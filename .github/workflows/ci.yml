@@ -27,18 +27,14 @@ jobs:
       - name: Build (bundle + type-check)
         run: npm run build
 
-      - name: Cache VS Code test binaries
-        uses: actions/cache@v4
-        with:
-          path: .vscode-test
-          key: vscode-test-${{ runner.os }}
+      - name: Test (unit)
+        run: npm test
 
-      # VS Code integration tests need a display server on Linux.
-      - name: Test
-        run: xvfb-run -a npm test
+      # NOTE: @vscode/test-electron integration tests are added in a later milestone;
+      # they will need `xvfb-run` on Linux and a `.vscode-test` cache step here.
 
       - name: Package extension (.vsix)
-        run: npx --yes @vscode/vsce package --out cad-preview.vsix
+        run: npm run package -- --out cad-preview.vsix
 
       - name: Upload .vsix artifact
         uses: actions/upload-artifact@v4

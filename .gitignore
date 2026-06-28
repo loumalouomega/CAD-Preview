@@ -1,0 +1,6 @@
+node_modules/
+dist/
+media/viewer.js
+media/viewer.js.map
+*.vsix
+.vscode-test/

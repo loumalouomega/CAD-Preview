@@ -58,7 +58,11 @@ npm test           # run unit + integration tests
 ```
 
 Press **F5** in VS Code to launch an Extension Development Host with the extension
-loaded, then open any supported file from `examples/`.
+loaded, then open a supported file from `examples/` — e.g. `examples/STL/cube.stl`.
+
+> **Status:** STL preview is implemented. STEP/IGES/BREP (OpenCascade.js) and the
+> remaining mesh loaders (OBJ/PLY/glTF) are in progress — see the milestones in the
+> implementation plan.
 
 ## Packaging
 
