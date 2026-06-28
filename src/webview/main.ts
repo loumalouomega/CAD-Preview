@@ -1,5 +1,6 @@
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
+import { buildMeshFromEncoded } from "./geometryBuilder";
 import type { HostToWebview, WebviewToHost } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -28,6 +29,16 @@ document.getElementById("wireframe")?.addEventListener("click", () => {
 window.addEventListener("message", async (event: MessageEvent<HostToWebview>) => {
   const msg = event.data;
   switch (msg.type) {
+    case "geometry":
+      try {
+        setStatus("Building geometry…");
+        const object = buildMeshFromEncoded(msg.meshes);
+        viewer.setModel(object);
+        setStatus("");
+      } catch (err) {
+        setStatus(`Failed to build geometry: ${(err as Error).message}`, true);
+      }
+      break;
     case "loadUrl":
       try {
         setStatus("Loading model…");

@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
-import type { HostToWebview, WebviewToHost } from "./protocol";
+import { loadBRep } from "./occtService";
+import { encodeBuffer, type HostToWebview, type WebviewToHost } from "./protocol";
+import type { CadFormat } from "./fileRouter";
 
 /** Read-only custom document: previews hold no editable state beyond their URI. */
 class CadDocument implements vscode.CustomDocument {
@@ -61,16 +63,34 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           const url = webviewPanel.webview.asWebviewUri(document.uri).toString();
           post({ type: "loadUrl", url, format: route.format });
         } else {
-          // OCCT pipeline lands in a later milestone.
-          post({
-            type: "error",
-            message: `${route.format.toUpperCase()} preview is not implemented yet.`,
-          });
+          this.handleBRep(document.uri, route.format as Extract<CadFormat, "step" | "iges" | "brep">, post);
         }
       }
     });
 
     webviewPanel.webview.html = this.getHtml(webviewPanel.webview);
+  }
+
+  private async handleBRep(
+    uri: vscode.Uri,
+    format: Extract<CadFormat, "step" | "iges" | "brep">,
+    post: (msg: HostToWebview) => void
+  ): Promise<void> {
+    try {
+      post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
+      const { meshes } = await loadBRep(this.context.extensionPath, bytes, format);
+      post({
+        type: "geometry",
+        meshes: meshes.map((m) => ({
+          positions: encodeBuffer(m.positions),
+          indices: encodeBuffer(m.indices),
+        })),
+      });
+    } catch (err) {
+      post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
+    }
   }
 
   private getHtml(webview: vscode.Webview): string {

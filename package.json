@@ -23,9 +23,12 @@
         "viewType": "cad-preview.mesh",
         "displayName": "CAD Preview",
         "selector": [
-          {
-            "filenamePattern": "*.stl"
-          }
+          { "filenamePattern": "*.stl" },
+          { "filenamePattern": "*.step" },
+          { "filenamePattern": "*.stp" },
+          { "filenamePattern": "*.iges" },
+          { "filenamePattern": "*.igs" },
+          { "filenamePattern": "*.brep" }
         ],
         "priority": "default"
       }
