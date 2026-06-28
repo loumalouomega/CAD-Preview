@@ -1,7 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { initOpenCascade } = require("opencascade.js") as { initOpenCascade: (opts: unknown) => Promise<unknown> };
+// Use the raw emscripten factory directly (NOT the initOpenCascade wrapper from
+// index.js, which takes no arguments and ignores wasmBinary). Passing wasmBinary
+// bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
+import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateShape, type GeometryBuffers } from "./meshExtract";
 import type { CadFormat } from "./fileRouter";
 
@@ -11,20 +13,18 @@ let _ocPromise: Promise<any> | null = null;
 /**
  * Returns the OpenCascade.js module, initializing it lazily on first call.
  *
- * The WASM binary is read from disk and passed directly to bypass Node 18's
- * built-in `fetch()` which confuses emscripten's environment detection for
- * file:// URLs.
+ * The WASM binary is read from disk and passed as `wasmBinary` to avoid
+ * Node 18's built-in `fetch()` being invoked with a filesystem path.
  *
  * `extensionPath` is the root of the installed extension (from ExtensionContext).
- * The WASM binary is expected at `<extensionPath>/dist/opencascade.wasm.wasm`
- * (copied there by the esbuild step).
+ * The WASM binary is expected at `<extensionPath>/dist/opencascade.wasm.wasm`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getOcct(extensionPath: string): Promise<any> {
   if (!_ocPromise) {
     const wasmPath = path.join(extensionPath, "dist", "opencascade.wasm.wasm");
     const wasmBinary = fs.readFileSync(wasmPath);
-    _ocPromise = initOpenCascade({ wasmBinary });
+    _ocPromise = openCascadeFactory({ wasmBinary });
   }
   return _ocPromise;
 }
