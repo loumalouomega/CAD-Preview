@@ -24,6 +24,10 @@
         "displayName": "CAD Preview",
         "selector": [
           { "filenamePattern": "*.stl" },
+          { "filenamePattern": "*.obj" },
+          { "filenamePattern": "*.ply" },
+          { "filenamePattern": "*.gltf" },
+          { "filenamePattern": "*.glb" },
           { "filenamePattern": "*.step" },
           { "filenamePattern": "*.stp" },
           { "filenamePattern": "*.iges" },
