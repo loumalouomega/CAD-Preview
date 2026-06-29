@@ -5,11 +5,13 @@ src/**
 test/**
 node_modules/**
 examples/**
+doc/**
 **/*.ts
 **/*.map
 esbuild.mjs
 tsconfig.json
 vitest.config.ts
+mkdocs.yml
 .gitignore
 CLAUDE.md
 **/*.vsix

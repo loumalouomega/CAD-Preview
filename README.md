@@ -1,6 +1,7 @@
 # CAD-Preview
 
 [![CI](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml/badge.svg)](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://loumalouomega.github.io/CAD-Preview/)
 [![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.80-blue?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![Three.js](https://img.shields.io/badge/Three.js-r160-black?logo=threedotjs)](https://threejs.org/)
 [![OpenCascade.js](https://img.shields.io/badge/OpenCascade.js-1.x-orange)](https://ocjs.org/)
@@ -31,7 +32,12 @@ loaders. Rendering is always Three.js.
 ## Features
 
 - Interactive camera: orbit, pan, zoom (OrbitControls with damping)
-- Fit-to-view on open and on demand via toolbar button
+- View-manipulation panel: stepped rotate (15° / 45° / 90°), pan, zoom, **Fit**
+  (reframe in place) and **Ctr** (reset to the default isometric view). The panel is
+  collapsible — use the **⌄ / ⌃** button to hide or show it.
+- Orientation cube: a labeled gizmo in the top-left corner that mirrors the current
+  view; click a face to snap to that standard view
+- Fit-to-view on open and on demand
 - Shaded / wireframe toggle
 - Axes and grid helpers
 - Loading status indicator and error reporting
@@ -80,6 +86,14 @@ supported file from `examples/`:
 npm run package    # produces cad-preview.vsix
 code --install-extension cad-preview.vsix
 ```
+
+## Documentation
+
+Full documentation is available at **https://loumalouomega.github.io/CAD-Preview/**
+
+Source lives in the [`doc/`](doc/) folder, built with [VitePress](https://vitepress.dev/) and
+deployed automatically to GitHub Pages on every push to `master`.
+See [`.github/workflows/docs.yml`](.github/workflows/docs.yml).
 
 ## CI
 

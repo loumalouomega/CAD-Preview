@@ -50,6 +50,56 @@ document.getElementById("wireframe")?.addEventListener("click", () => {
   viewer.setWireframe(wireframe);
 });
 
+// ── View-manipulation control panel ──────────────────────────────────────
+// Wire the panel inside a guard so a failure here can never block the `ready`
+// handshake below, or the host never sends the model and the webview stays blank.
+function setupViewControls(): void {
+  const panel = document.getElementById("view-controls");
+  const toggle = document.getElementById("vc-toggle");
+  toggle?.addEventListener("click", () => {
+    const collapsed = panel?.classList.toggle("collapsed") ?? false;
+    toggle.textContent = collapsed ? "⌃" : "⌄";
+    toggle.title = collapsed ? "Show controls" : "Hide controls";
+  });
+
+  let rotateStep = 45;
+  for (const btn of document.querySelectorAll<HTMLButtonElement>(".seg-btn")) {
+    btn.addEventListener("click", () => {
+      rotateStep = Number(btn.dataset.step);
+      document.querySelectorAll(".seg-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+  }
+
+  const on = (id: string, handler: () => void) =>
+    document.getElementById(id)?.addEventListener("click", handler);
+
+  on("rot-left", () => viewer.rotateView(rotateStep, 0));
+  on("rot-right", () => viewer.rotateView(-rotateStep, 0));
+  on("rot-up", () => viewer.rotateView(0, -rotateStep));
+  on("rot-down", () => viewer.rotateView(0, rotateStep));
+  on("pan-left", () => viewer.panView(0.15, 0));
+  on("pan-right", () => viewer.panView(-0.15, 0));
+  on("pan-up", () => viewer.panView(0, 0.15));
+  on("pan-down", () => viewer.panView(0, -0.15));
+  on("zoom-in", () => viewer.zoomView(0.8));
+  on("zoom-out", () => viewer.zoomView(1.25));
+  on("view-fit", () => viewer.fitView());
+  on("view-reset", () => viewer.resetView());
+}
+
+try {
+  setupViewControls();
+} catch (err) {
+  const message = `View controls failed to initialize: ${(err as Error).message}`;
+  console.error(message, err);
+  post({ type: "log", message });
+}
+
+window.addEventListener("unload", () => {
+  viewer.dispose();
+});
+
 window.addEventListener("message", async (event: MessageEvent<HostToWebview>) => {
   const msg = event.data;
   switch (msg.type) {

@@ -139,6 +139,48 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="grid" title="Toggle grid">Grid</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">Tree</button>
   </div>
+  <div id="view-controls">
+    <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">⌄</button>
+    <div id="vc-body">
+    <div class="vc-group">
+      <span class="vc-label">Rotate</span>
+      <div class="vc-segments">
+        <button class="seg-btn" data-step="15">15°</button>
+        <button class="seg-btn active" data-step="45">45°</button>
+        <button class="seg-btn" data-step="90">90°</button>
+      </div>
+      <div class="vc-cross">
+        <button id="rot-up" class="vc-arrow" style="grid-area:up" title="Rotate up">↑</button>
+        <button id="rot-left" class="vc-arrow" style="grid-area:left" title="Rotate left">←</button>
+        <button id="rot-right" class="vc-arrow" style="grid-area:right" title="Rotate right">→</button>
+        <button id="rot-down" class="vc-arrow" style="grid-area:down" title="Rotate down">↓</button>
+      </div>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">Pan</span>
+      <div class="vc-cross">
+        <button id="pan-up" class="vc-arrow" style="grid-area:up" title="Pan up">↑</button>
+        <button id="pan-left" class="vc-arrow" style="grid-area:left" title="Pan left">←</button>
+        <button id="pan-right" class="vc-arrow" style="grid-area:right" title="Pan right">→</button>
+        <button id="pan-down" class="vc-arrow" style="grid-area:down" title="Pan down">↓</button>
+      </div>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">Zoom</span>
+      <div class="vc-row">
+        <button id="zoom-in" class="vc-arrow" title="Zoom in">+</button>
+        <button id="zoom-out" class="vc-arrow" title="Zoom out">−</button>
+      </div>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">View</span>
+      <div class="vc-row">
+        <button id="view-fit" title="Fit to view">Fit</button>
+        <button id="view-reset" title="Reset to default view">Ctr</button>
+      </div>
+    </div>
+    </div>
+  </div>
   <div id="status">Loading…</div>
   <script nonce="${nonce}" src="${viewerUri}"></script>
 </body>
