@@ -1,6 +1,34 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 media/viewer.js
 media/viewer.js.map
+*.js.map
+
+# Packaged extension
 *.vsix
+
+# Test runner cache
 .vscode-test/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*.log
+*.swp
+*.swo
+
+# Env / secrets
+.env
+.env.*
+
+# Logs
+npm-debug.log*
+yarn-error.log
+
+# TypeScript incremental build cache
+*.tsbuildinfo
