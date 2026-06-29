@@ -1,34 +1,23 @@
 import * as THREE from "three";
-import type { Viewer } from "./viewer";
 
 /**
- * A small interactive orientation cube rendered in its own canvas. It mirrors the
- * main viewer's orientation each frame and, when a face is clicked, snaps the main
- * camera to the corresponding axis-aligned view.
+ * An orientation gizmo: a small labeled cube with RGB axes that indicates the
+ * current view orientation and snaps the camera to a standard view when clicked.
  *
- * Self-contained (own renderer/scene/camera) and asset-free: face labels are drawn
- * onto 2D canvases as `CanvasTexture`s so nothing is fetched (CSP-safe).
+ * It owns **no renderer or canvas** — the {@link Viewer} draws it into a corner of
+ * the main canvas via a scissor viewport, so only a single WebGL context exists.
+ * Asset-free: face labels are drawn onto 2D canvases as `CanvasTexture`s (CSP-safe).
  */
 export class OrientationCube {
-  private readonly renderer: THREE.WebGLRenderer;
-  private readonly scene = new THREE.Scene();
+  readonly scene = new THREE.Scene();
   private readonly camera: THREE.OrthographicCamera;
   private readonly cube: THREE.Mesh;
   private readonly raycaster = new THREE.Raycaster();
   private readonly materials: THREE.MeshBasicMaterial[];
   private readonly textures: THREE.CanvasTexture[];
-  private rafId = 0;
   private readonly camDistance = 5;
 
-  constructor(
-    private readonly canvas: HTMLCanvasElement,
-    private readonly viewer: Viewer
-  ) {
-    const size = canvas.clientWidth || 90;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    this.renderer.setPixelRatio(window.devicePixelRatio);
-    this.renderer.setSize(size, size, false);
-
+  constructor() {
     const frustum = 1.8;
     this.camera = new THREE.OrthographicCamera(-frustum, frustum, frustum, -frustum, 0.1, 100);
 
@@ -44,49 +33,48 @@ export class OrientationCube {
     this.scene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), len, 0xff3653, 0.3, 0.2));
     this.scene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), len, 0x8adb00, 0.3, 0.2));
     this.scene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), len, 0x2c8fff, 0.3, 0.2));
-
-    canvas.addEventListener("pointerdown", this.onPointerDown);
-    this.animate();
   }
 
-  private animate = (): void => {
-    this.rafId = requestAnimationFrame(this.animate);
-    const dir = this.viewer.getViewDirection();
-    this.camera.position.copy(dir).multiplyScalar(this.camDistance);
-    this.camera.up.copy(this.viewer.getCameraUp());
-    this.camera.lookAt(0, 0, 0);
-    this.renderer.render(this.scene, this.camera);
-  };
+  /** The gizmo's camera (kept in sync via {@link syncCamera}). */
+  get viewCamera(): THREE.Camera {
+    return this.camera;
+  }
 
-  private onPointerDown = (event: PointerEvent): void => {
-    const rect = this.canvas.getBoundingClientRect();
-    const ndc = new THREE.Vector2(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1
-    );
-    this.raycaster.setFromCamera(ndc, this.camera);
+  /** Aims the gizmo camera along `dir` (with `up`) so the cube mirrors the main view. */
+  syncCamera(dir: THREE.Vector3, up: THREE.Vector3): void {
+    this.camera.position.copy(dir).normalize().multiplyScalar(this.camDistance);
+    this.camera.up.copy(up);
+    this.camera.lookAt(0, 0, 0);
+    this.camera.updateMatrixWorld();
+  }
+
+  /**
+   * Raycasts the cube at gizmo-local NDC coordinates and returns the axis-aligned
+   * direction to snap to, or `null` if no face was hit.
+   */
+  pick(ndcX: number, ndcY: number): THREE.Vector3 | null {
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
     const hit = this.raycaster.intersectObject(this.cube)[0];
-    if (!hit?.face) return;
+    if (!hit?.face) return null;
     // The cube sits at identity, so its local face normal is the world view direction.
-    const n = hit.face.normal;
-    const ax = Math.abs(n.x);
-    const ay = Math.abs(n.y);
-    const az = Math.abs(n.z);
-    const dir = new THREE.Vector3();
-    if (ax >= ay && ax >= az) dir.set(Math.sign(n.x), 0, 0);
-    else if (ay >= az) dir.set(0, Math.sign(n.y), 0);
-    else dir.set(0, 0, Math.sign(n.z));
-    this.viewer.setViewDirection(dir);
-  };
+    return faceNormalToDirection(hit.face.normal);
+  }
 
   dispose(): void {
-    cancelAnimationFrame(this.rafId);
-    this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     this.cube.geometry.dispose();
     this.materials.forEach((m) => m.dispose());
     this.textures.forEach((t) => t.dispose());
-    this.renderer.dispose();
   }
+}
+
+/** Snaps a (near axis-aligned) face normal to the dominant unit axis direction. */
+export function faceNormalToDirection(n: THREE.Vector3): THREE.Vector3 {
+  const ax = Math.abs(n.x);
+  const ay = Math.abs(n.y);
+  const az = Math.abs(n.z);
+  if (ax >= ay && ax >= az) return new THREE.Vector3(Math.sign(n.x), 0, 0);
+  if (ay >= az) return new THREE.Vector3(0, Math.sign(n.y), 0);
+  return new THREE.Vector3(0, 0, Math.sign(n.z));
 }
 
 /** Draws a face label onto a canvas and returns it as a texture. */

@@ -182,13 +182,6 @@ body {
   color: var(--vscode-foreground, #ccc);
 }
 
-#orientation-cube {
-  width: 90px;
-  height: 90px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
 .vc-group {
   display: flex;
   flex-direction: column;

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import * as cam from "./cameraControls";
+import { OrientationCube } from "./orientationCube";
 
 /**
  * A self-contained Three.js viewer: scene, lights, helpers, orbit controls and
@@ -13,6 +14,9 @@ export class Viewer {
   private readonly controls: OrbitControls;
   private readonly grid: THREE.GridHelper;
   private readonly axes: THREE.AxesHelper;
+  private readonly gizmo = new OrientationCube();
+  private readonly gizmoSize = 96;
+  private readonly gizmoMargin = 10;
   private model: THREE.Object3D | null = null;
   private wireframe = false;
 
@@ -43,6 +47,8 @@ export class Viewer {
     this.axes = new THREE.AxesHelper(1);
     this.scene.add(this.axes);
 
+    // Capture-phase so a face click is handled before OrbitControls starts a drag.
+    this.renderer.domElement.addEventListener("pointerdown", this.onGizmoPointerDown, true);
     window.addEventListener("resize", this.onResize);
     this.animate();
   }
@@ -174,6 +180,8 @@ export class Viewer {
 
   dispose(): void {
     window.removeEventListener("resize", this.onResize);
+    this.renderer.domElement.removeEventListener("pointerdown", this.onGizmoPointerDown, true);
+    this.gizmo.dispose();
     this.clearModel();
     this.controls.dispose();
     this.renderer.dispose();
@@ -192,6 +200,52 @@ export class Viewer {
     requestAnimationFrame(this.animate);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+    this.renderGizmo();
+  };
+
+  /** Draws the orientation gizmo into the top-left corner via a scissor viewport. */
+  private renderGizmo(): void {
+    const el = this.renderer.domElement;
+    const cssW = el.clientWidth;
+    const cssH = el.clientHeight;
+    const s = this.gizmoSize;
+    const m = this.gizmoMargin;
+
+    this.gizmo.syncCamera(this.getViewDirection(), this.getCameraUp());
+
+    const x = m;
+    const y = cssH - m - s; // GL viewport origin is bottom-left → place at top-left.
+    this.renderer.setViewport(x, y, s, s);
+    this.renderer.setScissor(x, y, s, s);
+    this.renderer.setScissorTest(true);
+    // Overlay on the scene: clear only depth in this region, keep the scene's colors.
+    const prevAutoClear = this.renderer.autoClear;
+    this.renderer.autoClear = false;
+    this.renderer.clearDepth();
+    this.renderer.render(this.gizmo.scene, this.gizmo.viewCamera);
+    this.renderer.autoClear = prevAutoClear;
+    this.renderer.setScissorTest(false);
+    this.renderer.setViewport(0, 0, cssW, cssH);
+  }
+
+  private onGizmoPointerDown = (event: PointerEvent): void => {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const cssX = event.clientX - rect.left;
+    const cssY = event.clientY - rect.top;
+    const s = this.gizmoSize;
+    const m = this.gizmoMargin;
+    if (cssX < m || cssX > m + s || cssY < m || cssY > m + s) return;
+
+    const ndcX = ((cssX - m) / s) * 2 - 1;
+    const ndcY = 1 - ((cssY - m) / s) * 2;
+    this.gizmo.syncCamera(this.getViewDirection(), this.getCameraUp());
+    const dir = this.gizmo.pick(ndcX, ndcY);
+    if (dir) {
+      this.setViewDirection(dir);
+      // Stop OrbitControls (a listener on the same element) from also reacting.
+      event.stopImmediatePropagation();
+      event.preventDefault();
+    }
   };
 }
 

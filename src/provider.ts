@@ -140,7 +140,6 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="tree-toggle" title="Toggle component tree" style="display:none">Tree</button>
   </div>
   <div id="view-controls">
-    <canvas id="orientation-cube" width="90" height="90"></canvas>
     <div class="vc-group">
       <span class="vc-label">Rotate</span>
       <div class="vc-segments">
