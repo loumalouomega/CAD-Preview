@@ -3,7 +3,7 @@
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside VS Code.",
   "version": "0.0.1",
-  "publisher": "cad-preview",
+  "publisher": "kratos-multiphysics",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
