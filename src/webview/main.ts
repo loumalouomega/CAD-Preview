@@ -3,6 +3,7 @@ import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { buildGroupFromEncoded } from "./geometryBuilder";
 import { TreePanel } from "./treePanel";
+import { OrientationCube } from "./orientationCube";
 import type { HostToWebview, WebviewToHost, TreeNode } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -48,6 +49,42 @@ let wireframe = false;
 document.getElementById("wireframe")?.addEventListener("click", () => {
   wireframe = !wireframe;
   viewer.setWireframe(wireframe);
+});
+
+// ── View-manipulation control panel ──────────────────────────────────────
+const cube = new OrientationCube(
+  document.getElementById("orientation-cube") as HTMLCanvasElement,
+  viewer
+);
+
+let rotateStep = 45;
+for (const btn of document.querySelectorAll<HTMLButtonElement>(".seg-btn")) {
+  btn.addEventListener("click", () => {
+    rotateStep = Number(btn.dataset.step);
+    document.querySelectorAll(".seg-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+  });
+}
+
+const on = (id: string, handler: () => void) =>
+  document.getElementById(id)?.addEventListener("click", handler);
+
+on("rot-left", () => viewer.rotateView(rotateStep, 0));
+on("rot-right", () => viewer.rotateView(-rotateStep, 0));
+on("rot-up", () => viewer.rotateView(0, -rotateStep));
+on("rot-down", () => viewer.rotateView(0, rotateStep));
+on("pan-left", () => viewer.panView(0.15, 0));
+on("pan-right", () => viewer.panView(-0.15, 0));
+on("pan-up", () => viewer.panView(0, 0.15));
+on("pan-down", () => viewer.panView(0, -0.15));
+on("zoom-in", () => viewer.zoomView(0.8));
+on("zoom-out", () => viewer.zoomView(1.25));
+on("view-fit", () => viewer.fitView());
+on("view-reset", () => viewer.resetView());
+
+window.addEventListener("unload", () => {
+  cube.dispose();
+  viewer.dispose();
 });
 
 window.addEventListener("message", async (event: MessageEvent<HostToWebview>) => {

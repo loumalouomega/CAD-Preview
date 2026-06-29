@@ -163,6 +163,107 @@ body {
   background: var(--vscode-button-hoverBackground, #1177bb);
 }
 
+/* ── View-manipulation control panel ────────────────────────────────── */
+
+#view-controls {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  padding: 8px 14px;
+  z-index: 10;
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: 6px;
+  font-family: var(--vscode-font-family, sans-serif);
+  color: var(--vscode-foreground, #ccc);
+}
+
+#orientation-cube {
+  width: 90px;
+  height: 90px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.vc-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.vc-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+}
+
+.vc-segments {
+  display: flex;
+  gap: 2px;
+}
+
+.seg-btn,
+.vc-arrow,
+#view-controls .vc-row button {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.seg-btn {
+  padding: 3px 7px;
+}
+
+.seg-btn.active {
+  background: var(--vscode-button-background, #0e639c);
+}
+
+.seg-btn:hover,
+.vc-arrow:hover,
+#view-controls .vc-row button:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.vc-cross {
+  display: grid;
+  grid-template-columns: repeat(3, 24px);
+  grid-template-rows: repeat(3, 24px);
+  grid-template-areas:
+    ".    up    ."
+    "left .     right"
+    ".    down  .";
+  gap: 2px;
+}
+
+.vc-arrow {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vc-row {
+  display: flex;
+  gap: 4px;
+}
+
+#view-controls .vc-row button {
+  padding: 5px 9px;
+}
+
 /* ── Status bar ─────────────────────────────────────────────────────── */
 
 #status {

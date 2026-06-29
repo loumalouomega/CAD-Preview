@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import * as cam from "./cameraControls";
 
 /**
  * A self-contained Three.js viewer: scene, lights, helpers, orbit controls and
@@ -52,7 +53,7 @@ export class Viewer {
     this.model = object;
     this.applyWireframe();
     this.scene.add(object);
-    this.fitView();
+    this.resetView();
   }
 
   private clearModel(): void {
@@ -68,8 +69,8 @@ export class Viewer {
     this.model = null;
   }
 
-  /** Frames the current model (or the scene) within the camera view. */
-  fitView(): void {
+  /** Frames the current model (or the scene) within the view along `direction`. */
+  private frame(direction: THREE.Vector3): void {
     const target = this.model ?? this.scene;
     const box = new THREE.Box3().setFromObject(target);
     if (box.isEmpty()) return;
@@ -84,13 +85,58 @@ export class Viewer {
 
     const fov = (this.camera.fov * Math.PI) / 180;
     const distance = (radius / Math.sin(fov / 2)) * 1.5;
-    const dir = new THREE.Vector3(1, 0.8, 1).normalize();
+    const dir = direction.clone().normalize();
     this.camera.position.copy(center).addScaledVector(dir, distance);
     this.camera.near = distance / 100;
     this.camera.far = distance * 100;
     this.camera.updateProjectionMatrix();
     this.controls.target.copy(center);
     this.controls.update();
+  }
+
+  /** Frames the model keeping the current viewing orientation. */
+  fitView(): void {
+    const dir = this.getViewDirection();
+    this.frame(dir);
+  }
+
+  /** Resets to the default isometric orientation and frames the model. */
+  resetView(): void {
+    this.frame(new THREE.Vector3(1, 0.8, 1));
+  }
+
+  /** Orbits the camera around the target by the given degrees (azimuth, polar). */
+  rotateView(azimuthDeg: number, polarDeg: number): void {
+    cam.orbit(this.camera, this.controls.target, azimuthDeg, polarDeg);
+    this.controls.update();
+  }
+
+  /** Pans the camera and target by fractions of the framed extent. */
+  panView(dxFrac: number, dyFrac: number): void {
+    cam.pan(this.camera, this.controls.target, dxFrac, dyFrac);
+    this.controls.update();
+  }
+
+  /** Dollies the camera toward (`factor` < 1) or away from (`> 1`) the target. */
+  zoomView(factor: number): void {
+    cam.dolly(this.camera, this.controls.target, factor);
+    this.controls.update();
+  }
+
+  /** Repositions the camera along `dir`, keeping the current target and distance. */
+  setViewDirection(dir: THREE.Vector3): void {
+    cam.setDirection(this.camera, this.controls.target, dir);
+    this.controls.update();
+  }
+
+  /** Normalized direction from the orbit target to the camera. */
+  getViewDirection(): THREE.Vector3 {
+    return cam.viewDirection(this.camera, this.controls.target);
+  }
+
+  /** The camera's current up vector. */
+  getCameraUp(): THREE.Vector3 {
+    return this.camera.up.clone();
   }
 
   /**
