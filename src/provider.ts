@@ -140,6 +140,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="tree-toggle" title="Toggle component tree" style="display:none">Tree</button>
   </div>
   <div id="view-controls">
+    <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">⌄</button>
+    <div id="vc-body">
     <div class="vc-group">
       <span class="vc-label">Rotate</span>
       <div class="vc-segments">
@@ -176,6 +178,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         <button id="view-fit" title="Fit to view">Fit</button>
         <button id="view-reset" title="Reset to default view">Ctr</button>
       </div>
+    </div>
     </div>
   </div>
   <div id="status">Loading…</div>

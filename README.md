@@ -31,7 +31,12 @@ loaders. Rendering is always Three.js.
 ## Features
 
 - Interactive camera: orbit, pan, zoom (OrbitControls with damping)
-- Fit-to-view on open and on demand via toolbar button
+- View-manipulation panel: stepped rotate (15° / 45° / 90°), pan, zoom, **Fit**
+  (reframe in place) and **Ctr** (reset to the default isometric view). The panel is
+  collapsible — use the **⌄ / ⌃** button to hide or show it.
+- Orientation cube: a labeled gizmo in the top-left corner that mirrors the current
+  view; click a face to snap to that standard view
+- Fit-to-view on open and on demand
 - Shaded / wireframe toggle
 - Axes and grid helpers
 - Loading status indicator and error reporting

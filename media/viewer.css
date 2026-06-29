@@ -171,8 +171,8 @@ body {
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  align-items: flex-end;
-  gap: 18px;
+  align-items: flex-start;
+  gap: 8px;
   padding: 8px 14px;
   z-index: 10;
   background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
@@ -180,6 +180,38 @@ body {
   border-radius: 6px;
   font-family: var(--vscode-font-family, sans-serif);
   color: var(--vscode-foreground, #ccc);
+}
+
+#vc-body {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+}
+
+#view-controls.collapsed {
+  padding: 4px 8px;
+}
+
+#view-controls.collapsed #vc-body {
+  display: none;
+}
+
+.vc-collapse {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.vc-collapse:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
 }
 
 .vc-group {

@@ -49,6 +49,27 @@ garbage-collected. In `src/meshExtract.ts`, push every created handle into a cle
 list and `.delete()` all of them in a `try/finally` (reverse order), on both success
 and failure. The OCCT singleton is reused across files; only per-file objects are freed.
 
+## View manipulation (webview, Three.js only)
+
+The webview viewer exposes discrete view controls plus an orientation gizmo:
+
+- **Pure camera math lives in `src/webview/cameraControls.ts`** (`orbit`, `pan`, `dolly`,
+  `setDirection`, `viewDirection`). These operate on a `PerspectiveCamera` + target
+  `Vector3` with no DOM/renderer, so they are unit-tested headless. `Viewer`'s
+  `rotateView`/`panView`/`zoomView`/`setViewDirection` are thin wrappers that delegate to
+  them and then call `controls.update()`. `fitView()` reframes in the current orientation;
+  `resetView()` returns to the default isometric and is what `setModel()` calls.
+- **The orientation cube (`src/webview/orientationCube.ts`) must NOT create its own
+  WebGLRenderer/canvas.** A second WebGL context fails in some environments. It owns only a
+  scene/camera/cube/`pick()`; `Viewer.renderGizmo()` draws it into a corner of the **single
+  main renderer** via a scissor viewport (clear depth only, keep scene colors). Face clicks
+  are routed by a capture-phase `pointerdown` on the canvas that `stopImmediatePropagation()`s
+  so OrbitControls doesn't also react.
+- **The control panel is static HTML** built in `provider.ts` `getHtml` (`#view-controls`,
+  collapsible via `#vc-toggle`), wired in `src/webview/main.ts` `setupViewControls()`. Keep
+  that wiring inside its `try/catch` and **before** nothing that the `ready` handshake /
+  `post({ type: "ready" })` depends on — a throw there must never block model loading.
+
 ## Build & test
 
 ```bash
@@ -64,6 +85,11 @@ npm test           # unit tests via vitest
 
 Press **F5** to launch the Extension Development Host. Open `examples/STP/bull.stp`
 (B-rep) and `examples/STL/cube.stl` (mesh); confirm orbit/pan/zoom, fit-to-view,
-wireframe toggle. Open/close repeatedly and watch extension-host memory stay flat
-(leak check). Additional fixtures: `examples/OBJ/cube.obj`, `examples/PLY/cube.ply`,
-`examples/GLTF/cube.gltf`.
+wireframe toggle. Exercise the view-manipulation panel (stepped rotate/pan/zoom, Fit vs
+Ctr), the orientation cube (faces snap the view), and the **⌄ / ⌃** hide/show toggle.
+Open/close repeatedly and watch extension-host memory stay flat (leak check). Additional
+fixtures: `examples/OBJ/cube.obj`, `examples/PLY/cube.ply`, `examples/GLTF/cube.gltf`.
+
+On **VS Code Remote/SSH**, the running extension is the installed copy in
+`~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.
+Bump the version, `npx vsce package`, reinstall the `.vsix`, then reload the window.

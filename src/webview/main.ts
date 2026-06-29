@@ -54,6 +54,14 @@ document.getElementById("wireframe")?.addEventListener("click", () => {
 // Wire the panel inside a guard so a failure here can never block the `ready`
 // handshake below, or the host never sends the model and the webview stays blank.
 function setupViewControls(): void {
+  const panel = document.getElementById("view-controls");
+  const toggle = document.getElementById("vc-toggle");
+  toggle?.addEventListener("click", () => {
+    const collapsed = panel?.classList.toggle("collapsed") ?? false;
+    toggle.textContent = collapsed ? "⌃" : "⌄";
+    toggle.title = collapsed ? "Show controls" : "Hide controls";
+  });
+
   let rotateStep = 45;
   for (const btn of document.querySelectorAll<HTMLButtonElement>(".seg-btn")) {
     btn.addEventListener("click", () => {
