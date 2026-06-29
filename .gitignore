@@ -32,3 +32,7 @@ yarn-error.log
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# VitePress docs build output
+doc/.vitepress/dist
+doc/.vitepress/cache
