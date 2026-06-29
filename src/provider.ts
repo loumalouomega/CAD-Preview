@@ -80,14 +80,18 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
-      const { meshes } = await loadBRep(this.context.extensionPath, bytes, format);
+      const { groups, tree } = await loadBRep(this.context.extensionPath, bytes, format);
       post({
         type: "geometry",
-        meshes: meshes.map((m) => ({
-          positions: encodeBuffer(m.positions),
-          indices: encodeBuffer(m.indices),
-        })),
+        meshes: groups.flatMap((g) =>
+          g.meshes.map((m) => ({
+            positions: encodeBuffer(m.positions),
+            indices: encodeBuffer(m.indices),
+            groupId: g.id,
+          }))
+        ),
       });
+      post({ type: "tree", root: tree });
     } catch (err) {
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
     }
@@ -119,11 +123,21 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   <title>CAD Preview</title>
 </head>
 <body>
-  <div id="app"></div>
+  <div id="layout">
+    <div id="tree-panel">
+      <div id="tree-header">
+        <span id="tree-title">Components</span>
+        <button id="tree-close" title="Close panel">✕</button>
+      </div>
+      <div id="tree-body"></div>
+    </div>
+    <div id="app"></div>
+  </div>
   <div id="toolbar">
     <button id="fit" title="Fit to view">Fit</button>
     <button id="wireframe" title="Toggle wireframe">Wireframe</button>
     <button id="grid" title="Toggle grid">Grid</button>
+    <button id="tree-toggle" title="Toggle component tree" style="display:none">Tree</button>
   </div>
   <div id="status">Loading…</div>
   <script nonce="${nonce}" src="${viewerUri}"></script>

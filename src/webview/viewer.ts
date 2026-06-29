@@ -93,6 +93,21 @@ export class Viewer {
     this.controls.update();
   }
 
+  /**
+   * Isolates `groupId` by dimming all other meshes, or restores full opacity
+   * when called with `null`.
+   */
+  highlightGroup(groupId: string | null): void {
+    this.model?.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      const mat = obj.material as THREE.MeshStandardMaterial;
+      const selected = groupId === null || obj.userData.groupId === groupId;
+      mat.opacity = selected ? 1.0 : 0.08;
+      mat.transparent = !selected;
+      mat.needsUpdate = true;
+    });
+  }
+
   setWireframe(on: boolean): void {
     this.wireframe = on;
     this.applyWireframe();

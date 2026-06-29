@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import type { EncodedMesh } from "../protocol";
 
-/** Decode a base64 string back to a Float32Array. */
 function decodeF32(b64: string): Float32Array {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -9,7 +8,6 @@ function decodeF32(b64: string): Float32Array {
   return new Float32Array(bytes.buffer);
 }
 
-/** Decode a base64 string back to a Uint32Array. */
 function decodeU32(b64: string): Uint32Array {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -17,30 +15,31 @@ function decodeU32(b64: string): Uint32Array {
   return new Uint32Array(bytes.buffer);
 }
 
-/**
- * Builds a single merged `THREE.Mesh` from an array of per-face encoded meshes.
- * Normals are computed from geometry (smooth per vertex).
- */
-export function buildMeshFromEncoded(encodedMeshes: EncodedMesh[]): THREE.Mesh {
+function makeMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: 0xc0c4cc,
+    metalness: 0.1,
+    roughness: 0.7,
+    side: THREE.DoubleSide,
+    flatShading: false,
+  });
+}
+
+function mergeAndBuild(meshes: EncodedMesh[]): THREE.Mesh {
   const allPositions: Float32Array[] = [];
   const allIndices: Uint32Array[] = [];
   let vertexOffset = 0;
 
-  for (const em of encodedMeshes) {
+  for (const em of meshes) {
     const positions = decodeF32(em.positions);
     const indices = decodeU32(em.indices);
-
     allPositions.push(positions);
-    // Offset indices so they remain valid after merging all face buffers.
     const offsetIndices = new Uint32Array(indices.length);
-    for (let i = 0; i < indices.length; i++) {
-      offsetIndices[i] = indices[i] + vertexOffset;
-    }
+    for (let i = 0; i < indices.length; i++) offsetIndices[i] = indices[i] + vertexOffset;
     allIndices.push(offsetIndices);
     vertexOffset += positions.length / 3;
   }
 
-  // Concatenate into a single typed array.
   const totalVerts = allPositions.reduce((s, a) => s + a.length, 0);
   const totalIdx = allIndices.reduce((s, a) => s + a.length, 0);
   const mergedPos = new Float32Array(totalVerts);
@@ -55,14 +54,27 @@ export function buildMeshFromEncoded(encodedMeshes: EncodedMesh[]): THREE.Mesh {
   geometry.setAttribute("position", new THREE.BufferAttribute(mergedPos, 3));
   geometry.setIndex(new THREE.BufferAttribute(mergedIdx, 1));
   geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, makeMaterial());
+}
 
-  const material = new THREE.MeshStandardMaterial({
-    color: 0xc0c4cc,
-    metalness: 0.1,
-    roughness: 0.7,
-    side: THREE.DoubleSide,
-    flatShading: false,
-  });
+/**
+ * Builds a `THREE.Group` from per-face encoded meshes, grouping by `groupId`.
+ * Each solid becomes a separate `THREE.Mesh` child so it can be highlighted
+ * independently. `mesh.userData.groupId` stores the solid id.
+ */
+export function buildGroupFromEncoded(encodedMeshes: EncodedMesh[]): THREE.Group {
+  const byGroup = new Map<string, EncodedMesh[]>();
+  for (const em of encodedMeshes) {
+    const gid = em.groupId ?? "default";
+    if (!byGroup.has(gid)) byGroup.set(gid, []);
+    byGroup.get(gid)!.push(em);
+  }
 
-  return new THREE.Mesh(geometry, material);
+  const group = new THREE.Group();
+  for (const [groupId, meshes] of byGroup) {
+    const mesh = mergeAndBuild(meshes);
+    mesh.userData.groupId = groupId;
+    group.add(mesh);
+  }
+  return group;
 }

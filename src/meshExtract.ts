@@ -4,6 +4,13 @@ export interface GeometryBuffers {
   indices: Uint32Array;
 }
 
+export interface SolidGroup {
+  id: string;
+  label: string;
+  faceCount: number;
+  meshes: GeometryBuffers[];
+}
+
 /**
  * Minimal duck-type interfaces so extractFaceGeometry can be unit-tested without
  * loading the WASM. The real OCCT objects satisfy these interfaces at runtime.
@@ -19,11 +26,8 @@ interface OcctPolyTriangulation {
 interface OcctTrsf { TransformCoord(x: number, y: number, z: number): [number, number, number]; }
 
 /**
- * Extracts position, (placeholder) normal, and index buffers from one OCCT face.
- *
- * @param tri  Poly_Triangulation for the face (from BRep_Tool.Triangulation)
- * @param trsf Transform from TopLoc_Location, or null when identity
- * @param isReversed Whether face orientation is TopAbs_REVERSED
+ * Extracts position and index buffers from one OCCT face.
+ * Normals are computed on the webview side via computeVertexNormals().
  */
 export function extractFaceGeometry(
   tri: OcctPolyTriangulation,
@@ -51,42 +55,26 @@ export function extractFaceGeometry(
   const indices = new Uint32Array(nbTris * 3);
   for (let i = 1; i <= nbTris; i++) {
     const t = tri.Triangle(i);
-    const n1 = t.Value(1) - 1; // convert from 1-based to 0-based
+    const n1 = t.Value(1) - 1;
     const n2 = t.Value(2) - 1;
     const n3 = t.Value(3) - 1;
     t.delete();
     const base = (i - 1) * 3;
     if (isReversed) {
-      indices[base] = n1;
-      indices[base + 1] = n3;
-      indices[base + 2] = n2;
+      indices[base] = n1; indices[base + 1] = n3; indices[base + 2] = n2;
     } else {
-      indices[base] = n1;
-      indices[base + 1] = n2;
-      indices[base + 2] = n3;
+      indices[base] = n1; indices[base + 1] = n2; indices[base + 2] = n3;
     }
   }
 
-  // Normals are computed on the webview side from the geometry (computeVertexNormals).
-  const normals = new Float32Array(0);
-
-  return { positions, normals, indices };
+  return { positions, normals: new Float32Array(0), indices };
 }
 
-/**
- * Runs the full OCCT extraction pipeline on `shape`:
- * BRepMesh → face iteration → geometry buffers.
- *
- * Every OCCT handle created here is freed in a try/finally (reverse order).
- */
+/** Extract face geometry buffers from all faces in `shape` (no BRepMesh call). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function tessellateShape(oc: any, shape: any): GeometryBuffers[] {
+function extractFacesFromShape(oc: any, shape: any): GeometryBuffers[] {
   const cleanup: Array<{ delete(): void }> = [];
-
   try {
-    const mesher = new oc.BRepMesh_IncrementalMesh_2(shape, 0.1, false, 0.5, false);
-    cleanup.push(mesher);
-
     const results: GeometryBuffers[] = [];
     const exp = new oc.TopExp_Explorer_2(
       shape,
@@ -109,13 +97,9 @@ export function tessellateShape(oc: any, shape: any): GeometryBuffers[] {
       if (handle.IsNull()) continue;
 
       const tri = handle.get();
-      const hasTransform = !loc.IsIdentity();
-      const trsf = hasTransform ? loc.Transformation() : null;
+      const trsf = loc.IsIdentity() ? null : loc.Transformation();
       if (trsf) cleanup.push(trsf);
 
-      // Extract the 3×4 affine matrix from gp_Trsf once per face (Value(row,col)):
-      //   cols 1-3 = scale*rotation, col 4 = translation.
-      // Applying it in pure JS avoids any per-node WASM allocation.
       const m = trsf
         ? [
             trsf.Value(1, 1), trsf.Value(1, 2), trsf.Value(1, 3), trsf.Value(1, 4),
@@ -138,11 +122,77 @@ export function tessellateShape(oc: any, shape: any): GeometryBuffers[] {
 
       results.push(extractFaceGeometry(tri, trsfAdapter, isReversed));
     }
-
     return results;
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
-      try { cleanup[i].delete(); } catch { /* ignore double-free */ }
+      try { cleanup[i].delete(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Tessellates `shape` and groups the result by solid.
+ * Falls back to a single "Shape" group when the shape has no solid sub-shapes
+ * (e.g. surface/shell models).
+ *
+ * BRepMesh is run once on the whole shape before face exploration begins.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function tessellateByGroup(oc: any, shape: any): SolidGroup[] {
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const mesher = new oc.BRepMesh_IncrementalMesh_2(shape, 0.1, false, 0.5, false);
+    cleanup.push(mesher);
+
+    const groups: SolidGroup[] = [];
+
+    const solidExp = new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_SOLID,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    cleanup.push(solidExp);
+
+    let idx = 0;
+    for (; solidExp.More(); solidExp.Next()) {
+      const solidRef = solidExp.Current();
+      const meshes = extractFacesFromShape(oc, solidRef);
+      groups.push({
+        id: `solid-${idx}`,
+        label: `Solid ${idx + 1}`,
+        faceCount: meshes.length,
+        meshes,
+      });
+      idx++;
+    }
+
+    if (groups.length === 0) {
+      const meshes = extractFacesFromShape(oc, shape);
+      groups.push({ id: "solid-0", label: "Shape", faceCount: meshes.length, meshes });
+    }
+
+    return groups;
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Flat tessellation — kept for unit-test compatibility.
+ * New callers should prefer tessellateByGroup.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function tessellateShape(oc: any, shape: any): GeometryBuffers[] {
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const mesher = new oc.BRepMesh_IncrementalMesh_2(shape, 0.1, false, 0.5, false);
+    cleanup.push(mesher);
+    return extractFacesFromShape(oc, shape);
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
     }
   }
 }

@@ -4,21 +4,14 @@ import * as path from "path";
 // index.js, which takes no arguments and ignores wasmBinary). Passing wasmBinary
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
-import { tessellateShape, type GeometryBuffers } from "./meshExtract";
+import { tessellateByGroup, type SolidGroup } from "./meshExtract";
+import type { TreeNode } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ocPromise: Promise<any> | null = null;
 
-/**
- * Returns the OpenCascade.js module, initializing it lazily on first call.
- *
- * The WASM binary is read from disk and passed as `wasmBinary` to avoid
- * Node 18's built-in `fetch()` being invoked with a filesystem path.
- *
- * `extensionPath` is the root of the installed extension (from ExtensionContext).
- * The WASM binary is expected at `<extensionPath>/dist/opencascade.wasm.wasm`.
- */
+/** Returns the OpenCascade.js module, initializing it lazily on first call. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getOcct(extensionPath: string): Promise<any> {
   if (!_ocPromise) {
@@ -34,19 +27,20 @@ export function resetOcct(): void {
   _ocPromise = null;
 }
 
-export interface MeshResult {
-  meshes: GeometryBuffers[];
+export interface BRepResult {
+  groups: SolidGroup[];
+  tree: TreeNode;
 }
 
 /**
- * Reads `bytes`, parses with the appropriate OCCT reader, tessellates, and
- * returns the resulting geometry buffers.
+ * Reads `bytes`, parses with the appropriate OCCT reader, tessellates grouped
+ * by solid, and returns geometry groups alongside the component tree.
  */
 export async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
   format: Extract<CadFormat, "step" | "iges" | "brep">
-): Promise<MeshResult> {
+): Promise<BRepResult> {
   const oc = await getOcct(extensionPath);
 
   const tmpName = `/in.${format}`;
@@ -55,8 +49,9 @@ export async function loadBRep(
   const cleanup: Array<{ delete(): void }> = [];
   try {
     const shape = readShape(oc, tmpName, format, cleanup);
-    const meshes = tessellateShape(oc, shape);
-    return { meshes };
+    const groups = tessellateByGroup(oc, shape);
+    const tree = buildTree(format, groups);
+    return { groups, tree };
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }
@@ -65,14 +60,26 @@ export async function loadBRep(
   }
 }
 
+function buildTree(format: string, groups: SolidGroup[]): TreeNode {
+  return {
+    id: "root",
+    label: format.toUpperCase(),
+    children: groups.map((g) => ({
+      id: g.id,
+      label: g.label,
+      faceCount: g.faceCount,
+    })),
+  };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function readShape(oc: any, path: string, format: string, cleanup: Array<{ delete(): void }>): any {
+function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ delete(): void }>): any {
   const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
 
   if (format === "step") {
     const reader = new oc.STEPControl_Reader_1();
     cleanup.push(reader);
-    const ret = reader.ReadFile(path);
+    const ret = reader.ReadFile(filePath);
     if (ret.value !== retDone) throw new Error(`STEP ReadFile failed (code ${ret.value})`);
     reader.TransferRoots();
     const shape = reader.OneShape();
@@ -83,7 +90,7 @@ function readShape(oc: any, path: string, format: string, cleanup: Array<{ delet
   if (format === "iges") {
     const reader = new oc.IGESControl_Reader_1();
     cleanup.push(reader);
-    const ret = reader.ReadFile(path);
+    const ret = reader.ReadFile(filePath);
     if (ret.value !== retDone) throw new Error(`IGES ReadFile failed (code ${ret.value})`);
     reader.TransferRoots();
     const shape = reader.OneShape();
@@ -96,7 +103,7 @@ function readShape(oc: any, path: string, format: string, cleanup: Array<{ delet
     cleanup.push(builder);
     const shape = new oc.TopoDS_Shape();
     cleanup.push(shape);
-    oc.BRepTools.Read_2(shape, path, builder, new oc.Message_ProgressRange_1());
+    oc.BRepTools.Read_2(shape, filePath, builder, new oc.Message_ProgressRange_1());
     return shape;
   }
 
