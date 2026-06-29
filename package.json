@@ -1,0 +1,65 @@
+{
+  "name": "cad-preview",
+  "displayName": "CAD Preview",
+  "description": "Interactive 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside VS Code.",
+  "version": "0.0.1",
+  "publisher": "cad-preview",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/loumalouomega/CAD-Preview.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "cad-preview.mesh",
+        "displayName": "CAD Preview",
+        "selector": [
+          { "filenamePattern": "*.stl" },
+          { "filenamePattern": "*.obj" },
+          { "filenamePattern": "*.ply" },
+          { "filenamePattern": "*.gltf" },
+          { "filenamePattern": "*.glb" },
+          { "filenamePattern": "*.step" },
+          { "filenamePattern": "*.stp" },
+          { "filenamePattern": "*.iges" },
+          { "filenamePattern": "*.igs" },
+          { "filenamePattern": "*.brep" }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc --noEmit",
+    "build": "node esbuild.mjs && npm run compile",
+    "watch": "node esbuild.mjs --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "opencascade.js": "^1.1.1",
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/three": "^0.160.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "overrides": {
+    "undici": "^6.21.0"
+  }
+}
