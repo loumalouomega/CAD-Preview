@@ -53,6 +53,11 @@ export class Viewer {
     this.animate();
   }
 
+  /** The currently displayed model, or `null` if none has been loaded yet. */
+  getModel(): THREE.Object3D | null {
+    return this.model;
+  }
+
   /** Replaces the current model with `object`, recenters and fits the camera to it. */
   setModel(object: THREE.Object3D): void {
     this.clearModel();

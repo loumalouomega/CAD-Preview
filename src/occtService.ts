@@ -73,7 +73,7 @@ function buildTree(format: string, groups: SolidGroup[]): TreeNode {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ delete(): void }>): any {
+export function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ delete(): void }>): any {
   const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
 
   if (format === "step") {
@@ -103,9 +103,82 @@ function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ d
     cleanup.push(builder);
     const shape = new oc.TopoDS_Shape();
     cleanup.push(shape);
-    oc.BRepTools.Read_2(shape, filePath, builder, new oc.Message_ProgressRange_1());
+    // Not `Message_ProgressRange_1` — that constructor doesn't exist in this OCCT
+    // build and throws immediately. `Read_2`'s 4th param is actually a
+    // `Handle_Message_ProgressIndicator`.
+    const progress = new oc.Handle_Message_ProgressIndicator_1();
+    cleanup.push(progress);
+    oc.BRepTools.Read_2(shape, filePath, builder, progress);
     return shape;
   }
 
   throw new Error(`Unknown B-rep format: ${format}`);
+}
+
+type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
+
+/**
+ * Re-parses `bytes` as `sourceFormat` and writes the resulting shape out as
+ * `targetFormat`, returning the output file's bytes. Writer calls are verified against
+ * the live OCCT build — see `writeShape` below for the per-format quirks.
+ */
+export async function exportBRep(
+  extensionPath: string,
+  bytes: Uint8Array,
+  sourceFormat: BRepFormat,
+  targetFormat: BRepFormat
+): Promise<Uint8Array> {
+  const oc = await getOcct(extensionPath);
+
+  const inPath = `/export-in.${sourceFormat}`;
+  const outPath = `/export-out.${targetFormat}`;
+  oc.FS.writeFile(inPath, bytes);
+
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const shape = readShape(oc, inPath, sourceFormat, cleanup);
+    writeShape(oc, shape, outPath, targetFormat, cleanup);
+    return oc.FS.readFile(outPath);
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
+    }
+    try { oc.FS.unlink(inPath); } catch { /* ignore */ }
+    try { oc.FS.unlink(outPath); } catch { /* ignore */ }
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function writeShape(oc: any, shape: any, filePath: string, format: BRepFormat, cleanup: Array<{ delete(): void }>): void {
+  const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
+
+  if (format === "step") {
+    const writer = new oc.STEPControl_Writer_1();
+    cleanup.push(writer);
+    const transferStatus = writer.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true);
+    if (transferStatus.value !== retDone) throw new Error(`STEP Transfer failed (code ${transferStatus.value})`);
+    const writeStatus = writer.Write(filePath);
+    if (writeStatus.value !== retDone) throw new Error(`STEP Write failed (code ${writeStatus.value})`);
+    return;
+  }
+
+  if (format === "iges") {
+    const writer = new oc.IGESControl_Writer_1();
+    cleanup.push(writer);
+    writer.AddShape(shape);
+    writer.ComputeModel();
+    const ok = writer.Write_2(filePath, false);
+    if (!ok) throw new Error("IGES Write failed");
+    return;
+  }
+
+  if (format === "brep") {
+    const progress = new oc.Handle_Message_ProgressIndicator_1();
+    cleanup.push(progress);
+    const ok = oc.BRepTools.Write_2(shape, filePath, progress);
+    if (!ok) throw new Error("BREP Write failed");
+    return;
+  }
+
+  throw new Error(`Unknown B-rep export format: ${format}`);
 }

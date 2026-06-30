@@ -3,6 +3,22 @@
 Project memory for CAD-Preview — a VS Code extension that previews 3D CAD/mesh files
 in a read-only custom editor.
 
+## Keep docs in sync
+
+**Every time you change code in this repo, check whether `doc/`, `README.md`, and
+this file need updating too — and update them if they do.** Treat doc drift as part
+of the change, not a follow-up. Concretely:
+- New/changed message types in `src/protocol.ts` → update `doc/protocol.md`.
+- New/changed file-format behavior (read or write) → update `doc/file-formats.md` and
+  the format tables in `README.md` / `doc/index.md` / `doc/getting-started.md`.
+- New/changed module, exported function, or architectural decision → update
+  `doc/extension-host-api.md` or `doc/webview-api.md` (whichever process it runs in)
+  and, for non-negotiable invariants or non-obvious gotchas, this file.
+- New/changed toolbar buttons or UI flows → update `doc/getting-started.md`'s
+  toolbar/UI tables.
+If a change is purely internal refactoring with no observable behavior or API
+difference, docs don't need to move — use judgment, but default to checking.
+
 ## Architecture (non-negotiable invariants)
 
 - **OpenCascade.js (OCCT WASM) runs in the Node extension host**, never in the webview.
@@ -70,6 +86,47 @@ The webview viewer exposes discrete view controls plus an orientation gizmo:
   that wiring inside its `try/catch` and **before** nothing that the `ready` handshake /
   `post({ type: "ready" })` depends on — a throw there must never block model loading.
 
+## Export
+
+Export mirrors the read-side pipeline split, in reverse — see `src/exportTargets.ts`
+for the compatibility matrix (`exportTargetsFor`):
+
+- **B-rep targets** (STEP/IGES/BREP) are written entirely in the extension host.
+  `exportBRep()` in `src/occtService.ts` re-parses the source file with the existing
+  `readShape()` reader and hands the live `TopoDS_Shape` to the matching OCCT writer
+  (`STEPControl_Writer`, `IGESControl_Writer`, or `BRepTools::Write`). The webview is
+  never involved for these.
+- **Mesh targets** (STL/OBJ/PLY/glTF) are written in the webview
+  (`src/webview/meshExporters.ts`), reusing Three.js's bundled exporters
+  (`three/examples/jsm/exporters/`) on the `THREE.Object3D` already displayed —
+  works for *any* source format, since OCCT-tessellated and natively-loaded meshes
+  look identical once they're in the Three.js scene. The serialized result travels
+  back to the host as a new `exportResult`/`exportError` message and is written with
+  `vscode.workspace.fs.writeFile`, since only the host can show save dialogs.
+- This OCCT build has **no STL/OBJ/PLY/glTF writers** (readers only) and **no path
+  from a triangle mesh back to a B-rep** — that's why export targets are
+  pipeline-dependent rather than a flat list of every supported format.
+- glTF export always emits a single binary `.glb`, never a text `.gltf` with embedded
+  base64 buffers — simpler, no separate buffer-reference handling.
+- `GLTFExporter`'s binary path and `PLYExporter.parse()` both depend on browser-only
+  APIs (`FileReader`/`Blob`, `requestAnimationFrame`) that don't exist in plain
+  Node — `src/webview/meshExporters.test.ts` polyfills `requestAnimationFrame` for
+  PLY and skips unit-testing the glTF binary path (it's covered by the manual F5
+  verification only).
+- **OCCT API quirk, verified against the live WASM (not just docs):** the writer
+  classes' useful overloads are `STEPControl_Writer_1` → `.Transfer(shape,
+  STEPControl_StepModelType.STEPControl_AsIs, true)` → `.Write(path)`;
+  `IGESControl_Writer_1` → `.AddShape(shape)` → `.ComputeModel()` →
+  `.Write_2(path, false)`; `BRepTools.Write_2(shape, path,
+  new oc.Handle_Message_ProgressIndicator_1())`. The `_1`-suffixed `Write`/`Read`
+  overloads on these classes take a C++ `ostream`/`istream`, which isn't bound in
+  this WASM build and throws `UnboundTypeError` — always use the path-based overload.
+- **Fixed bug:** BREP *reading* (`readShape()`'s `format === "brep"` branch) used to
+  call `new oc.Message_ProgressRange_1()`, which isn't a real constructor in this
+  OCCT build — every `.brep` open threw immediately. The 4th param of
+  `BRepTools.Read_2` is actually a `Handle_Message_ProgressIndicator`, same type the
+  BREP writer above takes.
+
 ## Build & test
 
 ```bash
@@ -89,6 +146,11 @@ wireframe toggle. Exercise the view-manipulation panel (stepped rotate/pan/zoom,
 Ctr), the orientation cube (faces snap the view), and the **⌄ / ⌃** hide/show toggle.
 Open/close repeatedly and watch extension-host memory stay flat (leak check). Additional
 fixtures: `examples/OBJ/cube.obj`, `examples/PLY/cube.ply`, `examples/GLTF/cube.gltf`.
+
+Exercise **Export**: on `bull.stp`, confirm the quick-pick offers IGES/BREP/STL/OBJ/
+PLY/glTF (not STEP again); on `cube.stl`, confirm it offers only OBJ/PLY/glTF. Export
+to each target and reopen the output file to confirm it round-trips. Repeat
+export/cancel a few times and watch extension-host memory, same leak check as above.
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.

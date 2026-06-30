@@ -47,6 +47,27 @@ file extension
 
 `CadPreviewProvider.resolveCustomEditor()` in `src/provider.ts` reads the returned `FileRoute` and dispatches accordingly.
 
+## Export
+
+Export mirrors the same two-pipeline split, in reverse, driven by
+`exportTargetsFor()` in `src/exportTargets.ts`:
+
+- **B-rep targets** (STEP/IGES/BREP) are written entirely in the extension host:
+  `exportBRep()` in `src/occtService.ts` re-parses the source file with the existing
+  OCCT reader and hands the live `TopoDS_Shape` to the matching OCCT writer. The
+  webview is not involved.
+- **Mesh targets** (STL/OBJ/PLY/glTF) are written in the webview, since that's where
+  the triangulated `THREE.Object3D` already lives (for *any* source format — OCCT
+  tessellation results and natively-loaded meshes are indistinguishable once they're
+  in the Three.js scene). `src/webview/meshExporters.ts` wraps Three.js's bundled
+  exporters and posts the serialized result back to the host over `postMessage`,
+  since only the extension host can show native save dialogs.
+
+OCCT in this build only includes B-rep writers — there are no STL/OBJ/PLY/glTF
+writers, and no reverse path from a triangle mesh to a B-rep. That asymmetry is why
+export targets are pipeline-dependent rather than a flat list of every supported
+format.
+
 ## WASM Loading — Critical Detail
 
 **Do not use `initOpenCascade` from `opencascade.js/index.js`.** That wrapper takes zero arguments and ignores any options passed to it. In Node 18 the fallback code calls `fetch(wasmPath)`, which fails for filesystem paths (`TypeError: Failed to parse URL`).

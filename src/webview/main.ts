@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
+import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded } from "./geometryBuilder";
 import { TreePanel } from "./treePanel";
 import type { HostToWebview, WebviewToHost, TreeNode } from "../protocol";
@@ -35,6 +36,7 @@ function showTree(root: TreeNode): void {
 
 document.getElementById("fit")?.addEventListener("click", () => viewer.fitView());
 document.getElementById("grid")?.addEventListener("click", () => viewer.toggleGrid());
+document.getElementById("export")?.addEventListener("click", () => post({ type: "exportRequest" }));
 document.getElementById("tree-close")?.addEventListener("click", () => {
   treePanel.hide();
   window.dispatchEvent(new Event("resize"));
@@ -139,6 +141,17 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "error":
       setStatus(msg.message, true);
+      break;
+
+    case "exportMesh":
+      try {
+        const model = viewer.getModel();
+        if (!model) throw new Error("No model loaded");
+        const { data, binary } = await exportModel(model, msg.format);
+        post({ type: "exportResult", requestId: msg.requestId, data, binary });
+      } catch (err) {
+        post({ type: "exportError", requestId: msg.requestId, message: (err as Error).message });
+      }
       break;
   }
 });

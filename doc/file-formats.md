@@ -85,6 +85,36 @@ Binary and ASCII STL are both supported via `STLLoader`. The result is a single 
 
 ---
 
+## Export
+
+The toolbar **Export** button converts the currently displayed model into a
+compatible format and saves it via a native VS Code save dialog. The available
+targets depend on the source file's pipeline (`exportTargetsFor()` in
+`src/exportTargets.ts`):
+
+| Source pipeline | Export targets |
+|---|---|
+| B-rep (STEP/IGES/BREP) | the other two B-rep formats, **plus** STL/OBJ/PLY/glTF |
+| Mesh (STL/OBJ/PLY/glTF) | the other mesh formats only |
+
+The source format is never offered as its own export target.
+
+**B-rep targets** are written entirely in the extension host: the source file is
+re-parsed with the same OCCT reader used to open it, then handed to the matching OCCT
+writer (`STEPControl_Writer`, `IGESControl_Writer`, or `BRepTools::Write`) in
+`exportBRep()` (`src/occtService.ts`). There is no path from a triangulated mesh back
+to a B-rep, so mesh-sourced documents never offer STEP/IGES/BREP as a target.
+
+**Mesh targets** are written in the webview, reusing Three.js's bundled exporters
+(`three/examples/jsm/exporters/`) on the `THREE.Object3D` already displayed —
+regardless of whether it arrived via a native loader or OCCT tessellation. The
+serialized result is sent back to the host over the protocol described in
+[Host ↔ Webview Protocol](./protocol.md) and written to disk there, since only the
+host can show file dialogs.
+
+glTF export always produces a binary `.glb` file (not a text `.gltf` with embedded
+base64 buffers) — a single portable file, no separate buffer references to manage.
+
 ## File Size Guidance
 
 | Format | Practical limit | Notes |

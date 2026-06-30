@@ -21,12 +21,16 @@ export type HostToWebview =
   | { type: "tree"; root: TreeNode }
   | { type: "loadUrl"; url: string; format: CadFormat }
   | { type: "status"; text: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "exportMesh"; requestId: string; format: CadFormat };
 
 /** Messages sent from the webview to the extension host. */
 export type WebviewToHost =
   | { type: "ready" }
-  | { type: "log"; message: string };
+  | { type: "log"; message: string }
+  | { type: "exportRequest" }
+  | { type: "exportResult"; requestId: string; data: string; binary: boolean }
+  | { type: "exportError"; requestId: string; message: string };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array): string {

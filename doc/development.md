@@ -49,12 +49,13 @@ After any non-trivial change, run through:
 1. Open `examples/STP/bull.stp` — model renders, component tree visible.
 2. Open `examples/STL/cube.stl` — renders without loading the WASM.
 3. Orbit, pan, zoom with mouse — smooth movement with damping.
-4. Click each toolbar button: Fit, Wireframe, Grid, Tree toggle.
+4. Click each toolbar button: Fit, Wireframe, Grid, Export, Tree toggle.
 5. Use the view-controls panel: step rotate (15°/45°/90°), pan, zoom, Fit, Ctr (reset).
 6. Collapse and expand the view-controls panel with ⌄/⌃.
 7. Click all six faces of the orientation cube — view snaps to ±X/Y/Z.
 8. Click a row in the component tree — solid highlights, others dim. Click again to deselect.
-9. Open and close the same file several times — extension host memory stays flat (no OCCT heap leak).
+9. Click **Export** on `bull.stp` — quick-pick offers IGES/BREP/STL/OBJ/PLY/glTF (not STEP); export to each and reopen the output to confirm it round-trips. On `cube.stl`, confirm only OBJ/PLY/glTF are offered.
+10. Open and close the same file several times — extension host memory stays flat (no OCCT heap leak). Repeat with export/cancel cycles.
 
 ## Project Structure
 
@@ -64,8 +65,9 @@ CAD-Preview/
 │   ├── extension.ts          # Extension entry point
 │   ├── provider.ts           # Custom editor provider
 │   ├── fileRouter.ts         # File extension → strategy routing
+│   ├── exportTargets.ts      # Compatible export formats per route
 │   ├── protocol.ts           # Host↔webview message types
-│   ├── occtService.ts        # WASM singleton + B-rep loading
+│   ├── occtService.ts        # WASM singleton + B-rep loading + export
 │   ├── meshExtract.ts        # OCCT geometry extraction
 │   └── webview/
 │       ├── main.ts           # Webview entry point
@@ -74,6 +76,7 @@ CAD-Preview/
 │       ├── orientationCube.ts# Orientation gizmo
 │       ├── geometryBuilder.ts# Decode buffers → THREE.Group
 │       ├── meshLoaders.ts    # Three.js loader dispatch
+│       ├── meshExporters.ts  # Three.js exporter dispatch
 │       └── treePanel.ts      # Component tree DOM panel
 ├── media/                    # Runtime webview assets (built)
 │   ├── viewer.js             # Compiled webview IIFE bundle
@@ -124,11 +127,13 @@ Unit tests use [Vitest](https://vitest.dev/). They run headlessly — no display
 | Test file | Covers |
 |-----------|--------|
 | `src/fileRouter.test.ts` | Extension → `FileRoute` mapping |
+| `src/exportTargets.test.ts` | Export target matrix per route, extension map |
 | `src/meshExtract.test.ts` | `extractFaceGeometry`, winding order, index conversion |
 | `src/webview/cameraControls.test.ts` | `orbit`, `pan`, `dolly`, `setDirection`, `viewDirection` |
 | `src/webview/orientationCube.test.ts` | Cube initialization, `syncCamera`, `faceNormalToDirection` |
 | `src/webview/viewer.test.ts` | `Viewer` construction, `setModel`, `fitView` |
 | `src/webview/meshLoaders.test.ts` | Loader dispatch by format |
+| `src/webview/meshExporters.test.ts` | Exporter dispatch by format, base64 round-trip |
 
 Run all tests: `npm test`
 

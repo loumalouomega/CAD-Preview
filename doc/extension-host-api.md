@@ -9,7 +9,8 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/extension.ts` | VS Code extension entry point |
 | `src/provider.ts` | Custom editor provider, webview lifecycle |
 | `src/fileRouter.ts` | Map file extensions to render strategy |
-| `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation |
+| `src/exportTargets.ts` | Map a `FileRoute` to its compatible export formats |
+| `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export |
 | `src/meshExtract.ts` | Extract WebGL geometry from OCCT shapes |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 
@@ -50,16 +51,27 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 **`resolveCustomEditor(document, webviewPanel)`** — The main handler called whenever a supported file is opened:
 1. Sets the webview options (`enableScripts: true`, `localResourceRoots`).
 2. Sets `webviewPanel.webview.html` to the result of `getHtml()`.
-3. Registers a `webviewPanel.webview.onDidReceiveMessage` listener that waits for `{ type: "ready" }`.
+3. Registers a `webviewPanel.webview.onDidReceiveMessage` listener (and a per-panel
+   `pending: Map<string, { resolve; reject }>` used to correlate export round-trips)
+   that handles `"ready"`, `"exportRequest"`, `"exportResult"`, and `"exportError"`.
 4. On `"ready"`: calls `routeFile()` and dispatches to `handleBRep()` or posts a `"loadUrl"` message.
+5. On `"exportRequest"`: dispatches to `handleExport()`.
+6. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
 
 **`handleBRep(extensionPath, bytes, format, webview)`** — Private method. Calls `loadBRep()`, posts `"status"` progress messages, then posts `"geometry"` + `"tree"` messages. Posts `"error"` on failure.
+
+**`handleExport(uri, route, post, pending)`** — Private method. The whole "Export" toolbar button flow:
+1. `exportTargetsFor(route)` → `vscode.window.showQuickPick()` of compatible formats; bails if cancelled.
+2. `vscode.window.showSaveDialog()` defaulting to the source's folder + new extension (`EXPORT_EXTENSION`); bails if cancelled.
+3. If the target is a B-rep format (STEP/IGES/BREP): reads the source bytes and calls `exportBRep()` directly — no webview round-trip.
+   If the target is a mesh format (STL/OBJ/PLY/glTF): registers a `requestId` in `pending`, posts `"exportMesh"`, and awaits the promise that the `onDidReceiveMessage` handler resolves/rejects when the webview replies.
+4. Decodes the result (base64 or UTF-8, per the `binary` flag) and writes it with `vscode.workspace.fs.writeFile()`. Posts `"status"` on success, `"error"` on failure.
 
 **`getHtml(webview, extensionUri)`** — Private method. Generates the full webview HTML with:
 - A strict CSP nonce.
 - The compiled `media/viewer.js` bundle (IIFE).
 - The `media/viewer.css` stylesheet.
-- Static toolbar HTML (`#fit-btn`, `#wireframe-btn`, `#grid-btn`, `#tree-toggle-btn`).
+- Static toolbar HTML (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`).
 - Static view-controls panel HTML (`#view-controls`, `#vc-toggle`).
 - Tree panel container (`#tree-panel`).
 - Status/error overlay divs.
@@ -97,6 +109,27 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.obj` | `three` | `obj` |
 | `.ply` | `three` | `ply` |
 | `.gltf`, `.glb` | `three` | `gltf` |
+
+---
+
+## `src/exportTargets.ts`
+
+Maps a `FileRoute` to the formats it can be exported to, and the file extension/label
+to use for each. Pure functions, unit-tested in `src/exportTargets.test.ts`.
+
+```typescript
+function exportTargetsFor(route: FileRoute): CadFormat[]
+```
+B-rep sources (`route.strategy === "occt"`) return the other two B-rep formats plus
+all four mesh formats. Mesh sources (`route.strategy === "three"`) return the other
+mesh formats only. The source's own format is always excluded.
+
+```typescript
+const EXPORT_EXTENSION: Record<CadFormat, string>  // e.g. gltf → "glb"
+const EXPORT_LABEL: Record<CadFormat, string>       // e.g. gltf → "glTF Binary"
+```
+Used by `provider.ts`'s `handleExport()` to build the quick-pick items and the save
+dialog's default filename/filter.
 
 ---
 
@@ -142,12 +175,47 @@ function readShape(
   cleanup: { delete(): void }[]
 ): any  // TopoDS_Shape
 ```
-Internal helper. Selects the appropriate OCCT reader class and calls it. Pushes the reader onto `cleanup` so it is deleted in `loadBRep`'s `finally` block.
+Exported (used by both `loadBRep` and `exportBRep`). Selects the appropriate OCCT
+reader class and calls it. Pushes every handle it creates onto `cleanup` so they're
+deleted in the caller's `finally` block. The BREP branch's 4th `BRepTools.Read_2` arg
+is a `Handle_Message_ProgressIndicator` — *not* `Message_ProgressRange`, which isn't
+a real constructor in this OCCT build and throws immediately.
 
 ```typescript
 function buildTree(format: CadFormat, groups: SolidGroup[]): TreeNode
 ```
 Builds a `TreeNode` tree from the solid groups. The root label is derived from the format (e.g. `"STEP Assembly"`). Each `SolidGroup` becomes a child node with `id`, `label`, and `faceCount`.
+
+```typescript
+async function exportBRep(
+  extensionPath: string,
+  bytes: Uint8Array,
+  sourceFormat: "step" | "iges" | "brep",
+  targetFormat: "step" | "iges" | "brep"
+): Promise<Uint8Array>
+```
+Re-parses `bytes` with `readShape()` and writes the resulting `TopoDS_Shape` out as
+`targetFormat` via the private `writeShape()` helper, returning the output file's
+bytes (read back from the OCCT virtual filesystem). Cleans up every handle —
+reader/writer/shape/progress-indicator — in a `finally`, plus `oc.FS.unlink()` on
+both the input and output virtual paths, same discipline as `loadBRep`.
+
+```typescript
+function writeShape(
+  oc: any,
+  shape: any,
+  filePath: string,
+  format: "step" | "iges" | "brep",
+  cleanup: { delete(): void }[]
+): void
+```
+Internal helper called by `exportBRep`. Per-format writer calls, verified against the
+live WASM build (the `_1`-suffixed overloads take a C++ `ostream`/`istream` that
+isn't bound in this build and throw `UnboundTypeError` — always use the path-based
+overload instead):
+- **step**: `new oc.STEPControl_Writer_1()` → `.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true)` → check `IFSelect_RetDone` → `.Write(filePath)` → check status again.
+- **iges**: `new oc.IGESControl_Writer_1()` → `.AddShape(shape)` → `.ComputeModel()` → `.Write_2(filePath, false)` (boolean return).
+- **brep**: `oc.BRepTools.Write_2(shape, filePath, new oc.Handle_Message_ProgressIndicator_1())` (boolean return).
 
 ---
 

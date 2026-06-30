@@ -12,6 +12,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
 | `src/webview/geometryBuilder.ts` | Decode and build Three.js geometry from encoded buffers |
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
+| `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
 
 ---
@@ -25,7 +26,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
 3. Instantiate `TreePanel(document.getElementById('tree-panel'))`.
 4. Call `setupViewControls(viewer)` (in a `try/catch` — a UI wiring failure must not block the ready handshake).
-5. Wire toolbar buttons (`#fit-btn`, `#wireframe-btn`, `#grid-btn`, `#tree-toggle-btn`).
+5. Wire toolbar buttons (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`). The `#export` button posts `{ type: "exportRequest" }` — it doesn't show any UI itself; the host owns the quick-pick and save dialog.
 6. Register `window.addEventListener('message', ...)` for host messages.
 7. Post `{ type: 'ready' }` to the host.
 
@@ -38,6 +39,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagGroupIds(obj)` → `viewer.setModel(obj)` + `TreePanel.render(extractObjectTree(obj, label))` |
 | `"status"` | Set `#status-text` content |
 | `"error"` | Show `#error-overlay` with message |
+| `"exportMesh"` | `exportModel(viewer.getModel(), msg.format)` → posts back `"exportResult"` (with `data`/`binary`) or `"exportError"` on failure, correlated by `msg.requestId` |
 
 **Helper functions:**
 
@@ -79,6 +81,12 @@ The constructor creates:
 - `OrientationCube` instance
 
 **Model management:**
+
+```typescript
+getModel(): THREE.Object3D | null
+```
+Returns the currently displayed model, or `null` if none has loaded yet. Used by
+`main.ts`'s `"exportMesh"` handler to hand the model to `exportModel()`.
 
 ```typescript
 setModel(object: THREE.Object3D): void
@@ -333,6 +341,39 @@ async function loadMeshFromUrl(
 function applyDefaultMaterial(group: THREE.Group): void
 ```
 Walks all `THREE.Mesh` children. For each mesh that has no material or has a `MeshBasicMaterial` (the OBJLoader default), replaces it with a `MeshStandardMaterial` (color `0x888888`).
+
+---
+
+## `src/webview/meshExporters.ts`
+
+Dispatches to Three.js's bundled exporters (`three/examples/jsm/exporters/`) by
+format. Works on any loaded `THREE.Object3D`, regardless of whether it arrived via a
+native mesh loader or OCCT tessellation in the host — both end up as ordinary
+Three.js geometry in the scene.
+
+```typescript
+interface ExportedMesh { data: string; binary: boolean }
+
+async function exportModel(model: THREE.Object3D, format: CadFormat): Promise<ExportedMesh>
+```
+
+| `format` | Exporter | Result |
+|----------|----------|--------|
+| `"stl"` | `STLExporter` (`{ binary: true }`) | `DataView` → base64 |
+| `"obj"` | `OBJExporter` | text (OBJ has no binary form) |
+| `"ply"` | `PLYExporter` (`{ binary: false }`, callback-based — wrapped in a `Promise`) | text |
+| `"gltf"` | `GLTFExporter.parseAsync(model, { binary: true })` | `ArrayBuffer` (`.glb`) → base64 |
+
+```typescript
+function arrayBufferToBase64(buf: ArrayBufferLike): string
+```
+Browser-side `btoa` counterpart to the `atob`-based decode in `geometryBuilder.ts`.
+
+**Browser-only dependencies:** `GLTFExporter`'s binary path uses `FileReader`/`Blob`,
+and `PLYExporter.parse()` uses `requestAnimationFrame` — neither exists in plain
+Node, so they only run for real inside the webview. `meshExporters.test.ts`
+polyfills `requestAnimationFrame` to unit-test the PLY path and skips the glTF binary
+path entirely (covered by the manual F5 verification instead).
 
 ---
 

@@ -44,6 +44,7 @@ type HostToWebview =
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
+  | { type: 'exportMesh'; requestId: string; format: CadFormat }
 ```
 
 ### `geometry`
@@ -116,6 +117,19 @@ Shown in the error overlay (`#error-overlay`). Sent if tessellation throws or if
 { "type": "error", "message": "Failed to parse STEP file: …" }
 ```
 
+### `exportMesh`
+
+Sent when the user picks a mesh-format export target (STL/OBJ/PLY/glTF) in the
+host's quick-pick. Only mesh targets round-trip through the webview — B-rep targets
+(STEP/IGES/BREP) are written entirely in the host via OCCT, with no webview
+involvement. The webview serializes the currently displayed `THREE.Object3D` with the
+matching exporter from `three/examples/jsm/exporters/` and replies with
+`exportResult`/`exportError`.
+
+```json
+{ "type": "exportMesh", "requestId": "1234-0.56", "format": "stl" }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -124,6 +138,9 @@ Shown in the error overlay (`#error-overlay`). Sent if tessellation throws or if
 type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
+  | { type: 'exportRequest' }
+  | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
+  | { type: 'exportError'; requestId: string; message: string }
 ```
 
 ### `ready`
@@ -140,6 +157,32 @@ Sent by the webview for diagnostic messages. The host writes them to the VS Code
 
 ```json
 { "type": "log", "message": "Model loaded: 3 solids, 47,000 triangles" }
+```
+
+### `exportRequest`
+
+Sent when the user clicks the toolbar **Export** button. The host computes the
+compatible target formats for the open document (`exportTargetsFor()` in
+`src/exportTargets.ts`), shows a quick-pick and a save dialog, then either writes the
+file itself (B-rep targets) or follows up with `exportMesh` (mesh targets).
+
+```json
+{ "type": "exportRequest" }
+```
+
+### `exportResult` / `exportError`
+
+Sent in reply to `exportMesh`. `data` is base64 when `binary` is `true`, plain text
+otherwise — the same convention as `EncodedMesh`'s buffers, just generalized to a
+whole file. The host correlates the reply to its pending request via `requestId` and
+writes the decoded bytes to the path chosen in the save dialog.
+
+```json
+{ "type": "exportResult", "requestId": "1234-0.56", "data": "AAAA...", "binary": true }
+```
+
+```json
+{ "type": "exportError", "requestId": "1234-0.56", "message": "No model loaded" }
 ```
 
 ---
@@ -185,6 +228,27 @@ Host                                    Webview
  │  ────────────────────────────────────▶  │  loadMeshFromUrl() → setModel()
  │                                         │  extractObjectTree() → TreePanel.render()
 ```
+
+### Export (mesh target, e.g. STL/OBJ/PLY/glTF)
+
+```
+Host                                    Webview
+ │                                         │
+ │  ◀── { type: "exportRequest" } ────────  │  (Export button clicked)
+ │                                         │
+ │  [showQuickPick + showSaveDialog]       │
+ │                                         │
+ │  post { type: "exportMesh", … }         │
+ │  ────────────────────────────────────▶  │  exportModel() via Three.js exporter
+ │                                         │
+ │  ◀── { type: "exportResult", … } ──────  │
+ │                                         │
+ │  [decode + workspace.fs.writeFile]      │
+```
+
+B-rep targets (STEP/IGES/BREP) skip the `exportMesh` round-trip entirely — the host
+re-reads the source file and writes the target format directly via
+`exportBRep()` in `src/occtService.ts`.
 
 ---
 
