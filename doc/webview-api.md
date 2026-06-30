@@ -10,10 +10,14 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, gizmo |
 | `src/webview/cameraControls.ts` | Pure camera math utilities (unit-testable) |
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
-| `src/webview/geometryBuilder.ts` | Decode and build Three.js geometry from encoded buffers |
+| `src/webview/geometryBuilder.ts` | Decode and build per-face meshes + per-edge lines from encoded buffers |
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
+| `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity (unit-testable) |
+| `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
+| `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
+| `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
 
 ---
 
@@ -34,24 +38,32 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 
 | `type` | Action |
 |--------|--------|
-| `"geometry"` | `buildGroupFromEncoded(msg.meshes)` → `viewer.setModel(group)` + `TreePanel.render(root)` |
+| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges)` → `viewer.setModel(group)`, recolour, enable all pick modes |
 | `"tree"` | `TreePanel.render(msg.root)` |
-| `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagGroupIds(obj)` → `viewer.setModel(obj)` + `TreePanel.render(extractObjectTree(obj, label))` |
+| `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `viewer.setModel(obj)`, restrict pick mode to `volume` |
+| `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` |
 | `"status"` | Set `#status-text` content |
 | `"error"` | Show `#error-overlay` with message |
 | `"exportMesh"` | `exportModel(viewer.getModel(), msg.format)` → posts back `"exportResult"` (with `data`/`binary`) or `"exportError"` on failure, correlated by `msg.requestId` |
 
+The webview also posts `{ type: "partsChanged", parts }` whenever the user edits
+parts; the host debounces and writes the sidecar.
+
 **Helper functions:**
 
 ```typescript
-function tagGroupIds(obj: THREE.Object3D): void
+function tagMeshEntities(obj: THREE.Object3D): void
 ```
-Recursively assigns `userData.groupId = obj.uuid` to every `THREE.Mesh` in the hierarchy. This enables `viewer.highlightGroup()` to identify meshes by group.
+Assigns **stable** traversal-order ids (`node-N`, not `uuid`) as `userData.groupId`
+to every object, and additionally tags each `THREE.Mesh` as a pickable whole-object
+volume entity (`entityType: "surface"`, `entityId: node-N`). Stable ids let mesh-format
+part assignments round-trip across reopen; the shared id keeps `viewer.highlightGroup()`
+working for the component tree.
 
 ```typescript
 function extractObjectTree(obj: THREE.Object3D, rootLabel: string): TreeNode
 ```
-Builds a `TreeNode` hierarchy from a Three.js `Object3D` tree. Uses `obj.name` (or a fallback label) for `label`; `obj.uuid` for `id`.
+Builds a `TreeNode` hierarchy from a Three.js `Object3D` tree. Uses `obj.name` (or a fallback label) for `label`; the stable `userData.groupId` for `id`.
 
 ```typescript
 function hasMultipleNodes(root: TreeNode): boolean

@@ -4,11 +4,24 @@ export interface GeometryBuffers {
   indices: Uint32Array;
 }
 
+/** One face's triangulation plus its stable per-face entity id. */
+export interface FaceMesh {
+  faceId: string;
+  buffers: GeometryBuffers;
+}
+
+/** One edge discretized to a polyline plus its stable per-edge entity id. */
+export interface EdgeLine {
+  edgeId: string;
+  /** Consecutive xyz points; pairs (i, i+1) form line segments. */
+  positions: Float32Array;
+}
+
 export interface SolidGroup {
   id: string;
   label: string;
   faceCount: number;
-  meshes: GeometryBuffers[];
+  faces: FaceMesh[];
 }
 
 /**
@@ -24,6 +37,7 @@ interface OcctPolyTriangulation {
   Triangle(i: number): OcctTriangle;
 }
 interface OcctTrsf { TransformCoord(x: number, y: number, z: number): [number, number, number]; }
+interface OcctDiscretizer { NbPoints(): number; Value(i: number): OcctPoint; }
 
 /**
  * Extracts position and index buffers from one OCCT face.
@@ -68,6 +82,25 @@ export function extractFaceGeometry(
   }
 
   return { positions, normals: new Float32Array(0), indices };
+}
+
+/**
+ * Packs a discretized edge's points into a flat xyz `Float32Array`. The points
+ * are returned in curve order; the webview pairs consecutive points into the
+ * segments of a `THREE.LineSegments`/`Line`.
+ */
+export function polylineFromDiscretizer(disc: OcctDiscretizer): Float32Array {
+  const n = disc.NbPoints();
+  const positions = new Float32Array(n * 3);
+  for (let i = 1; i <= n; i++) {
+    const pt = disc.Value(i);
+    const base = (i - 1) * 3;
+    positions[base] = pt.X();
+    positions[base + 1] = pt.Y();
+    positions[base + 2] = pt.Z();
+    pt.delete();
+  }
+  return positions;
 }
 
 /** Extract face geometry buffers from all faces in `shape` (no BRepMesh call). */
@@ -153,22 +186,28 @@ export function tessellateByGroup(oc: any, shape: any): SolidGroup[] {
     );
     cleanup.push(solidExp);
 
+    // Global face counter so faceIds are stable across reopen (explorer order is
+    // deterministic for an unchanged shape) and unique across the whole model.
+    let faceCounter = 0;
+    const toFaceMeshes = (buffers: GeometryBuffers[]): FaceMesh[] =>
+      buffers.map((b) => ({ faceId: `face-${faceCounter++}`, buffers: b }));
+
     let idx = 0;
     for (; solidExp.More(); solidExp.Next()) {
       const solidRef = solidExp.Current();
-      const meshes = extractFacesFromShape(oc, solidRef);
+      const faces = toFaceMeshes(extractFacesFromShape(oc, solidRef));
       groups.push({
         id: `solid-${idx}`,
         label: `Solid ${idx + 1}`,
-        faceCount: meshes.length,
-        meshes,
+        faceCount: faces.length,
+        faces,
       });
       idx++;
     }
 
     if (groups.length === 0) {
-      const meshes = extractFacesFromShape(oc, shape);
-      groups.push({ id: "solid-0", label: "Shape", faceCount: meshes.length, meshes });
+      const faces = toFaceMeshes(extractFacesFromShape(oc, shape));
+      groups.push({ id: "solid-0", label: "Shape", faceCount: faces.length, faces });
     }
 
     return groups;
@@ -176,6 +215,75 @@ export function tessellateByGroup(oc: any, shape: any): SolidGroup[] {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }
     }
+  }
+}
+
+/**
+ * Discretizes every unique edge of `shape` to a polyline. A `TopExp_Explorer`
+ * over a solid visits each shared edge once per adjacent face, so edges are
+ * de-duplicated by HashCode bucket + `IsSame`; the first appearance (in the
+ * deterministic explorer order) fixes the edgeId, keeping ids stable across
+ * reopen of an unchanged file.
+ *
+ * This OCCT build does not bind `TopTools_IndexedMapOfShape`, hence the manual
+ * de-dup. Edges are discretized independently of face triangulation via
+ * `BRepAdaptor_Curve` + `GCPnts_UniformDeflection` (verified against the live WASM).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function extractEdges(oc: any, shape: any): EdgeLine[] {
+  const cleanup: Array<{ delete(): void }> = [];
+  const HASH_UPPER = 1 << 30;
+  try {
+    const edges: EdgeLine[] = [];
+    // hashCode → list of edges already seen (TopoDS shapes) for IsSame checks.
+    const seen = new Map<number, Array<{ IsSame(o: unknown): boolean }>>();
+
+    const exp = new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_EDGE,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    cleanup.push(exp);
+
+    for (; exp.More(); exp.Next()) {
+      const edge = oc.TopoDS.Edge_1(exp.Current());
+      const hash = edge.HashCode(HASH_UPPER);
+      const bucket = seen.get(hash);
+      if (bucket && bucket.some((e) => e.IsSame(edge))) {
+        edge.delete();
+        continue;
+      }
+      // Keep this edge handle alive in `seen` for later IsSame comparisons;
+      // it is released in the finally block via `cleanup`.
+      cleanup.push(edge);
+      if (bucket) bucket.push(edge);
+      else seen.set(hash, [edge]);
+
+      const positions = discretizeEdge(oc, edge, cleanup);
+      if (positions.length >= 6) {
+        edges.push({ edgeId: `edge-${edges.length}`, positions });
+      }
+    }
+    return edges;
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Discretizes a single edge to a flat xyz polyline. Returns empty on failure. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function discretizeEdge(oc: any, edge: any, cleanup: Array<{ delete(): void }>): Float32Array {
+  try {
+    const curve = new oc.BRepAdaptor_Curve_2(edge);
+    cleanup.push(curve);
+    const disc = new oc.GCPnts_UniformDeflection_2(curve, 0.1, false);
+    cleanup.push(disc);
+    if (!disc.IsDone() || disc.NbPoints() < 2) return new Float32Array(0);
+    return polylineFromDiscretizer(disc);
+  } catch {
+    return new Float32Array(0);
   }
 }
 

@@ -4,7 +4,7 @@ import * as path from "path";
 // index.js, which takes no arguments and ignores wasmBinary). Passing wasmBinary
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
-import { tessellateByGroup, type SolidGroup } from "./meshExtract";
+import { tessellateByGroup, extractEdges, type SolidGroup, type EdgeLine } from "./meshExtract";
 import type { TreeNode } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 
@@ -29,6 +29,7 @@ export function resetOcct(): void {
 
 export interface BRepResult {
   groups: SolidGroup[];
+  edges: EdgeLine[];
   tree: TreeNode;
 }
 
@@ -50,8 +51,9 @@ export async function loadBRep(
   try {
     const shape = readShape(oc, tmpName, format, cleanup);
     const groups = tessellateByGroup(oc, shape);
+    const edges = extractEdges(oc, shape);
     const tree = buildTree(format, groups);
-    return { groups, tree };
+    return { groups, edges, tree };
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }

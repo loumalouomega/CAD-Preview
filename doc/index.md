@@ -33,6 +33,10 @@ features:
     title: Component Tree Panel
     details: For multi-solid B-rep assemblies or multi-mesh glTF files, a component tree panel shows the hierarchy. Click any node to highlight that solid in the 3D view.
 
+  - icon: 🏷️
+    title: Define Parts (Volumes / Surfaces / Lines)
+    details: Click solids, faces, or edges in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only.
+
   - icon: 🔬
     title: Wireframe & Grid Helpers
     details: Toggle wireframe rendering, world-space axes, and a reference grid — all from the toolbar.

@@ -127,6 +127,40 @@ for the compatibility matrix (`exportTargetsFor`):
   `BRepTools.Read_2` is actually a `Handle_Message_ProgressIndicator`, same type the
   BREP writer above takes.
 
+## Geometry parts (editing)
+
+Users define named **parts** (FEM sub-model-parts) by clicking volumes/surfaces/
+lines in the view and assigning them. Non-negotiable invariants:
+
+- **The CAD file stays read-only.** Part assignments persist to a JSON sidecar
+  `<model>.parts.json` next to the source (`src/partsStore.ts`), never into the CAD
+  file. `CustomReadonlyEditorProvider` is unchanged. Parse/serialize live in the
+  **vscode-free** `src/partsSidecar.ts` so they unit-test; `partsStore.ts` adds the
+  `vscode.workspace.fs` I/O. Autosave is debounced (~500 ms) in `provider.ts` on each
+  `partsChanged` message.
+- **Entity ids must be deterministic and stable** across reopen (the sidecar
+  references them). B-rep: `face-N` and `solid-N` by deterministic `TopExp_Explorer`
+  order; `edge-N` by first appearance while de-duplicating shared edges. Mesh formats:
+  `node-N` by traversal order — **never `THREE` `uuid`** (uuids are random per load and
+  would break round-trip). See `tagMeshEntities` in `src/webview/main.ts`.
+- **This OCCT build does NOT bind `TopTools_IndexedMapOfShape`** (verified against the
+  live WASM). So edge de-dup in `extractEdges` (`src/meshExtract.ts`) uses
+  `edge.HashCode(1<<30)` buckets + `IsSame`; the deduped edge handles are kept alive in
+  the cleanup list until the end so `IsSame` stays valid, then all deleted in `finally`.
+- **OCCT edge API, verified against the live WASM:** discretize with
+  `new oc.BRepAdaptor_Curve_2(edge)` → `new oc.GCPnts_UniformDeflection_2(curve, 0.1,
+  false)` → `IsDone()`, `NbPoints()`, `Value(i)` (a `gp_Pnt`, must `.delete()`).
+- **Webview entity model:** `geometryBuilder.ts` builds **one `THREE.Mesh` per face**
+  and **one `THREE.Line` per edge** (own material each) under a per-solid `THREE.Group`,
+  tagged `userData = { groupId: solidId, entityType, entityId }`. This keeps the
+  existing `highlightGroup` working and makes raycast picking + per-part colouring
+  trivial. Picking resolution (`picking.ts`), the transient `SelectionSet`
+  (`selection.ts`), and the `PartsModel` (`partsModel.ts`) are DOM-free and unit-tested;
+  `partsPanel.ts` is the DOM. Selection happens on a click (down+up without a drag) so
+  OrbitControls still orbits — see `onSelectPointerUp` in `viewer.ts`.
+- VS Code webviews **block `prompt()`/`alert()`** — the Parts panel renames via an
+  inline `<input>`, not a dialog.
+
 ## Build & test
 
 ```bash
@@ -151,6 +185,14 @@ Exercise **Export**: on `bull.stp`, confirm the quick-pick offers IGES/BREP/STL/
 PLY/glTF (not STEP again); on `cube.stl`, confirm it offers only OBJ/PLY/glTF. Export
 to each target and reopen the output file to confirm it round-trips. Repeat
 export/cancel a few times and watch extension-host memory, same leak check as above.
+
+Exercise **Parts**: on `bull.stp`, click **Select**, then pick faces in **Surf** mode,
+edges in **Line** mode, and the solid in **Vol** mode (shift-click for multi-select).
+Click **＋ New**, assign the selection, and confirm the entities recolour and appear
+under the part in the panel; recolour/rename/delete; expand a part and remove an
+entity. Close and reopen the tab → assignments reload from `bull.stp.parts.json`
+(inspect it: valid JSON, CAD file untouched). On `cube.stl`, confirm Surf/Line are
+disabled and only whole-object **Vol** assignment works and round-trips.
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.

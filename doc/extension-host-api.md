@@ -11,7 +11,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/fileRouter.ts` | Map file extensions to render strategy |
 | `src/exportTargets.ts` | Map a `FileRoute` to its compatible export formats |
 | `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export |
-| `src/meshExtract.ts` | Extract WebGL geometry from OCCT shapes |
+| `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
+| `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
+| `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 
 ---
@@ -51,14 +53,18 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 **`resolveCustomEditor(document, webviewPanel)`** — The main handler called whenever a supported file is opened:
 1. Sets the webview options (`enableScripts: true`, `localResourceRoots`).
 2. Sets `webviewPanel.webview.html` to the result of `getHtml()`.
-3. Registers a `webviewPanel.webview.onDidReceiveMessage` listener (and a per-panel
-   `pending: Map<string, { resolve; reject }>` used to correlate export round-trips)
-   that handles `"ready"`, `"exportRequest"`, `"exportResult"`, and `"exportError"`.
-4. On `"ready"`: calls `routeFile()` and dispatches to `handleBRep()` or posts a `"loadUrl"` message.
-5. On `"exportRequest"`: dispatches to `handleExport()`.
-6. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
+3. Registers a `webviewPanel.webview.onDidReceiveMessage` listener (a per-panel
+   `pending: Map<string, { resolve; reject }>` correlates export round-trips, and a
+   per-panel debounce timer batches sidecar writes) that handles `"ready"`,
+   `"partsChanged"`, `"exportRequest"`, `"exportResult"`, and `"exportError"`.
+4. On `"ready"`: calls `routeFile()`, dispatches to `handleBRep()` or posts `"loadUrl"`, then calls `sendParts()`.
+5. On `"partsChanged"`: debounces (~500 ms) then `writeParts()` to the sidecar. The CAD file is never written.
+6. On `"exportRequest"`: dispatches to `handleExport()`.
+7. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
 
-**`handleBRep(extensionPath, bytes, format, webview)`** — Private method. Calls `loadBRep()`, posts `"status"` progress messages, then posts `"geometry"` + `"tree"` messages. Posts `"error"` on failure.
+**`handleBRep(extensionPath, bytes, format, webview)`** — Private method. Calls `loadBRep()`, posts `"status"` progress messages, then posts `"geometry"` (faces + edges) + `"tree"` messages. Posts `"error"` on failure.
+
+**`sendParts(uri, post)`** — Private method. Reads the parts sidecar via `readParts()` and posts a `"parts"` message (empty array when no sidecar exists).
 
 **`handleExport(uri, route, post, pending)`** — Private method. The whole "Export" toolbar button flow:
 1. `exportTargetsFor(route)` → `vscode.window.showQuickPick()` of compatible formats; bails if cancelled.
@@ -71,9 +77,9 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 - A strict CSP nonce.
 - The compiled `media/viewer.js` bundle (IIFE).
 - The `media/viewer.css` stylesheet.
-- Static toolbar HTML (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`).
+- Static toolbar HTML (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`, and the `#select-group` selection-mode controls).
 - Static view-controls panel HTML (`#view-controls`, `#vc-toggle`).
-- Tree panel container (`#tree-panel`).
+- Sidebar (`#side`) containing the tree panel (`#tree-panel`) and the Parts panel (`#parts-panel`).
 - Status/error overlay divs.
 
 ---
@@ -141,7 +147,8 @@ Manages the OpenCascade.js WASM singleton and performs B-rep parsing and tessell
 
 ```typescript
 interface BRepResult {
-  groups: SolidGroup[]   // from meshExtract.ts
+  groups: SolidGroup[]   // from meshExtract.ts (faces, grouped by solid)
+  edges: EdgeLine[]      // from meshExtract.ts (deduped edge polylines)
   tree: TreeNode         // from protocol.ts
 }
 ```
@@ -165,7 +172,7 @@ async function loadBRep(
   format: CadFormat
 ): Promise<BRepResult>
 ```
-High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, calls `tessellateByGroup()` to extract geometry, and calls `buildTree()` to build the component hierarchy.
+High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, and `buildTree()` to build the component hierarchy.
 
 ```typescript
 function readShape(
@@ -232,11 +239,21 @@ interface GeometryBuffers {
   indices: Uint32Array      // Triangle indices (0-based)
 }
 
+interface FaceMesh {
+  faceId: string            // stable per-face entity id ("face-N")
+  buffers: GeometryBuffers
+}
+
+interface EdgeLine {
+  edgeId: string            // stable per-edge entity id ("edge-N")
+  positions: Float32Array   // consecutive xyz points; pairs form polyline segments
+}
+
 interface SolidGroup {
   id: string
   label: string
   faceCount: number
-  meshes: GeometryBuffers[]
+  faces: FaceMesh[]
 }
 ```
 
@@ -252,6 +269,7 @@ interface OcctPolyTriangulation {
   Triangle(i: number): OcctTriangle
 }
 interface OcctTrsf { /* transform methods */ }
+interface OcctDiscretizer { NbPoints(): number; Value(i: number): OcctPoint }
 ```
 
 ### Functions
@@ -268,14 +286,49 @@ Extracts vertices and triangles from a single OCCT face's triangulation. Applies
 ```typescript
 function tessellateByGroup(oc: any, shape: any): SolidGroup[]
 ```
-Tessellates the entire `TopoDS_Shape`. Uses `BRepMesh_IncrementalMesh_2` with linear deflection `0.1`. Explores solids via `TopExp_Explorer`, then within each solid explores faces and calls `extractFaceGeometry`. Returns one `SolidGroup` per solid.
+Tessellates the entire `TopoDS_Shape`. Uses `BRepMesh_IncrementalMesh_2` with linear deflection `0.1`. Explores solids via `TopExp_Explorer`, then within each solid explores faces and calls `extractFaceGeometry`. Returns one `SolidGroup` per solid, each face tagged with a stable global `faceId` (deterministic explorer order).
 
-**Memory discipline:** Every OCCT handle created inside this function is pushed onto a local `cleanup[]` array. A `try/finally` block deletes them in reverse order regardless of success or failure.
+```typescript
+function extractEdges(oc: any, shape: any): EdgeLine[]
+```
+Explores every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` bucket + `IsSame` (this OCCT build does **not** bind `TopTools_IndexedMapOfShape`), then discretizes each unique edge to a polyline via `BRepAdaptor_Curve_2` + `GCPnts_UniformDeflection_2` (both verified against the live WASM). The first appearance in explorer order fixes the stable `edgeId`.
+
+```typescript
+function polylineFromDiscretizer(disc: OcctDiscretizer): Float32Array
+```
+Pure helper (unit-tested) that packs a discretizer's points into a flat xyz array, deleting each `gp_Pnt` handle it reads.
+
+**Memory discipline:** Every OCCT handle created in these functions is pushed onto a local `cleanup[]` array. A `try/finally` block deletes them in reverse order regardless of success or failure. In `extractEdges`, deduped edge handles are kept alive in `cleanup` until the end so later `IsSame` comparisons stay valid.
 
 ```typescript
 function tessellateShape(oc: any, shape: any): GeometryBuffers[]
 ```
 Legacy flat tessellation (no grouping). Kept for test compatibility. Returns one `GeometryBuffers` per face.
+
+---
+
+## `src/partsStore.ts` and `src/partsSidecar.ts`
+
+Persist user-defined parts in a `<model>.parts.json` sidecar beside the CAD file.
+The CAD file is never written — only the sidecar — so the editor stays read-only.
+
+`src/partsSidecar.ts` is **vscode-free** (so it unit-tests under vitest):
+
+```typescript
+function parsePartsJson(text: string): Part[]          // tolerant: returns [] on bad input
+function serializePartsJson(sourceName: string, parts: Part[]): string
+```
+
+`src/partsStore.ts` wraps them with VS Code filesystem access:
+
+```typescript
+function sidecarUri(modelUri: vscode.Uri): vscode.Uri  // <model>.parts.json
+async function readParts(modelUri): Promise<Part[]>     // [] if missing/unreadable
+async function writeParts(modelUri, parts): Promise<void>
+```
+
+`provider.ts` calls `readParts()` on open (posts a `parts` message) and, on each
+debounced `partsChanged` message (~500 ms), `writeParts()`.
 
 ---
 

@@ -64,6 +64,7 @@ The toolbar appears at the top of the editor:
 | **Grid** | Show/hide the world-space grid and axis helpers |
 | **Export** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) |
 | **Tree** | Show/hide the component tree panel (visible only for models with multiple components) |
+| **Select / Vol·Surf·Line** | Toggle entity selection mode and choose what a click picks — volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)). |
 
 ### View-Controls Panel
 
@@ -91,6 +92,35 @@ Click any face of the cube to snap the camera to that standard view:
 ### Component Tree Panel
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
+
+### Defining Parts
+
+CAD Preview lets you group geometry into named **parts** (the FEM
+sub-model-part / boundary-group concept). The **Parts** panel sits below the
+component tree in the left sidebar.
+
+To assign geometry to a part:
+
+1. Click **Select** in the toolbar to enter selection mode, and choose a pick
+   target: **Vol** (solids), **Surf** (faces), or **Line** (edges).
+2. Click entities in the 3D view to select them — they highlight blue.
+   Shift-click to add or remove from the selection; a plain click selects just
+   one; clicking empty space clears the selection.
+3. Click **＋ New** in the Parts panel to create a part, then click the **＋**
+   on that part's row to assign the current selection to it.
+
+Each part has an editable name, a colour swatch (click to recolour), and a
+`v/s/l` badge counting its volumes / surfaces / lines. Assigned entities are
+painted in the part's colour in the 3D view. Expand a part to see and remove
+individual entities; click a part row to highlight all of its entities. The
+**✕** on a part deletes it.
+
+Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD
+file and reloaded when you reopen it — the CAD file itself is never modified. See
+[Parts Sidecar](./file-formats.md#parts-sidecar-modelpartsjson) for the format.
+
+> **Mesh formats** (STL/OBJ/PLY/glTF) have no face/edge topology, so only whole
+> objects can be assigned, as **volumes** — the Surf and Line modes are disabled.
 
 ### Exporting a Model
 
@@ -121,4 +151,4 @@ surfaces, which is why mesh sources can't export to STEP/IGES/BREP.
 - **No BRep-embedded geometry in glTF.** Only triangulated `mesh` primitives inside glTF are rendered.
 - **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in-process in the Node extension host — there is no streaming.
 - **One-time WASM startup.** The first B-rep file open triggers OpenCascade.js initialization (~300 ms on a typical machine). Subsequent B-rep files open faster because the kernel is memoized.
-- **Read-only.** CAD Preview is a preview-only extension. The opened file itself cannot be edited or saved over from the 3D view — **Export** writes a new, separate file in a different format and never modifies the original.
+- **Read-only CAD file.** CAD Preview never modifies the opened CAD file. **Export** writes a new, separate file in a different format, and **part** definitions are saved to a separate `<model>.parts.json` sidecar — the original geometry is always left untouched.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractFaceGeometry } from "./meshExtract";
+import { extractFaceGeometry, polylineFromDiscretizer } from "./meshExtract";
 
 /** Minimal mock of a Poly_Triangulation face with 3 nodes forming one triangle. */
 function makeTriMock(
@@ -66,5 +66,34 @@ describe("extractFaceGeometry", () => {
     expect(indices.length).toBe(6);    // 2 triangles × 3
     expect(indices[0]).toBe(0);
     expect(indices[3]).toBe(1); // second triangle first index remapped (node 2 → 1)
+  });
+});
+
+describe("polylineFromDiscretizer", () => {
+  /** Mock of a GCPnts discretizer with 1-based Value(i). */
+  function makeDiscMock(points: [number, number, number][]) {
+    let deleted = 0;
+    const mock = {
+      NbPoints: () => points.length,
+      Value: (i: number) => {
+        const [x, y, z] = points[i - 1];
+        return { X: () => x, Y: () => y, Z: () => z, delete: () => { deleted++; } };
+      },
+      deletedCount: () => deleted,
+    };
+    return mock;
+  }
+
+  it("packs discretized points into a flat xyz array in curve order", () => {
+    const disc = makeDiscMock([[0, 0, 0], [1, 2, 3], [4, 5, 6]]);
+    const positions = polylineFromDiscretizer(disc);
+    expect(positions.length).toBe(9);
+    expect(Array.from(positions)).toEqual([0, 0, 0, 1, 2, 3, 4, 5, 6]);
+  });
+
+  it("releases every gp_Pnt handle it reads (OCCT memory discipline)", () => {
+    const disc = makeDiscMock([[0, 0, 0], [1, 1, 1]]);
+    polylineFromDiscretizer(disc);
+    expect(disc.deletedCount()).toBe(2);
   });
 });

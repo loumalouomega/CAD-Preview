@@ -2,6 +2,20 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import * as cam from "./cameraControls";
 import { OrientationCube } from "./orientationCube";
+import { collectTargets, resolvePick, type PickResult } from "./picking";
+import { DEFAULT_EDGE_COLOR, DEFAULT_FACE_COLOR } from "./geometryBuilder";
+import type { EntityType } from "../protocol";
+import type { SelectedEntity } from "./selection";
+
+/** Emissive tint applied to the transiently-selected entities. */
+const SELECTION_COLOR = 0x3b82f6;
+
+/** Per-part colouring of entities, resolved by id. */
+export interface EntityColorMap {
+  solids: Map<string, string>; // solidId → colour (applies to all its faces)
+  faces: Map<string, string>;  // faceId → colour (overrides the solid colour)
+  edges: Map<string, string>;  // edgeId → colour
+}
 
 /**
  * A self-contained Three.js viewer: scene, lights, helpers, orbit controls and
@@ -19,6 +33,13 @@ export class Viewer {
   private readonly gizmoMargin = 10;
   private model: THREE.Object3D | null = null;
   private wireframe = false;
+  private readonly raycaster = new THREE.Raycaster();
+  /** World-space half-thickness for picking thin edge lines; scaled per model. */
+  private pickThreshold = 0.05;
+  private selectionMode: EntityType | null = null;
+  private onEntityPick: ((r: PickResult, additive: boolean) => void) | null = null;
+  private onEmptyPick: (() => void) | null = null;
+  private pointerDownPos: { x: number; y: number } | null = null;
 
   constructor(private readonly container: HTMLElement) {
     const width = container.clientWidth;
@@ -49,6 +70,9 @@ export class Viewer {
 
     // Capture-phase so a face click is handled before OrbitControls starts a drag.
     this.renderer.domElement.addEventListener("pointerdown", this.onGizmoPointerDown, true);
+    // Entity picking: select on a click (down+up without a drag) so orbit still works.
+    this.renderer.domElement.addEventListener("pointerdown", this.onSelectPointerDown);
+    this.renderer.domElement.addEventListener("pointerup", this.onSelectPointerUp);
     window.addEventListener("resize", this.onResize);
     this.animate();
   }
@@ -93,6 +117,8 @@ export class Viewer {
     // Scale helpers to the model so the grid/axes stay meaningful.
     this.grid.scale.setScalar(radius / 5);
     this.axes.scale.setScalar(radius);
+    // Edge lines are infinitely thin; pick them within ~2% of the model radius.
+    this.pickThreshold = radius * 0.02;
 
     const fov = (this.camera.fov * Math.PI) / 180;
     const distance = (radius / Math.sin(fov / 2)) * 1.5;
@@ -165,6 +191,59 @@ export class Viewer {
     });
   }
 
+  // ── Entity selection & per-part colouring ──────────────────────────────
+
+  /** Sets the active pick mode (`null` disables picking). */
+  setSelectionMode(mode: EntityType | null): void {
+    this.selectionMode = mode;
+  }
+
+  /** Registers callbacks for entity clicks and clicks on empty space. */
+  setEntityPickHandler(onPick: (r: PickResult, additive: boolean) => void, onEmpty: () => void): void {
+    this.onEntityPick = onPick;
+    this.onEmptyPick = onEmpty;
+  }
+
+  /**
+   * Applies persistent per-part colours. Faces use their direct colour, else
+   * their solid's colour, else the default; edges use their colour or default.
+   * The base colour is stashed in `userData.baseColor` so the transient
+   * selection highlight can restore it.
+   */
+  setEntityColors(map: EntityColorMap): void {
+    this.model?.traverse((obj) => {
+      const ud = obj.userData;
+      if (obj instanceof THREE.Mesh && ud.entityType === "surface") {
+        const hex = map.faces.get(ud.entityId) ?? map.solids.get(ud.groupId);
+        const color = hex ? new THREE.Color(hex) : new THREE.Color(DEFAULT_FACE_COLOR);
+        ud.baseColor = color.getHex();
+        (obj.material as THREE.MeshStandardMaterial).color.copy(color);
+      } else if (obj instanceof THREE.Line && ud.entityType === "line") {
+        const hex = map.edges.get(ud.entityId);
+        const color = hex ? new THREE.Color(hex) : new THREE.Color(DEFAULT_EDGE_COLOR);
+        ud.baseColor = color.getHex();
+        (obj.material as THREE.LineBasicMaterial).color.copy(color);
+      }
+    });
+  }
+
+  /** Highlights the transiently-selected entities over their base colours. */
+  renderSelection(selected: SelectedEntity[]): void {
+    const keys = new Set(selected.map((e) => `${e.entityType}:${e.entityId}`));
+    this.model?.traverse((obj) => {
+      const ud = obj.userData;
+      if (obj instanceof THREE.Mesh && ud.entityType === "surface") {
+        const on = keys.has(`surface:${ud.entityId}`) || keys.has(`volume:${ud.groupId}`);
+        const mat = obj.material as THREE.MeshStandardMaterial;
+        mat.emissive.setHex(on ? SELECTION_COLOR : 0x000000);
+      } else if (obj instanceof THREE.Line && ud.entityType === "line") {
+        const mat = obj.material as THREE.LineBasicMaterial;
+        const base = (ud.baseColor as number | undefined) ?? DEFAULT_EDGE_COLOR;
+        mat.color.setHex(keys.has(`line:${ud.entityId}`) ? SELECTION_COLOR : base);
+      }
+    });
+  }
+
   setWireframe(on: boolean): void {
     this.wireframe = on;
     this.applyWireframe();
@@ -186,6 +265,8 @@ export class Viewer {
   dispose(): void {
     window.removeEventListener("resize", this.onResize);
     this.renderer.domElement.removeEventListener("pointerdown", this.onGizmoPointerDown, true);
+    this.renderer.domElement.removeEventListener("pointerdown", this.onSelectPointerDown);
+    this.renderer.domElement.removeEventListener("pointerup", this.onSelectPointerUp);
     this.gizmo.dispose();
     this.clearModel();
     this.controls.dispose();
@@ -232,6 +313,35 @@ export class Viewer {
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, cssW, cssH);
   }
+
+  private onSelectPointerDown = (event: PointerEvent): void => {
+    this.pointerDownPos = { x: event.clientX, y: event.clientY };
+  };
+
+  private onSelectPointerUp = (event: PointerEvent): void => {
+    const down = this.pointerDownPos;
+    this.pointerDownPos = null;
+    if (!down || this.selectionMode === null || !this.model) return;
+    // Ignore drags (orbit/pan) — only a near-stationary click selects.
+    if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = 1 - ((event.clientY - rect.top) / rect.height) * 2;
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
+    this.raycaster.params.Line.threshold = this.pickThreshold;
+
+    const targets = collectTargets(this.model, this.selectionMode);
+    const hits = this.raycaster.intersectObjects(targets, false);
+    for (const h of hits) {
+      const r = resolvePick(h.object.userData, this.selectionMode);
+      if (r) {
+        this.onEntityPick?.(r, event.shiftKey);
+        return;
+      }
+    }
+    this.onEmptyPick?.();
+  };
 
   private onGizmoPointerDown = (event: PointerEvent): void => {
     const rect = this.renderer.domElement.getBoundingClientRect();

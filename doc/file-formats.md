@@ -27,9 +27,10 @@ B-rep files describe solid geometry analytically (surfaces, edges, vertices) rat
 2. **Tessellate** — `BRepMesh_IncrementalMesh_2` with:
    - Linear deflection: `0.1`
    - Angular deflection: `0.5` (radians)
-3. **Extract** — `TopExp_Explorer` walks the `TopoDS_Shape`, visiting each `TopoDS_Face`. For each face, the triangulation (`Poly_Triangulation`) is pulled from the location-transformed face and converted to WebGL-ready `Float32Array` positions and `Uint32Array` indices.
-4. **Group** — faces are collected into `SolidGroup`s, one per top-level solid (`TopAbs_SOLID`). Each group becomes a separate `THREE.Mesh` in the webview, enabling per-solid highlighting.
-5. **Encode** — positions and indices are base64-encoded and posted to the webview as `EncodedMesh` objects.
+3. **Extract faces** — `TopExp_Explorer` walks the `TopoDS_Shape`, visiting each `TopoDS_Face`. For each face, the triangulation (`Poly_Triangulation`) is pulled from the location-transformed face and converted to WebGL-ready `Float32Array` positions and `Uint32Array` indices. Each face gets a stable id (`face-N`, deterministic explorer order) and records its parent solid.
+4. **Extract edges** — `extractEdges()` walks every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` + `IsSame` (this OCCT build does not bind `TopTools_IndexedMapOfShape`), and discretizes each unique edge to a polyline via `BRepAdaptor_Curve` + `GCPnts_UniformDeflection`. Each gets a stable id (`edge-N`).
+5. **Group** — faces are collected into `SolidGroup`s, one per top-level solid (`TopAbs_SOLID`). In the webview each face becomes its own `THREE.Mesh` and each edge its own `THREE.Line`, parented under a per-solid `THREE.Group` — so faces, edges, and solids can all be picked and coloured independently.
+6. **Encode** — positions and indices are base64-encoded and posted to the webview as `EncodedMesh` (faces) and `EncodedEdge` (edges) objects.
 
 ### Tessellation Quality
 
@@ -37,7 +38,11 @@ The linear deflection of `0.1` is a reasonable default for mechanical parts. Dec
 
 ### Solid Grouping
 
-A `SolidGroup` maps to one `THREE.Mesh` child of the root `THREE.Group`. The `userData.groupId` property links it to the component tree panel for highlighting. Each group's `faceCount` is the number of OCCT faces (not triangles) that were extracted.
+A `SolidGroup` maps to one `THREE.Group` child of the root, holding one
+`THREE.Mesh` per face. The `userData.groupId` (the solid id) links faces to the
+component tree panel for highlighting; each face mesh also carries
+`userData.entityType = "surface"` and `userData.entityId = face-N`. Each group's
+`faceCount` is the number of OCCT faces (not triangles) that were extracted.
 
 ### STEP
 
@@ -84,6 +89,39 @@ Binary and ASCII STL are both supported via `STLLoader`. The result is a single 
 - The component tree is built from the `Object3D` name hierarchy, not from glTF extras.
 
 ---
+
+## Parts Sidecar (`<model>.parts.json`)
+
+User-defined **parts** (named groups of volumes / surfaces / lines) are stored in
+a JSON sidecar written **next to** the CAD file — e.g. `bull.stp` →
+`bull.stp.parts.json`. The CAD file itself is never modified; the custom editor
+stays read-only. The sidecar is read on open (`readParts()`) and autosaved,
+debounced, on every edit (`writeParts()`), both in `src/partsStore.ts`. Parsing
+and serialization live in the vscode-free `src/partsSidecar.ts` so they are
+unit-tested.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "parts": [
+    {
+      "name": "Inlet",
+      "color": "#e6194b",
+      "volumes": ["solid-0"],
+      "surfaces": ["face-3", "face-7"],
+      "lines": ["edge-12"]
+    }
+  ]
+}
+```
+
+Entity ids are the stable topological ids assigned during extraction
+(`solid-*`, `face-*`, `edge-*`). For mesh formats (which have no B-rep topology)
+only whole-object **volumes** can be assigned, identified by a stable
+traversal-order id (`node-*`). Ids stay valid as long as the source file is
+unchanged. Parsing is tolerant: a missing or hand-corrupted sidecar yields an
+empty part list rather than blocking the model from opening.
 
 ## Export
 

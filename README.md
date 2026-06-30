@@ -41,6 +41,10 @@ loaders. Rendering is always Three.js.
 - Shaded / wireframe toggle
 - Axes and grid helpers
 - Loading status indicator and error reporting
+- **Parts**: define named groups by clicking volumes / surfaces / lines in the 3D
+  view and assigning them to a part; assignments are colour-highlighted, listed in a
+  tree panel, and saved to a `<model>.parts.json` sidecar (the CAD file stays
+  read-only)
 - **Export**: convert the open model to a compatible format and save it via a native
   Save dialog — see [Export](#export) below
 
