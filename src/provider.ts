@@ -1,8 +1,20 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
-import { loadBRep } from "./occtService";
-import { encodeBuffer, type HostToWebview, type WebviewToHost } from "./protocol";
-import type { CadFormat } from "./fileRouter";
+import { loadBRep, exportBRep } from "./occtService";
+import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
+import type { CadFormat, FileRoute } from "./fileRouter";
+import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL } from "./exportTargets";
+import { readParts, writeParts } from "./partsStore";
+
+/** Debounce window for autosaving the parts sidecar after edits. */
+const PARTS_SAVE_DEBOUNCE_MS = 500;
+
+const BREP_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
+
+interface PendingExport {
+  resolve: (result: { data: string; binary: boolean }) => void;
+  reject: (err: Error) => void;
+}
 
 /** Read-only custom document: previews hold no editable state beyond their URI. */
 class CadDocument implements vscode.CustomDocument {
@@ -52,6 +64,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     };
 
     const post = (msg: HostToWebview) => webviewPanel.webview.postMessage(msg);
+    const pending = new Map<string, PendingExport>();
+    let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
     webviewPanel.webview.onDidReceiveMessage((msg: WebviewToHost) => {
       if (msg.type === "ready") {
@@ -65,6 +79,34 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         } else {
           this.handleBRep(document.uri, route.format as Extract<CadFormat, "step" | "iges" | "brep">, post);
         }
+        void this.sendParts(document.uri, post);
+        return;
+      }
+
+      if (msg.type === "partsChanged") {
+        // Debounced autosave; the CAD file itself is never written, only the sidecar.
+        const parts: Part[] = msg.parts;
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+          void writeParts(document.uri, parts).then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save parts: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      if (msg.type === "exportRequest") {
+        if (route) this.handleExport(document.uri, route, post, pending);
+        return;
+      }
+
+      if (msg.type === "exportResult" || msg.type === "exportError") {
+        const p = pending.get(msg.requestId);
+        if (!p) return;
+        pending.delete(msg.requestId);
+        if (msg.type === "exportResult") p.resolve(msg);
+        else p.reject(new Error(msg.message));
       }
     });
 
@@ -80,20 +122,97 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
-      const { groups, tree } = await loadBRep(this.context.extensionPath, bytes, format);
+      const { groups, edges, tree } = await loadBRep(this.context.extensionPath, bytes, format);
       post({
         type: "geometry",
         meshes: groups.flatMap((g) =>
-          g.meshes.map((m) => ({
-            positions: encodeBuffer(m.positions),
-            indices: encodeBuffer(m.indices),
+          g.faces.map((f) => ({
+            positions: encodeBuffer(f.buffers.positions),
+            indices: encodeBuffer(f.buffers.indices),
             groupId: g.id,
+            faceId: f.faceId,
           }))
         ),
+        edges: edges.map((e) => ({
+          positions: encodeBuffer(e.positions),
+          edgeId: e.edgeId,
+        })),
       });
       post({ type: "tree", root: tree });
     } catch (err) {
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
+    }
+  }
+
+  /** Loads the parts sidecar (if any) and sends it to the webview. */
+  private async sendParts(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
+    try {
+      const parts = await readParts(uri);
+      post({ type: "parts", parts });
+    } catch {
+      post({ type: "parts", parts: [] });
+    }
+  }
+
+  /**
+   * Prompts for a target format and destination, then writes the export. B-rep
+   * targets are written directly via OCCT; mesh targets are serialized in the
+   * webview (which already holds the triangulated Three.js model) and relayed back.
+   */
+  private async handleExport(
+    uri: vscode.Uri,
+    route: FileRoute,
+    post: (msg: HostToWebview) => void,
+    pending: Map<string, PendingExport>
+  ): Promise<void> {
+    const targets = exportTargetsFor(route);
+    if (targets.length === 0) return;
+
+    const picked = await vscode.window.showQuickPick(
+      targets.map((format) => ({
+        label: EXPORT_LABEL[format],
+        description: `.${EXPORT_EXTENSION[format]}`,
+        format,
+      })),
+      { placeHolder: "Export model as…" }
+    );
+    if (!picked) return;
+
+    const targetFormat = picked.format;
+    const ext = EXPORT_EXTENSION[targetFormat];
+    const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+    const defaultUri = vscode.Uri.joinPath(uri, "..", `${baseName}.${ext}`);
+
+    const saveUri = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { [EXPORT_LABEL[targetFormat]]: [ext] },
+    });
+    if (!saveUri) return;
+
+    try {
+      let bytes: Uint8Array;
+      if (BREP_FORMATS.has(targetFormat)) {
+        const sourceBytes = await vscode.workspace.fs.readFile(uri);
+        bytes = await exportBRep(
+          this.context.extensionPath,
+          sourceBytes,
+          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+          targetFormat as Extract<CadFormat, "step" | "iges" | "brep">
+        );
+      } else {
+        const requestId = `${Date.now()}-${Math.random()}`;
+        const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
+          pending.set(requestId, { resolve, reject });
+          post({ type: "exportMesh", requestId, format: targetFormat });
+        });
+        bytes = result.binary
+          ? Buffer.from(result.data, "base64")
+          : Buffer.from(result.data, "utf8");
+      }
+      await vscode.workspace.fs.writeFile(saveUri, bytes);
+      post({ type: "status", text: `Exported to ${saveUri.fsPath}` });
+    } catch (err) {
+      post({ type: "error", message: `Export failed: ${(err as Error).message}` });
     }
   }
 
@@ -124,12 +243,21 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 </head>
 <body>
   <div id="layout">
-    <div id="tree-panel">
-      <div id="tree-header">
-        <span id="tree-title">Components</span>
-        <button id="tree-close" title="Close panel">✕</button>
+    <div id="side">
+      <div id="tree-panel">
+        <div id="tree-header">
+          <span id="tree-title">Components</span>
+          <button id="tree-close" title="Close panel">✕</button>
+        </div>
+        <div id="tree-body"></div>
       </div>
-      <div id="tree-body"></div>
+      <div id="parts-panel">
+        <div id="parts-header">
+          <span id="parts-title">Parts</span>
+          <button id="parts-new" title="New part">＋ New</button>
+        </div>
+        <div id="parts-body"></div>
+      </div>
     </div>
     <div id="app"></div>
   </div>
@@ -137,7 +265,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="fit" title="Fit to view">Fit</button>
     <button id="wireframe" title="Toggle wireframe">Wireframe</button>
     <button id="grid" title="Toggle grid">Grid</button>
+    <button id="export" title="Export model">Export</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">Tree</button>
+    <div id="select-group" title="Pick entities in the view to assign to a part">
+      <button id="sel-toggle" title="Toggle selection mode">Select</button>
+      <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">Vol</button>
+      <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">Surf</button>
+      <button class="sel-mode" data-mode="line" title="Pick lines (edges)">Line</button>
+    </div>
   </div>
   <div id="view-controls">
     <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">⌄</button>

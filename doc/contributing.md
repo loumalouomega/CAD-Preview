@@ -100,6 +100,18 @@ To support a new file format, make changes in the following places:
 
 5. **Tests** — Add test cases to the relevant test file (`src/fileRouter.test.ts` at minimum to verify routing; and a loader/parser test if the new code path is non-trivial).
 
+6. **Export (optional)** — If the format should also be an export *target*, add a
+   writer: for a mesh format, a branch in `exportModel()`
+   (`src/webview/meshExporters.ts`); for a B-rep format, a branch in `writeShape()`
+   (`src/occtService.ts`). Then add it to the relevant list in `exportTargetsFor()`
+   (`src/exportTargets.ts`) and its extension/label in `EXPORT_EXTENSION`/
+   `EXPORT_LABEL`. There is no writer path from a mesh format back to a B-rep format —
+   don't add a B-rep target for a mesh source.
+
+7. **Docs** — Update `doc/file-formats.md`, the format tables in `README.md` /
+   `doc/index.md` / `doc/getting-started.md`, and `doc/extension-host-api.md` /
+   `doc/webview-api.md` for whichever module changed. See [CLAUDE.md](https://github.com/loumalouomega/CAD-Preview/blob/master/CLAUDE.md)'s "Keep docs in sync" section.
+
 ## Architecture Constraints
 
 The following are **non-negotiable** invariants. PRs that violate them will not be merged:
@@ -108,6 +120,7 @@ The following are **non-negotiable** invariants. PRs that violate them will not 
 - **Never initialize OCCT in `activate()`.** The singleton is lazy — initialized only on the first B-rep open. Do not call `getOcct()` eagerly.
 - **The orientation cube must not create its own `WebGLRenderer`.** It draws via scissor viewport into the main renderer. A second WebGL context fails in constrained environments.
 - **`setupViewControls()` in `main.ts` must be wrapped in `try/catch`** and run before the `ready` handshake. A UI wiring failure must never block model loading.
+- **B-rep export targets are written in the host via OCCT; mesh export targets are written in the webview via Three.js exporters.** This build of OCCT has no STL/OBJ/PLY/glTF writers and no path from a mesh back to a B-rep — don't try to route mesh-to-B-rep export through OCCT, and don't move B-rep writing into the webview (same CSP/WASM reasoning as reading).
 
 ## Submitting a Pull Request
 

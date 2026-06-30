@@ -1,9 +1,14 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
+import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded } from "./geometryBuilder";
+import { splitMeshesIntoFacets } from "./meshFacets";
 import { TreePanel } from "./treePanel";
-import type { HostToWebview, WebviewToHost, TreeNode } from "../protocol";
+import { PartsModel } from "./partsModel";
+import { PartsPanel } from "./partsPanel";
+import { SelectionSet, type SelectedEntity } from "./selection";
+import type { HostToWebview, WebviewToHost, TreeNode, EntityType } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -12,6 +17,7 @@ const post = (msg: WebviewToHost) => vscode.postMessage(msg);
 
 const app = document.getElementById("app")!;
 const statusEl = document.getElementById("status")!;
+const sideEl = document.getElementById("side")!;
 const panelEl = document.getElementById("tree-panel")!;
 const toggleBtn = document.getElementById("tree-toggle") as HTMLButtonElement;
 
@@ -19,6 +25,71 @@ const viewer = new Viewer(app);
 const treePanel = new TreePanel(panelEl, (id) => {
   viewer.highlightGroup(id);
 });
+
+// ── Parts / selection state ──────────────────────────────────────────────
+const selection = new SelectionSet();
+let previewPartIndex: number | null = null;
+
+const partsModel = new PartsModel(() => {
+  // Fired on every parts mutation: persist, recolour, re-render.
+  post({ type: "partsChanged", parts: partsModel.list() });
+  refreshColors();
+  partsPanel.render(partsModel.list());
+});
+
+const partsPanel = new PartsPanel(document.getElementById("parts-panel")!, {
+  onCreate: () => partsModel.create(),
+  onAssign: (index) => {
+    partsModel.assign(index, selection.list());
+    selection.clear();
+    previewPartIndex = null;
+    renderHighlight();
+  },
+  onRemovePart: (index) => partsModel.remove(index),
+  onRename: (index, name) => partsModel.rename(index, name),
+  onRecolor: (index, color) => partsModel.recolor(index, color),
+  onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
+  onSelectPart: (index) => {
+    previewPartIndex = index;
+    renderHighlight();
+  },
+});
+
+/** Applies persistent per-part colours, then re-draws the active highlight. */
+function refreshColors(): void {
+  viewer.setEntityColors(partsModel.colorMap());
+  renderHighlight();
+}
+
+/** Draws either the previewed part's entities or the working selection. */
+function renderHighlight(): void {
+  const entities: SelectedEntity[] =
+    previewPartIndex !== null ? partsModel.entitiesOf(previewPartIndex) : selection.list();
+  viewer.renderSelection(entities);
+}
+
+function showSidebar(): void {
+  sideEl.classList.add("visible");
+  window.dispatchEvent(new Event("resize"));
+}
+
+viewer.setEntityPickHandler(
+  (result, additive) => {
+    previewPartIndex = null;
+    if (additive) {
+      selection.toggle(result);
+    } else {
+      selection.clear();
+      selection.add(result);
+    }
+    renderHighlight();
+  },
+  () => {
+    previewPartIndex = null;
+    selection.clear();
+    renderHighlight();
+  }
+);
 
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
@@ -29,12 +100,50 @@ function setStatus(text: string, isError = false): void {
 function showTree(root: TreeNode): void {
   treePanel.render(root);
   toggleBtn.style.display = "";
-  // Notify the renderer that #app may have resized.
-  window.dispatchEvent(new Event("resize"));
+  showSidebar();
+}
+
+// ── Selection-mode toolbar ────────────────────────────────────────────────
+let selectMode: EntityType = "surface";
+let selecting = false;
+function setupSelectionControls(): void {
+  const toggle = document.getElementById("sel-toggle");
+  const modeBtns = [...document.querySelectorAll<HTMLButtonElement>(".sel-mode")];
+  const apply = () => viewer.setSelectionMode(selecting ? selectMode : null);
+  toggle?.addEventListener("click", () => {
+    selecting = !selecting;
+    toggle.classList.toggle("active", selecting);
+    apply();
+  });
+  for (const btn of modeBtns) {
+    btn.addEventListener("click", () => {
+      if (btn.disabled) return;
+      selectMode = btn.dataset.mode as EntityType;
+      modeBtns.forEach((b) => b.classList.toggle("active", b === btn));
+      if (selecting) apply();
+    });
+  }
+}
+
+/** Restricts pickable entity kinds (mesh formats expose only whole "volumes"). */
+function setSelectableModes(modes: EntityType[]): void {
+  const allowed = new Set(modes);
+  let active: HTMLButtonElement | null = null;
+  for (const btn of document.querySelectorAll<HTMLButtonElement>(".sel-mode")) {
+    const ok = allowed.has(btn.dataset.mode as EntityType);
+    btn.disabled = !ok;
+    if (ok && (active === null || btn.dataset.mode === selectMode)) active = btn;
+  }
+  if (active) {
+    selectMode = active.dataset.mode as EntityType;
+    document.querySelectorAll(".sel-mode").forEach((b) => b.classList.toggle("active", b === active));
+    if (selecting) viewer.setSelectionMode(selectMode);
+  }
 }
 
 document.getElementById("fit")?.addEventListener("click", () => viewer.fitView());
 document.getElementById("grid")?.addEventListener("click", () => viewer.toggleGrid());
+document.getElementById("export")?.addEventListener("click", () => post({ type: "exportRequest" }));
 document.getElementById("tree-close")?.addEventListener("click", () => {
   treePanel.hide();
   window.dispatchEvent(new Event("resize"));
@@ -90,6 +199,7 @@ function setupViewControls(): void {
 
 try {
   setupViewControls();
+  setupSelectionControls();
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
   console.error(message, err);
@@ -106,8 +216,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "geometry":
       try {
         setStatus("Building geometry…");
-        const group = buildGroupFromEncoded(msg.meshes);
+        const group = buildGroupFromEncoded(msg.meshes, msg.edges);
         viewer.setModel(group);
+        refreshColors();
+        setSelectableModes(["volume", "surface", "line"]);
+        showSidebar();
         setStatus("");
       } catch (err) {
         setStatus(`Failed to build geometry: ${(err as Error).message}`, true);
@@ -118,15 +231,30 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       showTree(msg.root);
       break;
 
+    case "parts":
+      partsModel.load(msg.parts);
+      refreshColors();
+      partsPanel.render(partsModel.list());
+      showSidebar();
+      break;
+
     case "loadUrl":
       try {
         setStatus("Loading model…");
         const object = await loadMeshFromUrl(msg.url, msg.format);
-        tagGroupIds(object);
-        viewer.setModel(object);
-        setStatus("");
-        // Build tree from the loaded Object3D hierarchy.
+        tagMeshEntities(object);
+        // Build the Components tree from the original hierarchy (before the mesh
+        // is split into facets, so the tree lists whole objects, not facets).
         const root = extractObjectTree(object, msg.format.toUpperCase());
+        // Segment each mesh into coplanar facets so individual faces are pickable.
+        // Returns a new root when the loaded object itself is a mesh (e.g. STL).
+        const model = splitMeshesIntoFacets(object);
+        viewer.setModel(model);
+        refreshColors();
+        // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
+        setSelectableModes(["volume", "surface"]);
+        showSidebar();
+        setStatus("");
         if (hasMultipleNodes(root)) showTree(root);
       } catch (err) {
         setStatus(`Failed to load model: ${(err as Error).message}`, true);
@@ -140,13 +268,32 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "error":
       setStatus(msg.message, true);
       break;
+
+    case "exportMesh":
+      try {
+        const model = viewer.getModel();
+        if (!model) throw new Error("No model loaded");
+        const { data, binary } = await exportModel(model, msg.format);
+        post({ type: "exportResult", requestId: msg.requestId, data, binary });
+      } catch (err) {
+        post({ type: "exportError", requestId: msg.requestId, message: (err as Error).message });
+      }
+      break;
   }
 });
 
-/** Tag each Object3D with its uuid as groupId so highlightGroup works. */
-function tagGroupIds(obj: THREE.Object3D): void {
-  obj.userData.groupId = obj.uuid;
-  for (const child of obj.children) tagGroupIds(child);
+/**
+ * Tags a Three.js-loaded model with STABLE ids (traversal order, not uuid) so
+ * part assignments round-trip across reopen. Each object's id becomes its
+ * `groupId`; a mesh's id is its volume id, carried onto the facet group built by
+ * `splitMeshesIntoFacets`. The shared id keeps the Components tree highlight
+ * working.
+ */
+function tagMeshEntities(obj: THREE.Object3D): void {
+  let i = 0;
+  obj.traverse((o) => {
+    o.userData.groupId = `node-${i++}`;
+  });
 }
 
 /** Build a TreeNode from an Object3D hierarchy (for Three.js-loaded formats). */
@@ -156,7 +303,7 @@ function extractObjectTree(obj: THREE.Object3D, rootLabel: string): TreeNode {
     const children = o.children
       .filter((c) => c instanceof THREE.Mesh || c instanceof THREE.Group)
       .map(toNode);
-    return { id: o.uuid, label, children: children.length > 0 ? children : undefined };
+    return { id: o.userData.groupId as string, label, children: children.length > 0 ? children : undefined };
   }
   return { id: "root", label: rootLabel, children: obj.children.map(toNode) };
 }

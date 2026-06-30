@@ -27,11 +27,45 @@ Represents one node in the component hierarchy. `id` matches the `groupId` in `E
 interface EncodedMesh {
   positions: string   // base64-encoded Float32Array (XYZ vertex positions)
   indices: string     // base64-encoded Uint32Array (triangle indices, 0-based)
-  groupId: string     // solid / mesh group identifier
+  groupId: string     // parent solid id this face belongs to
+  faceId: string      // stable per-face entity id (e.g. "face-3")
 }
 ```
 
-Geometry is base64-encoded for safe `postMessage` transport. `groupId` links the mesh to the corresponding `TreeNode.id` in the component tree.
+One encoded mesh per **face** (B-rep). Geometry is base64-encoded for safe
+`postMessage` transport. `groupId` links the face to its solid's `TreeNode.id`;
+`faceId` is the stable per-face entity id used by part assignments and picking.
+
+### `EncodedEdge`
+
+```typescript
+interface EncodedEdge {
+  positions: string   // base64-encoded Float32Array — consecutive points form a polyline
+  edgeId: string      // stable per-edge entity id (e.g. "edge-12")
+}
+```
+
+One per **unique edge** (B-rep), discretized to a polyline. Shared edges are
+de-duplicated host-side; `edgeId` is stable across reopen of an unchanged file.
+
+### `EntityType` and `Part`
+
+```typescript
+type EntityType = 'volume' | 'surface' | 'line'
+
+interface Part {
+  name: string
+  color: string       // CSS hex, e.g. "#ff8800"
+  volumes: string[]   // solid ids
+  surfaces: string[]  // face ids
+  lines: string[]     // edge ids
+}
+```
+
+A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the
+stable topological ids above (`solid-*`, `face-*`, `edge-*`), or, for mesh
+formats, stable per-object ids (`node-*`). Parts are persisted in the JSON
+sidecar — see [File Formats](./file-formats.md).
 
 ---
 
@@ -39,31 +73,32 @@ Geometry is base64-encoded for safe `postMessage` transport. `groupId` links the
 
 ```typescript
 type HostToWebview =
-  | { type: 'geometry'; meshes: EncodedMesh[] }
+  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[] }
   | { type: 'tree';     root: TreeNode }
   | { type: 'loadUrl';  url: string; format: CadFormat }
+  | { type: 'parts';    parts: Part[] }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
+  | { type: 'exportMesh'; requestId: string; format: CadFormat }
 ```
 
 ### `geometry`
 
-Sent after B-rep tessellation. Contains all solid groups as encoded meshes. The webview calls `buildGroupFromEncoded(msg.meshes)` and then `viewer.setModel(group)`.
+Sent after B-rep tessellation. Contains every face as an encoded mesh plus every
+unique edge as a polyline. The webview calls
+`buildGroupFromEncoded(msg.meshes, msg.edges)` (one `THREE.Mesh` per face, one
+`THREE.Line` per edge, parented under per-solid groups) and then
+`viewer.setModel(group)`.
 
 ```json
 {
   "type": "geometry",
   "meshes": [
-    {
-      "positions": "AAAA...",
-      "indices": "AAAA...",
-      "groupId": "solid-0"
-    },
-    {
-      "positions": "BBBB...",
-      "indices": "BBBB...",
-      "groupId": "solid-1"
-    }
+    { "positions": "AAAA...", "indices": "AAAA...", "groupId": "solid-0", "faceId": "face-0" },
+    { "positions": "BBBB...", "indices": "BBBB...", "groupId": "solid-0", "faceId": "face-1" }
+  ],
+  "edges": [
+    { "positions": "CCCC...", "edgeId": "edge-0" }
   ]
 }
 ```
@@ -98,6 +133,22 @@ Sent for mesh-format files (STL/OBJ/PLY/glTF). The `url` is a `vscode-webview://
 }
 ```
 
+### `parts`
+
+Sent after geometry, once the host has read the parts sidecar
+(`<model>.parts.json`). Carries the saved part definitions (empty array when no
+sidecar exists). The webview loads them into `PartsModel`, recolours the model,
+and renders the Parts panel.
+
+```json
+{
+  "type": "parts",
+  "parts": [
+    { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": ["face-3"], "lines": [] }
+  ]
+}
+```
+
 ### `status`
 
 Progress text shown in the status overlay (`#status-text`). Sent at key points during B-rep loading:
@@ -116,6 +167,19 @@ Shown in the error overlay (`#error-overlay`). Sent if tessellation throws or if
 { "type": "error", "message": "Failed to parse STEP file: …" }
 ```
 
+### `exportMesh`
+
+Sent when the user picks a mesh-format export target (STL/OBJ/PLY/glTF) in the
+host's quick-pick. Only mesh targets round-trip through the webview — B-rep targets
+(STEP/IGES/BREP) are written entirely in the host via OCCT, with no webview
+involvement. The webview serializes the currently displayed `THREE.Object3D` with the
+matching exporter from `three/examples/jsm/exporters/` and replies with
+`exportResult`/`exportError`.
+
+```json
+{ "type": "exportMesh", "requestId": "1234-0.56", "format": "stl" }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -124,6 +188,21 @@ Shown in the error overlay (`#error-overlay`). Sent if tessellation throws or if
 type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
+  | { type: 'partsChanged'; parts: Part[] }
+  | { type: 'exportRequest' }
+  | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
+  | { type: 'exportError'; requestId: string; message: string }
+```
+
+### `partsChanged`
+
+Sent whenever the user mutates parts (create / rename / recolour / delete /
+assign / remove entity). The host debounces these (~500 ms) and writes the full
+part list to the `<model>.parts.json` sidecar via `writeParts()`. The CAD file
+itself is never written — only the sidecar.
+
+```json
+{ "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [] } ] }
 ```
 
 ### `ready`
@@ -140,6 +219,32 @@ Sent by the webview for diagnostic messages. The host writes them to the VS Code
 
 ```json
 { "type": "log", "message": "Model loaded: 3 solids, 47,000 triangles" }
+```
+
+### `exportRequest`
+
+Sent when the user clicks the toolbar **Export** button. The host computes the
+compatible target formats for the open document (`exportTargetsFor()` in
+`src/exportTargets.ts`), shows a quick-pick and a save dialog, then either writes the
+file itself (B-rep targets) or follows up with `exportMesh` (mesh targets).
+
+```json
+{ "type": "exportRequest" }
+```
+
+### `exportResult` / `exportError`
+
+Sent in reply to `exportMesh`. `data` is base64 when `binary` is `true`, plain text
+otherwise — the same convention as `EncodedMesh`'s buffers, just generalized to a
+whole file. The host correlates the reply to its pending request via `requestId` and
+writes the decoded bytes to the path chosen in the save dialog.
+
+```json
+{ "type": "exportResult", "requestId": "1234-0.56", "data": "AAAA...", "binary": true }
+```
+
+```json
+{ "type": "exportError", "requestId": "1234-0.56", "message": "No model loaded" }
 ```
 
 ---
@@ -185,6 +290,27 @@ Host                                    Webview
  │  ────────────────────────────────────▶  │  loadMeshFromUrl() → setModel()
  │                                         │  extractObjectTree() → TreePanel.render()
 ```
+
+### Export (mesh target, e.g. STL/OBJ/PLY/glTF)
+
+```
+Host                                    Webview
+ │                                         │
+ │  ◀── { type: "exportRequest" } ────────  │  (Export button clicked)
+ │                                         │
+ │  [showQuickPick + showSaveDialog]       │
+ │                                         │
+ │  post { type: "exportMesh", … }         │
+ │  ────────────────────────────────────▶  │  exportModel() via Three.js exporter
+ │                                         │
+ │  ◀── { type: "exportResult", … } ──────  │
+ │                                         │
+ │  [decode + workspace.fs.writeFile]      │
+```
+
+B-rep targets (STEP/IGES/BREP) skip the `exportMesh` round-trip entirely — the host
+re-reads the source file and writes the target format directly via
+`exportBRep()` in `src/occtService.ts`.
 
 ---
 

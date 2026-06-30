@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { EncodedMesh } from "../protocol";
+import type { EncodedMesh, EncodedEdge } from "../protocol";
 
 function decodeF32(b64: string): Float32Array {
   const bin = atob(b64);
@@ -15,9 +15,15 @@ function decodeU32(b64: string): Uint32Array {
   return new Uint32Array(bytes.buffer);
 }
 
-function makeMaterial(): THREE.MeshStandardMaterial {
+/** Base surface colour for unassigned faces. */
+export const DEFAULT_FACE_COLOR = 0xc0c4cc;
+/** Base colour for unassigned edges. */
+export const DEFAULT_EDGE_COLOR = 0x303338;
+
+/** A fresh material per face so faces can be coloured independently. */
+export function makeFaceMaterial(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
-    color: 0xc0c4cc,
+    color: DEFAULT_FACE_COLOR,
     metalness: 0.1,
     roughness: 0.7,
     side: THREE.DoubleSide,
@@ -25,44 +31,48 @@ function makeMaterial(): THREE.MeshStandardMaterial {
   });
 }
 
-function mergeAndBuild(meshes: EncodedMesh[]): THREE.Mesh {
-  const allPositions: Float32Array[] = [];
-  const allIndices: Uint32Array[] = [];
-  let vertexOffset = 0;
-
-  for (const em of meshes) {
-    const positions = decodeF32(em.positions);
-    const indices = decodeU32(em.indices);
-    allPositions.push(positions);
-    const offsetIndices = new Uint32Array(indices.length);
-    for (let i = 0; i < indices.length; i++) offsetIndices[i] = indices[i] + vertexOffset;
-    allIndices.push(offsetIndices);
-    vertexOffset += positions.length / 3;
-  }
-
-  const totalVerts = allPositions.reduce((s, a) => s + a.length, 0);
-  const totalIdx = allIndices.reduce((s, a) => s + a.length, 0);
-  const mergedPos = new Float32Array(totalVerts);
-  const mergedIdx = new Uint32Array(totalIdx);
-
-  let pOff = 0;
-  for (const p of allPositions) { mergedPos.set(p, pOff); pOff += p.length; }
-  let iOff = 0;
-  for (const idx of allIndices) { mergedIdx.set(idx, iOff); iOff += idx.length; }
-
+function buildFaceMesh(em: EncodedMesh): THREE.Mesh {
+  const positions = decodeF32(em.positions);
+  const indices = decodeU32(em.indices);
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(mergedPos, 3));
-  geometry.setIndex(new THREE.BufferAttribute(mergedIdx, 1));
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   geometry.computeVertexNormals();
-  return new THREE.Mesh(geometry, makeMaterial());
+  const mesh = new THREE.Mesh(geometry, makeFaceMaterial());
+  // `groupId` keeps the existing per-solid `highlightGroup` working; the entity
+  // fields drive picking and per-part colouring.
+  mesh.userData.groupId = em.groupId;
+  mesh.userData.entityType = "surface";
+  mesh.userData.entityId = em.faceId;
+  return mesh;
+}
+
+function buildEdgeLine(ee: EncodedEdge): THREE.Line {
+  const positions = decodeF32(ee.positions);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const material = new THREE.LineBasicMaterial({ color: DEFAULT_EDGE_COLOR });
+  const line = new THREE.Line(geometry, material);
+  line.userData.entityType = "line";
+  line.userData.entityId = ee.edgeId;
+  return line;
 }
 
 /**
- * Builds a `THREE.Group` from per-face encoded meshes, grouping by `groupId`.
- * Each solid becomes a separate `THREE.Mesh` child so it can be highlighted
- * independently. `mesh.userData.groupId` stores the solid id.
+ * Builds the model `THREE.Group` from per-face encoded meshes and per-edge
+ * polylines. Layout:
+ *   root
+ *     ├─ solid group (userData.groupId = solidId)
+ *     │    └─ face mesh (entityType "surface", entityId faceId, groupId solidId)
+ *     └─ "edges" group
+ *          └─ edge line (entityType "line", entityId edgeId)
+ * Each face/edge is its own object with its own material, so it can be picked
+ * and coloured independently.
  */
-export function buildGroupFromEncoded(encodedMeshes: EncodedMesh[]): THREE.Group {
+export function buildGroupFromEncoded(
+  encodedMeshes: EncodedMesh[],
+  encodedEdges: EncodedEdge[] = []
+): THREE.Group {
   const byGroup = new Map<string, EncodedMesh[]>();
   for (const em of encodedMeshes) {
     const gid = em.groupId ?? "default";
@@ -70,11 +80,20 @@ export function buildGroupFromEncoded(encodedMeshes: EncodedMesh[]): THREE.Group
     byGroup.get(gid)!.push(em);
   }
 
-  const group = new THREE.Group();
-  for (const [groupId, meshes] of byGroup) {
-    const mesh = mergeAndBuild(meshes);
-    mesh.userData.groupId = groupId;
-    group.add(mesh);
+  const root = new THREE.Group();
+  for (const [solidId, meshes] of byGroup) {
+    const solidGroup = new THREE.Group();
+    solidGroup.userData.groupId = solidId;
+    for (const em of meshes) solidGroup.add(buildFaceMesh(em));
+    root.add(solidGroup);
   }
-  return group;
+
+  if (encodedEdges.length > 0) {
+    const edgesGroup = new THREE.Group();
+    edgesGroup.name = "edges";
+    for (const ee of encodedEdges) edgesGroup.add(buildEdgeLine(ee));
+    root.add(edgesGroup);
+  }
+
+  return root;
 }

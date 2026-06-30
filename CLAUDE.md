@@ -3,6 +3,22 @@
 Project memory for CAD-Preview — a VS Code extension that previews 3D CAD/mesh files
 in a read-only custom editor.
 
+## Keep docs in sync
+
+**Every time you change code in this repo, check whether `doc/`, `README.md`, and
+this file need updating too — and update them if they do.** Treat doc drift as part
+of the change, not a follow-up. Concretely:
+- New/changed message types in `src/protocol.ts` → update `doc/protocol.md`.
+- New/changed file-format behavior (read or write) → update `doc/file-formats.md` and
+  the format tables in `README.md` / `doc/index.md` / `doc/getting-started.md`.
+- New/changed module, exported function, or architectural decision → update
+  `doc/extension-host-api.md` or `doc/webview-api.md` (whichever process it runs in)
+  and, for non-negotiable invariants or non-obvious gotchas, this file.
+- New/changed toolbar buttons or UI flows → update `doc/getting-started.md`'s
+  toolbar/UI tables.
+If a change is purely internal refactoring with no observable behavior or API
+difference, docs don't need to move — use judgment, but default to checking.
+
 ## Architecture (non-negotiable invariants)
 
 - **OpenCascade.js (OCCT WASM) runs in the Node extension host**, never in the webview.
@@ -70,6 +86,88 @@ The webview viewer exposes discrete view controls plus an orientation gizmo:
   that wiring inside its `try/catch` and **before** nothing that the `ready` handshake /
   `post({ type: "ready" })` depends on — a throw there must never block model loading.
 
+## Export
+
+Export mirrors the read-side pipeline split, in reverse — see `src/exportTargets.ts`
+for the compatibility matrix (`exportTargetsFor`):
+
+- **B-rep targets** (STEP/IGES/BREP) are written entirely in the extension host.
+  `exportBRep()` in `src/occtService.ts` re-parses the source file with the existing
+  `readShape()` reader and hands the live `TopoDS_Shape` to the matching OCCT writer
+  (`STEPControl_Writer`, `IGESControl_Writer`, or `BRepTools::Write`). The webview is
+  never involved for these.
+- **Mesh targets** (STL/OBJ/PLY/glTF) are written in the webview
+  (`src/webview/meshExporters.ts`), reusing Three.js's bundled exporters
+  (`three/examples/jsm/exporters/`) on the `THREE.Object3D` already displayed —
+  works for *any* source format, since OCCT-tessellated and natively-loaded meshes
+  look identical once they're in the Three.js scene. The serialized result travels
+  back to the host as a new `exportResult`/`exportError` message and is written with
+  `vscode.workspace.fs.writeFile`, since only the host can show save dialogs.
+- This OCCT build has **no STL/OBJ/PLY/glTF writers** (readers only) and **no path
+  from a triangle mesh back to a B-rep** — that's why export targets are
+  pipeline-dependent rather than a flat list of every supported format.
+- glTF export always emits a single binary `.glb`, never a text `.gltf` with embedded
+  base64 buffers — simpler, no separate buffer-reference handling.
+- `GLTFExporter`'s binary path and `PLYExporter.parse()` both depend on browser-only
+  APIs (`FileReader`/`Blob`, `requestAnimationFrame`) that don't exist in plain
+  Node — `src/webview/meshExporters.test.ts` polyfills `requestAnimationFrame` for
+  PLY and skips unit-testing the glTF binary path (it's covered by the manual F5
+  verification only).
+- **OCCT API quirk, verified against the live WASM (not just docs):** the writer
+  classes' useful overloads are `STEPControl_Writer_1` → `.Transfer(shape,
+  STEPControl_StepModelType.STEPControl_AsIs, true)` → `.Write(path)`;
+  `IGESControl_Writer_1` → `.AddShape(shape)` → `.ComputeModel()` →
+  `.Write_2(path, false)`; `BRepTools.Write_2(shape, path,
+  new oc.Handle_Message_ProgressIndicator_1())`. The `_1`-suffixed `Write`/`Read`
+  overloads on these classes take a C++ `ostream`/`istream`, which isn't bound in
+  this WASM build and throws `UnboundTypeError` — always use the path-based overload.
+- **Fixed bug:** BREP *reading* (`readShape()`'s `format === "brep"` branch) used to
+  call `new oc.Message_ProgressRange_1()`, which isn't a real constructor in this
+  OCCT build — every `.brep` open threw immediately. The 4th param of
+  `BRepTools.Read_2` is actually a `Handle_Message_ProgressIndicator`, same type the
+  BREP writer above takes.
+
+## Geometry parts (editing)
+
+Users define named **parts** (FEM sub-model-parts) by clicking volumes/surfaces/
+lines in the view and assigning them. Non-negotiable invariants:
+
+- **The CAD file stays read-only.** Part assignments persist to a JSON sidecar
+  `<model>.parts.json` next to the source (`src/partsStore.ts`), never into the CAD
+  file. `CustomReadonlyEditorProvider` is unchanged. Parse/serialize live in the
+  **vscode-free** `src/partsSidecar.ts` so they unit-test; `partsStore.ts` adds the
+  `vscode.workspace.fs` I/O. Autosave is debounced (~500 ms) in `provider.ts` on each
+  `partsChanged` message.
+- **Entity ids must be deterministic and stable** across reopen (the sidecar
+  references them). B-rep: `face-N` and `solid-N` by deterministic `TopExp_Explorer`
+  order; `edge-N` by first appearance while de-duplicating shared edges. Mesh formats:
+  `node-N` by traversal order (volumes) — **never `THREE` `uuid`** (uuids are random
+  per load and would break round-trip). See `tagMeshEntities` in `src/webview/main.ts`.
+- **Mesh "surfaces" are computed, not stored.** Mesh formats have no face topology, so
+  `splitMeshesIntoFacets` (`src/webview/meshFacets.ts`) segments each loaded mesh into
+  connected near-coplanar **facets** (~15° tolerance, position-welded adjacency) and
+  replaces it with a `THREE.Group` of per-facet sub-meshes — same per-face object model
+  as B-rep. Facet ids `node-N/face-K` by deterministic triangle order. Meshes above
+  `MAX_FACETS` facets are kept whole (one surface); meshes have no lines. The Components
+  tree is built from the original hierarchy **before** splitting so it lists whole objects.
+- **This OCCT build does NOT bind `TopTools_IndexedMapOfShape`** (verified against the
+  live WASM). So edge de-dup in `extractEdges` (`src/meshExtract.ts`) uses
+  `edge.HashCode(1<<30)` buckets + `IsSame`; the deduped edge handles are kept alive in
+  the cleanup list until the end so `IsSame` stays valid, then all deleted in `finally`.
+- **OCCT edge API, verified against the live WASM:** discretize with
+  `new oc.BRepAdaptor_Curve_2(edge)` → `new oc.GCPnts_UniformDeflection_2(curve, 0.1,
+  false)` → `IsDone()`, `NbPoints()`, `Value(i)` (a `gp_Pnt`, must `.delete()`).
+- **Webview entity model:** `geometryBuilder.ts` builds **one `THREE.Mesh` per face**
+  and **one `THREE.Line` per edge** (own material each) under a per-solid `THREE.Group`,
+  tagged `userData = { groupId: solidId, entityType, entityId }`. This keeps the
+  existing `highlightGroup` working and makes raycast picking + per-part colouring
+  trivial. Picking resolution (`picking.ts`), the transient `SelectionSet`
+  (`selection.ts`), and the `PartsModel` (`partsModel.ts`) are DOM-free and unit-tested;
+  `partsPanel.ts` is the DOM. Selection happens on a click (down+up without a drag) so
+  OrbitControls still orbits — see `onSelectPointerUp` in `viewer.ts`.
+- VS Code webviews **block `prompt()`/`alert()`** — the Parts panel renames via an
+  inline `<input>`, not a dialog.
+
 ## Build & test
 
 ```bash
@@ -89,6 +187,19 @@ wireframe toggle. Exercise the view-manipulation panel (stepped rotate/pan/zoom,
 Ctr), the orientation cube (faces snap the view), and the **⌄ / ⌃** hide/show toggle.
 Open/close repeatedly and watch extension-host memory stay flat (leak check). Additional
 fixtures: `examples/OBJ/cube.obj`, `examples/PLY/cube.ply`, `examples/GLTF/cube.gltf`.
+
+Exercise **Export**: on `bull.stp`, confirm the quick-pick offers IGES/BREP/STL/OBJ/
+PLY/glTF (not STEP again); on `cube.stl`, confirm it offers only OBJ/PLY/glTF. Export
+to each target and reopen the output file to confirm it round-trips. Repeat
+export/cancel a few times and watch extension-host memory, same leak check as above.
+
+Exercise **Parts**: on `bull.stp`, click **Select**, then pick faces in **Surf** mode,
+edges in **Line** mode, and the solid in **Vol** mode (shift-click for multi-select).
+Click **＋ New**, assign the selection, and confirm the entities recolour and appear
+under the part in the panel; recolour/rename/delete; expand a part and remove an
+entity. Close and reopen the tab → assignments reload from `bull.stp.parts.json`
+(inspect it: valid JSON, CAD file untouched). On `cube.stl`, confirm Surf/Line are
+disabled and only whole-object **Vol** assignment works and round-trips.
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.

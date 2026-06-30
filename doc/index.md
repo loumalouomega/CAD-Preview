@@ -33,6 +33,10 @@ features:
     title: Component Tree Panel
     details: For multi-solid B-rep assemblies or multi-mesh glTF files, a component tree panel shows the hierarchy. Click any node to highlight that solid in the 3D view.
 
+  - icon: 🏷️
+    title: Define Parts (Volumes / Surfaces / Lines)
+    details: Click solids, faces, or edges in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only.
+
   - icon: 🔬
     title: Wireframe & Grid Helpers
     details: Toggle wireframe rendering, world-space axes, and a reference grid — all from the toolbar.
@@ -40,6 +44,10 @@ features:
   - icon: 🚀
     title: Lazy WASM, Fast Activation
     details: The OpenCascade.js kernel is initialized only on the first B-rep open and then memoized. Opening STL or glTF files never loads the WASM at all. Extension activation is instant.
+
+  - icon: 💾
+    title: Export to a Compatible Format
+    details: Convert the open model and save it via a native dialog. B-rep files (STEP/IGES/BREP) can export to each other (true OCCT writers) or to any mesh format; mesh files can export to other mesh formats.
 ---
 
 ## Supported Formats

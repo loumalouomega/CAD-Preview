@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "source": "cube.obj",
+  "parts": [
+    {
+      "name": "Part 1",
+      "color": "#e6194b",
+      "volumes": [],
+      "surfaces": [],
+      "lines": []
+    },
+    {
+      "name": "Part 2",
+      "color": "#3cb44b",
+      "volumes": [],
+      "surfaces": [
+        "node-1/face-0",
+        "node-1/face-1"
+      ],
+      "lines": []
+    }
+  ]
+}

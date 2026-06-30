@@ -41,6 +41,29 @@ loaders. Rendering is always Three.js.
 - Shaded / wireframe toggle
 - Axes and grid helpers
 - Loading status indicator and error reporting
+- **Parts**: define named groups by clicking volumes / surfaces / lines in the 3D
+  view and assigning them to a part; assignments are colour-highlighted, listed in a
+  tree panel, and saved to a `<model>.parts.json` sidecar (the CAD file stays
+  read-only)
+- **Export**: convert the open model to a compatible format and save it via a native
+  Save dialog — see [Export](#export) below
+
+## Export
+
+The toolbar **Export** button converts the currently displayed model to a compatible
+format. Available targets depend on the source file's pipeline:
+
+| Source pipeline | Export targets |
+| ---------------- | --------------- |
+| B-rep (STEP/IGES/BREP) | the other two B-rep formats (true OCCT writers) **+** STL/OBJ/PLY/glTF |
+| Mesh (STL/OBJ/PLY/glTF) | the other mesh formats only |
+
+The source format itself is never offered. B-rep targets are written entirely in the
+extension host via OCCT; mesh targets are serialized in the webview from the
+already-tessellated Three.js model (there is no way to promote a triangle mesh back
+into a B-rep). glTF export always produces a single binary `.glb` file. See
+[File Formats → Export](https://loumalouomega.github.io/CAD-Preview/file-formats#export)
+for details.
 
 ## Architecture
 
