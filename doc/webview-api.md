@@ -18,6 +18,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
+| `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 
 ---
 
@@ -40,7 +41,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 |--------|--------|
 | `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges)` → `viewer.setModel(group)`, recolour, enable all pick modes |
 | `"tree"` | `TreePanel.render(msg.root)` |
-| `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `viewer.setModel(obj)`, restrict pick mode to `volume` |
+| `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `splitMeshesIntoFacets(obj)` → `viewer.setModel(model)`, pick modes `volume` + `surface` |
 | `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` |
 | `"status"` | Set `#status-text` content |
 | `"error"` | Show `#error-overlay` with message |

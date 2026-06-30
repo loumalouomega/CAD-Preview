@@ -141,8 +141,15 @@ lines in the view and assigning them. Non-negotiable invariants:
 - **Entity ids must be deterministic and stable** across reopen (the sidecar
   references them). B-rep: `face-N` and `solid-N` by deterministic `TopExp_Explorer`
   order; `edge-N` by first appearance while de-duplicating shared edges. Mesh formats:
-  `node-N` by traversal order — **never `THREE` `uuid`** (uuids are random per load and
-  would break round-trip). See `tagMeshEntities` in `src/webview/main.ts`.
+  `node-N` by traversal order (volumes) — **never `THREE` `uuid`** (uuids are random
+  per load and would break round-trip). See `tagMeshEntities` in `src/webview/main.ts`.
+- **Mesh "surfaces" are computed, not stored.** Mesh formats have no face topology, so
+  `splitMeshesIntoFacets` (`src/webview/meshFacets.ts`) segments each loaded mesh into
+  connected near-coplanar **facets** (~15° tolerance, position-welded adjacency) and
+  replaces it with a `THREE.Group` of per-facet sub-meshes — same per-face object model
+  as B-rep. Facet ids `node-N/face-K` by deterministic triangle order. Meshes above
+  `MAX_FACETS` facets are kept whole (one surface); meshes have no lines. The Components
+  tree is built from the original hierarchy **before** splitting so it lists whole objects.
 - **This OCCT build does NOT bind `TopTools_IndexedMapOfShape`** (verified against the
   live WASM). So edge de-dup in `extractEdges` (`src/meshExtract.ts`) uses
   `edge.HashCode(1<<30)` buckets + `IsSame`; the deduped edge handles are kept alive in

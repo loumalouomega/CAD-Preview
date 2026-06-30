@@ -117,10 +117,11 @@ unit-tested.
 ```
 
 Entity ids are the stable topological ids assigned during extraction
-(`solid-*`, `face-*`, `edge-*`). For mesh formats (which have no B-rep topology)
-only whole-object **volumes** can be assigned, identified by a stable
-traversal-order id (`node-*`). Ids stay valid as long as the source file is
-unchanged. Parsing is tolerant: a missing or hand-corrupted sidecar yields an
+(`solid-*`, `face-*`, `edge-*`). For mesh formats (which have no stored B-rep
+topology), the whole object is a **volume** with a stable traversal-order id
+(`node-*`), and each connected near-coplanar **facet** detected on load is a
+**surface** (`node-*/face-*`); meshes have no assignable lines. Ids stay valid as
+long as the source file is unchanged. Parsing is tolerant: a missing or hand-corrupted sidecar yields an
 empty part list rather than blocking the model from opening.
 
 ## Export

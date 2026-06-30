@@ -119,8 +119,11 @@ Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD
 file and reloaded when you reopen it — the CAD file itself is never modified. See
 [Parts Sidecar](./file-formats.md#parts-sidecar-modelpartsjson) for the format.
 
-> **Mesh formats** (STL/OBJ/PLY/glTF) have no face/edge topology, so only whole
-> objects can be assigned, as **volumes** — the Surf and Line modes are disabled.
+> **Mesh formats** (STL/OBJ/PLY/glTF) have no stored face/edge topology. CAD
+> Preview segments each mesh into connected, near-coplanar **facets** on load, so
+> **Surf** picks a flat face (a cube → its 6 faces) and **Vol** picks the whole
+> object. Highly curved meshes that would split into very many facets are kept
+> whole; **Line** is disabled for meshes.
 
 ### Exporting a Model
 

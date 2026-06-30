@@ -21,7 +21,7 @@ export const DEFAULT_FACE_COLOR = 0xc0c4cc;
 export const DEFAULT_EDGE_COLOR = 0x303338;
 
 /** A fresh material per face so faces can be coloured independently. */
-function makeFaceMaterial(): THREE.MeshStandardMaterial {
+export function makeFaceMaterial(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
     color: DEFAULT_FACE_COLOR,
     metalness: 0.1,

@@ -3,6 +3,7 @@ import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded } from "./geometryBuilder";
+import { splitMeshesIntoFacets } from "./meshFacets";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
@@ -242,14 +243,18 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         setStatus("Loading model…");
         const object = await loadMeshFromUrl(msg.url, msg.format);
         tagMeshEntities(object);
-        viewer.setModel(object);
+        // Build the Components tree from the original hierarchy (before the mesh
+        // is split into facets, so the tree lists whole objects, not facets).
+        const root = extractObjectTree(object, msg.format.toUpperCase());
+        // Segment each mesh into coplanar facets so individual faces are pickable.
+        // Returns a new root when the loaded object itself is a mesh (e.g. STL).
+        const model = splitMeshesIntoFacets(object);
+        viewer.setModel(model);
         refreshColors();
-        // Mesh formats have no face/edge topology — only whole-object volumes.
-        setSelectableModes(["volume"]);
+        // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
+        setSelectableModes(["volume", "surface"]);
         showSidebar();
         setStatus("");
-        // Build tree from the loaded Object3D hierarchy.
-        const root = extractObjectTree(object, msg.format.toUpperCase());
         if (hasMultipleNodes(root)) showTree(root);
       } catch (err) {
         setStatus(`Failed to load model: ${(err as Error).message}`, true);
@@ -279,19 +284,15 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
 /**
  * Tags a Three.js-loaded model with STABLE ids (traversal order, not uuid) so
- * part assignments round-trip across reopen. Each `THREE.Mesh` becomes a
- * pickable whole-object "volume" entity; the id doubles as `groupId` so the
- * Components tree highlight keeps working.
+ * part assignments round-trip across reopen. Each object's id becomes its
+ * `groupId`; a mesh's id is its volume id, carried onto the facet group built by
+ * `splitMeshesIntoFacets`. The shared id keeps the Components tree highlight
+ * working.
  */
 function tagMeshEntities(obj: THREE.Object3D): void {
   let i = 0;
   obj.traverse((o) => {
-    const id = `node-${i++}`;
-    o.userData.groupId = id;
-    if (o instanceof THREE.Mesh) {
-      o.userData.entityType = "surface";
-      o.userData.entityId = id;
-    }
+    o.userData.groupId = `node-${i++}`;
   });
 }
 
