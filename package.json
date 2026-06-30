@@ -23,16 +23,36 @@
         "viewType": "cad-preview.mesh",
         "displayName": "CAD Preview",
         "selector": [
-          { "filenamePattern": "*.stl" },
-          { "filenamePattern": "*.obj" },
-          { "filenamePattern": "*.ply" },
-          { "filenamePattern": "*.gltf" },
-          { "filenamePattern": "*.glb" },
-          { "filenamePattern": "*.step" },
-          { "filenamePattern": "*.stp" },
-          { "filenamePattern": "*.iges" },
-          { "filenamePattern": "*.igs" },
-          { "filenamePattern": "*.brep" }
+          {
+            "filenamePattern": "*.stl"
+          },
+          {
+            "filenamePattern": "*.obj"
+          },
+          {
+            "filenamePattern": "*.ply"
+          },
+          {
+            "filenamePattern": "*.gltf"
+          },
+          {
+            "filenamePattern": "*.glb"
+          },
+          {
+            "filenamePattern": "*.step"
+          },
+          {
+            "filenamePattern": "*.stp"
+          },
+          {
+            "filenamePattern": "*.iges"
+          },
+          {
+            "filenamePattern": "*.igs"
+          },
+          {
+            "filenamePattern": "*.brep"
+          }
         ],
         "priority": "default"
       }
@@ -51,7 +71,8 @@
   },
   "dependencies": {
     "opencascade.js": "^1.1.1",
-    "three": "^0.160.0"
+    "three": "^0.160.0",
+    "three-bvh-csg": "^0.0.16"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",

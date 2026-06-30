@@ -74,3 +74,55 @@ describe("applyEditsMesh", () => {
     expect(() => applyEditsMesh(root, [{ op: "fillet", edges: ["edge-0"], radius: 1 }])).not.toThrow();
   });
 });
+
+describe("applyEditsMesh booleans (three-bvh-csg)", () => {
+  function twoBoxes(): THREE.Object3D {
+    const root = new THREE.Group();
+    const a = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2)); // centred at origin
+    const b = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2));
+    b.position.set(1, 1, 1);
+    root.add(a, b);
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    return root;
+  }
+
+  it("unite replaces both operands with a single result mesh", () => {
+    const root = twoBoxes();
+    applyEditsMesh(root, [{ op: "boolean", kind: "union", a: ["node-1"], b: ["node-2"] }]);
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    expect(meshes).toHaveLength(1);
+    expect(meshes[0].userData.groupId).toBe("node-1");
+    expect(meshes[0].geometry.getAttribute("position").count).toBeGreaterThan(0);
+  });
+
+  it("skips a boolean whose operands do not resolve", () => {
+    const root = twoBoxes();
+    applyEditsMesh(root, [{ op: "boolean", kind: "subtract", a: ["node-9"], b: ["node-2"] }]);
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    expect(meshes).toHaveLength(2); // unchanged
+  });
+});
+
+describe("applyEditsMesh explode", () => {
+  function twoSeparatedBoxes(): THREE.Object3D {
+    const root = new THREE.Group();
+    const a = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2)); a.position.set(-5, 0, 0);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2)); b.position.set(5, 0, 0);
+    root.add(a, b);
+    let i = 0; root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    return root;
+  }
+
+  it("spreads bodies radially from the model centre by factor", () => {
+    const root = twoSeparatedBoxes();
+    const [a, b] = root.children;
+    applyEditsMesh(root, [{ op: "explode", factor: 1 }]);
+    root.updateMatrixWorld(true);
+    // Centre is x=0; factor 1 doubles each offset: -5 → -10, +5 → +10.
+    expect(Math.round(a.getWorldPosition(new THREE.Vector3()).x)).toBe(-10);
+    expect(Math.round(b.getWorldPosition(new THREE.Vector3()).x)).toBe(10);
+  });
+});

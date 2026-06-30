@@ -8,12 +8,34 @@ export type TransformDraft =
   | { kind: "scale"; center: Vec3; factors: Vec3 }
   | { kind: "mirror"; planePoint: Vec3; planeNormal: Vec3 };
 
+export type BooleanKind = "union" | "subtract" | "intersect";
+
+/** A feature-modeling op minus its profile/path operands (the wiring supplies those
+ * from the selected faces/edges before pushing to the op-stack). */
+export type FeatureDraft =
+  | { kind: "extrude"; dir: Vec3; length: number }
+  | { kind: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
+  | { kind: "sweep" }
+  | { kind: "loft" };
+
 export interface EditsPanelCallbacks {
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
   /** Apply a transform to the current selection (the wiring supplies targets). */
   onApplyTransform: (draft: TransformDraft) => void;
+  /** Capture the current selection as boolean operand A; returns its size. */
+  onCaptureBooleanA: () => number;
+  /** Apply a boolean of captured-A against the current selection (operand B). */
+  onApplyBoolean: (kind: BooleanKind) => void;
+  /** Apply a fillet/chamfer of the given amount to the selected edges (B-rep only). */
+  onApplyFillet: (kind: "fillet" | "chamfer", amount: number) => void;
+  /** Apply a feature-modeling op; operands come from the selected faces/edges (B-rep only). */
+  onApplyFeature: (draft: FeatureDraft) => void;
+  /** Explode the assembly: spread bodies radially by `factor` (all formats). */
+  onApplyExplode: (factor: number) => void;
+  /** Mate: align the first selected face onto the second (B-rep only). */
+  onApplyMate: () => void;
 }
 
 /**
@@ -30,6 +52,9 @@ export class EditsPanel {
   private readonly redoBtn: HTMLButtonElement;
   private readonly clearBtn: HTMLButtonElement;
   private kind: TransformDraft["kind"] = "translate";
+  private featureKind: FeatureDraft["kind"] = "extrude";
+  /** B-rep-only sections (fillet/chamfer, feature modeling); disabled for mesh sources. */
+  private brepOnlyEls: HTMLElement[] = [];
 
   constructor(
     private readonly panel: HTMLElement,
@@ -113,6 +138,239 @@ export class EditsPanel {
     this.compose.appendChild(kindRow);
     this.compose.appendChild(fields);
     this.renderFields();
+    this.buildBooleanComposer();
+    this.buildFilletComposer();
+    this.buildFeatureComposer();
+    this.buildAssemblyComposer();
+  }
+
+  // ── Assembly composer (explode all formats; mate B-rep only) ─────────────
+
+  private buildAssemblyComposer(): void {
+    const row = document.createElement("div");
+    row.className = "compose-row compose-assembly";
+
+    const label = document.createElement("span");
+    label.className = "compose-label";
+    label.textContent = "Explode";
+    row.appendChild(label);
+
+    const factor = document.createElement("input");
+    factor.type = "number";
+    factor.step = "any";
+    factor.min = "0";
+    factor.className = "compose-num";
+    factor.value = "1";
+    factor.title = "Spread factor (0 = none)";
+    row.appendChild(factor);
+
+    const explode = document.createElement("button");
+    explode.className = "compose-apply";
+    explode.textContent = "Apply";
+    explode.title = "Spread the bodies radially from the model centre";
+    explode.addEventListener("click", () => this.cb.onApplyExplode(Number(factor.value) || 0));
+    row.appendChild(explode);
+    this.compose.appendChild(row);
+
+    const mateRow = document.createElement("div");
+    mateRow.className = "compose-row compose-mate";
+    const mateLabel = document.createElement("span");
+    mateLabel.className = "compose-label";
+    mateLabel.textContent = "Mate";
+    mateRow.appendChild(mateLabel);
+    const mateHint = document.createElement("span");
+    mateHint.className = "compose-hint";
+    mateHint.textContent = "Select face A then B";
+    mateRow.appendChild(mateHint);
+    const mate = document.createElement("button");
+    mate.className = "compose-apply";
+    mate.textContent = "Apply";
+    mate.title = "Align the first selected face onto the second";
+    mate.addEventListener("click", () => this.cb.onApplyMate());
+    mateRow.appendChild(mate);
+    this.compose.appendChild(mateRow);
+    this.brepOnlyEls.push(mateRow);
+  }
+
+  /** Enables/disables the B-rep-only sections (fillet/chamfer) for mesh sources. */
+  setBRepOnly(enabled: boolean): void {
+    for (const el of this.brepOnlyEls) {
+      el.classList.toggle("disabled", !enabled);
+      el.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(
+        "button, input, select"
+      ).forEach((c) => { c.disabled = !enabled; });
+    }
+  }
+
+  // ── Fillet / chamfer composer (selected edges, B-rep only) ───────────────
+
+  private buildFilletComposer(): void {
+    const row = document.createElement("div");
+    row.className = "compose-row compose-feature";
+
+    const select = document.createElement("select");
+    select.className = "compose-kind";
+    for (const [value, text] of [["fillet", "Fillet"], ["chamfer", "Chamfer"]] as const) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = text;
+      select.appendChild(opt);
+    }
+    row.appendChild(select);
+
+    const amount = document.createElement("input");
+    amount.type = "number";
+    amount.step = "any";
+    amount.min = "0";
+    amount.className = "compose-num";
+    amount.value = "1";
+    amount.title = "Fillet radius / chamfer setback";
+    row.appendChild(amount);
+
+    const apply = document.createElement("button");
+    apply.className = "compose-apply";
+    apply.textContent = "Apply";
+    apply.title = "Apply to the selected edges (Line mode)";
+    apply.addEventListener("click", () => {
+      this.cb.onApplyFillet(select.value as "fillet" | "chamfer", Number(amount.value) || 0);
+    });
+    row.appendChild(apply);
+
+    this.compose.appendChild(row);
+    this.brepOnlyEls.push(row);
+  }
+
+  // ── Feature-modeling composer (selected faces/edges, B-rep only) ─────────
+
+  private buildFeatureComposer(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "compose-feature";
+
+    const kindRow = document.createElement("div");
+    kindRow.className = "compose-row";
+    const select = document.createElement("select");
+    select.className = "compose-kind";
+    for (const [value, text] of [
+      ["extrude", "Extrude"], ["revolve", "Revolve"], ["sweep", "Sweep"], ["loft", "Loft"],
+    ] as const) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = text;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => {
+      this.featureKind = select.value as FeatureDraft["kind"];
+      this.renderFeatureFields();
+    });
+    kindRow.appendChild(select);
+
+    const apply = document.createElement("button");
+    apply.className = "compose-apply";
+    apply.textContent = "Apply";
+    apply.title = "Build the feature from the selected face(s) / edge";
+    apply.addEventListener("click", () => this.emitFeature());
+    kindRow.appendChild(apply);
+
+    const fields = document.createElement("div");
+    fields.className = "compose-fields";
+    fields.id = "feature-fields";
+
+    wrap.appendChild(kindRow);
+    wrap.appendChild(fields);
+    this.compose.appendChild(wrap);
+    this.brepOnlyEls.push(wrap);
+    this.renderFeatureFields();
+  }
+
+  private featureFields(): HTMLElement {
+    return this.compose.querySelector("#feature-fields")!;
+  }
+
+  private renderFeatureFields(): void {
+    const f = this.featureFields();
+    f.innerHTML = "";
+    switch (this.featureKind) {
+      case "extrude":
+        f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
+        f.appendChild(this.numField("length", "Length", 10));
+        break;
+      case "revolve":
+        f.appendChild(this.vecField("axisPoint", "Point", [0, 0, 0]));
+        f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
+        f.appendChild(this.numField("angleDeg", "Angle°", 360));
+        break;
+      case "sweep":
+        f.appendChild(featureHint("Profile = selected face · path = selected edge"));
+        break;
+      case "loft":
+        f.appendChild(featureHint("Profiles = 2+ selected faces"));
+        break;
+    }
+  }
+
+  private emitFeature(): void {
+    const f = this.featureFields();
+    let draft: FeatureDraft;
+    switch (this.featureKind) {
+      case "extrude":
+        draft = { kind: "extrude", dir: this.readVec("dir", f), length: this.readNum("length", f) };
+        break;
+      case "revolve":
+        draft = {
+          kind: "revolve", axisPoint: this.readVec("axisPoint", f),
+          axisDir: this.readVec("axisDir", f), angleDeg: this.readNum("angleDeg", f),
+        };
+        break;
+      case "sweep": draft = { kind: "sweep" }; break;
+      case "loft": draft = { kind: "loft" }; break;
+    }
+    this.cb.onApplyFeature(draft);
+  }
+
+  // ── Boolean composer (operand A captured, B = live selection) ────────────
+
+  private buildBooleanComposer(): void {
+    const row = document.createElement("div");
+    row.className = "compose-row compose-bool";
+
+    const select = document.createElement("select");
+    select.className = "compose-kind";
+    for (const [value, text] of [
+      ["union", "Unite"], ["subtract", "Subtract"], ["intersect", "Intersect"],
+    ] as const) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = text;
+      select.appendChild(opt);
+    }
+    row.appendChild(select);
+
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    status.textContent = "A: —";
+
+    const setA = document.createElement("button");
+    setA.className = "compose-apply";
+    setA.textContent = "Set A";
+    setA.title = "Capture the selected volumes as boolean operand A";
+    setA.addEventListener("click", () => {
+      const n = this.cb.onCaptureBooleanA();
+      status.textContent = n > 0 ? `A: ${n}` : "A: —";
+    });
+    row.appendChild(setA);
+
+    const apply = document.createElement("button");
+    apply.className = "compose-apply";
+    apply.textContent = "Apply";
+    apply.title = "Apply the boolean: captured A against the current selection (B)";
+    apply.addEventListener("click", () => {
+      this.cb.onApplyBoolean(select.value as BooleanKind);
+      status.textContent = "A: —";
+    });
+    row.appendChild(apply);
+
+    this.compose.appendChild(row);
+    this.compose.appendChild(status);
   }
 
   private fields(): HTMLElement {
@@ -179,15 +437,15 @@ export class EditsPanel {
     return row;
   }
 
-  private readVec(name: string): Vec3 {
-    const inputs = this.fields().querySelectorAll<HTMLInputElement>(`input[data-name="${name}"]`);
+  private readVec(name: string, scope: HTMLElement = this.fields()): Vec3 {
+    const inputs = scope.querySelectorAll<HTMLInputElement>(`input[data-name="${name}"]`);
     const v: number[] = [0, 0, 0];
     inputs.forEach((inp) => { v[Number(inp.dataset.i)] = Number(inp.value) || 0; });
     return [v[0], v[1], v[2]];
   }
 
-  private readNum(name: string): number {
-    const inp = this.fields().querySelector<HTMLInputElement>(`input[data-name="${name}"]`);
+  private readNum(name: string, scope: HTMLElement = this.fields()): number {
+    const inp = scope.querySelector<HTMLInputElement>(`input[data-name="${name}"]`);
     return inp ? Number(inp.value) || 0 : 0;
   }
 
@@ -208,6 +466,14 @@ export class EditsPanel {
     }
     this.cb.onApplyTransform(draft);
   }
+}
+
+/** A small grey hint line for composers that take their operands from the selection. */
+function featureHint(text: string): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "compose-hint";
+  el.textContent = text;
+  return el;
 }
 
 /** A short, human-readable one-line summary of an op for the panel list. */

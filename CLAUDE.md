@@ -219,6 +219,54 @@ on top of the source model. Non-negotiable invariants:
   `BRep_Builder.MakeCompound(c)` + `.Add(c, TopoDS.Solid_1(exp.Current()))`.
   `Bnd_Box.Get()` is **not** bound (throws and aborts the module) — read corners
   via `CornerMin()`/`CornerMax()` instead.
+- **OCCT boolean API, verified against the live WASM:** use the `_3` constructor
+  `new BRepAlgoAPI_Fuse_3(s1, s2)` / `_Cut_3` / `_Common_3` → `.Shape()` (union /
+  subtract / intersect). The 3rd `Message_ProgressRange` arg is **optional and not
+  constructible** in this build (`Message_ProgressRange_1` is not a real ctor — the
+  same quirk as BREP read), so pass only the two shapes. `occtOperations.booleanSolids`
+  builds each operand from its `solid-N` set (a compound when >1), runs the op, and
+  rebuilds a compound of `result + untargeted solids`; an op with unresolved operands
+  or `IsDone()===false` is **skipped** (graceful, never hard-fails replay). Box
+  fixtures for probing: `BRepPrimAPI_MakeBox_3(gp_Pnt_3, gp_Pnt_3)` (two corners).
+- **Mesh booleans use `three-bvh-csg`** (`Evaluator`/`Brush` + `ADDITION`/
+  `SUBTRACTION`/`INTERSECTION`) in `src/webview/meshEdits.ts`, bundled into the
+  **webview iife only** (a normal dep; esbuild bundles it — keep it out of the
+  extension-host bundle). `applyMeshBoolean` resolves operand A/B to their first
+  mesh, bakes world matrices into the `Brush.matrix`, evaluates, and replaces both
+  operands in the tree with the single result mesh (tagged with A's node id).
+- **OCCT fillet/chamfer API, verified against the live WASM** (B-rep only): fillet
+  `new BRepFilletAPI_MakeFillet(shape, ChFi3d_FilletShape.ChFi3d_Rational)`, chamfer
+  `new BRepFilletAPI_MakeChamfer(shape)` (both **unsuffixed** ctors), then
+  `.Add_2(amount, edge)` per edge → `.Shape()` (auto-builds; `.Build()` needs the
+  unbound `Message_ProgressRange`, so call `.Shape()` and check `.IsDone()`).
+  `occtOperations.filletEdges` resolves `edge-N` ids via `collectEdges`, which
+  **replicates `extractEdges`' exact ordering** (HashCode+IsSame de-dup, then keep
+  only edges that discretize to ≥2 points) so the ids picked in the view map to the
+  right live edges. A fillet whose edges don't resolve, or whose `.Shape()` throws
+  (radius too large) / `IsDone()` is false, is skipped.
+- **OCCT feature-modeling API, verified against the live WASM** (B-rep only): from a
+  selected profile **face** (`face-N`, resolved by `collectFaces` in the same global
+  solid→face order `tessellateByGroup` assigns) — extrude
+  `BRepPrimAPI_MakePrism_1(face, gp_Vec_4, false, true).Shape()` (the `gp_Vec` is the
+  unit `dir` scaled to `length`); revolve `BRepPrimAPI_MakeRevol_1(face, gp_Ax1_2(pnt,
+  dir), angleRad, false).Shape()`; sweep `BRepOffsetAPI_MakePipe_1(spineWire, face)`
+  with the spine `BRepBuilderAPI_MakeWire_2(edge).Wire()` from the path `edge-N`; loft
+  `new BRepOffsetAPI_ThruSections(true, false, 1e-6)` + `.AddWire(BRepTools.OuterWire(
+  face))` per profile + `.Build()` + `.Shape()`. `occtOperations.featureModel`
+  **appends** the new solid as an extra body (`compound(existing shape + new solid)`)
+  — non-destructive; it never cuts/fuses the source. Any feature whose operands don't
+  resolve or whose builder throws is skipped. The panel's feature composer is in
+  `brepOnlyEls` (disabled for meshes via `setBRepOnly`).
+- **OCCT assembly API, verified against the live WASM:** explode (`occtOperations.
+  explodeSolids`, all formats) spreads each solid by `(solidCentre − modelCentre)·
+  factor`, centres from `Bnd_Box`/`CornerMin`/`CornerMax`; the mesh path
+  (`meshEdits.applyMeshExplode`) does the same with `THREE.Box3`. Mate
+  (`occtOperations.mateShape`, B-rep only) aligns planar `faceA` onto `faceB`: face
+  plane via `BRepAdaptor_Surface_2(face, true)` → `GetType()===GeomAbs_Plane` →
+  `.Plane()` (`Location()`, `Axis().Direction()`); rigid motion `gp_Trsf.SetDisplacement(
+  gp_Ax3_4(ptA, nA), gp_Ax3_4(ptB, −nB))` applied to the solid owning `faceA`
+  (`owningSolid` finds it by `IsSame`). Non-planar faces / unresolved ids / failed
+  displacement are skipped.
 
 ## Build & test
 
@@ -255,13 +303,16 @@ disabled and only whole-object **Vol** assignment works and round-trips.
 
 Exercise **Edits**: on `bull.stp`, **Select** the solid in **Vol** mode, then in the
 **Edits** panel pick **Move/Rotate/Scale/Mirror**, enter params, **Apply** → the model
-updates live and the op appears in the list. **Undo/Redo/Clear** the stack. Close and
-reopen the tab → ops reload from `bull.stp.edits.json` (inspect: valid JSON, CAD file
-untouched). **Export** the edited model (e.g. to STEP/STL) and reopen the output → the
-edits are baked in. On `cube.stl`, confirm transforms apply (mesh path) and that any
-B-rep-only ops are unavailable. Apply/undo repeatedly + open/close → host memory stays
-flat (OCCT handle-leak check, same as above). (M1 ships transforms; booleans/feature
-modeling/assembly land in later milestones.)
+updates live and the op appears in the list. Then exercise **booleans** (Set A on one
+volume, Apply against another), **Fillet/Chamfer** (select edges in Line mode),
+**Extrude/Revolve/Sweep/Loft** (select a profile face in Surf mode — adds a new body),
+and **Explode/Mate**. **Undo/Redo/Clear** the stack. Close and reopen the tab → ops
+reload from `bull.stp.edits.json` (inspect: valid JSON, CAD file untouched). **Export**
+the edited model (e.g. to STEP/STL) and reopen the output → the edits are baked in. On
+`cube.stl`, confirm transforms, booleans, and explode apply (mesh path) and that the
+B-rep-only ops (fillet/chamfer, feature modeling, mate) are disabled. Apply/undo
+repeatedly + open/close → host memory stays flat (OCCT handle-leak check, same as
+above).
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.

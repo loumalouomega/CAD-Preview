@@ -623,6 +623,46 @@ body {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+.compose-bool {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+.compose-bool-a {
+  display: block;
+  font-size: 10px;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.compose-feature {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+.compose-feature.disabled,
+.compose-row.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.compose-hint {
+  font-size: 10px;
+  opacity: 0.6;
+  padding: 2px 0;
+}
+
+.compose-assembly,
+.compose-mate {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+.compose-mate { border-top: none; padding-top: 0; }
+.compose-row.disabled { opacity: 0.4; pointer-events: none; }
+
 /* ── Selection-mode toolbar group ───────────────────────────────────── */
 
 #select-group {

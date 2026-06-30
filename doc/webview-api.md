@@ -464,7 +464,15 @@ class EditsPanel {
 
 `onApplyTransform(draft: TransformDraft)` hands a transform op **without targets**
 to `main.ts`, which injects the selected volume ids before pushing it to the
-`EditsModel`. (More op-creation forms are added in later milestones.)
+`EditsModel`. The boolean composer uses `onCaptureBooleanA()` (captures the current
+selection as operand A, returns its size for display) and `onApplyBoolean(kind)`
+(applies captured-A against the live selection as operand B). The fillet/chamfer
+composer uses `onApplyFillet(kind, amount)` (applies to the selected edges) and the
+feature composer uses `onApplyFeature(draft)` (extrude/revolve/sweep/loft from the
+selected profile face(s)/path edge); both are **B-rep-only** sections that
+`setBRepOnly(enabled)` disables for mesh sources. The assembly composer uses
+`onApplyExplode(factor)` (all formats) and `onApplyMate()` (aligns the two selected
+faces, B-rep only).
 
 ## `src/webview/meshEdits.ts`
 
@@ -479,6 +487,10 @@ function resolveMeshTargets(root: THREE.Object3D, ids: string[]): THREE.Object3D
 
 `transformMatrixForOp` builds the world-space matrix for translate/rotate/scale/
 mirror (rotation/scale/mirror conjugated about their point via `T(p)·M·T(−p)`;
-mirror is a Householder reflection). Feature-modeling ops (`BREP_ONLY_OPS`) are
-skipped — meshes have no sketch/exact topology. `main.ts` caches the pristine tagged
-object and calls `applyEditsMesh` on a clone inside `rebuildMeshModel()`.
+mirror is a Householder reflection). **Booleans** go through `applyMeshBoolean`,
+which resolves operand A/B to their first mesh, evaluates a CSG via **`three-bvh-csg`**
+(`Evaluator`/`Brush` with `ADDITION`/`SUBTRACTION`/`INTERSECTION`), and replaces both
+operands in the tree with the single result mesh (tagged with A's node id).
+Feature-modeling ops (`BREP_ONLY_OPS`) are skipped — meshes have no sketch/exact
+topology. `main.ts` caches the pristine tagged object and calls `applyEditsMesh` on a
+clone inside `rebuildMeshModel()`.

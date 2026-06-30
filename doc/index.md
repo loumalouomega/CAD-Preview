@@ -39,7 +39,7 @@ features:
 
   - icon: ✏️
     title: Non-destructive Editing
-    details: Apply transform operations (move / rotate / scale / mirror) to selected volumes. Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export. Booleans, feature modeling and assembly ops land in later milestones.
+    details: Apply transforms (move / rotate / scale / mirror), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), and assembly ops (explode / mate). Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
 
   - icon: 🔬
     title: Wireframe & Grid Helpers

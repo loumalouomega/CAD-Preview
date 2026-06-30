@@ -142,13 +142,21 @@ To apply a transform:
 | Edits control | Action |
 |---|---|
 | **Move / Rotate / Scale / Mirror** | Choose the transform, enter parameters, **Apply** it to the selected volumes |
+| **Unite / Subtract / Intersect** | Select operand-A volumes and click **Set A**, then select operand-B volumes and click **Apply** |
+| **Fillet / Chamfer** | Select edges (**Line** mode), enter the radius / setback, and **Apply** (B-rep only) |
+| **Extrude / Revolve / Sweep / Loft** | Select a profile face (**Surf** mode; a path edge too for Sweep, 2+ faces for Loft), set parameters, **Apply** — builds a new body (B-rep only) |
+| **Explode** | Enter a spread factor and **Apply** — spreads the bodies radially from the model centre (all formats) |
+| **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
 | **↶ / ↷** | Undo / redo the last operation |
 | **Clear** | Remove all operations (back to the original model) |
 
-The current release ships the four **transforms**; booleans (union/subtract/
-intersect), feature modeling (extrude/revolve/sweep/loft, fillet/chamfer), and
-assembly operations land in later milestones. Transforms work on both B-rep and
-mesh files; feature-modeling operations are available only for B-rep sources.
+The current release ships **transforms** (move/rotate/scale/mirror), **booleans**
+(unite/subtract/intersect), **fillet/chamfer**, **feature modeling**
+(extrude/revolve/sweep/loft), and **assembly** ops (explode/mate). Transforms,
+booleans, and explode work on both B-rep and mesh files; fillet/chamfer,
+feature-modeling, and mate are available only for B-rep sources (the panel disables
+them for meshes). Feature-modeling ops **append a new body** to the model — they
+never cut or fuse the source.
 
 When you **Export** an edited model, the edits are baked into the output file. See
 [Edits Sidecar](./file-formats.md#edits-sidecar-modeleditsjson) for the format.

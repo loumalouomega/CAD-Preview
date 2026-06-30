@@ -91,9 +91,9 @@ type EditOp =
 An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the
 same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single
 tolerance gate — malformed ops are dropped, never thrown. The list is persisted in
-the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md). The op
-union is the full target surface; milestones implement them progressively (M1 ships
-the four transforms; booleans/feature-modeling/assembly land later).
+the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md). All op
+kinds are implemented: transforms, booleans, fillet/chamfer, feature modeling
+(extrude/revolve/sweep/loft), and assembly (explode/mate).
 
 ---
 

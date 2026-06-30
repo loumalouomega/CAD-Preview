@@ -1,5 +1,9 @@
 import * as THREE from "three";
+import { Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION } from "three-bvh-csg";
 import { BREP_ONLY_OPS, type EditOp, type Vec3 } from "../editOps";
+
+/** Single shared CSG evaluator (cheap to keep; avoids re-alloc per boolean). */
+const csg = new Evaluator();
 
 /**
  * Webview-side (Three.js) edit engine for mesh formats (STL/OBJ/PLY/glTF), which
@@ -16,8 +20,10 @@ import { BREP_ONLY_OPS, type EditOp, type Vec3 } from "../editOps";
 export function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Object3D {
   for (const op of ops) {
     if (BREP_ONLY_OPS.has(op.op)) continue; // not meaningful on a triangle mesh
+    if (op.op === "boolean") { applyMeshBoolean(root, op); continue; }
+    if (op.op === "explode") { applyMeshExplode(root, op.factor); continue; }
     const m = transformMatrixForOp(op);
-    if (!m) continue; // booleans (M2) handled separately; everything else no-op here
+    if (!m) continue; // anything else is a no-op on a mesh
     for (const target of resolveMeshTargets(root, transformTargets(op))) {
       // Local matrices of mesh roots are identity, so a world-space op matrix
       // applies correctly. applyMatrix4 premultiplies + re-decomposes.
@@ -25,6 +31,68 @@ export function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Objec
     }
   }
   return root;
+}
+
+/**
+ * Mesh boolean via `three-bvh-csg`. Resolves operand A/B to their first mesh
+ * (the typical 1-vs-1 case), evaluates the CSG, and replaces both operands in the
+ * tree with the single result mesh (tagged with A's node id so it stays pickable
+ * and colourable). Unresolved operands are skipped, mirroring the host's graceful
+ * boolean. Topology changes re-id facets on the next split — accepted id drift.
+ */
+function applyMeshBoolean(root: THREE.Object3D, op: Extract<EditOp, { op: "boolean" }>): void {
+  const aMesh = firstMesh(resolveMeshTargets(root, op.a));
+  const bMesh = firstMesh(resolveMeshTargets(root, op.b));
+  if (!aMesh || !bMesh) return;
+
+  const brushA = new Brush(aMesh.geometry);
+  aMesh.updateWorldMatrix(true, false);
+  brushA.matrix.copy(aMesh.matrixWorld);
+  brushA.matrixAutoUpdate = false;
+  const brushB = new Brush(bMesh.geometry);
+  bMesh.updateWorldMatrix(true, false);
+  brushB.matrix.copy(bMesh.matrixWorld);
+  brushB.matrixAutoUpdate = false;
+
+  const operation =
+    op.kind === "union" ? ADDITION : op.kind === "subtract" ? SUBTRACTION : INTERSECTION;
+  const result = csg.evaluate(brushA, brushB, operation);
+
+  const out = new THREE.Mesh(result.geometry, aMesh.material);
+  out.userData.groupId = op.a[0]; // keep a stable id for tagging/colouring
+
+  // Remove both operands (and any extra resolved targets) then attach the result.
+  for (const o of [...resolveMeshTargets(root, op.a), ...resolveMeshTargets(root, op.b)]) {
+    o.parent?.remove(o);
+  }
+  root.add(out);
+}
+
+/**
+ * Mesh **explode**: spreads each top-level node radially from the model centre by
+ * `factor` (mirrors the host's `explodeSolids`). Each child is translated by
+ * `(childCentre − modelCentre) · factor` using `THREE.Box3` world bounds.
+ */
+function applyMeshExplode(root: THREE.Object3D, factor: number): void {
+  const whole = new THREE.Box3().setFromObject(root);
+  if (whole.isEmpty()) return;
+  const c = whole.getCenter(new THREE.Vector3());
+  for (const child of [...root.children]) {
+    const b = new THREE.Box3().setFromObject(child);
+    if (b.isEmpty()) continue;
+    const off = b.getCenter(new THREE.Vector3()).sub(c).multiplyScalar(factor);
+    child.applyMatrix4(new THREE.Matrix4().makeTranslation(off.x, off.y, off.z));
+  }
+}
+
+/** The first `THREE.Mesh` among `objs` or their descendants. */
+function firstMesh(objs: THREE.Object3D[]): THREE.Mesh | null {
+  for (const o of objs) {
+    let found: THREE.Mesh | null = null;
+    o.traverse((c) => { if (!found && (c as THREE.Mesh).isMesh) found = c as THREE.Mesh; });
+    if (found) return found;
+  }
+  return null;
 }
 
 /** The target ids of a transform op (empty for ops that have no `targets`). */

@@ -68,6 +68,11 @@ const editsModel = new EditsModel(() => {
   if (pristineMesh) rebuildMeshModel();
 });
 
+/** Captured boolean operand A (volume ids); operand B is the live selection. */
+let booleanA: string[] = [];
+const selectedVolumes = (): string[] =>
+  selection.list().filter((e) => e.entityType === "volume").map((e) => e.entityId);
+
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onUndo: () => editsModel.undo(),
   onRedo: () => editsModel.redo(),
@@ -75,9 +80,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onApplyTransform: (draft) => {
     // Transforms act on whole volumes. Use the selected volume ids; require at
     // least one so an edit is never silently a no-op.
-    const targets = selection.list()
-      .filter((e) => e.entityType === "volume")
-      .map((e) => e.entityId);
+    const targets = selectedVolumes();
     if (targets.length === 0) {
       setStatus("Select one or more volumes (Vol mode) before applying a transform.", true);
       return;
@@ -90,6 +93,79 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       case "mirror": op = { op: "mirror", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal }; break;
     }
     editsModel.push(op);
+    setStatus("");
+  },
+  onCaptureBooleanA: () => {
+    booleanA = selectedVolumes();
+    if (booleanA.length === 0) setStatus("Select volumes for operand A before Set A.", true);
+    return booleanA.length;
+  },
+  onApplyBoolean: (kind) => {
+    const b = selectedVolumes();
+    if (booleanA.length === 0) { setStatus("Set operand A first (select volumes → Set A).", true); return; }
+    if (b.length === 0) { setStatus("Select operand B volumes before applying.", true); return; }
+    if (b.some((id) => booleanA.includes(id))) {
+      setStatus("Operands A and B must be different volumes.", true);
+      return;
+    }
+    editsModel.push({ op: "boolean", kind, a: booleanA, b });
+    booleanA = [];
+    selection.clear();
+    renderHighlight();
+    setStatus("");
+  },
+  onApplyFillet: (kind, amount) => {
+    // Fillet/chamfer act on selected edges (Line mode), B-rep only.
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length === 0) {
+      setStatus("Select one or more edges (Line mode) before applying a fillet/chamfer.", true);
+      return;
+    }
+    if (amount <= 0) { setStatus("Enter a positive radius / setback.", true); return; }
+    editsModel.push(
+      kind === "fillet" ? { op: "fillet", edges, radius: amount } : { op: "chamfer", edges, distance: amount }
+    );
+    setStatus("");
+  },
+  onApplyFeature: (draft) => {
+    // Feature modeling builds a new body from selected profile faces (Surf mode)
+    // and, for sweep, a path edge (Line mode). B-rep only.
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    let op: EditOp | null = null;
+    switch (draft.kind) {
+      case "extrude":
+        if (!faces[0]) { setStatus("Select a profile face (Surf mode) to extrude.", true); return; }
+        op = { op: "extrude", profile: faces[0], dir: draft.dir, length: draft.length };
+        break;
+      case "revolve":
+        if (!faces[0]) { setStatus("Select a profile face (Surf mode) to revolve.", true); return; }
+        op = { op: "revolve", profile: faces[0], axisPoint: draft.axisPoint, axisDir: draft.axisDir, angleDeg: draft.angleDeg };
+        break;
+      case "sweep":
+        if (!faces[0] || !edges[0]) { setStatus("Select a profile face and a path edge for sweep.", true); return; }
+        op = { op: "sweep", profile: faces[0], path: edges[0] };
+        break;
+      case "loft":
+        if (faces.length < 2) { setStatus("Select 2+ profile faces (Surf mode) to loft.", true); return; }
+        op = { op: "loft", profiles: faces };
+        break;
+    }
+    editsModel.push(op);
+    setStatus("");
+  },
+  onApplyExplode: (factor) => {
+    editsModel.push({ op: "explode", factor });
+    setStatus("");
+  },
+  onApplyMate: () => {
+    // Mate aligns the first selected face onto the second (Surf mode), B-rep only.
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    if (faces.length < 2) {
+      setStatus("Select two faces (Surf mode): face A first, then face B, to mate.", true);
+      return;
+    }
+    editsModel.push({ op: "mate", faceA: faces[0], faceB: faces[1] });
     setStatus("");
   },
 });
@@ -273,6 +349,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         viewer.setModel(group);
         refreshColors();
         setSelectableModes(["volume", "surface", "line"]);
+        editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
         showSidebar();
         setStatus("");
       } catch (err) {
@@ -314,6 +391,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         rebuildMeshModel();
         // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
         setSelectableModes(["volume", "surface"]);
+        editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
         showSidebar();
         setStatus("");
         if (hasMultipleNodes(root)) showTree(root);

@@ -257,8 +257,33 @@ deterministic `solid-N` explorer order the read pipeline uses: when every solid 
 targeted (or the shape has no solids) the whole shape is transformed; otherwise a new
 `TopoDS_Compound` is assembled from the transformed targets plus the untouched rest.
 The `gp_Trsf`/`gp_GTrsf` suffix details are recorded in `CLAUDE.md` (verified against
-the live WASM). Booleans, fillet/chamfer, feature modeling and assembly ops are
-no-ops here until their milestones land.
+the live WASM).
+
+**Booleans (M2)** are applied by `booleanSolids()` via `BRepAlgoAPI_{Fuse,Cut,
+Common}_3(s1, s2).Shape()` (the progress-range arg is optional/unbound). Each operand
+shape is built from its `solid-N` set (a compound when more than one); the operands
+are replaced by the single boolean result and the untargeted solids are preserved in
+a rebuilt compound. An op with unresolved operands or `IsDone()===false` is skipped.
+
+**Fillet/chamfer (M3)** are applied by `filletEdges()` via `BRepFilletAPI_MakeFillet`
+/ `BRepFilletAPI_MakeChamfer` + `.Add_2(amount, edge)` → `.Shape()`. Edge `edge-N` ids
+are resolved by `collectEdges()`, which replicates `extractEdges`' exact de-dup +
+discretization-validity ordering so the picked ids map to the right live edges. A
+fillet whose edges don't resolve or whose `.Shape()` throws / `IsDone()` is false is
+skipped.
+
+**Feature modeling (M4)** is applied by `featureModel()`/`buildFeatureSolid()` —
+extrude (`MakePrism_1`), revolve (`MakeRevol_1`), sweep (`MakePipe_1`), loft
+(`ThruSections`). Profile `face-N` ids are resolved by `collectFaces()` in the same
+global solid→face order `tessellateByGroup` assigns; the resulting solid is
+**appended** as a new body (`compound(existing + new)`), never cutting/fusing the
+source. Operands that don't resolve or builders that throw are skipped.
+
+**Assembly (M5):** `explodeSolids()` spreads each solid from the model bbox centre by
+`factor` (all formats; mesh path in `meshEdits.applyMeshExplode`). `mateShape()`
+aligns planar `faceA` onto `faceB` via `gp_Trsf.SetDisplacement` of `gp_Ax3` frames
+(face planes from `BRepAdaptor_Surface_2`), moving the solid `owningSolid()` finds for
+`faceA`. Non-planar faces / unresolved ids / failed displacement are skipped.
 
 ---
 

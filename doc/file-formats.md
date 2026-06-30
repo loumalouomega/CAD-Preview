@@ -126,9 +126,9 @@ empty part list rather than blocking the model from opening.
 
 ## Edits Sidecar (`<model>.edits.json`)
 
-User-applied **edit operations** (transforms, and — in later milestones —
-booleans, feature modeling, assembly) are stored in a **second** JSON sidecar next
-to the CAD file — e.g. `bull.stp` → `bull.stp.edits.json`. Like parts, this never
+User-applied **edit operations** (transforms and booleans, and — in later
+milestones — feature modeling, assembly) are stored in a **second** JSON sidecar
+next to the CAD file — e.g. `bull.stp` → `bull.stp.edits.json`. Like parts, this never
 modifies the CAD file: the editor stays read-only. The sidecar holds an **ordered,
 replayable op-list** that is re-applied on every open, so the displayed model is
 `base shape ∘ ops`. It is read on open (`readEdits()`) and autosaved, debounced, on
@@ -150,8 +150,8 @@ the vscode-free `src/editsSidecar.ts` so they are unit-tested.
 
 | Source pipeline | Edit engine | Supported ops (current) |
 |---|---|---|
-| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror (booleans/features/assembly: later milestones) |
-| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror (booleans: later) — feature-modeling ops are B-rep only |
+| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror, boolean (unite/subtract/intersect), fillet, chamfer, extrude, revolve, sweep, loft, explode, mate |
+| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror, boolean (via `three-bvh-csg`), explode — fillet/chamfer, feature-modeling & mate are B-rep only |
 
 Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops
 are dropped via `validateEditOp` (`src/editOps.ts`) and a corrupt or missing
