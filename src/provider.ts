@@ -5,8 +5,10 @@ import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from 
 import type { CadFormat, FileRoute } from "./fileRouter";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL } from "./exportTargets";
 import { readParts, writeParts } from "./partsStore";
+import { readEdits, writeEdits } from "./editsStore";
+import type { EditOp } from "./editOps";
 
-/** Debounce window for autosaving the parts sidecar after edits. */
+/** Debounce window for autosaving the parts/edits sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
 
 const BREP_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
@@ -65,20 +67,40 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
     const post = (msg: HostToWebview) => webviewPanel.webview.postMessage(msg);
     const pending = new Map<string, PendingExport>();
-    let saveTimer: ReturnType<typeof setTimeout> | undefined;
+    let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
-    webviewPanel.webview.onDidReceiveMessage((msg: WebviewToHost) => {
+    // The live edit op-list. Loaded from the sidecar on `ready`, updated on every
+    // `editsChanged`. Threaded into the B-rep load + export so the view and Export
+    // both reflect the edits. The source CAD file is never modified.
+    let currentEdits: EditOp[] = [];
+
+    /** (Re)tessellates a B-rep source with the current edits, or (re)loads a mesh. */
+    const loadModel = () => {
+      if (!route) return;
+      if (route.strategy === "three") {
+        const url = webviewPanel.webview.asWebviewUri(document.uri).toString();
+        post({ type: "loadUrl", url, format: route.format });
+      } else {
+        void this.handleBRep(
+          document.uri,
+          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+          post,
+          currentEdits
+        );
+      }
+    };
+
+    webviewPanel.webview.onDidReceiveMessage(async (msg: WebviewToHost) => {
       if (msg.type === "ready") {
         if (!route) {
           post({ type: "error", message: `Unsupported file type: ${document.uri.fsPath}` });
           return;
         }
-        if (route.strategy === "three") {
-          const url = webviewPanel.webview.asWebviewUri(document.uri).toString();
-          post({ type: "loadUrl", url, format: route.format });
-        } else {
-          this.handleBRep(document.uri, route.format as Extract<CadFormat, "step" | "iges" | "brep">, post);
-        }
+        // Load edits before the model so a B-rep source is tessellated already-edited.
+        currentEdits = await readEdits(document.uri);
+        loadModel();
+        post({ type: "edits", ops: currentEdits });
         void this.sendParts(document.uri, post);
         return;
       }
@@ -86,8 +108,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (msg.type === "partsChanged") {
         // Debounced autosave; the CAD file itself is never written, only the sidecar.
         const parts: Part[] = msg.parts;
-        if (saveTimer) clearTimeout(saveTimer);
-        saveTimer = setTimeout(() => {
+        if (partsSaveTimer) clearTimeout(partsSaveTimer);
+        partsSaveTimer = setTimeout(() => {
           void writeParts(document.uri, parts).then(
             undefined,
             (err) => post({ type: "error", message: `Could not save parts: ${(err as Error).message}` })
@@ -96,8 +118,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "editsChanged") {
+        currentEdits = msg.ops;
+        // Debounced sidecar autosave (separate timer/file from parts).
+        if (editsSaveTimer) clearTimeout(editsSaveTimer);
+        editsSaveTimer = setTimeout(() => {
+          void writeEdits(document.uri, currentEdits).then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save edits: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
+        // B-rep edits are applied in the host, so re-tessellate immediately. Mesh
+        // edits are applied in the webview itself, which already updated the view.
+        if (route && route.strategy === "occt") loadModel();
+        return;
+      }
+
       if (msg.type === "exportRequest") {
-        if (route) this.handleExport(document.uri, route, post, pending);
+        if (route) this.handleExport(document.uri, route, post, pending, currentEdits);
         return;
       }
 
@@ -116,13 +154,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   private async handleBRep(
     uri: vscode.Uri,
     format: Extract<CadFormat, "step" | "iges" | "brep">,
-    post: (msg: HostToWebview) => void
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[] = []
   ): Promise<void> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
-      const { groups, edges, tree } = await loadBRep(this.context.extensionPath, bytes, format);
+      const { groups, edges, tree } = await loadBRep(this.context.extensionPath, bytes, format, ops);
       post({
         type: "geometry",
         meshes: groups.flatMap((g) =>
@@ -163,7 +202,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     uri: vscode.Uri,
     route: FileRoute,
     post: (msg: HostToWebview) => void,
-    pending: Map<string, PendingExport>
+    pending: Map<string, PendingExport>,
+    ops: EditOp[] = []
   ): Promise<void> {
     const targets = exportTargetsFor(route);
     if (targets.length === 0) return;
@@ -197,7 +237,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           this.context.extensionPath,
           sourceBytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
-          targetFormat as Extract<CadFormat, "step" | "iges" | "brep">
+          targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
+          ops
         );
       } else {
         const requestId = `${Date.now()}-${Math.random()}`;
@@ -257,6 +298,18 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           <button id="parts-new" title="New part">＋ New</button>
         </div>
         <div id="parts-body"></div>
+      </div>
+      <div id="edits-panel">
+        <div id="edits-header">
+          <span id="edits-title">Edits</span>
+          <div id="edits-actions">
+            <button id="edits-undo" title="Undo last edit" disabled>↶</button>
+            <button id="edits-redo" title="Redo edit" disabled>↷</button>
+            <button id="edits-clear" title="Clear all edits" disabled>Clear</button>
+          </div>
+        </div>
+        <div id="edits-compose"></div>
+        <div id="edits-body"></div>
       </div>
     </div>
     <div id="app"></div>

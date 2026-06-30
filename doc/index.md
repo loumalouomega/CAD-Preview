@@ -37,6 +37,10 @@ features:
     title: Define Parts (Volumes / Surfaces / Lines)
     details: Click solids, faces, or edges in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only.
 
+  - icon: ✏️
+    title: Non-destructive Editing
+    details: Apply transform operations (move / rotate / scale / mirror) to selected volumes. Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export. Booleans, feature modeling and assembly ops land in later milestones.
+
   - icon: 🔬
     title: Wireframe & Grid Helpers
     details: Toggle wireframe rendering, world-space axes, and a reference grid — all from the toolbar.

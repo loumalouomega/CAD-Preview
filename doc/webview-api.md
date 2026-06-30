@@ -18,6 +18,9 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
+| `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
+| `src/webview/editsPanel.ts` | Edits panel DOM — transform composer + op list |
+| `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 
 ---
@@ -414,3 +417,68 @@ class TreePanel {
 **`private updateSelection(): void`** — Adds/removes the `selected` CSS class from rows based on `this._selectedId`. Called after each click.
 
 The `onSelect` callback is wired in `main.ts` to call `viewer.highlightGroup(id)`.
+
+## `src/webview/editsModel.ts`
+
+### `EditsModel`
+
+The in-webview **op-stack** for the replayable edit list. Pure data (no DOM),
+mirroring `PartsModel`. Owns both the applied list and a redo buffer; the host
+stays dumb and just persists / re-tessellates whatever list this produces.
+
+```typescript
+class EditsModel {
+  constructor(onChange: () => void)
+  load(ops: EditOp[]): void   // hydrate from sidecar — does NOT fire onChange
+  list(): EditOp[]            // deep copies, in order
+  push(op: EditOp): void      // append; clears the redo buffer
+  undo(): void                // pop last → redo buffer
+  redo(): void                // re-apply most recently undone
+  clear(): void               // empty both stacks
+  get size(): number
+  get canUndo(): boolean
+  get canRedo(): boolean
+}
+```
+
+Every mutation fires `onChange`, wired in `main.ts` to post `editsChanged`, render
+the panel, and (for mesh files) rebuild the displayed model. `load` does **not**
+fire — it is the initial sidecar load and must not echo back as a write.
+
+## `src/webview/editsPanel.ts`
+
+### `EditsPanel`
+
+Manages the `#edits-panel` DOM: a **transform composer** (a `Move/Rotate/Scale/
+Mirror` dropdown with numeric `<input>`s and an **Apply** button), an
+Undo/Redo/Clear control row, and the ordered op list with a one-line summary each
+(`describeOp`). VS Code webviews block `prompt()`, so all input is via numeric
+fields.
+
+```typescript
+class EditsPanel {
+  constructor(panel: HTMLElement, cb: EditsPanelCallbacks)
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean): void
+}
+```
+
+`onApplyTransform(draft: TransformDraft)` hands a transform op **without targets**
+to `main.ts`, which injects the selected volume ids before pushing it to the
+`EditsModel`. (More op-creation forms are added in later milestones.)
+
+## `src/webview/meshEdits.ts`
+
+The webview edit engine for **mesh formats** (no OCCT in the host). Folds the op-list
+over a pristine `THREE.Object3D` clone so ops replay cleanly on every change.
+
+```typescript
+function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Object3D
+function transformMatrixForOp(op: EditOp): THREE.Matrix4 | null   // pure, unit-tested
+function resolveMeshTargets(root: THREE.Object3D, ids: string[]): THREE.Object3D[]
+```
+
+`transformMatrixForOp` builds the world-space matrix for translate/rotate/scale/
+mirror (rotation/scale/mirror conjugated about their point via `T(p)·M·T(−p)`;
+mirror is a Householder reflection). Feature-modeling ops (`BREP_ONLY_OPS`) are
+skipped — meshes have no sketch/exact topology. `main.ts` caches the pristine tagged
+object and calls `applyEditsMesh` on a clone inside `rebuildMeshModel()`.

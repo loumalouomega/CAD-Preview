@@ -7,8 +7,11 @@ import { splitMeshesIntoFacets } from "./meshFacets";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
+import { EditsModel } from "./editsModel";
+import { EditsPanel } from "./editsPanel";
+import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
-import type { HostToWebview, WebviewToHost, TreeNode, EntityType } from "../protocol";
+import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -55,6 +58,42 @@ const partsPanel = new PartsPanel(document.getElementById("parts-panel")!, {
   },
 });
 
+// ── Edits (replayable op-stack) ───────────────────────────────────────────
+// The webview owns the op-stack; the host persists it and (for B-rep) re-applies
+// it via OCCT. Mesh edits are replayed locally by rebuilding from the pristine
+// loaded object (see rebuildMeshModel).
+const editsModel = new EditsModel(() => {
+  post({ type: "editsChanged", ops: editsModel.list() });
+  editsPanel.render(editsModel.list(), editsModel.canUndo, editsModel.canRedo);
+  if (pristineMesh) rebuildMeshModel();
+});
+
+const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
+  onUndo: () => editsModel.undo(),
+  onRedo: () => editsModel.redo(),
+  onClear: () => editsModel.clear(),
+  onApplyTransform: (draft) => {
+    // Transforms act on whole volumes. Use the selected volume ids; require at
+    // least one so an edit is never silently a no-op.
+    const targets = selection.list()
+      .filter((e) => e.entityType === "volume")
+      .map((e) => e.entityId);
+    if (targets.length === 0) {
+      setStatus("Select one or more volumes (Vol mode) before applying a transform.", true);
+      return;
+    }
+    let op: EditOp;
+    switch (draft.kind) {
+      case "translate": op = { op: "translate", targets, vec: draft.vec }; break;
+      case "rotate": op = { op: "rotate", targets, axisPoint: draft.axisPoint, axisDir: draft.axisDir, angleDeg: draft.angleDeg }; break;
+      case "scale": op = { op: "scale", targets, center: draft.center, factors: draft.factors }; break;
+      case "mirror": op = { op: "mirror", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal }; break;
+    }
+    editsModel.push(op);
+    setStatus("");
+  },
+});
+
 /** Applies persistent per-part colours, then re-draws the active highlight. */
 function refreshColors(): void {
   viewer.setEntityColors(partsModel.colorMap());
@@ -66,6 +105,20 @@ function renderHighlight(): void {
   const entities: SelectedEntity[] =
     previewPartIndex !== null ? partsModel.entitiesOf(previewPartIndex) : selection.list();
   viewer.renderSelection(entities);
+}
+
+// The pristine, tagged-but-unedited loaded object for mesh formats. Mesh edits
+// are non-destructive: every edit rebuilds the displayed model from this clone so
+// the op-list replays cleanly (B-rep replay happens in the host instead).
+let pristineMesh: THREE.Object3D | null = null;
+
+/** Rebuilds the displayed mesh model: clone pristine → apply ops → facet-split. */
+function rebuildMeshModel(): void {
+  if (!pristineMesh) return;
+  const edited = applyEditsMesh(pristineMesh.clone(), editsModel.list());
+  const model = splitMeshesIntoFacets(edited);
+  viewer.setModel(model);
+  refreshColors();
 }
 
 function showSidebar(): void {
@@ -238,6 +291,15 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       showSidebar();
       break;
 
+    case "edits":
+      // Hydrate the op-stack from the sidecar (does not echo back as a write).
+      editsModel.load(msg.ops);
+      editsPanel.render(editsModel.list(), editsModel.canUndo, editsModel.canRedo);
+      // B-rep arrives already-tessellated with these ops; mesh replays locally.
+      if (pristineMesh) rebuildMeshModel();
+      showSidebar();
+      break;
+
     case "loadUrl":
       try {
         setStatus("Loading model…");
@@ -246,11 +308,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         // Build the Components tree from the original hierarchy (before the mesh
         // is split into facets, so the tree lists whole objects, not facets).
         const root = extractObjectTree(object, msg.format.toUpperCase());
-        // Segment each mesh into coplanar facets so individual faces are pickable.
-        // Returns a new root when the loaded object itself is a mesh (e.g. STL).
-        const model = splitMeshesIntoFacets(object);
-        viewer.setModel(model);
-        refreshColors();
+        // Cache the pristine object; the displayed model is rebuilt from it with
+        // the current edits applied (no-op when there are none).
+        pristineMesh = object;
+        rebuildMeshModel();
         // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
         setSelectableModes(["volume", "surface"]);
         showSidebar();
@@ -266,6 +327,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "error":
+      setStatus(msg.message, true);
+      break;
+
+    case "editError":
       setStatus(msg.message, true);
       break;
 

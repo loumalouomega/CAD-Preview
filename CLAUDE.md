@@ -168,6 +168,58 @@ lines in the view and assigning them. Non-negotiable invariants:
 - VS Code webviews **block `prompt()`/`alert()`** — the Parts panel renames via an
   inline `<input>`, not a dialog.
 
+## Geometry editing (operations)
+
+Users apply **edit operations** (transforms, booleans, feature modeling, assembly)
+on top of the source model. Non-negotiable invariants:
+
+- **The CAD file stays read-only — still.** Edits persist to a *second* sidecar
+  `<model>.edits.json` (next to `<model>.parts.json`), an **ordered, replayable
+  op-list** re-applied on every open. The displayed model is `base shape ∘ ops`.
+  `CustomReadonlyEditorProvider` is unchanged; nothing ever writes the CAD file.
+  **Export bakes the edits in** (the export pipeline re-applies the same ops).
+- **One shared op model.** `src/editOps.ts` (vscode-free) holds the `EditOp`
+  discriminated union + `validateEditOp` — the **single tolerance gate**; the
+  sidecar parser and any incoming op run through it, so a malformed op is dropped,
+  never crashes replay. Parse/serialize live in the vscode-free
+  `src/editsSidecar.ts`; `src/editsStore.ts` adds the `vscode.workspace.fs` I/O.
+  Autosave is debounced (~500 ms) in `provider.ts` on each `editsChanged` message,
+  on a **separate timer** from parts.
+- **Pipeline split mirrors read/export.** B-rep ops run in the **host** via OCCT
+  (`src/occtOperations.ts` `applyEditsBRep` — folds ops over the live
+  `TopoDS_Shape`, then the existing `tessellateByGroup`/`extractEdges` re-display
+  it). Mesh ops run in the **webview** via Three.js (`src/webview/meshEdits.ts`
+  `applyEditsMesh`). Feature-modeling ops are **B-rep only** (`BREP_ONLY_OPS`) —
+  meshes have no sketch/exact topology — and the panel disables them for meshes.
+- **The webview owns the op-stack** (`src/webview/editsModel.ts`: push/undo/redo/
+  clear + redo buffer, DOM-free, unit-tested); the host stays dumb and just
+  persists + (for B-rep) re-tessellates whatever list it receives. `editsPanel.ts`
+  is the DOM (transform composer + op list); numeric `<input>`s, not `prompt()`.
+- **Mesh replay is non-destructive:** `main.ts` caches the pristine tagged
+  `Object3D` and rebuilds the displayed model from a clone on every edit
+  (`rebuildMeshModel`), so ops replay cleanly. B-rep replay happens in the host.
+- **Transforms act on whole solids/volumes.** Operands are the same stable
+  `solid-N`/`node-N` ids; `occtOperations.transformSolids` transforms the whole
+  shape when all solids are targeted, else assembles a `TopoDS_Compound` of the
+  transformed targets + untouched rest (deterministic `TopExp_Explorer` order, the
+  same the read pipeline uses for ids).
+- **Entity-id drift (known, accepted):** topology-changing ops (booleans, fillet,
+  feature modeling) re-tessellate into **new** `face-N`/`edge-N` ids, so existing
+  *part* assignments may not resolve after them — the tolerant sidecar parser drops
+  unresolved ids on reload, degrading gracefully. No id-rebinding is attempted.
+- **OCCT transform API, verified against the live WASM** (use these exact suffixes;
+  others throw `BindingError`/`UnboundTypeError`): translate
+  `gp_Trsf.SetTranslation_1(gp_Vec_4)`; rotate `gp_Trsf.SetRotation_1(gp_Ax1_2(
+  gp_Pnt_3, gp_Dir_4), angleRad)`; **plane** mirror `gp_Trsf.SetMirror_3(gp_Ax2_3(
+  gp_Pnt_3, gp_Dir_4))` (NB: `SetMirror_1` is point, `SetMirror_2` is axis/`gp_Ax1`);
+  uniform scale `gp_Trsf.SetScale(gp_Pnt_3, s)`; non-uniform scale `gp_GTrsf` +
+  `SetValue(row, col, v)` (1-based 3×4) applied via `BRepBuilderAPI_GTransform_2(
+  shape, gtrsf, true).Shape()`; rigid transforms via `BRepBuilderAPI_Transform_2(
+  shape, trsf, true).Shape()`. Compound rebuild: `new TopoDS_Compound()` +
+  `BRep_Builder.MakeCompound(c)` + `.Add(c, TopoDS.Solid_1(exp.Current()))`.
+  `Bnd_Box.Get()` is **not** bound (throws and aborts the module) — read corners
+  via `CornerMin()`/`CornerMax()` instead.
+
 ## Build & test
 
 ```bash
@@ -200,6 +252,16 @@ under the part in the panel; recolour/rename/delete; expand a part and remove an
 entity. Close and reopen the tab → assignments reload from `bull.stp.parts.json`
 (inspect it: valid JSON, CAD file untouched). On `cube.stl`, confirm Surf/Line are
 disabled and only whole-object **Vol** assignment works and round-trips.
+
+Exercise **Edits**: on `bull.stp`, **Select** the solid in **Vol** mode, then in the
+**Edits** panel pick **Move/Rotate/Scale/Mirror**, enter params, **Apply** → the model
+updates live and the op appears in the list. **Undo/Redo/Clear** the stack. Close and
+reopen the tab → ops reload from `bull.stp.edits.json` (inspect: valid JSON, CAD file
+untouched). **Export** the edited model (e.g. to STEP/STL) and reopen the output → the
+edits are baked in. On `cube.stl`, confirm transforms apply (mesh path) and that any
+B-rep-only ops are unavailable. Apply/undo repeatedly + open/close → host memory stays
+flat (OCCT handle-leak check, same as above). (M1 ships transforms; booleans/feature
+modeling/assembly land in later milestones.)
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.

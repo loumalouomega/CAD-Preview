@@ -1,4 +1,7 @@
 import type { CadFormat } from "./fileRouter";
+import type { EditOp } from "./editOps";
+
+export type { EditOp } from "./editOps";
 
 /** A node in the model component tree sent from host → webview. */
 export interface TreeNode {
@@ -43,8 +46,10 @@ export type HostToWebview =
   | { type: "tree"; root: TreeNode }
   | { type: "loadUrl"; url: string; format: CadFormat }
   | { type: "parts"; parts: Part[] }
+  | { type: "edits"; ops: EditOp[] }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
+  | { type: "editError"; message: string }
   | { type: "exportMesh"; requestId: string; format: CadFormat };
 
 /** Messages sent from the webview to the extension host. */
@@ -52,6 +57,7 @@ export type WebviewToHost =
   | { type: "ready" }
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
+  | { type: "editsChanged"; ops: EditOp[] }
   | { type: "exportRequest" }
   | { type: "exportResult"; requestId: string; data: string; binary: boolean }
   | { type: "exportError"; requestId: string; message: string };

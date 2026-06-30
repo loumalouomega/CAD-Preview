@@ -124,6 +124,45 @@ topology), the whole object is a **volume** with a stable traversal-order id
 long as the source file is unchanged. Parsing is tolerant: a missing or hand-corrupted sidecar yields an
 empty part list rather than blocking the model from opening.
 
+## Edits Sidecar (`<model>.edits.json`)
+
+User-applied **edit operations** (transforms, and — in later milestones —
+booleans, feature modeling, assembly) are stored in a **second** JSON sidecar next
+to the CAD file — e.g. `bull.stp` → `bull.stp.edits.json`. Like parts, this never
+modifies the CAD file: the editor stays read-only. The sidecar holds an **ordered,
+replayable op-list** that is re-applied on every open, so the displayed model is
+`base shape ∘ ops`. It is read on open (`readEdits()`) and autosaved, debounced, on
+every change (`writeEdits()`), both in `src/editsStore.ts`; parse/serialize live in
+the vscode-free `src/editsSidecar.ts` so they are unit-tested.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "ops": [
+    { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0] },
+    { "op": "rotate", "targets": ["solid-0"], "axisPoint": [0, 0, 0], "axisDir": [0, 0, 1], "angleDeg": 45 }
+  ]
+}
+```
+
+**Where ops are applied** mirrors the read/export split:
+
+| Source pipeline | Edit engine | Supported ops (current) |
+|---|---|---|
+| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror (booleans/features/assembly: later milestones) |
+| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror (booleans: later) — feature-modeling ops are B-rep only |
+
+Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops
+are dropped via `validateEditOp` (`src/editOps.ts`) and a corrupt or missing
+sidecar yields an empty list rather than blocking the model. **Export bakes the
+edits in** — the export pipeline re-applies the same ops to the exported geometry.
+
+> **Entity-id drift:** topology-changing ops (booleans, fillet, feature modeling)
+> re-tessellate into new `face-*`/`edge-*` ids, so a part assignment made before
+> such an op may no longer resolve afterwards. The tolerant parts parser drops
+> unresolved ids on reload, so this degrades gracefully rather than erroring.
+
 ## Export
 
 The toolbar **Export** button converts the currently displayed model into a
@@ -139,10 +178,11 @@ targets depend on the source file's pipeline (`exportTargetsFor()` in
 The source format is never offered as its own export target.
 
 **B-rep targets** are written entirely in the extension host: the source file is
-re-parsed with the same OCCT reader used to open it, then handed to the matching OCCT
-writer (`STEPControl_Writer`, `IGESControl_Writer`, or `BRepTools::Write`) in
-`exportBRep()` (`src/occtService.ts`). There is no path from a triangulated mesh back
-to a B-rep, so mesh-sourced documents never offer STEP/IGES/BREP as a target.
+re-parsed with the same OCCT reader used to open it, the current edit op-list is
+applied (`applyEditsBRep`), then the result is handed to the matching OCCT writer
+(`STEPControl_Writer`, `IGESControl_Writer`, or `BRepTools::Write`) in `exportBRep()`
+(`src/occtService.ts`). There is no path from a triangulated mesh back to a B-rep, so
+mesh-sourced documents never offer STEP/IGES/BREP as a target.
 
 **Mesh targets** are written in the webview, reusing Three.js's bundled exporters
 (`three/examples/jsm/exporters/`) on the `THREE.Object3D` already displayed —

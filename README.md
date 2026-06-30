@@ -45,6 +45,11 @@ loaders. Rendering is always Three.js.
   view and assigning them to a part; assignments are colour-highlighted, listed in a
   tree panel, and saved to a `<model>.parts.json` sidecar (the CAD file stays
   read-only)
+- **Edits**: apply non-destructive **transform** operations (move / rotate / scale /
+  mirror) to selected volumes; operations are undoable, replayable, and saved to a
+  `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in
+  only on **Export**. (Booleans, feature modeling and assembly ops land in later
+  milestones; transforms work on B-rep and mesh, feature modeling on B-rep only.)
 - **Export**: convert the open model to a compatible format and save it via a native
   Save dialog — see [Export](#export) below
 

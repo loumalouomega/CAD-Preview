@@ -5,8 +5,10 @@ import * as path from "path";
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, type SolidGroup, type EdgeLine } from "./meshExtract";
+import { applyEditsBRep } from "./occtOperations";
 import type { TreeNode } from "./protocol";
 import type { CadFormat } from "./fileRouter";
+import type { EditOp } from "./editOps";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ocPromise: Promise<any> | null = null;
@@ -34,13 +36,16 @@ export interface BRepResult {
 }
 
 /**
- * Reads `bytes`, parses with the appropriate OCCT reader, tessellates grouped
- * by solid, and returns geometry groups alongside the component tree.
+ * Reads `bytes`, parses with the appropriate OCCT reader, applies the replayable
+ * edit op-list (if any), tessellates grouped by solid, and returns geometry
+ * groups alongside the component tree. With an empty `ops` this is the original
+ * read-only path; the source bytes are never modified.
  */
 export async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
-  format: Extract<CadFormat, "step" | "iges" | "brep">
+  format: Extract<CadFormat, "step" | "iges" | "brep">,
+  ops: EditOp[] = []
 ): Promise<BRepResult> {
   const oc = await getOcct(extensionPath);
 
@@ -49,7 +54,8 @@ export async function loadBRep(
 
   const cleanup: Array<{ delete(): void }> = [];
   try {
-    const shape = readShape(oc, tmpName, format, cleanup);
+    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
     const groups = tessellateByGroup(oc, shape);
     const edges = extractEdges(oc, shape);
     const tree = buildTree(format, groups);
@@ -120,15 +126,17 @@ export function readShape(oc: any, filePath: string, format: string, cleanup: Ar
 type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
 
 /**
- * Re-parses `bytes` as `sourceFormat` and writes the resulting shape out as
- * `targetFormat`, returning the output file's bytes. Writer calls are verified against
+ * Re-parses `bytes` as `sourceFormat`, applies the edit op-list, and writes the
+ * resulting shape out as `targetFormat`, returning the output file's bytes — so
+ * Export bakes in the same edits the view shows. Writer calls are verified against
  * the live OCCT build — see `writeShape` below for the per-format quirks.
  */
 export async function exportBRep(
   extensionPath: string,
   bytes: Uint8Array,
   sourceFormat: BRepFormat,
-  targetFormat: BRepFormat
+  targetFormat: BRepFormat,
+  ops: EditOp[] = []
 ): Promise<Uint8Array> {
   const oc = await getOcct(extensionPath);
 
@@ -138,7 +146,8 @@ export async function exportBRep(
 
   const cleanup: Array<{ delete(): void }> = [];
   try {
-    const shape = readShape(oc, inPath, sourceFormat, cleanup);
+    const baseShape = readShape(oc, inPath, sourceFormat, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
     writeShape(oc, shape, outPath, targetFormat, cleanup);
     return oc.FS.readFile(outPath);
   } finally {

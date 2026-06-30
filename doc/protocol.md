@@ -67,6 +67,34 @@ stable topological ids above (`solid-*`, `face-*`, `edge-*`), or, for mesh
 formats, stable per-object ids (`node-*`). Parts are persisted in the JSON
 sidecar — see [File Formats](./file-formats.md).
 
+### `EditOp`
+
+```typescript
+type Vec3 = [number, number, number]
+
+type EditOp =
+  | { op: 'translate'; targets: string[]; vec: Vec3 }
+  | { op: 'rotate'; targets: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
+  | { op: 'scale'; targets: string[]; center: Vec3; factors: Vec3 }   // uniform = [s,s,s]
+  | { op: 'mirror'; targets: string[]; planePoint: Vec3; planeNormal: Vec3 }
+  | { op: 'boolean'; kind: 'union' | 'subtract' | 'intersect'; a: string[]; b: string[] }
+  | { op: 'fillet'; edges: string[]; radius: number }
+  | { op: 'chamfer'; edges: string[]; distance: number }
+  | { op: 'extrude'; profile: string; dir: Vec3; length: number }
+  | { op: 'revolve'; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
+  | { op: 'sweep'; profile: string; path: string }
+  | { op: 'loft'; profiles: string[] }
+  | { op: 'explode'; factor: number }
+  | { op: 'mate'; faceA: string; faceB: string }
+```
+
+An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the
+same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single
+tolerance gate — malformed ops are dropped, never thrown. The list is persisted in
+the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md). The op
+union is the full target surface; milestones implement them progressively (M1 ships
+the four transforms; booleans/feature-modeling/assembly land later).
+
 ---
 
 ## Host → Webview Messages (`HostToWebview`)
@@ -149,6 +177,32 @@ and renders the Parts panel.
 }
 ```
 
+### `edits`
+
+Sent after geometry, once the host has read the edits sidecar
+(`<model>.edits.json`). Carries the saved, ordered edit op-list (empty array when
+no sidecar exists). The webview hydrates `EditsModel` and renders the Edits panel.
+For B-rep the geometry already arrives with these ops applied (the host folds them
+in before tessellating); for mesh formats the webview replays them locally.
+
+```json
+{
+  "type": "edits",
+  "ops": [
+    { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0] }
+  ]
+}
+```
+
+### `editError`
+
+Shown in the status overlay when applying an op fails (e.g. an OCCT operation
+throws). Distinct from `error` only by intent; both render the same way.
+
+```json
+{ "type": "editError", "message": "Boolean failed: …" }
+```
+
 ### `status`
 
 Progress text shown in the status overlay (`#status-text`). Sent at key points during B-rep loading:
@@ -189,6 +243,7 @@ type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
   | { type: 'partsChanged'; parts: Part[] }
+  | { type: 'editsChanged'; ops: EditOp[] }
   | { type: 'exportRequest' }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
@@ -203,6 +258,20 @@ itself is never written — only the sidecar.
 
 ```json
 { "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [] } ] }
+```
+
+### `editsChanged`
+
+Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear).
+Carries the full ordered op-list. The host debounces these (~500 ms, on a separate
+timer from `partsChanged`) and writes them to the `<model>.edits.json` sidecar via
+`writeEdits()`. For B-rep sources the host also re-tessellates immediately with the
+new ops and pushes a fresh `geometry` + `tree`; for mesh sources the webview has
+already replayed the ops locally, so the host only persists. The CAD file is never
+written — only the sidecar. See [`EditOp`](#editop) for op shapes.
+
+```json
+{ "type": "editsChanged", "ops": [ { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0] } ] }
 ```
 
 ### `ready`

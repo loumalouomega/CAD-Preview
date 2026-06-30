@@ -10,10 +10,14 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/provider.ts` | Custom editor provider, webview lifecycle |
 | `src/fileRouter.ts` | Map file extensions to render strategy |
 | `src/exportTargets.ts` | Map a `FileRoute` to its compatible export formats |
-| `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export |
+| `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export (op-list aware) |
+| `src/occtOperations.ts` | Host-side OCCT edit engine — folds the op-list over a `TopoDS_Shape` |
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
 | `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
+| `src/editOps.ts` | The `EditOp` union + `validateEditOp` tolerance gate (vscode-free) |
+| `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
+| `src/editsSidecar.ts` | Pure parse/serialize for the edits sidecar (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 
 ---
@@ -169,10 +173,11 @@ Resets the singleton to `null`. Used in tests and hot-reload scenarios. **Not sa
 async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
-  format: CadFormat
+  format: CadFormat,
+  ops?: EditOp[]            // replayable edit op-list (default [])
 ): Promise<BRepResult>
 ```
-High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, and `buildTree()` to build the component hierarchy.
+High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, and `buildTree()` to build the component hierarchy. With an empty `ops` this is the original read-only path; the source bytes are never modified.
 
 ```typescript
 function readShape(
@@ -198,12 +203,14 @@ async function exportBRep(
   extensionPath: string,
   bytes: Uint8Array,
   sourceFormat: "step" | "iges" | "brep",
-  targetFormat: "step" | "iges" | "brep"
+  targetFormat: "step" | "iges" | "brep",
+  ops?: EditOp[]            // replayable edit op-list (default [])
 ): Promise<Uint8Array>
 ```
-Re-parses `bytes` with `readShape()` and writes the resulting `TopoDS_Shape` out as
-`targetFormat` via the private `writeShape()` helper, returning the output file's
-bytes (read back from the OCCT virtual filesystem). Cleans up every handle —
+Re-parses `bytes` with `readShape()`, applies the edit op-list via `applyEditsBRep()`,
+and writes the resulting `TopoDS_Shape` out as `targetFormat` via the private
+`writeShape()` helper, returning the output file's bytes (read back from the OCCT
+virtual filesystem) — so **Export bakes the edits in**. Cleans up every handle —
 reader/writer/shape/progress-indicator — in a `finally`, plus `oc.FS.unlink()` on
 both the input and output virtual paths, same discipline as `loadBRep`.
 
@@ -223,6 +230,57 @@ overload instead):
 - **step**: `new oc.STEPControl_Writer_1()` → `.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true)` → check `IFSelect_RetDone` → `.Write(filePath)` → check status again.
 - **iges**: `new oc.IGESControl_Writer_1()` → `.AddShape(shape)` → `.ComputeModel()` → `.Write_2(filePath, false)` (boolean return).
 - **brep**: `oc.BRepTools.Write_2(shape, filePath, new oc.Handle_Message_ProgressIndicator_1())` (boolean return).
+
+---
+
+## `src/occtOperations.ts`
+
+The host-side OCCT **edit engine**. Folds the replayable op-list over a freshly-read
+`TopoDS_Shape` and returns the edited shape, which `loadBRep`/`exportBRep` then
+tessellate / write exactly as for an unedited file. The webview never sees OCCT.
+
+```typescript
+function applyEditsBRep(
+  oc: any,
+  baseShape: any,            // TopoDS_Shape
+  ops: EditOp[],
+  cleanup: { delete(): void }[]
+): any                       // TopoDS_Shape (edited)
+```
+Reduces `ops` over `baseShape`. Every wrapped handle it creates is pushed onto
+`cleanup` (freed in the caller's `finally`); the **returned** shape is *not* deleted
+here — the caller owns its lifetime. Unimplemented ops are skipped, so a sidecar
+authored against a newer build never hard-fails an older one.
+
+**Transforms (M1)** are applied by `transformSolids()`, which respects the same
+deterministic `solid-N` explorer order the read pipeline uses: when every solid is
+targeted (or the shape has no solids) the whole shape is transformed; otherwise a new
+`TopoDS_Compound` is assembled from the transformed targets plus the untouched rest.
+The `gp_Trsf`/`gp_GTrsf` suffix details are recorded in `CLAUDE.md` (verified against
+the live WASM). Booleans, fillet/chamfer, feature modeling and assembly ops are
+no-ops here until their milestones land.
+
+---
+
+## `src/editOps.ts`, `src/editsStore.ts`, `src/editsSidecar.ts`
+
+The edit-operation model and its sidecar, mirroring the parts trio.
+
+`src/editOps.ts` is **vscode-free** and holds the `EditOp` discriminated union plus:
+
+```typescript
+function validateEditOp(raw: unknown): EditOp | null   // single tolerance gate
+const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOp["op"]>  // re-id faces/edges on reload
+const BREP_ONLY_OPS: ReadonlySet<EditOp["op"]>          // disabled for mesh files
+```
+
+`src/editsSidecar.ts` is **vscode-free** (unit-tested): `parseEditsJson(text)` (runs
+every op through `validateEditOp`, dropping malformed ones, preserving order) and
+`serializeEditsJson(sourceName, ops)` (version-stamped, trailing newline).
+
+`src/editsStore.ts` wraps them with VS Code filesystem access: `editsSidecarUri()`
+(`<model>.edits.json`), `readEdits()` (tolerant — `[]` on missing/unreadable), and
+`writeEdits()` (writes only the sidecar; the CAD file is never touched).
 
 ---
 
