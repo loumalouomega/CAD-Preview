@@ -150,8 +150,8 @@ the vscode-free `src/editsSidecar.ts` so they are unit-tested.
 
 | Source pipeline | Edit engine | Supported ops (current) |
 |---|---|---|
-| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror, boolean (unite/subtract/intersect), fillet, chamfer, extrude, revolve, sweep, loft, explode, mate, addBox, addSphere, addCylinder, addCone, addTorus, addPrism, addCircleProfile, addRectangleProfile, addPolygonProfile |
-| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror, boolean (via `three-bvh-csg`), explode, addBox, addSphere, addCylinder, addCone, addTorus, addPrism — fillet/chamfer, feature-modeling, mate & the 2D profile ops are B-rep only |
+| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror, boolean (unite/subtract/intersect), fillet, chamfer, extrude, revolve, sweep, loft, explode, mate, addBox, addSphere, addCylinder, addCone, addTorus, addPrism, addCircleProfile, addRectangleProfile, addPolygonProfile, addPoint, addLine, addArc, addSurfaceFromLines, addVolumeFromSurfaces |
+| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror, boolean (via `three-bvh-csg`), explode, addBox, addSphere, addCylinder, addCone, addTorus, addPrism — fillet/chamfer, feature-modeling, mate, the 2D profile ops, and the bottom-up wireframe ops (addPoint/addLine/addArc/addSurfaceFromLines/addVolumeFromSurfaces) are B-rep only |
 
 Primitive-creation ops (`addBox`/`addSphere`/`addCylinder`/`addCone`/`addTorus`/
 `addPrism`) are the one op family that needs **no existing operands** — they build a
@@ -166,6 +166,19 @@ a `"Sketches"` pseudo-body in the Components tree/view, made visible by a "free-
 pass in the tessellation pipeline (see `doc/extension-host-api.md`). Extruding/
 revolving/sweeping/lofting a sketch consumes it into the resulting solid — it doesn't
 leave a duplicate face behind.
+
+The bottom-up wireframe ops (`addPoint`/`addLine`/`addArc`/`addSurfaceFromLines`/
+`addVolumeFromSurfaces`) let a shape be built up the traditional CAD way instead of
+from parametric primitives or profile extrusion: place standalone points, connect
+them with lines/arcs (typed endpoints, not point references), select a closed set of
+lines and **Build → Surface** to assemble a face, then select a closed set of surfaces
+and **Build → Volume** to sew them into a solid. Like the 2D profile ops, all five are
+B-rep only — meshes have no wire/sewing concept — and a point-select mode (`📍 Point`)
+shows every vertex in the model (original geometry's corners as well as added
+points), consistent with how Vol/Surf/Line already show everything. An
+`addSurfaceFromLines`/`addVolumeFromSurfaces` selection that doesn't actually close
+(open chain of lines, open shell of surfaces) is skipped gracefully — no error, no
+op applied.
 
 Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops
 are dropped via `validateEditOp` (`src/editOps.ts`) and a corrupt or missing

@@ -36,6 +36,13 @@ export type ProfileDraft =
   | { kind: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number }
   | { kind: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number };
 
+/** A wireframe-primitive draft — self-contained (no selection needed), builds a
+ * standalone point/line/arc. B-rep only (meshes have no sketch/exact topology). */
+export type WireframeDraft =
+  | { kind: "addPoint"; position: Vec3 }
+  | { kind: "addLine"; start: Vec3; end: Vec3 }
+  | { kind: "addArc"; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number };
+
 export interface EditsPanelCallbacks {
   onUndo: () => void;
   onRedo: () => void;
@@ -58,6 +65,12 @@ export interface EditsPanelCallbacks {
   onApplyPrimitive: (draft: PrimitiveDraft) => void;
   /** Add a new standalone flat profile face (no selection needed; B-rep only). */
   onApplyProfile: (draft: ProfileDraft) => void;
+  /** Add a new standalone point/line/arc (no selection needed; B-rep only). */
+  onApplyWireframe: (draft: WireframeDraft) => void;
+  /** Build a flat face from the currently-selected lines (Line mode, B-rep only). */
+  onBuildSurfaceFromLines: () => void;
+  /** Build a solid by sewing the currently-selected surfaces (Surf mode, B-rep only). */
+  onBuildVolumeFromSurfaces: () => void;
 }
 
 /**
@@ -77,7 +90,8 @@ export class EditsPanel {
   private featureKind: FeatureDraft["kind"] = "extrude";
   private primitiveKind: PrimitiveDraft["kind"] = "addBox";
   private profileKind: ProfileDraft["kind"] = "addCircleProfile";
-  /** B-rep-only sections (fillet/chamfer, feature modeling, 2D profiles); disabled for mesh sources. */
+  private wireframeKind: WireframeDraft["kind"] = "addPoint";
+  /** B-rep-only sections (fillet/chamfer, feature modeling, 2D profiles, wireframe); disabled for mesh sources. */
   private brepOnlyEls: HTMLElement[] = [];
 
   constructor(
@@ -164,6 +178,8 @@ export class EditsPanel {
     this.renderFields();
     this.buildBooleanComposer();
     this.buildFilletComposer();
+    this.buildWireframeComposer();
+    this.buildWireframeBuildComposer();
     this.buildProfileComposer();
     this.buildFeatureComposer();
     this.buildPrimitiveComposer();
@@ -261,6 +277,127 @@ export class EditsPanel {
       this.cb.onApplyFillet(select.value as "fillet" | "chamfer", Number(amount.value) || 0);
     });
     row.appendChild(apply);
+
+    this.compose.appendChild(row);
+    this.brepOnlyEls.push(row);
+  }
+
+  // ── Wireframe composer (Point/Line/Arc — no selection needed; B-rep only) ──
+
+  private buildWireframeComposer(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "compose-wireframe";
+
+    const kindRow = document.createElement("div");
+    kindRow.className = "compose-row";
+    const select = document.createElement("select");
+    select.className = "compose-kind";
+    for (const [value, text] of [
+      ["addPoint", "Point"], ["addLine", "Line"], ["addArc", "Arc"],
+    ] as const) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = text;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => {
+      this.wireframeKind = select.value as WireframeDraft["kind"];
+      this.renderWireframeFields();
+    });
+    kindRow.appendChild(select);
+
+    const apply = document.createElement("button");
+    apply.className = "compose-apply";
+    apply.textContent = "Add";
+    apply.title = "Add a new standalone point/line/arc (no selection needed)";
+    apply.addEventListener("click", () => this.emitWireframe());
+    kindRow.appendChild(apply);
+
+    const fields = document.createElement("div");
+    fields.className = "compose-fields";
+    fields.id = "wireframe-fields";
+
+    wrap.appendChild(kindRow);
+    wrap.appendChild(fields);
+    this.compose.appendChild(wrap);
+    this.brepOnlyEls.push(wrap);
+    this.renderWireframeFields();
+  }
+
+  private wireframeFields(): HTMLElement {
+    return this.compose.querySelector("#wireframe-fields")!;
+  }
+
+  private renderWireframeFields(): void {
+    const f = this.wireframeFields();
+    f.innerHTML = "";
+    switch (this.wireframeKind) {
+      case "addPoint":
+        f.appendChild(this.vecField("position", "Position", [0, 0, 0]));
+        break;
+      case "addLine":
+        f.appendChild(this.vecField("start", "Start", [0, 0, 0]));
+        f.appendChild(this.vecField("end", "End", [10, 0, 0]));
+        break;
+      case "addArc":
+        f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
+        f.appendChild(this.vecField("normal", "Normal", [0, 0, 1]));
+        f.appendChild(this.numField("radius", "Radius", 5));
+        f.appendChild(this.numField("startAngleDeg", "Start°", 0));
+        f.appendChild(this.numField("endAngleDeg", "End°", 180));
+        break;
+    }
+  }
+
+  private emitWireframe(): void {
+    const f = this.wireframeFields();
+    let draft: WireframeDraft;
+    switch (this.wireframeKind) {
+      case "addPoint":
+        draft = { kind: "addPoint", position: this.readVec("position", f) };
+        break;
+      case "addLine":
+        draft = { kind: "addLine", start: this.readVec("start", f), end: this.readVec("end", f) };
+        break;
+      case "addArc":
+        draft = {
+          kind: "addArc", center: this.readVec("center", f), normal: this.readVec("normal", f),
+          radius: this.readNum("radius", f), startAngleDeg: this.readNum("startAngleDeg", f),
+          endAngleDeg: this.readNum("endAngleDeg", f),
+        };
+        break;
+    }
+    this.cb.onApplyWireframe(draft);
+  }
+
+  // ── Build-from-selection composer (Surface from Lines / Volume from Surfaces;
+  //    B-rep only). A single direct button per target reads the live selection
+  //    at click time — unlike the boolean composer's two-step "Set A then
+  //    Apply", these each need only ONE operand set, which is already exactly
+  //    what's currently selected in Line/Surf mode; nothing to capture separately.
+
+  private buildWireframeBuildComposer(): void {
+    const row = document.createElement("div");
+    row.className = "compose-row compose-build";
+
+    const label = document.createElement("span");
+    label.className = "compose-label";
+    label.textContent = "Build";
+    row.appendChild(label);
+
+    const surfBtn = document.createElement("button");
+    surfBtn.className = "compose-apply";
+    surfBtn.textContent = "Surface";
+    surfBtn.title = "Build a flat face from the selected lines (Line mode; must form a closed loop)";
+    surfBtn.addEventListener("click", () => this.cb.onBuildSurfaceFromLines());
+    row.appendChild(surfBtn);
+
+    const volBtn = document.createElement("button");
+    volBtn.className = "compose-apply";
+    volBtn.textContent = "Volume";
+    volBtn.title = "Build a solid by sewing the selected surfaces (Surf mode; must form a closed shell)";
+    volBtn.addEventListener("click", () => this.cb.onBuildVolumeFromSurfaces());
+    row.appendChild(volBtn);
 
     this.compose.appendChild(row);
     this.brepOnlyEls.push(row);
@@ -751,6 +888,11 @@ export function describeOp(op: EditOp): string {
     case "addCircleProfile": return `⌗ Circle sketch r=${op.radius}`;
     case "addRectangleProfile": return `⌗ Rectangle sketch ${op.width}×${op.height}`;
     case "addPolygonProfile": return `⌗ ${op.sides}-gon sketch r=${op.radius}`;
+    case "addPoint": return `• Point`;
+    case "addLine": return `— Line`;
+    case "addArc": return `⌒ Arc r=${op.radius} ${op.startAngleDeg}°→${op.endAngleDeg}°`;
+    case "addSurfaceFromLines": return `⌗ Surface from ${op.edges.length} lines`;
+    case "addVolumeFromSurfaces": return `⬢ Volume from ${op.faces.length} surfaces`;
   }
 }
 

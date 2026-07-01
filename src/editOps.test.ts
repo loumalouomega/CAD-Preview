@@ -131,4 +131,51 @@ describe("validateEditOp", () => {
       expect(BREP_ONLY_OPS.has(kind)).toBe(true);
     }
   });
+
+  it("accepts well-formed wireframe ops", () => {
+    expect(validateEditOp({ op: "addPoint", position: [1, 2, 3] }))
+      .toEqual({ op: "addPoint", position: [1, 2, 3] });
+    expect(validateEditOp({ op: "addLine", start: [0, 0, 0], end: [10, 0, 0] }))
+      .toEqual({ op: "addLine", start: [0, 0, 0], end: [10, 0, 0] });
+    expect(validateEditOp({
+      op: "addArc", center: [0, 0, 0], normal: [0, 0, 1], radius: 5, startAngleDeg: 0, endAngleDeg: 90,
+    })).toEqual({
+      op: "addArc", center: [0, 0, 0], normal: [0, 0, 1], radius: 5, startAngleDeg: 0, endAngleDeg: 90,
+    });
+    expect(validateEditOp({ op: "addSurfaceFromLines", edges: ["edge-0", "edge-1", "edge-2"] }))
+      .toEqual({ op: "addSurfaceFromLines", edges: ["edge-0", "edge-1", "edge-2"] });
+    expect(validateEditOp({ op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] }))
+      .toEqual({ op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] });
+  });
+
+  it("rejects malformed wireframe ops", () => {
+    // missing position
+    expect(validateEditOp({ op: "addPoint", position: [0, 0] })).toBeNull();
+    // degenerate zero-length line
+    expect(validateEditOp({ op: "addLine", start: [1, 2, 3], end: [1, 2, 3] })).toBeNull();
+    // arc: non-positive radius, zero-length normal, equal angles
+    expect(validateEditOp({
+      op: "addArc", center: [0, 0, 0], normal: [0, 0, 1], radius: 0, startAngleDeg: 0, endAngleDeg: 90,
+    })).toBeNull();
+    expect(validateEditOp({
+      op: "addArc", center: [0, 0, 0], normal: [0, 0, 0], radius: 5, startAngleDeg: 0, endAngleDeg: 90,
+    })).toBeNull();
+    expect(validateEditOp({
+      op: "addArc", center: [0, 0, 0], normal: [0, 0, 1], radius: 5, startAngleDeg: 45, endAngleDeg: 45,
+    })).toBeNull();
+    // surface-from-lines needs >=3 edges
+    expect(validateEditOp({ op: "addSurfaceFromLines", edges: ["edge-0", "edge-1"] })).toBeNull();
+    expect(validateEditOp({ op: "addSurfaceFromLines", edges: [] })).toBeNull();
+    // volume-from-surfaces needs >=4 faces
+    expect(validateEditOp({ op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2"] })).toBeNull();
+  });
+
+  it("wireframe ops are topology-changing, B-rep only", () => {
+    for (const kind of [
+      "addPoint", "addLine", "addArc", "addSurfaceFromLines", "addVolumeFromSurfaces",
+    ] as const) {
+      expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
+      expect(BREP_ONLY_OPS.has(kind)).toBe(true);
+    }
+  });
 });

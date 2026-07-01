@@ -371,6 +371,107 @@ on top of the source model. Non-negotiable invariants:
     of) — confirmed against the live WASM, not assumed.
   - A profile whose builder throws is skipped, same graceful-degradation rule.
 
+## Bottom-up wireframe modeling (Points, Lines, Arcs → Surfaces → Volumes)
+
+Users can also build shapes from scratch, bottom-up: create standalone **points**,
+**lines**, and **arcs**; select a set of lines to build a **surface**; select a set
+of surfaces to build a **volume**. All five ops are **B-rep only** — mesh files have
+no wire/sewing concept, and since the two hardest ops (surface/volume) are
+inherently B-rep-only, giving mesh files a sketch-only subset of the workflow would
+be incoherent (same rationale as the 2D profile sketches above).
+
+- **Points are a 4th first-class `EntityType`** (`"volume" | "surface" | "line" |
+  "point"`), not a special case bolted on. Point-select mode shows **every vertex
+  in the model** — original geometry's corners AND user-added standalone points —
+  via the same unrestricted whole-shape explorer pattern `extractEdges` already
+  used for edges (`extractVertices` in `src/meshExtract.ts`: `TopExp_Explorer_2
+  (shape, TopAbs_VERTEX, TopAbs_SHAPE)` + `HashCode`/`IsSame` dedup, no
+  discretization filter since a vertex is a single point, not a polyline). This
+  is a *consistency* choice: Vol/Surf/Line already show everything (original +
+  added), so Point mode doing the same is the coherent design, not a corner-cut —
+  confirmed 8 unique corners on a plain box, 64 on `bull.stp`.
+- **Points are NEVER resolved as operands by any other op** — `addLine`/`addArc`
+  take typed `Vec3` coordinates, not point-id references, matching every other
+  creation op in this codebase (Box/Sphere/.../Circle/Rectangle/Polygon all take
+  pure numeric params). This means point extraction is **display-only** — there
+  is **no `collectVertices` in `occtOperations.ts`**, and therefore **none of the
+  lockstep-pipeline-pair risk** the free-face fix had (nothing needs to resolve a
+  `point-N` id back to a live vertex during editing).
+- **Point rendering: `THREE.Sprite`**, not `THREE.Points`/`PointsMaterial` (which
+  packs every point into one `BufferGeometry` and raycasts to an index, not a
+  distinct `Object3D` — breaking the "one entity, one tagged object" invariant
+  every other picking/colouring path relies on) and not per-vertex `SphereGeometry`
+  meshes (real triangle cost × N vertices, doesn't stay a constant screen size). A
+  Sprite is individually pickable/colourable at near-zero cost and stays
+  camera-facing. The dot texture is a single shared, canvas-drawn circle,
+  **lazily built and memoized on first use** (`geometryBuilder.ts`'s
+  `dotTexture()`) — NOT eagerly at module load like the texture itself might
+  suggest, because `orientationCube.ts`'s existing texture-drawing code only runs
+  inside a class constructor (lazy by construction); a naive `const DOT_TEXTURE =
+  makeDotTexture()` at module scope broke `viewer.test.ts` (no jsdom in this
+  project's vitest config — confirmed by the test failure, not assumed) since
+  `geometryBuilder.ts` is transitively imported by `viewer.ts`, which
+  `meshFromGeometry`'s pure-function tests import with zero DOM available.
+- **Point hit-testing does NOT reuse `pickThreshold`** (that's specifically
+  `raycaster.params.Line.threshold`, a Line-only knob) — sprites get their own
+  proportional-to-model-radius `pointSpriteScale`, computed in `Viewer.frame()`
+  alongside `pickThreshold`, applied to every point sprite's `.scale` each time
+  the model is (re)framed.
+- **OCCT wireframe-primitive API, verified against the live WASM:** point
+  `BRepBuilderAPI_MakeVertex(gp_Pnt)` — **unsuffixed**, this class (like
+  `BRepBuilderAPI_Sewing` below) has no `_N` overloads in this binding, unlike
+  almost everything else — → `.Vertex()`. Line reuses the already-verified
+  `BRepBuilderAPI_MakeEdge_3(pnt, pnt)`. Arc reuses the already-verified
+  `gp_Circ_2(gp_Ax2_3(pnt, normal), radius)`, trimmed via `BRepBuilderAPI_
+  MakeEdge_9(circ, alpha1, alpha2)` (radians; found by probing all 35 `MakeEdge`
+  overloads with a `(gp_Circ, number, number)` argument shape) — confirmed to
+  sweep in the increasing-angle (counterclockwise about `normal`) direction,
+  wrapping through 0 if `alpha2 < alpha1`.
+- **OCCT surface-from-lines API, verified against the live WASM:**
+  `BRepBuilderAPI_MakeWire_1` + `.Add_1()` per selected edge (resolved via the
+  **existing** `collectEdges`, zero changes needed) — confirmed to auto-assemble
+  edges added in **shuffled (non-sequential) order** by their shared vertices, so
+  pick order in the view doesn't matter. `.IsDone()` is the primary graceful-skip
+  gate: `false` for genuinely disconnected edges (no shared vertices at all,
+  confirmed via a probe), `true` for anything that connects — **including an
+  "almost closed" open chain that doesn't loop back to its start**, which OCCT
+  wires are not required to do. No reliable "is this wire actually a closed loop"
+  API was found in this binding (`BRepTools.IsReallyClosed`/`DetectClosedness`
+  need extra args this binding doesn't expose usefully; `ShapeAnalysis_Wire.
+  CheckClosed` didn't distinguish a closed 4-edge square from an open 3-edge one
+  in testing) — accepted: `BRepBuilderAPI_MakeFace_15(wire, true)` on an open
+  chain may still produce a best-effort face in this OCCT build, which is
+  harmless (never a crash), not a silently-wrong result that matters for this
+  feature's purpose. The resulting face benefits from the existing free-face
+  pass with **zero further pipeline changes**.
+- **OCCT volume-from-surfaces API, verified against the live WASM** (the riskiest
+  new surface in this feature — probed with 6 *mutually disconnected* faces built
+  independently via `buildFlatFace`, matching what a user actually selects, NOT
+  `BRepPrimAPI_MakeBox`): `new BRepBuilderAPI_Sewing(tolerance, true, true, true,
+  false)` (only constructor, all 5 params required — no defaulted overload in
+  this binding) → `.Add(face)` per face → `.Perform(new Handle_Message_
+  ProgressIndicator_1())` (needs this progress-handle arg, unlike most
+  single-shape ops elsewhere in this file) → `.SewedShape()`, then an explorer
+  pulls the `TopAbs_SHELL` out via `TopoDS.Shell_1`. **Closure check — verified
+  NOT to be `.IsNull()`, volume sign, or `BRepCheck_Analyzer`** (all tried and
+  rejected): `BRepBuilderAPI_MakeSolid` happily builds a non-null "solid" from an
+  OPEN shell, and `BRepGProp.VolumeProperties` returns a plausible-looking
+  *wrong* number for one too. The reliable signal is **`sew.NbFreeEdges()`**:
+  exactly `0` for a properly closed shell, `>0` for an open one (confirmed: 0 for
+  a full 6-face box, 4 for 5-of-6, 8 for 3-of-6) — this is the gate
+  `addVolumeFromSurfaces` uses. `BRepBuilderAPI_MakeSolid_3(shell)` builds the
+  solid (found by brute-force probing all 7 numbered overloads). **Unlike
+  `extrude`'s `Copy=false` (which consumes its source face), sewing does NOT
+  consume the input faces** — verified end-to-end on `bull.stp`: after sewing 6
+  rectangle-profile faces into a box solid, all 6 originals remain visible in
+  "Sketches" alongside the new solid's own 6. Accepted, not a bug — the sketches
+  stay available to reuse; suppressing them would need excluding specific faces
+  from the compound rebuild, extra complexity for a cosmetic concern.
+- Every op in this family is skipped (returns the unmodified shape) on
+  unresolved operands, a builder throw, or (surface/volume specifically) a
+  structurally invalid selection — same graceful-degradation rule as every
+  other op in this file.
+
 ## Build & test
 
 ```bash
@@ -427,6 +528,23 @@ apply (mesh path, matching the B-rep path's placement/orientation for the same
 params) and that the B-rep-only ops (fillet/chamfer, feature modeling, mate, and the
 **2D profile composer**) are disabled. Apply/undo repeatedly + open/close → host
 memory stays flat (OCCT handle-leak check, same as above).
+
+Then exercise **bottom-up wireframe modeling** (also B-rep only): click the new
+**📍 Point** select-mode button and confirm a sprite appears at every existing vertex
+of `bull.stp`. In the **Edits** panel's wireframe composer, add a **Point**, a **Line**
+(two typed endpoints), and an **Arc** → confirm each is selectable in the matching
+pick mode alongside the model's real geometry and colourable via a Part. Build 4 Lines
+forming a closed square (typed endpoints), select all 4 in **Line** mode, click
+**Build → Surface** → confirm a new face appears under "Sketches"; try an open
+(non-closing) set of lines → confirm a graceful no-op (no crash, no new face). Build 6
+Rectangle profiles positioned as a box's faces, select all 6 in **Surf** mode, click
+**Build → Volume** → confirm a new closed solid appears in **Vol** mode; try only 5 of
+the 6 (open shell) → confirm a graceful no-op. **Undo/Redo/Clear**; close and reopen
+the tab → all five op kinds reload from `bull.stp.edits.json`. **Export** the model →
+reopen the output → the points/lines/arcs/surfaces/volumes are baked in. On
+`cube.stl`, confirm the **📍 Point** button and the wireframe/build composers are
+disabled. Apply/undo repeatedly + open/close → host memory stays flat (OCCT
+handle-leak check, same as above).
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.

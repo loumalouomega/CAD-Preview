@@ -76,6 +76,14 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addRectangleProfile":
     case "addPolygonProfile":
       return addProfile(oc, shape, op, cleanup);
+    case "addPoint":
+    case "addLine":
+    case "addArc":
+      return addWireframePrimitive(oc, shape, op, cleanup);
+    case "addSurfaceFromLines":
+      return addSurfaceFromLines(oc, shape, op, cleanup);
+    case "addVolumeFromSurfaces":
+      return addVolumeFromSurfaces(oc, shape, op, cleanup);
     default:
       return shape;
   }
@@ -551,6 +559,219 @@ function buildProfileFace(oc: any, op: EditOp, cleanup: Array<{ delete(): void }
       default:
         return null;
     }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Wireframe primitive creation (Point/Line/Arc): builds a bare `TopoDS_Vertex`
+ * or `TopoDS_Edge` — no existing operands, no thickness — and **appends** it,
+ * same non-destructive `compound(existing shape + new vertex/edge)` pattern as
+ * {@link addPrimitive}/{@link addProfile}. Points are display-only (surfaced by
+ * `extractVertices` in `src/meshExtract.ts`) and are never resolved as an
+ * operand by any other op, so unlike faces this has no lockstep-pipeline
+ * counterpart to keep in sync — appending a bare vertex/edge just works with
+ * the existing unconditional whole-shape vertex/edge extraction. A wireframe
+ * primitive whose builder throws is skipped.
+ *
+ * OCCT API, verified against the live WASM:
+ *   point → `BRepBuilderAPI_MakeVertex(gp_Pnt)` (unsuffixed — this class has no
+ *           `_N` overloads, unlike almost everything else in this codebase)
+ *           → `.Vertex()`.
+ *   line  → the already-verified `BRepBuilderAPI_MakeEdge_3(pnt, pnt)`.
+ *   arc   → the already-verified `gp_Circ_2(gp_Ax2_3(pnt, normal), radius)`,
+ *           trimmed via `BRepBuilderAPI_MakeEdge_9(circ, alpha1, alpha2)` (of
+ *           35 total `MakeEdge` overloads — found by probing each index with a
+ *           `(gp_Circ, number, number)` argument shape). Sweeps from
+ *           `alpha1` to `alpha2` in the increasing (counterclockwise about
+ *           `normal`) direction, wrapping through 0 if `alpha2 < alpha1` —
+ *           confirmed against the live WASM, not assumed.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+  const entity = buildWireframePrimitive(oc, op, cleanup);
+  if (!entity) return shape;
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  builder.Add(comp, shape);
+  builder.Add(comp, entity);
+  return comp;
+}
+
+/** Builds the new vertex/edge, or null on builder failure. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    switch (op.op) {
+      case "addPoint": {
+        const p = keep(pnt(oc, op.position));
+        const vertex = keep(new oc.BRepBuilderAPI_MakeVertex(p)).Vertex();
+        return vertex.IsNull() ? null : keep(vertex);
+      }
+      case "addLine": {
+        const edge = keep(new oc.BRepBuilderAPI_MakeEdge_3(keep(pnt(oc, op.start)), keep(pnt(oc, op.end)))).Edge();
+        return edge.IsNull() ? null : keep(edge);
+      }
+      case "addArc": {
+        const ax2 = keep(new oc.gp_Ax2_3(keep(pnt(oc, op.center)), keep(dir(oc, op.normal))));
+        const circ = keep(new oc.gp_Circ_2(ax2, op.radius));
+        const alpha1 = (op.startAngleDeg * Math.PI) / 180;
+        const alpha2 = (op.endAngleDeg * Math.PI) / 180;
+        const edge = keep(new oc.BRepBuilderAPI_MakeEdge_9(circ, alpha1, alpha2)).Edge();
+        return edge.IsNull() ? null : keep(edge);
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds a standalone flat face from the wire formed by the selected edges and
+ * **appends** it — same non-destructive `compound(existing shape + new face)`
+ * pattern as {@link addProfile}, and it likewise benefits from the free-face
+ * tessellation pass with zero further changes needed there. Edge `edge-N` ids
+ * are resolved via the **existing** `collectEdges`.
+ *
+ * OCCT wire-assembly API, verified against the live WASM: `BRepBuilderAPI_
+ * MakeWire_1` + `.Add_1()` per selected edge — confirmed to auto-assemble
+ * edges added in an arbitrary (shuffled) order by their shared vertices, not
+ * just sequential order, so the pick order in the view doesn't matter. `.Add_1
+ * ()`'s connectivity check is what rejects a genuinely unrelated/disconnected
+ * edge set (`.IsDone()` false) — the primary graceful-skip gate. **Caveat,
+ * verified not assumed:** a chain of edges that connects but does not loop
+ * back to its own start (an "almost closed" open polyline) may still succeed
+ * through `.IsDone()` and `BRepBuilderAPI_MakeFace_15` in this OCCT build —
+ * OCCT wires are not required to be closed, and no reliable "is this wire a
+ * closed loop" API was found in this binding (`BRepTools.IsReallyClosed`/
+ * `DetectClosedness` need extra args this binding doesn't expose usefully;
+ * `ShapeAnalysis_Wire.CheckClosed` did not distinguish the two cases in
+ * testing). Accepted: a best-effort face from an open chain is harmless
+ * (never a crash), consistent with this codebase's graceful-degradation rule.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>): any {
+  const face = buildSurfaceFromLines(oc, shape, op, cleanup);
+  if (!face) return shape;
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  builder.Add(comp, shape);
+  builder.Add(comp, face);
+  return comp;
+}
+
+/** Builds the new face from the selected edges, or null on unresolved operands / failure. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const edges = collectEdges(oc, shape, cleanup);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const picked = op.edges.map((id) => edges[edgeIndex(id)]).filter((e): e is any => e != null);
+    if (picked.length < 3) return null; // a closed loop needs at least 3 edges
+
+    const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+    for (const e of picked) mkWire.Add_1(e);
+    if (!mkWire.IsDone()) return null; // edges don't connect into a wire at all
+
+    const wire = keep(mkWire.Wire());
+    const face = keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face();
+    return face.IsNull() ? null : keep(face);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds a new solid by sewing the selected faces into a closed shell and
+ * **appends** it — the standard extra-body append pattern used throughout this
+ * file. Face `face-N` ids are resolved via the **existing** `collectFaces`
+ * (already includes the free-face pass, so a face built by `addSurfaceFromLines`
+ * is naturally selectable here too — zero further changes needed).
+ *
+ * OCCT sewing API, verified against the live WASM (probed with a realistic
+ * input: 6 mutually-disconnected faces, built independently — not from
+ * `BRepPrimAPI_MakeBox` — matching what a user actually selects):
+ *   `new BRepBuilderAPI_Sewing(tolerance, true, true, true, false)` (this
+ *   class's only constructor takes all 5 params — no defaulted overload in
+ *   this binding) → `.Add(face)` per face → `.Perform(new Handle_Message_
+ *   ProgressIndicator_1())` (the unsuffixed `Perform` needs this progress
+ *   handle arg, unlike most single-shape ops in this codebase, which skip a
+ *   progress arg entirely) → `.SewedShape()`, then an explorer pulls the
+ *   `TopAbs_SHELL` out of the result (`TopoDS.Shell_1`).
+ *
+ * **Closure check — verified NOT to be `.IsNull()`/volume sign/`BRepCheck_
+ * Analyzer`** (all tried and rejected during probing): `BRepBuilderAPI_
+ * MakeSolid` happily builds a non-null "solid" from an OPEN shell, and
+ * `BRepGProp.VolumeProperties` returns a plausible-looking (wrong) number for
+ * an open shell too — neither is a reliable skip signal. The reliable one is
+ * `sew.NbFreeEdges()`: exactly 0 for a properly closed shell, > 0 (the
+ * boundary edges of whatever's missing) for an open one — confirmed with a
+ * unit box built from all 6 faces (0 free edges) vs. 5-of-6 (4 free edges) vs.
+ * 3-of-6 (8 free edges). This is the gate `addVolumeFromSurfaces` uses.
+ *
+ * `BRepBuilderAPI_MakeSolid_3(shell)` builds the solid from the verified-closed
+ * shell (found by brute-force probing all 7 numbered overloads against a real
+ * shell argument).
+ *
+ * **Unlike `extrude`'s `Copy=false` (which reuses and thereby consumes its
+ * source face), sewing does NOT consume the input faces** — verified end-to-end
+ * on `bull.stp`: after sewing 6 rectangle-profile faces into a box solid, all 6
+ * original faces are still present as free faces (visible in "Sketches")
+ * alongside the new solid's own 6. This is accepted, not a bug: the sewn shell
+ * is built from copies, so the original sketches remain available to reuse for
+ * another operation. Not worth suppressing — doing so would mean excluding
+ * specific faces from the compound rebuild, extra complexity for a purely
+ * cosmetic concern.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addVolumeFromSurfaces(oc: any, shape: any, op: Extract<EditOp, { op: "addVolumeFromSurfaces" }>, cleanup: Array<{ delete(): void }>): any {
+  const solid = buildVolumeFromSurfaces(oc, shape, op, cleanup);
+  if (!solid) return shape;
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  builder.Add(comp, shape);
+  builder.Add(comp, solid);
+  return comp;
+}
+
+/** Builds the new solid from the selected faces, or null on unresolved operands / an open shell / failure. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildVolumeFromSurfaces(oc: any, shape: any, op: Extract<EditOp, { op: "addVolumeFromSurfaces" }>, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const faces = collectFaces(oc, shape, cleanup);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const picked = op.faces.map((id) => faces[faceIndex(id)]).filter((f): f is any => f != null);
+    if (picked.length < 4) return null; // a closed volume needs at least 4 faces
+
+    const sew = keep(new oc.BRepBuilderAPI_Sewing(1e-6, true, true, true, false));
+    for (const f of picked) sew.Add(f);
+    sew.Perform(keep(new oc.Handle_Message_ProgressIndicator_1()));
+    if (sew.NbFreeEdges() > 0) return null; // open/non-manifold shell — can't make a solid
+
+    const sewn = keep(sew.SewedShape());
+    const shellExp = keep(new oc.TopExp_Explorer_2(
+      sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    ));
+    if (!shellExp.More()) return null;
+    const shell = keep(oc.TopoDS.Shell_1(shellExp.Current()));
+
+    const solid = keep(new oc.BRepBuilderAPI_MakeSolid_3(shell)).Solid();
+    return solid.IsNull() ? null : keep(solid);
   } catch {
     return null;
   }

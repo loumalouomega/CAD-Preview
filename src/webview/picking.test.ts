@@ -5,6 +5,7 @@ import { resolvePick, collectTargets } from "./picking";
 describe("resolvePick", () => {
   const face = { entityType: "surface", entityId: "face-3", groupId: "solid-1" };
   const edge = { entityType: "line", entityId: "edge-7" };
+  const point = { entityType: "point", entityId: "point-2" };
 
   it("resolves a face hit to the face in surface mode", () => {
     expect(resolvePick(face, "surface")).toEqual({ entityType: "surface", entityId: "face-3" });
@@ -31,6 +32,18 @@ describe("resolvePick", () => {
     expect(resolvePick({ entityType: "surface" }, "surface")).toBeNull();
     expect(resolvePick({ entityType: "surface", entityId: "face-0" }, "volume")).toBeNull();
   });
+
+  it("resolves a point hit in point mode", () => {
+    expect(resolvePick(point, "point")).toEqual({ entityType: "point", entityId: "point-2" });
+  });
+
+  it("ignores a point hit when not in point mode, and non-point hits in point mode", () => {
+    expect(resolvePick(point, "surface")).toBeNull();
+    expect(resolvePick(point, "line")).toBeNull();
+    expect(resolvePick(point, "volume")).toBeNull();
+    expect(resolvePick(face, "point")).toBeNull();
+    expect(resolvePick(edge, "point")).toBeNull();
+  });
 });
 
 describe("collectTargets", () => {
@@ -47,6 +60,11 @@ describe("collectTargets", () => {
     line.userData = { entityType: "line", entityId: "edge-0" };
     edges.add(line);
     root.add(edges);
+    const points = new THREE.Group();
+    const sprite = new THREE.Sprite();
+    sprite.userData = { entityType: "point", entityId: "point-0" };
+    points.add(sprite);
+    root.add(points);
     return root;
   }
 
@@ -60,5 +78,10 @@ describe("collectTargets", () => {
   it("collects only edge lines for line mode", () => {
     const root = buildModel();
     expect(collectTargets(root, "line").map((o) => o.userData.entityId)).toEqual(["edge-0"]);
+  });
+
+  it("collects only point sprites for point mode", () => {
+    const root = buildModel();
+    expect(collectTargets(root, "point").map((o) => o.userData.entityId)).toEqual(["point-0"]);
   });
 });

@@ -42,7 +42,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 
 | `type` | Action |
 |--------|--------|
-| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges)` → `viewer.setModel(group)`, recolour, enable all pick modes |
+| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` → `viewer.setModel(group)`, recolour, enable all pick modes (`volume`/`surface`/`line`/`point`) |
 | `"tree"` | `TreePanel.render(msg.root)` |
 | `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `splitMeshesIntoFacets(obj)` → `viewer.setModel(model)`, pick modes `volume` + `surface` |
 | `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` |
@@ -157,6 +157,14 @@ getCameraUp(): THREE.Vector3
 Returns `camera.up` (the "up" vector used by OrbitControls).
 
 **Scene state:**
+
+**Point rendering:** each `frame()` call (on `setModel`/`fitView`/`resetView`)
+computes `pointSpriteScale = radius * 0.01` (the model's bounding-sphere radius,
+same input `pickThreshold` already uses) and applies it to every `THREE.Sprite`'s
+`.scale` in the model — this keeps point markers a roughly constant fraction of
+model size regardless of scale. This is a separate mechanism from
+`raycaster.params.Line.threshold` (Line-only); sprites have their own hit-testing
+via `THREE.Sprite`'s native raycasting.
 
 ```typescript
 highlightGroup(groupId: string | null): void
@@ -316,9 +324,26 @@ Draws `text` centered on a 64×64 `<canvas>` with a colored background matching 
 Decodes base64-encoded geometry from the host and builds a `THREE.Group`.
 
 ```typescript
-function buildGroupFromEncoded(encodedMeshes: EncodedMesh[]): THREE.Group
+function buildGroupFromEncoded(
+  encodedMeshes: EncodedMesh[],
+  encodedEdges: EncodedEdge[] = [],
+  encodedPoints: EncodedPoint[] = []
+): THREE.Group
 ```
-Groups `encodedMeshes` by `groupId`. For each group, calls `mergeAndBuild()` to produce a `THREE.Mesh`. Sets `mesh.userData.groupId` so `Viewer.highlightGroup()` can identify it. Returns the root `THREE.Group`.
+Groups `encodedMeshes` by `groupId`. For each group, calls `mergeAndBuild()` to produce a `THREE.Mesh`. Sets `mesh.userData.groupId` so `Viewer.highlightGroup()` can identify it. Edges become a sibling `"edges"` group of `THREE.Line`s; points become a sibling `"points"` group of `THREE.Sprite`s (via `buildPointSprite`). Returns the root `THREE.Group`.
+
+```typescript
+function buildPointSprite(ep: EncodedPoint): THREE.Sprite
+```
+Builds a `THREE.Sprite` at the decoded position, tagged `userData = { entityType:
+"point", entityId: ep.pointId }`. Uses a single shared, lazily-built canvas dot
+texture (`dotTexture()` — memoized on first call, **not** built eagerly at module
+load: an earlier eager version broke `viewer.test.ts`, which imports this module
+transitively in a plain-Node vitest environment with no `document` available).
+`THREE.Sprite` was chosen over `THREE.Points`/`PointsMaterial` (which would raycast
+to a shared-buffer index, not a distinct `Object3D`, breaking the "one entity, one
+tagged object" invariant every other picking/colouring path relies on) and over
+per-vertex mesh geometry (real triangle cost × N, doesn't stay constant screen-size).
 
 ```typescript
 function mergeAndBuild(meshes: { positions: Float32Array; indices: Uint32Array }[]): THREE.Mesh
@@ -485,6 +510,18 @@ user-controlled; `main.ts` rejects a draft where `up` is (anti-)parallel to `nor
 before pushing (mirroring `validateEditOp`'s `notParallel` check). A sketch is
 created to be picked afterward (Surf mode) and fed into the feature composer's
 `profile` field — the two composers work together, not independently.
+
+The **wireframe composer** (Point/Line/Arc) uses `onApplyWireframe(draft:
+WireframeDraft)` — no selection needed, just typed coordinates — and IS registered
+in `brepOnlyEls`. A separate **build composer** — a single row of "Surface" and
+"Volume" buttons, reusing `.compose-row` — calls `onBuildSurfaceFromLines()` /
+`onBuildVolumeFromSurfaces()` directly with **no capture step**, unlike the boolean
+composer's two-operand "Set A then Apply" pattern: `main.ts` reads the live
+selection (`selection.list()` filtered to `entityType==="line"` or `"surface"`)
+at click time, since each op needs exactly one operand set, which is already
+what's currently selected in Line/Surf mode. Both guard a minimum count
+client-side (`>=3` lines, `>=4` faces) before pushing, matching `validateEditOp`'s
+gate so a rejected click never silently no-ops without feedback.
 
 ## `src/webview/meshEdits.ts`
 

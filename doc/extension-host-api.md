@@ -153,6 +153,7 @@ Manages the OpenCascade.js WASM singleton and performs B-rep parsing and tessell
 interface BRepResult {
   groups: SolidGroup[]   // from meshExtract.ts (faces, grouped by solid)
   edges: EdgeLine[]      // from meshExtract.ts (deduped edge polylines)
+  points: PointEntity[]  // from meshExtract.ts (every vertex in the shape)
   tree: TreeNode         // from protocol.ts
 }
 ```
@@ -177,7 +178,7 @@ async function loadBRep(
   ops?: EditOp[]            // replayable edit op-list (default [])
 ): Promise<BRepResult>
 ```
-High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, and `buildTree()` to build the component hierarchy. With an empty `ops` this is the original read-only path; the source bytes are never modified.
+High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, `extractVertices()` to extract every vertex in the shape, and `buildTree()` to build the component hierarchy. With an empty `ops` this is the original read-only path; the source bytes are never modified.
 
 ```typescript
 function readShape(
@@ -327,6 +328,45 @@ resolves to the exact face OCCT just built. Extruding a profile **consumes** it 
 no duplicate face is left behind in `"Sketches"` afterward. A profile whose builder
 throws is skipped.
 
+**Bottom-up wireframe modeling (M8)** — `addWireframePrimitive()` (point/line/arc),
+`addSurfaceFromLines()`, and `addVolumeFromSurfaces()` — is B-rep only
+(`BREP_ONLY_OPS`), all five ops. Point/line/arc follow the same append pattern as
+every other creation op: `BRepBuilderAPI_MakeVertex(pnt)` (unsuffixed — this class,
+like `BRepBuilderAPI_Sewing` below, has no `_N` overloads in this binding), the
+already-verified `BRepBuilderAPI_MakeEdge_3(pnt, pnt)` for lines, and the
+already-verified `gp_Circ_2` trimmed via `BRepBuilderAPI_MakeEdge_9(circ, alpha1,
+alpha2)` for arcs (radians; found among the 35 `MakeEdge` overloads). Neither points
+nor edges built this way are resolved as operands by anything else — `addLine`/
+`addArc` take typed `Vec3` coordinates, not entity-id references, so there is
+**no `collectVertices()`** in this file.
+
+`addSurfaceFromLines()` resolves `edge-N` ids via the **existing** `collectEdges()`
+(unchanged), assembles them with `BRepBuilderAPI_MakeWire_1` + `.Add_1()` per edge —
+verified to auto-connect edges added in shuffled order via their shared vertices —
+then `BRepBuilderAPI_MakeFace_15(wire, true)`. `.IsDone()` catches genuinely
+disconnected edges but **not** an "almost closed" open chain (no reliable
+closed-loop check was found in this binding — `BRepTools.IsReallyClosed`/
+`DetectClosedness` need args this binding doesn't expose usefully, and
+`ShapeAnalysis_Wire.CheckClosed` didn't distinguish closed from open in testing);
+an open chain may still produce a best-effort face, which is harmless. The
+resulting face flows through the existing free-face pass with no further changes.
+
+`addVolumeFromSurfaces()` resolves `face-N` ids via the **existing** `collectFaces()`
+(which already includes the M7 free-face pass, so an M8b-built surface is
+selectable here too), sews them with `new BRepBuilderAPI_Sewing(tolerance, true,
+true, true, false)` (5 required params, no shorter overload) → `.Add(face)` per
+face → `.Perform(new Handle_Message_ProgressIndicator_1())` → `.SewedShape()`, pulls
+the `TopAbs_SHELL` via `TopoDS.Shell_1`. The closure check is **`sew.NbFreeEdges()`**
+— `0` for a properly closed shell, `>0` for an open one — found only after
+`.IsNull()`, sign/magnitude of `BRepGProp.VolumeProperties`, and
+`BRepBuilderAPI_MakeSolid` all gave misleading non-error results on an open shell.
+`BRepBuilderAPI_MakeSolid_3(shell)` builds the final solid. **Sewing does not
+consume its input faces** (unlike extrude's `Copy=false`) — the source faces remain
+visible in `"Sketches"` after a successful volume build; left as-is rather than
+suppressed (would need excluding specific faces from the compound rebuild, extra
+complexity for a cosmetic concern). Any op with unresolved operands, a builder
+throw, or (surface/volume specifically) a structurally invalid selection is skipped.
+
 ---
 
 ## `src/editOps.ts`, `src/editsStore.ts`, `src/editsSidecar.ts`
@@ -372,6 +412,11 @@ interface FaceMesh {
 interface EdgeLine {
   edgeId: string            // stable per-edge entity id ("edge-N")
   positions: Float32Array   // consecutive xyz points; pairs form polyline segments
+}
+
+interface PointEntity {
+  pointId: string            // stable per-vertex entity id ("point-N")
+  position: [number, number, number]
 }
 
 interface SolidGroup {
@@ -424,6 +469,17 @@ Explores every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` bucket +
 function polylineFromDiscretizer(disc: OcctDiscretizer): Float32Array
 ```
 Pure helper (unit-tested) that packs a discretizer's points into a flat xyz array, deleting each `gp_Pnt` handle it reads.
+
+```typescript
+function extractVertices(oc: any, shape: any): PointEntity[]
+```
+Explores every `TopoDS_VERTEX` in the whole shape (`TopExp_Explorer_2(shape,
+TopAbs_VERTEX, TopAbs_SHAPE)`), de-duplicating by `HashCode` bucket + `IsSame` (same
+technique as `extractEdges`). Unlike face/edge extraction there is no claim/free
+distinction and no discretization filter — a vertex is always exactly one point.
+Runs unconditionally over the whole shape (original geometry's corners **and** any
+user-added standalone points), since nothing downstream ever resolves a `point-N`
+id back to a live vertex — point extraction is purely for display.
 
 **Memory discipline:** Every OCCT handle created in these functions is pushed onto a local `cleanup[]` array. A `try/finally` block deletes them in reverse order regardless of success or failure. In `extractEdges`, deduped edge handles are kept alive in `cleanup` until the end so later `IsSame` comparisons stay valid.
 

@@ -6,7 +6,7 @@ export interface PartsPanelCallbacks {
   onRemovePart: (index: number) => void;
   onRename: (index: number, name: string) => void;
   onRecolor: (index: number, color: string) => void;
-  onRemoveEntity: (index: number, entityType: "volume" | "surface" | "line", entityId: string) => void;
+  onRemoveEntity: (index: number, entityType: "volume" | "surface" | "line" | "point", entityId: string) => void;
   onSelectPart: (index: number | null) => void;
 }
 
@@ -49,7 +49,7 @@ export class PartsPanel {
 
     const chevron = document.createElement("span");
     chevron.className = "part-chevron";
-    const total = part.volumes.length + part.surfaces.length + part.lines.length;
+    const total = part.volumes.length + part.surfaces.length + part.lines.length + part.points.length;
     chevron.textContent = total > 0 ? "▾" : " ";
     row.appendChild(chevron);
 
@@ -72,8 +72,8 @@ export class PartsPanel {
 
     const badge = document.createElement("span");
     badge.className = "part-badge";
-    badge.textContent = `${part.volumes.length}/${part.surfaces.length}/${part.lines.length}`;
-    badge.title = "volumes / surfaces / lines";
+    badge.textContent = `${part.volumes.length}/${part.surfaces.length}/${part.lines.length}/${part.points.length}`;
+    badge.title = "volumes / surfaces / lines / points";
     row.appendChild(badge);
 
     const assign = document.createElement("button");
@@ -112,10 +112,11 @@ export class PartsPanel {
   }
 
   private buildEntities(part: Part, index: number): HTMLElement | null {
-    const rows: Array<["volume" | "surface" | "line", string]> = [
+    const rows: Array<["volume" | "surface" | "line" | "point", string]> = [
       ...part.volumes.map((id) => ["volume", id] as ["volume", string]),
       ...part.surfaces.map((id) => ["surface", id] as ["surface", string]),
       ...part.lines.map((id) => ["line", id] as ["line", string]),
+      ...part.points.map((id) => ["point", id] as ["point", string]),
     ];
     if (rows.length === 0) return null;
 

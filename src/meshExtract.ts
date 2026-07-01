@@ -376,6 +376,62 @@ function discretizeEdge(oc: any, edge: any, cleanup: Array<{ delete(): void }>):
   }
 }
 
+/** One vertex's position plus its stable per-point entity id. */
+export interface PointEntity {
+  pointId: string;
+  /** A single xyz triple (not a polyline — a vertex is always one point). */
+  position: [number, number, number];
+}
+
+/**
+ * Extracts every unique vertex of `shape` (`TopExp_Explorer` over
+ * `TopAbs_VERTEX`, de-duplicated by `HashCode` bucket + `IsSame`, mirroring
+ * {@link extractEdges} almost line-for-line). Unlike faces, this is
+ * **unconditional over the whole shape** — no "claimed by a solid" pass — so
+ * Point mode shows every vertex in the model: original geometry's corners AND
+ * user-added standalone points (`addPoint`), exactly how Line mode already
+ * shows every edge (original + added). Points are never resolved as operands
+ * by any other op, so unlike faces this extraction has no lockstep-pipeline
+ * counterpart to keep in sync in `occtOperations.ts` — it's display-only.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function extractVertices(oc: any, shape: any): PointEntity[] {
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const points: PointEntity[] = [];
+    const seen = new Map<number, Array<{ IsSame(o: unknown): boolean }>>();
+
+    const exp = new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    cleanup.push(exp);
+
+    for (; exp.More(); exp.Next()) {
+      const vertex = oc.TopoDS.Vertex_1(exp.Current());
+      const hash = vertex.HashCode(HASH_UPPER);
+      const bucket = seen.get(hash);
+      if (bucket && bucket.some((v) => v.IsSame(vertex))) {
+        vertex.delete();
+        continue;
+      }
+      cleanup.push(vertex);
+      if (bucket) bucket.push(vertex);
+      else seen.set(hash, [vertex]);
+
+      const pnt = oc.BRep_Tool.Pnt(vertex);
+      points.push({ pointId: `point-${points.length}`, position: [pnt.X(), pnt.Y(), pnt.Z()] });
+      pnt.delete();
+    }
+    return points;
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
+    }
+  }
+}
+
 /**
  * Flat tessellation — kept for unit-test compatibility.
  * New callers should prefer tessellateByGroup.

@@ -638,7 +638,8 @@ body {
 
 .compose-feature,
 .compose-primitive,
-.compose-profile {
+.compose-profile,
+.compose-wireframe {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
@@ -648,6 +649,7 @@ body {
    source format, so the composer is never disabled via setBRepOnly(). */
 .compose-feature.disabled,
 .compose-profile.disabled,
+.compose-wireframe.disabled,
 .compose-row.disabled {
   opacity: 0.4;
   pointer-events: none;

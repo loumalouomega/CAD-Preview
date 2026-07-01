@@ -161,7 +161,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
-      const { groups, edges, tree } = await loadBRep(this.context.extensionPath, bytes, format, ops);
+      const { groups, edges, points, tree } = await loadBRep(this.context.extensionPath, bytes, format, ops);
       post({
         type: "geometry",
         meshes: groups.flatMap((g) =>
@@ -175,6 +175,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         edges: edges.map((e) => ({
           positions: encodeBuffer(e.positions),
           edgeId: e.edgeId,
+        })),
+        points: points.map((p) => ({
+          position: encodeBuffer(new Float32Array(p.position)),
+          pointId: p.pointId,
         })),
       });
       post({ type: "tree", root: tree });
@@ -322,6 +326,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="tree-toggle" title="Toggle component tree" style="display:none">🌳 Tree</button>
     <div id="select-group" title="Pick entities in the view to assign to a part">
       <button id="sel-toggle" title="Toggle selection mode">🖱️ Select</button>
+      <button class="sel-mode" data-mode="point" title="Pick points (vertices)">📍 Point</button>
       <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">🧊 Vol</button>
       <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">◼️ Surf</button>
       <button class="sel-mode" data-mode="line" title="Pick lines (edges)">📏 Line</button>

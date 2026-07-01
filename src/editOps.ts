@@ -57,6 +57,16 @@ export interface AddCircleProfileOp { op: "addCircleProfile"; center: Vec3; norm
 export interface AddRectangleProfileOp { op: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; }
 /** Add a standalone flat regular `sides`-gon profile face of circumradius `radius`. */
 export interface AddPolygonProfileOp { op: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; }
+/** Add a standalone point (vertex) at `position`. Never resolved as an operand by any other op — display-only. */
+export interface AddPointOp { op: "addPoint"; position: Vec3; }
+/** Add a standalone straight-line edge from `start` to `end`. */
+export interface AddLineOp { op: "addLine"; start: Vec3; end: Vec3; }
+/** Add a standalone circular-arc edge: the circle at (`center`,`normal`,`radius`), trimmed from `startAngleDeg` to `endAngleDeg` (sweeping counterclockwise about `normal`, wrapping through 0° if `endAngleDeg < startAngleDeg`). */
+export interface AddArcOp { op: "addArc"; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; }
+/** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
+export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
+/** Build a new solid by sewing the selected faces into a closed shell. */
+export interface AddVolumeFromSurfacesOp { op: "addVolumeFromSurfaces"; faces: string[]; }
 
 export type EditOp =
   | TranslateOp | RotateOp | ScaleOp | MirrorOp
@@ -64,7 +74,8 @@ export type EditOp =
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
-  | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp;
+  | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
+  | AddPointOp | AddLineOp | AddArcOp | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp;
 
 export type EditOpKind = EditOp["op"];
 
@@ -73,12 +84,14 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
+  "addPoint", "addLine", "addArc", "addSurfaceFromLines", "addVolumeFromSurfaces",
 ]);
 
 /** Ops only available for B-rep sources (meshes have no sketch/exact topology). */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
+  "addPoint", "addLine", "addArc", "addSurfaceFromLines", "addVolumeFromSurfaces",
 ]);
 
 function isFiniteNumber(v: unknown): v is number {
@@ -107,6 +120,11 @@ function asNonZeroVec3(v: unknown): Vec3 | null {
   if (!vec) return null;
   const [x, y, z] = vec;
   return x * x + y * y + z * z > 0 ? vec : null;
+}
+
+/** True when `a` and `b` are exactly equal component-wise (for rejecting degenerate zero-length lines). */
+function vecEqual(a: Vec3, b: Vec3): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 }
 
 /** True when `a` and `b` are not (anti-)parallel — i.e. their cross product is non-zero. */
@@ -268,6 +286,32 @@ export function validateEditOp(raw: unknown): EditOp | null {
         && isFiniteNumber(o.sides) && Number.isInteger(o.sides) && o.sides >= 3
         ? { op: "addPolygonProfile", center, normal, up, radius: o.radius, sides: o.sides }
         : null;
+    }
+    case "addPoint": {
+      const position = asVec3(o.position);
+      return position ? { op: "addPoint", position } : null;
+    }
+    case "addLine": {
+      const start = asVec3(o.start);
+      const end = asVec3(o.end);
+      return start && end && !vecEqual(start, end) ? { op: "addLine", start, end } : null;
+    }
+    case "addArc": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      return center && normal && isPositive(o.radius)
+        && isFiniteNumber(o.startAngleDeg) && isFiniteNumber(o.endAngleDeg)
+        && o.startAngleDeg !== o.endAngleDeg
+        ? { op: "addArc", center, normal, radius: o.radius, startAngleDeg: o.startAngleDeg, endAngleDeg: o.endAngleDeg }
+        : null;
+    }
+    case "addSurfaceFromLines": {
+      const edges = asIdArray(o.edges, 3); // a closed loop needs at least 3 edges
+      return edges ? { op: "addSurfaceFromLines", edges } : null;
+    }
+    case "addVolumeFromSurfaces": {
+      const faces = asIdArray(o.faces, 4); // a closed volume needs at least 4 faces
+      return faces ? { op: "addVolumeFromSurfaces", faces } : null;
     }
     default:
       return null;

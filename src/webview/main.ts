@@ -247,6 +247,52 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push(op);
     setStatus("");
   },
+  onApplyWireframe: (draft) => {
+    // Point/Line/Arc are self-contained placements — no selection needed.
+    let op: EditOp;
+    switch (draft.kind) {
+      case "addPoint":
+        op = { op: "addPoint", position: draft.position };
+        break;
+      case "addLine":
+        if (draft.start.every((v, i) => v === draft.end[i])) {
+          setStatus("Start and end must differ.", true);
+          return;
+        }
+        op = { op: "addLine", start: draft.start, end: draft.end };
+        break;
+      case "addArc":
+        if (draft.radius <= 0) { setStatus("Arc radius must be positive.", true); return; }
+        if (draft.startAngleDeg === draft.endAngleDeg) { setStatus("Start and end angle must differ.", true); return; }
+        op = {
+          op: "addArc", center: draft.center, normal: draft.normal, radius: draft.radius,
+          startAngleDeg: draft.startAngleDeg, endAngleDeg: draft.endAngleDeg,
+        };
+        break;
+    }
+    editsModel.push(op);
+    setStatus("");
+  },
+  onBuildSurfaceFromLines: () => {
+    // Reads the live selection directly — Line mode must already be active with
+    // the loop's edges picked. Host resolves ids fresh, so no capture step needed.
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length < 3) {
+      setStatus("Select 3+ lines (Line mode) forming a closed loop.", true);
+      return;
+    }
+    editsModel.push({ op: "addSurfaceFromLines", edges });
+    setStatus("");
+  },
+  onBuildVolumeFromSurfaces: () => {
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    if (faces.length < 4) {
+      setStatus("Select 4+ surfaces (Surf mode) forming a closed shell.", true);
+      return;
+    }
+    editsModel.push({ op: "addVolumeFromSurfaces", faces });
+    setStatus("");
+  },
 });
 
 /** True when `a` and `b` are not (anti-)parallel — their cross product is non-zero. */
@@ -432,10 +478,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "geometry":
       try {
         setStatus("Building geometry…");
-        const group = buildGroupFromEncoded(msg.meshes, msg.edges);
+        const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group);
         refreshColors();
-        setSelectableModes(["volume", "surface", "line"]);
+        setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
         showSidebar();
         setStatus("");

@@ -48,10 +48,25 @@ interface EncodedEdge {
 One per **unique edge** (B-rep), discretized to a polyline. Shared edges are
 de-duplicated host-side; `edgeId` is stable across reopen of an unchanged file.
 
+### `EncodedPoint`
+
+```typescript
+interface EncodedPoint {
+  position: string   // base64-encoded Float32Array, length 3 (XYZ)
+  pointId: string     // stable per-vertex entity id (e.g. "point-5")
+}
+```
+
+One per **unique vertex** (B-rep) — every vertex in the shape, including the
+model's own corners as well as any user-added standalone points. Unlike faces and
+edges, points are never resolved as operands by another op (`addLine`/`addArc`
+take typed coordinates, not point-id references), so extraction is purely for
+display/picking.
+
 ### `EntityType` and `Part`
 
 ```typescript
-type EntityType = 'volume' | 'surface' | 'line'
+type EntityType = 'volume' | 'surface' | 'line' | 'point'
 
 interface Part {
   name: string
@@ -59,13 +74,15 @@ interface Part {
   volumes: string[]   // solid ids
   surfaces: string[]  // face ids
   lines: string[]     // edge ids
+  points: string[]    // point ids
 }
 ```
 
 A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the
-stable topological ids above (`solid-*`, `face-*`, `edge-*`), or, for mesh
-formats, stable per-object ids (`node-*`). Parts are persisted in the JSON
-sidecar — see [File Formats](./file-formats.md).
+stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for
+mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats
+have no assignable lines or points). Parts are persisted in the JSON sidecar — see
+[File Formats](./file-formats.md).
 
 ### `EditOp`
 
@@ -86,6 +103,11 @@ type EditOp =
   | { op: 'loft'; profiles: string[] }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
+  | { op: 'addPoint'; position: Vec3 }
+  | { op: 'addLine'; start: Vec3; end: Vec3 }
+  | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number }
+  | { op: 'addSurfaceFromLines'; edges: string[] }   // >= 3 edge ids, must close into a loop
+  | { op: 'addVolumeFromSurfaces'; faces: string[] } // >= 4 face ids, must sew into a closed shell
 ```
 
 An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the
@@ -94,8 +116,10 @@ tolerance gate — malformed ops are dropped, never thrown. The list is persiste
 the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md). All op
 kinds are implemented: transforms, booleans, fillet/chamfer, feature modeling
 (extrude/revolve/sweep/loft), assembly (explode/mate), primitive creation
-(box/sphere/cylinder/cone/torus/prism), and 2D profile sketches (circle/rectangle/
-polygon, B-rep only, for use as a later feature-modeling `profile`).
+(box/sphere/cylinder/cone/torus/prism), 2D profile sketches (circle/rectangle/
+polygon, B-rep only, for use as a later feature-modeling `profile`), and
+bottom-up wireframe modeling (addPoint/addLine/addArc/addSurfaceFromLines/
+addVolumeFromSurfaces, B-rep only).
 
 ---
 
@@ -103,7 +127,7 @@ polygon, B-rep only, for use as a later feature-modeling `profile`).
 
 ```typescript
 type HostToWebview =
-  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[] }
+  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
   | { type: 'tree';     root: TreeNode }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | { type: 'parts';    parts: Part[] }
@@ -114,11 +138,11 @@ type HostToWebview =
 
 ### `geometry`
 
-Sent after B-rep tessellation. Contains every face as an encoded mesh plus every
-unique edge as a polyline. The webview calls
-`buildGroupFromEncoded(msg.meshes, msg.edges)` (one `THREE.Mesh` per face, one
-`THREE.Line` per edge, parented under per-solid groups) and then
-`viewer.setModel(group)`.
+Sent after B-rep tessellation. Contains every face as an encoded mesh, every unique
+edge as a polyline, and every vertex as a point. The webview calls
+`buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` (one `THREE.Mesh` per
+face, one `THREE.Line` per edge, one `THREE.Sprite` per point, parented under
+per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group)`.
 
 ```json
 {
@@ -129,6 +153,9 @@ unique edge as a polyline. The webview calls
   ],
   "edges": [
     { "positions": "CCCC...", "edgeId": "edge-0" }
+  ],
+  "points": [
+    { "position": "DDDD...", "pointId": "point-0" }
   ]
 }
 ```
@@ -174,7 +201,7 @@ and renders the Parts panel.
 {
   "type": "parts",
   "parts": [
-    { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": ["face-3"], "lines": [] }
+    { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": ["face-3"], "lines": [], "points": [] }
   ]
 }
 ```
@@ -259,7 +286,7 @@ part list to the `<model>.parts.json` sidecar via `writeParts()`. The CAD file
 itself is never written — only the sidecar.
 
 ```json
-{ "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [] } ] }
+{ "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [], "points": [] } ] }
 ```
 
 ### `editsChanged`

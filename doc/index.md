@@ -34,12 +34,12 @@ features:
     details: For multi-solid B-rep assemblies or multi-mesh glTF files, a component tree panel shows the hierarchy. Click any node to highlight that solid in the 3D view.
 
   - icon: 🏷️
-    title: Define Parts (Volumes / Surfaces / Lines)
-    details: Click solids, faces, or edges in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only.
+    title: Define Parts (Volumes / Surfaces / Lines / Points)
+    details: Click solids, faces, edges, or vertices in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only.
 
   - icon: ✏️
     title: Non-destructive Editing
-    details: Apply transforms (move / rotate / scale / mirror), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate), primitive creation (box/cube, sphere, cylinder, cone, torus, prism), and 2D profile sketches (circle, rectangle, polygon) for use as extrude/revolve/sweep/loft profiles. Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
+    details: Apply transforms (move / rotate / scale / mirror), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate), primitive creation (box/cube, sphere, cylinder, cone, torus, prism), 2D profile sketches (circle, rectangle, polygon) for use as extrude/revolve/sweep/loft profiles, and bottom-up wireframe modeling (points, lines, arcs → surfaces from lines → volumes from surfaces). Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
 
   - icon: 🔬
     title: Wireframe & Grid Helpers

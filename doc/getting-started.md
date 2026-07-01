@@ -64,7 +64,7 @@ The toolbar appears at the top of the editor:
 | **Grid** | Show/hide the world-space grid and axis helpers |
 | **Export** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) |
 | **Tree** | Show/hide the component tree panel (visible only for models with multiple components) |
-| **Select / Vol·Surf·Line** | Toggle entity selection mode and choose what a click picks — volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)). |
+| **Select / Point·Vol·Surf·Line** | Toggle entity selection mode and choose what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). |
 
 ### View-Controls Panel
 
@@ -110,7 +110,7 @@ To assign geometry to a part:
    on that part's row to assign the current selection to it.
 
 Each part has an editable name, a colour swatch (click to recolour), and a
-`v/s/l` badge counting its volumes / surfaces / lines. Assigned entities are
+`v/s/l/p` badge counting its volumes / surfaces / lines / points. Assigned entities are
 painted in the part's colour in the 3D view. Expand a part to see and remove
 individual entities; click a part row to highlight all of its entities. The
 **✕** on a part deletes it.
@@ -123,7 +123,7 @@ file and reloaded when you reopen it — the CAD file itself is never modified. 
 > Preview segments each mesh into connected, near-coplanar **facets** on load, so
 > **Surf** picks a flat face (a cube → its 6 faces) and **Vol** picks the whole
 > object. Highly curved meshes that would split into very many facets are kept
-> whole; **Line** is disabled for meshes.
+> whole; **Line** and **Point** are disabled for meshes.
 
 ### Editing Geometry
 
@@ -149,23 +149,30 @@ To apply a transform:
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
 | **Box / Sphere / Cylinder / Cone / Torus / Prism** | Choose the primitive, enter its centre/axis/dimensions, and **Add** — appends a new body at that placement (no selection needed; all formats) |
 | **Circle / Rectangle / Polygon** | Choose the shape, enter its centre/normal/dimensions (Rectangle & Polygon also take an **Up** direction), and **Sketch** — appends a flat profile face you can later select (**Surf** mode) and feed into Extrude/Revolve/Sweep/Loft (no selection needed; B-rep only) |
+| **Point / Line / Arc** | Choose the entity, enter its coordinates (typed, not picked), and **Add** — appends a standalone point/line/arc you can select later (**Point**/**Line** mode) (no selection needed; B-rep only) |
+| **Build → Surface** | Select ≥3 lines (**Line** mode) that close into a loop and click **Surface** — assembles them into a new flat face under "Sketches" (B-rep only) |
+| **Build → Volume** | Select ≥4 surfaces (**Surf** mode) that close into a shell and click **Volume** — sews them into a new closed solid (B-rep only) |
 | **↶ / ↷** | Undo / redo the last operation |
 | **Clear** | Remove all operations (back to the original model) |
 
 The current release ships **transforms** (move/rotate/scale/mirror), **booleans**
 (unite/subtract/intersect), **fillet/chamfer**, **feature modeling**
 (extrude/revolve/sweep/loft), **assembly** ops (explode/mate), **primitive creation**
-(box/cube, sphere, cylinder, cone, torus, N-sided prism), and **2D profile sketches**
-(circle, rectangle, N-sided polygon). Transforms, booleans, explode, and primitive
-creation work on both B-rep and mesh files; fillet/chamfer, feature-modeling, mate,
-and 2D profile sketches are available only for B-rep sources (the panel disables them
+(box/cube, sphere, cylinder, cone, torus, N-sided prism), **2D profile sketches**
+(circle, rectangle, N-sided polygon), and **bottom-up wireframe modeling** (points,
+lines, arcs → surfaces built from a set of lines → volumes built from a set of
+surfaces). Transforms, booleans, explode, and primitive creation work on both B-rep
+and mesh files; fillet/chamfer, feature-modeling, mate, 2D profile sketches, and the
+wireframe/build ops are available only for B-rep sources (the panel disables them
 for meshes). Feature-modeling ops and primitives **append a new body** to the model —
 they never cut or fuse the source. For primitives, `center` is the body's geometric
 centre (box/sphere/torus) or its base centre (cylinder/cone/prism, extruded along
 `Axis`) — matching how the underlying CAD kernel places them. A 2D profile sketch
 builds a flat face, not a body — it's meant to be picked and extruded/revolved/swept/
 lofted; doing so consumes the sketch into the new solid rather than leaving a
-duplicate flat face behind.
+duplicate flat face behind. Building a Surface or Volume needs an already-closed
+selection (a loop of lines, a sealed set of surfaces); an open selection is silently
+skipped rather than producing a malformed body.
 
 When you **Export** an edited model, the edits are baked into the output file. See
 [Edits Sidecar](./file-formats.md#edits-sidecar-modeleditsjson) for the format.
