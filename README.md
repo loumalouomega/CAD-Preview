@@ -8,6 +8,8 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 
+![](https://raw.githubusercontent.com/loumalouomega/CAD-Preview/master/images/cad_preview.png)
+
 A Visual Studio Code extension that previews 3D CAD and mesh files directly in the
 editor. Open a supported file and CAD-Preview renders an interactive 3D view
 (orbit / pan / zoom) in a read-only custom editor.
