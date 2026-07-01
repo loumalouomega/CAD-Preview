@@ -150,8 +150,13 @@ the vscode-free `src/editsSidecar.ts` so they are unit-tested.
 
 | Source pipeline | Edit engine | Supported ops (current) |
 |---|---|---|
-| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror, boolean (unite/subtract/intersect), fillet, chamfer, extrude, revolve, sweep, loft, explode, mate |
-| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror, boolean (via `three-bvh-csg`), explode — fillet/chamfer, feature-modeling & mate are B-rep only |
+| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror, boolean (unite/subtract/intersect), fillet, chamfer, extrude, revolve, sweep, loft, explode, mate, addBox, addSphere, addCylinder, addCone, addTorus, addPrism |
+| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror, boolean (via `three-bvh-csg`), explode, addBox, addSphere, addCylinder, addCone, addTorus, addPrism — fillet/chamfer, feature-modeling & mate are B-rep only |
+
+Primitive-creation ops (`addBox`/`addSphere`/`addCylinder`/`addCone`/`addTorus`/
+`addPrism`) are the one op family that needs **no existing operands** — they build a
+new body from parameters alone and append it, on both pipelines, no B-rep-only
+restriction.
 
 Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops
 are dropped via `validateEditOp` (`src/editOps.ts`) and a corrupt or missing

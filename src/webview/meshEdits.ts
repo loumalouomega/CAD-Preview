@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION } from "three-bvh-csg";
 import { BREP_ONLY_OPS, type EditOp, type Vec3 } from "../editOps";
+import { makeFaceMaterial } from "./geometryBuilder";
 
 /** Single shared CSG evaluator (cheap to keep; avoids re-alloc per boolean). */
 const csg = new Evaluator();
@@ -18,10 +19,23 @@ const csg = new Evaluator();
  * topology) and are skipped here; the panel disables them for mesh files.
  */
 export function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Object3D {
+  // Counts only `addX` ops seen so far in THIS fold pass, so `prim-{K}` ids are
+  // deterministic by op-list position and stable across repeated replays of the
+  // same list (independent of whether a given primitive's mesh build succeeds).
+  let primCount = 0;
   for (const op of ops) {
     if (BREP_ONLY_OPS.has(op.op)) continue; // not meaningful on a triangle mesh
     if (op.op === "boolean") { applyMeshBoolean(root, op); continue; }
     if (op.op === "explode") { applyMeshExplode(root, op.factor); continue; }
+    if (op.op.startsWith("add")) {
+      const mesh = buildPrimitiveMesh(op);
+      if (mesh) {
+        mesh.userData.groupId = `prim-${primCount}`;
+        root.add(mesh);
+      }
+      primCount++;
+      continue;
+    }
     const m = transformMatrixForOp(op);
     if (!m) continue; // anything else is a no-op on a mesh
     for (const target of resolveMeshTargets(root, transformTargets(op))) {
@@ -83,6 +97,94 @@ function applyMeshExplode(root: THREE.Object3D, factor: number): void {
     const off = b.getCenter(new THREE.Vector3()).sub(c).multiplyScalar(factor);
     child.applyMatrix4(new THREE.Matrix4().makeTranslation(off.x, off.y, off.z));
   }
+}
+
+/**
+ * Primitive creation: builds a brand-new `THREE.Mesh` from op parameters (no
+ * existing geometry read). Since `applyEditsMesh` always folds over a *fresh
+ * clone* of the pristine loaded object (see `rebuildMeshModel` in `main.ts`),
+ * primitives don't pre-exist in that clone — this constructs-and-attaches them on
+ * every single replay, mirroring the host's `addPrimitive`/`buildPrimitiveSolid`
+ * append pattern. Reuses `makeFaceMaterial()` so primitives look identical to
+ * every other surface (parts colouring overrides it the same way either way).
+ * Canonical Three.js orientations: `CylinderGeometry`/`ConeGeometry` are
+ * vertically centred on local +Y; `TorusGeometry`'s ring lies in the local
+ * XY-plane with its hole axis along local +Z. Both are rotated to the op's
+ * `axis` via `Quaternion.setFromUnitVectors`, then translated into place.
+ */
+function buildPrimitiveMesh(op: EditOp): THREE.Mesh | null {
+  switch (op.op) {
+    case "addBox": {
+      const geo = new THREE.BoxGeometry(op.size[0], op.size[1], op.size[2]);
+      const mesh = new THREE.Mesh(geo, makeFaceMaterial());
+      mesh.applyMatrix4(new THREE.Matrix4().makeTranslation(...op.center));
+      return mesh;
+    }
+    case "addSphere": {
+      const geo = new THREE.SphereGeometry(op.radius, 32, 24);
+      const mesh = new THREE.Mesh(geo, makeFaceMaterial());
+      mesh.applyMatrix4(new THREE.Matrix4().makeTranslation(...op.center));
+      return mesh;
+    }
+    case "addCylinder": {
+      const geo = new THREE.CylinderGeometry(op.radius, op.radius, op.height, 32);
+      const mesh = new THREE.Mesh(geo, makeFaceMaterial());
+      mesh.applyMatrix4(baseAlignedMatrix(op.center, op.axis, op.height));
+      return mesh;
+    }
+    case "addCone": {
+      // Three's CylinderGeometry(radiusTop, radiusBottom, ...): local +Y is TOP.
+      // Our op has radius1 = base, radius2 = top, matching the OCCT convention.
+      const geo = new THREE.CylinderGeometry(op.radius2, op.radius1, op.height, 32);
+      const mesh = new THREE.Mesh(geo, makeFaceMaterial());
+      mesh.applyMatrix4(baseAlignedMatrix(op.center, op.axis, op.height));
+      return mesh;
+    }
+    case "addTorus": {
+      const geo = new THREE.TorusGeometry(op.majorRadius, op.minorRadius, 16, 48);
+      const mesh = new THREE.Mesh(geo, makeFaceMaterial());
+      mesh.applyMatrix4(centerAlignedMatrix(op.center, op.axis));
+      return mesh;
+    }
+    case "addPrism": {
+      // Flat radial segments (no smoothing) give a regular N-gon cross-section.
+      const geo = new THREE.CylinderGeometry(op.radius, op.radius, op.height, op.sides);
+      const mesh = new THREE.Mesh(geo, makeFaceMaterial());
+      mesh.applyMatrix4(baseAlignedMatrix(op.center, op.axis, op.height));
+      return mesh;
+    }
+    default:
+      return null;
+  }
+}
+
+const CANONICAL_Y = new THREE.Vector3(0, 1, 0);
+const CANONICAL_Z = new THREE.Vector3(0, 0, 1);
+const UNIT_SCALE = new THREE.Vector3(1, 1, 1);
+
+/**
+ * World matrix for a +Y-canonical, vertically-centred geometry (Cylinder/Cone)
+ * whose BASE (local Y = −height/2) must land at `center`, extruded along `axis`.
+ * Rotates canonical +Y onto `axis` first, then translates by `+height/2` along
+ * the (now-rotated) axis so the base — not the centre — lands on `center`.
+ */
+function baseAlignedMatrix(center: Vec3, axis: Vec3, height: number): THREE.Matrix4 {
+  const axisVec = new THREE.Vector3(...axis);
+  if (axisVec.lengthSq() === 0) axisVec.set(0, 1, 0); else axisVec.normalize();
+  const q = new THREE.Quaternion().setFromUnitVectors(CANONICAL_Y, axisVec);
+  const pos = new THREE.Vector3(...center).addScaledVector(axisVec, height / 2);
+  return new THREE.Matrix4().compose(pos, q, UNIT_SCALE);
+}
+
+/**
+ * World matrix for a +Z-canonical, centre-symmetric geometry (Torus) whose
+ * CENTRE lands at `center`, ring normal rotated from canonical +Z onto `axis`.
+ */
+function centerAlignedMatrix(center: Vec3, axis: Vec3): THREE.Matrix4 {
+  const axisVec = new THREE.Vector3(...axis);
+  if (axisVec.lengthSq() === 0) axisVec.set(0, 0, 1); else axisVec.normalize();
+  const q = new THREE.Quaternion().setFromUnitVectors(CANONICAL_Z, axisVec);
+  return new THREE.Matrix4().compose(new THREE.Vector3(...center), q, UNIT_SCALE);
 }
 
 /** The first `THREE.Mesh` among `objs` or their descendants. */

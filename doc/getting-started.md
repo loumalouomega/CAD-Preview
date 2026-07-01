@@ -147,16 +147,20 @@ To apply a transform:
 | **Extrude / Revolve / Sweep / Loft** | Select a profile face (**Surf** mode; a path edge too for Sweep, 2+ faces for Loft), set parameters, **Apply** — builds a new body (B-rep only) |
 | **Explode** | Enter a spread factor and **Apply** — spreads the bodies radially from the model centre (all formats) |
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
+| **Box / Sphere / Cylinder / Cone / Torus / Prism** | Choose the primitive, enter its centre/axis/dimensions, and **Add** — appends a new body at that placement (no selection needed; all formats) |
 | **↶ / ↷** | Undo / redo the last operation |
 | **Clear** | Remove all operations (back to the original model) |
 
 The current release ships **transforms** (move/rotate/scale/mirror), **booleans**
 (unite/subtract/intersect), **fillet/chamfer**, **feature modeling**
-(extrude/revolve/sweep/loft), and **assembly** ops (explode/mate). Transforms,
-booleans, and explode work on both B-rep and mesh files; fillet/chamfer,
-feature-modeling, and mate are available only for B-rep sources (the panel disables
-them for meshes). Feature-modeling ops **append a new body** to the model — they
-never cut or fuse the source.
+(extrude/revolve/sweep/loft), **assembly** ops (explode/mate), and **primitive
+creation** (box/cube, sphere, cylinder, cone, torus, N-sided prism). Transforms,
+booleans, explode, and primitive creation work on both B-rep and mesh files;
+fillet/chamfer, feature-modeling, and mate are available only for B-rep sources (the
+panel disables them for meshes). Feature-modeling ops and primitives **append a new
+body** to the model — they never cut or fuse the source. For primitives, `center` is
+the body's geometric centre (box/sphere/torus) or its base centre (cylinder/cone/
+prism, extruded along `Axis`) — matching how the underlying CAD kernel places them.
 
 When you **Export** an edited model, the edits are baked into the output file. See
 [Edits Sidecar](./file-formats.md#edits-sidecar-modeleditsjson) for the format.

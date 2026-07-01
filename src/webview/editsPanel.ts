@@ -18,6 +18,16 @@ export type FeatureDraft =
   | { kind: "sweep" }
   | { kind: "loft" };
 
+/** A primitive-creation draft — self-contained (no selection needed), pushed
+ * straight to an `EditOp` by the wiring. */
+export type PrimitiveDraft =
+  | { kind: "addBox"; center: Vec3; size: Vec3 }
+  | { kind: "addSphere"; center: Vec3; radius: number }
+  | { kind: "addCylinder"; center: Vec3; axis: Vec3; radius: number; height: number }
+  | { kind: "addCone"; center: Vec3; axis: Vec3; radius1: number; radius2: number; height: number }
+  | { kind: "addTorus"; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number }
+  | { kind: "addPrism"; center: Vec3; axis: Vec3; radius: number; sides: number; height: number };
+
 export interface EditsPanelCallbacks {
   onUndo: () => void;
   onRedo: () => void;
@@ -36,6 +46,8 @@ export interface EditsPanelCallbacks {
   onApplyExplode: (factor: number) => void;
   /** Mate: align the first selected face onto the second (B-rep only). */
   onApplyMate: () => void;
+  /** Add a new primitive body at the given placement (no selection needed; all formats). */
+  onApplyPrimitive: (draft: PrimitiveDraft) => void;
 }
 
 /**
@@ -53,6 +65,7 @@ export class EditsPanel {
   private readonly clearBtn: HTMLButtonElement;
   private kind: TransformDraft["kind"] = "translate";
   private featureKind: FeatureDraft["kind"] = "extrude";
+  private primitiveKind: PrimitiveDraft["kind"] = "addBox";
   /** B-rep-only sections (fillet/chamfer, feature modeling); disabled for mesh sources. */
   private brepOnlyEls: HTMLElement[] = [];
 
@@ -141,6 +154,7 @@ export class EditsPanel {
     this.buildBooleanComposer();
     this.buildFilletComposer();
     this.buildFeatureComposer();
+    this.buildPrimitiveComposer();
     this.buildAssemblyComposer();
   }
 
@@ -327,6 +341,132 @@ export class EditsPanel {
     this.cb.onApplyFeature(draft);
   }
 
+  // ── Primitive composer (no selection needed — self-contained placement) ──
+
+  private buildPrimitiveComposer(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "compose-primitive";
+
+    const kindRow = document.createElement("div");
+    kindRow.className = "compose-row";
+    const select = document.createElement("select");
+    select.className = "compose-kind";
+    for (const [value, text] of [
+      ["addBox", "Box"], ["addSphere", "Sphere"], ["addCylinder", "Cylinder"],
+      ["addCone", "Cone"], ["addTorus", "Torus"], ["addPrism", "Prism"],
+    ] as const) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = text;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => {
+      this.primitiveKind = select.value as PrimitiveDraft["kind"];
+      this.renderPrimitiveFields();
+    });
+    kindRow.appendChild(select);
+
+    const apply = document.createElement("button");
+    apply.className = "compose-apply";
+    apply.textContent = "Add";
+    apply.title = "Add a new primitive body at this placement (no selection needed)";
+    apply.addEventListener("click", () => this.emitPrimitive());
+    kindRow.appendChild(apply);
+
+    const fields = document.createElement("div");
+    fields.className = "compose-fields";
+    fields.id = "primitive-fields";
+
+    wrap.appendChild(kindRow);
+    wrap.appendChild(fields);
+    this.compose.appendChild(wrap);
+    // Deliberately NOT pushed into brepOnlyEls — primitives work on every format.
+    this.renderPrimitiveFields();
+  }
+
+  private primitiveFields(): HTMLElement {
+    return this.compose.querySelector("#primitive-fields")!;
+  }
+
+  private renderPrimitiveFields(): void {
+    const f = this.primitiveFields();
+    f.innerHTML = "";
+    switch (this.primitiveKind) {
+      case "addBox":
+        f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
+        f.appendChild(this.vecField("size", "Size", [10, 10, 10]));
+        break;
+      case "addSphere":
+        f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
+        f.appendChild(this.numField("radius", "Radius", 5));
+        break;
+      case "addCylinder":
+        f.appendChild(this.vecField("center", "Base", [0, 0, 0]));
+        f.appendChild(this.vecField("axis", "Axis", [0, 0, 1]));
+        f.appendChild(this.numField("radius", "Radius", 5));
+        f.appendChild(this.numField("height", "Height", 10));
+        break;
+      case "addCone":
+        f.appendChild(this.vecField("center", "Base", [0, 0, 0]));
+        f.appendChild(this.vecField("axis", "Axis", [0, 0, 1]));
+        f.appendChild(this.numField("radius1", "Base r", 5));
+        f.appendChild(this.numField("radius2", "Top r", 0));
+        f.appendChild(this.numField("height", "Height", 10));
+        break;
+      case "addTorus":
+        f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
+        f.appendChild(this.vecField("axis", "Axis", [0, 0, 1]));
+        f.appendChild(this.numField("majorRadius", "Major r", 10));
+        f.appendChild(this.numField("minorRadius", "Minor r", 2));
+        break;
+      case "addPrism":
+        f.appendChild(this.vecField("center", "Base", [0, 0, 0]));
+        f.appendChild(this.vecField("axis", "Axis", [0, 0, 1]));
+        f.appendChild(this.numField("radius", "Radius", 5));
+        f.appendChild(this.numField("sides", "Sides", 6));
+        f.appendChild(this.numField("height", "Height", 10));
+        break;
+    }
+  }
+
+  private emitPrimitive(): void {
+    const f = this.primitiveFields();
+    let draft: PrimitiveDraft;
+    switch (this.primitiveKind) {
+      case "addBox":
+        draft = { kind: "addBox", center: this.readVec("center", f), size: this.readVec("size", f) };
+        break;
+      case "addSphere":
+        draft = { kind: "addSphere", center: this.readVec("center", f), radius: this.readNum("radius", f) };
+        break;
+      case "addCylinder":
+        draft = {
+          kind: "addCylinder", center: this.readVec("center", f), axis: this.readVec("axis", f),
+          radius: this.readNum("radius", f), height: this.readNum("height", f),
+        };
+        break;
+      case "addCone":
+        draft = {
+          kind: "addCone", center: this.readVec("center", f), axis: this.readVec("axis", f),
+          radius1: this.readNum("radius1", f), radius2: this.readNum("radius2", f), height: this.readNum("height", f),
+        };
+        break;
+      case "addTorus":
+        draft = {
+          kind: "addTorus", center: this.readVec("center", f), axis: this.readVec("axis", f),
+          majorRadius: this.readNum("majorRadius", f), minorRadius: this.readNum("minorRadius", f),
+        };
+        break;
+      case "addPrism":
+        draft = {
+          kind: "addPrism", center: this.readVec("center", f), axis: this.readVec("axis", f),
+          radius: this.readNum("radius", f), sides: this.readNum("sides", f), height: this.readNum("height", f),
+        };
+        break;
+    }
+    this.cb.onApplyPrimitive(draft);
+  }
+
   // ── Boolean composer (operand A captured, B = live selection) ────────────
 
   private buildBooleanComposer(): void {
@@ -492,6 +632,12 @@ export function describeOp(op: EditOp): string {
     case "loft": return `Loft ${op.profiles.length} profiles`;
     case "explode": return `Explode ×${op.factor}`;
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
+    case "addBox": return `+ Box ${op.size.join("×")}`;
+    case "addSphere": return `+ Sphere r=${op.radius}`;
+    case "addCylinder": return `+ Cylinder r=${op.radius} h=${op.height}`;
+    case "addCone": return `+ Cone r1=${op.radius1} r2=${op.radius2} h=${op.height}`;
+    case "addTorus": return `+ Torus R=${op.majorRadius} r=${op.minorRadius}`;
+    case "addPrism": return `+ ${op.sides}-gon Prism r=${op.radius} h=${op.height}`;
   }
 }
 

@@ -285,6 +285,18 @@ aligns planar `faceA` onto `faceB` via `gp_Trsf.SetDisplacement` of `gp_Ax3` fra
 (face planes from `BRepAdaptor_Surface_2`), moving the solid `owningSolid()` finds for
 `faceA`. Non-planar faces / unresolved ids / failed displacement are skipped.
 
+**Primitive creation (M6)** is applied by `addPrimitive()`/`buildPrimitiveSolid()` —
+the one op family with **no existing operands**: it builds a new solid from
+parameters alone and appends it (`compound(existing + new)`, same non-destructive
+pattern as `featureModel`), and unlike M3/M4/M5's B-rep-only ops, it also runs on the
+mesh engine (`meshEdits.buildPrimitiveMesh`) — see `src/webview/meshEdits.ts` below.
+`BRepPrimAPI_MakeBox_3`/`MakeSphere_5`/`MakeCylinder_3`/`MakeCone_3`/`MakeTorus_5`
+build the five direct-primitive shapes from a `gp_Pnt_3`/`gp_Ax2_3` placement; the
+N-gon prism has no OCCT primitive, so it's built by hand (`planeBasis()` computes two
+JS-side perpendicular unit vectors, N points are placed around them, then
+`BRepBuilderAPI_MakeWire_1`/`MakeFace_15`/the already-verified `MakePrism_1` extrude
+the polygon). A primitive whose builder throws is skipped.
+
 ---
 
 ## `src/editOps.ts`, `src/editsStore.ts`, `src/editsSidecar.ts`

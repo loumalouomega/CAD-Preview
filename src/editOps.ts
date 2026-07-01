@@ -39,18 +39,32 @@ export interface LoftOp { op: "loft"; profiles: string[]; }
 export interface ExplodeOp { op: "explode"; factor: number; }
 /** Align face `faceA` onto face `faceB` (basic single-constraint mate). */
 export interface MateOp { op: "mate"; faceA: string; faceB: string; }
+/** Add a box centred at `center` with full extents `size`. A cube is a box with equal `size` components. */
+export interface AddBoxOp { op: "addBox"; center: Vec3; size: Vec3; }
+/** Add a sphere of `radius` centred at `center`. */
+export interface AddSphereOp { op: "addSphere"; center: Vec3; radius: number; }
+/** Add a cylinder of `radius`/`height` with its base centred at `center`, extruded along `axis`. */
+export interface AddCylinderOp { op: "addCylinder"; center: Vec3; axis: Vec3; radius: number; height: number; }
+/** Add a cone/frustum (`radius1` base, `radius2` top — 0 for a sharp apex) with base at `center` along `axis`. */
+export interface AddConeOp { op: "addCone"; center: Vec3; axis: Vec3; radius1: number; radius2: number; height: number; }
+/** Add a torus of `majorRadius`/`minorRadius` centred at `center`, ring normal `axis`. */
+export interface AddTorusOp { op: "addTorus"; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number; }
+/** Add a regular `sides`-gon prism of circumradius `radius`/`height` with base at `center` along `axis`. */
+export interface AddPrismOp { op: "addPrism"; center: Vec3; axis: Vec3; radius: number; sides: number; height: number; }
 
 export type EditOp =
   | TranslateOp | RotateOp | ScaleOp | MirrorOp
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
-  | ExplodeOp | MateOp;
+  | ExplodeOp | MateOp
+  | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp;
 
 export type EditOpKind = EditOp["op"];
 
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
+  "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
 ]);
 
 /** Ops only available for B-rep sources (meshes have no sketch/exact topology). */
@@ -72,6 +86,18 @@ function asIdArray(v: unknown, min = 1): string[] | null {
   if (!Array.isArray(v)) return null;
   const ids = v.filter((x): x is string => typeof x === "string");
   return ids.length >= min ? ids : null;
+}
+
+function isPositive(v: unknown): v is number {
+  return isFiniteNumber(v) && v > 0;
+}
+
+/** A `Vec3` with non-zero length (for axis directions, which can't collapse to a point). */
+function asNonZeroVec3(v: unknown): Vec3 | null {
+  const vec = asVec3(v);
+  if (!vec) return null;
+  const [x, y, z] = vec;
+  return x * x + y * y + z * z > 0 ? vec : null;
 }
 
 /**
@@ -156,6 +182,49 @@ export function validateEditOp(raw: unknown): EditOp | null {
     case "mate": {
       return typeof o.faceA === "string" && typeof o.faceB === "string"
         ? { op: "mate", faceA: o.faceA, faceB: o.faceB }
+        : null;
+    }
+    case "addBox": {
+      const center = asVec3(o.center);
+      const size = asVec3(o.size);
+      return center && size && size.every((s) => s > 0)
+        ? { op: "addBox", center, size }
+        : null;
+    }
+    case "addSphere": {
+      const center = asVec3(o.center);
+      return center && isPositive(o.radius) ? { op: "addSphere", center, radius: o.radius } : null;
+    }
+    case "addCylinder": {
+      const center = asVec3(o.center);
+      const axis = asNonZeroVec3(o.axis);
+      return center && axis && isPositive(o.radius) && isPositive(o.height)
+        ? { op: "addCylinder", center, axis, radius: o.radius, height: o.height }
+        : null;
+    }
+    case "addCone": {
+      const center = asVec3(o.center);
+      const axis = asNonZeroVec3(o.axis);
+      return center && axis && isFiniteNumber(o.radius1) && o.radius1 >= 0
+        && isFiniteNumber(o.radius2) && o.radius2 >= 0 && (o.radius1 > 0 || o.radius2 > 0)
+        && isPositive(o.height)
+        ? { op: "addCone", center, axis, radius1: o.radius1, radius2: o.radius2, height: o.height }
+        : null;
+    }
+    case "addTorus": {
+      const center = asVec3(o.center);
+      const axis = asNonZeroVec3(o.axis);
+      return center && axis && isPositive(o.majorRadius) && isPositive(o.minorRadius)
+        && o.minorRadius < o.majorRadius
+        ? { op: "addTorus", center, axis, majorRadius: o.majorRadius, minorRadius: o.minorRadius }
+        : null;
+    }
+    case "addPrism": {
+      const center = asVec3(o.center);
+      const axis = asNonZeroVec3(o.axis);
+      return center && axis && isPositive(o.radius) && isPositive(o.height)
+        && isFiniteNumber(o.sides) && Number.isInteger(o.sides) && o.sides >= 3
+        ? { op: "addPrism", center, axis, radius: o.radius, sides: o.sides, height: o.height }
         : null;
     }
     default:

@@ -62,6 +62,13 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
       return explodeSolids(oc, shape, op.factor, cleanup);
     case "mate":
       return mateShape(oc, shape, op, cleanup);
+    case "addBox":
+    case "addSphere":
+    case "addCylinder":
+    case "addCone":
+    case "addTorus":
+    case "addPrism":
+      return addPrimitive(oc, shape, op, cleanup);
     default:
       return shape;
   }
@@ -350,6 +357,132 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
   } catch {
     return null;
   }
+}
+
+/**
+ * Primitive creation: builds a new solid from scratch (no existing operands) and
+ * **appends** it to the model as an extra body — same non-destructive
+ * `compound(existing shape + new solid)` pattern as {@link featureModel}. A
+ * primitive whose builder throws is skipped so replay never hard-fails.
+ *
+ * OCCT primitive API, verified against the live WASM (see CLAUDE.md):
+ *   box      → `BRepPrimAPI_MakeBox_3(gp_Pnt_3 corner1, gp_Pnt_3 corner2)`
+ *   sphere   → `BRepPrimAPI_MakeSphere_5(gp_Pnt_3 center, radius)`
+ *   cylinder → `BRepPrimAPI_MakeCylinder_3(gp_Ax2_3(pnt, dir), radius, height)`
+ *   cone     → `BRepPrimAPI_MakeCone_3(gp_Ax2_3(pnt, dir), radius1, radius2, height)`
+ *   torus    → `BRepPrimAPI_MakeTorus_5(gp_Ax2_3(pnt, dir), majorRadius, minorRadius)`
+ * (`gp_Ax2` placement means cylinder/cone/torus are addressed as an OCCT
+ * `location`+`direction` pair — the base for cylinder/cone, the ring centre/normal
+ * for torus. `Bnd_Box` confirms cylinder/cone are **base-centred**, matching this
+ * op family's `center` semantics.) There is no OCCT "regular polygon" primitive,
+ * so the N-gon prism is built manually: N points around `center` in the plane
+ * perpendicular to `axis` → `BRepBuilderAPI_MakeWire_1` + `.Add_1()` per
+ * `BRepBuilderAPI_MakeEdge_3(pnt, pnt)` edge → `BRepBuilderAPI_MakeFace_15(wire,
+ * true)` → the already-verified `BRepPrimAPI_MakePrism_1(face, vec, false, true)`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addPrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+  const solid = buildPrimitiveSolid(oc, op, cleanup);
+  if (!solid) return shape;
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  builder.Add(comp, shape);
+  builder.Add(comp, solid);
+  return comp;
+}
+
+/** Builds the new primitive solid, or null on builder failure. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    switch (op.op) {
+      case "addBox": {
+        const [cx, cy, cz] = op.center;
+        const [sx, sy, sz] = op.size;
+        const c1 = keep(pnt(oc, [cx - sx / 2, cy - sy / 2, cz - sz / 2]));
+        const c2 = keep(pnt(oc, [cx + sx / 2, cy + sy / 2, cz + sz / 2]));
+        return keep(keep(new oc.BRepPrimAPI_MakeBox_3(c1, c2)).Shape());
+      }
+      case "addSphere": {
+        const center = keep(pnt(oc, op.center));
+        return keep(keep(new oc.BRepPrimAPI_MakeSphere_5(center, op.radius)).Shape());
+      }
+      case "addCylinder": {
+        const ax2 = keep(new oc.gp_Ax2_3(keep(pnt(oc, op.center)), keep(dir(oc, op.axis))));
+        return keep(keep(new oc.BRepPrimAPI_MakeCylinder_3(ax2, op.radius, op.height)).Shape());
+      }
+      case "addCone": {
+        const ax2 = keep(new oc.gp_Ax2_3(keep(pnt(oc, op.center)), keep(dir(oc, op.axis))));
+        return keep(keep(new oc.BRepPrimAPI_MakeCone_3(ax2, op.radius1, op.radius2, op.height)).Shape());
+      }
+      case "addTorus": {
+        const ax2 = keep(new oc.gp_Ax2_3(keep(pnt(oc, op.center)), keep(dir(oc, op.axis))));
+        return keep(keep(new oc.BRepPrimAPI_MakeTorus_5(ax2, op.majorRadius, op.minorRadius)).Shape());
+      }
+      case "addPrism": {
+        const [ux, vx] = planeBasis(op.axis);
+        const points = [];
+        for (let i = 0; i < op.sides; i++) {
+          const a = (2 * Math.PI * i) / op.sides;
+          const c = Math.cos(a) * op.radius;
+          const s = Math.sin(a) * op.radius;
+          points.push(keep(pnt(oc, [
+            op.center[0] + c * ux[0] + s * vx[0],
+            op.center[1] + c * ux[1] + s * vx[1],
+            op.center[2] + c * ux[2] + s * vx[2],
+          ])));
+        }
+        const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+        for (let i = 0; i < points.length; i++) {
+          const edge = keep(new oc.BRepBuilderAPI_MakeEdge_3(points[i], points[(i + 1) % points.length])).Edge();
+          keep(edge);
+          mkWire.Add_1(edge);
+        }
+        if (!mkWire.IsDone()) return null;
+        const wire = keep(mkWire.Wire());
+        const face = keep(keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face());
+        const [ax, ay, az] = op.axis;
+        const len = Math.hypot(ax, ay, az) || 1;
+        const s = op.height / len;
+        const extrudeVec = keep(new oc.gp_Vec_4(ax * s, ay * s, az * s));
+        return keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, extrudeVec, false, true)).Shape());
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Two unit vectors spanning the plane perpendicular to `axis` (for building the
+ * N-gon prism's base polygon). Pure JS math — no OCCT handles involved.
+ */
+function planeBasis(axis: Vec3): [Vec3, Vec3] {
+  const [ax, ay, az] = axis;
+  const len = Math.hypot(ax, ay, az) || 1;
+  const n: Vec3 = [ax / len, ay / len, az / len];
+  // Pick a helper vector not parallel to n (avoid near-zero cross product).
+  const helper: Vec3 = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const u = cross(helper, n);
+  normalize(u);
+  const v = cross(n, u);
+  normalize(v);
+  return [u, v];
+}
+
+function cross(a: Vec3, b: Vec3): Vec3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function normalize(v: Vec3): void {
+  const len = Math.hypot(v[0], v[1], v[2]) || 1;
+  v[0] /= len; v[1] /= len; v[2] /= len;
 }
 
 /**

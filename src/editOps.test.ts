@@ -35,4 +35,48 @@ describe("validateEditOp", () => {
     expect(TOPOLOGY_CHANGING_OPS.has("boolean")).toBe(true);
     expect(TOPOLOGY_CHANGING_OPS.has("translate")).toBe(false);
   });
+
+  it("accepts well-formed primitive ops", () => {
+    expect(validateEditOp({ op: "addBox", center: [0, 0, 0], size: [1, 2, 3] }))
+      .toEqual({ op: "addBox", center: [0, 0, 0], size: [1, 2, 3] });
+    expect(validateEditOp({ op: "addSphere", center: [0, 0, 0], radius: 5 }))
+      .toEqual({ op: "addSphere", center: [0, 0, 0], radius: 5 });
+    expect(validateEditOp({ op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, height: 10 }))
+      .toEqual({ op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, height: 10 });
+    expect(validateEditOp({ op: "addCone", center: [0, 0, 0], axis: [0, 0, 1], radius1: 5, radius2: 0, height: 10 }))
+      .toEqual({ op: "addCone", center: [0, 0, 0], axis: [0, 0, 1], radius1: 5, radius2: 0, height: 10 });
+    expect(validateEditOp({ op: "addTorus", center: [0, 0, 0], axis: [0, 0, 1], majorRadius: 10, minorRadius: 2 }))
+      .toEqual({ op: "addTorus", center: [0, 0, 0], axis: [0, 0, 1], majorRadius: 10, minorRadius: 2 });
+    expect(validateEditOp({ op: "addPrism", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, sides: 6, height: 10 }))
+      .toEqual({ op: "addPrism", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, sides: 6, height: 10 });
+  });
+
+  it("rejects malformed primitive ops", () => {
+    // non-positive dimensions
+    expect(validateEditOp({ op: "addBox", center: [0, 0, 0], size: [1, 0, 3] })).toBeNull();
+    expect(validateEditOp({ op: "addSphere", center: [0, 0, 0], radius: 0 })).toBeNull();
+    expect(validateEditOp({ op: "addSphere", center: [0, 0, 0], radius: -1 })).toBeNull();
+    expect(validateEditOp({ op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, height: 0 })).toBeNull();
+    // zero-length axis
+    expect(validateEditOp({ op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 0], radius: 5, height: 10 })).toBeNull();
+    // cone: both radii zero is degenerate
+    expect(validateEditOp({ op: "addCone", center: [0, 0, 0], axis: [0, 0, 1], radius1: 0, radius2: 0, height: 10 })).toBeNull();
+    // cone: negative radius
+    expect(validateEditOp({ op: "addCone", center: [0, 0, 0], axis: [0, 0, 1], radius1: -1, radius2: 0, height: 10 })).toBeNull();
+    // torus: minorRadius >= majorRadius
+    expect(validateEditOp({ op: "addTorus", center: [0, 0, 0], axis: [0, 0, 1], majorRadius: 5, minorRadius: 5 })).toBeNull();
+    expect(validateEditOp({ op: "addTorus", center: [0, 0, 0], axis: [0, 0, 1], majorRadius: 5, minorRadius: 6 })).toBeNull();
+    // prism: sides < 3 or non-integer
+    expect(validateEditOp({ op: "addPrism", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, sides: 2, height: 10 })).toBeNull();
+    expect(validateEditOp({ op: "addPrism", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, sides: 3.5, height: 10 })).toBeNull();
+    // missing/short center
+    expect(validateEditOp({ op: "addBox", center: [0, 0], size: [1, 2, 3] })).toBeNull();
+  });
+
+  it("primitive ops are topology-changing and not B-rep-only", () => {
+    for (const kind of ["addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism"] as const) {
+      expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
+      expect(BREP_ONLY_OPS.has(kind)).toBe(false);
+    }
+  });
 });

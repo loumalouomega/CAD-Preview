@@ -472,7 +472,12 @@ feature composer uses `onApplyFeature(draft)` (extrude/revolve/sweep/loft from t
 selected profile face(s)/path edge); both are **B-rep-only** sections that
 `setBRepOnly(enabled)` disables for mesh sources. The assembly composer uses
 `onApplyExplode(factor)` (all formats) and `onApplyMate()` (aligns the two selected
-faces, B-rep only).
+faces, B-rep only). The **primitive composer** uses `onApplyPrimitive(draft:
+PrimitiveDraft)` — the only op-creation callback that needs **no selection at all**;
+`draft` already carries every parameter (`center`/`axis`/dimensions), so `main.ts`
+just validates positivity and pushes the op straight through. This composer is
+deliberately never registered in `brepOnlyEls`, since primitives work on both
+engines.
 
 ## `src/webview/meshEdits.ts`
 
@@ -494,3 +499,18 @@ operands in the tree with the single result mesh (tagged with A's node id).
 Feature-modeling ops (`BREP_ONLY_OPS`) are skipped — meshes have no sketch/exact
 topology. `main.ts` caches the pristine tagged object and calls `applyEditsMesh` on a
 clone inside `rebuildMeshModel()`.
+
+**Primitives** (`addBox`/`addSphere`/`addCylinder`/`addCone`/`addTorus`/`addPrism`)
+go through `buildPrimitiveMesh(op)`, which constructs a fresh `THREE.BufferGeometry`
+(`BoxGeometry`/`SphereGeometry`/`CylinderGeometry`/`TorusGeometry` — `CylinderGeometry
+(radius, radius, height, sides)` doubles as the N-gon prism) and attaches it under
+`root`. Because `applyEditsMesh` always folds over a **fresh clone** of the pristine
+object (primitives never pre-exist in it), this construction happens on every replay
+— tagged `userData.groupId = "prim-{K}"`, where `K` counts only `addX` ops seen so
+far in that fold pass (reset per call), so ids are deterministic by op-list position
+and never collide with the loaded file's `node-N` ids. `baseAlignedMatrix`/
+`centerAlignedMatrix` rotate Three's canonical primitive orientation (cylinder/cone:
++Y-centred; torus: XY-plane ring, +Z normal — verified from the Three.js source) onto
+the op's `axis` via `Quaternion.setFromUnitVectors`, then translate; get the
+rotate-then-translate order wrong and non-canonical-axis primitives land off-centre
+(regression-tested with a tilted-axis cylinder in `meshEdits.test.ts`).

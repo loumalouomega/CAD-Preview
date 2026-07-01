@@ -168,6 +168,54 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "mate", faceA: faces[0], faceB: faces[1] });
     setStatus("");
   },
+  onApplyPrimitive: (draft) => {
+    // Primitives are self-contained placements — no selection/operand needed.
+    // A light client-side guard avoids silently pushing an op that
+    // validateEditOp would later drop on reload (non-positive dimensions).
+    let op: EditOp;
+    switch (draft.kind) {
+      case "addBox":
+        if (draft.size.some((s) => s <= 0)) { setStatus("Box size must be positive.", true); return; }
+        op = { op: "addBox", center: draft.center, size: draft.size };
+        break;
+      case "addSphere":
+        if (draft.radius <= 0) { setStatus("Sphere radius must be positive.", true); return; }
+        op = { op: "addSphere", center: draft.center, radius: draft.radius };
+        break;
+      case "addCylinder":
+        if (draft.radius <= 0 || draft.height <= 0) { setStatus("Radius and height must be positive.", true); return; }
+        op = { op: "addCylinder", center: draft.center, axis: draft.axis, radius: draft.radius, height: draft.height };
+        break;
+      case "addCone":
+        if (draft.radius1 <= 0 && draft.radius2 <= 0) { setStatus("At least one cone radius must be positive.", true); return; }
+        if (draft.height <= 0) { setStatus("Height must be positive.", true); return; }
+        op = {
+          op: "addCone", center: draft.center, axis: draft.axis,
+          radius1: draft.radius1, radius2: draft.radius2, height: draft.height,
+        };
+        break;
+      case "addTorus":
+        if (draft.majorRadius <= 0 || draft.minorRadius <= 0 || draft.minorRadius >= draft.majorRadius) {
+          setStatus("Torus needs 0 < minor radius < major radius.", true);
+          return;
+        }
+        op = {
+          op: "addTorus", center: draft.center, axis: draft.axis,
+          majorRadius: draft.majorRadius, minorRadius: draft.minorRadius,
+        };
+        break;
+      case "addPrism":
+        if (draft.radius <= 0 || draft.height <= 0) { setStatus("Radius and height must be positive.", true); return; }
+        if (!Number.isInteger(draft.sides) || draft.sides < 3) { setStatus("Sides must be an integer ≥ 3.", true); return; }
+        op = {
+          op: "addPrism", center: draft.center, axis: draft.axis,
+          radius: draft.radius, sides: draft.sides, height: draft.height,
+        };
+        break;
+    }
+    editsModel.push(op);
+    setStatus("");
+  },
 });
 
 /** Applies persistent per-part colours, then re-draws the active highlight. */

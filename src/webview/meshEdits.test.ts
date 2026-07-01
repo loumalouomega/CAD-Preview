@@ -106,6 +106,122 @@ describe("applyEditsMesh booleans (three-bvh-csg)", () => {
   });
 });
 
+describe("applyEditsMesh primitives", () => {
+  function emptyRoot(): THREE.Object3D {
+    return new THREE.Group();
+  }
+
+  function firstPrim(root: THREE.Object3D): THREE.Mesh {
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    expect(meshes).toHaveLength(1);
+    return meshes[0];
+  }
+
+  it("addBox places a box centred at `center` with the given size", () => {
+    const root = emptyRoot();
+    applyEditsMesh(root, [{ op: "addBox", center: [1, 2, 3], size: [2, 4, 6] }]);
+    const mesh = firstPrim(root);
+    expect(mesh.userData.groupId).toBe("prim-0");
+    const box = new THREE.Box3().setFromObject(mesh);
+    expect([box.min.x, box.min.y, box.min.z].map(round)).toEqual([0, 0, 0]);
+    expect([box.max.x, box.max.y, box.max.z].map(round)).toEqual([2, 4, 6]);
+  });
+
+  it("addSphere places a sphere centred at `center` with the given radius", () => {
+    const root = emptyRoot();
+    applyEditsMesh(root, [{ op: "addSphere", center: [0, 0, 0], radius: 5 }]);
+    const box = new THREE.Box3().setFromObject(firstPrim(root));
+    expect(box.min.x).toBeCloseTo(-5, 1);
+    expect(box.max.x).toBeCloseTo(5, 1);
+  });
+
+  it("addCylinder along the canonical +Y axis: base at `center`, extends `height` up", () => {
+    const root = emptyRoot();
+    applyEditsMesh(root, [{ op: "addCylinder", center: [0, 0, 0], axis: [0, 1, 0], radius: 2, height: 10 }]);
+    const box = new THREE.Box3().setFromObject(firstPrim(root));
+    expect(box.min.y).toBeCloseTo(0, 1);
+    expect(box.max.y).toBeCloseTo(10, 1);
+    expect(box.min.x).toBeCloseTo(-2, 1);
+    expect(box.max.x).toBeCloseTo(2, 1);
+  });
+
+  it("addCylinder along a non-canonical axis (+X): the single highest-risk placement case", () => {
+    const root = emptyRoot();
+    applyEditsMesh(root, [{ op: "addCylinder", center: [0, 0, 0], axis: [1, 0, 0], radius: 2, height: 10 }]);
+    const box = new THREE.Box3().setFromObject(firstPrim(root));
+    // Base at x=0, extending to x=10 — NOT vertically centred on x=0 (that would
+    // indicate the base→centre translation was skipped or applied pre-rotation).
+    expect(box.min.x).toBeCloseTo(0, 1);
+    expect(box.max.x).toBeCloseTo(10, 1);
+    expect(box.min.y).toBeCloseTo(-2, 1);
+    expect(box.max.y).toBeCloseTo(2, 1);
+    expect(box.min.z).toBeCloseTo(-2, 1);
+    expect(box.max.z).toBeCloseTo(2, 1);
+  });
+
+  it("addCone: base radius1 at `center`, top radius2 at `center + axis*height`", () => {
+    const root = emptyRoot();
+    applyEditsMesh(root, [{ op: "addCone", center: [0, 0, 0], axis: [0, 0, 1], radius1: 5, radius2: 0, height: 10 }]);
+    const box = new THREE.Box3().setFromObject(firstPrim(root));
+    expect(box.min.z).toBeCloseTo(0, 1);
+    expect(box.max.z).toBeCloseTo(10, 1);
+    expect(box.min.x).toBeCloseTo(-5, 1); // base radius, not the (zero) top radius
+    expect(box.max.x).toBeCloseTo(5, 1);
+  });
+
+  it("addTorus: ring centred at `center`, normal along a tilted `axis`", () => {
+    const root = emptyRoot();
+    applyEditsMesh(root, [{ op: "addTorus", center: [0, 0, 0], axis: [1, 0, 0], majorRadius: 5, minorRadius: 1 }]);
+    const box = new THREE.Box3().setFromObject(firstPrim(root));
+    // Ring normal along +X ⇒ thin along X (± minorRadius), wide in Y/Z (± majorRadius+minorRadius).
+    expect(box.min.x).toBeCloseTo(-1, 1);
+    expect(box.max.x).toBeCloseTo(1, 1);
+    expect(box.min.y).toBeCloseTo(-6, 1);
+    expect(box.max.y).toBeCloseTo(6, 1);
+  });
+
+  it("addPrism: N-sided cross-section, base at `center`, extruded along `axis`", () => {
+    const root = emptyRoot();
+    applyEditsMesh(root, [{ op: "addPrism", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, sides: 6, height: 10 }]);
+    const mesh = firstPrim(root);
+    expect((mesh.geometry as THREE.CylinderGeometry).parameters.radialSegments).toBe(6);
+    const box = new THREE.Box3().setFromObject(mesh);
+    expect(box.min.z).toBeCloseTo(0, 1);
+    expect(box.max.z).toBeCloseTo(10, 1);
+  });
+
+  it("assigns sequential prim-N ids by op-list position, stable across repeated replay", () => {
+    const ops: EditOp[] = [
+      { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] },
+      { op: "addSphere", center: [5, 0, 0], radius: 1 },
+    ];
+    const ids1 = idsOf(applyEditsMesh(emptyRoot(), ops));
+    const ids2 = idsOf(applyEditsMesh(emptyRoot(), ops)); // fresh root, same list
+    expect(ids1).toEqual(["prim-0", "prim-1"]);
+    expect(ids2).toEqual(ids1);
+  });
+
+  it("a later op in the same fold pass can reference a primitive created earlier in the list", () => {
+    const root = emptyRoot();
+    const ops: EditOp[] = [
+      { op: "addBox", center: [0, 0, 0], size: [2, 2, 2] },
+      { op: "translate", targets: ["prim-0"], vec: [10, 0, 0] },
+    ];
+    applyEditsMesh(root, ops);
+    const box = new THREE.Box3().setFromObject(firstPrim(root));
+    // Box centred at (0,0,0) size 2 → [-1,1]; translated +10 → [9,11].
+    expect(box.min.x).toBeCloseTo(9, 1);
+    expect(box.max.x).toBeCloseTo(11, 1);
+  });
+
+  function idsOf(root: THREE.Object3D): string[] {
+    const ids: string[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) ids.push(o.userData.groupId as string); });
+    return ids;
+  }
+});
+
 describe("applyEditsMesh explode", () => {
   function twoSeparatedBoxes(): THREE.Object3D {
     const root = new THREE.Group();

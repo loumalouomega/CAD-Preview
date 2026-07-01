@@ -267,6 +267,58 @@ on top of the source model. Non-negotiable invariants:
   gp_Ax3_4(ptA, nA), gp_Ax3_4(ptB, −nB))` applied to the solid owning `faceA`
   (`owningSolid` finds it by `IsSame`). Non-planar faces / unresolved ids / failed
   displacement are skipped.
+- **Primitive creation (Box/Cube, Sphere, Cylinder, Cone, Torus, N-gon Prism):**
+  unlike every other edit op, these need no existing operands — they build a new
+  body from scratch and **append** it (`occtOperations.addPrimitive`, same
+  `compound(existing shape + new solid)` pattern as `featureModel`). Unlike
+  fillet/chamfer/feature-modeling, they are **NOT B-rep only** — the mesh engine
+  builds them too, so the panel composer is deliberately never added to
+  `brepOnlyEls`. `center` is the geometric centre for symmetric primitives (box,
+  sphere, torus) and the **base** centre for extruded ones (cylinder, cone,
+  prism) — matches OCCT's natural `gp_Ax2` placement.
+  - **OCCT primitive API, verified against the live WASM** (use these exact
+    suffixes): box `BRepPrimAPI_MakeBox_3(gp_Pnt_3 corner1, gp_Pnt_3 corner2)`
+    (same overload booleans already use); sphere `BRepPrimAPI_MakeSphere_5(
+    gp_Pnt_3 center, radius)`; cylinder `BRepPrimAPI_MakeCylinder_3(gp_Ax2_3(
+    pnt, dir), radius, height)`; cone `BRepPrimAPI_MakeCone_3(gp_Ax2_3(pnt,
+    dir), radius1, radius2, height)`; torus `BRepPrimAPI_MakeTorus_5(gp_Ax2_3(
+    pnt, dir), majorRadius, minorRadius)`. Each class has many angle-partial
+    overloads (`_1` through `_12` for sphere) — the indices above are NOT the
+    first/simplest overload and were found by brute-force probing every index
+    against known-good argument shapes, not by guessing from declaration order.
+    There is no OCCT "regular polygon" primitive, so the **N-gon prism** is
+    built manually: N points around `center` in the plane perpendicular to
+    `axis` (computed via `planeBasis()`, pure JS cross-product math — an
+    arbitrary non-parallel helper vector + two cross products, no OCCT calls)
+    → `BRepBuilderAPI_MakeWire_1` + `.Add_1()` per `BRepBuilderAPI_MakeEdge_3(
+    pnt, pnt)` edge → `BRepBuilderAPI_MakeFace_15(wire, true)` → the
+    already-verified `BRepPrimAPI_MakePrism_1(face, vec, false, true)`.
+  - **Mesh primitive API** (`meshEdits.buildPrimitiveMesh`): Three.js
+    `BoxGeometry`/`SphereGeometry`/`CylinderGeometry`/`TorusGeometry`
+    (`CylinderGeometry(radius, radius, height, sides)` — flat radial segments —
+    doubles as the N-gon prism generator; `CylinderGeometry(radiusTop=radius2,
+    radiusBottom=radius1, height)` is the cone). Three's canonical orientation
+    is +Y-centred for cylinder/cone (base at local Y = −height/2) and
+    +Z-normal, XY-plane-ring for torus — confirmed from the Three.js source,
+    not assumed. `baseAlignedMatrix`/`centerAlignedMatrix` rotate the canonical
+    axis onto the op's `axis` via `Quaternion.setFromUnitVectors`, THEN
+    translate (base-aligned primitives translate by `+height/2` along the
+    *rotated* axis so the base — not the mesh's local centre — lands on
+    `center`); get this order wrong and cylinders float off-centre on any
+    non-canonical axis (regression-tested in `meshEdits.test.ts` with a tilted
+    `axis:[1,0,0]` cylinder).
+  - **Id scheme (mesh only):** since `applyEditsMesh` always folds over a
+    *fresh clone* of the pristine loaded object (`rebuildMeshModel` in
+    `main.ts`), added primitives don't pre-exist in that clone — they are
+    literally reconstructed on every single replay and tagged
+    `userData.groupId = "prim-{K}"`, where `K` is a counter over only `addX`
+    ops seen so far **in that fold pass** (reset to 0 at the start of every
+    `applyEditsMesh` call). This is deterministic by op-list position, never
+    collides with the loaded file's `node-N` ids (assigned once at load, before
+    any edits exist), and is stable across repeated replays of the same list.
+  - A primitive whose builder throws (host) or whose kind doesn't match any
+    case (either engine) is skipped, same graceful-degradation rule as every
+    other op.
 
 ## Build & test
 
@@ -306,10 +358,15 @@ Exercise **Edits**: on `bull.stp`, **Select** the solid in **Vol** mode, then in
 updates live and the op appears in the list. Then exercise **booleans** (Set A on one
 volume, Apply against another), **Fillet/Chamfer** (select edges in Line mode),
 **Extrude/Revolve/Sweep/Loft** (select a profile face in Surf mode — adds a new body),
-and **Explode/Mate**. **Undo/Redo/Clear** the stack. Close and reopen the tab → ops
-reload from `bull.stp.edits.json` (inspect: valid JSON, CAD file untouched). **Export**
-the edited model (e.g. to STEP/STL) and reopen the output → the edits are baked in. On
-`cube.stl`, confirm transforms, booleans, and explode apply (mesh path) and that the
+and **Explode/Mate**. Then exercise the **primitive composer** (no selection needed):
+pick each of **Box/Sphere/Cylinder/Cone/Torus/Prism**, enter parameters (try a
+non-axis-aligned `Axis` on cylinder/cone/torus/prism), **Add** → confirm each new body
+appears correctly placed and oriented. **Undo/Redo/Clear** the stack. Close and reopen
+the tab → ops (including primitives) reload from `bull.stp.edits.json` (inspect: valid
+JSON, CAD file untouched). **Export** the edited model (e.g. to STEP/STL) and reopen
+the output → the edits, including added primitives, are baked in. On `cube.stl`,
+confirm transforms, booleans, explode, and **all six primitives** apply (mesh path,
+matching the B-rep path's placement/orientation for the same params) and that the
 B-rep-only ops (fillet/chamfer, feature modeling, mate) are disabled. Apply/undo
 repeatedly + open/close → host memory stays flat (OCCT handle-leak check, same as
 above).
