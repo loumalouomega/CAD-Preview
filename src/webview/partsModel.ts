@@ -41,6 +41,7 @@ export class PartsModel {
       volumes: [],
       surfaces: [],
       lines: [],
+      points: [],
     });
     this.onChange();
   }
@@ -94,12 +95,14 @@ export class PartsModel {
     const solids = new Map<string, string>();
     const faces = new Map<string, string>();
     const edges = new Map<string, string>();
+    const points = new Map<string, string>();
     for (const p of this.parts) {
       for (const id of p.volumes) solids.set(id, p.color);
       for (const id of p.surfaces) faces.set(id, p.color);
       for (const id of p.lines) edges.set(id, p.color);
+      for (const id of p.points) points.set(id, p.color);
     }
-    return { solids, faces, edges };
+    return { solids, faces, edges, points };
   }
 
   /** The entities of one part as a flat selection list (for highlighting). */
@@ -110,12 +113,13 @@ export class PartsModel {
       ...p.volumes.map((id) => ({ entityType: "volume" as const, entityId: id })),
       ...p.surfaces.map((id) => ({ entityType: "surface" as const, entityId: id })),
       ...p.lines.map((id) => ({ entityType: "line" as const, entityId: id })),
+      ...p.points.map((id) => ({ entityType: "point" as const, entityId: id })),
     ];
   }
 }
 
 function bucketFor(p: Part, type: SelectedEntity["entityType"]): string[] {
-  return type === "volume" ? p.volumes : type === "surface" ? p.surfaces : p.lines;
+  return type === "volume" ? p.volumes : type === "surface" ? p.surfaces : type === "line" ? p.lines : p.points;
 }
 
 function clone(p: Part): Part {
@@ -125,5 +129,6 @@ function clone(p: Part): Part {
     volumes: [...p.volumes],
     surfaces: [...p.surfaces],
     lines: [...p.lines],
+    points: [...p.points],
   };
 }

@@ -8,6 +8,8 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 
+![](https://raw.githubusercontent.com/loumalouomega/CAD-Preview/master/images/cad_preview.png)
+
 A Visual Studio Code extension that previews 3D CAD and mesh files directly in the
 editor. Open a supported file and CAD-Preview renders an interactive 3D view
 (orbit / pan / zoom) in a read-only custom editor.
@@ -41,10 +43,22 @@ loaders. Rendering is always Three.js.
 - Shaded / wireframe toggle
 - Axes and grid helpers
 - Loading status indicator and error reporting
-- **Parts**: define named groups by clicking volumes / surfaces / lines in the 3D
-  view and assigning them to a part; assignments are colour-highlighted, listed in a
-  tree panel, and saved to a `<model>.parts.json` sidecar (the CAD file stays
-  read-only)
+- **Parts**: define named groups by clicking volumes / surfaces / lines / points in
+  the 3D view and assigning them to a part; assignments are colour-highlighted,
+  listed in a tree panel, and saved to a `<model>.parts.json` sidecar (the CAD file
+  stays read-only)
+- **Edits**: apply non-destructive operations — **transforms** (move / rotate / scale /
+  mirror), **booleans** (unite / subtract / intersect), **fillet/chamfer**, **feature
+  modeling** (extrude / revolve / sweep / loft), **assembly** (explode / mate),
+  **primitive creation** (box/cube, sphere, cylinder, cone, torus, N-sided prism),
+  **2D profile sketches** (circle, rectangle, N-sided polygon — pick one later as an
+  extrude/revolve/sweep/loft profile), and **bottom-up wireframe modeling** (points,
+  lines, arcs → build a surface from a set of lines → build a volume from a set of
+  surfaces); operations are undoable, replayable, and saved
+  to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are
+  baked in only on **Export**. (Transforms, booleans, explode, and primitive creation
+  work on both B-rep and mesh; fillet/chamfer, feature modeling, mate, 2D profile
+  sketches, and the wireframe/build ops are B-rep only.)
 - **Export**: convert the open model to a compatible format and save it via a native
   Save dialog — see [Export](#export) below
 

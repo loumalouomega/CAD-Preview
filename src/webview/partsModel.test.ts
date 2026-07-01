@@ -22,11 +22,13 @@ describe("PartsModel", () => {
       { entityType: "surface", entityId: "face-2" },
       { entityType: "surface", entityId: "face-2" }, // dup
       { entityType: "line", entityId: "edge-5" },
+      { entityType: "point", entityId: "point-3" },
     ]);
     const p = m.list()[0];
     expect(p.volumes).toEqual(["solid-0"]);
     expect(p.surfaces).toEqual(["face-2"]);
     expect(p.lines).toEqual(["edge-5"]);
+    expect(p.points).toEqual(["point-3"]);
   });
 
   it("removes a single entity and whole parts", () => {
@@ -57,7 +59,7 @@ describe("PartsModel", () => {
   it("load() replaces data without firing onChange", () => {
     const onChange = vi.fn();
     const m = new PartsModel(onChange);
-    m.load([{ name: "X", color: "#abcdef", volumes: ["solid-0"], surfaces: [], lines: [] }]);
+    m.load([{ name: "X", color: "#abcdef", volumes: ["solid-0"], surfaces: [], lines: [], points: [] }]);
     expect(onChange).not.toHaveBeenCalled();
     expect(m.list()[0].name).toBe("X");
     expect(m.entitiesOf(0)).toEqual([{ entityType: "volume", entityId: "solid-0" }]);

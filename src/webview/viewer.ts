@@ -3,7 +3,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import * as cam from "./cameraControls";
 import { OrientationCube } from "./orientationCube";
 import { collectTargets, resolvePick, type PickResult } from "./picking";
-import { DEFAULT_EDGE_COLOR, DEFAULT_FACE_COLOR } from "./geometryBuilder";
+import { DEFAULT_EDGE_COLOR, DEFAULT_FACE_COLOR, DEFAULT_POINT_COLOR } from "./geometryBuilder";
 import type { EntityType } from "../protocol";
 import type { SelectedEntity } from "./selection";
 
@@ -15,6 +15,7 @@ export interface EntityColorMap {
   solids: Map<string, string>; // solidId → colour (applies to all its faces)
   faces: Map<string, string>;  // faceId → colour (overrides the solid colour)
   edges: Map<string, string>;  // edgeId → colour
+  points: Map<string, string>; // pointId → colour
 }
 
 /**
@@ -36,6 +37,8 @@ export class Viewer {
   private readonly raycaster = new THREE.Raycaster();
   /** World-space half-thickness for picking thin edge lines; scaled per model. */
   private pickThreshold = 0.05;
+  /** World-space scale for point sprites; scaled per model (see `frame()`). */
+  private pointSpriteScale = 0.02;
   private selectionMode: EntityType | null = null;
   private onEntityPick: ((r: PickResult, additive: boolean) => void) | null = null;
   private onEmptyPick: (() => void) | null = null;
@@ -119,6 +122,14 @@ export class Viewer {
     this.axes.scale.setScalar(radius);
     // Edge lines are infinitely thin; pick them within ~2% of the model radius.
     this.pickThreshold = radius * 0.02;
+    // Point sprites don't share the raycaster's Line.threshold mechanism — their
+    // own world-space scale is what makes them proportionally hit-testable/visible.
+    this.pointSpriteScale = radius * 0.01;
+    this.model?.traverse((obj) => {
+      if (obj instanceof THREE.Sprite && obj.userData.entityType === "point") {
+        obj.scale.setScalar(this.pointSpriteScale);
+      }
+    });
 
     const fov = (this.camera.fov * Math.PI) / 180;
     const distance = (radius / Math.sin(fov / 2)) * 1.5;
@@ -223,6 +234,11 @@ export class Viewer {
         const color = hex ? new THREE.Color(hex) : new THREE.Color(DEFAULT_EDGE_COLOR);
         ud.baseColor = color.getHex();
         (obj.material as THREE.LineBasicMaterial).color.copy(color);
+      } else if (obj instanceof THREE.Sprite && ud.entityType === "point") {
+        const hex = map.points.get(ud.entityId);
+        const color = hex ? new THREE.Color(hex) : new THREE.Color(DEFAULT_POINT_COLOR);
+        ud.baseColor = color.getHex();
+        (obj.material as THREE.SpriteMaterial).color.copy(color);
       }
     });
   }
@@ -240,6 +256,10 @@ export class Viewer {
         const mat = obj.material as THREE.LineBasicMaterial;
         const base = (ud.baseColor as number | undefined) ?? DEFAULT_EDGE_COLOR;
         mat.color.setHex(keys.has(`line:${ud.entityId}`) ? SELECTION_COLOR : base);
+      } else if (obj instanceof THREE.Sprite && ud.entityType === "point") {
+        const mat = obj.material as THREE.SpriteMaterial;
+        const base = (ud.baseColor as number | undefined) ?? DEFAULT_POINT_COLOR;
+        mat.color.setHex(keys.has(`point:${ud.entityId}`) ? SELECTION_COLOR : base);
       }
     });
   }

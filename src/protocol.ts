@@ -1,4 +1,7 @@
 import type { CadFormat } from "./fileRouter";
+import type { EditOp } from "./editOps";
+
+export type { EditOp } from "./editOps";
 
 /** A node in the model component tree sent from host → webview. */
 export interface TreeNode {
@@ -22,8 +25,14 @@ export interface EncodedEdge {
   edgeId: string;    // stable per-edge entity id (e.g. "edge-12")
 }
 
+/** One vertex's position encoded as base64 for JSON-safe transfer. */
+export interface EncodedPoint {
+  position: string; // base64 Float32Array, length 3 (x, y, z) — same encoding convention as meshes/edges
+  pointId: string;  // stable per-point entity id (e.g. "point-4")
+}
+
 /** The kind of geometric entity a part assignment refers to. */
-export type EntityType = "volume" | "surface" | "line";
+export type EntityType = "volume" | "surface" | "line" | "point";
 
 /**
  * A user-defined named part (FEM sub-model-part / group). Holds the ids of the
@@ -35,16 +44,19 @@ export interface Part {
   volumes: string[];   // solid ids
   surfaces: string[];  // face ids
   lines: string[];     // edge ids
+  points: string[];    // point (vertex) ids
 }
 
 /** Messages sent from the extension host to the webview. */
 export type HostToWebview =
-  | { type: "geometry"; meshes: EncodedMesh[]; edges: EncodedEdge[] }
+  | { type: "geometry"; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
   | { type: "tree"; root: TreeNode }
   | { type: "loadUrl"; url: string; format: CadFormat }
   | { type: "parts"; parts: Part[] }
+  | { type: "edits"; ops: EditOp[] }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
+  | { type: "editError"; message: string }
   | { type: "exportMesh"; requestId: string; format: CadFormat };
 
 /** Messages sent from the webview to the extension host. */
@@ -52,6 +64,7 @@ export type WebviewToHost =
   | { type: "ready" }
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
+  | { type: "editsChanged"; ops: EditOp[] }
   | { type: "exportRequest" }
   | { type: "exportResult"; requestId: string; data: string; binary: boolean }
   | { type: "exportError"; requestId: string; message: string };

@@ -18,6 +18,9 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
+| `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
+| `src/webview/editsPanel.ts` | Edits panel DOM — transform composer + op list |
+| `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 
 ---
@@ -39,7 +42,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 
 | `type` | Action |
 |--------|--------|
-| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges)` → `viewer.setModel(group)`, recolour, enable all pick modes |
+| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` → `viewer.setModel(group)`, recolour, enable all pick modes (`volume`/`surface`/`line`/`point`) |
 | `"tree"` | `TreePanel.render(msg.root)` |
 | `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `splitMeshesIntoFacets(obj)` → `viewer.setModel(model)`, pick modes `volume` + `surface` |
 | `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` |
@@ -154,6 +157,14 @@ getCameraUp(): THREE.Vector3
 Returns `camera.up` (the "up" vector used by OrbitControls).
 
 **Scene state:**
+
+**Point rendering:** each `frame()` call (on `setModel`/`fitView`/`resetView`)
+computes `pointSpriteScale = radius * 0.01` (the model's bounding-sphere radius,
+same input `pickThreshold` already uses) and applies it to every `THREE.Sprite`'s
+`.scale` in the model — this keeps point markers a roughly constant fraction of
+model size regardless of scale. This is a separate mechanism from
+`raycaster.params.Line.threshold` (Line-only); sprites have their own hit-testing
+via `THREE.Sprite`'s native raycasting.
 
 ```typescript
 highlightGroup(groupId: string | null): void
@@ -313,9 +324,26 @@ Draws `text` centered on a 64×64 `<canvas>` with a colored background matching 
 Decodes base64-encoded geometry from the host and builds a `THREE.Group`.
 
 ```typescript
-function buildGroupFromEncoded(encodedMeshes: EncodedMesh[]): THREE.Group
+function buildGroupFromEncoded(
+  encodedMeshes: EncodedMesh[],
+  encodedEdges: EncodedEdge[] = [],
+  encodedPoints: EncodedPoint[] = []
+): THREE.Group
 ```
-Groups `encodedMeshes` by `groupId`. For each group, calls `mergeAndBuild()` to produce a `THREE.Mesh`. Sets `mesh.userData.groupId` so `Viewer.highlightGroup()` can identify it. Returns the root `THREE.Group`.
+Groups `encodedMeshes` by `groupId`. For each group, calls `mergeAndBuild()` to produce a `THREE.Mesh`. Sets `mesh.userData.groupId` so `Viewer.highlightGroup()` can identify it. Edges become a sibling `"edges"` group of `THREE.Line`s; points become a sibling `"points"` group of `THREE.Sprite`s (via `buildPointSprite`). Returns the root `THREE.Group`.
+
+```typescript
+function buildPointSprite(ep: EncodedPoint): THREE.Sprite
+```
+Builds a `THREE.Sprite` at the decoded position, tagged `userData = { entityType:
+"point", entityId: ep.pointId }`. Uses a single shared, lazily-built canvas dot
+texture (`dotTexture()` — memoized on first call, **not** built eagerly at module
+load: an earlier eager version broke `viewer.test.ts`, which imports this module
+transitively in a plain-Node vitest environment with no `document` available).
+`THREE.Sprite` was chosen over `THREE.Points`/`PointsMaterial` (which would raycast
+to a shared-buffer index, not a distinct `Object3D`, breaking the "one entity, one
+tagged object" invariant every other picking/colouring path relies on) and over
+per-vertex mesh geometry (real triangle cost × N, doesn't stay constant screen-size).
 
 ```typescript
 function mergeAndBuild(meshes: { positions: Float32Array; indices: Uint32Array }[]): THREE.Mesh
@@ -414,3 +442,119 @@ class TreePanel {
 **`private updateSelection(): void`** — Adds/removes the `selected` CSS class from rows based on `this._selectedId`. Called after each click.
 
 The `onSelect` callback is wired in `main.ts` to call `viewer.highlightGroup(id)`.
+
+## `src/webview/editsModel.ts`
+
+### `EditsModel`
+
+The in-webview **op-stack** for the replayable edit list. Pure data (no DOM),
+mirroring `PartsModel`. Owns both the applied list and a redo buffer; the host
+stays dumb and just persists / re-tessellates whatever list this produces.
+
+```typescript
+class EditsModel {
+  constructor(onChange: () => void)
+  load(ops: EditOp[]): void   // hydrate from sidecar — does NOT fire onChange
+  list(): EditOp[]            // deep copies, in order
+  push(op: EditOp): void      // append; clears the redo buffer
+  undo(): void                // pop last → redo buffer
+  redo(): void                // re-apply most recently undone
+  clear(): void               // empty both stacks
+  get size(): number
+  get canUndo(): boolean
+  get canRedo(): boolean
+}
+```
+
+Every mutation fires `onChange`, wired in `main.ts` to post `editsChanged`, render
+the panel, and (for mesh files) rebuild the displayed model. `load` does **not**
+fire — it is the initial sidecar load and must not echo back as a write.
+
+## `src/webview/editsPanel.ts`
+
+### `EditsPanel`
+
+Manages the `#edits-panel` DOM: a **transform composer** (a `Move/Rotate/Scale/
+Mirror` dropdown with numeric `<input>`s and an **Apply** button), an
+Undo/Redo/Clear control row, and the ordered op list with a one-line summary each
+(`describeOp`). VS Code webviews block `prompt()`, so all input is via numeric
+fields.
+
+```typescript
+class EditsPanel {
+  constructor(panel: HTMLElement, cb: EditsPanelCallbacks)
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean): void
+}
+```
+
+`onApplyTransform(draft: TransformDraft)` hands a transform op **without targets**
+to `main.ts`, which injects the selected volume ids before pushing it to the
+`EditsModel`. The boolean composer uses `onCaptureBooleanA()` (captures the current
+selection as operand A, returns its size for display) and `onApplyBoolean(kind)`
+(applies captured-A against the live selection as operand B). The fillet/chamfer
+composer uses `onApplyFillet(kind, amount)` (applies to the selected edges) and the
+feature composer uses `onApplyFeature(draft)` (extrude/revolve/sweep/loft from the
+selected profile face(s)/path edge); both are **B-rep-only** sections that
+`setBRepOnly(enabled)` disables for mesh sources. The assembly composer uses
+`onApplyExplode(factor)` (all formats) and `onApplyMate()` (aligns the two selected
+faces, B-rep only). The **primitive composer** uses `onApplyPrimitive(draft:
+PrimitiveDraft)` — the only op-creation callback that needs **no selection at all**;
+`draft` already carries every parameter (`center`/`axis`/dimensions), so `main.ts`
+just validates positivity and pushes the op straight through. This composer is
+deliberately never registered in `brepOnlyEls`, since primitives work on both
+engines. The **2D profile composer** (Circle/Rectangle/Polygon) similarly uses
+`onApplyProfile(draft: ProfileDraft)` — also no selection needed — but IS registered
+in `brepOnlyEls` (2D sketches are B-rep only). Rectangle/Polygon drafts carry an
+explicit `up: Vec3` (besides `normal`) so the sketch's in-plane orientation is
+user-controlled; `main.ts` rejects a draft where `up` is (anti-)parallel to `normal`
+before pushing (mirroring `validateEditOp`'s `notParallel` check). A sketch is
+created to be picked afterward (Surf mode) and fed into the feature composer's
+`profile` field — the two composers work together, not independently.
+
+The **wireframe composer** (Point/Line/Arc) uses `onApplyWireframe(draft:
+WireframeDraft)` — no selection needed, just typed coordinates — and IS registered
+in `brepOnlyEls`. A separate **build composer** — a single row of "Surface" and
+"Volume" buttons, reusing `.compose-row` — calls `onBuildSurfaceFromLines()` /
+`onBuildVolumeFromSurfaces()` directly with **no capture step**, unlike the boolean
+composer's two-operand "Set A then Apply" pattern: `main.ts` reads the live
+selection (`selection.list()` filtered to `entityType==="line"` or `"surface"`)
+at click time, since each op needs exactly one operand set, which is already
+what's currently selected in Line/Surf mode. Both guard a minimum count
+client-side (`>=3` lines, `>=4` faces) before pushing, matching `validateEditOp`'s
+gate so a rejected click never silently no-ops without feedback.
+
+## `src/webview/meshEdits.ts`
+
+The webview edit engine for **mesh formats** (no OCCT in the host). Folds the op-list
+over a pristine `THREE.Object3D` clone so ops replay cleanly on every change.
+
+```typescript
+function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Object3D
+function transformMatrixForOp(op: EditOp): THREE.Matrix4 | null   // pure, unit-tested
+function resolveMeshTargets(root: THREE.Object3D, ids: string[]): THREE.Object3D[]
+```
+
+`transformMatrixForOp` builds the world-space matrix for translate/rotate/scale/
+mirror (rotation/scale/mirror conjugated about their point via `T(p)·M·T(−p)`;
+mirror is a Householder reflection). **Booleans** go through `applyMeshBoolean`,
+which resolves operand A/B to their first mesh, evaluates a CSG via **`three-bvh-csg`**
+(`Evaluator`/`Brush` with `ADDITION`/`SUBTRACTION`/`INTERSECTION`), and replaces both
+operands in the tree with the single result mesh (tagged with A's node id).
+Feature-modeling ops (`BREP_ONLY_OPS`) are skipped — meshes have no sketch/exact
+topology. `main.ts` caches the pristine tagged object and calls `applyEditsMesh` on a
+clone inside `rebuildMeshModel()`.
+
+**Primitives** (`addBox`/`addSphere`/`addCylinder`/`addCone`/`addTorus`/`addPrism`)
+go through `buildPrimitiveMesh(op)`, which constructs a fresh `THREE.BufferGeometry`
+(`BoxGeometry`/`SphereGeometry`/`CylinderGeometry`/`TorusGeometry` — `CylinderGeometry
+(radius, radius, height, sides)` doubles as the N-gon prism) and attaches it under
+`root`. Because `applyEditsMesh` always folds over a **fresh clone** of the pristine
+object (primitives never pre-exist in it), this construction happens on every replay
+— tagged `userData.groupId = "prim-{K}"`, where `K` counts only `addX` ops seen so
+far in that fold pass (reset per call), so ids are deterministic by op-list position
+and never collide with the loaded file's `node-N` ids. `baseAlignedMatrix`/
+`centerAlignedMatrix` rotate Three's canonical primitive orientation (cylinder/cone:
++Y-centred; torus: XY-plane ring, +Z normal — verified from the Three.js source) onto
+the op's `axis` via `Quaternion.setFromUnitVectors`, then translate; get the
+rotate-then-translate order wrong and non-canonical-axis primitives land off-centre
+(regression-tested with a tilted-axis cylinder in `meshEdits.test.ts`).

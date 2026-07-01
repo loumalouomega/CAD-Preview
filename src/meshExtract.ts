@@ -39,6 +39,9 @@ interface OcctPolyTriangulation {
 interface OcctTrsf { TransformCoord(x: number, y: number, z: number): [number, number, number]; }
 interface OcctDiscretizer { NbPoints(): number; Value(i: number): OcctPoint; }
 
+/** Bucket capacity for `HashCode`-based shape de-dup (shared by face + edge dedup). */
+const HASH_UPPER = 1 << 30;
+
 /**
  * Extracts position and index buffers from one OCCT face.
  * Normals are computed on the webview side via computeVertexNormals().
@@ -103,9 +106,105 @@ export function polylineFromDiscretizer(disc: OcctDiscretizer): Float32Array {
   return positions;
 }
 
-/** Extract face geometry buffers from all faces in `shape` (no BRepMesh call). */
+/** Triangulates one already-`BRepMesh`'d face, or null when it has no triangulation. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractFacesFromShape(oc: any, shape: any): GeometryBuffers[] {
+function triangulateFace(oc: any, face: any, cleanup: Array<{ delete(): void }>): GeometryBuffers | null {
+  const isReversed =
+    face.Orientation_1().value === oc.TopAbs_Orientation.TopAbs_REVERSED.value;
+
+  const loc = new oc.TopLoc_Location_1();
+  cleanup.push(loc);
+
+  const handle = oc.BRep_Tool.Triangulation(face, loc);
+  if (handle.IsNull()) return null;
+
+  const tri = handle.get();
+  const trsf = loc.IsIdentity() ? null : loc.Transformation();
+  if (trsf) cleanup.push(trsf);
+
+  const m = trsf
+    ? [
+        trsf.Value(1, 1), trsf.Value(1, 2), trsf.Value(1, 3), trsf.Value(1, 4),
+        trsf.Value(2, 1), trsf.Value(2, 2), trsf.Value(2, 3), trsf.Value(2, 4),
+        trsf.Value(3, 1), trsf.Value(3, 2), trsf.Value(3, 3), trsf.Value(3, 4),
+      ]
+    : null;
+
+  const trsfAdapter = m
+    ? {
+        TransformCoord(x: number, y: number, z: number): [number, number, number] {
+          return [
+            m[0] * x + m[1] * y + m[2] * z + m[3],
+            m[4] * x + m[5] * y + m[6] * z + m[7],
+            m[8] * x + m[9] * y + m[10] * z + m[11],
+          ];
+        },
+      }
+    : null;
+
+  return extractFaceGeometry(tri, trsfAdapter, isReversed);
+}
+
+/**
+ * Extract face geometry buffers from all faces in `shape` (no BRepMesh call).
+ *
+ * When `claim` is given, every visited face is recorded into `claim.map`
+ * (`HashCode` bucket → face handles for later `IsSame` checks) so a later
+ * {@link extractFreeFaces} pass can tell which faces are already "owned" by a
+ * solid. Those claimed face handles must outlive this single call (they're
+ * compared again later), so they're pushed into `claim.cleanup` — the *caller's*
+ * longer-lived cleanup array — instead of this function's own, which is deleted
+ * when it returns.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractFacesFromShape(
+  oc: any,
+  shape: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  claim?: { map: Map<number, any[]>; cleanup: Array<{ delete(): void }> }
+): GeometryBuffers[] {
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const results: GeometryBuffers[] = [];
+    const exp = new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_FACE,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    cleanup.push(exp);
+
+    for (; exp.More(); exp.Next()) {
+      const face = oc.TopoDS.Face_1(exp.Current());
+      if (claim) {
+        claim.cleanup.push(face);
+        const hash = face.HashCode(HASH_UPPER);
+        const bucket = claim.map.get(hash);
+        if (bucket) bucket.push(face); else claim.map.set(hash, [face]);
+      } else {
+        cleanup.push(face);
+      }
+
+      const g = triangulateFace(oc, face, cleanup);
+      if (g) results.push(g);
+    }
+    return results;
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Faces of the whole `shape` NOT already present in `claimed` (`HashCode` bucket
+ * + `IsSame`, matching the de-dup technique {@link extractEdges} already uses).
+ * Surfaces standalone 2D profile faces (e.g. `addCircleProfile`/
+ * `addRectangleProfile`/`addPolygonProfile`) that live in the model compound
+ * alongside real solids — without this, `tessellateByGroup`'s solid-only pass
+ * would silently drop them and they'd never become visible/pickable.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractFreeFaces(oc: any, shape: any, claimed: Map<number, any[]>): GeometryBuffers[] {
   const cleanup: Array<{ delete(): void }> = [];
   try {
     const results: GeometryBuffers[] = [];
@@ -119,41 +218,11 @@ function extractFacesFromShape(oc: any, shape: any): GeometryBuffers[] {
     for (; exp.More(); exp.Next()) {
       const face = oc.TopoDS.Face_1(exp.Current());
       cleanup.push(face);
+      const bucket = claimed.get(face.HashCode(HASH_UPPER));
+      if (bucket && bucket.some((f) => f.IsSame(face))) continue; // owned by a solid
 
-      const isReversed =
-        face.Orientation_1().value === oc.TopAbs_Orientation.TopAbs_REVERSED.value;
-
-      const loc = new oc.TopLoc_Location_1();
-      cleanup.push(loc);
-
-      const handle = oc.BRep_Tool.Triangulation(face, loc);
-      if (handle.IsNull()) continue;
-
-      const tri = handle.get();
-      const trsf = loc.IsIdentity() ? null : loc.Transformation();
-      if (trsf) cleanup.push(trsf);
-
-      const m = trsf
-        ? [
-            trsf.Value(1, 1), trsf.Value(1, 2), trsf.Value(1, 3), trsf.Value(1, 4),
-            trsf.Value(2, 1), trsf.Value(2, 2), trsf.Value(2, 3), trsf.Value(2, 4),
-            trsf.Value(3, 1), trsf.Value(3, 2), trsf.Value(3, 3), trsf.Value(3, 4),
-          ]
-        : null;
-
-      const trsfAdapter = m
-        ? {
-            TransformCoord(x: number, y: number, z: number): [number, number, number] {
-              return [
-                m[0] * x + m[1] * y + m[2] * z + m[3],
-                m[4] * x + m[5] * y + m[6] * z + m[7],
-                m[8] * x + m[9] * y + m[10] * z + m[11],
-              ];
-            },
-          }
-        : null;
-
-      results.push(extractFaceGeometry(tri, trsfAdapter, isReversed));
+      const g = triangulateFace(oc, face, cleanup);
+      if (g) results.push(g);
     }
     return results;
   } finally {
@@ -192,10 +261,18 @@ export function tessellateByGroup(oc: any, shape: any): SolidGroup[] {
     const toFaceMeshes = (buffers: GeometryBuffers[]): FaceMesh[] =>
       buffers.map((b) => ({ faceId: `face-${faceCounter++}`, buffers: b }));
 
+    // Face handles claimed by a solid are recorded here so the free-face pass
+    // below (run only when solids exist) can skip them. The claimed handles are
+    // pushed into THIS function's `cleanup` (not extractFacesFromShape's own,
+    // per-call one) so they stay alive until the free-face IsSame comparisons run.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const claimedMap = new Map<number, any[]>();
+    const claim = { map: claimedMap, cleanup };
+
     let idx = 0;
     for (; solidExp.More(); solidExp.Next()) {
       const solidRef = solidExp.Current();
-      const faces = toFaceMeshes(extractFacesFromShape(oc, solidRef));
+      const faces = toFaceMeshes(extractFacesFromShape(oc, solidRef, claim));
       groups.push({
         id: `solid-${idx}`,
         label: `Solid ${idx + 1}`,
@@ -206,8 +283,21 @@ export function tessellateByGroup(oc: any, shape: any): SolidGroup[] {
     }
 
     if (groups.length === 0) {
+      // No solids at all — treat every face of the shape as one group (a bare
+      // surface/shell model, or a document holding only 2D profile faces).
       const faces = toFaceMeshes(extractFacesFromShape(oc, shape));
       groups.push({ id: "solid-0", label: "Shape", faceCount: faces.length, faces });
+    } else {
+      // Solids exist — also surface any standalone 2D profile faces (added via
+      // addCircleProfile/addRectangleProfile/addPolygonProfile) that aren't owned
+      // by any solid, grouped together so they stay visible/pickable (Surf mode)
+      // and usable as extrude/revolve/sweep/loft profiles. `collectFaces` in
+      // occtOperations.ts mirrors this exact algorithm so face-N ids resolve to
+      // the same live face on both the read and edit-replay paths.
+      const freeFaces = toFaceMeshes(extractFreeFaces(oc, shape, claimedMap));
+      if (freeFaces.length > 0) {
+        groups.push({ id: `solid-${idx}`, label: "Sketches", faceCount: freeFaces.length, faces: freeFaces });
+      }
     }
 
     return groups;
@@ -232,7 +322,6 @@ export function tessellateByGroup(oc: any, shape: any): SolidGroup[] {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function extractEdges(oc: any, shape: any): EdgeLine[] {
   const cleanup: Array<{ delete(): void }> = [];
-  const HASH_UPPER = 1 << 30;
   try {
     const edges: EdgeLine[] = [];
     // hashCode → list of edges already seen (TopoDS shapes) for IsSame checks.
@@ -284,6 +373,62 @@ function discretizeEdge(oc: any, edge: any, cleanup: Array<{ delete(): void }>):
     return polylineFromDiscretizer(disc);
   } catch {
     return new Float32Array(0);
+  }
+}
+
+/** One vertex's position plus its stable per-point entity id. */
+export interface PointEntity {
+  pointId: string;
+  /** A single xyz triple (not a polyline — a vertex is always one point). */
+  position: [number, number, number];
+}
+
+/**
+ * Extracts every unique vertex of `shape` (`TopExp_Explorer` over
+ * `TopAbs_VERTEX`, de-duplicated by `HashCode` bucket + `IsSame`, mirroring
+ * {@link extractEdges} almost line-for-line). Unlike faces, this is
+ * **unconditional over the whole shape** — no "claimed by a solid" pass — so
+ * Point mode shows every vertex in the model: original geometry's corners AND
+ * user-added standalone points (`addPoint`), exactly how Line mode already
+ * shows every edge (original + added). Points are never resolved as operands
+ * by any other op, so unlike faces this extraction has no lockstep-pipeline
+ * counterpart to keep in sync in `occtOperations.ts` — it's display-only.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function extractVertices(oc: any, shape: any): PointEntity[] {
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const points: PointEntity[] = [];
+    const seen = new Map<number, Array<{ IsSame(o: unknown): boolean }>>();
+
+    const exp = new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    cleanup.push(exp);
+
+    for (; exp.More(); exp.Next()) {
+      const vertex = oc.TopoDS.Vertex_1(exp.Current());
+      const hash = vertex.HashCode(HASH_UPPER);
+      const bucket = seen.get(hash);
+      if (bucket && bucket.some((v) => v.IsSame(vertex))) {
+        vertex.delete();
+        continue;
+      }
+      cleanup.push(vertex);
+      if (bucket) bucket.push(vertex);
+      else seen.set(hash, [vertex]);
+
+      const pnt = oc.BRep_Tool.Pnt(vertex);
+      points.push({ pointId: `point-${points.length}`, position: [pnt.X(), pnt.Y(), pnt.Z()] });
+      pnt.delete();
+    }
+    return points;
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
+    }
   }
 }
 

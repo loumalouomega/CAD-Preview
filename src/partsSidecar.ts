@@ -41,6 +41,7 @@ export function parsePartsJson(text: string): Part[] {
       volumes: asStringArray(p.volumes),
       surfaces: asStringArray(p.surfaces),
       lines: asStringArray(p.lines),
+      points: asStringArray(p.points), // [] for sidecars written before points existed
     });
   }
   return parts;

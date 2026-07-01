@@ -2,9 +2,10 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside VS Code.",
-  "version": "0.1.8",
+  "version": "0.4.0",
   "publisher": "kratos-multiphysics",
   "license": "SEE LICENSE IN LICENSE",
+  "icon": "images/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/loumalouomega/CAD-Preview.git"
@@ -23,16 +24,36 @@
         "viewType": "cad-preview.mesh",
         "displayName": "CAD Preview",
         "selector": [
-          { "filenamePattern": "*.stl" },
-          { "filenamePattern": "*.obj" },
-          { "filenamePattern": "*.ply" },
-          { "filenamePattern": "*.gltf" },
-          { "filenamePattern": "*.glb" },
-          { "filenamePattern": "*.step" },
-          { "filenamePattern": "*.stp" },
-          { "filenamePattern": "*.iges" },
-          { "filenamePattern": "*.igs" },
-          { "filenamePattern": "*.brep" }
+          {
+            "filenamePattern": "*.stl"
+          },
+          {
+            "filenamePattern": "*.obj"
+          },
+          {
+            "filenamePattern": "*.ply"
+          },
+          {
+            "filenamePattern": "*.gltf"
+          },
+          {
+            "filenamePattern": "*.glb"
+          },
+          {
+            "filenamePattern": "*.step"
+          },
+          {
+            "filenamePattern": "*.stp"
+          },
+          {
+            "filenamePattern": "*.iges"
+          },
+          {
+            "filenamePattern": "*.igs"
+          },
+          {
+            "filenamePattern": "*.brep"
+          }
         ],
         "priority": "default"
       }
@@ -51,7 +72,8 @@
   },
   "dependencies": {
     "opencascade.js": "^1.1.1",
-    "three": "^0.160.0"
+    "three": "^0.160.0",
+    "three-bvh-csg": "^0.0.16"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",

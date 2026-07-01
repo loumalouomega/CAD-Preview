@@ -10,10 +10,14 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/provider.ts` | Custom editor provider, webview lifecycle |
 | `src/fileRouter.ts` | Map file extensions to render strategy |
 | `src/exportTargets.ts` | Map a `FileRoute` to its compatible export formats |
-| `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export |
+| `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export (op-list aware) |
+| `src/occtOperations.ts` | Host-side OCCT edit engine — folds the op-list over a `TopoDS_Shape` |
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
 | `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
+| `src/editOps.ts` | The `EditOp` union + `validateEditOp` tolerance gate (vscode-free) |
+| `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
+| `src/editsSidecar.ts` | Pure parse/serialize for the edits sidecar (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 
 ---
@@ -149,6 +153,7 @@ Manages the OpenCascade.js WASM singleton and performs B-rep parsing and tessell
 interface BRepResult {
   groups: SolidGroup[]   // from meshExtract.ts (faces, grouped by solid)
   edges: EdgeLine[]      // from meshExtract.ts (deduped edge polylines)
+  points: PointEntity[]  // from meshExtract.ts (every vertex in the shape)
   tree: TreeNode         // from protocol.ts
 }
 ```
@@ -169,10 +174,11 @@ Resets the singleton to `null`. Used in tests and hot-reload scenarios. **Not sa
 async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
-  format: CadFormat
+  format: CadFormat,
+  ops?: EditOp[]            // replayable edit op-list (default [])
 ): Promise<BRepResult>
 ```
-High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, and `buildTree()` to build the component hierarchy.
+High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, `extractVertices()` to extract every vertex in the shape, and `buildTree()` to build the component hierarchy. With an empty `ops` this is the original read-only path; the source bytes are never modified.
 
 ```typescript
 function readShape(
@@ -198,12 +204,14 @@ async function exportBRep(
   extensionPath: string,
   bytes: Uint8Array,
   sourceFormat: "step" | "iges" | "brep",
-  targetFormat: "step" | "iges" | "brep"
+  targetFormat: "step" | "iges" | "brep",
+  ops?: EditOp[]            // replayable edit op-list (default [])
 ): Promise<Uint8Array>
 ```
-Re-parses `bytes` with `readShape()` and writes the resulting `TopoDS_Shape` out as
-`targetFormat` via the private `writeShape()` helper, returning the output file's
-bytes (read back from the OCCT virtual filesystem). Cleans up every handle —
+Re-parses `bytes` with `readShape()`, applies the edit op-list via `applyEditsBRep()`,
+and writes the resulting `TopoDS_Shape` out as `targetFormat` via the private
+`writeShape()` helper, returning the output file's bytes (read back from the OCCT
+virtual filesystem) — so **Export bakes the edits in**. Cleans up every handle —
 reader/writer/shape/progress-indicator — in a `finally`, plus `oc.FS.unlink()` on
 both the input and output virtual paths, same discipline as `loadBRep`.
 
@@ -223,6 +231,163 @@ overload instead):
 - **step**: `new oc.STEPControl_Writer_1()` → `.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true)` → check `IFSelect_RetDone` → `.Write(filePath)` → check status again.
 - **iges**: `new oc.IGESControl_Writer_1()` → `.AddShape(shape)` → `.ComputeModel()` → `.Write_2(filePath, false)` (boolean return).
 - **brep**: `oc.BRepTools.Write_2(shape, filePath, new oc.Handle_Message_ProgressIndicator_1())` (boolean return).
+
+---
+
+## `src/occtOperations.ts`
+
+The host-side OCCT **edit engine**. Folds the replayable op-list over a freshly-read
+`TopoDS_Shape` and returns the edited shape, which `loadBRep`/`exportBRep` then
+tessellate / write exactly as for an unedited file. The webview never sees OCCT.
+
+```typescript
+function applyEditsBRep(
+  oc: any,
+  baseShape: any,            // TopoDS_Shape
+  ops: EditOp[],
+  cleanup: { delete(): void }[]
+): any                       // TopoDS_Shape (edited)
+```
+Reduces `ops` over `baseShape`. Every wrapped handle it creates is pushed onto
+`cleanup` (freed in the caller's `finally`); the **returned** shape is *not* deleted
+here — the caller owns its lifetime. Unimplemented ops are skipped, so a sidecar
+authored against a newer build never hard-fails an older one.
+
+**Transforms (M1)** are applied by `transformSolids()`, which respects the same
+deterministic `solid-N` explorer order the read pipeline uses: when every solid is
+targeted (or the shape has no solids) the whole shape is transformed; otherwise a new
+`TopoDS_Compound` is assembled from the transformed targets plus the untouched rest.
+The `gp_Trsf`/`gp_GTrsf` suffix details are recorded in `CLAUDE.md` (verified against
+the live WASM).
+
+**Booleans (M2)** are applied by `booleanSolids()` via `BRepAlgoAPI_{Fuse,Cut,
+Common}_3(s1, s2).Shape()` (the progress-range arg is optional/unbound). Each operand
+shape is built from its `solid-N` set (a compound when more than one); the operands
+are replaced by the single boolean result and the untargeted solids are preserved in
+a rebuilt compound. An op with unresolved operands or `IsDone()===false` is skipped.
+
+**Fillet/chamfer (M3)** are applied by `filletEdges()` via `BRepFilletAPI_MakeFillet`
+/ `BRepFilletAPI_MakeChamfer` + `.Add_2(amount, edge)` → `.Shape()`. Edge `edge-N` ids
+are resolved by `collectEdges()`, which replicates `extractEdges`' exact de-dup +
+discretization-validity ordering so the picked ids map to the right live edges. A
+fillet whose edges don't resolve or whose `.Shape()` throws / `IsDone()` is false is
+skipped.
+
+**Feature modeling (M4)** is applied by `featureModel()`/`buildFeatureSolid()` —
+extrude (`MakePrism_1`), revolve (`MakeRevol_1`), sweep (`MakePipe_1`), loft
+(`ThruSections`). Profile `face-N` ids are resolved by `collectFaces()` in the same
+global solid→face order `tessellateByGroup` assigns; the resulting solid is
+**appended** as a new body (`compound(existing + new)`), never cutting/fusing the
+source. Operands that don't resolve or builders that throw are skipped.
+
+**Assembly (M5):** `explodeSolids()` spreads each solid from the model bbox centre by
+`factor` (all formats; mesh path in `meshEdits.applyMeshExplode`). `mateShape()`
+aligns planar `faceA` onto `faceB` via `gp_Trsf.SetDisplacement` of `gp_Ax3` frames
+(face planes from `BRepAdaptor_Surface_2`), moving the solid `owningSolid()` finds for
+`faceA`. Non-planar faces / unresolved ids / failed displacement are skipped.
+
+**Primitive creation (M6)** is applied by `addPrimitive()`/`buildPrimitiveSolid()` —
+the one op family with **no existing operands**: it builds a new solid from
+parameters alone and appends it (`compound(existing + new)`, same non-destructive
+pattern as `featureModel`), and unlike M3/M4/M5's B-rep-only ops, it also runs on the
+mesh engine (`meshEdits.buildPrimitiveMesh`) — see `src/webview/meshEdits.ts` below.
+`BRepPrimAPI_MakeBox_3`/`MakeSphere_5`/`MakeCylinder_3`/`MakeCone_3`/`MakeTorus_5`
+build the five direct-primitive shapes from a `gp_Pnt_3`/`gp_Ax2_3` placement; the
+N-gon prism has no OCCT primitive, so it's built by hand (`planeBasis()` computes two
+JS-side perpendicular unit vectors, N points are placed around them, then
+`buildFlatFace()` — `BRepBuilderAPI_MakeWire_1`/`MakeFace_15` — makes the base face,
+then the already-verified `MakePrism_1` extrudes it). A primitive whose builder
+throws is skipped.
+
+**2D profile sketches (M7)** are applied by `addProfile()`/`buildProfileFace()` —
+like primitives, no existing operands, but the appended body is a bare
+**`TopoDS_Face`** (no thickness), meant to be picked (Surf mode) and fed into
+`extrude`/`revolve`/`sweep`/`loft` as the `profile` operand afterward. B-rep only
+(`BREP_ONLY_OPS`). Circle uses `gp_Circ_2(gp_Ax2_3(pnt, normal), radius)` →
+`BRepBuilderAPI_MakeEdge_8(circ)` → wire → face; rectangle/polygon reuse the same
+`buildFlatFace()` helper the N-gon prism uses, with corners computed via
+`inPlaneBasis(normal, up)` — unlike `planeBasis()`, this derives the in-plane `u`
+axis from the op's explicit `up` vector (projected off `normal`, normalized) so
+orientation is user-controlled, not arbitrary.
+
+**This required extending the tessellation pipeline itself.** `tessellateByGroup`
+(`src/meshExtract.ts`) used to only extract faces belonging to a solid; a bare face
+appended into the model compound would be silently invisible. It now also runs a
+free-face pass — after tessellating each solid, it claims every face it touched
+(`HashCode` bucket + `IsSame`, the same de-dup technique `extractEdges` already uses
+for edges) and then walks the whole shape's faces once more, surfacing anything not
+claimed as an extra `"Sketches"` group. **`collectFaces()`/`addFreeFacesOf()` in this
+file duplicate that exact algorithm** so `face-N` ids resolve to the same live face
+on both the read/display path and the edit-resolution path — if the two ever drift
+out of lockstep, a `face-N` picked in the view will silently target the wrong face.
+Verified end-to-end against the live WASM, not assumed: a compound of a solid + a
+free face splits into exactly the expected claimed/free counts, and
+`addCircleProfile` immediately followed by `extrude` on the predicted `face-N`
+resolves to the exact face OCCT just built. Extruding a profile **consumes** it —
+`MakePrism_1`'s `Copy=false` reuses the source face as the new solid's base cap, so
+no duplicate face is left behind in `"Sketches"` afterward. A profile whose builder
+throws is skipped.
+
+**Bottom-up wireframe modeling (M8)** — `addWireframePrimitive()` (point/line/arc),
+`addSurfaceFromLines()`, and `addVolumeFromSurfaces()` — is B-rep only
+(`BREP_ONLY_OPS`), all five ops. Point/line/arc follow the same append pattern as
+every other creation op: `BRepBuilderAPI_MakeVertex(pnt)` (unsuffixed — this class,
+like `BRepBuilderAPI_Sewing` below, has no `_N` overloads in this binding), the
+already-verified `BRepBuilderAPI_MakeEdge_3(pnt, pnt)` for lines, and the
+already-verified `gp_Circ_2` trimmed via `BRepBuilderAPI_MakeEdge_9(circ, alpha1,
+alpha2)` for arcs (radians; found among the 35 `MakeEdge` overloads). Neither points
+nor edges built this way are resolved as operands by anything else — `addLine`/
+`addArc` take typed `Vec3` coordinates, not entity-id references, so there is
+**no `collectVertices()`** in this file.
+
+`addSurfaceFromLines()` resolves `edge-N` ids via the **existing** `collectEdges()`
+(unchanged), assembles them with `BRepBuilderAPI_MakeWire_1` + `.Add_1()` per edge —
+verified to auto-connect edges added in shuffled order via their shared vertices —
+then `BRepBuilderAPI_MakeFace_15(wire, true)`. `.IsDone()` catches genuinely
+disconnected edges but **not** an "almost closed" open chain (no reliable
+closed-loop check was found in this binding — `BRepTools.IsReallyClosed`/
+`DetectClosedness` need args this binding doesn't expose usefully, and
+`ShapeAnalysis_Wire.CheckClosed` didn't distinguish closed from open in testing);
+an open chain may still produce a best-effort face, which is harmless. The
+resulting face flows through the existing free-face pass with no further changes.
+
+`addVolumeFromSurfaces()` resolves `face-N` ids via the **existing** `collectFaces()`
+(which already includes the M7 free-face pass, so an M8b-built surface is
+selectable here too), sews them with `new BRepBuilderAPI_Sewing(tolerance, true,
+true, true, false)` (5 required params, no shorter overload) → `.Add(face)` per
+face → `.Perform(new Handle_Message_ProgressIndicator_1())` → `.SewedShape()`, pulls
+the `TopAbs_SHELL` via `TopoDS.Shell_1`. The closure check is **`sew.NbFreeEdges()`**
+— `0` for a properly closed shell, `>0` for an open one — found only after
+`.IsNull()`, sign/magnitude of `BRepGProp.VolumeProperties`, and
+`BRepBuilderAPI_MakeSolid` all gave misleading non-error results on an open shell.
+`BRepBuilderAPI_MakeSolid_3(shell)` builds the final solid. **Sewing does not
+consume its input faces** (unlike extrude's `Copy=false`) — the source faces remain
+visible in `"Sketches"` after a successful volume build; left as-is rather than
+suppressed (would need excluding specific faces from the compound rebuild, extra
+complexity for a cosmetic concern). Any op with unresolved operands, a builder
+throw, or (surface/volume specifically) a structurally invalid selection is skipped.
+
+---
+
+## `src/editOps.ts`, `src/editsStore.ts`, `src/editsSidecar.ts`
+
+The edit-operation model and its sidecar, mirroring the parts trio.
+
+`src/editOps.ts` is **vscode-free** and holds the `EditOp` discriminated union plus:
+
+```typescript
+function validateEditOp(raw: unknown): EditOp | null   // single tolerance gate
+const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOp["op"]>  // re-id faces/edges on reload
+const BREP_ONLY_OPS: ReadonlySet<EditOp["op"]>          // disabled for mesh files
+```
+
+`src/editsSidecar.ts` is **vscode-free** (unit-tested): `parseEditsJson(text)` (runs
+every op through `validateEditOp`, dropping malformed ones, preserving order) and
+`serializeEditsJson(sourceName, ops)` (version-stamped, trailing newline).
+
+`src/editsStore.ts` wraps them with VS Code filesystem access: `editsSidecarUri()`
+(`<model>.edits.json`), `readEdits()` (tolerant — `[]` on missing/unreadable), and
+`writeEdits()` (writes only the sidecar; the CAD file is never touched).
 
 ---
 
@@ -247,6 +412,11 @@ interface FaceMesh {
 interface EdgeLine {
   edgeId: string            // stable per-edge entity id ("edge-N")
   positions: Float32Array   // consecutive xyz points; pairs form polyline segments
+}
+
+interface PointEntity {
+  pointId: string            // stable per-vertex entity id ("point-N")
+  position: [number, number, number]
 }
 
 interface SolidGroup {
@@ -288,6 +458,8 @@ function tessellateByGroup(oc: any, shape: any): SolidGroup[]
 ```
 Tessellates the entire `TopoDS_Shape`. Uses `BRepMesh_IncrementalMesh_2` with linear deflection `0.1`. Explores solids via `TopExp_Explorer`, then within each solid explores faces and calls `extractFaceGeometry`. Returns one `SolidGroup` per solid, each face tagged with a stable global `faceId` (deterministic explorer order).
 
+When solids exist, it also runs a **free-face pass** (`extractFreeFaces`): every face touched while processing a solid is "claimed" into a `HashCode`-bucketed map (via `extractFacesFromShape`'s optional `claim` parameter — the claimed face handles are pushed into `tessellateByGroup`'s own long-lived `cleanup`, not the per-call one, so they outlive the comparison), then the whole shape's faces are walked once more and anything not claimed (`IsSame` check) becomes an extra `"Sketches"` group. This surfaces standalone 2D profile faces added via `addCircleProfile`/`addRectangleProfile`/`addPolygonProfile` (`src/occtOperations.ts`), which would otherwise be silently dropped — without it, a bare `TopoDS_Face` mixed into the compound never gets tessellated or a `faceId`. **`occtOperations.ts`'s `collectFaces` duplicates this exact algorithm** so `face-N` ids resolve consistently between the read/display path and the edit-resolution path; see that file's docs above for why keeping the two in lockstep matters. `triangulateFace` factors out the per-face triangulation logic shared by the solid pass, the no-solids fallback, and the free-face pass.
+
 ```typescript
 function extractEdges(oc: any, shape: any): EdgeLine[]
 ```
@@ -297,6 +469,17 @@ Explores every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` bucket +
 function polylineFromDiscretizer(disc: OcctDiscretizer): Float32Array
 ```
 Pure helper (unit-tested) that packs a discretizer's points into a flat xyz array, deleting each `gp_Pnt` handle it reads.
+
+```typescript
+function extractVertices(oc: any, shape: any): PointEntity[]
+```
+Explores every `TopoDS_VERTEX` in the whole shape (`TopExp_Explorer_2(shape,
+TopAbs_VERTEX, TopAbs_SHAPE)`), de-duplicating by `HashCode` bucket + `IsSame` (same
+technique as `extractEdges`). Unlike face/edge extraction there is no claim/free
+distinction and no discretization filter — a vertex is always exactly one point.
+Runs unconditionally over the whole shape (original geometry's corners **and** any
+user-added standalone points), since nothing downstream ever resolves a `point-N`
+id back to a live vertex — point extraction is purely for display.
 
 **Memory discipline:** Every OCCT handle created in these functions is pushed onto a local `cleanup[]` array. A `try/finally` block deletes them in reverse order regardless of success or failure. In `extractEdges`, deduped edge handles are kept alive in `cleanup` until the end so later `IsSame` comparisons stay valid.
 

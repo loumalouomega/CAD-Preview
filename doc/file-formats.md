@@ -124,6 +124,72 @@ topology), the whole object is a **volume** with a stable traversal-order id
 long as the source file is unchanged. Parsing is tolerant: a missing or hand-corrupted sidecar yields an
 empty part list rather than blocking the model from opening.
 
+## Edits Sidecar (`<model>.edits.json`)
+
+User-applied **edit operations** (transforms and booleans, and — in later
+milestones — feature modeling, assembly) are stored in a **second** JSON sidecar
+next to the CAD file — e.g. `bull.stp` → `bull.stp.edits.json`. Like parts, this never
+modifies the CAD file: the editor stays read-only. The sidecar holds an **ordered,
+replayable op-list** that is re-applied on every open, so the displayed model is
+`base shape ∘ ops`. It is read on open (`readEdits()`) and autosaved, debounced, on
+every change (`writeEdits()`), both in `src/editsStore.ts`; parse/serialize live in
+the vscode-free `src/editsSidecar.ts` so they are unit-tested.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "ops": [
+    { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0] },
+    { "op": "rotate", "targets": ["solid-0"], "axisPoint": [0, 0, 0], "axisDir": [0, 0, 1], "angleDeg": 45 }
+  ]
+}
+```
+
+**Where ops are applied** mirrors the read/export split:
+
+| Source pipeline | Edit engine | Supported ops (current) |
+|---|---|---|
+| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror, boolean (unite/subtract/intersect), fillet, chamfer, extrude, revolve, sweep, loft, explode, mate, addBox, addSphere, addCylinder, addCone, addTorus, addPrism, addCircleProfile, addRectangleProfile, addPolygonProfile, addPoint, addLine, addArc, addSurfaceFromLines, addVolumeFromSurfaces |
+| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror, boolean (via `three-bvh-csg`), explode, addBox, addSphere, addCylinder, addCone, addTorus, addPrism — fillet/chamfer, feature-modeling, mate, the 2D profile ops, and the bottom-up wireframe ops (addPoint/addLine/addArc/addSurfaceFromLines/addVolumeFromSurfaces) are B-rep only |
+
+Primitive-creation ops (`addBox`/`addSphere`/`addCylinder`/`addCone`/`addTorus`/
+`addPrism`) are the one op family that needs **no existing operands** — they build a
+new body from parameters alone and append it, on both pipelines, no B-rep-only
+restriction.
+
+The 2D profile ops (`addCircleProfile`/`addRectangleProfile`/`addPolygonProfile`)
+similarly need no operands, but build a **flat face** (no thickness) rather than a
+solid, and are B-rep only — their purpose is to be picked (Surf mode) as an
+`extrude`/`revolve`/`sweep`/`loft` profile afterward. They're grouped together under
+a `"Sketches"` pseudo-body in the Components tree/view, made visible by a "free-face"
+pass in the tessellation pipeline (see `doc/extension-host-api.md`). Extruding/
+revolving/sweeping/lofting a sketch consumes it into the resulting solid — it doesn't
+leave a duplicate face behind.
+
+The bottom-up wireframe ops (`addPoint`/`addLine`/`addArc`/`addSurfaceFromLines`/
+`addVolumeFromSurfaces`) let a shape be built up the traditional CAD way instead of
+from parametric primitives or profile extrusion: place standalone points, connect
+them with lines/arcs (typed endpoints, not point references), select a closed set of
+lines and **Build → Surface** to assemble a face, then select a closed set of surfaces
+and **Build → Volume** to sew them into a solid. Like the 2D profile ops, all five are
+B-rep only — meshes have no wire/sewing concept — and a point-select mode (`📍 Point`)
+shows every vertex in the model (original geometry's corners as well as added
+points), consistent with how Vol/Surf/Line already show everything. An
+`addSurfaceFromLines`/`addVolumeFromSurfaces` selection that doesn't actually close
+(open chain of lines, open shell of surfaces) is skipped gracefully — no error, no
+op applied.
+
+Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops
+are dropped via `validateEditOp` (`src/editOps.ts`) and a corrupt or missing
+sidecar yields an empty list rather than blocking the model. **Export bakes the
+edits in** — the export pipeline re-applies the same ops to the exported geometry.
+
+> **Entity-id drift:** topology-changing ops (booleans, fillet, feature modeling)
+> re-tessellate into new `face-*`/`edge-*` ids, so a part assignment made before
+> such an op may no longer resolve afterwards. The tolerant parts parser drops
+> unresolved ids on reload, so this degrades gracefully rather than erroring.
+
 ## Export
 
 The toolbar **Export** button converts the currently displayed model into a
@@ -139,10 +205,11 @@ targets depend on the source file's pipeline (`exportTargetsFor()` in
 The source format is never offered as its own export target.
 
 **B-rep targets** are written entirely in the extension host: the source file is
-re-parsed with the same OCCT reader used to open it, then handed to the matching OCCT
-writer (`STEPControl_Writer`, `IGESControl_Writer`, or `BRepTools::Write`) in
-`exportBRep()` (`src/occtService.ts`). There is no path from a triangulated mesh back
-to a B-rep, so mesh-sourced documents never offer STEP/IGES/BREP as a target.
+re-parsed with the same OCCT reader used to open it, the current edit op-list is
+applied (`applyEditsBRep`), then the result is handed to the matching OCCT writer
+(`STEPControl_Writer`, `IGESControl_Writer`, or `BRepTools::Write`) in `exportBRep()`
+(`src/occtService.ts`). There is no path from a triangulated mesh back to a B-rep, so
+mesh-sourced documents never offer STEP/IGES/BREP as a target.
 
 **Mesh targets** are written in the webview, reusing Three.js's bundled exporters
 (`three/examples/jsm/exporters/`) on the `THREE.Object3D` already displayed —
