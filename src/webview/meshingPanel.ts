@@ -1,0 +1,201 @@
+import type { MeshOptions } from "../meshOptions";
+
+/** Success readout: the generated mesh's element counts. */
+export interface MeshingStats {
+  nodeCount: number;
+  elementCount: number;
+}
+
+/** Failure readout: a human-readable error message from the host. */
+export interface MeshingError {
+  error: string;
+}
+
+export interface MeshingPanelCallbacks {
+  /** A form control changed; the wiring merges the patch into the model and re-generates/persists. */
+  onOptionsChange: (patch: Partial<MeshOptions>) => void;
+  onGenerate: () => void;
+  onExportMsh: () => void;
+  onExportGeo: () => void;
+  onClear: () => void;
+}
+
+/** Curated, well-known GMSH 2D algorithm ids (`Mesh.Algorithm`) — not exhaustive. */
+const ALGORITHM_2D: Array<[number, string]> = [
+  [1, "MeshAdapt"],
+  [5, "Delaunay"],
+  [6, "Frontal-Delaunay"],
+];
+
+/** Curated, well-known GMSH 3D algorithm ids (`Mesh.Algorithm3D`) — not exhaustive. */
+const ALGORITHM_3D: Array<[number, string]> = [
+  [1, "Delaunay"],
+  [4, "Frontal"],
+  [10, "HXT"],
+];
+
+/**
+ * Renders the meshing options form (dimension, element size, algorithm choice,
+ * element order, optimize) plus Generate/Export .msh/Export .geo/Clear buttons
+ * and a stats/error readout. DOM-only — no business logic, no `prompt()`/
+ * `alert()` (VS Code webviews block them; see `partsPanel.ts` for the
+ * established inline-`<input>` convention this codebase uses instead).
+ */
+export class MeshingPanel {
+  private readonly body: HTMLElement;
+  private readonly statusEl: HTMLElement;
+  private readonly generateBtn: HTMLButtonElement;
+  private readonly exportMshBtn: HTMLButtonElement;
+  private readonly exportGeoBtn: HTMLButtonElement;
+  private readonly clearBtn: HTMLButtonElement;
+
+  private readonly dimensionSelect: HTMLSelectElement;
+  private readonly sizeMinInput: HTMLInputElement;
+  private readonly sizeMaxInput: HTMLInputElement;
+  private readonly algorithm2DSelect: HTMLSelectElement;
+  private readonly algorithm3DSelect: HTMLSelectElement;
+  private readonly elementOrderSelect: HTMLSelectElement;
+  private readonly optimizeCheckbox: HTMLInputElement;
+
+  constructor(
+    private readonly panel: HTMLElement,
+    private readonly cb: MeshingPanelCallbacks
+  ) {
+    this.body = panel.querySelector("#meshing-body")!;
+    this.statusEl = panel.querySelector("#meshing-status")!;
+    this.generateBtn = panel.querySelector("#meshing-generate")!;
+    this.exportMshBtn = panel.querySelector("#meshing-export-msh")!;
+    this.exportGeoBtn = panel.querySelector("#meshing-export-geo")!;
+    this.clearBtn = panel.querySelector("#meshing-clear")!;
+
+    this.generateBtn.addEventListener("click", () => cb.onGenerate());
+    this.exportMshBtn.addEventListener("click", () => cb.onExportMsh());
+    this.exportGeoBtn.addEventListener("click", () => cb.onExportGeo());
+    this.clearBtn.addEventListener("click", () => cb.onClear());
+
+    const form = document.createElement("div");
+    form.className = "meshing-form";
+
+    this.dimensionSelect = this.select(form, "Dimension", [
+      ["1", "1D"],
+      ["2", "2D"],
+      ["3", "3D"],
+    ]);
+    this.dimensionSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ dimension: Number(this.dimensionSelect.value) as MeshOptions["dimension"] });
+    });
+
+    this.sizeMinInput = this.numberField(form, "Size min", 0);
+    this.sizeMinInput.addEventListener("change", () => {
+      cb.onOptionsChange({ sizeMin: Number(this.sizeMinInput.value) || 0 });
+    });
+
+    this.sizeMaxInput = this.numberField(form, "Size max", 0);
+    this.sizeMaxInput.addEventListener("change", () => {
+      cb.onOptionsChange({ sizeMax: Number(this.sizeMaxInput.value) || 0 });
+    });
+
+    this.algorithm2DSelect = this.select(
+      form,
+      "2D algorithm",
+      ALGORITHM_2D.map(([id, name]) => [String(id), `${name} (${id})`])
+    );
+    this.algorithm2DSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ algorithm2D: Number(this.algorithm2DSelect.value) });
+    });
+
+    this.algorithm3DSelect = this.select(
+      form,
+      "3D algorithm",
+      ALGORITHM_3D.map(([id, name]) => [String(id), `${name} (${id})`])
+    );
+    this.algorithm3DSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ algorithm3D: Number(this.algorithm3DSelect.value) });
+    });
+
+    this.elementOrderSelect = this.select(form, "Element order", [
+      ["1", "Linear (1)"],
+      ["2", "Quadratic (2)"],
+    ]);
+    this.elementOrderSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ elementOrder: Number(this.elementOrderSelect.value) as MeshOptions["elementOrder"] });
+    });
+
+    const optimizeRow = document.createElement("label");
+    optimizeRow.className = "meshing-field meshing-checkbox";
+    const optimizeLabel = document.createElement("span");
+    optimizeLabel.className = "meshing-label";
+    optimizeLabel.textContent = "Optimize";
+    optimizeRow.appendChild(optimizeLabel);
+    this.optimizeCheckbox = document.createElement("input");
+    this.optimizeCheckbox.type = "checkbox";
+    this.optimizeCheckbox.addEventListener("change", () => {
+      cb.onOptionsChange({ optimize: this.optimizeCheckbox.checked });
+    });
+    optimizeRow.appendChild(this.optimizeCheckbox);
+    form.appendChild(optimizeRow);
+
+    this.body.appendChild(form);
+  }
+
+  /** Rebuilds the form controls to reflect `options`, and the stats/error readout. */
+  render(options: MeshOptions, status?: MeshingStats | MeshingError): void {
+    this.dimensionSelect.value = String(options.dimension);
+    this.sizeMinInput.value = String(options.sizeMin);
+    this.sizeMaxInput.value = String(options.sizeMax);
+    this.algorithm2DSelect.value = String(options.algorithm2D);
+    this.algorithm3DSelect.value = String(options.algorithm3D);
+    this.elementOrderSelect.value = String(options.elementOrder);
+    this.optimizeCheckbox.checked = options.optimize;
+
+    this.statusEl.classList.remove("meshing-status-error");
+    if (!status) {
+      this.statusEl.textContent = "";
+    } else if ("error" in status) {
+      this.statusEl.textContent = status.error;
+      this.statusEl.classList.add("meshing-status-error");
+    } else {
+      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}`;
+    }
+  }
+
+  private select(parent: HTMLElement, label: string, options: Array<[string, string]>): HTMLSelectElement {
+    const row = document.createElement("label");
+    row.className = "meshing-field";
+    const span = document.createElement("span");
+    span.className = "meshing-label";
+    span.textContent = label;
+    row.appendChild(span);
+
+    const select = document.createElement("select");
+    select.className = "meshing-select";
+    for (const [value, text] of options) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = text;
+      select.appendChild(opt);
+    }
+    row.appendChild(select);
+    parent.appendChild(row);
+    return select;
+  }
+
+  private numberField(parent: HTMLElement, label: string, def: number): HTMLInputElement {
+    const row = document.createElement("label");
+    row.className = "meshing-field";
+    const span = document.createElement("span");
+    span.className = "meshing-label";
+    span.textContent = label;
+    row.appendChild(span);
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.min = "0";
+    input.className = "meshing-num";
+    input.value = String(def);
+    row.appendChild(input);
+    parent.appendChild(row);
+    return input;
+  }
+}
