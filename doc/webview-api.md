@@ -477,7 +477,14 @@ PrimitiveDraft)` — the only op-creation callback that needs **no selection at 
 `draft` already carries every parameter (`center`/`axis`/dimensions), so `main.ts`
 just validates positivity and pushes the op straight through. This composer is
 deliberately never registered in `brepOnlyEls`, since primitives work on both
-engines.
+engines. The **2D profile composer** (Circle/Rectangle/Polygon) similarly uses
+`onApplyProfile(draft: ProfileDraft)` — also no selection needed — but IS registered
+in `brepOnlyEls` (2D sketches are B-rep only). Rectangle/Polygon drafts carry an
+explicit `up: Vec3` (besides `normal`) so the sketch's in-plane orientation is
+user-controlled; `main.ts` rejects a draft where `up` is (anti-)parallel to `normal`
+before pushing (mirroring `validateEditOp`'s `notParallel` check). A sketch is
+created to be picked afterward (Surf mode) and fed into the feature composer's
+`profile` field — the two composers work together, not independently.
 
 ## `src/webview/meshEdits.ts`
 

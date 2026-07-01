@@ -637,7 +637,8 @@ body {
 }
 
 .compose-feature,
-.compose-primitive {
+.compose-primitive,
+.compose-profile {
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
@@ -646,6 +647,7 @@ body {
 /* .compose-primitive is deliberately excluded here — primitives work on every
    source format, so the composer is never disabled via setBRepOnly(). */
 .compose-feature.disabled,
+.compose-profile.disabled,
 .compose-row.disabled {
   opacity: 0.4;
   pointer-events: none;

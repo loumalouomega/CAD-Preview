@@ -1,5 +1,8 @@
 import type { EditOp, Vec3 } from "./editOps";
 
+/** Bucket capacity for `HashCode`-based shape de-dup (shared by face + edge dedup). */
+const HASH_UPPER = 1 << 30;
+
 /**
  * Host-side (OCCT) edit engine. Folds the replayable op-list over a freshly-read
  * base `TopoDS_Shape`, returning the edited shape to tessellate + display +
@@ -69,6 +72,10 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addTorus":
     case "addPrism":
       return addPrimitive(oc, shape, op, cleanup);
+    case "addCircleProfile":
+    case "addRectangleProfile":
+    case "addPolygonProfile":
+      return addProfile(oc, shape, op, cleanup);
     default:
       return shape;
   }
@@ -425,26 +432,9 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
       }
       case "addPrism": {
         const [ux, vx] = planeBasis(op.axis);
-        const points = [];
-        for (let i = 0; i < op.sides; i++) {
-          const a = (2 * Math.PI * i) / op.sides;
-          const c = Math.cos(a) * op.radius;
-          const s = Math.sin(a) * op.radius;
-          points.push(keep(pnt(oc, [
-            op.center[0] + c * ux[0] + s * vx[0],
-            op.center[1] + c * ux[1] + s * vx[1],
-            op.center[2] + c * ux[2] + s * vx[2],
-          ])));
-        }
-        const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
-        for (let i = 0; i < points.length; i++) {
-          const edge = keep(new oc.BRepBuilderAPI_MakeEdge_3(points[i], points[(i + 1) % points.length])).Edge();
-          keep(edge);
-          mkWire.Add_1(edge);
-        }
-        if (!mkWire.IsDone()) return null;
-        const wire = keep(mkWire.Wire());
-        const face = keep(keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face());
+        const points = regularPolygonPoints(op.center, ux, vx, op.radius, op.sides);
+        const face = buildFlatFace(oc, points, cleanup);
+        if (!face) return null;
         const [ax, ay, az] = op.axis;
         const len = Math.hypot(ax, ay, az) || 1;
         const s = op.height / len;
@@ -457,6 +447,140 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
   } catch {
     return null;
   }
+}
+
+/**
+ * Builds a closed planar face from an ordered loop of points, connecting them
+ * with straight edges — the shared wire/face pattern behind the N-gon prism
+ * (subsequently extruded) and the flat rectangle/polygon profiles (used as-is).
+ * OCCT API, verified against the live WASM (see CLAUDE.md):
+ * `BRepBuilderAPI_MakeWire_1` + `.Add_1()` per `BRepBuilderAPI_MakeEdge_3(pnt,
+ * pnt)` edge → `BRepBuilderAPI_MakeFace_15(wire, true)`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildFlatFace(oc: any, points: Vec3[], cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const pts = points.map((p) => keep(pnt(oc, p)));
+  const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+  for (let i = 0; i < pts.length; i++) {
+    const edge = keep(new oc.BRepBuilderAPI_MakeEdge_3(pts[i], pts[(i + 1) % pts.length])).Edge();
+    keep(edge);
+    mkWire.Add_1(edge);
+  }
+  if (!mkWire.IsDone()) return null;
+  const wire = keep(mkWire.Wire());
+  const face = keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face();
+  return face.IsNull() ? null : keep(face);
+}
+
+/** N points evenly spaced around `center` on the circle of `radius` spanned by
+ * orthonormal in-plane basis (`u`, `v`). */
+function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, sides: number): Vec3[] {
+  const points: Vec3[] = [];
+  for (let i = 0; i < sides; i++) {
+    const a = (2 * Math.PI * i) / sides;
+    points.push(addScaled(center, u, Math.cos(a) * radius, v, Math.sin(a) * radius));
+  }
+  return points;
+}
+
+/**
+ * 2D profile creation: builds a new standalone flat face (no thickness) and
+ * **appends** it to the model — same non-destructive `compound(existing + new)`
+ * pattern as {@link addPrimitive}/{@link featureModel}, except the appended body
+ * here is a bare `TopoDS_Face`, not a solid. `tessellateByGroup`'s free-face pass
+ * (`src/meshExtract.ts`) is what makes it visible/pickable afterward — without
+ * that, a loose face mixed into a compound alongside real solids would be
+ * silently dropped from tessellation. A profile whose builder throws is skipped.
+ *
+ * OCCT circle API, verified against the live WASM: `gp_Circ_2(gp_Ax2_3(pnt,
+ * normal), radius)` → `BRepBuilderAPI_MakeEdge_8(circ)` → `BRepBuilderAPI_
+ * MakeWire_1` + `.Add_1()` → `BRepBuilderAPI_MakeFace_15(wire, true)`.
+ * Rectangle/polygon use {@link buildFlatFace} with corners computed via
+ * {@link inPlaneBasis} (unlike the 3D primitives' `planeBasis`, this derives the
+ * in-plane `u` axis from the op's `up` vector so orientation is user-controlled,
+ * not arbitrary — needed here because width ≠ height / polygon phase matters for
+ * a flat sketch in a way it mostly doesn't for a solid of revolution).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addProfile(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+  const face = buildProfileFace(oc, op, cleanup);
+  if (!face) return shape;
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  builder.Add(comp, shape);
+  builder.Add(comp, face);
+  return comp;
+}
+
+/** Builds the new profile face, or null on builder failure. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildProfileFace(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    switch (op.op) {
+      case "addCircleProfile": {
+        const ax2 = keep(new oc.gp_Ax2_3(keep(pnt(oc, op.center)), keep(dir(oc, op.normal))));
+        const circ = keep(new oc.gp_Circ_2(ax2, op.radius));
+        const edge = keep(keep(new oc.BRepBuilderAPI_MakeEdge_8(circ)).Edge());
+        const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+        mkWire.Add_1(edge);
+        if (!mkWire.IsDone()) return null;
+        const wire = keep(mkWire.Wire());
+        const face = keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face();
+        return face.IsNull() ? null : keep(face);
+      }
+      case "addRectangleProfile": {
+        const [u, v] = inPlaneBasis(op.normal, op.up);
+        const hw = op.width / 2, hh = op.height / 2;
+        const corners: Vec3[] = [
+          addScaled(op.center, u, -hw, v, -hh),
+          addScaled(op.center, u, hw, v, -hh),
+          addScaled(op.center, u, hw, v, hh),
+          addScaled(op.center, u, -hw, v, hh),
+        ];
+        return buildFlatFace(oc, corners, cleanup);
+      }
+      case "addPolygonProfile": {
+        const [u, v] = inPlaneBasis(op.normal, op.up);
+        return buildFlatFace(oc, regularPolygonPoints(op.center, u, v, op.radius, op.sides), cleanup);
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Orthonormal in-plane basis (`u`, `v`) perpendicular to `normal`, with `u`
+ * derived from `up` (projected off `normal`, then normalized) so rectangle/
+ * polygon profiles orient predictably from a user-supplied reference direction,
+ * unlike {@link planeBasis}'s arbitrary perpendicular. Callers must ensure `up`
+ * is not (anti-)parallel to `normal` (`validateEditOp` already enforces this).
+ */
+function inPlaneBasis(normal: Vec3, up: Vec3): [Vec3, Vec3] {
+  const n = normalized(normal);
+  const d = up[0] * n[0] + up[1] * n[1] + up[2] * n[2]; // up · n
+  const proj: Vec3 = [up[0] - d * n[0], up[1] - d * n[1], up[2] - d * n[2]];
+  const u = normalized(proj);
+  const v = normalized(cross(n, u));
+  return [u, v];
+}
+
+/** A new, normalized copy of `v` (pure — does not mutate the input). */
+function normalized(v: Vec3): Vec3 {
+  const len = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+/** `base + u*du + v*dv`. */
+function addScaled(base: Vec3, u: Vec3, du: number, v: Vec3, dv: number): Vec3 {
+  return [base[0] + u[0] * du + v[0] * dv, base[1] + u[1] * du + v[1] * dv, base[2] + u[2] * du + v[2] * dv];
 }
 
 /**
@@ -489,13 +613,20 @@ function normalize(v: Vec3): void {
  * Enumerates faces in the SAME global `face-N` order `tessellateByGroup`
  * (`src/meshExtract.ts`) assigns: solids in `TopExp_Explorer` order, faces within
  * each in explorer order, with a fallback to the whole shape's faces when there are
- * no solids. (It does not replay tessellation's skip-untriangulated-faces step, so
+ * no solids — and, when solids DO exist, any standalone 2D profile faces (added via
+ * `addCircleProfile`/`addRectangleProfile`/`addPolygonProfile`) not owned by any
+ * solid, appended last in whole-shape explorer order. This mirrors
+ * `tessellateByGroup`'s free-face pass exactly (same `HashCode`+`IsSame` claiming
+ * algorithm) so a `face-N` id picked in the view always resolves to the same live
+ * face here. (It does not replay tessellation's skip-untriangulated-faces step, so
  * in the rare degenerate-face case an index could shift — accepted.)
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function collectFaces(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const out: any[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const claimed = new Map<number, any[]>();
   const solidExp = new oc.TopExp_Explorer_2(
     shape,
     oc.TopAbs_ShapeEnum.TopAbs_SOLID,
@@ -505,14 +636,18 @@ function collectFaces(oc: any, shape: any, cleanup: Array<{ delete(): void }>): 
   let anySolid = false;
   for (; solidExp.More(); solidExp.Next()) {
     anySolid = true;
-    addFacesOf(oc, solidExp.Current(), out, cleanup);
+    addFacesOf(oc, solidExp.Current(), out, cleanup, claimed);
   }
   if (!anySolid) addFacesOf(oc, shape, out, cleanup);
+  else addFreeFacesOf(oc, shape, out, cleanup, claimed);
   return out;
 }
 
+/** Appends every face of `shapeRef`; when `claim` is given, also records each
+ * face's identity into it (`HashCode` bucket) so {@link addFreeFacesOf} can skip
+ * faces already owned by a solid. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addFacesOf(oc: any, shapeRef: any, out: any[], cleanup: Array<{ delete(): void }>): void {
+function addFacesOf(oc: any, shapeRef: any, out: any[], cleanup: Array<{ delete(): void }>, claim?: Map<number, any[]>): void {
   const exp = new oc.TopExp_Explorer_2(
     shapeRef,
     oc.TopAbs_ShapeEnum.TopAbs_FACE,
@@ -521,6 +656,30 @@ function addFacesOf(oc: any, shapeRef: any, out: any[], cleanup: Array<{ delete(
   cleanup.push(exp);
   for (; exp.More(); exp.Next()) {
     const face = oc.TopoDS.Face_1(exp.Current());
+    cleanup.push(face);
+    out.push(face);
+    if (claim) {
+      const hash = face.HashCode(HASH_UPPER);
+      const bucket = claim.get(hash);
+      if (bucket) bucket.push(face); else claim.set(hash, [face]);
+    }
+  }
+}
+
+/** Appends faces of the whole `shape` not already present in `claimed` — the
+ * `collectFaces` mirror of `meshExtract.ts`'s `extractFreeFaces`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addFreeFacesOf(oc: any, shape: any, out: any[], cleanup: Array<{ delete(): void }>, claimed: Map<number, any[]>): void {
+  const exp = new oc.TopExp_Explorer_2(
+    shape,
+    oc.TopAbs_ShapeEnum.TopAbs_FACE,
+    oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+  );
+  cleanup.push(exp);
+  for (; exp.More(); exp.Next()) {
+    const face = oc.TopoDS.Face_1(exp.Current());
+    const bucket = claimed.get(face.HashCode(HASH_UPPER));
+    if (bucket && bucket.some((f) => f.IsSame(face))) { face.delete(); continue; } // owned by a solid
     cleanup.push(face);
     out.push(face);
   }

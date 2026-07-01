@@ -93,7 +93,9 @@ same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the sing
 tolerance gate — malformed ops are dropped, never thrown. The list is persisted in
 the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md). All op
 kinds are implemented: transforms, booleans, fillet/chamfer, feature modeling
-(extrude/revolve/sweep/loft), and assembly (explode/mate).
+(extrude/revolve/sweep/loft), assembly (explode/mate), primitive creation
+(box/sphere/cylinder/cone/torus/prism), and 2D profile sketches (circle/rectangle/
+polygon, B-rep only, for use as a later feature-modeling `profile`).
 
 ---
 

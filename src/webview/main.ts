@@ -216,7 +216,46 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push(op);
     setStatus("");
   },
+  onApplyProfile: (draft) => {
+    // 2D profiles are self-contained placements — no selection/operand needed.
+    // Sketched now, picked (Surf mode) and used as an extrude/revolve/sweep/loft
+    // profile later. A light client-side guard mirrors validateEditOp's checks.
+    let op: EditOp;
+    switch (draft.kind) {
+      case "addCircleProfile":
+        if (draft.radius <= 0) { setStatus("Circle radius must be positive.", true); return; }
+        op = { op: "addCircleProfile", center: draft.center, normal: draft.normal, radius: draft.radius };
+        break;
+      case "addRectangleProfile":
+        if (draft.width <= 0 || draft.height <= 0) { setStatus("Width and height must be positive.", true); return; }
+        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
+        op = {
+          op: "addRectangleProfile", center: draft.center, normal: draft.normal,
+          up: draft.up, width: draft.width, height: draft.height,
+        };
+        break;
+      case "addPolygonProfile":
+        if (draft.radius <= 0) { setStatus("Radius must be positive.", true); return; }
+        if (!Number.isInteger(draft.sides) || draft.sides < 3) { setStatus("Sides must be an integer ≥ 3.", true); return; }
+        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
+        op = {
+          op: "addPolygonProfile", center: draft.center, normal: draft.normal,
+          up: draft.up, radius: draft.radius, sides: draft.sides,
+        };
+        break;
+    }
+    editsModel.push(op);
+    setStatus("");
+  },
 });
+
+/** True when `a` and `b` are not (anti-)parallel — their cross product is non-zero. */
+function nonParallel(a: [number, number, number], b: [number, number, number]): boolean {
+  const cx = a[1] * b[2] - a[2] * b[1];
+  const cy = a[2] * b[0] - a[0] * b[2];
+  const cz = a[0] * b[1] - a[1] * b[0];
+  return cx * cx + cy * cy + cz * cz > 0;
+}
 
 /** Applies persistent per-part colours, then re-draws the active highlight. */
 function refreshColors(): void {

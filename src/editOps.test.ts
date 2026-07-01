@@ -79,4 +79,56 @@ describe("validateEditOp", () => {
       expect(BREP_ONLY_OPS.has(kind)).toBe(false);
     }
   });
+
+  it("accepts well-formed 2D profile ops", () => {
+    expect(validateEditOp({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 5 }))
+      .toEqual({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 5 });
+    expect(validateEditOp({
+      op: "addRectangleProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 6,
+    })).toEqual({
+      op: "addRectangleProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 6,
+    });
+    expect(validateEditOp({
+      op: "addPolygonProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radius: 5, sides: 6,
+    })).toEqual({
+      op: "addPolygonProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radius: 5, sides: 6,
+    });
+  });
+
+  it("rejects malformed 2D profile ops", () => {
+    // non-positive dimensions
+    expect(validateEditOp({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 0 })).toBeNull();
+    expect(validateEditOp({
+      op: "addRectangleProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 0, height: 6,
+    })).toBeNull();
+    expect(validateEditOp({
+      op: "addPolygonProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radius: -1, sides: 6,
+    })).toBeNull();
+    // zero-length normal/up
+    expect(validateEditOp({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 0], radius: 5 })).toBeNull();
+    expect(validateEditOp({
+      op: "addRectangleProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [0, 0, 0], width: 10, height: 6,
+    })).toBeNull();
+    // up parallel to normal — no well-defined in-plane frame
+    expect(validateEditOp({
+      op: "addRectangleProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [0, 0, 5], width: 10, height: 6,
+    })).toBeNull();
+    expect(validateEditOp({
+      op: "addPolygonProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [0, 0, -3], radius: 5, sides: 6,
+    })).toBeNull();
+    // polygon: sides < 3 or non-integer
+    expect(validateEditOp({
+      op: "addPolygonProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radius: 5, sides: 2,
+    })).toBeNull();
+    expect(validateEditOp({
+      op: "addPolygonProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radius: 5, sides: 4.5,
+    })).toBeNull();
+  });
+
+  it("2D profile ops are topology-changing, B-rep only", () => {
+    for (const kind of ["addCircleProfile", "addRectangleProfile", "addPolygonProfile"] as const) {
+      expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
+      expect(BREP_ONLY_OPS.has(kind)).toBe(true);
+    }
+  });
 });

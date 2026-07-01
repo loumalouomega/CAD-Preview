@@ -28,6 +28,14 @@ export type PrimitiveDraft =
   | { kind: "addTorus"; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number }
   | { kind: "addPrism"; center: Vec3; axis: Vec3; radius: number; sides: number; height: number };
 
+/** A 2D profile draft — self-contained (no selection needed), builds a standalone
+ * flat face you can later pick (Surf mode) as a profile for Extrude/Revolve/
+ * Sweep/Loft. B-rep only (meshes have no sketch/exact topology). */
+export type ProfileDraft =
+  | { kind: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number }
+  | { kind: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number }
+  | { kind: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number };
+
 export interface EditsPanelCallbacks {
   onUndo: () => void;
   onRedo: () => void;
@@ -48,6 +56,8 @@ export interface EditsPanelCallbacks {
   onApplyMate: () => void;
   /** Add a new primitive body at the given placement (no selection needed; all formats). */
   onApplyPrimitive: (draft: PrimitiveDraft) => void;
+  /** Add a new standalone flat profile face (no selection needed; B-rep only). */
+  onApplyProfile: (draft: ProfileDraft) => void;
 }
 
 /**
@@ -66,7 +76,8 @@ export class EditsPanel {
   private kind: TransformDraft["kind"] = "translate";
   private featureKind: FeatureDraft["kind"] = "extrude";
   private primitiveKind: PrimitiveDraft["kind"] = "addBox";
-  /** B-rep-only sections (fillet/chamfer, feature modeling); disabled for mesh sources. */
+  private profileKind: ProfileDraft["kind"] = "addCircleProfile";
+  /** B-rep-only sections (fillet/chamfer, feature modeling, 2D profiles); disabled for mesh sources. */
   private brepOnlyEls: HTMLElement[] = [];
 
   constructor(
@@ -153,6 +164,7 @@ export class EditsPanel {
     this.renderFields();
     this.buildBooleanComposer();
     this.buildFilletComposer();
+    this.buildProfileComposer();
     this.buildFeatureComposer();
     this.buildPrimitiveComposer();
     this.buildAssemblyComposer();
@@ -252,6 +264,104 @@ export class EditsPanel {
 
     this.compose.appendChild(row);
     this.brepOnlyEls.push(row);
+  }
+
+  // ── 2D profile composer (no selection needed — self-contained; B-rep only) ─
+
+  private buildProfileComposer(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "compose-profile";
+
+    const kindRow = document.createElement("div");
+    kindRow.className = "compose-row";
+    const select = document.createElement("select");
+    select.className = "compose-kind";
+    for (const [value, text] of [
+      ["addCircleProfile", "Circle"], ["addRectangleProfile", "Rectangle"], ["addPolygonProfile", "Polygon"],
+    ] as const) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = text;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => {
+      this.profileKind = select.value as ProfileDraft["kind"];
+      this.renderProfileFields();
+    });
+    kindRow.appendChild(select);
+
+    const apply = document.createElement("button");
+    apply.className = "compose-apply";
+    apply.textContent = "Sketch";
+    apply.title = "Add a new flat profile face at this placement (pick it later in Surf mode as an Extrude/Revolve/Sweep/Loft profile)";
+    apply.addEventListener("click", () => this.emitProfile());
+    kindRow.appendChild(apply);
+
+    const fields = document.createElement("div");
+    fields.className = "compose-fields";
+    fields.id = "profile-fields";
+
+    wrap.appendChild(kindRow);
+    wrap.appendChild(fields);
+    this.compose.appendChild(wrap);
+    this.brepOnlyEls.push(wrap);
+    this.renderProfileFields();
+  }
+
+  private profileFields(): HTMLElement {
+    return this.compose.querySelector("#profile-fields")!;
+  }
+
+  private renderProfileFields(): void {
+    const f = this.profileFields();
+    f.innerHTML = "";
+    switch (this.profileKind) {
+      case "addCircleProfile":
+        f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
+        f.appendChild(this.vecField("normal", "Normal", [0, 0, 1]));
+        f.appendChild(this.numField("radius", "Radius", 5));
+        break;
+      case "addRectangleProfile":
+        f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
+        f.appendChild(this.vecField("normal", "Normal", [0, 0, 1]));
+        f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
+        f.appendChild(this.numField("width", "Width", 10));
+        f.appendChild(this.numField("height", "Height", 6));
+        break;
+      case "addPolygonProfile":
+        f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
+        f.appendChild(this.vecField("normal", "Normal", [0, 0, 1]));
+        f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
+        f.appendChild(this.numField("radius", "Radius", 5));
+        f.appendChild(this.numField("sides", "Sides", 6));
+        break;
+    }
+  }
+
+  private emitProfile(): void {
+    const f = this.profileFields();
+    let draft: ProfileDraft;
+    switch (this.profileKind) {
+      case "addCircleProfile":
+        draft = {
+          kind: "addCircleProfile", center: this.readVec("center", f),
+          normal: this.readVec("normal", f), radius: this.readNum("radius", f),
+        };
+        break;
+      case "addRectangleProfile":
+        draft = {
+          kind: "addRectangleProfile", center: this.readVec("center", f), normal: this.readVec("normal", f),
+          up: this.readVec("up", f), width: this.readNum("width", f), height: this.readNum("height", f),
+        };
+        break;
+      case "addPolygonProfile":
+        draft = {
+          kind: "addPolygonProfile", center: this.readVec("center", f), normal: this.readVec("normal", f),
+          up: this.readVec("up", f), radius: this.readNum("radius", f), sides: this.readNum("sides", f),
+        };
+        break;
+    }
+    this.cb.onApplyProfile(draft);
   }
 
   // ── Feature-modeling composer (selected faces/edges, B-rep only) ─────────
@@ -638,6 +748,9 @@ export function describeOp(op: EditOp): string {
     case "addCone": return `+ Cone r1=${op.radius1} r2=${op.radius2} h=${op.height}`;
     case "addTorus": return `+ Torus R=${op.majorRadius} r=${op.minorRadius}`;
     case "addPrism": return `+ ${op.sides}-gon Prism r=${op.radius} h=${op.height}`;
+    case "addCircleProfile": return `⌗ Circle sketch r=${op.radius}`;
+    case "addRectangleProfile": return `⌗ Rectangle sketch ${op.width}×${op.height}`;
+    case "addPolygonProfile": return `⌗ ${op.sides}-gon sketch r=${op.radius}`;
   }
 }
 

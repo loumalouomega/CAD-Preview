@@ -294,8 +294,38 @@ mesh engine (`meshEdits.buildPrimitiveMesh`) — see `src/webview/meshEdits.ts` 
 build the five direct-primitive shapes from a `gp_Pnt_3`/`gp_Ax2_3` placement; the
 N-gon prism has no OCCT primitive, so it's built by hand (`planeBasis()` computes two
 JS-side perpendicular unit vectors, N points are placed around them, then
-`BRepBuilderAPI_MakeWire_1`/`MakeFace_15`/the already-verified `MakePrism_1` extrude
-the polygon). A primitive whose builder throws is skipped.
+`buildFlatFace()` — `BRepBuilderAPI_MakeWire_1`/`MakeFace_15` — makes the base face,
+then the already-verified `MakePrism_1` extrudes it). A primitive whose builder
+throws is skipped.
+
+**2D profile sketches (M7)** are applied by `addProfile()`/`buildProfileFace()` —
+like primitives, no existing operands, but the appended body is a bare
+**`TopoDS_Face`** (no thickness), meant to be picked (Surf mode) and fed into
+`extrude`/`revolve`/`sweep`/`loft` as the `profile` operand afterward. B-rep only
+(`BREP_ONLY_OPS`). Circle uses `gp_Circ_2(gp_Ax2_3(pnt, normal), radius)` →
+`BRepBuilderAPI_MakeEdge_8(circ)` → wire → face; rectangle/polygon reuse the same
+`buildFlatFace()` helper the N-gon prism uses, with corners computed via
+`inPlaneBasis(normal, up)` — unlike `planeBasis()`, this derives the in-plane `u`
+axis from the op's explicit `up` vector (projected off `normal`, normalized) so
+orientation is user-controlled, not arbitrary.
+
+**This required extending the tessellation pipeline itself.** `tessellateByGroup`
+(`src/meshExtract.ts`) used to only extract faces belonging to a solid; a bare face
+appended into the model compound would be silently invisible. It now also runs a
+free-face pass — after tessellating each solid, it claims every face it touched
+(`HashCode` bucket + `IsSame`, the same de-dup technique `extractEdges` already uses
+for edges) and then walks the whole shape's faces once more, surfacing anything not
+claimed as an extra `"Sketches"` group. **`collectFaces()`/`addFreeFacesOf()` in this
+file duplicate that exact algorithm** so `face-N` ids resolve to the same live face
+on both the read/display path and the edit-resolution path — if the two ever drift
+out of lockstep, a `face-N` picked in the view will silently target the wrong face.
+Verified end-to-end against the live WASM, not assumed: a compound of a solid + a
+free face splits into exactly the expected claimed/free counts, and
+`addCircleProfile` immediately followed by `extrude` on the predicted `face-N`
+resolves to the exact face OCCT just built. Extruding a profile **consumes** it —
+`MakePrism_1`'s `Copy=false` reuses the source face as the new solid's base cap, so
+no duplicate face is left behind in `"Sketches"` afterward. A profile whose builder
+throws is skipped.
 
 ---
 
@@ -382,6 +412,8 @@ Extracts vertices and triangles from a single OCCT face's triangulation. Applies
 function tessellateByGroup(oc: any, shape: any): SolidGroup[]
 ```
 Tessellates the entire `TopoDS_Shape`. Uses `BRepMesh_IncrementalMesh_2` with linear deflection `0.1`. Explores solids via `TopExp_Explorer`, then within each solid explores faces and calls `extractFaceGeometry`. Returns one `SolidGroup` per solid, each face tagged with a stable global `faceId` (deterministic explorer order).
+
+When solids exist, it also runs a **free-face pass** (`extractFreeFaces`): every face touched while processing a solid is "claimed" into a `HashCode`-bucketed map (via `extractFacesFromShape`'s optional `claim` parameter — the claimed face handles are pushed into `tessellateByGroup`'s own long-lived `cleanup`, not the per-call one, so they outlive the comparison), then the whole shape's faces are walked once more and anything not claimed (`IsSame` check) becomes an extra `"Sketches"` group. This surfaces standalone 2D profile faces added via `addCircleProfile`/`addRectangleProfile`/`addPolygonProfile` (`src/occtOperations.ts`), which would otherwise be silently dropped — without it, a bare `TopoDS_Face` mixed into the compound never gets tessellated or a `faceId`. **`occtOperations.ts`'s `collectFaces` duplicates this exact algorithm** so `face-N` ids resolve consistently between the read/display path and the edit-resolution path; see that file's docs above for why keeping the two in lockstep matters. `triangulateFace` factors out the per-face triangulation logic shared by the solid pass, the no-solids fallback, and the free-face pass.
 
 ```typescript
 function extractEdges(oc: any, shape: any): EdgeLine[]

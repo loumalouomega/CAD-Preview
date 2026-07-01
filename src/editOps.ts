@@ -51,13 +51,20 @@ export interface AddConeOp { op: "addCone"; center: Vec3; axis: Vec3; radius1: n
 export interface AddTorusOp { op: "addTorus"; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number; }
 /** Add a regular `sides`-gon prism of circumradius `radius`/`height` with base at `center` along `axis`. */
 export interface AddPrismOp { op: "addPrism"; center: Vec3; axis: Vec3; radius: number; sides: number; height: number; }
+/** Add a standalone flat circular profile face (no thickness), for later use as an extrude/revolve/sweep/loft profile. */
+export interface AddCircleProfileOp { op: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number; }
+/** Add a standalone flat rectangular profile face. `up` (with `normal`) fixes its in-plane orientation. */
+export interface AddRectangleProfileOp { op: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; }
+/** Add a standalone flat regular `sides`-gon profile face of circumradius `radius`. */
+export interface AddPolygonProfileOp { op: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; }
 
 export type EditOp =
   | TranslateOp | RotateOp | ScaleOp | MirrorOp
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
-  | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp;
+  | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
+  | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp;
 
 export type EditOpKind = EditOp["op"];
 
@@ -65,11 +72,13 @@ export type EditOpKind = EditOp["op"];
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
+  "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
 ]);
 
 /** Ops only available for B-rep sources (meshes have no sketch/exact topology). */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
+  "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
 ]);
 
 function isFiniteNumber(v: unknown): v is number {
@@ -98,6 +107,14 @@ function asNonZeroVec3(v: unknown): Vec3 | null {
   if (!vec) return null;
   const [x, y, z] = vec;
   return x * x + y * y + z * z > 0 ? vec : null;
+}
+
+/** True when `a` and `b` are not (anti-)parallel — i.e. their cross product is non-zero. */
+function notParallel(a: Vec3, b: Vec3): boolean {
+  const cx = a[1] * b[2] - a[2] * b[1];
+  const cy = a[2] * b[0] - a[0] * b[2];
+  const cz = a[0] * b[1] - a[1] * b[0];
+  return cx * cx + cy * cy + cz * cz > 0;
 }
 
 /**
@@ -225,6 +242,31 @@ export function validateEditOp(raw: unknown): EditOp | null {
       return center && axis && isPositive(o.radius) && isPositive(o.height)
         && isFiniteNumber(o.sides) && Number.isInteger(o.sides) && o.sides >= 3
         ? { op: "addPrism", center, axis, radius: o.radius, sides: o.sides, height: o.height }
+        : null;
+    }
+    case "addCircleProfile": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      return center && normal && isPositive(o.radius)
+        ? { op: "addCircleProfile", center, normal, radius: o.radius }
+        : null;
+    }
+    case "addRectangleProfile": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      const up = asNonZeroVec3(o.up);
+      return center && normal && up && notParallel(normal, up)
+        && isPositive(o.width) && isPositive(o.height)
+        ? { op: "addRectangleProfile", center, normal, up, width: o.width, height: o.height }
+        : null;
+    }
+    case "addPolygonProfile": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      const up = asNonZeroVec3(o.up);
+      return center && normal && up && notParallel(normal, up) && isPositive(o.radius)
+        && isFiniteNumber(o.sides) && Number.isInteger(o.sides) && o.sides >= 3
+        ? { op: "addPolygonProfile", center, normal, up, radius: o.radius, sides: o.sides }
         : null;
     }
     default:

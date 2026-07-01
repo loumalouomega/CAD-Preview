@@ -319,6 +319,57 @@ on top of the source model. Non-negotiable invariants:
   - A primitive whose builder throws (host) or whose kind doesn't match any
     case (either engine) is skipped, same graceful-degradation rule as every
     other op.
+- **2D profile sketches (Circle, Rectangle, N-gon Polygon) — B-rep only:** like
+  primitives, these need no existing operands, but unlike primitives they build a
+  bare **flat face** (no thickness), appended the same
+  `compound(existing shape + new face)` way (`occtOperations.addProfile`/
+  `buildProfileFace`). Their entire purpose is to be picked afterward (Surf mode)
+  and fed into `extrude`/`revolve`/`sweep`/`loft` as the `profile` operand — so
+  they are meshes-have-no-sketch **B-rep only**, added to `BREP_ONLY_OPS`, and the
+  panel composer IS in `brepOnlyEls` (unlike the 3D primitive composer).
+  - **CRITICAL — the tessellation pipeline had to be extended for this to work.**
+    `tessellateByGroup` (`src/meshExtract.ts`) used to *only* extract faces
+    belonging to a `TopAbs_SOLID`; a bare face mixed into the model compound
+    would be silently dropped from the tessellated groups sent to the webview —
+    never visible, never pickable, `face-N` never assigned. It now also runs a
+    **free-face pass**: after tessellating each solid, it walks every face of the
+    whole shape and, via the same `HashCode`-bucket + `IsSame` de-dup technique
+    `extractEdges` already used for edges, skips any face already "claimed" by a
+    solid — the remainder become one extra `"Sketches"` group. **This algorithm
+    is duplicated (not shared code) in `occtOperations.ts`'s `collectFaces`/
+    `addFreeFacesOf`, and the two MUST stay in lockstep** — `collectFaces`
+    resolves `face-N` ids for every existing face-based op (extrude, revolve,
+    sweep, loft, boolean's operand faces via mate, etc.), so if its face-visiting
+    order ever diverges from `tessellateByGroup`'s, a `face-N` picked in the view
+    will silently resolve to the *wrong* live face on the next edit. Verified
+    end-to-end against the live WASM: a compound of one solid + one free face
+    tessellates to exactly the expected face split (`{claimed: 6, free: 1}` for a
+    box + circle); `addCircleProfile` immediately followed by `extrude` on its
+    predicted `face-N` correctly resolves to the same face OCCT just built.
+  - **OCCT circle API, verified against the live WASM:** `gp_Circ_2(gp_Ax2_3(pnt,
+    normal), radius)` → `BRepBuilderAPI_MakeEdge_8(circ)` (of 35 total `MakeEdge`
+    overloads — found by probing each index with a `gp_Circ` argument) →
+    `BRepBuilderAPI_MakeWire_1` + `.Add_1()` → `BRepBuilderAPI_MakeFace_15(wire,
+    true)`. Rectangle/polygon reuse the exact same wire/face code the N-gon prism
+    uses (factored into a shared `buildFlatFace()` helper — `addPrism`'s inline
+    version was refactored to call it too, regression-verified unchanged).
+  - **Orientation is user-controlled, unlike the 3D primitives.** Rectangle/
+    polygon take an explicit `up: Vec3` (in addition to `normal`) — `up` must not
+    be (anti-)parallel to `normal` (`validateEditOp` rejects that). `inPlaneBasis
+    (normal, up)` projects `up` off `normal` and normalizes it for the width axis
+    `u`, then `v = normal × u` for the height axis — this is deliberately
+    *different* from `planeBasis()` (used by the 3D N-gon prism), which picks an
+    arbitrary perpendicular since a solid of revolution mostly doesn't care about
+    polygon phase; a flat rectangle very much does. Verified end-to-end: a
+    rectangle with `normal:[0,0,1], up:[1,0,0], width:10, height:6` produces the
+    exact bbox `x:±5, y:±3, z:0`.
+  - **Extruding a profile consumes it — no orphan duplicate.** `BRepPrimAPI_
+    MakePrism_1(face, vec, false, true)`'s `Copy=false` means OCCT reuses the
+    *original* face object as the resulting solid's base cap rather than copying
+    it; after `addCircleProfile` → `extrude`, the free-face pass finds nothing
+    left over (the circle face is now "claimed" by the new solid it became part
+    of) — confirmed against the live WASM, not assumed.
+  - A profile whose builder throws is skipped, same graceful-degradation rule.
 
 ## Build & test
 
@@ -361,15 +412,21 @@ volume, Apply against another), **Fillet/Chamfer** (select edges in Line mode),
 and **Explode/Mate**. Then exercise the **primitive composer** (no selection needed):
 pick each of **Box/Sphere/Cylinder/Cone/Torus/Prism**, enter parameters (try a
 non-axis-aligned `Axis` on cylinder/cone/torus/prism), **Add** → confirm each new body
-appears correctly placed and oriented. **Undo/Redo/Clear** the stack. Close and reopen
-the tab → ops (including primitives) reload from `bull.stp.edits.json` (inspect: valid
+appears correctly placed and oriented. Then exercise the **2D profile composer**
+(also no selection needed, B-rep only): **Sketch** a Circle, a Rectangle (try a
+non-default `Up`), and a Polygon → confirm each appears as a flat face grouped under
+"Sketches" in the Components tree; **Select** it in **Surf** mode and feed it into
+**Extrude** (or Revolve/Sweep/Loft) → confirm it builds a new solid at the sketch's
+location and the sketch face disappears from "Sketches" (consumed into the new solid,
+not duplicated). **Undo/Redo/Clear** the stack. Close and reopen the tab → ops
+(including primitives and sketches) reload from `bull.stp.edits.json` (inspect: valid
 JSON, CAD file untouched). **Export** the edited model (e.g. to STEP/STL) and reopen
-the output → the edits, including added primitives, are baked in. On `cube.stl`,
-confirm transforms, booleans, explode, and **all six primitives** apply (mesh path,
-matching the B-rep path's placement/orientation for the same params) and that the
-B-rep-only ops (fillet/chamfer, feature modeling, mate) are disabled. Apply/undo
-repeatedly + open/close → host memory stays flat (OCCT handle-leak check, same as
-above).
+the output → the edits, including added primitives and extruded sketches, are baked
+in. On `cube.stl`, confirm transforms, booleans, explode, and **all six primitives**
+apply (mesh path, matching the B-rep path's placement/orientation for the same
+params) and that the B-rep-only ops (fillet/chamfer, feature modeling, mate, and the
+**2D profile composer**) are disabled. Apply/undo repeatedly + open/close → host
+memory stays flat (OCCT handle-leak check, same as above).
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.

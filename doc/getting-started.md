@@ -148,19 +148,24 @@ To apply a transform:
 | **Explode** | Enter a spread factor and **Apply** — spreads the bodies radially from the model centre (all formats) |
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
 | **Box / Sphere / Cylinder / Cone / Torus / Prism** | Choose the primitive, enter its centre/axis/dimensions, and **Add** — appends a new body at that placement (no selection needed; all formats) |
+| **Circle / Rectangle / Polygon** | Choose the shape, enter its centre/normal/dimensions (Rectangle & Polygon also take an **Up** direction), and **Sketch** — appends a flat profile face you can later select (**Surf** mode) and feed into Extrude/Revolve/Sweep/Loft (no selection needed; B-rep only) |
 | **↶ / ↷** | Undo / redo the last operation |
 | **Clear** | Remove all operations (back to the original model) |
 
 The current release ships **transforms** (move/rotate/scale/mirror), **booleans**
 (unite/subtract/intersect), **fillet/chamfer**, **feature modeling**
-(extrude/revolve/sweep/loft), **assembly** ops (explode/mate), and **primitive
-creation** (box/cube, sphere, cylinder, cone, torus, N-sided prism). Transforms,
-booleans, explode, and primitive creation work on both B-rep and mesh files;
-fillet/chamfer, feature-modeling, and mate are available only for B-rep sources (the
-panel disables them for meshes). Feature-modeling ops and primitives **append a new
-body** to the model — they never cut or fuse the source. For primitives, `center` is
-the body's geometric centre (box/sphere/torus) or its base centre (cylinder/cone/
-prism, extruded along `Axis`) — matching how the underlying CAD kernel places them.
+(extrude/revolve/sweep/loft), **assembly** ops (explode/mate), **primitive creation**
+(box/cube, sphere, cylinder, cone, torus, N-sided prism), and **2D profile sketches**
+(circle, rectangle, N-sided polygon). Transforms, booleans, explode, and primitive
+creation work on both B-rep and mesh files; fillet/chamfer, feature-modeling, mate,
+and 2D profile sketches are available only for B-rep sources (the panel disables them
+for meshes). Feature-modeling ops and primitives **append a new body** to the model —
+they never cut or fuse the source. For primitives, `center` is the body's geometric
+centre (box/sphere/torus) or its base centre (cylinder/cone/prism, extruded along
+`Axis`) — matching how the underlying CAD kernel places them. A 2D profile sketch
+builds a flat face, not a body — it's meant to be picked and extruded/revolved/swept/
+lofted; doing so consumes the sketch into the new solid rather than leaving a
+duplicate flat face behind.
 
 When you **Export** an edited model, the edits are baked into the output file. See
 [Edits Sidecar](./file-formats.md#edits-sidecar-modeleditsjson) for the format.

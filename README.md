@@ -47,12 +47,14 @@ loaders. Rendering is always Three.js.
   read-only)
 - **Edits**: apply non-destructive operations — **transforms** (move / rotate / scale /
   mirror), **booleans** (unite / subtract / intersect), **fillet/chamfer**, **feature
-  modeling** (extrude / revolve / sweep / loft), **assembly** (explode / mate), and
-  **primitive creation** (box/cube, sphere, cylinder, cone, torus, N-sided prism);
-  operations are undoable, replayable, and saved to a `<model>.edits.json` sidecar —
-  the CAD file stays read-only, and edits are baked in only on **Export**. (Transforms,
-  booleans, explode, and primitive creation work on both B-rep and mesh; fillet/chamfer,
-  feature modeling, and mate are B-rep only.)
+  modeling** (extrude / revolve / sweep / loft), **assembly** (explode / mate),
+  **primitive creation** (box/cube, sphere, cylinder, cone, torus, N-sided prism), and
+  **2D profile sketches** (circle, rectangle, N-sided polygon — pick one later as an
+  extrude/revolve/sweep/loft profile); operations are undoable, replayable, and saved
+  to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are
+  baked in only on **Export**. (Transforms, booleans, explode, and primitive creation
+  work on both B-rep and mesh; fillet/chamfer, feature modeling, mate, and 2D profile
+  sketches are B-rep only.)
 - **Export**: convert the open model to a compatible format and save it via a native
   Save dialog — see [Export](#export) below
 

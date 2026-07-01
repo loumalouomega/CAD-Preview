@@ -39,7 +39,7 @@ features:
 
   - icon: ✏️
     title: Non-destructive Editing
-    details: Apply transforms (move / rotate / scale / mirror), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate), and primitive creation (box/cube, sphere, cylinder, cone, torus, prism). Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
+    details: Apply transforms (move / rotate / scale / mirror), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate), primitive creation (box/cube, sphere, cylinder, cone, torus, prism), and 2D profile sketches (circle, rectangle, polygon) for use as extrude/revolve/sweep/loft profiles. Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
 
   - icon: 🔬
     title: Wireframe & Grid Helpers
