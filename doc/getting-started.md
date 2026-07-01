@@ -64,6 +64,7 @@ The toolbar appears at the top of the editor:
 | **Grid** | Show/hide the world-space grid and axis helpers |
 | **Export** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) |
 | **Tree** | Show/hide the component tree panel (visible only for models with multiple components) |
+| **🔬 FE Mesh** | Toggle the generated finite-element mesh overlay on/off (see [Generating an FE Mesh](#generating-an-fe-mesh)). The **FE Mesh** panel itself is always visible in the sidebar; this button only shows/clears the overlay. |
 | **Select / Point·Vol·Surf·Line** | Toggle entity selection mode and choose what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). |
 
 ### View-Controls Panel
@@ -176,6 +177,51 @@ skipped rather than producing a malformed body.
 
 When you **Export** an edited model, the edits are baked into the output file. See
 [Edits Sidecar](./file-formats.md#edits-sidecar-modeleditsjson) for the format.
+
+### Generating an FE Mesh
+
+The **FE Mesh** panel (below the Edits panel) generates a finite-element mesh
+(nodes + triangles/tetrahedra) of the currently displayed model using
+[Gmsh](https://gmsh.info) compiled to WebAssembly. The result is shown as a blue
+overlay on top of the existing geometry — it never replaces or modifies the
+original model. See [GMSH Integration](https://loumalouomega.github.io/CAD-Preview/gmsh-integration)
+for the full technical write-up.
+
+To generate a mesh:
+
+1. Set the meshing options in the panel: **Dimension** (1D/2D/3D), **Size min /
+   max**, **2D algorithm** / **3D algorithm**, **Element order** (linear/
+   quadratic), and **Optimize**.
+2. Click **▶ Generate**. The overlay appears and the panel's status line shows
+   `Nodes: N · Elements: M`, or an error message if generation fails.
+3. Click **🔬 FE Mesh** in the toolbar to show/hide the overlay without
+   discarding it; click **Clear** in the panel to remove it entirely.
+
+| FE Mesh control | Action |
+|---|---|
+| **Dimension** | 1D (edges only), 2D (surface triangulation), or 3D (volume tetrahedralization) |
+| **Size min / max** | Bounds on generated element size (`Mesh.MeshSizeMin`/`Mesh.MeshSizeMax`) |
+| **2D algorithm / 3D algorithm** | The Gmsh meshing algorithm to use for each dimension |
+| **Element order** | Linear (1) or quadratic (2) elements |
+| **Optimize** | Run Gmsh's mesh optimizer after generation |
+| **▶ Generate** | Run Gmsh now with the current options and show the result as an overlay |
+| **📤 .msh** | Save the generated mesh in Gmsh's native `.msh` format via a Save dialog |
+| **📤 .geo** | Save the model's fully-expanded `.geo_unrolled` Gmsh script via a Save dialog |
+| **Clear** | Remove the mesh overlay (the original model is unaffected either way) |
+
+Mesh options are saved automatically to a `<model>.mesh.json` sidecar next to the
+CAD file, and an editable `<model>.geo` Gmsh script is regenerated alongside it on
+every change — see [Mesh Options Sidecar](./file-formats.md#mesh-options-sidecar-modelmeshjson-and-generated-geo-script)
+for the format. **The `.geo` file is one-way: hand-edits to it are never read back
+by the extension** — use the FE Mesh panel to change options, not the generated
+script. Neither file modifies the source CAD file.
+
+> **B-rep vs mesh sources:** for STEP/IGES/BREP files, the model currently shown
+> (including any applied edits) is re-exported to STEP and handed to Gmsh
+> directly. For STL/OBJ/PLY/glTF files, Gmsh has no volume topology to start
+> from, so the displayed triangle soup is first reclassified into surfaces at
+> sharp-angle boundaries (`classifySurfaces`, default 40°) and rebuilt into a
+> closed volume before a 3D mesh can be generated.
 
 ### Exporting a Model
 

@@ -26,6 +26,7 @@ export default defineConfig({
           { text: 'Extension Host API',      link: '/extension-host-api' },
           { text: 'Webview API',             link: '/webview-api' },
           { text: 'Host ↔ Webview Protocol', link: '/protocol' },
+          { text: 'GMSH Integration',        link: '/gmsh-integration' },
         ],
       },
       {
@@ -40,7 +41,7 @@ export default defineConfig({
       { icon: 'github', link: 'https://github.com/loumalouomega/CAD-Preview' },
     ],
     footer: {
-      message: 'Released under the MIT License.',
+      message: 'Released under the GPL-2.0-or-later License.',
       copyright: 'Copyright © CAD-Preview contributors',
     },
     search: { provider: 'local' },

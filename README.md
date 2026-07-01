@@ -61,6 +61,14 @@ loaders. Rendering is always Three.js.
   sketches, and the wireframe/build ops are B-rep only.)
 - **Export**: convert the open model to a compatible format and save it via a native
   Save dialog — see [Export](#export) below
+- **FE Meshing**: generate a finite-element mesh (nodes + triangles/tetrahedra) of the
+  open model with [Gmsh](https://gmsh.info) compiled to WebAssembly, shown as an
+  overlay on top of the existing view. Options (dimension, element size, algorithm,
+  element order) are set in the **FE Mesh** panel and autosaved to a
+  `<model>.mesh.json` sidecar alongside a generated, editable `<model>.geo` script;
+  **Export .msh** / **Export .geo** save the mesh or the unrolled Gmsh script to disk.
+  The CAD file stays read-only. See [GMSH Integration](https://loumalouomega.github.io/CAD-Preview/gmsh-integration)
+  for details.
 
 ## Export
 

@@ -52,6 +52,10 @@ features:
   - icon: 💾
     title: Export to a Compatible Format
     details: Convert the open model and save it via a native dialog. B-rep files (STEP/IGES/BREP) can export to each other (true OCCT writers) or to any mesh format; mesh files can export to other mesh formats.
+
+  - icon: 🧮
+    title: FE Mesh Generation (Gmsh)
+    details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry. Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as `.msh` or `.geo_unrolled`. The CAD file stays read-only.
 ---
 
 ## Supported Formats
@@ -73,5 +77,5 @@ features:
 [![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.80-blue?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![Three.js](https://img.shields.io/badge/Three.js-r160-black?logo=threedotjs)](https://threejs.org/)
 [![OpenCascade.js](https://img.shields.io/badge/OpenCascade.js-1.x-orange)](https://ocjs.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/loumalouomega/CAD-Preview/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](https://github.com/loumalouomega/CAD-Preview/blob/master/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
