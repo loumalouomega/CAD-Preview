@@ -1,5 +1,6 @@
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
+import type { MeshOptions } from "./meshOptions";
 
 export type { EditOp } from "./editOps";
 
@@ -57,7 +58,10 @@ export type HostToWebview =
   | { type: "status"; text: string }
   | { type: "error"; message: string }
   | { type: "editError"; message: string }
-  | { type: "exportMesh"; requestId: string; format: CadFormat };
+  | { type: "exportMesh"; requestId: string; format: CadFormat }
+  | { type: "meshingOptions"; options: MeshOptions }
+  | { type: "meshingResult"; positions: string; indices: string; nodeCount: number; elementCount: number }
+  | { type: "meshingError"; message: string };
 
 /** Messages sent from the webview to the extension host. */
 export type WebviewToHost =
@@ -67,7 +71,10 @@ export type WebviewToHost =
   | { type: "editsChanged"; ops: EditOp[] }
   | { type: "exportRequest" }
   | { type: "exportResult"; requestId: string; data: string; binary: boolean }
-  | { type: "exportError"; requestId: string; message: string };
+  | { type: "exportError"; requestId: string; message: string }
+  | { type: "meshingChanged"; options: MeshOptions }
+  | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
+  | { type: "meshingExport"; target: "msh" | "geoUnrolled"; options: MeshOptions; stl?: string };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array): string {
