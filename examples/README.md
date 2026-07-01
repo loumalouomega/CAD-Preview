@@ -62,7 +62,6 @@ pipelines against a wide range of solids and assemblies.
 | `gehaeuse.stp` | 124K | gehaeuse |
 | `hose-fitting.stp` | 132K | 21151-6-6 |
 | `interacting_pockets.stp` | 68K | interactingPockets |
-| `interacting_pockets.stp.1` | 68K | interactingPockets (duplicate of `interacting_pockets.stp`) |
 | `iso14649-demo.stp` | 192K | PART11 (ISO 14649 machining demo) |
 | `jack_in_the_box.stp` | 696K | jack_in_the_box |
 | `lower_carriage.stp` | 76K | lower_carriage |
