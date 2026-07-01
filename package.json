@@ -71,6 +71,7 @@
     "docs:preview": "vitepress preview doc"
   },
   "dependencies": {
+    "@loumalouomega/gmsh-wasm": "^0.1.2",
     "opencascade.js": "^1.1.1",
     "three": "^0.160.0",
     "three-bvh-csg": "^0.0.16"

@@ -48,16 +48,19 @@ const webviewConfig = {
   logLevel: "info",
 };
 
-/** Copy the WASM binary to dist/ so it ships with the packaged extension. */
+/** Copy the WASM binaries to dist/ so they ship with the packaged extension. */
 function copyWasm() {
-  const src = path.join(
-    __dirname,
-    "node_modules/opencascade.js/dist/opencascade.wasm.wasm"
-  );
-  const dst = path.join(__dirname, "dist/opencascade.wasm.wasm");
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.copyFileSync(src, dst);
-  console.log(`Copied opencascade.wasm.wasm → dist/ (${(fs.statSync(dst).size / 1e6).toFixed(1)} MB)`);
+  const binaries = [
+    ["node_modules/opencascade.js/dist/opencascade.wasm.wasm", "dist/opencascade.wasm.wasm"],
+    ["node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-core.wasm", "dist/gmsh-core.wasm"],
+  ];
+  for (const [srcRel, dstRel] of binaries) {
+    const src = path.join(__dirname, srcRel);
+    const dst = path.join(__dirname, dstRel);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(src, dst);
+    console.log(`Copied ${srcRel.split("/").pop()} → ${dstRel} (${(fs.statSync(dst).size / 1e6).toFixed(1)} MB)`);
+  }
 }
 
 if (watch) {
