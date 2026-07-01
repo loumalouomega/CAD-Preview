@@ -437,6 +437,19 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         <div id="edits-compose"></div>
         <div id="edits-body"></div>
       </div>
+      <div id="meshing-panel">
+        <div id="meshing-header">
+          <span id="meshing-title">FE Mesh</span>
+          <div id="meshing-actions">
+            <button id="meshing-generate" title="Generate mesh">▶ Generate</button>
+            <button id="meshing-export-msh" title="Export .msh">📤 .msh</button>
+            <button id="meshing-export-geo" title="Export unrolled .geo">📤 .geo</button>
+            <button id="meshing-clear" title="Clear generated mesh">Clear</button>
+          </div>
+        </div>
+        <div id="meshing-body"></div>
+        <div id="meshing-status"></div>
+      </div>
     </div>
     <div id="app"></div>
   </div>
@@ -446,6 +459,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="grid" title="Toggle grid">▦ Grid</button>
     <button id="export" title="Export model">📤 Export</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">🌳 Tree</button>
+    <button id="meshing-toggle" title="Toggle FE mesh overlay">🔬 FE Mesh</button>
     <div id="select-group" title="Pick entities in the view to assign to a part">
       <button id="sel-toggle" title="Toggle selection mode">🖱️ Select</button>
       <button class="sel-mode" data-mode="point" title="Pick points (vertices)">📍 Point</button>

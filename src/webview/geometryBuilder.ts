@@ -110,6 +110,46 @@ function buildPointSprite(ep: EncodedPoint): THREE.Sprite {
 }
 
 /**
+ * Builds a display group for a generated FE (finite-element) surface mesh — the
+ * GMSH-produced triangulation shown as an overlay via `Viewer.setMeshOverlay`,
+ * distinct from the model's own B-rep/native faces. Contains a shaded
+ * `THREE.Mesh` plus a `THREE.LineSegments` wireframe over the same geometry, both
+ * tagged `userData.entityType = "mesh"` — deliberately NOT `"surface"`/`"line"`,
+ * so the existing parts/selection code (which keys off
+ * `"surface"|"line"|"point"|"volume"`) never picks or colours it.
+ */
+export function buildFEMesh(positionsB64: string, indicesB64: string): THREE.Group {
+  const positions = decodeF32(positionsB64);
+  const indices = decodeU32(indicesB64);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x4ea1ff, // distinct hue from DEFAULT_FACE_COLOR so an overlay is visually distinguishable
+    metalness: 0.1,
+    roughness: 0.7,
+    side: THREE.DoubleSide,
+    flatShading: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.userData.entityType = "mesh";
+
+  const wireGeometry = new THREE.WireframeGeometry(geometry);
+  const wireMaterial = new THREE.LineBasicMaterial({ color: 0x1a3d66 });
+  const wireframe = new THREE.LineSegments(wireGeometry, wireMaterial);
+  wireframe.userData.entityType = "mesh";
+
+  const group = new THREE.Group();
+  group.name = "feMesh";
+  group.add(mesh);
+  group.add(wireframe);
+  return group;
+}
+
+/**
  * Builds the model `THREE.Group` from per-face encoded meshes, per-edge
  * polylines, and per-vertex points. Layout:
  *   root

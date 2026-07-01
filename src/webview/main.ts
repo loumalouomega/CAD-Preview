@@ -2,13 +2,15 @@ import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { exportModel } from "./meshExporters";
-import { buildGroupFromEncoded } from "./geometryBuilder";
+import { buildGroupFromEncoded, buildFEMesh } from "./geometryBuilder";
 import { splitMeshesIntoFacets } from "./meshFacets";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
 import { EditsModel } from "./editsModel";
 import { EditsPanel } from "./editsPanel";
+import { MeshingModel } from "./meshingModel";
+import { MeshingPanel } from "./meshingPanel";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
@@ -295,6 +297,49 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   },
 });
 
+// ── Meshing (GMSH FE-mesh generation) ────────────────────────────────────
+// The webview owns the options bag + panel; the host runs GMSH and posts back
+// a result/error. Mesh-source documents (pristineMesh !== null) must supply
+// an `stl` snapshot of the currently displayed model since the host has no
+// other way to get triangulated geometry for them — B-rep documents don't
+// need one, the host re-exports STEP itself from the live OCCT shape.
+const meshingModel = new MeshingModel(() => {
+  post({ type: "meshingChanged", options: meshingModel.get() });
+  // Options changed but nothing has been (re)generated yet — clear the stale
+  // stats/error readout rather than showing a result for the old options.
+  meshingPanel.render(meshingModel.get());
+});
+
+/** Snapshot of the displayed model as base64 STL, for mesh-source documents only. */
+async function currentStlIfMeshSource(): Promise<string | undefined> {
+  if (!pristineMesh) return undefined;
+  const model = viewer.getModel();
+  if (!model) return undefined;
+  return (await exportModel(model, "stl")).data;
+}
+
+const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!, {
+  onOptionsChange: (patch) => meshingModel.update(patch),
+  onGenerate: async () => {
+    post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
+  },
+  onExportMsh: async () => {
+    post({ type: "meshingExport", target: "msh", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
+  },
+  onExportGeo: async () => {
+    post({
+      type: "meshingExport",
+      target: "geoUnrolled",
+      options: meshingModel.get(),
+      stl: await currentStlIfMeshSource(),
+    });
+  },
+  onClear: () => {
+    viewer.setMeshOverlay(null);
+    meshingPanel.render(meshingModel.get());
+  },
+});
+
 /** True when `a` and `b` are not (anti-)parallel — their cross product is non-zero. */
 function nonParallel(a: [number, number, number], b: [number, number, number]): boolean {
   const cx = a[1] * b[2] - a[2] * b[1];
@@ -468,6 +513,25 @@ try {
   post({ type: "log", message });
 }
 
+// ── Meshing toolbar toggle ────────────────────────────────────────────────
+// Toggling only controls whether the generated overlay is shown; the panel
+// itself is always present in the sidebar. A separate try/catch from the view
+// controls above, per the same invariant: a throw here must never block the
+// `ready` handshake / model loading below.
+let meshingEnabled = false;
+try {
+  const meshingToggle = document.getElementById("meshing-toggle");
+  meshingToggle?.addEventListener("click", () => {
+    meshingEnabled = !meshingEnabled;
+    meshingToggle.classList.toggle("active", meshingEnabled);
+    if (!meshingEnabled) viewer.setMeshOverlay(null);
+  });
+} catch (err) {
+  const message = `Meshing controls failed to initialize: ${(err as Error).message}`;
+  console.error(message, err);
+  post({ type: "log", message });
+}
+
 window.addEventListener("unload", () => {
   viewer.dispose();
 });
@@ -554,6 +618,21 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       } catch (err) {
         post({ type: "exportError", requestId: msg.requestId, message: (err as Error).message });
       }
+      break;
+
+    case "meshingOptions":
+      // Initial hydration from the host (or the reloaded sidecar) — does not echo back as a write.
+      meshingModel.load(msg.options);
+      meshingPanel.render(meshingModel.get());
+      break;
+
+    case "meshingResult":
+      viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices));
+      meshingPanel.render(meshingModel.get(), { nodeCount: msg.nodeCount, elementCount: msg.elementCount });
+      break;
+
+    case "meshingError":
+      meshingPanel.render(meshingModel.get(), { error: msg.message });
       break;
   }
 });
