@@ -1,0 +1,110 @@
+import { describe, it, expect } from "vitest";
+import { validateMeshOptions, DEFAULT_MESH_OPTIONS } from "./meshOptions";
+
+describe("validateMeshOptions", () => {
+  it("accepts a well-formed options object unchanged", () => {
+    const opts = {
+      dimension: 2,
+      sizeMin: 0.1,
+      sizeMax: 10,
+      algorithm2D: 5,
+      algorithm3D: 1,
+      elementOrder: 2,
+      optimize: false,
+      stlAngle: 30,
+    };
+    expect(validateMeshOptions(opts)).toEqual(opts);
+  });
+
+  it("returns null when raw isn't an object", () => {
+    expect(validateMeshOptions(null)).toBeNull();
+    expect(validateMeshOptions(undefined)).toBeNull();
+    expect(validateMeshOptions("nope")).toBeNull();
+    expect(validateMeshOptions(42)).toBeNull();
+    expect(validateMeshOptions([])).toBeNull();
+  });
+
+  it("falls back to defaults for an empty object", () => {
+    expect(validateMeshOptions({})).toEqual(DEFAULT_MESH_OPTIONS);
+  });
+
+  it("clamps/defaults individually invalid fields rather than rejecting the whole object", () => {
+    const result = validateMeshOptions({
+      dimension: 7, // invalid -> default
+      sizeMin: -5, // invalid -> default
+      sizeMax: "big", // invalid -> default
+      algorithm2D: "x", // invalid -> default
+      algorithm3D: null, // invalid -> default
+      elementOrder: 3, // invalid -> default
+      optimize: "yes", // invalid -> default
+      stlAngle: 400, // invalid -> default
+    });
+    expect(result).toEqual(DEFAULT_MESH_OPTIONS);
+  });
+
+  it("defaults dimension unless it is exactly 1, 2, or 3", () => {
+    expect(validateMeshOptions({ dimension: 1 })?.dimension).toBe(1);
+    expect(validateMeshOptions({ dimension: 2 })?.dimension).toBe(2);
+    expect(validateMeshOptions({ dimension: 3 })?.dimension).toBe(3);
+    expect(validateMeshOptions({ dimension: 0 })?.dimension).toBe(DEFAULT_MESH_OPTIONS.dimension);
+    expect(validateMeshOptions({ dimension: 2.5 })?.dimension).toBe(DEFAULT_MESH_OPTIONS.dimension);
+  });
+
+  it("defaults elementOrder unless it is exactly 1 or 2", () => {
+    expect(validateMeshOptions({ elementOrder: 1 })?.elementOrder).toBe(1);
+    expect(validateMeshOptions({ elementOrder: 2 })?.elementOrder).toBe(2);
+    expect(validateMeshOptions({ elementOrder: 3 })?.elementOrder).toBe(DEFAULT_MESH_OPTIONS.elementOrder);
+    expect(validateMeshOptions({ elementOrder: 0 })?.elementOrder).toBe(DEFAULT_MESH_OPTIONS.elementOrder);
+  });
+
+  it("defaults sizeMin/sizeMax when negative or non-finite, and defaults both when sizeMin > sizeMax", () => {
+    expect(validateMeshOptions({ sizeMin: -1 })?.sizeMin).toBe(DEFAULT_MESH_OPTIONS.sizeMin);
+    expect(validateMeshOptions({ sizeMax: -1 })?.sizeMax).toBe(DEFAULT_MESH_OPTIONS.sizeMax);
+    expect(validateMeshOptions({ sizeMin: Infinity })?.sizeMin).toBe(DEFAULT_MESH_OPTIONS.sizeMin);
+    // sizeMin > sizeMax is invalid combination -> both fall back to defaults
+    const result = validateMeshOptions({ sizeMin: 10, sizeMax: 1 });
+    expect(result?.sizeMin).toBe(DEFAULT_MESH_OPTIONS.sizeMin);
+    expect(result?.sizeMax).toBe(DEFAULT_MESH_OPTIONS.sizeMax);
+    // valid: sizeMin === sizeMax is fine
+    expect(validateMeshOptions({ sizeMin: 5, sizeMax: 5 })).toMatchObject({ sizeMin: 5, sizeMax: 5 });
+  });
+
+  it("defaults stlAngle unless strictly within (0, 180)", () => {
+    expect(validateMeshOptions({ stlAngle: 0 })?.stlAngle).toBe(DEFAULT_MESH_OPTIONS.stlAngle);
+    expect(validateMeshOptions({ stlAngle: 180 })?.stlAngle).toBe(DEFAULT_MESH_OPTIONS.stlAngle);
+    expect(validateMeshOptions({ stlAngle: -10 })?.stlAngle).toBe(DEFAULT_MESH_OPTIONS.stlAngle);
+    expect(validateMeshOptions({ stlAngle: 90 })?.stlAngle).toBe(90);
+  });
+
+  it("defaults algorithm2D/algorithm3D unless finite numbers", () => {
+    expect(validateMeshOptions({ algorithm2D: "x" })?.algorithm2D).toBe(DEFAULT_MESH_OPTIONS.algorithm2D);
+    expect(validateMeshOptions({ algorithm3D: NaN })?.algorithm3D).toBe(DEFAULT_MESH_OPTIONS.algorithm3D);
+    expect(validateMeshOptions({ algorithm2D: 8 })?.algorithm2D).toBe(8);
+  });
+
+  it("defaults optimize unless it is a boolean", () => {
+    expect(validateMeshOptions({ optimize: true })?.optimize).toBe(true);
+    expect(validateMeshOptions({ optimize: false })?.optimize).toBe(false);
+    expect(validateMeshOptions({ optimize: "true" })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
+    expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
+  });
+});
+
+describe("DEFAULT_MESH_OPTIONS", () => {
+  it("is itself valid", () => {
+    expect(validateMeshOptions(DEFAULT_MESH_OPTIONS)).toEqual(DEFAULT_MESH_OPTIONS);
+  });
+
+  it("matches the documented defaults", () => {
+    expect(DEFAULT_MESH_OPTIONS).toEqual({
+      dimension: 3,
+      sizeMin: 0,
+      sizeMax: 1e22,
+      algorithm2D: 6,
+      algorithm3D: 4,
+      elementOrder: 1,
+      optimize: true,
+      stlAngle: 40,
+    });
+  });
+});
