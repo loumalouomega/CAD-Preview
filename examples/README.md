@@ -29,9 +29,7 @@ Real-world STEP AP203 models, mostly drawn from the public
 [NIST/STEP Tools AP203 test file library](https://www.steptools.com/docs/stpfiles/ap203/index.html).
 `bull.stp` is the primary fixture used throughout `CLAUDE.md`'s manual verification
 steps (parts, edits, wireframe modeling); the rest exercise the tessellation and edge
-pipelines against a wide range of solids and assemblies. `as1_pe.stp.1` and
-`interacting_pockets.stp.1` are duplicate copies (`.1` suffix) of their same-named
-neighbors.
+pipelines against a wide range of solids and assemblies.
 
 | File | Size | Header name / description |
 |------|-----:|----------|
@@ -41,7 +39,6 @@ neighbors.
 | `53711_74563f01_na.stp` | 56K | 53711_74563f01_na.203 |
 | `angle1.stp` | 24K | angle1 |
 | `as1_pe.stp` | 80K | AS1_ASM (aircraft wing assembly) |
-| `as1_pe.stp.1` | 80K | AS1_ASM (duplicate of `as1_pe.stp`) |
 | `bernetl.stp` | 240K | LAURA TEST STEP |
 | `block.stp` | 12K | block |
 | `boeing_part.stp` | 184K | boeing_part |
