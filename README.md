@@ -138,6 +138,30 @@ GitHub Actions runs on every push and pull request to `master`:
 builds the extension, runs unit tests, and uploads a `.vsix` artifact.
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
+## Licensing
+
+CAD-Preview bundles [`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomega/GMSH-JS),
+which compiles the Gmsh mesh generator and statically links it (together with
+OpenCASCADE Technology) into a single WebAssembly binary. Gmsh is distributed under the
+**GNU General Public License, version 2 or later** (GPL-2.0-or-later), with a linking
+exception that covers Netgen, METIS, OpenCASCADE, and ParaView. Because CAD-Preview
+ships that compiled binary as part of the extension, CAD-Preview itself is distributed
+under the **GPL-2.0-or-later** — see [LICENSE](LICENSE) for the full text.
+
+OpenCASCADE Technology (OCCT) is used in two places in this extension: directly, via
+[`opencascade.js`](https://github.com/donalffons/opencascade.js), for the native B-rep
+read/export pipeline, and indirectly, inside gmsh-wasm's meshing pipeline. OCCT is
+licensed under the **GNU Lesser General Public License, version 2.1**, with an
+additional exception granted by its authors.
+
+Anyone who needs to use Gmsh under terms other than the GPL can obtain a separate
+commercial license directly from its authors at [gmsh.info](https://gmsh.info).
+
+### Attribution
+
+- **Gmsh** — C. Geuzaine and J.-F. Remacle. <https://gmsh.info>
+- **OpenCASCADE Technology (OCCT)** — <https://dev.opencascade.org>
+
 ## License
 
 See [LICENSE](LICENSE).

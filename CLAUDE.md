@@ -19,6 +19,17 @@ of the change, not a follow-up. Concretely:
 If a change is purely internal refactoring with no observable behavior or API
 difference, docs don't need to move — use judgment, but default to checking.
 
+## License
+
+This project is licensed **GPL-2.0-or-later** (not MIT) because it bundles
+`@loumalouomega/gmsh-wasm`, which statically links the GPL-2.0-or-later-licensed Gmsh
+(and OpenCASCADE) into its shipped WASM binary — distributing that binary makes
+CAD-Preview a combined/derivative work bound by the same terms. **Before adding any
+new dependency that gets bundled into the shipped extension** (i.e. anything that
+ends up in the packaged `.vsix`, not just a dev/build-time tool), check its license
+for GPL compatibility first — see the README's "Licensing" section for the current
+rationale and attribution.
+
 ## Architecture (non-negotiable invariants)
 
 - **OpenCascade.js (OCCT WASM) runs in the Node extension host**, never in the webview.
