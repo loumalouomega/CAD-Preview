@@ -315,16 +315,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <div id="app"></div>
   </div>
   <div id="toolbar">
-    <button id="fit" title="Fit to view">Fit</button>
-    <button id="wireframe" title="Toggle wireframe">Wireframe</button>
-    <button id="grid" title="Toggle grid">Grid</button>
-    <button id="export" title="Export model">Export</button>
-    <button id="tree-toggle" title="Toggle component tree" style="display:none">Tree</button>
+    <button id="fit" title="Fit to view">🔍 Fit</button>
+    <button id="wireframe" title="Toggle wireframe">🕸️ Wireframe</button>
+    <button id="grid" title="Toggle grid">▦ Grid</button>
+    <button id="export" title="Export model">📤 Export</button>
+    <button id="tree-toggle" title="Toggle component tree" style="display:none">🌳 Tree</button>
     <div id="select-group" title="Pick entities in the view to assign to a part">
-      <button id="sel-toggle" title="Toggle selection mode">Select</button>
-      <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">Vol</button>
-      <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">Surf</button>
-      <button class="sel-mode" data-mode="line" title="Pick lines (edges)">Line</button>
+      <button id="sel-toggle" title="Toggle selection mode">🖱️ Select</button>
+      <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">🧊 Vol</button>
+      <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">◼️ Surf</button>
+      <button class="sel-mode" data-mode="line" title="Pick lines (edges)">📏 Line</button>
     </div>
   </div>
   <div id="view-controls">
