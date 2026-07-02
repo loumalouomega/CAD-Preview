@@ -143,6 +143,20 @@ export class Viewer {
     this.setModelFacesVisible(this.meshOverlay === null);
   }
 
+  /**
+   * Shows/hides the *current* overlay in place (`Object3D.visible`), without
+   * disposing it — unlike `setMeshOverlay(null)`, which tears the overlay down
+   * entirely. This is what the toolbar's FE Mesh toggle uses: switching it off
+   * then back on redisplays the same generated mesh instantly, with no need to
+   * re-run Generate. A no-op if nothing has been generated yet (`meshOverlay`
+   * is `null`) — the model's faces are left exactly as they were in that case.
+   */
+  setMeshOverlayVisible(visible: boolean): void {
+    if (!this.meshOverlay) return;
+    this.meshOverlay.visible = visible;
+    this.setModelFacesVisible(!visible);
+  }
+
   /** Shows/hides the model's shaded face meshes (`entityType === "surface"`), leaving edges/points untouched. */
   private setModelFacesVisible(visible: boolean): void {
     this.model?.traverse((obj) => {

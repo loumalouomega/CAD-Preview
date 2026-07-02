@@ -548,9 +548,17 @@ Non-negotiable invariants:
   the previous overlay's geometries/materials on swap. **It is auto-cleared when a
   new model loads** — `setModel()` calls `setMeshOverlay(null)` as its very first
   line, since a previously-generated overlay was computed from the *old* geometry
-  and must not linger looking valid. The toolbar's **🔬 FE Mesh** toggle only
-  shows/clears the overlay (`viewer.setMeshOverlay(null)` when switched off); the
-  FE Mesh panel itself is always present in the sidebar regardless of toggle state.
+  and must not linger looking valid. The toolbar's **🔬 FE Mesh** toggle
+  show/hides the *existing* overlay in place (`Viewer.setMeshOverlayVisible()`,
+  `Object3D.visible`, no dispose) rather than clearing it — toggling off then
+  back on must redisplay the same generated mesh instantly, with no need to
+  re-run Generate. Only three things actually dispose the overlay: a new model
+  loading (above), the panel's **Clear** button, and a fresh **Generate**
+  replacing it with a new one; all three also reset the toggle's `.active`
+  state to stay truthful about what's currently displayed (same rule
+  `meshingResult`/`meshingError` already followed for Generate — the toggle
+  must never claim "on" for content that isn't actually shown). The FE Mesh
+  panel itself is always present in the sidebar regardless of toggle state.
 - **The overlay's shaded mesh is unlit (`MeshBasicMaterial`), not `MeshStandardMaterial`
   like every other face material in this codebase.** A tet-mesh boundary is
   thousands of small, irregularly-oriented triangles — unlike a B-rep face's
@@ -683,8 +691,9 @@ exist next to the source, are valid JSON/text, and the CAD file itself is untouc
 hand-edit `bull.stp.geo` and change an option in the panel → confirm your hand-edit is
 overwritten (one-way generation, by design). Toggle **🔬 FE Mesh** off → confirm the
 overlay disappears and the original model is completely unaffected (no geometry
-change, still editable/exportable normally); toggle back on after a fresh **Generate**
-to confirm the overlay reappears. Repeat on `cube.stl` (a mesh-format source — Generate
+change, still editable/exportable normally); toggle back on **without regenerating**
+→ confirm the same overlay reappears instantly. Click **Clear** → confirm the overlay
+is disposed and the toggle turns itself off. Repeat on `cube.stl` (a mesh-format source — Generate
 should still work, reclassifying the STL's triangle soup into a volume before
 meshing). Apply **Generate** repeatedly, toggle on/off, and open/close the tab
 repeatedly → watch extension-host memory stay flat (same OCCT-style leak check as

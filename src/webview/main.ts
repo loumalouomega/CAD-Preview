@@ -337,6 +337,10 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   },
   onClear: () => {
     viewer.setMeshOverlay(null);
+    // Same toggle-truthfulness invariant as `meshingResult`/`meshingError`
+    // below: Clear disposes the overlay, so the toggle must stop claiming "on".
+    meshingEnabled = false;
+    meshingToggle?.classList.remove("active");
     meshingPanel.render(meshingModel.get());
   },
 });
@@ -530,7 +534,11 @@ try {
   meshingToggle?.addEventListener("click", () => {
     meshingEnabled = !meshingEnabled;
     meshingToggle?.classList.toggle("active", meshingEnabled);
-    if (!meshingEnabled) viewer.setMeshOverlay(null);
+    // Show/hide in place (keeps the generated overlay alive) rather than
+    // `setMeshOverlay(null)`, which disposes it — otherwise toggling off then
+    // back on left the mesh gone until the next Generate. A no-op if nothing
+    // has been generated yet.
+    viewer.setMeshOverlayVisible(meshingEnabled);
   });
 } catch (err) {
   const message = `Meshing controls failed to initialize: ${(err as Error).message}`;

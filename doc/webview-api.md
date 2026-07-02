@@ -146,6 +146,18 @@ a feature-line reference), and clearing it (`obj === null`) restores them. Two
 opaque solids occupying the same space are illegible layered on top of each
 other; this is display-only (`Object3D.visible`), never touches geometry.
 
+```typescript
+setMeshOverlayVisible(visible: boolean): void
+```
+Shows/hides the *current* overlay in place (`Object3D.visible`) without
+disposing it, mirroring the model-faces visibility via the same
+`setModelFacesVisible()` helper. This is what the toolbar's FE Mesh toggle
+calls — switching it off then back on must redisplay the same generated mesh
+instantly, with no re-run of Generate needed. A no-op when `meshOverlay` is
+`null` (nothing generated yet). Distinct from `setMeshOverlay(null)`, which
+actually disposes the overlay and is reserved for a new model loading, the
+panel's Clear button, or a fresh Generate replacing it with a new one.
+
 **Camera operations:**
 
 ```typescript
@@ -690,5 +702,7 @@ In `main.ts`, `onGenerate`/`onExportMsh`/`onExportGeo` each independently call a
 async `currentStlIfMeshSource()` helper before posting (returns `undefined` for
 B-rep documents, since the host re-exports STEP itself), then post
 `meshingGenerate`/`meshingExport` with the current `MeshingModel.get()` snapshot
-plus that optional `stl`. `onClear` calls `viewer.setMeshOverlay(null)` directly
-and re-renders the panel with no status.
+plus that optional `stl`. `onClear` calls `viewer.setMeshOverlay(null)` directly,
+resets the toolbar toggle's `meshingEnabled`/`.active` state (same
+toggle-truthfulness rule `meshingResult`/`meshingError` follow), and re-renders
+the panel with no status.
