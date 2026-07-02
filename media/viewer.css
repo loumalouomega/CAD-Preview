@@ -412,6 +412,24 @@ body {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+.part-meshsize {
+  flex-shrink: 0;
+  width: 44px;
+  font: inherit;
+  font-size: 10px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+.part-meshsize:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.part-meshsize:focus {
+  outline: none;
+  background: var(--vscode-input-background, #1e1e1e);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
 .part-badge {
   font-size: 10px;
   opacity: 0.6;

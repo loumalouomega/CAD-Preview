@@ -62,6 +62,13 @@ export class PartsModel {
     this.onChange();
   }
 
+  setMeshSize(index: number, size: number | undefined): void {
+    const p = this.parts[index];
+    if (!p) return;
+    p.meshSize = size;
+    this.onChange();
+  }
+
   remove(index: number): void {
     if (index < 0 || index >= this.parts.length) return;
     this.parts.splice(index, 1);
@@ -130,5 +137,6 @@ function clone(p: Part): Part {
     surfaces: [...p.surfaces],
     lines: [...p.lines],
     points: [...p.points],
+    meshSize: p.meshSize,
   };
 }

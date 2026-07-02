@@ -46,6 +46,7 @@ export interface Part {
   surfaces: string[];  // face ids
   lines: string[];     // edge ids
   points: string[];    // point (vertex) ids
+  meshSize?: number;   // optional Gmsh target element size for local refinement
 }
 
 /** Messages sent from the extension host to the webview. */
@@ -60,8 +61,24 @@ export type HostToWebview =
   | { type: "editError"; message: string }
   | { type: "exportMesh"; requestId: string; format: CadFormat }
   | { type: "meshingOptions"; options: MeshOptions }
-  | { type: "meshingResult"; positions: string; indices: string; nodeCount: number; elementCount: number }
+  | {
+      type: "meshingResult";
+      positions: string;
+      indices: string;
+      nodeCount: number;
+      elementCount: number;
+      elementGroups: MeshElementGroup[];
+    }
   | { type: "meshingError"; message: string };
+
+/** One contiguous run of triangles in `meshingResult.indices` belonging to a
+ * single part (or, for `name === null`, the trailing ungrouped/default run). */
+export interface MeshElementGroup {
+  name: string | null;
+  color: string | null;
+  indexStart: number;
+  indexCount: number;
+}
 
 /** Messages sent from the webview to the extension host. */
 export type WebviewToHost =

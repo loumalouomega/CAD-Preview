@@ -53,6 +53,7 @@ const partsPanel = new PartsPanel(document.getElementById("parts-panel")!, {
   onRemovePart: (index) => partsModel.remove(index),
   onRename: (index, name) => partsModel.rename(index, name),
   onRecolor: (index, color) => partsModel.recolor(index, color),
+  onMeshSize: (index, size) => partsModel.setMeshSize(index, size),
   onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
   onSelectPart: (index) => {
     previewPartIndex = index;
@@ -642,7 +643,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "meshingResult":
       meshingPanel.setBusy(false);
-      viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices));
+      viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.elementGroups));
       // A successful generate always results in a visible overlay, so bring the
       // toggle's state in sync here (rather than optimistically in `onGenerate`,
       // before the async round-trip even completes) — that way a failed generate

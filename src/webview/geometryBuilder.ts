@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { EncodedMesh, EncodedEdge, EncodedPoint } from "../protocol";
+import type { EncodedMesh, EncodedEdge, EncodedPoint, MeshElementGroup } from "../protocol";
 
 function decodeF32(b64: string): Float32Array {
   const bin = atob(b64);
@@ -109,6 +109,10 @@ function buildPointSprite(ep: EncodedPoint): THREE.Sprite {
   return sprite;
 }
 
+/** Default overlay colour for triangles not claimed by any part — distinct hue
+ * from DEFAULT_FACE_COLOR so an overlay is visually distinguishable. */
+const DEFAULT_MESH_COLOR = 0x4ea1ff;
+
 /**
  * Builds a display group for a generated FE (finite-element) surface mesh — the
  * GMSH-produced triangulation shown as an overlay via `Viewer.setMeshOverlay`,
@@ -117,8 +121,17 @@ function buildPointSprite(ep: EncodedPoint): THREE.Sprite {
  * tagged `userData.entityType = "mesh"` — deliberately NOT `"surface"`/`"line"`,
  * so the existing parts/selection code (which keys off
  * `"surface"|"line"|"point"|"volume"`) never picks or colours it.
+ *
+ * `elementGroups` partitions the triangle buffer into per-part colour ranges
+ * (from `gmshService.ts`'s physical-group-derived grouping); each becomes a
+ * `geometry.addGroup` range + its own `MeshBasicMaterial`, so the shaded mesh
+ * renders multi-material. An empty `elementGroups` (no parts resolved) falls
+ * back to a single default-blue range covering the whole buffer — identical
+ * to the pre-parts behavior. The wireframe is unaffected by grouping (its
+ * `WireframeGeometry` is pure line topology, no per-triangle colour) and stays
+ * a single `LineBasicMaterial`, same as before.
  */
-export function buildFEMesh(positionsB64: string, indicesB64: string): THREE.Group {
+export function buildFEMesh(positionsB64: string, indicesB64: string, elementGroups: MeshElementGroup[]): THREE.Group {
   const positions = decodeF32(positionsB64);
   const indices = decodeU32(indicesB64);
 
@@ -126,27 +139,33 @@ export function buildFEMesh(positionsB64: string, indicesB64: string): THREE.Gro
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
 
-  const material = new THREE.MeshBasicMaterial({
-    color: 0x4ea1ff, // distinct hue from DEFAULT_FACE_COLOR so an overlay is visually distinguishable
-    side: THREE.DoubleSide,
-    // Unlit on purpose: a tet-mesh boundary is thousands of small, irregularly
-    // oriented triangles (unlike a smooth NURBS-tessellated B-rep face), so a
-    // lit material (MeshStandardMaterial) shades each one differently under the
-    // scene's directional/hemisphere lights — triangles facing away from the
-    // light go dark/near-black, which reads as scattered holes even though the
-    // geometry is a complete, watertight surface. A flat unlit color removes
-    // that per-facet brightness variation entirely.
-    //
-    // The wireframe below is built from this exact geometry, so its lines are
-    // perfectly coincident with these triangles' surface — without pushing the
-    // filled polygons back in depth, the GPU's per-pixel depth test can't
-    // reliably resolve which one wins, producing a z-fighting speckle on top of
-    // the shading issue above.
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
-  });
-  const mesh = new THREE.Mesh(geometry, material);
+  const groups = elementGroups.length > 0 ? elementGroups : [{ name: null, color: null, indexStart: 0, indexCount: indices.length }];
+  const materials = groups.map(
+    (g) =>
+      new THREE.MeshBasicMaterial({
+        color: g.color ?? DEFAULT_MESH_COLOR,
+        side: THREE.DoubleSide,
+        // Unlit on purpose: a tet-mesh boundary is thousands of small, irregularly
+        // oriented triangles (unlike a smooth NURBS-tessellated B-rep face), so a
+        // lit material (MeshStandardMaterial) shades each one differently under the
+        // scene's directional/hemisphere lights — triangles facing away from the
+        // light go dark/near-black, which reads as scattered holes even though the
+        // geometry is a complete, watertight surface. A flat unlit color removes
+        // that per-facet brightness variation entirely.
+        //
+        // The wireframe below is built from this exact geometry, so its lines are
+        // perfectly coincident with these triangles' surface — without pushing the
+        // filled polygons back in depth, the GPU's per-pixel depth test can't
+        // reliably resolve which one wins, producing a z-fighting speckle on top of
+        // the shading issue above.
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      })
+  );
+  groups.forEach((g, i) => geometry.addGroup(g.indexStart, g.indexCount, i));
+
+  const mesh = new THREE.Mesh(geometry, materials);
   mesh.userData.entityType = "mesh";
 
   const wireGeometry = new THREE.WireframeGeometry(geometry);

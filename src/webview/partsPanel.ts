@@ -6,6 +6,7 @@ export interface PartsPanelCallbacks {
   onRemovePart: (index: number) => void;
   onRename: (index: number, name: string) => void;
   onRecolor: (index: number, color: string) => void;
+  onMeshSize: (index: number, size: number | undefined) => void;
   onRemoveEntity: (index: number, entityType: "volume" | "surface" | "line" | "point", entityId: string) => void;
   onSelectPart: (index: number | null) => void;
 }
@@ -69,6 +70,22 @@ export class PartsPanel {
     name.addEventListener("change", () => this.cb.onRename(index, name.value));
     name.addEventListener("click", (e) => e.stopPropagation());
     row.appendChild(name);
+
+    const meshSize = document.createElement("input");
+    meshSize.type = "number";
+    meshSize.className = "part-meshsize";
+    meshSize.title = "Target mesh size for local refinement (optional)";
+    meshSize.placeholder = "size";
+    meshSize.min = "0";
+    meshSize.step = "any";
+    meshSize.value = part.meshSize != null ? String(part.meshSize) : "";
+    meshSize.addEventListener("change", () => {
+      const raw = meshSize.value.trim();
+      const n = raw === "" ? undefined : Number(raw);
+      this.cb.onMeshSize(index, n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined);
+    });
+    meshSize.addEventListener("click", (e) => e.stopPropagation());
+    row.appendChild(meshSize);
 
     const badge = document.createElement("span");
     badge.className = "part-badge";

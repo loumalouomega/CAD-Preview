@@ -9,6 +9,8 @@ import { readEdits, writeEdits } from "./editsStore";
 import type { EditOp } from "./editOps";
 import { readMeshOptions, writeMeshOptions, writeGeoScript } from "./meshOptionsStore";
 import { generateMesh, exportGeoUnrolled, type MeshGenerationInput } from "./gmshService";
+import { applyStlPartSizeOverride } from "./meshOptions";
+import type { MeshOptions } from "./meshOptions";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -158,11 +160,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
             return;
           }
-          const result = await generateMesh(this.context.extensionPath, input, msg.options);
+          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
+          const result = await generateMesh(this.context.extensionPath, input, options, parts);
           post({
             type: "meshingResult",
             positions: encodeBuffer(result.positions),
             indices: encodeBuffer(result.indices),
+            elementGroups: result.elementGroups,
             nodeCount: result.nodeCount,
             elementCount: result.elementCount,
           });
@@ -179,8 +183,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
             return;
           }
+          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
           if (msg.target === "msh") {
-            const result = await generateMesh(this.context.extensionPath, input, msg.options);
+            const result = await generateMesh(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
               document.uri,
               "msh",
@@ -189,7 +194,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
               post
             );
           } else {
-            const text = await exportGeoUnrolled(this.context.extensionPath, input, msg.options);
+            const text = await exportGeoUnrolled(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
               document.uri,
               "geo_unrolled",
@@ -301,6 +306,25 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
     if (!stl) return undefined;
     return { kind: "stl", stlBytes: Buffer.from(stl, "base64") };
+  }
+
+  /**
+   * Reads the parts sidecar and shapes it per `input`'s kind: B-rep sources
+   * pass `parts` straight through to `generateMesh`/`exportGeoUnrolled` (which
+   * turn them into physical groups + per-part sizing fields); STL/mesh
+   * sources can't get true physical groups (see `gmshPartsMap.ts`), so `parts`
+   * is dropped ([]) and `options` instead gets `applyStlPartSizeOverride`'s
+   * one-off sizing degrade for just this call — never persisted back to the
+   * `.mesh.json` sidecar.
+   */
+  private async resolveMeshPartsAndOptions(
+    uri: vscode.Uri,
+    input: MeshGenerationInput,
+    options: MeshOptions
+  ): Promise<{ parts: Part[]; options: MeshOptions }> {
+    const parts = await readParts(uri);
+    if (input.kind === "brep") return { parts, options };
+    return { parts: [], options: applyStlPartSizeOverride(options, parts) };
   }
 
   /**

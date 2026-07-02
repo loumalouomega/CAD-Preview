@@ -8,6 +8,8 @@
  * rejected outright when `raw` isn't an object at all.
  */
 
+import type { Part } from "./protocol";
+
 export interface MeshOptions {
   dimension: 1 | 2 | 3;
   sizeMin: number;
@@ -68,4 +70,23 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
 
   return { dimension, sizeMin, sizeMax, algorithm2D, algorithm3D, elementOrder, optimize, stlAngle };
+}
+
+/**
+ * STL/mesh-format sources can't get true part-preserving physical groups (see
+ * `gmshPartsMap.ts`'s doc comment — Gmsh's STL reclassification pipeline
+ * produces brand-new surface/volume tags with zero correlation to any
+ * original id), but a narrow sizing-only degrade is still useful: if exactly
+ * one part has `meshSize` set, apply it as a one-off `sizeMin`/`sizeMax`
+ * override for this generate/export call only (never persisted — the caller
+ * must not write the result back to the `.mesh.json` sidecar). Zero or more
+ * than one part with `meshSize` set is ambiguous (which part's size should
+ * win for a single merged STL volume?) — silently falls back to `options`
+ * unchanged.
+ */
+export function applyStlPartSizeOverride(options: MeshOptions, parts: Part[]): MeshOptions {
+  const withSize = parts.filter((p) => p.meshSize != null);
+  if (withSize.length !== 1) return options;
+  const size = withSize[0].meshSize as number;
+  return { ...options, sizeMin: size, sizeMax: size };
 }

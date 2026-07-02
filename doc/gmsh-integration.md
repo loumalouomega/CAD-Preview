@@ -64,6 +64,12 @@ export type MeshGenerationInput =
   gmsh.model.occ.synchronize();
   ```
 
+  Immediately after `synchronize()`, the B-rep path also threads the document's
+  `Part[]` (read fresh from `<model>.parts.json` via `readParts()`) through
+  `applyPartsToGmshModel` (`src/gmshPartsMap.ts`) — see
+  [Parts → physical groups](#parts--physical-groups-b-rep-only) below. Mesh-source
+  input never calls this; `parts` is always `[]` for the STL branch.
+
 - **Mesh source** (`.stl/.obj/.ply/.gltf/.glb`) — the host has no B-rep to
   re-export, so the *webview* serializes whatever `THREE.Object3D` is currently
   displayed to an in-memory STL (reusing the same `exportModel(..., "stl")` mesh
@@ -94,6 +100,105 @@ Both paths converge on the shared options application in
 `gmsh.option.setNumber`), then `generateMesh` calls `gmsh.model.mesh.generate
 (options.dimension)` and reads the result back with `gmsh.model.mesh.getNodes()` /
 `gmsh.model.mesh.getElements()`.
+
+## Parts → physical groups (B-rep only)
+
+Generated meshes preserve the user's **parts** (named face/edge/solid/point groups
+from the Parts panel, `Part` in `src/protocol.ts`) as Gmsh **physical groups** — so
+a `.msh`/`.geo_unrolled` export carries the same named regions a downstream FE
+solver expects, and the live overlay recolours per part. This is **B-rep only**,
+for the same reason feature-modeling/fillet/chamfer are B-rep only (see
+[Geometry editing](../CLAUDE.md#geometry-editing-operations)): Gmsh's STL path
+(`classifySurfaces`/`createGeometry`) produces brand-new surface/volume tags with
+zero correlation to a mesh-format document's original `node-N`/facet ids, so there
+is no reliable way to preserve part membership through it.
+
+**The correlation problem.** `face-N`/`solid-N`/`edge-N`/`point-N` ids are assigned
+by CAD-Preview's own OCCT (opencascade.js) walking `TopExp_Explorer` order over the
+shape (`src/meshExtract.ts`/`src/occtOperations.ts`). Gmsh re-parses the exported
+STEP bytes with its **own, separate** OCCT build baked into gmsh-wasm — a different
+WASM module entirely, so no live shape object can be shared between the two, and
+there is no guarantee Gmsh's internal entity tags land in the same order (STEP
+import order is not a reliable cross-OCCT-build correspondence — `importShapes`'s
+`outDimTags` is deliberately **not** relied on for this reason).
+
+`src/gmshPartsMap.ts`'s `applyPartsToGmshModel` resolves the correspondence
+**geometrically** instead: for every entity referenced by some part, it computes a
+bounding-box centre on both sides — `bboxCenter` (`src/occtOperations.ts`, already
+used elsewhere for `explodeSolids`) on CAD-Preview's own OCCT shape (re-read from
+the *same* STEP bytes already handed to Gmsh), and `gmsh.model.getBoundingBox(dim,
+tag)` on Gmsh's synchronized entities — then nearest-matches them within a
+tolerance relative to the whole model's bbox diagonal (`1e-3 × diagonal`), accepted
+only if unambiguous (the best match must be either the sole candidate within
+tolerance, or meaningfully closer than the runner-up). An unresolved or ambiguous
+entity is silently skipped — the same graceful-degradation convention every other
+unresolved-id path in this codebase follows (fillet/chamfer/mate/etc.).
+
+Once ids resolve to Gmsh `(dim, tag)` pairs, one `gmsh.model.addPhysicalGroup(dim,
+tags, -1, part.name)` call is made per part per dimension it has entities in. This
+happens before `mesh.generate()`/`gmsh.write()`, so both the `.msh` (`$PhysicalNames`
+section) and `.geo_unrolled` (`Physical Volume(...)`/`Physical Surface(...)`/etc.)
+outputs carry the groups natively — no extra serialization code needed beyond
+creating them in Gmsh's in-memory model.
+
+`gmshService.ts`'s `buildIndices` also uses the returned tag→part maps to bucket
+generated triangles into contiguous per-part ranges (`MeshElementGroup[]` — see
+[Protocol messages](#protocol-messages)) for the live overlay's per-part colouring,
+scoping `getElements(dim, tag)` to one entity at a time instead of the original
+single global call. For `dimension === 3`, this runs **per volume** (`getElements(3,
+tag)` limits tets to that volume's own set before the tet-boundary-face-dedup
+algorithm runs) — correct even for two touching part-volumes, since Gmsh tags each
+tetrahedron by its single owning volume regardless of geometric adjacency, so a
+face shared between two touching volumes is independently each volume's own
+boundary.
+
+**Known asymmetry, confirmed against the live WASM (`examples/STP/angle1.stp`, a
+single-solid model with one volume-scoped part and one surface-scoped part):** a
+part assigned by **surface** (not volume) still gets its own `Physical Surface` in
+`.msh`/`.geo_unrolled` output correctly — but for a **3D** (`dimension === 3`)
+generate, it will **not** get its own colour range in the live overlay, because
+`buildIndices3D` only groups by `volumeTagToPart` (a tet-boundary triangle's group
+comes from which *volume* the owning tetrahedron belongs to — Gmsh's 3D mesh
+doesn't retain a "this boundary triangle's parent B-rep surface" link the way a 2D
+surface mesh's elements do). A surface-scoped part's triangles fall into the
+trailing default-blue range in 3D mode. This is not a bug in the correlation or
+physical-group logic — both work correctly — it's a deliberate scope limit of the
+overlay-colouring bucketing specifically. **2D** (`dimension === 2`) generates are
+unaffected: `buildIndices2D` groups directly by `surfaceTagToPart` via
+`getElements(2, tag)` per surface, so a surface-scoped part colours correctly there.
+If overlay colouring for surface-scoped parts in 3D mode is ever needed, it would
+require also reading the intermediate 2D surface mesh Gmsh generates as part of a
+3D run (`getElements(2, tag)` is still populated even when `Mesh.dimension === 3`)
+and cross-referencing triangle node-tag sets against the tet-boundary triangles —
+not attempted here to keep the initial implementation's risk surface smaller.
+
+## Per-part mesh size
+
+A part can carry an optional `meshSize?: number` (a single target element size, not
+a min/max range) — set via the Parts panel's per-row numeric field. For every part
+with `meshSize` set and at least one resolved entity, `applyPartsToGmshModel`
+creates a Gmsh **`Constant` field** (`gmsh.model.mesh.field.add("Constant")`)
+scoped to that part's resolved entities via `PointsList`/`CurvesList`/
+`SurfacesList`/`VolumesList` (`setNumbers`) with `VIn` (`setNumber`) set to the
+part's `meshSize`. All parts' Constant fields are then combined via a `Min` field
+(`FieldsList` = every Constant field's tag) and set as the background mesh
+(`setAsBackgroundMesh`) — so the smallest requested size wins in any overlap, and
+regions outside every sized part keep the global `Mesh.MeshSizeMin/Max` sizing
+unaffected (Gmsh's own semantics: those remain clamps on the background field's
+output). This mechanism is implemented per the standard Gmsh Field API (documented
+in the Gmsh reference manual, not this WASM build specifically) but has not yet
+been exercised against a live multi-part generate in this repo — verify empirically
+per this doc's own discipline (see [Known limitations](#known-limitations)) before
+relying on it for production meshing.
+
+**STL/mesh-format sources get a narrower degrade, not the full mechanism above:**
+since there is no per-entity correlation for STL input, `src/meshOptions.ts`'s
+`applyStlPartSizeOverride` checks whether *exactly one* part in the document has
+`meshSize` set; if so, that value overrides `sizeMin`/`sizeMax` globally for that
+one generate/export call (never persisted to `<model>.mesh.json`). Zero or more
+than one part with `meshSize` set is ambiguous — which part's size should win for a
+single merged STL volume? — so it silently falls back to the panel's own options,
+unchanged.
 
 ## Options, sidecars, and the `.geo` script
 
@@ -153,7 +258,7 @@ Six message types were added to `src/protocol.ts` for this feature (see
 | Message | Direction | Purpose |
 |---------|-----------|---------|
 | `meshingOptions` | host → webview | Hydrates the panel with the sidecar's (or default) `MeshOptions` on load. |
-| `meshingResult` | host → webview | Encoded boundary triangulation (`positions`/`indices`, base64) plus `nodeCount`/`elementCount` stats after a successful generate. |
+| `meshingResult` | host → webview | Encoded boundary triangulation (`positions`/`indices`, base64) plus `nodeCount`/`elementCount` stats and `elementGroups` (`MeshElementGroup[]` — per-part contiguous triangle ranges, from physical-group resolution; see [Parts → physical groups](#parts--physical-groups-b-rep-only)) after a successful generate. |
 | `meshingError` | host → webview | A human-readable failure message (bad geometry, GMSH exception, missing STL data) rendered in the panel's status line. |
 | `meshingChanged` | webview → host | A `MeshOptions` patch to persist (`<model>.mesh.json` + `<model>.geo`). |
 | `meshingGenerate` | webview → host | Request to run `generateMesh` now; carries the current options and, for mesh-format documents, a base64 `stl` snapshot. |
@@ -172,12 +277,18 @@ Six message types were added to `src/protocol.ts` for this feature (see
   status line that shows either `Nodes: N · Elements: M` or an error string. Pure
   DOM, no business logic, no `prompt()`/`alert()` (VS Code webviews block those —
   same constraint documented for the Parts/Edits panels).
-- **`src/webview/geometryBuilder.ts`**'s `buildFEMesh(positionsB64, indicesB64)`
-  decodes the base64 buffers from a `meshingResult` message into a `THREE.Group`
-  containing a shaded `MeshStandardMaterial` mesh (a distinct blue, `0x4ea1ff`, so
-  the overlay reads as separate from the model's own face colouring) plus a
-  `WireframeGeometry` overlay of the same triangulation, tagged
-  `userData.entityType = "mesh"`.
+- **`src/webview/geometryBuilder.ts`**'s `buildFEMesh(positionsB64, indicesB64,
+  elementGroups)` decodes the base64 buffers from a `meshingResult` message into a
+  `THREE.Group` containing a shaded, multi-material `MeshBasicMaterial` mesh
+  (unlit — see the code comment for why) plus a `WireframeGeometry` overlay of the
+  same triangulation, tagged `userData.entityType = "mesh"`. Each `elementGroups`
+  entry becomes one `geometry.addGroup(indexStart, indexCount, materialIndex)`
+  range and its own material — `part.color` for a resolved part, or the default
+  blue `0x4ea1ff` for the trailing ungrouped range (or the single implicit range
+  when `elementGroups` is empty, e.g. an STL source or a document with no parts) —
+  so the overlay reads per-part just like the model's own faces do. The wireframe
+  is unaffected by grouping (`WireframeGeometry` is pure line topology) and stays a
+  single `LineBasicMaterial`.
 - **`src/webview/viewer.ts`**'s `Viewer.setMeshOverlay(obj)` adds/replaces that
   group as a **sibling of `model`** in the scene (never a child) and disposes the
   previous overlay's geometries/materials before swapping — so toggling the FE
@@ -285,6 +396,21 @@ plus one explicit "everything else worked" confirmation:
   (`1`) from the 3D algorithm dropdown for native `geo`/`occ` solids or STL
   remeshes where it isn't affected — the default just avoids the failure mode for
   the common case (opening a STEP/IGES/BREP file) out of the box.
+
+- **Parts → physical groups + per-part sizing fields: verified working against
+  the live WASM** (`examples/STP/angle1.stp`, one volume-scoped part with
+  `meshSize: 0.5` and one surface-scoped part, `dimension: 3`): the standard Gmsh
+  `Constant`/`Min` field option name strings (`PointsList`/`CurvesList`/
+  `SurfacesList`/`VolumesList`/`VIn`/`FieldsList`), `addPhysicalGroup`, and the
+  bbox-centre correlation (`bboxCenter` vs. `getBoundingBox`, tolerance `1e-3 ×
+  model bbox diagonal`) all resolved correctly — a no-parts baseline generate
+  produced 499 nodes, the identical geometry with the sized part produced 235,088
+  nodes (clear, correctly-directed local refinement, not a silent no-op), and the
+  resulting `.msh`'s `$PhysicalNames` section listed both parts by name at the
+  right dimension (`3 1 "PartA"`, `2 2 "PartB"`). See the surface-scoped-part
+  overlay-colouring caveat in [Parts → physical groups](#parts--physical-groups-b-rep-only)
+  above for the one confirmed gap (3D-mode overlay colouring only, not physical
+  groups or sizing) found during this same verification pass.
 
 - **Everything else this feature needed is present and worked correctly.**
   `gmsh.model.occ.importShapes`, the STL remesh sequence

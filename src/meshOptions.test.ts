@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { validateMeshOptions, DEFAULT_MESH_OPTIONS } from "./meshOptions";
+import { validateMeshOptions, applyStlPartSizeOverride, DEFAULT_MESH_OPTIONS } from "./meshOptions";
+import type { Part } from "./protocol";
+
+function part(overrides: Partial<Part>): Part {
+  return { name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [], ...overrides };
+}
 
 describe("validateMeshOptions", () => {
   it("accepts a well-formed options object unchanged", () => {
@@ -87,6 +92,29 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ optimize: false })?.optimize).toBe(false);
     expect(validateMeshOptions({ optimize: "true" })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
+  });
+});
+
+describe("applyStlPartSizeOverride", () => {
+  it("leaves options unchanged when no part has meshSize set", () => {
+    const parts = [part({ name: "A" }), part({ name: "B" })];
+    expect(applyStlPartSizeOverride(DEFAULT_MESH_OPTIONS, parts)).toBe(DEFAULT_MESH_OPTIONS);
+  });
+
+  it("leaves options unchanged when more than one part has meshSize set (ambiguous)", () => {
+    const parts = [part({ name: "A", meshSize: 1 }), part({ name: "B", meshSize: 2 })];
+    expect(applyStlPartSizeOverride(DEFAULT_MESH_OPTIONS, parts)).toBe(DEFAULT_MESH_OPTIONS);
+  });
+
+  it("overrides sizeMin/sizeMax to the single part's meshSize", () => {
+    const parts = [part({ name: "A" }), part({ name: "B", meshSize: 0.5 })];
+    const result = applyStlPartSizeOverride(DEFAULT_MESH_OPTIONS, parts);
+    expect(result).toEqual({ ...DEFAULT_MESH_OPTIONS, sizeMin: 0.5, sizeMax: 0.5 });
+    expect(DEFAULT_MESH_OPTIONS.sizeMin).not.toBe(0.5); // original untouched
+  });
+
+  it("no-ops on an empty parts list", () => {
+    expect(applyStlPartSizeOverride(DEFAULT_MESH_OPTIONS, [])).toBe(DEFAULT_MESH_OPTIONS);
   });
 });
 

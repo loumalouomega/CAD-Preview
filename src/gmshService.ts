@@ -5,6 +5,8 @@ import * as path from "path";
 // wasm binary explicitly rather than letting it try to fetch() a filesystem path.
 import initialize from "@loumalouomega/gmsh-wasm";
 import type { MeshOptions } from "./meshOptions";
+import type { Part, MeshElementGroup } from "./protocol";
+import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -45,6 +47,7 @@ export type MeshGenerationInput =
 export interface MeshResult {
   positions: Float32Array;
   indices: Uint32Array;
+  elementGroups: MeshElementGroup[];
   nodeCount: number;
   elementCount: number;
   mshText: string;
@@ -57,17 +60,30 @@ export interface MeshResult {
  * `exportGeoUnrolled`, which then diverge (mesh+read-back vs. write .geo_unrolled).
  * The caller owns unlinking the MEMFS temp file it's given back, in its own
  * try/finally.
+ *
+ * `parts` (B-rep input only — ignored for STL, see `applyPartsToGmshModel`'s
+ * doc comment for why) are turned into Gmsh physical groups + an optional
+ * per-part background sizing field right after `occ.synchronize()`, so both
+ * `.msh`/`.geo_unrolled` output and `mesh.generate()` itself see them.
  */
-function loadGeometryAndApplyOptions(gmsh: GmshApi, input: MeshGenerationInput, options: MeshOptions): string {
+async function loadGeometryAndApplyOptions(
+  extensionPath: string,
+  gmsh: GmshApi,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[]
+): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null }> {
   gmsh.clear();
   gmsh.model.add(`model-${++_modelCounter}`);
 
   const tmpPath = input.kind === "brep" ? "/model.step" : "/model.stl";
   gmsh.FS.writeFile(tmpPath, input.kind === "brep" ? input.stepBytes : input.stlBytes);
 
+  let groupMaps: PartGroupMaps | null = null;
   if (input.kind === "brep") {
     gmsh.model.occ.importShapes(tmpPath);
     gmsh.model.occ.synchronize();
+    groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts);
   } else {
     gmsh.merge(tmpPath);
     gmsh.model.mesh.classifySurfaces((options.stlAngle ?? 40) * (Math.PI / 180));
@@ -90,7 +106,7 @@ function loadGeometryAndApplyOptions(gmsh: GmshApi, input: MeshGenerationInput, 
   gmsh.option.setNumber("Mesh.ElementOrder", options.elementOrder);
   gmsh.option.setNumber("Mesh.Optimize", options.optimize ? 1 : 0);
 
-  return tmpPath;
+  return { tmpPath, groupMaps };
 }
 
 /**
@@ -104,21 +120,23 @@ function loadGeometryAndApplyOptions(gmsh: GmshApi, input: MeshGenerationInput, 
 export async function generateMesh(
   extensionPath: string,
   input: MeshGenerationInput,
-  options: MeshOptions
+  options: MeshOptions,
+  parts: Part[] = []
 ): Promise<MeshResult> {
   const gmsh = await getGmsh(extensionPath);
 
   const outPath = "/out.msh";
   let tmpPath: string | null = null;
   try {
-    tmpPath = loadGeometryAndApplyOptions(gmsh, input, options);
+    const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
+    tmpPath = loaded.tmpPath;
 
     gmsh.model.mesh.generate(options.dimension);
 
     const nodes = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
     const { positions, tagToIndex } = buildPositions(nodes);
 
-    const indices = buildIndices(gmsh, options.dimension, tagToIndex);
+    const { indices, elementGroups } = buildIndices(gmsh, options.dimension, tagToIndex, loaded.groupMaps);
 
     gmsh.write(outPath);
     const mshText = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
@@ -126,6 +144,7 @@ export async function generateMesh(
     return {
       positions,
       indices,
+      elementGroups,
       nodeCount: nodes.nodeTags.length,
       elementCount: countElements(gmsh, options.dimension),
       mshText,
@@ -146,14 +165,16 @@ export async function generateMesh(
 export async function exportGeoUnrolled(
   extensionPath: string,
   input: MeshGenerationInput,
-  options: MeshOptions
+  options: MeshOptions,
+  parts: Part[] = []
 ): Promise<string> {
   const gmsh = await getGmsh(extensionPath);
 
   const outPath = "/out.geo_unrolled";
   let tmpPath: string | null = null;
   try {
-    tmpPath = loadGeometryAndApplyOptions(gmsh, input, options);
+    const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
+    tmpPath = loaded.tmpPath;
 
     gmsh.write(outPath);
     return gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
@@ -188,10 +209,17 @@ function buildPositions(nodes: { nodeTags: number[]; coord: number[] }): {
 
 /**
  * Builds the display triangulation's index buffer for the given mesh
- * `dimension`:
+ * `dimension`, plus `elementGroups`: a contiguous, gap-free partition of the
+ * returned `indices` into per-part ranges (when `groupMaps` resolved any
+ * part's entities) followed by one trailing ungrouped range (`name`/`color`
+ * both `null`) for anything not claimed by a part. With `groupMaps === null`
+ * (no parts, or an STL source) this degrades to the original single-range,
+ * single-global-`getElements`-call behavior.
+ *
  * - `1`: no triangle exists for a line mesh; return an empty buffer.
  * - `2`: the generated type-2 (3-node triangle) elements are already the
- *   surface triangulation — remap their node tags to compacted indices directly.
+ *   surface triangulation — remap their node tags to compacted indices
+ *   directly, per surface entity when grouping.
  * - `3`: derive the boundary surface from the volume mesh by enumerating each
  *   tetrahedron's 4 triangular faces (by node tags), keying each face by its
  *   3 node tags *sorted* (an order-independent identity so a face shared by
@@ -200,28 +228,129 @@ function buildPositions(nodes: { nodeTags: number[]; coord: number[] }): {
  *   tet — a face shared by two tets is interior and both copies are dropped.
  *   The kept triangle's *unsorted* (original) winding from its owning tet's
  *   local face definition is preserved in the output so normals stay outward.
+ *   When grouping, this runs per-volume (`getElements(3, tag)` scoped to one
+ *   volume's own tets) — correct even for two touching part-volumes, since
+ *   Gmsh tags each tet by its single owning volume regardless of geometric
+ *   adjacency, so a shared face is independently each volume's own boundary.
  */
-function buildIndices(gmsh: GmshApi, dimension: MeshOptions["dimension"], tagToIndex: Map<number, number>): Uint32Array {
+function buildIndices(
+  gmsh: GmshApi,
+  dimension: MeshOptions["dimension"],
+  tagToIndex: Map<number, number>,
+  groupMaps: PartGroupMaps | null
+): { indices: Uint32Array; elementGroups: MeshElementGroup[] } {
   if (dimension === 1) {
-    return new Uint32Array(0);
+    return { indices: new Uint32Array(0), elementGroups: [] };
   }
-
   if (dimension === 2) {
-    const els = gmsh.model.mesh.getElements(2) as { elementTypes: number[]; nodeTags: number[][] };
-    const triType = els.elementTypes.indexOf(2); // 2 == 3-node triangle
-    if (triType < 0) return new Uint32Array(0);
-    const triNodeTags = els.nodeTags[triType];
-    const out = new Uint32Array(triNodeTags.length);
-    for (let i = 0; i < triNodeTags.length; i++) {
-      out[i] = tagToIndex.get(triNodeTags[i]) ?? 0;
-    }
-    return out;
+    return buildIndices2D(gmsh, tagToIndex, groupMaps);
+  }
+  return buildIndices3D(gmsh, tagToIndex, groupMaps);
+}
+
+function buildIndices2D(
+  gmsh: GmshApi,
+  tagToIndex: Map<number, number>,
+  groupMaps: PartGroupMaps | null
+): { indices: Uint32Array; elementGroups: MeshElementGroup[] } {
+  if (!groupMaps || groupMaps.surfaceTagToPart.size === 0) {
+    const out: number[] = [];
+    appendTriangles2D(gmsh, undefined, tagToIndex, out);
+    return {
+      indices: new Uint32Array(out),
+      elementGroups: out.length > 0 ? [{ name: null, color: null, indexStart: 0, indexCount: out.length }] : [],
+    };
   }
 
-  // dimension === 3: extract the boundary triangles of the tetrahedral mesh.
-  const els = gmsh.model.mesh.getElements(3) as { elementTypes: number[]; nodeTags: number[][] };
+  const out: number[] = [];
+  const elementGroups: MeshElementGroup[] = [];
+  const claimedTags = new Set<number>();
+  for (const { info, tags } of groupTagsByPart(groupMaps.surfaceTagToPart)) {
+    const start = out.length;
+    for (const tag of tags) {
+      claimedTags.add(tag);
+      appendTriangles2D(gmsh, tag, tagToIndex, out);
+    }
+    if (out.length > start) {
+      elementGroups.push({ name: info.name, color: info.color, indexStart: start, indexCount: out.length - start });
+    }
+  }
+
+  const allSurfaces = (gmsh.model.getEntities(2).dimTags as number[]) ?? [];
+  const start = out.length;
+  for (let i = 0; i < allSurfaces.length; i += 2) {
+    const tag = allSurfaces[i + 1];
+    if (claimedTags.has(tag)) continue;
+    appendTriangles2D(gmsh, tag, tagToIndex, out);
+  }
+  if (out.length > start) {
+    elementGroups.push({ name: null, color: null, indexStart: start, indexCount: out.length - start });
+  }
+
+  return { indices: new Uint32Array(out), elementGroups };
+}
+
+/** Appends one surface entity's (or, with `tag === undefined`, every surface
+ * entity's) type-2 triangle node tags, remapped via `tagToIndex`, onto `out`. */
+function appendTriangles2D(gmsh: GmshApi, tag: number | undefined, tagToIndex: Map<number, number>, out: number[]): void {
+  const els = gmsh.model.mesh.getElements(2, tag) as { elementTypes: number[]; nodeTags: number[][] };
+  const triType = els.elementTypes.indexOf(2); // 2 == 3-node triangle
+  if (triType < 0) return;
+  const triNodeTags = els.nodeTags[triType];
+  for (let i = 0; i < triNodeTags.length; i++) {
+    out.push(tagToIndex.get(triNodeTags[i]) ?? 0);
+  }
+}
+
+function buildIndices3D(
+  gmsh: GmshApi,
+  tagToIndex: Map<number, number>,
+  groupMaps: PartGroupMaps | null
+): { indices: Uint32Array; elementGroups: MeshElementGroup[] } {
+  if (!groupMaps || groupMaps.volumeTagToPart.size === 0) {
+    const boundaryTris = extractBoundaryFaces(gmsh, undefined, tagToIndex);
+    return {
+      indices: new Uint32Array(boundaryTris),
+      elementGroups:
+        boundaryTris.length > 0 ? [{ name: null, color: null, indexStart: 0, indexCount: boundaryTris.length }] : [],
+    };
+  }
+
+  const out: number[] = [];
+  const elementGroups: MeshElementGroup[] = [];
+  const claimedTags = new Set<number>();
+  for (const { info, tags } of groupTagsByPart(groupMaps.volumeTagToPart)) {
+    const start = out.length;
+    for (const tag of tags) {
+      claimedTags.add(tag);
+      out.push(...extractBoundaryFaces(gmsh, tag, tagToIndex));
+    }
+    if (out.length > start) {
+      elementGroups.push({ name: info.name, color: info.color, indexStart: start, indexCount: out.length - start });
+    }
+  }
+
+  const allVolumes = (gmsh.model.getEntities(3).dimTags as number[]) ?? [];
+  const start = out.length;
+  for (let i = 0; i < allVolumes.length; i += 2) {
+    const tag = allVolumes[i + 1];
+    if (claimedTags.has(tag)) continue;
+    out.push(...extractBoundaryFaces(gmsh, tag, tagToIndex));
+  }
+  if (out.length > start) {
+    elementGroups.push({ name: null, color: null, indexStart: start, indexCount: out.length - start });
+  }
+
+  return { indices: new Uint32Array(out), elementGroups };
+}
+
+/** The boundary triangles of one volume's (or, with `tag === undefined`,
+ * every volume's) own tetrahedra — see {@link buildIndices}'s doc comment for
+ * the shared-face dedup algorithm. */
+function extractBoundaryFaces(gmsh: GmshApi, tag: number | undefined, tagToIndex: Map<number, number>): number[] {
+  const els = gmsh.model.mesh.getElements(3, tag) as { elementTypes: number[]; nodeTags: number[][] };
   const tetType = els.elementTypes.indexOf(4); // 4 == 4-node tetrahedron
-  if (tetType < 0) return new Uint32Array(0);
+  if (tetType < 0) return [];
   const tetNodeTags = els.nodeTags[tetType];
 
   // The 4 triangular faces of a tet [a, b, c, d], each face's local winding
@@ -266,7 +395,24 @@ function buildIndices(gmsh: GmshApi, dimension: MeshOptions["dimension"], tagToI
       );
     }
   }
-  return new Uint32Array(boundaryTris);
+  return boundaryTris;
+}
+
+/** Groups a tag->part map into per-part tag buckets, ordered by each part's
+ * first-encountered tag (stable regardless of the source map's key order). */
+function groupTagsByPart(map: Map<number, PartGroupInfo>): Array<{ info: PartGroupInfo; tags: number[] }> {
+  const order: PartGroupInfo[] = [];
+  const buckets = new Map<PartGroupInfo, number[]>();
+  for (const [tag, info] of map) {
+    let bucket = buckets.get(info);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(info, bucket);
+      order.push(info);
+    }
+    bucket.push(tag);
+  }
+  return order.map((info) => ({ info, tags: buckets.get(info)! }));
 }
 
 /** Total element count across all element types for `getElements(dim)`. */

@@ -47,6 +47,23 @@ describe("parsePartsJson", () => {
     expect(parts[0]).toEqual({ name: "ok", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] });
     expect(parts[1].surfaces).toEqual(["a", "b"]);
   });
+
+  it("parses a valid positive meshSize and coerces invalid values to undefined", () => {
+    const base = { name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] };
+    const cases: Array<[unknown, number | undefined]> = [
+      [10, 10],
+      [0.5, 0.5],
+      [0, undefined],
+      [-5, undefined],
+      [NaN, undefined],
+      ["10", undefined],
+      [undefined, undefined],
+    ];
+    for (const [raw, expected] of cases) {
+      const text = JSON.stringify({ parts: [{ ...base, meshSize: raw }] });
+      expect(parsePartsJson(text)[0].meshSize).toBe(expected);
+    }
+  });
 });
 
 describe("serializePartsJson", () => {
@@ -60,5 +77,13 @@ describe("serializePartsJson", () => {
     expect(obj.source).toBe("model.step");
     expect(parsePartsJson(text)).toEqual(parts);
     expect(text.endsWith("\n")).toBe(true);
+  });
+
+  it("round-trips a part's meshSize", () => {
+    const parts: Part[] = [{
+      name: "P", color: "#123456", volumes: ["solid-0"], surfaces: [], lines: [], points: [], meshSize: 0.25,
+    }];
+    const text = serializePartsJson("model.step", parts);
+    expect(parsePartsJson(text)).toEqual(parts);
   });
 });

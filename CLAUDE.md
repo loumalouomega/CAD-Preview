@@ -401,13 +401,17 @@ be incoherent (same rationale as the 2D profile sketches above).
   is a *consistency* choice: Vol/Surf/Line already show everything (original +
   added), so Point mode doing the same is the coherent design, not a corner-cut —
   confirmed 8 unique corners on a plain box, 64 on `bull.stp`.
-- **Points are NEVER resolved as operands by any other op** — `addLine`/`addArc`
-  take typed `Vec3` coordinates, not point-id references, matching every other
-  creation op in this codebase (Box/Sphere/.../Circle/Rectangle/Polygon all take
-  pure numeric params). This means point extraction is **display-only** — there
-  is **no `collectVertices` in `occtOperations.ts`**, and therefore **none of the
-  lockstep-pipeline-pair risk** the free-face fix had (nothing needs to resolve a
-  `point-N` id back to a live vertex during editing).
+- **Points are NEVER resolved as operands by any other *editing* op** —
+  `addLine`/`addArc` take typed `Vec3` coordinates, not point-id references,
+  matching every other creation op in this codebase (Box/Sphere/.../Circle/
+  Rectangle/Polygon all take pure numeric params). So for edit-op replay, point
+  extraction is **display-only** — none of the lockstep-pipeline-pair risk the
+  free-face fix had (nothing needs to resolve a `point-N` id back to a live
+  vertex during editing). This is no longer *globally* true, though: `collectVertices`
+  **was** added to `occtOperations.ts` for the Gmsh parts-preservation feature
+  (`src/gmshPartsMap.ts`, see the Meshing section below), which does need to
+  resolve a part's `point-N` ids back to live vertices for physical-group/sizing
+  creation — mirrors `extractVertices`' exact `HashCode`+`IsSame` dedup order.
 - **Point rendering: `THREE.Sprite`**, not `THREE.Points`/`PointsMaterial` (which
   packs every point into one `BufferGeometry` and raycasts to an index, not a
   distinct `Object3D` — breaking the "one entity, one tagged object" invariant
@@ -559,8 +563,9 @@ Non-negotiable invariants:
   `meshingResult`/`meshingError` already followed for Generate — the toggle
   must never claim "on" for content that isn't actually shown). The FE Mesh
   panel itself is always present in the sidebar regardless of toggle state.
-- **The overlay's shaded mesh is unlit (`MeshBasicMaterial`), not `MeshStandardMaterial`
-  like every other face material in this codebase.** A tet-mesh boundary is
+- **The overlay's shaded mesh is unlit (`MeshBasicMaterial`, one per
+  `elementGroups` entry — see below), not `MeshStandardMaterial` like every
+  other face material in this codebase.** A tet-mesh boundary is
   thousands of small, irregularly-oriented triangles — unlike a B-rep face's
   smooth NURBS-tessellated triangulation — so a lit material shades each one
   differently under the scene's directional/hemisphere lights; triangles
@@ -594,6 +599,60 @@ Non-negotiable invariants:
   (`#meshing-progress`) plus a `"Generating…"` status line. Export (`.msh`/`.geo`)
   isn't wired to it — its save-dialog completion already surfaces through the
   generic toolbar status bar.
+- **Parts are preserved in generated meshes as Gmsh physical groups —
+  B-rep sources only**, matching the existing `BREP_ONLY_OPS` scope (Gmsh's STL
+  reclassification pipeline produces brand-new surface/volume tags with zero
+  correlation to a mesh document's original ids, so there is no reliable
+  per-part correlation for STL/OBJ/PLY/glTF sources). `src/gmshPartsMap.ts`'s
+  `applyPartsToGmshModel` resolves each part's `face-N`/`edge-N`/`solid-N`/
+  `point-N` ids to Gmsh `(dim,tag)` entities **geometrically** — bounding-box
+  centre matching between CAD-Preview's own OCCT (`bboxCenter`, already used by
+  `explodeSolids`) and Gmsh's own `getBoundingBox`, both computed from the
+  *same* STEP bytes (their two independent, separately-versioned OCCT builds
+  give no ordering guarantee, so `importShapes`'s `outDimTags` order is
+  deliberately **not** relied on) — within a tolerance of `1e-3 × model bbox
+  diagonal`, accepted only if unambiguous. An unresolved/ambiguous entity is
+  silently skipped, same graceful-degradation rule as every other unresolved-id
+  path in this codebase. Resolved entities become one
+  `gmsh.model.addPhysicalGroup(dim, tags, -1, part.name)` per part per
+  dimension, which lands in `.msh`/`.geo_unrolled` output automatically once
+  created (no extra serialization needed). **Confirmed against the live WASM**
+  (`examples/STP/angle1.stp`): a no-parts baseline generate produced 499 nodes;
+  the same geometry with one volume-scoped part's `meshSize: 0.5` produced
+  235,088 nodes (clear, correctly-directed local refinement, not a silent
+  no-op), and the resulting `.msh`'s `$PhysicalNames` section listed both a
+  volume- and a surface-scoped part by name at the right dimension. One
+  confirmed gap from that same pass: for a **3D** (`dimension === 3`) generate,
+  a **surface**-scoped part still gets its own `Physical Surface` in
+  `.msh`/`.geo_unrolled` output correctly, but does **not** get its own overlay
+  colour range (`buildIndices3D` only groups triangles by their owning
+  *volume*, since Gmsh's tet-boundary triangles carry no parent-B-rep-surface
+  link) — it falls into the default-blue trailing range instead. **2D**
+  generates are unaffected (`buildIndices2D` groups directly by surface). See
+  `doc/gmsh-integration.md`'s "Parts → physical groups" section for the full
+  write-up.
+- **A part's optional `meshSize` (a single target size, not min/max) becomes a
+  Gmsh `Constant` field** scoped to that part's resolved entities (`VIn` +
+  `PointsList`/`CurvesList`/`SurfacesList`/`VolumesList`), and all parts'
+  Constant fields combine via a `Min` field set as the background mesh — so the
+  smallest requested size wins on overlap, and unsized regions keep the global
+  `sizeMin`/`sizeMax` clamps. **STL/mesh sources can't get per-entity sizing**
+  (no correlation, same as physical groups above) — instead
+  `meshOptions.ts`'s `applyStlPartSizeOverride` applies a one-off
+  `sizeMin`/`sizeMax` override for that one generate/export call **only** when
+  *exactly one* part in the document has `meshSize` set (never persisted to
+  `<model>.mesh.json`; 0 or 2+ sized parts is ambiguous and silently no-ops).
+- **The mesh overlay is multi-material, one `MeshBasicMaterial` per
+  `meshingResult.elementGroups` entry** (`{name,color,indexStart,indexCount}`,
+  via `THREE.BufferGeometry.addGroup`) — `gmshService.ts`'s `buildIndices` scopes
+  `getElements(dim, tag)` to one entity at a time (instead of one global call)
+  to bucket triangles into contiguous per-part ranges, with an always-present
+  trailing ungrouped range (`name`/`color` both `null`, rendered in the
+  original default blue) for anything not claimed by a part. For `dimension
+  === 3` this buckets **per volume** — `getElements(3, tag)` limits tets to
+  one volume before the shared-tet-face dedup runs — which stays correct even
+  for two touching part-volumes, since Gmsh tags each tet by its single owning
+  volume regardless of geometric adjacency.
 - Bundling gmsh-wasm is *why this project is GPL-2.0-or-later, not MIT* — see the
   "License" section above and the README's "Licensing" section for the full
   rationale. Full technical write-up (input paths, GMSH API call sequences,
@@ -699,6 +758,23 @@ meshing). Apply **Generate** repeatedly, toggle on/off, and open/close the tab
 repeatedly → watch extension-host memory stay flat (same OCCT-style leak check as
 above; the GMSH-wasm singleton is reused across generations, only per-generation MEMFS
 files are cleaned up).
+
+Then exercise **parts-preserving meshing**: on `angle1.stp` (or another multi-face
+STEP), create 2+ parts covering different faces/solids and set one part's **mesh
+size** field (in its row in the Parts panel) to a value noticeably smaller than the
+model's default size. Click **▶ Generate** → confirm the overlay recolours per part
+(each part's assigned faces/solids render in that part's colour, everything else in
+the original default blue) and the sized part's region visibly refines. Click
+**📤 .msh**, save, and open the file in a text editor → confirm a `$PhysicalNames`
+section listing the part names; click **📤 .geo** and confirm `Physical Volume(...)`/
+`Physical Surface(...)` statements naming the same parts. Reassign/rename/recolour a
+part and regenerate → confirm the overlay and exports pick up the change. On
+`cube.stl`, set a single part's mesh size → confirm Generate applies it as a global
+size override for that one run (no per-part overlay colouring, no physical groups —
+expected, since STL sources can't correlate parts) and `cube.stl.mesh.json` is
+unaffected; set two parts' mesh sizes → confirm it silently falls back to the panel's
+own global size (ambiguous, ignored). Apply/regenerate repeatedly + open/close the
+tab → watch extension-host memory stay flat (same leak check as above).
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.
