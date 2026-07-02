@@ -241,12 +241,17 @@ files itself. Parsing the sidecar is tolerant: a missing or hand-corrupted
 `<model>.mesh.json` falls back to `DEFAULT_MESH_OPTIONS` rather than blocking the
 panel from working.
 
-**Exported mesh artifacts (`.msh` / `.geo_unrolled`):** the FE Mesh panel's
-**Export .msh** and **Export .geo** buttons write further output files via a
-native Save dialog — GMSH's native `.msh` mesh format (nodes + elements) and
-Gmsh's fully-expanded `.geo_unrolled` script, respectively. Like every other
-Export target in this codebase, these are save-as artifacts the user places
-wherever they choose; they are not sidecars and are not read back by CAD-Preview.
+**Exported mesh artifacts:** the FE Mesh panel's export `<select>` + **📤 Export**
+write further output files via a native Save dialog, in whichever Gmsh format
+is picked — GMSH's native `.msh` mesh format (nodes + elements), the legacy
+`.msh2` (v2.2) variant, Gmsh's fully-expanded `.geo_unrolled` script, or any of
+VTK/I-DEAS Universal (`.unv`)/Abaqus (`.inp`)/Nastran (`.bdf`)/SU2 (`.su2`)/
+INRIA Medit (`.mesh`)/STL/Diffpack (`.diff`)/OFF — see
+[GMSH Integration § Export formats](gmsh-integration.md#export-formats) for the
+full registry and which formats this WASM build actually supports. Like every
+other Export target in this codebase, these are save-as artifacts the user
+places wherever they choose; they are not sidecars and are not read back by
+CAD-Preview.
 
 ## Export
 

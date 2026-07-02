@@ -1,4 +1,5 @@
 import type { MeshOptions } from "../meshOptions";
+import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 
 /** Success readout: the generated mesh's element counts. */
 export interface MeshingStats {
@@ -15,8 +16,8 @@ export interface MeshingPanelCallbacks {
   /** A form control changed; the wiring merges the patch into the model and re-generates/persists. */
   onOptionsChange: (patch: Partial<MeshOptions>) => void;
   onGenerate: () => void;
-  onExportMsh: () => void;
-  onExportGeo: () => void;
+  /** Export in the format currently picked in the format `<select>`. */
+  onExport: (format: MeshExportFormatId) => void;
   onClear: () => void;
 }
 
@@ -36,18 +37,22 @@ const ALGORITHM_3D: Array<[number, string]> = [
 
 /**
  * Renders the meshing options form (dimension, element size, algorithm choice,
- * element order, optimize) plus Generate/Export .msh/Export .geo/Clear buttons
- * and a stats/error readout. DOM-only — no business logic, no `prompt()`/
- * `alert()` (VS Code webviews block them; see `partsPanel.ts` for the
- * established inline-`<input>` convention this codebase uses instead).
+ * element order, optimize) plus Generate/Export-format-`<select>`+Export/Clear
+ * controls and a stats/error readout. The export format picker is a single
+ * `<select>` populated from `MESH_EXPORT_FORMATS` (`meshExportFormats.ts`)
+ * rather than one button per format — that list only grows over time, and a
+ * dedicated button per Gmsh output format doesn't scale in a sidebar panel.
+ * DOM-only — no business logic, no `prompt()`/`alert()` (VS Code webviews
+ * block them; see `partsPanel.ts` for the established inline-`<input>`
+ * convention this codebase uses instead).
  */
 export class MeshingPanel {
   private readonly body: HTMLElement;
   private readonly statusEl: HTMLElement;
   private readonly progressEl: HTMLElement;
   private readonly generateBtn: HTMLButtonElement;
-  private readonly exportMshBtn: HTMLButtonElement;
-  private readonly exportGeoBtn: HTMLButtonElement;
+  private readonly exportFormatSelect: HTMLSelectElement;
+  private readonly exportBtn: HTMLButtonElement;
   private readonly clearBtn: HTMLButtonElement;
 
   private readonly dimensionSelect: HTMLSelectElement;
@@ -66,13 +71,19 @@ export class MeshingPanel {
     this.statusEl = panel.querySelector("#meshing-status")!;
     this.progressEl = panel.querySelector("#meshing-progress")!;
     this.generateBtn = panel.querySelector("#meshing-generate")!;
-    this.exportMshBtn = panel.querySelector("#meshing-export-msh")!;
-    this.exportGeoBtn = panel.querySelector("#meshing-export-geo")!;
+    this.exportFormatSelect = panel.querySelector("#meshing-export-format")!;
+    this.exportBtn = panel.querySelector("#meshing-export")!;
     this.clearBtn = panel.querySelector("#meshing-clear")!;
 
+    for (const format of MESH_EXPORT_FORMATS) {
+      const opt = document.createElement("option");
+      opt.value = format.id;
+      opt.textContent = format.label;
+      this.exportFormatSelect.appendChild(opt);
+    }
+
     this.generateBtn.addEventListener("click", () => cb.onGenerate());
-    this.exportMshBtn.addEventListener("click", () => cb.onExportMsh());
-    this.exportGeoBtn.addEventListener("click", () => cb.onExportGeo());
+    this.exportBtn.addEventListener("click", () => cb.onExport(this.exportFormatSelect.value as MeshExportFormatId));
     this.clearBtn.addEventListener("click", () => cb.onClear());
 
     const form = document.createElement("div");

@@ -1,6 +1,7 @@
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import type { MeshOptions } from "./meshOptions";
+import type { MeshExportFormatId } from "./meshExportFormats";
 
 export type { EditOp } from "./editOps";
 
@@ -91,7 +92,7 @@ export type WebviewToHost =
   | { type: "exportError"; requestId: string; message: string }
   | { type: "meshingChanged"; options: MeshOptions }
   | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
-  | { type: "meshingExport"; target: "msh" | "geoUnrolled"; options: MeshOptions; stl?: string };
+  | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array): string {

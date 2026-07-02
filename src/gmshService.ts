@@ -7,6 +7,7 @@ import initialize from "@loumalouomega/gmsh-wasm";
 import type { MeshOptions } from "./meshOptions";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
+import { meshExportFormat, type MeshExportFormatId } from "./meshExportFormats";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -221,6 +222,46 @@ export async function exportGeoUnrolled(
     }
     try { gmsh.FS.unlink(outPath); } catch { /* ignore */ }
     try { gmsh.FS.unlink(xaoPath); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Meshes `input` per `options`/`parts` (same geometry+options setup as
+ * `generateMesh`) and writes the result in any of the other mesh formats
+ * Gmsh's `gmsh.write()` supports besides `.msh`/`.geo_unrolled` — see
+ * `meshExportFormats.ts` for the registry and which formats were actually
+ * confirmed working against this WASM build. `gmsh.write()` dispatches purely
+ * by the output path's extension, so this is a thin, format-agnostic
+ * generate-then-write, unlike `.geo_unrolled`'s bespoke XAO-companion
+ * handling above (none of these formats have an equivalent companion file).
+ * `formatId` must not be `"msh"`/`"geoUnrolled"` — those have their own
+ * dedicated functions and are never routed through this one.
+ */
+export async function exportMeshFormat(
+  extensionPath: string,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[],
+  formatId: Exclude<MeshExportFormatId, "msh" | "geoUnrolled">
+): Promise<string> {
+  const format = meshExportFormat(formatId);
+  if (!format) throw new Error(`Unknown mesh export format: ${formatId}`);
+
+  const gmsh = await getGmsh(extensionPath);
+  const outPath = `/out.${format.extension}`;
+  let tmpPath: string | null = null;
+  try {
+    const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
+    tmpPath = loaded.tmpPath;
+
+    gmsh.model.mesh.generate(options.dimension);
+    gmsh.write(outPath);
+    return gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
+  } finally {
+    if (tmpPath) {
+      try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
+    }
+    try { gmsh.FS.unlink(outPath); } catch { /* ignore */ }
   }
 }
 

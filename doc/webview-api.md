@@ -655,10 +655,12 @@ echo back as a write.
 ### `MeshingPanel`
 
 Manages the `#meshing-panel` DOM: a form (dimension, size min/max, 2D/3D
-algorithm dropdowns, element order, optimize checkbox) plus Generate / Export
-`.msh` / Export `.geo` / Clear buttons and a status line. Pure DOM, no business
-logic, no `prompt()`/`alert()` (VS Code webviews block those — same constraint as
-the Parts/Edits panels).
+algorithm dropdowns, element order, optimize checkbox) plus a Generate button, an
+export-format `<select>` (populated from `MESH_EXPORT_FORMATS` in
+`src/meshExportFormats.ts` — one shared registry instead of one button per
+format) + Export button, a Clear button, and a status line. Pure DOM, no
+business logic, no `prompt()`/`alert()` (VS Code webviews block those — same
+constraint as the Parts/Edits panels).
 
 ```typescript
 interface MeshingStats { nodeCount: number; elementCount: number }
@@ -667,8 +669,7 @@ interface MeshingError { error: string }
 interface MeshingPanelCallbacks {
   onOptionsChange: (patch: Partial<MeshOptions>) => void
   onGenerate: () => void
-  onExportMsh: () => void
-  onExportGeo: () => void
+  onExport: (format: MeshExportFormatId) => void  // the format currently picked in the `<select>`
   onClear: () => void
 }
 
@@ -694,11 +695,11 @@ progress hook to report a real percentage from) plus a `"Generating…"` status
 line; `setBusy(false)` reverses both. `main.ts`'s `onGenerate` calls
 `setBusy(true)` before posting `meshingGenerate`, and the `meshingResult`/
 `meshingError` handlers call `setBusy(false)` before rendering the outcome.
-Export (`onExportMsh`/`onExportGeo`) is not wired to `setBusy` — its
+Export (`onExport`) is not wired to `setBusy` — its
 save-dialog-driven completion surfaces through the generic `status`/`error`
 messages (`setStatus()`, the toolbar status bar), not this panel.
 
-In `main.ts`, `onGenerate`/`onExportMsh`/`onExportGeo` each independently call an
+In `main.ts`, `onGenerate`/`onExport` each independently call an
 async `currentStlIfMeshSource()` helper before posting (returns `undefined` for
 B-rep documents, since the host re-exports STEP itself), then post
 `meshingGenerate`/`meshingExport` with the current `MeshingModel.get()` snapshot

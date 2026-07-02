@@ -33,9 +33,9 @@ export function getGmsh(extensionPath: string): Promise<GmshApi> {
 }
 ```
 
-Opening a file never triggers this — only clicking **▶ Generate** or one of the
-**Export .msh / .geo** buttons in the FE Mesh panel does, exactly the same
-first-use trigger discipline as OCCT's `getOcct`. Subsequent mesh generations reuse
+Opening a file never triggers this — only clicking **▶ Generate** or **📤 Export**
+in the FE Mesh panel does, exactly the same first-use trigger discipline as
+OCCT's `getOcct`. Subsequent mesh generations reuse
 the same singleton; per-generation state is reset with `gmsh.clear()` +
 `gmsh.model.add(...)` rather than a second `gmsh.initialize()` (see
 `loadGeometryAndApplyOptions` in `src/gmshService.ts`).
@@ -277,7 +277,45 @@ Six message types were added to `src/protocol.ts` for this feature (see
 | `meshingError` | host → webview | A human-readable failure message (bad geometry, GMSH exception, missing STL data) rendered in the panel's status line. |
 | `meshingChanged` | webview → host | A `MeshOptions` patch to persist (`<model>.mesh.json` + `<model>.geo`). |
 | `meshingGenerate` | webview → host | Request to run `generateMesh` now; carries the current options and, for mesh-format documents, a base64 `stl` snapshot. |
-| `meshingExport` | webview → host | Request to write `.msh` or `.geo_unrolled` to disk via a save dialog; same options/`stl` payload as `meshingGenerate`. |
+| `meshingExport` | webview → host | Request to write the mesh (or, for `"geoUnrolled"`, the unrolled geometry) to disk in the format picked in the panel's export `<select>`, via a save dialog; `target` is a `MeshExportFormatId`, same options/`stl` payload as `meshingGenerate`. |
+
+## Export formats
+
+The FE Mesh panel's export `<select>` is populated from `MESH_EXPORT_FORMATS`
+in `src/meshExportFormats.ts` — a single, vscode-free registry (`{id, label,
+extension, filterLabel}[]`) imported by both the host (`gmshService.ts`/
+`provider.ts`, to pick the MEMFS write extension and the save-dialog filter)
+and the webview (`meshingPanel.ts`, to build the `<option>` list), the same
+"shared, kernel-agnostic" convention `meshOptions.ts` already established. This
+replaces the original one-button-per-format design (`📤 .msh`, `📤 .geo`) —
+that pattern doesn't scale once more than two or three Gmsh output formats are
+offered.
+
+`gmsh.write(fileName)` dispatches purely by the output path's extension; the
+registry's `extension` field doubles as both the MEMFS write extension (which
+Gmsh writer gets selected) and the save-dialog's default extension/filter.
+Since neither `gmsh.d.ts` nor the package README enumerate which formats a
+given WASM build actually supports, the full set Gmsh's writer-dispatch table
+recognizes was probed directly against the live `gmsh-core.wasm`
+(`gmsh.write("/out.<ext>")` for every extension in Gmsh's own `Mesh.Format`
+option-string enumeration, found via a `strings` scan of the `.wasm` binary):
+
+| Result | Formats |
+|---|---|
+| Works | `msh` (v4.1, default), `msh2` (legacy v2.2 — selected purely by writing to a `.msh2` path, no `Mesh.MshFileVersion` option needed), `geo_unrolled` (existing, XAO-companion caveat below), `vtk`, `unv` (I-DEAS Universal), `inp` (Abaqus), `bdf`/`nas` (Nastran Bulk Data — same writer, only `bdf` is registered), `su2`, `mesh` (INRIA Medit), `stl`, `diff` (Diffpack), `off`, plus a few registered but not offered in the UI as redundant/niche for FE/CFD interchange: `ply2`, `wrl`, `x3d`, `dat`, `m`/`matlab`, `ir3`, `celum` |
+| Compiled out | `cgns`, `med` — both extension-recognized (Gmsh's dispatch code path exists) but throw `"This version of Gmsh was compiled without CGNS support"` / `"Gmsh must be compiled with MED support to write '...'"`; both formats need HDF5-backed libraries (`libCGNS`, `libMED`) this WASM build doesn't statically link. Not a CAD-Preview limitation — would need `@loumalouomega/gmsh-wasm` rebuilt with those libs linked in. |
+| Unusable for this pipeline | `p3d`, `neu` — wrote 0 bytes for a tri/tet mesh (structured-grid/quad-oriented formats); `vtk_bin`, `tochnog`, `matlab` (as a bare unrecognized extension distinct from `.m`) — not recognized as output extensions at all in this build. |
+
+All working text formats are read back via `gmsh.FS.readFile(path, {
+encoding: "utf8" })` and written UTF-8 as-is — none of the offered formats
+produced binary output in this build (Gmsh defaults to ASCII output unless
+`Mesh.Binary` is explicitly set, which this pipeline never does).
+`src/gmshService.ts`'s `exportMeshFormat()` is the generic writer for every
+format except `"msh"` (which reuses `generateMesh`'s `mshText` side product)
+and `"geoUnrolled"` (which has its own XAO-companion handling, see above) — a
+thin `loadGeometryAndApplyOptions` → `mesh.generate(options.dimension)` →
+`gmsh.write("/out.<extension>")` → read-back-as-text, since none of these
+formats need anything beyond a generated mesh.
 
 ## Webview: panel, model, and overlay display
 
@@ -288,10 +326,12 @@ Six message types were added to `src/protocol.ts` for this feature (see
   sync) and `update()` (patch + fire `onChange`, used for user edits).
 - **`src/webview/meshingPanel.ts`** (`MeshingPanel`) — the DOM: a form
   (dimension, size min/max, 2D/3D algorithm dropdowns, element order, optimize
-  checkbox) plus Generate / Export `.msh` / Export `.geo` / Clear buttons and a
-  status line that shows either `Nodes: N · Elements: M` or an error string. Pure
-  DOM, no business logic, no `prompt()`/`alert()` (VS Code webviews block those —
-  same constraint documented for the Parts/Edits panels).
+  checkbox) plus a Generate button, an export-format `<select>` (populated from
+  `MESH_EXPORT_FORMATS`, see [Export formats](#export-formats) above) with a
+  single Export button, a Clear button, and a status line that shows either
+  `Nodes: N · Elements: M` or an error string. Pure DOM, no business logic, no
+  `prompt()`/`alert()` (VS Code webviews block those — same constraint
+  documented for the Parts/Edits panels).
 - **`src/webview/geometryBuilder.ts`**'s `buildFEMesh(positionsB64, indicesB64,
   elementGroups)` decodes the base64 buffers from a `meshingResult` message into a
   `THREE.Group` containing a shaded, multi-material `MeshBasicMaterial` mesh
@@ -329,9 +369,9 @@ Six message types were added to `src/protocol.ts` for this feature (see
   (`#meshing-progress`, a CSS keyframe sweep) plus a `"Generating…"` status line —
   indeterminate because `gmsh.model.mesh.generate()` is one opaque blocking call
   with no progress hook to report a real percentage from (`GmshLogger` only
-  offers post-hoc wall/CPU time, not a streaming callback). Export
-  (`.msh`/`.geo`) is not wired to `setBusy`; its save-dialog flow already
-  surfaces completion/failure via the generic toolbar status bar.
+  offers post-hoc wall/CPU time, not a streaming callback). **📤 Export** (any
+  format) is not wired to `setBusy`; its save-dialog flow already surfaces
+  completion/failure via the generic toolbar status bar.
 
 ## Licensing
 

@@ -543,6 +543,21 @@ body {
 #edits-actions button:disabled,
 #meshing-actions button:disabled { opacity: 0.35; cursor: default; }
 
+.meshing-export-select {
+  font: inherit;
+  font-size: 11px;
+  max-width: 120px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #1e1e1e);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+.meshing-export-select:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
 #edits-body {
   /* flows inside #edits-scroll, which owns the scrolling */
 }

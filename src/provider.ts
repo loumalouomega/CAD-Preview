@@ -8,7 +8,8 @@ import { readParts, writeParts } from "./partsStore";
 import { readEdits, writeEdits } from "./editsStore";
 import type { EditOp } from "./editOps";
 import { readMeshOptions, writeMeshOptions, writeGeoScript } from "./meshOptionsStore";
-import { generateMesh, exportGeoUnrolled, type MeshGenerationInput } from "./gmshService";
+import { generateMesh, exportGeoUnrolled, exportMeshFormat, type MeshGenerationInput } from "./gmshService";
+import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 
@@ -193,7 +194,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
               async () => Buffer.from(result.mshText, "utf8"),
               post
             );
-          } else {
+          } else if (msg.target === "geoUnrolled") {
             const geo = await exportGeoUnrolled(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
               document.uri,
@@ -212,6 +213,19 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
                 const fixedText = geo.text.replace(/Merge "[^"]*\.xao";/, `Merge "${xaoName}";`);
                 return Buffer.from(fixedText, "utf8");
               },
+              post
+            );
+          } else {
+            // Every other registered format (VTK/UNV/Abaqus/Nastran/SU2/etc.) — a
+            // plain generate-then-write with no companion file, see `exportMeshFormat`.
+            const format = meshExportFormat(msg.target);
+            if (!format) throw new Error(`Unknown mesh export format: ${msg.target}`);
+            const text = await exportMeshFormat(this.context.extensionPath, input, options, parts, msg.target);
+            await this.promptSaveAndWrite(
+              document.uri,
+              format.extension,
+              format.filterLabel,
+              async () => Buffer.from(text, "utf8"),
               post
             );
           }
@@ -483,8 +497,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           <span id="meshing-title">FE Mesh</span>
           <div id="meshing-actions">
             <button id="meshing-generate" title="Generate mesh">▶ Generate</button>
-            <button id="meshing-export-msh" title="Export .msh">📤 .msh</button>
-            <button id="meshing-export-geo" title="Export unrolled .geo">📤 .geo</button>
+            <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
+            <button id="meshing-export" title="Export mesh">📤 Export</button>
             <button id="meshing-clear" title="Clear generated mesh">Clear</button>
           </div>
         </div>
