@@ -182,7 +182,12 @@ Six message types were added to `src/protocol.ts` for this feature (see
   group as a **sibling of `model`** in the scene (never a child) and disposes the
   previous overlay's geometries/materials before swapping — so toggling the FE
   Mesh overlay off leaves the original tessellated/loaded geometry completely
-  untouched.
+  untouched. It also toggles the model's shaded faces (`entityType ===
+  "surface"`) invisible while an overlay is shown, and visible again once it's
+  cleared — two overlapping opaque solids (the model's faces and the mesh
+  overlay) are unreadable layered on top of each other; edges/points stay
+  visible throughout as a feature-line reference. Display-only
+  (`Object3D.visible`), never touches geometry.
 - **`src/webview/main.ts`** wires the panel's callbacks to `post()` calls
   (`meshingChanged`/`meshingGenerate`/`meshingExport`), snapshots an STL via
   `currentStlIfMeshSource()` for mesh-source documents, and handles the
@@ -191,6 +196,16 @@ Six message types were added to `src/protocol.ts` for this feature (see
   and `meshingPanel.render(..., { error })` on failure. The toolbar's **🔬 FE Mesh**
   toggle (`meshingToggle`) shows/hides the panel and clears the overlay when
   switched off.
+- **Generate feedback:** `onGenerate` calls `meshingPanel.setBusy(true)` before
+  posting `meshingGenerate`, and the `meshingResult`/`meshingError` handlers call
+  `setBusy(false)`. `setBusy` disables `#meshing-generate` (so the WASM call
+  can't be re-triggered mid-flight) and shows an indeterminate progress bar
+  (`#meshing-progress`, a CSS keyframe sweep) plus a `"Generating…"` status line —
+  indeterminate because `gmsh.model.mesh.generate()` is one opaque blocking call
+  with no progress hook to report a real percentage from (`GmshLogger` only
+  offers post-hoc wall/CPU time, not a streaming callback). Export
+  (`.msh`/`.geo`) is not wired to `setBusy`; its save-dialog flow already
+  surfaces completion/failure via the generic toolbar status bar.
 
 ## Licensing
 

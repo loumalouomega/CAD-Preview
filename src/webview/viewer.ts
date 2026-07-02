@@ -134,6 +134,20 @@ export class Viewer {
       this.meshOverlay = obj;
       this.scene.add(obj);
     }
+    // Shaded faces and the FE-mesh overlay are both opaque solids at the same
+    // location — showing both makes neither legible (see the screenshot in the
+    // originating bug report). Hide the model's faces while an overlay is shown,
+    // keeping edges/points visible as a feature-line reference; restore them the
+    // moment the overlay is cleared. Display-only (Object3D.visible), never
+    // touches geometry.
+    this.setModelFacesVisible(this.meshOverlay === null);
+  }
+
+  /** Shows/hides the model's shaded face meshes (`entityType === "surface"`), leaving edges/points untouched. */
+  private setModelFacesVisible(visible: boolean): void {
+    this.model?.traverse((obj) => {
+      if (obj.userData.entityType === "surface") obj.visible = visible;
+    });
   }
 
   /** Frames the current model (or the scene) within the view along `direction`. */

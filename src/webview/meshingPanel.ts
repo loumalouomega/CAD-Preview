@@ -44,6 +44,7 @@ const ALGORITHM_3D: Array<[number, string]> = [
 export class MeshingPanel {
   private readonly body: HTMLElement;
   private readonly statusEl: HTMLElement;
+  private readonly progressEl: HTMLElement;
   private readonly generateBtn: HTMLButtonElement;
   private readonly exportMshBtn: HTMLButtonElement;
   private readonly exportGeoBtn: HTMLButtonElement;
@@ -63,6 +64,7 @@ export class MeshingPanel {
   ) {
     this.body = panel.querySelector("#meshing-body")!;
     this.statusEl = panel.querySelector("#meshing-status")!;
+    this.progressEl = panel.querySelector("#meshing-progress")!;
     this.generateBtn = panel.querySelector("#meshing-generate")!;
     this.exportMshBtn = panel.querySelector("#meshing-export-msh")!;
     this.exportGeoBtn = panel.querySelector("#meshing-export-geo")!;
@@ -156,6 +158,21 @@ export class MeshingPanel {
       this.statusEl.classList.add("meshing-status-error");
     } else {
       this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}`;
+    }
+  }
+
+  /**
+   * Toggles the busy state for a `Generate` round-trip: disables the button
+   * (so a slow WASM call can't be re-triggered while it's already running) and
+   * shows the indeterminate `#meshing-progress` bar, since GMSH's `generate()`
+   * is a single opaque call with no fractional progress to report.
+   */
+  setBusy(busy: boolean): void {
+    this.generateBtn.disabled = busy;
+    this.progressEl.classList.toggle("active", busy);
+    if (busy) {
+      this.statusEl.classList.remove("meshing-status-error");
+      this.statusEl.textContent = "Generating…";
     }
   }
 

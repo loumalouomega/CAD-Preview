@@ -139,6 +139,13 @@ to just clear the overlay. `setModel()` calls `this.setMeshOverlay(null)` as its
 very first line: a previously-generated overlay was computed from the *old*
 geometry and must not linger looking valid over a newly-loaded model.
 
+`setMeshOverlay()` also toggles the model's shaded faces via the private
+`setModelFacesVisible()` helper: showing an overlay (`obj !== null`) hides every
+mesh tagged `userData.entityType === "surface"` (leaving edges/points visible as
+a feature-line reference), and clearing it (`obj === null`) restores them. Two
+opaque solids occupying the same space are illegible layered on top of each
+other; this is display-only (`Object3D.visible`), never touches geometry.
+
 **Camera operations:**
 
 ```typescript
@@ -649,6 +656,7 @@ interface MeshingPanelCallbacks {
 class MeshingPanel {
   constructor(panel: HTMLElement, cb: MeshingPanelCallbacks)
   render(options: MeshOptions, status?: MeshingStats | MeshingError): void
+  setBusy(busy: boolean): void
 }
 ```
 
@@ -659,6 +667,17 @@ algorithm dropdowns are populated from small curated, **not exhaustive**, lists
 of well-known GMSH algorithm ids (`Mesh.Algorithm`/`Mesh.Algorithm3D`) — e.g.
 Frontal-Delaunay (`6`) for 2D and Frontal (`4`, the default) for 3D — rather than
 every id GMSH supports.
+
+`setBusy(true)` disables `#meshing-generate` (a slow WASM call can't be
+re-triggered mid-flight) and shows the indeterminate `#meshing-progress` bar
+(CSS keyframe sweep — GMSH's `generate()` is one opaque blocking call with no
+progress hook to report a real percentage from) plus a `"Generating…"` status
+line; `setBusy(false)` reverses both. `main.ts`'s `onGenerate` calls
+`setBusy(true)` before posting `meshingGenerate`, and the `meshingResult`/
+`meshingError` handlers call `setBusy(false)` before rendering the outcome.
+Export (`onExportMsh`/`onExportGeo`) is not wired to `setBusy` — its
+save-dialog-driven completion surfaces through the generic `status`/`error`
+messages (`setStatus()`, the toolbar status bar), not this panel.
 
 In `main.ts`, `onGenerate`/`onExportMsh`/`onExportGeo` each independently call an
 async `currentStlIfMeshSource()` helper before posting (returns `undefined` for

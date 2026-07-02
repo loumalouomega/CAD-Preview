@@ -553,6 +553,32 @@ body {
   padding: 6px 8px;
 }
 
+/* Indeterminate — GMSH's generate() call has no progress hook, just a single
+   opaque WASM call, so this can only signal "working", not a percentage. */
+#meshing-progress {
+  height: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+#meshing-progress.active {
+  background: var(--vscode-sideBar-border, #3c3c3c);
+}
+
+#meshing-progress.active::before {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: var(--vscode-progressBar-background, #0e70c0);
+  animation: meshing-progress-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes meshing-progress-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
 .meshing-form {
   display: flex;
   flex-direction: column;

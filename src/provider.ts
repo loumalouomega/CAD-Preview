@@ -449,6 +449,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             <button id="meshing-clear" title="Clear generated mesh">Clear</button>
           </div>
         </div>
+        <div id="meshing-progress"></div>
         <div id="meshing-body"></div>
         <div id="meshing-status"></div>
       </div>

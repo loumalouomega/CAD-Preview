@@ -551,6 +551,21 @@ Non-negotiable invariants:
   and must not linger looking valid. The toolbar's **🔬 FE Mesh** toggle only
   shows/clears the overlay (`viewer.setMeshOverlay(null)` when switched off); the
   FE Mesh panel itself is always present in the sidebar regardless of toggle state.
+- **`setMeshOverlay()` also hides the model's shaded faces while an overlay is
+  shown** (`entityType === "surface"` meshes get `.visible = false`; edges/points
+  stay visible as a feature-line reference), restoring them when the overlay is
+  cleared. Two opaque solids occupying the same space are unreadable stacked on
+  each other — display-only, never touches geometry, same "never mutate the
+  original" invariant as the overlay itself.
+- **Generate has no progress reporting from GMSH itself** — `gmsh.model.mesh.
+  generate()` is one opaque blocking WASM call with no progress hook (`GmshLogger`
+  only exposes post-hoc wall/CPU time). `MeshingPanel.setBusy(true/false)`
+  (called from `onGenerate` before posting, and from the `meshingResult`/
+  `meshingError` handlers) is therefore an indeterminate signal only: it disables
+  `#meshing-generate` and shows a CSS keyframe-sweep progress bar
+  (`#meshing-progress`) plus a `"Generating…"` status line. Export (`.msh`/`.geo`)
+  isn't wired to it — its save-dialog completion already surfaces through the
+  generic toolbar status bar.
 - Bundling gmsh-wasm is *why this project is GPL-2.0-or-later, not MIT* — see the
   "License" section above and the README's "Licensing" section for the full
   rationale. Full technical write-up (input paths, GMSH API call sequences,
@@ -634,9 +649,12 @@ handle-leak check, same as above).
 Then exercise **Meshing (GMSH-JS)**: on `bull.stp`, click the toolbar **🔬 FE Mesh**
 toggle (this just arms overlay display — the **FE Mesh** panel is already visible in
 the sidebar). Set options (try 2D vs 3D dimension, a smaller **Size max**, a different
-2D/3D algorithm), click **▶ Generate** → confirm a blue mesh overlay appears on top of
-the existing geometry (the original faces/edges remain visible and unchanged) and the
-panel status line shows `Nodes: N · Elements: M`. Click **📤 .msh** and **📤 .geo**,
+2D/3D algorithm), click **▶ Generate** → while the WASM call runs, confirm the
+`#meshing-generate` button disables and an indeterminate progress bar/`"Generating…"`
+status appear; once done, confirm a blue mesh overlay appears (the original model's
+shaded faces auto-hide so they don't visually compete with the overlay, but its edges
+stay visible as a feature-line reference — unchanged geometry, `.visible` toggle only)
+and the panel status line shows `Nodes: N · Elements: M`. Click **📤 .msh** and **📤 .geo**,
 save each, and reopen them (`.msh` is GMSH's native mesh format; `.geo` from this
 button is the fully-expanded `.geo_unrolled` script, not the sidecar `.geo` — see
 below) to confirm they contain real content. Close and reopen the tab → confirm
