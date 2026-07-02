@@ -143,8 +143,8 @@ export class MeshingPanel {
     this.dimensionSelect.value = String(options.dimension);
     this.sizeMinInput.value = String(options.sizeMin);
     this.sizeMaxInput.value = String(options.sizeMax);
-    this.algorithm2DSelect.value = String(options.algorithm2D);
-    this.algorithm3DSelect.value = String(options.algorithm3D);
+    this.setSelectValue(this.algorithm2DSelect, options.algorithm2D);
+    this.setSelectValue(this.algorithm3DSelect, options.algorithm3D);
     this.elementOrderSelect.value = String(options.elementOrder);
     this.optimizeCheckbox.checked = options.optimize;
 
@@ -156,6 +156,30 @@ export class MeshingPanel {
       this.statusEl.classList.add("meshing-status-error");
     } else {
       this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}`;
+    }
+  }
+
+  /**
+   * Sets a `<select>`'s value, tolerating values that aren't in the curated
+   * option list (e.g. `MeshOptions.algorithm2D`/`algorithm3D` accept any finite
+   * GMSH algorithm id per `validateMeshOptions`, but `ALGORITHM_2D`/`ALGORITHM_3D`
+   * above only list the well-known ones). Assigning `.value` to a number with no
+   * matching `<option>` is a silent no-op in the DOM — the select falls back to
+   * displaying whatever option happens to be first, while the real model state
+   * still holds the true value. Detect that failed assignment (the standard way:
+   * compare `.value` after attempting the set) and, if it happened, append a
+   * one-off `<option>` for the exact value before retrying, so the dropdown
+   * always displays what's actually selected.
+   */
+  private setSelectValue(select: HTMLSelectElement, value: number): void {
+    const target = String(value);
+    select.value = target;
+    if (select.value !== target) {
+      const opt = document.createElement("option");
+      opt.value = target;
+      opt.textContent = `Custom (${value})`;
+      select.appendChild(opt);
+      select.value = target;
     }
   }
 

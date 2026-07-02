@@ -280,3 +280,14 @@ plus one explicit "everything else worked" confirmation:
   or workarounds required beyond the Frontal-algorithm default above. Beyond the
   three points above, **there is no other missing or broken GMSH-JS functionality
   to report upstream for this feature.**
+
+  **Addendum:** that statement is scoped to GMSH-JS's own API surface, and it
+  still stands — but it shouldn't be read as "the whole feature shipped bug-free
+  on the first try." Two integration issues surfaced after initial implementation
+  and were fixed, both in **CAD-Preview's own** bundling/OCCT-integration code,
+  not in GMSH-JS: (a) an esbuild ESM→CJS bundling quirk where gmsh-wasm's use of
+  `import.meta.url` needed a `banner`+`define` shim to survive the CJS conversion
+  (see `esbuild.mjs`), and (b) an undocumented MEMFS path-length limit in the OCCT
+  WASM build that affected `exportBRep()`'s generated temp file names (see
+  `src/occtService.ts`). Neither was a gap in GMSH-JS's API — they were bugs in
+  how CAD-Preview wired its own build and its separate OCCT WASM module together.

@@ -75,6 +75,9 @@ function loadGeometryAndApplyOptions(gmsh: GmshApi, input: MeshGenerationInput, 
     const surfaces = gmsh.model.getEntities(2).dimTags as number[];
     const surfaceTags: number[] = [];
     for (let i = 0; i < surfaces.length; i += 2) surfaceTags.push(surfaces[i + 1]);
+    if (surfaceTags.length === 0) {
+      throw new Error("STL classification produced no surfaces — the mesh may not be a valid closed solid");
+    }
     const loopTag = gmsh.model.geo.addSurfaceLoop(surfaceTags);
     gmsh.model.geo.addVolume([loopTag]);
     gmsh.model.geo.synchronize();

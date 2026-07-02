@@ -518,12 +518,17 @@ try {
 // itself is always present in the sidebar. A separate try/catch from the view
 // controls above, per the same invariant: a throw here must never block the
 // `ready` handshake / model loading below.
+// `meshingToggle` is hoisted out of the try block (mirroring `meshingEnabled`)
+// so the `meshingResult` handler below can also reflect "a mesh is currently
+// displayed" on the button, keeping the toggle's visual state truthful instead
+// of only ever being flipped by the click handler itself.
 let meshingEnabled = false;
+let meshingToggle: HTMLElement | null = null;
 try {
-  const meshingToggle = document.getElementById("meshing-toggle");
+  meshingToggle = document.getElementById("meshing-toggle");
   meshingToggle?.addEventListener("click", () => {
     meshingEnabled = !meshingEnabled;
-    meshingToggle.classList.toggle("active", meshingEnabled);
+    meshingToggle?.classList.toggle("active", meshingEnabled);
     if (!meshingEnabled) viewer.setMeshOverlay(null);
   });
 } catch (err) {
@@ -628,10 +633,19 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "meshingResult":
       viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices));
+      // A successful generate always results in a visible overlay, so bring the
+      // toggle's state in sync here (rather than optimistically in `onGenerate`,
+      // before the async round-trip even completes) — that way a failed generate
+      // never leaves the toggle falsely claiming "on" for content that was never
+      // displayed (see `meshingError` below, which deliberately leaves state alone).
+      meshingEnabled = true;
+      meshingToggle?.classList.add("active");
       meshingPanel.render(meshingModel.get(), { nodeCount: msg.nodeCount, elementCount: msg.elementCount });
       break;
 
     case "meshingError":
+      // Nothing new was displayed on failure — leave `meshingEnabled`/the toggle's
+      // state exactly as it was (whatever overlay, if any, was already shown stays).
       meshingPanel.render(meshingModel.get(), { error: msg.message });
       break;
   }
