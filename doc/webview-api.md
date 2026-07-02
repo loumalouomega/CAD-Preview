@@ -396,6 +396,10 @@ color `0x1a3d66`) over the same geometry. Both are tagged
 `userData.entityType = "mesh"` — deliberately **not** `"surface"`/`"line"`, so
 the existing picking/parts-colouring code (which only recognizes
 `"volume"|"surface"|"line"|"point"`) never tries to pick or colour the overlay.
+The shaded mesh's material sets `polygonOffset: true` (`polygonOffsetFactor`/
+`polygonOffsetUnits: 1`) because its wireframe is built from that exact same
+geometry — perfectly coincident triangles/lines z-fight without it, rendering
+as a speckled pattern that looks like the mesh has holes.
 
 **Decode helpers:**
 

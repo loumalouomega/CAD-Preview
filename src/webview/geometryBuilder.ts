@@ -133,6 +133,14 @@ export function buildFEMesh(positionsB64: string, indicesB64: string): THREE.Gro
     roughness: 0.7,
     side: THREE.DoubleSide,
     flatShading: false,
+    // The wireframe below is built from this exact geometry, so its lines are
+    // perfectly coincident with these triangles' surface — without pushing the
+    // filled polygons back in depth, the GPU's per-pixel depth test can't
+    // reliably resolve which one wins, producing a speckled z-fighting pattern
+    // that looks like the mesh is full of holes.
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.userData.entityType = "mesh";
