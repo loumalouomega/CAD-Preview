@@ -194,12 +194,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
               post
             );
           } else {
-            const text = await exportGeoUnrolled(this.context.extensionPath, input, options, parts);
+            const geo = await exportGeoUnrolled(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
               document.uri,
               "geo_unrolled",
               "GMSH Unrolled Geometry",
-              async () => Buffer.from(text, "utf8"),
+              async (saveUri) => {
+                if (!geo.xao) return Buffer.from(geo.text, "utf8");
+                // B-rep geometry can't be textually unrolled — gmsh.write() emitted a
+                // `Merge "<memfs path>.xao";` stub. Write the real content (the XAO
+                // companion) as a sibling of the saved file and fix the reference up
+                // to a relative name so it actually resolves when reopened.
+                const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
+                const xaoName = `${saveName}.xao`;
+                const xaoUri = vscode.Uri.joinPath(saveUri, "..", xaoName);
+                await vscode.workspace.fs.writeFile(xaoUri, geo.xao);
+                const fixedText = geo.text.replace(/Merge "[^"]*\.xao";/, `Merge "${xaoName}";`);
+                return Buffer.from(fixedText, "utf8");
+              },
               post
             );
           }
@@ -354,7 +366,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
     const targetFormat = picked.format;
 
-    await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async () => {
+    await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async (_saveUri) => {
       if (BREP_FORMATS.has(targetFormat)) {
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
         return exportBRep(
@@ -378,15 +390,18 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   /**
    * Shared save-dialog + write flow used by `handleExport` and `meshingExport`:
    * computes a default filename beside the source (`<baseName>.<ext>`), prompts
-   * `showSaveDialog`, invokes `getBytes()` to produce the file's contents, writes
-   * it, and posts a `status`/`error` message — so the caller doesn't have to
-   * duplicate the dialog/write/error-post boilerplate.
+   * `showSaveDialog`, invokes `getBytes(saveUri)` to produce the file's contents
+   * (the chosen `saveUri` is passed through so a caller needing to write a
+   * sibling companion file — e.g. the `.geo_unrolled` export's XAO companion —
+   * can derive its name/location from it), writes it, and posts a
+   * `status`/`error` message — so the caller doesn't have to duplicate the
+   * dialog/write/error-post boilerplate.
    */
   private async promptSaveAndWrite(
     uri: vscode.Uri,
     ext: string,
     filterLabel: string,
-    getBytes: () => Promise<Uint8Array>,
+    getBytes: (saveUri: vscode.Uri) => Promise<Uint8Array>,
     post: (msg: HostToWebview) => void
   ): Promise<void> {
     const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
@@ -399,7 +414,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     if (!saveUri) return;
 
     try {
-      const bytes = await getBytes();
+      const bytes = await getBytes(saveUri);
       await vscode.workspace.fs.writeFile(saveUri, bytes);
       post({ type: "status", text: `Exported to ${saveUri.fsPath}` });
     } catch (err) {

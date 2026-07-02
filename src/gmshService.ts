@@ -105,6 +105,13 @@ async function loadGeometryAndApplyOptions(
   gmsh.option.setNumber("Mesh.Algorithm3D", options.algorithm3D);
   gmsh.option.setNumber("Mesh.ElementOrder", options.elementOrder);
   gmsh.option.setNumber("Mesh.Optimize", options.optimize ? 1 : 0);
+  // Gmsh's default (0) writes only elements belonging to a physical group once
+  // ANY physical group exists in the model — i.e. the instant one part has a
+  // resolved entity, `gmsh.write()` would silently drop every other
+  // entity's elements from .msh/.geo_unrolled output. Physical groups here are
+  // purely an additional tag on top of the full mesh, never a filter, so this
+  // must always be 1 regardless of whether `parts` is empty.
+  gmsh.option.setNumber("Mesh.SaveAll", 1);
 
   return { tmpPath, groupMaps };
 }
@@ -157,32 +164,63 @@ export async function generateMesh(
   }
 }
 
+export interface GeoExportResult {
+  text: string;
+  /**
+   * The companion XAO file Gmsh writes alongside `.geo_unrolled` output for
+   * OCC-imported (B-rep) geometry — `null` for a pure GEO-kernel model (the
+   * STL path), which unrolls fully inline with no companion needed.
+   */
+  xao: Uint8Array | null;
+}
+
 /**
  * Same geometry-import + options setup as `generateMesh`, but writes the
  * model's unrolled `.geo` script instead of meshing — lets Export offer a
  * `.geo_unrolled` target without a second host round trip.
+ *
+ * OCC B-rep geometry (the STEP re-export every B-rep source goes through) has
+ * no native textual GEO representation, so for that path `gmsh.write()` emits
+ * a single `Merge "<xao>";` stub referencing a companion XAO file (Gmsh's own
+ * OCC-preserving exchange format — it round-trips the shapes, physical
+ * groups, and mesh-size fields) that it writes alongside `outPath` in MEMFS.
+ * That XAO file is the actual content; `text` alone is a dangling reference
+ * to a MEMFS-only path the caller must resolve — see `xao` above. The STL
+ * path (GEO-kernel `addSurfaceLoop`/`addVolume`) has no such companion since
+ * it unrolls to real Point/Curve/Surface/Volume commands inline.
  */
 export async function exportGeoUnrolled(
   extensionPath: string,
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[] = []
-): Promise<string> {
+): Promise<GeoExportResult> {
   const gmsh = await getGmsh(extensionPath);
 
   const outPath = "/out.geo_unrolled";
+  const xaoPath = `${outPath}.xao`;
   let tmpPath: string | null = null;
   try {
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
     gmsh.write(outPath);
-    return gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
+    const text = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
+
+    let xao: Uint8Array | null = null;
+    try {
+      xao = gmsh.FS.readFile(xaoPath) as Uint8Array;
+    } catch {
+      // no companion — a GEO-kernel-only model unrolled fully inline.
+    }
+
+    return { text, xao };
   } finally {
     if (tmpPath) {
       try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
     }
     try { gmsh.FS.unlink(outPath); } catch { /* ignore */ }
+    try { gmsh.FS.unlink(xaoPath); } catch { /* ignore */ }
   }
 }
 

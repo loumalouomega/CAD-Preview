@@ -615,22 +615,51 @@ Non-negotiable invariants:
   silently skipped, same graceful-degradation rule as every other unresolved-id
   path in this codebase. Resolved entities become one
   `gmsh.model.addPhysicalGroup(dim, tags, -1, part.name)` per part per
-  dimension, which lands in `.msh`/`.geo_unrolled` output automatically once
-  created (no extra serialization needed). **Confirmed against the live WASM**
+  dimension, which lands in `.msh` output's `$PhysicalNames` section
+  automatically once created. **`gmsh.write()`'s `Mesh.SaveAll` option must be
+  forced to `1`** (`loadGeometryAndApplyOptions`, unconditionally, parts or no
+  parts) — Gmsh's own default (`0`) writes only elements belonging to *some*
+  physical group once *any* physical group exists, so the instant one part
+  resolves one entity, every other entity's elements would otherwise vanish
+  from `.msh`/`.geo_unrolled` output (physical groups are meant to tag a subset
+  of a full mesh here, never filter it — confirmed as a real, silent regression
+  before this override was added: one part on 1 of 15 surfaces produced a
+  `.msh` containing only that surface's 88 triangles). The **live** overlay is
+  unaffected by `Mesh.SaveAll` either way — it's built from `getNodes()`/
+  `getElements()` calls directly against Gmsh's in-memory model, not from
+  re-reading a written file. **Confirmed against the live WASM**
   (`examples/STP/angle1.stp`): a no-parts baseline generate produced 499 nodes;
   the same geometry with one volume-scoped part's `meshSize: 0.5` produced
   235,088 nodes (clear, correctly-directed local refinement, not a silent
   no-op), and the resulting `.msh`'s `$PhysicalNames` section listed both a
   volume- and a surface-scoped part by name at the right dimension. One
   confirmed gap from that same pass: for a **3D** (`dimension === 3`) generate,
-  a **surface**-scoped part still gets its own `Physical Surface` in
-  `.msh`/`.geo_unrolled` output correctly, but does **not** get its own overlay
-  colour range (`buildIndices3D` only groups triangles by their owning
-  *volume*, since Gmsh's tet-boundary triangles carry no parent-B-rep-surface
-  link) — it falls into the default-blue trailing range instead. **2D**
-  generates are unaffected (`buildIndices2D` groups directly by surface). See
-  `doc/gmsh-integration.md`'s "Parts → physical groups" section for the full
-  write-up.
+  a **surface**-scoped part still gets its own `Physical Surface` in `.msh`
+  output correctly, but does **not** get its own overlay colour range
+  (`buildIndices3D` only groups triangles by their owning *volume*, since
+  Gmsh's tet-boundary triangles carry no parent-B-rep-surface link) — it falls
+  into the default-blue trailing range instead. **2D** generates are
+  unaffected (`buildIndices2D` groups directly by surface). **`.geo_unrolled`
+  output does NOT carry `Physical Volume(...)`/`Physical Surface(...)` as
+  textual statements for B-rep sources at all** — see the next bullet for why
+  and how it's made to round-trip them anyway. See `doc/gmsh-integration.md`'s
+  "Parts → physical groups" section for the full write-up.
+- **`gmsh.write("*.geo_unrolled")` cannot textually inline OCC-imported B-rep
+  geometry** — confirmed against the live WASM: for every B-rep source, it
+  writes a single-line stub (`Merge "/out.geo_unrolled.xao";`) referencing a
+  companion **XAO** file (Gmsh's own OCC-preserving exchange format, which does
+  preserve shapes + physical groups + mesh-size fields) it wrote alongside in
+  MEMFS — a path this code originally never read back, so the exported
+  `.geo_unrolled` was a dangling reference to a file that didn't exist on the
+  user's disk. `gmshService.ts`'s `exportGeoUnrolled` now returns `{ text, xao
+  }` (`xao` is `null` for the STL/GEO-kernel path, which unrolls fully inline
+  with no companion needed); `provider.ts`'s `meshingExport` "geo" branch
+  writes the XAO bytes as a sibling of the chosen save path and rewrites the
+  stub's `Merge` reference to that sibling's relative filename before writing
+  the `.geo_unrolled` text, so the pair is self-contained. Verified end-to-end:
+  reopening the rewritten pair in a fresh Gmsh model restored the same
+  volume/surface counts, the same physical groups, and — after re-running
+  `mesh.generate()` — the same node count as the original sized-part generate.
 - **A part's optional `meshSize` (a single target size, not min/max) becomes a
   Gmsh `Constant` field** scoped to that part's resolved entities (`VIn` +
   `PointsList`/`CurvesList`/`SurfacesList`/`VolumesList`), and all parts'
@@ -766,9 +795,19 @@ model's default size. Click **▶ Generate** → confirm the overlay recolours p
 (each part's assigned faces/solids render in that part's colour, everything else in
 the original default blue) and the sized part's region visibly refines. Click
 **📤 .msh**, save, and open the file in a text editor → confirm a `$PhysicalNames`
-section listing the part names; click **📤 .geo** and confirm `Physical Volume(...)`/
-`Physical Surface(...)` statements naming the same parts. Reassign/rename/recolour a
-part and regenerate → confirm the overlay and exports pick up the change. On
+section listing the part names, AND confirm the `$Elements` section has more than
+one entity block (i.e. the *whole* model was written, not just the sized/assigned
+part — `Mesh.SaveAll` must be forced on once any part exists, or every other
+entity's elements silently vanish from the file even though the live overlay still
+looks correct). Click **📤 .geo** and save it — a companion `<name>.geo_unrolled.xao`
+file is written alongside it (B-rep sources only; this is expected and required, not
+an error) — then reopen the `.geo_unrolled` in a real Gmsh install (or via this
+repo's own `gmsh.open(...)`) with the `.xao` sibling present and confirm the full
+geometry, physical groups, and any per-part sizing field all come back (the
+`.geo_unrolled` text itself has no textual `Physical Volume(...)`/`Physical
+Surface(...)` statements for B-rep sources — OCC geometry can't be unrolled to native
+GEO primitives, so the XAO companion carries that data instead). Reassign/rename/
+recolour a part and regenerate → confirm the overlay and exports pick up the change. On
 `cube.stl`, set a single part's mesh size → confirm Generate applies it as a global
 size override for that one run (no per-part overlay colouring, no physical groups —
 expected, since STL sources can't correlate parts) and `cube.stl.mesh.json` is
