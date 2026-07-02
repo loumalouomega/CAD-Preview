@@ -396,10 +396,13 @@ color `0x1a3d66`) over the same geometry. Both are tagged
 `userData.entityType = "mesh"` — deliberately **not** `"surface"`/`"line"`, so
 the existing picking/parts-colouring code (which only recognizes
 `"volume"|"surface"|"line"|"point"`) never tries to pick or colour the overlay.
-The shaded mesh's material sets `polygonOffset: true` (`polygonOffsetFactor`/
-`polygonOffsetUnits: 1`) because its wireframe is built from that exact same
-geometry — perfectly coincident triangles/lines z-fight without it, rendering
-as a speckled pattern that looks like the mesh has holes.
+The shaded mesh uses an unlit `MeshBasicMaterial` (not `MeshStandardMaterial`
+like other face materials) — a tet-mesh boundary's many small, irregularly
+oriented triangles shade unevenly under scene lighting, which looks like
+scattered holes even on a complete, watertight mesh; flat color avoids that.
+It also sets `polygonOffset: true` (`polygonOffsetFactor`/`polygonOffsetUnits:
+1`) because its wireframe is built from that exact same geometry — perfectly
+coincident triangles/lines z-fight without it.
 
 **Decode helpers:**
 

@@ -125,19 +125,23 @@ export function buildFEMesh(positionsB64: string, indicesB64: string): THREE.Gro
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-  geometry.computeVertexNormals();
 
-  const material = new THREE.MeshStandardMaterial({
+  const material = new THREE.MeshBasicMaterial({
     color: 0x4ea1ff, // distinct hue from DEFAULT_FACE_COLOR so an overlay is visually distinguishable
-    metalness: 0.1,
-    roughness: 0.7,
     side: THREE.DoubleSide,
-    flatShading: false,
+    // Unlit on purpose: a tet-mesh boundary is thousands of small, irregularly
+    // oriented triangles (unlike a smooth NURBS-tessellated B-rep face), so a
+    // lit material (MeshStandardMaterial) shades each one differently under the
+    // scene's directional/hemisphere lights — triangles facing away from the
+    // light go dark/near-black, which reads as scattered holes even though the
+    // geometry is a complete, watertight surface. A flat unlit color removes
+    // that per-facet brightness variation entirely.
+    //
     // The wireframe below is built from this exact geometry, so its lines are
     // perfectly coincident with these triangles' surface — without pushing the
     // filled polygons back in depth, the GPU's per-pixel depth test can't
-    // reliably resolve which one wins, producing a speckled z-fighting pattern
-    // that looks like the mesh is full of holes.
+    // reliably resolve which one wins, producing a z-fighting speckle on top of
+    // the shading issue above.
     polygonOffset: true,
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,

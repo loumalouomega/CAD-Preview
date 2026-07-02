@@ -551,20 +551,26 @@ Non-negotiable invariants:
   and must not linger looking valid. The toolbar's **🔬 FE Mesh** toggle only
   shows/clears the overlay (`viewer.setMeshOverlay(null)` when switched off); the
   FE Mesh panel itself is always present in the sidebar regardless of toggle state.
-- **The overlay's shaded mesh needs `polygonOffset` because its own wireframe is
-  drawn from the exact same geometry.** `buildFEMesh`'s `THREE.LineSegments`
-  wireframe is a `WireframeGeometry` derived directly from the shaded mesh's
-  `BufferGeometry` — perfectly coincident with its triangles, unlike the base
-  model (whose edges are separate B-rep curve geometry, never literally on top
-  of a face mesh). Without `polygonOffset: true` (+ `polygonOffsetFactor`/
-  `polygonOffsetUnits: 1`) on the shaded material, the GPU depth test can't
-  reliably resolve filled-triangle-vs-coincident-line-on-top per pixel, which
-  looks exactly like the mesh being full of holes — a self z-fighting artifact,
-  **not** a real gap in the GMSH-generated geometry (verified: re-running the
-  STEP-export→GMSH-tetrahedralize→boundary-extraction pipeline standalone on
-  `examples/STP/angle1.stp` and rendering the raw output triangles headlessly
-  showed a complete, watertight boundary from every angle — the bug was purely
-  in `geometryBuilder.buildFEMesh`'s material, not the meshing pipeline).
+- **The overlay's shaded mesh is unlit (`MeshBasicMaterial`), not `MeshStandardMaterial`
+  like every other face material in this codebase.** A tet-mesh boundary is
+  thousands of small, irregularly-oriented triangles — unlike a B-rep face's
+  smooth NURBS-tessellated triangulation — so a lit material shades each one
+  differently under the scene's directional/hemisphere lights; triangles
+  facing away from the light go dark/near-black, which reads as scattered
+  holes even though the geometry is a complete, watertight surface (verified:
+  re-running the STEP-export→GMSH-tetrahedralize→boundary-extraction pipeline
+  standalone on `examples/STP/angle1.stp` and rendering the raw output
+  triangles headlessly showed a complete boundary from every angle — the
+  "holes" were a shading artifact, not a gap in the GMSH-generated geometry).
+  A flat unlit color removes that per-facet brightness variation entirely.
+  `buildFEMesh`'s `THREE.LineSegments` wireframe is also a `WireframeGeometry`
+  derived directly from the shaded mesh's `BufferGeometry` — perfectly
+  coincident with its triangles, unlike the base model (whose edges are
+  separate B-rep curve geometry, never literally on top of a face mesh) — so
+  the shaded material also needs `polygonOffset: true` (+
+  `polygonOffsetFactor`/`polygonOffsetUnits: 1`) or the GPU depth test can't
+  reliably resolve filled-triangle-vs-coincident-line-on-top per pixel,
+  compounding the same holes-that-aren't-holes look with z-fighting.
 - **`setMeshOverlay()` also hides the model's shaded faces while an overlay is
   shown** (`entityType === "surface"` meshes get `.visible = false`; edges/points
   stay visible as a feature-line reference), restoring them when the overlay is
