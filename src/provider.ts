@@ -434,8 +434,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             <button id="edits-clear" title="Clear all edits" disabled>Clear</button>
           </div>
         </div>
-        <div id="edits-compose"></div>
-        <div id="edits-body"></div>
+        <div id="edits-scroll">
+          <div id="edits-compose"></div>
+          <div id="edits-body"></div>
+        </div>
       </div>
       <div id="meshing-panel">
         <div id="meshing-header">
