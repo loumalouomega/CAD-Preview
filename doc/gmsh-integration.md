@@ -277,7 +277,7 @@ Six message types were added to `src/protocol.ts` for this feature (see
 | `meshingError` | host → webview | A human-readable failure message (bad geometry, GMSH exception, missing STL data) rendered in the panel's status line. |
 | `meshingChanged` | webview → host | A `MeshOptions` patch to persist (`<model>.mesh.json` + `<model>.geo`). |
 | `meshingGenerate` | webview → host | Request to run `generateMesh` now; carries the current options and, for mesh-format documents, a base64 `stl` snapshot. |
-| `meshingExport` | webview → host | Request to write the mesh (or, for `"geoUnrolled"`, the unrolled geometry) to disk in the format picked in the panel's export `<select>`, via a save dialog; `target` is a `MeshExportFormatId`, same options/`stl` payload as `meshingGenerate`. |
+| `meshingExport` | webview → host | Request to write the mesh (or, for `"geoUnrolled"`, the unrolled geometry; or, for `"mdpaElements"`/`"mdpaGeometries"`, hand-serialized Kratos MDPA — see [Export formats](#export-formats)) to disk in the format picked in the panel's export `<select>`, via a save dialog; `target` is a `MeshExportFormatId`, same options/`stl` payload as `meshingGenerate`. |
 
 ## Export formats
 
@@ -311,11 +311,110 @@ encoding: "utf8" })` and written UTF-8 as-is — none of the offered formats
 produced binary output in this build (Gmsh defaults to ASCII output unless
 `Mesh.Binary` is explicitly set, which this pipeline never does).
 `src/gmshService.ts`'s `exportMeshFormat()` is the generic writer for every
-format except `"msh"` (which reuses `generateMesh`'s `mshText` side product)
-and `"geoUnrolled"` (which has its own XAO-companion handling, see above) — a
-thin `loadGeometryAndApplyOptions` → `mesh.generate(options.dimension)` →
-`gmsh.write("/out.<extension>")` → read-back-as-text, since none of these
-formats need anything beyond a generated mesh.
+format except `"msh"` (which reuses `generateMesh`'s `mshText` side product),
+`"geoUnrolled"` (which has its own XAO-companion handling, see above), and
+`"mdpaElements"`/`"mdpaGeometries"` (hand-serialized, see below — never a
+`gmsh.write()` call at all) — a thin `loadGeometryAndApplyOptions` →
+`mesh.generate(options.dimension)` → `gmsh.write("/out.<extension>")` →
+read-back-as-text, since none of the remaining formats need anything beyond a
+generated mesh.
+
+### Kratos MDPA (hand-written, not a `gmsh.write()` format)
+
+[Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos)' `.mdpa`
+format is not one of the formats in the probe table above — Gmsh has no MDPA
+writer at all, so it can't be reached through `exportMeshFormat()`. It's
+serialized entirely by hand: `src/mdpaWriter.ts` (pure, vscode/WASM-free, unit
+tests in `mdpaWriter.test.ts`) builds the ASCII text from a plain `MdpaMesh`
+(`{nodes, tets, triangles, groups}`); `src/gmshService.ts`'s `exportMdpa()` +
+private `extractMdpaMesh()` pull that data off the live gmsh model after
+`mesh.generate()` (via `getNodes()`/per-entity-tag `getElements(dim, tag)`
+loops, the same pattern `extractBoundaryFaces`/`appendTriangles2D` already use
+for the display triangulation) and hand it to `writeMdpa()`. No MEMFS
+write/read-back round trip exists for this format.
+
+Two mutually exclusive modes, each its own registry entry rather than a
+sub-toggle (`mdpaElements`/`mdpaGeometries` in `meshExportFormats.ts`,
+deliberately listed **first** so `mdpaElements` is the default-selected export
+format):
+
+- **`mdpaElements` ("Elements + Conditions")** — the solver-ready shape.
+  Tets → `Begin Elements Element3D4N`, triangles → `Begin Conditions
+  SurfaceCondition3D3N`, both `<id> <prop_id> <n1> ... <nk>` with `prop_id`
+  always `0` under a single `Begin Properties 0` block — this codebase has no
+  material/property data of any kind, so there's never a second property id
+  to reference.
+- **`mdpaGeometries` ("Geometries")** — tets → `Begin Geometries
+  Tetrahedra3D4`, triangles → `Begin Geometries Triangle3D3`, `<id> <n1> ...
+  <nk>` with **no property id** (the structural difference from the other
+  mode, confirmed against Kratos's own docs, not inferred) and no `Properties`
+  block. Kratos's `Geometries` is a single container, so both geometry kinds
+  **share one id space** — tets get `1..T`, triangles continue `T+1..T+G` in
+  the same block sequence, not restarting at 1.
+
+Both a cell type's root block (`Elements`/`Conditions`/`Geometries`) and its
+matching `SubModelPart*` sub-block are **omitted entirely when there are zero
+members** (e.g. a `dimension: 2` generate produces triangles but no tets) —
+never an empty `Begin`/`End` pair. `options.elementOrder !== 1` (quadratic) is
+rejected with an actionable error *before* `mesh.generate()` even runs, since
+a 10-node tet/6-node triangle can't be represented as `Element3D4N`/
+`Tetrahedra3D4`; `extractMdpaMesh()` also throws if it ever finds a 3D element
+type other than the linear tet or a 2D type other than the linear triangle,
+as a defensive backstop behind that pre-flight check.
+
+**Node ordering.** Kratos's reference `Tetrahedra3D4`/`Triangle3D3` local node
+order — confirmed against the [official node-ordering
+docs](https://kratosmultiphysics.github.io/Kratos/pages/Kratos/For_Developers/Data_Structures/Mesh_Node_Ordering.html)
+— is the standard simplex reference-element convention (nodes 0/1/2 the base,
+node 3 the tet's apex; nodes 0/1 the triangle's base, node 2 its apex) that
+Gmsh's own element types 4/2 already use, so `getElements()`'s raw node order
+maps 1:1 with no permutation needed. As a defensive measure (Gmsh's own
+node-ordering page didn't return its diagrams through automated fetching, so
+this couldn't be verified byte-for-byte against Gmsh's own docs the same way),
+`mdpaWriter.ts`'s `orientTet()` independently recomputes each tet's signed
+volume (scalar triple product from node 0) after mapping and swaps the last
+two output node ids if it's negative — every emitted tet has a positive
+Jacobian regardless of any subtle ordering mismatch. Triangles pass through
+unchanged; there's no single universally "correct" winding for an arbitrary
+boundary condition surface to check against.
+
+**SubModelParts** map 1:1 to `Part[]` (B-rep sources only — mesh/STL
+documents get `parts: []` before reaching `gmshService.ts`, same as every
+other parts-preservation feature, so their MDPA export has root blocks only,
+no SubModelParts). `Part[]` has no nesting concept anywhere in this codebase,
+so SubModelParts are always flat — one top-level `Begin SubModelPart <name>`
+per part, never nested. `extractMdpaMesh()`'s private `groupPartsAcrossDims()`
+(the 4-map generalization of `buildIndices`'s existing `groupTagsByPart`)
+reuses `PartGroupMaps` from `applyPartsToGmshModel` — already computed as a
+side effect of `loadGeometryAndApplyOptions`, never recomputed — to bucket
+each part's tets/triangles by owning volume/surface tag, plus resolve its
+`lines`/`points` selections to extra node ids via `getNodes(1, curveTag,
+/*includeBoundary*/ true)`/`getNodes(0, pointTag)` (a part's edges/points
+contribute *only* to `SubModelPartNodes`, never their own element/condition/
+geometry entries — this exporter's cell scope is strictly linear tets and
+triangles). Each SubModelPart's `SubModelPartNodes` is the **union** of those
+explicit selections and every node its grouped cells reference — never just
+the explicit selection, so a reader never needs to backfill implied nodes.
+SubModelPart names are sanitized (anything but `[A-Za-z0-9_]` → `_`, a
+non-letter/underscore start gets a `Part_` prefix) and de-duplicated among
+siblings with a `_2`, `_3`, … suffix. Output is fully deterministic: node ids
+are assigned by sorting on source tag ascending, and element/condition/
+geometry ids by sorting each cell's own (already-renumbered) node-id tuple
+ascending — byte-identical output for the same geometry regardless of gmsh's
+internal (not contractually stable) enumeration order. Node coordinates are
+always written in scientific notation (`x.toExponential()`, e.g. `8e+0`,
+`9.769962616701e-14`) rather than plain decimal, at full round-trip precision
+(no fixed digit count — exactly as many digits as the double needs).
+
+Verified end-to-end against the live WASM build on `examples/STP/angle1.stp`
+with a 2-part `Part[]` (one volume-scoped, one surface-scoped): 1899 tets /
+988 boundary triangles generated; the volume-scoped SubModelPart's
+`SubModelPartElements` claimed all 1899 tets and none of the conditions; the
+surface-scoped one claimed the matching triangles and none of the elements;
+every connectivity line had the expected column count with no node id
+outside `[1, nodeCount]`; Mode B's triangle geometry ids all came out strictly
+after its tet geometry ids (confirming the shared id space); and
+`elementOrder: 2` threw the documented pre-flight error.
 
 ## Webview: panel, model, and overlay display
 

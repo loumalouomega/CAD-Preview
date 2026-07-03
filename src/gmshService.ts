@@ -8,6 +8,7 @@ import type { MeshOptions } from "./meshOptions";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
 import { meshExportFormat, type MeshExportFormatId } from "./meshExportFormats";
+import { writeMdpa, type MdpaMesh, type MdpaMode, type MdpaNode, type MdpaTet, type MdpaTriangle, type MdpaGroup } from "./mdpaWriter";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -234,15 +235,17 @@ export async function exportGeoUnrolled(
  * by the output path's extension, so this is a thin, format-agnostic
  * generate-then-write, unlike `.geo_unrolled`'s bespoke XAO-companion
  * handling above (none of these formats have an equivalent companion file).
- * `formatId` must not be `"msh"`/`"geoUnrolled"` — those have their own
- * dedicated functions and are never routed through this one.
+ * `formatId` must not be `"msh"`/`"geoUnrolled"`/`"mdpaElements"`/
+ * `"mdpaGeometries"` — those have their own dedicated functions and are never
+ * routed through this one (MDPA in particular isn't a Gmsh writer format at
+ * all — see `exportMdpa` below).
  */
 export async function exportMeshFormat(
   extensionPath: string,
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[],
-  formatId: Exclude<MeshExportFormatId, "msh" | "geoUnrolled">
+  formatId: Exclude<MeshExportFormatId, "msh" | "geoUnrolled" | "mdpaElements" | "mdpaGeometries">
 ): Promise<string> {
   const format = meshExportFormat(formatId);
   if (!format) throw new Error(`Unknown mesh export format: ${formatId}`);
@@ -263,6 +266,176 @@ export async function exportMeshFormat(
     }
     try { gmsh.FS.unlink(outPath); } catch { /* ignore */ }
   }
+}
+
+const MDPA_TET_TYPE = 4; // 4-node tetrahedron (same element-type id used throughout this file)
+const MDPA_TRI_TYPE = 2; // 3-node triangle
+
+/**
+ * Meshes `input` per `options`/`parts` and hand-serializes the result as
+ * Kratos MDPA text via `mdpaWriter.ts`'s pure `writeMdpa()`. Unlike every
+ * other export format in this file, MDPA has no `gmsh.write()` support at
+ * all — there is no MEMFS write/read-back round trip here; `extractMdpaMesh`
+ * reads nodes/elements directly off the live model instead.
+ */
+export async function exportMdpa(
+  extensionPath: string,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[],
+  mode: MdpaMode
+): Promise<string> {
+  if (options.elementOrder !== 1) {
+    throw new Error(
+      'Kratos MDPA export only supports linear (order 1) elements — Element3D4N/Tetrahedra3D4 and ' +
+        'SurfaceCondition3D3N/Triangle3D3 are both 1st-order simplices. Set "Element order" to Linear ' +
+        "in the FE Mesh panel and export again."
+    );
+  }
+
+  const gmsh = await getGmsh(extensionPath);
+  let tmpPath: string | null = null;
+  try {
+    const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
+    tmpPath = loaded.tmpPath;
+
+    gmsh.model.mesh.generate(options.dimension);
+    const mesh = extractMdpaMesh(gmsh, loaded.groupMaps);
+    return writeMdpa(mesh, mode);
+  } finally {
+    if (tmpPath) {
+      try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Pulls the live gmsh model's linear tet/triangle mesh, plus `groupMaps`'
+ * part groupings, into the plain gmsh-free `MdpaMesh` shape `writeMdpa`
+ * consumes. Must run after `mesh.generate()`. Loops per-entity-tag (like
+ * `extractBoundaryFaces`/`appendTriangles2D` above) rather than one
+ * whole-model `getElements(dim)` call, since each cell's owning
+ * volume/surface tag is needed to resolve which part it belongs to. Throws
+ * if any 3D element type other than the 4-node tet, or 2D type other than
+ * the 3-node triangle, is found — a defensive backstop behind `exportMdpa`'s
+ * `elementOrder` pre-flight check (that check alone doesn't cover every
+ * conceivable non-simplex element a future option might enable).
+ */
+function extractMdpaMesh(gmsh: GmshApi, groupMaps: PartGroupMaps | null): MdpaMesh {
+  const nodesRaw = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
+  const nodes: MdpaNode[] = nodesRaw.nodeTags.map((tag, i) => ({
+    tag,
+    x: nodesRaw.coord[i * 3],
+    y: nodesRaw.coord[i * 3 + 1],
+    z: nodesRaw.coord[i * 3 + 2],
+  }));
+
+  const tets: MdpaTet[] = [];
+  const tetVolumeTag: number[] = [];
+  const volumeTags = (gmsh.model.getEntities(3).dimTags as number[]) ?? [];
+  for (let i = 0; i < volumeTags.length; i += 2) {
+    const tag = volumeTags[i + 1];
+    const els = gmsh.model.mesh.getElements(3, tag) as { elementTypes: number[]; nodeTags: number[][] };
+    for (let t = 0; t < els.elementTypes.length; t++) {
+      const type = els.elementTypes[t];
+      if (type !== MDPA_TET_TYPE) {
+        throw new Error(
+          `Kratos MDPA export only supports 4-node tetrahedra, but volume ${tag} contains an ` +
+            `unsupported 3D element type (${type}). Adjust the mesh options and try again.`
+        );
+      }
+      const tagsForType = els.nodeTags[t];
+      for (let n = 0; n < tagsForType.length; n += 4) {
+        tets.push({ nodeTags: [tagsForType[n], tagsForType[n + 1], tagsForType[n + 2], tagsForType[n + 3]] });
+        tetVolumeTag.push(tag);
+      }
+    }
+  }
+
+  const triangles: MdpaTriangle[] = [];
+  const triSurfaceTag: number[] = [];
+  const surfaceTags = (gmsh.model.getEntities(2).dimTags as number[]) ?? [];
+  for (let i = 0; i < surfaceTags.length; i += 2) {
+    const tag = surfaceTags[i + 1];
+    const els = gmsh.model.mesh.getElements(2, tag) as { elementTypes: number[]; nodeTags: number[][] };
+    for (let t = 0; t < els.elementTypes.length; t++) {
+      const type = els.elementTypes[t];
+      if (type !== MDPA_TRI_TYPE) {
+        throw new Error(
+          `Kratos MDPA export only supports 3-node triangles, but surface ${tag} contains an ` +
+            `unsupported 2D element type (${type}). Adjust the mesh options and try again.`
+        );
+      }
+      const tagsForType = els.nodeTags[t];
+      for (let n = 0; n < tagsForType.length; n += 3) {
+        triangles.push({ nodeTags: [tagsForType[n], tagsForType[n + 1], tagsForType[n + 2]] });
+        triSurfaceTag.push(tag);
+      }
+    }
+  }
+
+  const groups: MdpaGroup[] = [];
+  if (groupMaps) {
+    for (const bucket of groupPartsAcrossDims(groupMaps)) {
+      const volumeTagSet = new Set(bucket.volumeTags);
+      const surfaceTagSet = new Set(bucket.surfaceTags);
+      const tetIndices: number[] = [];
+      tetVolumeTag.forEach((vTag, idx) => {
+        if (volumeTagSet.has(vTag)) tetIndices.push(idx);
+      });
+      const triangleIndices: number[] = [];
+      triSurfaceTag.forEach((sTag, idx) => {
+        if (surfaceTagSet.has(sTag)) triangleIndices.push(idx);
+      });
+
+      const extraNodeTags: number[] = [];
+      for (const pointTag of bucket.pointTags) {
+        const pn = gmsh.model.mesh.getNodes(0, pointTag) as { nodeTags: number[] };
+        extraNodeTags.push(...pn.nodeTags);
+      }
+      for (const curveTag of bucket.curveTags) {
+        const cn = gmsh.model.mesh.getNodes(1, curveTag, true) as { nodeTags: number[] };
+        extraNodeTags.push(...cn.nodeTags);
+      }
+
+      groups.push({ name: bucket.info.name, tetIndices, triangleIndices, extraNodeTags });
+    }
+  }
+
+  return { nodes, tets, triangles, groups };
+}
+
+/** 4-map generalization of {@link groupTagsByPart} below — buckets a part's
+ * volume/surface/curve/point tags together by `PartGroupInfo` object
+ * identity (the same `info` object `applyPartsToGmshModel` reuses across all
+ * four of `groupMaps`' maps for one part — see its doc comment), preserving
+ * first-encountered order. */
+function groupPartsAcrossDims(maps: PartGroupMaps): Array<{
+  info: PartGroupInfo;
+  volumeTags: number[];
+  surfaceTags: number[];
+  curveTags: number[];
+  pointTags: number[];
+}> {
+  const order: PartGroupInfo[] = [];
+  const byInfo = new Map<
+    PartGroupInfo,
+    { volumeTags: number[]; surfaceTags: number[]; curveTags: number[]; pointTags: number[] }
+  >();
+  const ensure = (info: PartGroupInfo) => {
+    let bucket = byInfo.get(info);
+    if (!bucket) {
+      bucket = { volumeTags: [], surfaceTags: [], curveTags: [], pointTags: [] };
+      byInfo.set(info, bucket);
+      order.push(info);
+    }
+    return bucket;
+  };
+  for (const [tag, info] of maps.volumeTagToPart) ensure(info).volumeTags.push(tag);
+  for (const [tag, info] of maps.surfaceTagToPart) ensure(info).surfaceTags.push(tag);
+  for (const [tag, info] of maps.curveTagToPart) ensure(info).curveTags.push(tag);
+  for (const [tag, info] of maps.pointTagToPart) ensure(info).pointTags.push(tag);
+  return order.map((info) => ({ info, ...byInfo.get(info)! }));
 }
 
 /**

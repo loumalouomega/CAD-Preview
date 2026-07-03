@@ -408,13 +408,16 @@ re-exports the live OCCT shape to STEP itself. The host replies with
 Sent when the user picks a format in the FE Mesh panel's export `<select>` and
 clicks **📤 Export**. `target` is a `MeshExportFormatId` (see
 `src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` registry, the single source
-of truth shared by the host and the webview's `<select>`) selecting which GMSH
+of truth shared by the host and the webview's `<select>` — `"mdpaElements"` is
+listed first and is therefore the default-selected format) selecting which
 output to write: `"msh"` runs `generateMesh` and saves the raw `.msh` text;
 `"geoUnrolled"` calls `exportGeoUnrolled` and saves the `.geo_unrolled` text
-(handling its XAO companion, see below); every other id (`"msh2"`, `"vtk"`,
-`"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`, `"stl"`, `"diff"`, `"off"`) runs
-`exportMeshFormat`, a generic mesh-then-`gmsh.write()` for whatever format
-those Gmsh output formats other than `.msh`/`.geo_unrolled` that this WASM
+(handling its XAO companion, see below); `"mdpaElements"`/`"mdpaGeometries"`
+run `exportMdpa`, a hand-written Kratos MDPA serializer with no `gmsh.write()`
+involved at all (see `doc/gmsh-integration.md`'s "Kratos MDPA" section); every
+other id (`"msh2"`, `"vtk"`, `"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`,
+`"stl"`, `"diff"`, `"off"`) runs `exportMeshFormat`, a generic
+mesh-then-`gmsh.write()` for whatever other Gmsh output formats this WASM
 build actually supports (confirmed by probing every format Gmsh's writer table
 recognizes — see `doc/gmsh-integration.md`). Same `options`/optional `stl`
 payload as `meshingGenerate`. The host prompts a save dialog (reusing the same

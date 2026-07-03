@@ -8,7 +8,7 @@ import { readParts, writeParts } from "./partsStore";
 import { readEdits, writeEdits } from "./editsStore";
 import type { EditOp } from "./editOps";
 import { readMeshOptions, writeMeshOptions, writeGeoScript } from "./meshOptionsStore";
-import { generateMesh, exportGeoUnrolled, exportMeshFormat, type MeshGenerationInput } from "./gmshService";
+import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
@@ -213,6 +213,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
                 const fixedText = geo.text.replace(/Merge "[^"]*\.xao";/, `Merge "${xaoName}";`);
                 return Buffer.from(fixedText, "utf8");
               },
+              post
+            );
+          } else if (msg.target === "mdpaElements" || msg.target === "mdpaGeometries") {
+            // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
+            // exportMdpa's doc comment), unlike every other format below.
+            const format = meshExportFormat(msg.target)!;
+            const text = await exportMdpa(
+              this.context.extensionPath,
+              input,
+              options,
+              parts,
+              msg.target === "mdpaElements" ? "elements" : "geometries"
+            );
+            await this.promptSaveAndWrite(
+              document.uri,
+              format.extension,
+              format.filterLabel,
+              async () => Buffer.from(text, "utf8"),
               post
             );
           } else {

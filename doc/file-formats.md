@@ -242,11 +242,14 @@ files itself. Parsing the sidecar is tolerant: a missing or hand-corrupted
 panel from working.
 
 **Exported mesh artifacts:** the FE Mesh panel's export `<select>` + **📤 Export**
-write further output files via a native Save dialog, in whichever Gmsh format
-is picked — GMSH's native `.msh` mesh format (nodes + elements), the legacy
-`.msh2` (v2.2) variant, Gmsh's fully-expanded `.geo_unrolled` script, or any of
-VTK/I-DEAS Universal (`.unv`)/Abaqus (`.inp`)/Nastran (`.bdf`)/SU2 (`.su2`)/
-INRIA Medit (`.mesh`)/STL/Diffpack (`.diff`)/OFF — see
+write further output files via a native Save dialog, in whichever format is
+picked — hand-written Kratos `.mdpa` (the default; either an Elements +
+Conditions or a Geometries layout, see
+[GMSH Integration § Kratos MDPA](gmsh-integration.md#kratos-mdpa-hand-written-not-a-gmshwrite-format)),
+GMSH's native `.msh` mesh format (nodes + elements), the legacy `.msh2` (v2.2)
+variant, Gmsh's fully-expanded `.geo_unrolled` script, or any of VTK/I-DEAS
+Universal (`.unv`)/Abaqus (`.inp`)/Nastran (`.bdf`)/SU2 (`.su2`)/INRIA Medit
+(`.mesh`)/STL/Diffpack (`.diff`)/OFF — see
 [GMSH Integration § Export formats](gmsh-integration.md#export-formats) for the
 full registry and which formats this WASM build actually supports. Like every
 other Export target in this codebase, these are save-as artifacts the user

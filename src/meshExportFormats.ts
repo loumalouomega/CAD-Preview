@@ -14,6 +14,13 @@
  * offered as a format that always fails. `p3d`/`neu` wrote 0 bytes for a
  * tri/tet mesh (structured-grid/quad-only formats) — excluded as unusable for
  * this pipeline's element types.
+ *
+ * `mdpaElements`/`mdpaGeometries` are the one exception to all of the above —
+ * Kratos MDPA has no `gmsh.write()` support at all, so these two are
+ * hand-serialized by `mdpaWriter.ts`/`gmshService.ts`'s `exportMdpa()`
+ * instead of the generic `gmsh.write()`-based `exportMeshFormat()` every
+ * other id here goes through. They're listed first so `mdpaElements` is the
+ * default-selected `<select>` option (array order = option order).
  */
 
 export interface MeshExportFormat {
@@ -28,6 +35,18 @@ export interface MeshExportFormat {
 }
 
 export const MESH_EXPORT_FORMATS = [
+  {
+    id: "mdpaElements",
+    label: "Kratos MDPA — Elements + Conditions (.mdpa)",
+    extension: "mdpa",
+    filterLabel: "Kratos MDPA (Elements + Conditions)",
+  },
+  {
+    id: "mdpaGeometries",
+    label: "Kratos MDPA — Geometries (.mdpa)",
+    extension: "mdpa",
+    filterLabel: "Kratos MDPA (Geometries)",
+  },
   { id: "msh", label: "Gmsh Mesh (.msh)", extension: "msh", filterLabel: "GMSH Mesh" },
   { id: "msh2", label: "Gmsh Mesh v2, Legacy (.msh2)", extension: "msh2", filterLabel: "GMSH Mesh v2 (Legacy)" },
   {

@@ -541,17 +541,71 @@ Non-negotiable invariants:
   webview (`meshingPanel.ts` populates the export `<select>` from it) — the
   original design had one button per format (`📤 .msh`, `📤 .geo`), which
   doesn't scale once more formats are added. Every format id except `"msh"`
-  (reuses `generateMesh`'s `mshText`) and `"geoUnrolled"` (its own XAO-companion
-  handling, see below) routes through `gmshService.ts`'s generic
-  `exportMeshFormat()`: mesh, then `gmsh.write("/out.<extension>")`, then
-  read back as text — confirmed against the live WASM build for all 10 other
-  registered formats (`msh2`, `vtk`, `unv`, `inp`, `bdf`, `su2`, `mesh`, `stl`,
-  `diff`, `off`). CGNS and MED are recognized by Gmsh's writer-dispatch table
-  but throw `"...compiled without CGNS support"`/`"...must be compiled with MED
+  (reuses `generateMesh`'s `mshText`), `"geoUnrolled"` (its own XAO-companion
+  handling, see below), and `"mdpaElements"`/`"mdpaGeometries"` (see next
+  bullet) routes through `gmshService.ts`'s generic `exportMeshFormat()`:
+  mesh, then `gmsh.write("/out.<extension>")`, then read back as text —
+  confirmed against the live WASM build for all 10 other registered formats
+  (`msh2`, `vtk`, `unv`, `inp`, `bdf`, `su2`, `mesh`, `stl`, `diff`, `off`).
+  CGNS and MED are recognized by Gmsh's writer-dispatch table but throw
+  `"...compiled without CGNS support"`/`"...must be compiled with MED
   support..."` in this build (need HDF5-backed libs not linked in) — excluded
   from the registry rather than offered as an always-failing option. See
   `doc/gmsh-integration.md`'s "Export formats" section for the full probe
   results and which other formats were excluded as unusable/redundant.
+- **Kratos MDPA is hand-written — the one export format with no `gmsh.write()`
+  support at all.** `mdpaElements`/`mdpaGeometries` are listed *first* in
+  `MESH_EXPORT_FORMATS`, making `mdpaElements` the default-selected export
+  format. `src/mdpaWriter.ts` (pure, vscode/WASM-free, unit-tested in
+  `mdpaWriter.test.ts` against hand-built fixtures — mirrors `partsSidecar.ts`/
+  `editOps.ts`'s pure-module convention) serializes a plain `MdpaMesh`
+  (`{nodes, tets, triangles, groups}`) to ASCII text; `gmshService.ts`'s
+  `exportMdpa()` + private `extractMdpaMesh()` pull that data off the live
+  gmsh model after `mesh.generate()` (per-entity-tag `getElements(dim, tag)`
+  loops, same pattern as `extractBoundaryFaces`/`appendTriangles2D`) and hand
+  it to `writeMdpa()` — no MEMFS write/read-back round trip. Two mutually
+  exclusive modes: `"elements"` writes `Element3D4N`/`SurfaceCondition3D3N`
+  under `Begin Elements`/`Begin Conditions`, each `<id> <prop_id> <n1..nk>`
+  with `prop_id` always `0` (this codebase has no material/property data) in
+  a single `Begin Properties 0` block; `"geometries"` writes
+  `Tetrahedra3D4`/`Triangle3D3` under `Begin Geometries` instead, `<id>
+  <n1..nk>` with **no** property id, and — since Kratos's `Geometries` is one
+  container — tets and triangles **share one id space** (tets `1..T`,
+  triangles continue `T+1..T+G`). A cell type's root block and its matching
+  `SubModelPart*` sub-block are omitted entirely when empty (e.g. a
+  `dimension: 2` generate has triangles but no tets) rather than writing an
+  empty pair; `options.elementOrder !== 1` is rejected with an actionable
+  error before `mesh.generate()` runs (a 10-node tet/6-node triangle can't be
+  `Element3D4N`/`Tetrahedra3D4`), and `extractMdpaMesh()` throws as a
+  defensive backstop if it ever finds any other 3D/2D element type.
+  **Node ordering**: Kratos's `Tetrahedra3D4`/`Triangle3D3` reference-element
+  node order (confirmed against Kratos's own node-ordering docs) is the
+  standard simplex convention Gmsh's own element types 4/2 already use — 1:1,
+  no permutation — but since that couldn't be verified byte-for-byte against
+  Gmsh's *own* node-ordering docs (an automated fetch didn't return the
+  diagrams), `mdpaWriter.ts`'s `orientTet()` defensively recomputes each tet's
+  signed volume and swaps the last two output node ids if negative, so every
+  emitted tet has a positive Jacobian regardless. **SubModelParts** map 1:1 to
+  `Part[]` — always flat (no nesting concept exists anywhere in this
+  codebase's `Part[]`), B-rep sources only (mesh/STL documents get `parts:
+  []` before reaching `gmshService.ts`, same as every other parts-preservation
+  feature). `extractMdpaMesh()`'s private `groupPartsAcrossDims()` (the 4-map
+  generalization of `groupTagsByPart`) reuses `PartGroupMaps` from
+  `applyPartsToGmshModel` — never recomputed — to bucket cells per part and
+  resolve `lines`/`points` selections to extra node ids via `getNodes(1,
+  curveTag, /*includeBoundary*/ true)`/`getNodes(0, pointTag)` (edges/points
+  contribute only to `SubModelPartNodes`, never their own element/condition/
+  geometry entries — this exporter's cell scope is strictly linear tets and
+  triangles). A SubModelPart's `SubModelPartNodes` is always the **union** of
+  its explicit point/curve selections and every node its grouped cells
+  reference, never just one or the other. Output is deterministic: node ids
+  sort by source tag ascending, cell ids sort by each cell's own renumbered
+  node-id tuple ascending — byte-identical regardless of gmsh's internal
+  (not contractually stable) enumeration order. Verified end-to-end against
+  the live WASM build on `angle1.stp` with a 2-part `Part[]`: correct
+  per-part element/condition claiming, no dangling node references, and
+  the `elementOrder: 2` pre-flight rejection. See
+  `doc/gmsh-integration.md`'s "Kratos MDPA" section for the full write-up.
 - **Two input paths converge on the same options step.** B-rep documents
   (`kind: "brep"`) re-export the live OCCT shape to STEP bytes via the existing
   `exportBRep()` (so unsaved edits are reflected) and load them with
@@ -789,13 +843,18 @@ the sidebar). Set options (try 2D vs 3D dimension, a smaller **Size max**, a dif
 status appear; once done, confirm a blue mesh overlay appears (the original model's
 shaded faces auto-hide so they don't visually compete with the overlay, but its edges
 stay visible as a feature-line reference — unchanged geometry, `.visible` toggle only)
-and the panel status line shows `Nodes: N · Elements: M`. Pick each of "Gmsh Mesh
-(.msh)", "Gmsh Mesh v2, Legacy (.msh2)", and "Gmsh Geometry (.geo_unrolled)" in the
-export `<select>` and click **📤 Export** for each, saving and reopening them
-(`.msh`/`.msh2` are GMSH's native mesh formats at two schema versions; `.geo_unrolled`
-is the fully-expanded script, not the sidecar `.geo` — see below) to confirm they
-contain real content. Also pick a couple of the other formats (e.g. VTK, Abaqus
-`.inp`, or STL) and confirm those export and reopen too. Close and reopen the tab → confirm
+and the panel status line shows `Nodes: N · Elements: M`. Confirm the export
+`<select>`'s default selection is "Kratos MDPA — Elements + Conditions (.mdpa)". Pick
+each of that, "Kratos MDPA — Geometries (.mdpa)", "Gmsh Mesh (.msh)", "Gmsh Mesh v2,
+Legacy (.msh2)", and "Gmsh Geometry (.geo_unrolled)" in the export `<select>` and click
+**📤 Export** for each, saving and reopening them (both MDPA modes should contain
+`Begin Nodes`/`Begin Elements`+`Begin Conditions` or `Begin Geometries` blocks and, if
+any Parts exist, `Begin SubModelPart` blocks; `.msh`/`.msh2` are GMSH's native mesh
+formats at two schema versions; `.geo_unrolled` is the fully-expanded script, not the
+sidecar `.geo` — see below) to confirm they contain real content. Also pick a couple
+of the other formats (e.g. VTK, Abaqus `.inp`, or STL) and confirm those export and
+reopen too. Set **Element order** to Quadratic (2) and try exporting either MDPA
+format → confirm a clear error message instead of a corrupt file. Close and reopen the tab → confirm
 `bull.stp.mesh.json` (the options) and `bull.stp.geo` (the generated, editable script)
 exist next to the source, are valid JSON/text, and the CAD file itself is untouched;
 hand-edit `bull.stp.geo` and change an option in the panel → confirm your hand-edit is
@@ -821,7 +880,12 @@ confirm a `$PhysicalNames` section listing the part names, AND confirm the
 `$Elements` section has more than one entity block (i.e. the *whole* model was
 written, not just the sized/assigned part — `Mesh.SaveAll` must be forced on once
 any part exists, or every other entity's elements silently vanish from the file
-even though the live overlay still looks correct). Pick "Gmsh Geometry
+even though the live overlay still looks correct). Pick "Kratos MDPA — Elements +
+Conditions" and export it → open the `.mdpa` file and confirm one `Begin SubModelPart
+<name>` per part (names matching the Parts panel, sanitized), each with a non-empty
+`SubModelPartNodes` list and the correct `SubModelPartElements`/`SubModelPartConditions`
+membership for that part's assigned faces/solids; repeat for "Kratos MDPA — Geometries"
+and confirm the equivalent `SubModelPartGeometries` blocks. Pick "Gmsh Geometry
 (.geo_unrolled)" and export it — a companion `<name>.geo_unrolled.xao`
 file is written alongside it (B-rep sources only; this is expected and required, not
 an error) — then reopen the `.geo_unrolled` in a real Gmsh install (or via this

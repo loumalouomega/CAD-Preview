@@ -66,9 +66,11 @@ loaders. Rendering is always Three.js.
   overlay on top of the existing view. Options (dimension, element size, algorithm,
   element order) are set in the **FE Mesh** panel and autosaved to a
   `<model>.mesh.json` sidecar alongside a generated, editable `<model>.geo` script;
-  **📤 Export** saves the mesh to disk in any format the panel's dropdown offers
-  (Gmsh `.msh`/`.msh2`/`.geo_unrolled`, VTK, I-DEAS Universal, Abaqus, Nastran,
-  SU2, INRIA Medit, STL, Diffpack, OFF). The CAD file stays read-only. See
+  **📤 Export** saves the mesh to disk in any format the panel's dropdown offers,
+  defaulting to **Kratos MDPA** (hand-written, in either an Elements+Conditions
+  or a Geometries layout, preserving named Parts as Kratos SubModelParts), or
+  Gmsh `.msh`/`.msh2`/`.geo_unrolled`, VTK, I-DEAS Universal, Abaqus, Nastran,
+  SU2, INRIA Medit, STL, Diffpack, OFF. The CAD file stays read-only. See
   [GMSH Integration](https://loumalouomega.github.io/CAD-Preview/gmsh-integration)
   for details.
 
