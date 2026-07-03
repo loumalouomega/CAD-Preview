@@ -241,6 +241,12 @@ files itself. Parsing the sidecar is tolerant: a missing or hand-corrupted
 `<model>.mesh.json` falls back to `DEFAULT_MESH_OPTIONS` rather than blocking the
 panel from working.
 
+A `sizeMax` of `1e22` is Gmsh's "unbounded" sentinel: it means "no explicit
+target size was ever chosen", and the webview displays it as an empty **auto**
+field, seeding a bounding-box-derived default (model diagonal / 20) over it in
+memory once the model loads. That seed is display-only — neither sidecar file is
+created or rewritten until the user actually changes an option in the panel.
+
 **Exported mesh artifacts:** the FE Mesh panel's export `<select>` + **📤 Export**
 write further output files via a native Save dialog, in whichever format is
 picked — hand-written Kratos `.mdpa` (the default; either an Elements +

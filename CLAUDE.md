@@ -517,6 +517,29 @@ Non-negotiable invariants:
   of the box; users can still pick Delaunay (`1`) from the 3D algorithm dropdown
   for cases it doesn't affect. See `doc/gmsh-integration.md`'s "Known limitations"
   for the full verification trail (GMSH-JS's own README documents this upstream).
+- **The panel's primary size control is a coarser→finer slider with a
+  bbox-derived default — and seeding it must never create sidecars.**
+  `DEFAULT_MESH_OPTIONS.sizeMax` is the Gmsh "unbounded" `SIZE_MAX_SENTINEL`
+  (`1e22`); once the model's extents are known, `syncMeshSizeSeed()`
+  (`src/webview/main.ts`, called from the `geometry`/`loadUrl`/`meshingOptions`
+  handlers — their arrival order is not deterministic) replaces a still-sentinel
+  `sizeMax` with `diagonal/20` via **`MeshingModel.load()`, never `update()`** —
+  `update()` fires `meshingChanged`, which would write `.mesh.json`/`.geo` for
+  every file merely opened. A persisted user value (≠ sentinel) always wins; the
+  panel never displays the raw `1e+22` (empty "auto" Size max field, disabled
+  slider until seeded). All slider math (log mapping `diagonal/5`↔`diagonal/200`,
+  Coarse/Medium/Fine presets `diagonal/{10,20,50}`, and the order-of-magnitude
+  element-count estimate feeding the readout + the ~1M-element warning) lives in
+  the pure, headless-tested `src/webview/meshSizeHeuristics.ts` — plain JS from
+  the bbox (`Viewer.getModelExtents()`) only, **never a gmsh call**, so the
+  lazy-WASM invariant holds. Slider/preset/field commits that would drop
+  `sizeMax` below `sizeMin` patch `sizeMin: 0` in the same update, or
+  `validateMeshOptions`' pair rule silently resets both on reload. The slider
+  commits on `change` (release), not `input` (mid-drag) — no message spam. The
+  panel also mirrors the Parts panel's per-part `meshSize` inputs (a "Part
+  sizes" section routing to the same `PartsModel.setMeshSize`) and tucks the
+  raw options form — including the STL angle field, disabled for B-rep sources
+  via `setSourceKind` — into a collapsed-by-default "Advanced settings" section.
 - **Sidecar pair `<model>.mesh.json` + `<model>.geo`, beside parts/edits.** The
   FE-mesh options (`MeshOptions` — a flat bag, not an op-list) autosave (~500 ms,
   its own debounce timer, separate from parts/edits) to `<model>.mesh.json` via
@@ -837,13 +860,22 @@ handle-leak check, same as above).
 
 Then exercise **Meshing (GMSH-JS)**: on `bull.stp`, click the toolbar **🔬 FE Mesh**
 toggle (this just arms overlay display — the **FE Mesh** panel is already visible in
-the sidebar). Set options (try 2D vs 3D dimension, a smaller **Size max**, a different
-2D/3D algorithm), click **▶ Generate** → while the WASM call runs, confirm the
+the sidebar). Confirm the **coarser→finer slider** starts at the bbox-derived default
+(readout `Size: X · ~N elements`, with the Advanced "Size max" field showing the same
+number — never a raw `1e+22`), that **Coarse/Medium/Fine** snap it, and that dragging
+it to the finest end on a large model raises the ⚠ large-mesh warning (drag updates
+only the readout; the sidecar write happens on release). Expand **Advanced settings**
+(collapsed by default) and set options (try 2D vs 3D dimension, a smaller **Size
+max** — the slider must follow it, and clearing the field must restore the bbox
+default — a different 2D/3D algorithm; confirm **STL angle** is disabled for this
+B-rep source), click **▶ Generate** → while the WASM call runs, confirm the
 `#meshing-generate` button disables and an indeterminate progress bar/`"Generating…"`
 status appear; once done, confirm a blue mesh overlay appears (the original model's
 shaded faces auto-hide so they don't visually compete with the overlay, but its edges
 stay visible as a feature-line reference — unchanged geometry, `.visible` toggle only)
-and the panel status line shows `Nodes: N · Elements: M`. Confirm the export
+and the panel status line shows `Nodes: N · Elements: M · T s` (wall-clock generate
+time). Also confirm that merely opening a file and moving nothing writes **no**
+sidecars (the bbox seed uses `load()`, not `update()`). Confirm the export
 `<select>`'s default selection is "Kratos MDPA — Elements + Conditions (.mdpa)". Pick
 each of that, "Kratos MDPA — Geometries (.mdpa)", "Gmsh Mesh (.msh)", "Gmsh Mesh v2,
 Legacy (.msh2)", and "Gmsh Geometry (.geo_unrolled)" in the export `<select>` and click
@@ -871,8 +903,9 @@ files are cleaned up).
 
 Then exercise **parts-preserving meshing**: on `angle1.stp` (or another multi-face
 STEP), create 2+ parts covering different faces/solids and set one part's **mesh
-size** field (in its row in the Parts panel) to a value noticeably smaller than the
-model's default size. Click **▶ Generate** → confirm the overlay recolours per part
+size** field (in its row in the Parts panel — or equivalently in the FE Mesh panel's
+mirrored **Part sizes** section; confirm a value typed in either shows up in the
+other) to a value noticeably smaller than the model's default size. Click **▶ Generate** → confirm the overlay recolours per part
 (each part's assigned faces/solids render in that part's colour, everything else in
 the original default blue) and the sized part's region visibly refines. Pick "Gmsh
 Mesh (.msh)" and click **📤 Export**, save, and open the file in a text editor →

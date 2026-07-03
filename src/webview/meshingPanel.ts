@@ -1,10 +1,28 @@
-import type { MeshOptions } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, type MeshOptions } from "../meshOptions";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
+import type { Part } from "../protocol";
+import {
+  LARGE_ELEMENT_COUNT,
+  PRESET_DIVISORS,
+  defaultTargetSize,
+  estimateElementCount,
+  formatCount,
+  formatSize,
+  sizeToSlider,
+  sliderToSize,
+} from "./meshSizeHeuristics";
 
-/** Success readout: the generated mesh's element counts. */
+/** The displayed model's bounding-box dimensions, from `Viewer.getModelExtents()`. */
+export interface ModelExtents {
+  size: [number, number, number];
+  diagonal: number;
+}
+
+/** Success readout: the generated mesh's element counts (+ wall-clock time). */
 export interface MeshingStats {
   nodeCount: number;
   elementCount: number;
+  elapsedMs?: number;
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -15,6 +33,8 @@ export interface MeshingError {
 export interface MeshingPanelCallbacks {
   /** A form control changed; the wiring merges the patch into the model and re-generates/persists. */
   onOptionsChange: (patch: Partial<MeshOptions>) => void;
+  /** A part's target mesh size changed in the "Part sizes" section (`undefined` = inherit global). */
+  onPartMeshSize: (index: number, size: number | undefined) => void;
   onGenerate: () => void;
   /** Export in the format currently picked in the format `<select>`. */
   onExport: (format: MeshExportFormatId) => void;
@@ -36,15 +56,20 @@ const ALGORITHM_3D: Array<[number, string]> = [
 ];
 
 /**
- * Renders the meshing options form (dimension, element size, algorithm choice,
- * element order, optimize) plus Generate/Export-format-`<select>`+Export/Clear
- * controls and a stats/error readout. The export format picker is a single
+ * Renders the meshing controls: a primary coarser→finer element-size slider
+ * (log-scale over the model's bounding-box diagonal, with Coarse/Medium/Fine
+ * presets and a live size + estimated-element-count readout), a "Part sizes"
+ * section mirroring the Parts panel's per-part size inputs, and a collapsed
+ * "Advanced settings" section holding the raw GMSH options (dimension, size
+ * min/max, algorithm choice, element order, optimize, STL angle) — plus
+ * Generate/Export-format-`<select>`+Export/Clear controls, a large-mesh
+ * warning, and a stats/error readout. The export format picker is a single
  * `<select>` populated from `MESH_EXPORT_FORMATS` (`meshExportFormats.ts`)
  * rather than one button per format — that list only grows over time, and a
  * dedicated button per Gmsh output format doesn't scale in a sidebar panel.
- * DOM-only — no business logic, no `prompt()`/`alert()` (VS Code webviews
- * block them; see `partsPanel.ts` for the established inline-`<input>`
- * convention this codebase uses instead).
+ * DOM-only — no business logic (all size math is `meshSizeHeuristics.ts`),
+ * no `prompt()`/`alert()` (VS Code webviews block them; see `partsPanel.ts`
+ * for the established inline-`<input>` convention this codebase uses instead).
  */
 export class MeshingPanel {
   private readonly body: HTMLElement;
@@ -55,6 +80,12 @@ export class MeshingPanel {
   private readonly exportBtn: HTMLButtonElement;
   private readonly clearBtn: HTMLButtonElement;
 
+  private readonly warningEl: HTMLElement;
+  private readonly sizeSlider: HTMLInputElement;
+  private readonly sliderReadout: HTMLElement;
+  private readonly partsSection: HTMLElement;
+  private readonly partsBody: HTMLElement;
+
   private readonly dimensionSelect: HTMLSelectElement;
   private readonly sizeMinInput: HTMLInputElement;
   private readonly sizeMaxInput: HTMLInputElement;
@@ -62,6 +93,12 @@ export class MeshingPanel {
   private readonly algorithm3DSelect: HTMLSelectElement;
   private readonly elementOrderSelect: HTMLSelectElement;
   private readonly optimizeCheckbox: HTMLInputElement;
+  private readonly stlAngleInput: HTMLInputElement;
+
+  /** Model bounding box, pushed by the wiring after each model load. */
+  private extents: ModelExtents | null = null;
+  /** Options as of the last `render()` — the slider/estimate math needs them between renders. */
+  private lastOptions: MeshOptions | null = null;
 
   constructor(
     private readonly panel: HTMLElement,
@@ -86,8 +123,105 @@ export class MeshingPanel {
     this.exportBtn.addEventListener("click", () => cb.onExport(this.exportFormatSelect.value as MeshExportFormatId));
     this.clearBtn.addEventListener("click", () => cb.onClear());
 
+    // ── Large-mesh warning (above everything, visible regardless of collapse) ──
+    this.warningEl = document.createElement("div");
+    this.warningEl.id = "meshing-warning";
+    this.warningEl.hidden = true;
+    this.body.appendChild(this.warningEl);
+
+    // ── Primary size control: presets + coarser→finer slider + readout ──
+    const sizeSection = document.createElement("div");
+    sizeSection.className = "meshing-size";
+
+    const presetRow = document.createElement("div");
+    presetRow.className = "meshing-preset-row";
+    for (const key of ["coarse", "medium", "fine"] as const) {
+      const btn = document.createElement("button");
+      btn.className = "meshing-preset";
+      btn.textContent = key.charAt(0).toUpperCase() + key.slice(1);
+      btn.title = `Set element size to model diagonal / ${PRESET_DIVISORS[key]}`;
+      btn.addEventListener("click", () => {
+        if (!this.extents) return;
+        this.commitSizeMax(this.extents.diagonal / PRESET_DIVISORS[key]);
+      });
+      presetRow.appendChild(btn);
+    }
+    sizeSection.appendChild(presetRow);
+
+    const sliderRow = document.createElement("div");
+    sliderRow.className = "meshing-slider-row";
+    const coarserLabel = document.createElement("span");
+    coarserLabel.className = "meshing-slider-end";
+    coarserLabel.textContent = "Coarser";
+    sliderRow.appendChild(coarserLabel);
+
+    this.sizeSlider = document.createElement("input");
+    this.sizeSlider.type = "range";
+    this.sizeSlider.className = "meshing-slider";
+    this.sizeSlider.min = "0";
+    this.sizeSlider.max = "1000";
+    this.sizeSlider.step = "1";
+    this.sizeSlider.disabled = true;
+    // Mid-drag: refresh the readout/warning locally only. The commit (and the
+    // resulting `meshingChanged` message + sidecar write) happens on release
+    // ("change"), so dragging never spams the host.
+    this.sizeSlider.addEventListener("input", () => {
+      if (!this.extents) return;
+      this.refreshSizeReadout(sliderToSize(Number(this.sizeSlider.value) / 1000, this.extents.diagonal));
+    });
+    this.sizeSlider.addEventListener("change", () => {
+      if (!this.extents) return;
+      this.commitSizeMax(sliderToSize(Number(this.sizeSlider.value) / 1000, this.extents.diagonal));
+    });
+    sliderRow.appendChild(this.sizeSlider);
+
+    const finerLabel = document.createElement("span");
+    finerLabel.className = "meshing-slider-end";
+    finerLabel.textContent = "Finer";
+    sliderRow.appendChild(finerLabel);
+    sizeSection.appendChild(sliderRow);
+
+    this.sliderReadout = document.createElement("div");
+    this.sliderReadout.className = "meshing-slider-readout";
+    this.sliderReadout.textContent = "—";
+    sizeSection.appendChild(this.sliderReadout);
+
+    this.body.appendChild(sizeSection);
+
+    // ── Part sizes (mirrors the Parts panel's per-part size inputs) ──
+    this.partsSection = document.createElement("div");
+    this.partsSection.className = "meshing-section";
+    this.partsSection.id = "meshing-part-sizes";
+    this.partsSection.hidden = true;
+    const partsHeader = document.createElement("div");
+    partsHeader.className = "meshing-section-title";
+    partsHeader.textContent = "Part sizes";
+    partsHeader.title = "Per-part target element size — blank inherits the global size";
+    this.partsSection.appendChild(partsHeader);
+    this.partsBody = document.createElement("div");
+    this.partsBody.className = "meshing-section-body";
+    this.partsSection.appendChild(this.partsBody);
+    this.body.appendChild(this.partsSection);
+
+    // ── Advanced settings (collapsed by default) ──
+    const advSection = document.createElement("div");
+    advSection.className = "meshing-section collapsed";
+    const advToggle = document.createElement("button");
+    advToggle.className = "meshing-section-header";
+    advToggle.type = "button";
+    const advChevron = document.createElement("span");
+    advChevron.className = "meshing-section-chevron";
+    advChevron.textContent = "▸";
+    advToggle.appendChild(advChevron);
+    advToggle.appendChild(document.createTextNode("Advanced settings"));
+    advToggle.addEventListener("click", () => {
+      const collapsed = advSection.classList.toggle("collapsed");
+      advChevron.textContent = collapsed ? "▸" : "▾";
+    });
+    advSection.appendChild(advToggle);
+
     const form = document.createElement("div");
-    form.className = "meshing-form";
+    form.className = "meshing-form meshing-section-body";
 
     this.dimensionSelect = this.select(form, "Dimension", [
       ["1", "1D"],
@@ -104,8 +238,16 @@ export class MeshingPanel {
     });
 
     this.sizeMaxInput = this.numberField(form, "Size max", 0);
+    this.sizeMaxInput.placeholder = "auto";
     this.sizeMaxInput.addEventListener("change", () => {
-      cb.onOptionsChange({ sizeMax: Number(this.sizeMaxInput.value) || 0 });
+      const raw = this.sizeMaxInput.value.trim();
+      if (raw === "") {
+        // Cleared: back to "auto" — the bbox-derived default when the model's
+        // extents are known, else the sentinel (re-seeded once they arrive).
+        this.commitSizeMax(this.extents ? defaultTargetSize(this.extents.diagonal) : SIZE_MAX_SENTINEL);
+        return;
+      }
+      this.commitSizeMax(Number(raw) || 0);
     });
 
     this.algorithm2DSelect = this.select(
@@ -148,18 +290,30 @@ export class MeshingPanel {
     optimizeRow.appendChild(this.optimizeCheckbox);
     form.appendChild(optimizeRow);
 
-    this.body.appendChild(form);
+    this.stlAngleInput = this.numberField(form, "STL angle (°)", 40);
+    this.stlAngleInput.addEventListener("change", () => {
+      cb.onOptionsChange({ stlAngle: Number(this.stlAngleInput.value) || 0 });
+    });
+
+    advSection.appendChild(form);
+    this.body.appendChild(advSection);
   }
 
   /** Rebuilds the form controls to reflect `options`, and the stats/error readout. */
   render(options: MeshOptions, status?: MeshingStats | MeshingError): void {
+    this.lastOptions = options;
     this.dimensionSelect.value = String(options.dimension);
     this.sizeMinInput.value = String(options.sizeMin);
-    this.sizeMaxInput.value = String(options.sizeMax);
+    // Never display the raw 1e+22 sentinel — show an empty "auto" field until
+    // a real (user-set or bbox-seeded) size exists.
+    this.sizeMaxInput.value = options.sizeMax === SIZE_MAX_SENTINEL ? "" : String(options.sizeMax);
     this.setSelectValue(this.algorithm2DSelect, options.algorithm2D);
     this.setSelectValue(this.algorithm3DSelect, options.algorithm3D);
     this.elementOrderSelect.value = String(options.elementOrder);
     this.optimizeCheckbox.checked = options.optimize;
+    this.stlAngleInput.value = String(options.stlAngle);
+
+    this.syncSlider();
 
     this.statusEl.classList.remove("meshing-status-error");
     if (!status) {
@@ -168,8 +322,73 @@ export class MeshingPanel {
       this.statusEl.textContent = status.error;
       this.statusEl.classList.add("meshing-status-error");
     } else {
-      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}`;
+      const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
+      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}`;
     }
+  }
+
+  /**
+   * Stores the displayed model's bounding box (from `Viewer.getModelExtents()`)
+   * and re-syncs the slider/readout/warning against it. Until extents exist the
+   * slider is disabled — the wiring seeds a bbox-derived default size and calls
+   * this on every model load.
+   */
+  setModelExtents(extents: ModelExtents | null): void {
+    this.extents = extents;
+    this.syncSlider();
+  }
+
+  /**
+   * Enables/disables the mesh-source-only controls: the STL angle only feeds
+   * `classifySurfaces` on the STL reclassification path, so it's disabled (not
+   * hidden) for B-rep documents — mirrors `editsPanel.setBRepOnly`.
+   */
+  setSourceKind(kind: "brep" | "mesh"): void {
+    this.stlAngleInput.disabled = kind === "brep";
+    this.stlAngleInput.title =
+      kind === "brep" ? "Only used for mesh/STL sources" : "Surface-classification angle for mesh/STL sources";
+  }
+
+  /**
+   * Rebuilds the "Part sizes" rows — the same `Part.meshSize` the Parts panel
+   * edits, mirrored here so meshing-related sizing lives next to the other
+   * meshing controls. Hidden while no parts exist.
+   */
+  renderParts(parts: Part[]): void {
+    this.partsSection.hidden = parts.length === 0;
+    this.partsBody.textContent = "";
+    parts.forEach((part, index) => {
+      const row = document.createElement("div");
+      row.className = "meshing-part-row";
+
+      const dot = document.createElement("span");
+      dot.className = "meshing-part-dot";
+      dot.style.backgroundColor = part.color;
+      row.appendChild(dot);
+
+      const name = document.createElement("span");
+      name.className = "meshing-part-name";
+      name.textContent = part.name;
+      name.title = part.name;
+      row.appendChild(name);
+
+      const input = document.createElement("input");
+      input.type = "number";
+      input.className = "meshing-num meshing-part-size";
+      input.title = "Target mesh size for this part (blank = inherit global)";
+      input.placeholder = "global";
+      input.min = "0";
+      input.step = "any";
+      input.value = part.meshSize != null ? String(part.meshSize) : "";
+      input.addEventListener("change", () => {
+        const raw = input.value.trim();
+        const n = raw === "" ? undefined : Number(raw);
+        this.cb.onPartMeshSize(index, n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined);
+      });
+      row.appendChild(input);
+
+      this.partsBody.appendChild(row);
+    });
   }
 
   /**
@@ -184,6 +403,51 @@ export class MeshingPanel {
     if (busy) {
       this.statusEl.classList.remove("meshing-status-error");
       this.statusEl.textContent = "Generating…";
+    }
+  }
+
+  /**
+   * Commits a new global target size, guarding pair consistency: if the new
+   * `sizeMax` would drop below the current `sizeMin`, reset `sizeMin` to 0 in
+   * the same patch — otherwise `validateMeshOptions`' pair rule would silently
+   * reset BOTH sizes to defaults on the next sidecar reload.
+   */
+  private commitSizeMax(sizeMax: number): void {
+    const sizeMin = this.lastOptions?.sizeMin ?? 0;
+    this.cb.onOptionsChange(sizeMax < sizeMin ? { sizeMax, sizeMin: 0 } : { sizeMax });
+  }
+
+  /** Re-positions the slider and refreshes the readout/warning from current state. */
+  private syncSlider(): void {
+    const options = this.lastOptions;
+    const hasSize = options != null && options.sizeMax !== SIZE_MAX_SENTINEL;
+    this.sizeSlider.disabled = !this.extents || !hasSize;
+    if (this.extents && hasSize) {
+      this.sizeSlider.value = String(Math.round(sizeToSlider(options.sizeMax, this.extents.diagonal) * 1000));
+    }
+    this.refreshSizeReadout(hasSize ? options.sizeMax : null);
+  }
+
+  /** Updates the size + estimated-element-count readout and the large-mesh warning. */
+  private refreshSizeReadout(size: number | null): void {
+    if (size == null) {
+      this.sliderReadout.textContent = "—";
+      this.warningEl.hidden = true;
+      return;
+    }
+    if (!this.extents) {
+      this.sliderReadout.textContent = `Size: ${formatSize(size)}`;
+      this.warningEl.hidden = true;
+      return;
+    }
+    const dimension = this.lastOptions?.dimension ?? 3;
+    const estimate = estimateElementCount(this.extents.size, size, dimension);
+    this.sliderReadout.textContent = `Size: ${formatSize(size)} · ${formatCount(estimate)} elements`;
+    if (estimate > LARGE_ELEMENT_COUNT) {
+      this.warningEl.textContent = `⚠ Estimated ${formatCount(estimate)} elements — generation may be slow or run out of memory.`;
+      this.warningEl.hidden = false;
+    } else {
+      this.warningEl.hidden = true;
     }
   }
 
@@ -250,4 +514,9 @@ export class MeshingPanel {
     parent.appendChild(row);
     return input;
   }
+}
+
+/** "850 ms" under a second, else one-decimal seconds ("3.2 s"). */
+function formatElapsed(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }

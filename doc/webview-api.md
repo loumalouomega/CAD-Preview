@@ -23,7 +23,8 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 | `src/webview/meshingModel.ts` | Current FE-mesh `MeshOptions` store, DOM-free (unit-tested) |
-| `src/webview/meshingPanel.ts` | FE Mesh panel DOM — options form + Generate/Export/Clear buttons |
+| `src/webview/meshingPanel.ts` | FE Mesh panel DOM — size slider/presets, part sizes, Advanced settings, Generate/Export/Clear |
+| `src/webview/meshSizeHeuristics.ts` | Pure size-slider math: bbox default, log mapping, element-count estimate (unit-tested) |
 
 ---
 
@@ -44,17 +45,17 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 
 | `type` | Action |
 |--------|--------|
-| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` → `viewer.setModel(group)`, recolour, enable all pick modes (`volume`/`surface`/`line`/`point`) |
+| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` → `viewer.setModel(group)`, recolour, enable all pick modes (`volume`/`surface`/`line`/`point`), `MeshingPanel.setSourceKind("brep")`/`setModelExtents(...)` + `syncMeshSizeSeed()` |
 | `"tree"` | `TreePanel.render(msg.root)` |
-| `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `splitMeshesIntoFacets(obj)` → `viewer.setModel(model)`, pick modes `volume` + `surface` |
-| `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` |
+| `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `splitMeshesIntoFacets(obj)` → `viewer.setModel(model)`, pick modes `volume` + `surface`, `MeshingPanel.setSourceKind("mesh")`/`setModelExtents(...)` + `syncMeshSizeSeed()` |
+| `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` + `MeshingPanel.renderParts()` |
 | `"edits"` | `EditsModel.load(msg.ops)` → (mesh sources) `rebuildMeshModel()` → `EditsPanel.render()` |
 | `"status"` | Set `#status-text` content |
 | `"error"` | Show `#error-overlay` with message |
 | `"editError"` | Show `#error-overlay` with message (same rendering as `"error"`, distinct only by intent) |
 | `"exportMesh"` | `exportModel(viewer.getModel(), msg.format)` → posts back `"exportResult"` (with `data`/`binary`) or `"exportError"` on failure, correlated by `msg.requestId` |
-| `"meshingOptions"` | `MeshingModel.load(msg.options)` (hydration only) → `MeshingPanel.render()` |
-| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices))` → `MeshingPanel.render(..., { nodeCount, elementCount })` |
+| `"meshingOptions"` | `MeshingModel.load(msg.options)` (hydration only) → `syncMeshSizeSeed()` → `MeshingPanel.render()` |
+| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.elementGroups))` → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs })` |
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
 
 The webview also posts `{ type: "partsChanged", parts }` whenever the user edits
@@ -117,6 +118,15 @@ getModel(): THREE.Object3D | null
 ```
 Returns the currently displayed model, or `null` if none has loaded yet. Used by
 `main.ts`'s `"exportMesh"` handler to hand the model to `exportModel()`.
+
+```typescript
+getModelExtents(): { size: [number, number, number]; diagonal: number } | null
+```
+The current model's world-space bounding-box dimensions and diagonal, or `null`
+if no model is loaded (or its box is empty). Recomputed on demand with the same
+`Box3` math `frame()` uses, so it automatically tracks edit-driven model
+rebuilds. Feeds the FE Mesh panel's bbox-derived default size and element-count
+estimate (`meshSizeHeuristics.ts`) — display-only, never mutates geometry.
 
 ```typescript
 setModel(object: THREE.Object3D): void
@@ -654,20 +664,28 @@ echo back as a write.
 
 ### `MeshingPanel`
 
-Manages the `#meshing-panel` DOM: a form (dimension, size min/max, 2D/3D
-algorithm dropdowns, element order, optimize checkbox) plus a Generate button, an
-export-format `<select>` (populated from `MESH_EXPORT_FORMATS` in
-`src/meshExportFormats.ts` — one shared registry instead of one button per
-format) + Export button, a Clear button, and a status line. Pure DOM, no
-business logic, no `prompt()`/`alert()` (VS Code webviews block those — same
-constraint as the Parts/Edits panels).
+Manages the `#meshing-panel` DOM, top to bottom: a large-mesh warning strip
+(`#meshing-warning`); the primary size control (Coarse/Medium/Fine preset
+buttons, a coarser→finer log-scale slider driving `sizeMax`, and a
+`Size: X · ~N elements` readout); a "Part sizes" section mirroring the Parts
+panel's per-part `meshSize` inputs (hidden while no parts exist); a
+collapsed-by-default "Advanced settings" section with the raw options form
+(dimension, size min/max, 2D/3D algorithm dropdowns, element order, optimize
+checkbox, STL angle) — plus a Generate button, an export-format `<select>`
+(populated from `MESH_EXPORT_FORMATS` in `src/meshExportFormats.ts` — one
+shared registry instead of one button per format) + Export button, a Clear
+button, and a status line. Pure DOM, no business logic (size math delegates to
+`meshSizeHeuristics.ts`), no `prompt()`/`alert()` (VS Code webviews block
+those — same constraint as the Parts/Edits panels).
 
 ```typescript
-interface MeshingStats { nodeCount: number; elementCount: number }
+interface ModelExtents { size: [number, number, number]; diagonal: number }
+interface MeshingStats { nodeCount: number; elementCount: number; elapsedMs?: number }
 interface MeshingError { error: string }
 
 interface MeshingPanelCallbacks {
   onOptionsChange: (patch: Partial<MeshOptions>) => void
+  onPartMeshSize: (index: number, size: number | undefined) => void  // undefined = inherit global
   onGenerate: () => void
   onExport: (format: MeshExportFormatId) => void  // the format currently picked in the `<select>`
   onClear: () => void
@@ -676,17 +694,36 @@ interface MeshingPanelCallbacks {
 class MeshingPanel {
   constructor(panel: HTMLElement, cb: MeshingPanelCallbacks)
   render(options: MeshOptions, status?: MeshingStats | MeshingError): void
+  renderParts(parts: Part[]): void
+  setModelExtents(extents: ModelExtents | null): void
+  setSourceKind(kind: "brep" | "mesh"): void
   setBusy(busy: boolean): void
 }
 ```
 
-`render()` syncs every form control to `options` and updates the status line:
-blank when `status` is omitted, `Nodes: N · Elements: M` for a `MeshingStats`, or
-the error string (with an error CSS class) for a `MeshingError`. The 2D/3D
+`render()` syncs every form control to `options` (including the slider position
+via `sizeToSlider`; a value outside the slider's range pegs the thumb at an end
+while the readout keeps the true number) and updates the status line: blank when
+`status` is omitted, `Nodes: N · Elements: M · 3.2 s` for a `MeshingStats`
+(time from `elapsedMs`, omitted when absent), or the error string (with an
+error CSS class) for a `MeshingError`. When `options.sizeMax` is still the
+`SIZE_MAX_SENTINEL`, the Size max field shows an empty `auto` placeholder and
+the slider is disabled — the raw `1e+22` is never displayed. The 2D/3D
 algorithm dropdowns are populated from small curated, **not exhaustive**, lists
 of well-known GMSH algorithm ids (`Mesh.Algorithm`/`Mesh.Algorithm3D`) — e.g.
 Frontal-Delaunay (`6`) for 2D and Frontal (`4`, the default) for 3D — rather than
 every id GMSH supports.
+
+The slider commits on `change` (release) only; `input` (mid-drag) refreshes the
+readout/warning locally so dragging never spams `meshingChanged`. Commits that
+would drop `sizeMax` below the current `sizeMin` include `sizeMin: 0` in the
+same patch (guarding `validateMeshOptions`' pair rule). `setModelExtents()` is
+pushed by `main.ts` on each model load and feeds the readout's element-count
+estimate and the presets; `setSourceKind("brep")` disables the STL angle field
+(it only feeds the STL reclassification path), mirroring
+`editsPanel.setBRepOnly`. `renderParts()` rebuilds the Part sizes rows —
+`onPartMeshSize` routes to the same `PartsModel.setMeshSize` the Parts panel
+uses, so the two inputs are views of one value.
 
 `setBusy(true)` disables `#meshing-generate` (a slow WASM call can't be
 re-triggered mid-flight) and shows the indeterminate `#meshing-progress` bar
@@ -707,3 +744,35 @@ plus that optional `stl`. `onClear` calls `viewer.setMeshOverlay(null)` directly
 resets the toolbar toggle's `meshingEnabled`/`.active` state (same
 toggle-truthfulness rule `meshingResult`/`meshingError` follow), and re-renders
 the panel with no status.
+
+---
+
+## `src/webview/meshSizeHeuristics.ts`
+
+The pure math behind the FE Mesh panel's primary size control. Plain numbers
+in/out — vscode-free, THREE-free, and (critically) gmsh-free, so rendering the
+panel can never trip the lazy-WASM-init invariant — and unit-tested headless
+(`meshSizeHeuristics.test.ts`), like `cameraControls.ts`.
+
+```typescript
+const DEFAULT_SIZE_DIVISOR = 20   // default target size = bbox diagonal / 20
+const COARSE_DIVISOR = 5          // slider t=0 → diagonal / 5 (coarsest)
+const FINE_DIVISOR = 200          // slider t=1 → diagonal / 200 (finest)
+const PRESET_DIVISORS = { coarse: 10, medium: 20, fine: 50 }
+const LARGE_ELEMENT_COUNT = 1_000_000  // estimate above this → panel warning
+
+function defaultTargetSize(diagonal: number): number
+function sliderToSize(t: number, diagonal: number): number   // log interp, t clamped [0,1]
+function sizeToSlider(size: number, diagonal: number): number // inverse, clamped [0,1]
+function estimateElementCount(bboxSize: [number, number, number],
+                              targetSize: number, dimension: 1 | 2 | 3): number
+function formatCount(n: number): string  // "~850", "~12k", "~1.2M"
+function formatSize(n: number): string   // 3 significant digits
+```
+
+`estimateElementCount` is an **order-of-magnitude heuristic computed from the
+bounding box only** (3D ≈ 6 tets per h-cube of bbox volume; 2D ≈ 2 triangles per
+h-square of bbox surface area; 1D ≈ segments along the diagonal) — it knowingly
+overestimates non-boxy models and exists to power the readout and the large-mesh
+warning, not to predict Gmsh's real output. The bbox comes from
+`Viewer.getModelExtents()`, pushed into the panel by `main.ts` on each model load.

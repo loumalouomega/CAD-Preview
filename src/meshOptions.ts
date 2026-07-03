@@ -21,10 +21,19 @@ export interface MeshOptions {
   stlAngle: number; // classifySurfaces angle, degrees
 }
 
+/**
+ * Gmsh's "unbounded" sentinel for `Mesh.MeshSizeMax`. A `sizeMax` equal to
+ * this means "no explicit target size yet" — the webview seeds a real,
+ * bbox-derived default in its place once the model's extents are known (see
+ * `syncMeshSizeSeed` in `src/webview/main.ts`), and the panel must never
+ * display the raw `1e+22`.
+ */
+export const SIZE_MAX_SENTINEL = 1e22;
+
 export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   dimension: 3,
   sizeMin: 0,
-  sizeMax: 1e22,
+  sizeMax: SIZE_MAX_SENTINEL,
   algorithm2D: 6 /* Frontal-Delaunay */,
   algorithm3D: 4 /* Frontal */,
   elementOrder: 1,

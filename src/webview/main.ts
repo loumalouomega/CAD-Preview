@@ -11,6 +11,8 @@ import { EditsModel } from "./editsModel";
 import { EditsPanel } from "./editsPanel";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
+import { defaultTargetSize } from "./meshSizeHeuristics";
+import { SIZE_MAX_SENTINEL } from "../meshOptions";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
@@ -36,10 +38,12 @@ const selection = new SelectionSet();
 let previewPartIndex: number | null = null;
 
 const partsModel = new PartsModel(() => {
-  // Fired on every parts mutation: persist, recolour, re-render.
+  // Fired on every parts mutation: persist, recolour, re-render (both the
+  // Parts panel and the FE Mesh panel's mirrored "Part sizes" rows).
   post({ type: "partsChanged", parts: partsModel.list() });
   refreshColors();
   partsPanel.render(partsModel.list());
+  meshingPanel.renderParts(partsModel.list());
 });
 
 const partsPanel = new PartsPanel(document.getElementById("parts-panel")!, {
@@ -321,6 +325,8 @@ async function currentStlIfMeshSource(): Promise<string | undefined> {
 
 const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!, {
   onOptionsChange: (patch) => meshingModel.update(patch),
+  // Same store the Parts panel edits — one Part.meshSize, two mirrored inputs.
+  onPartMeshSize: (index, size) => partsModel.setMeshSize(index, size),
   onGenerate: async () => {
     meshingPanel.setBusy(true);
     post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
@@ -337,6 +343,26 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     meshingPanel.render(meshingModel.get());
   },
 });
+
+/**
+ * Seeds a bbox-derived default target size while `sizeMax` is still the
+ * "unbounded" sentinel. Called from the `geometry`, `loadUrl`, AND
+ * `meshingOptions` handlers — model geometry and the options sidecar arrive
+ * in no deterministic order (B-rep tessellation is async), so whichever lands
+ * last completes the seed. A persisted user value (≠ sentinel) always wins,
+ * and once seeded the repeat calls (e.g. re-tessellation after each B-rep
+ * edit) are no-ops. Deliberately uses `load()` (which does NOT fire onChange)
+ * rather than `update()`: merely OPENING a file must never post
+ * `meshingChanged` and create `.mesh.json`/`.geo` sidecars the user never
+ * asked for — the seeded value only persists after a real user change.
+ */
+function syncMeshSizeSeed(): void {
+  const extents = viewer.getModelExtents();
+  if (!extents) return;
+  if (meshingModel.get().sizeMax !== SIZE_MAX_SENTINEL) return;
+  meshingModel.load({ ...meshingModel.get(), sizeMax: defaultTargetSize(extents.diagonal) });
+  meshingPanel.render(meshingModel.get());
+}
 
 /** True when `a` and `b` are not (anti-)parallel — their cross product is non-zero. */
 function nonParallel(a: [number, number, number], b: [number, number, number]): boolean {
@@ -371,6 +397,10 @@ function rebuildMeshModel(): void {
   const model = splitMeshesIntoFacets(edited);
   viewer.setModel(model);
   refreshColors();
+  // Edits can change the bounding box; keep the FE Mesh panel's element-count
+  // estimate honest. (B-rep sources get the equivalent via the re-posted
+  // `geometry` message after each edit.)
+  meshingPanel.setModelExtents(viewer.getModelExtents());
 }
 
 function showSidebar(): void {
@@ -554,6 +584,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         refreshColors();
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
+        meshingPanel.setSourceKind("brep");
+        meshingPanel.setModelExtents(viewer.getModelExtents());
+        syncMeshSizeSeed();
         showSidebar();
         setStatus("");
       } catch (err) {
@@ -569,6 +602,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       partsModel.load(msg.parts);
       refreshColors();
       partsPanel.render(partsModel.list());
+      meshingPanel.renderParts(partsModel.list());
       showSidebar();
       break;
 
@@ -596,6 +630,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
         setSelectableModes(["volume", "surface"]);
         editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
+        meshingPanel.setSourceKind("mesh");
+        meshingPanel.setModelExtents(viewer.getModelExtents());
+        syncMeshSizeSeed();
         showSidebar();
         setStatus("");
         if (hasMultipleNodes(root)) showTree(root);
@@ -630,6 +667,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "meshingOptions":
       // Initial hydration from the host (or the reloaded sidecar) — does not echo back as a write.
       meshingModel.load(msg.options);
+      syncMeshSizeSeed();
       meshingPanel.render(meshingModel.get());
       break;
 
@@ -643,7 +681,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // displayed (see `meshingError` below, which deliberately leaves state alone).
       meshingEnabled = true;
       meshingToggle?.classList.add("active");
-      meshingPanel.render(meshingModel.get(), { nodeCount: msg.nodeCount, elementCount: msg.elementCount });
+      meshingPanel.render(meshingModel.get(), {
+        nodeCount: msg.nodeCount,
+        elementCount: msg.elementCount,
+        elapsedMs: msg.elapsedMs,
+      });
       break;
 
     case "meshingError":

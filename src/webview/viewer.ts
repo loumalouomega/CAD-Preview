@@ -87,6 +87,24 @@ export class Viewer {
     return this.model;
   }
 
+  /**
+   * The current model's world-space bounding-box dimensions and diagonal, or
+   * `null` if no model is loaded. Recomputed on demand (same `Box3` math
+   * `frame()` uses) so it automatically tracks edit-driven model rebuilds.
+   * Feeds the FE Mesh panel's bbox-derived default size and element-count
+   * estimate — display-only, never mutates geometry.
+   */
+  getModelExtents(): { size: [number, number, number]; diagonal: number } | null {
+    if (!this.model) return null;
+    const box = new THREE.Box3().setFromObject(this.model);
+    if (box.isEmpty()) return null;
+    const size = box.getSize(new THREE.Vector3());
+    return {
+      size: [size.x, size.y, size.z],
+      diagonal: size.length(),
+    };
+  }
+
   /** Replaces the current model with `object`, recenters and fits the camera to it. */
   setModel(object: THREE.Object3D): void {
     // A previously-generated FE mesh overlay was computed from the OLD geometry;
