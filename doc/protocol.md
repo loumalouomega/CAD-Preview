@@ -160,7 +160,8 @@ type HostToWebview =
   | { type: 'editError'; message: string }
   | { type: 'exportMesh'; requestId: string; format: CadFormat }
   | { type: 'meshingOptions'; options: MeshOptions }
-  | { type: 'meshingResult'; positions: string; indices: string; nodeCount: number; elementCount: number }
+  | { type: 'meshingResult'; positions: string; indices: string; nodeCount: number; elementCount: number;
+      elementGroups: MeshElementGroup[]; elapsedMs: number }
   | { type: 'meshingError'; message: string }
 ```
 
@@ -312,12 +313,25 @@ target is `"msh"`) on a successful GMSH run. `positions`/`indices` are the base6
 `Float32Array`/`Uint32Array` boundary triangulation, encoded exactly like
 `EncodedMesh`'s buffers — for a 3D mesh these are the tetrahedra's boundary faces
 derived host-side, not the tetrahedra themselves. `nodeCount`/`elementCount` are the
-full node/element counts (not just the displayed boundary triangle count). The
-webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices))` and
-renders the stats in the panel's status line.
+full node/element counts (not just the displayed boundary triangle count), and
+`elapsedMs` is the wall-clock duration of the generate call. `elementGroups`
+partitions `indices` into contiguous per-part runs (`{name, color, indexStart,
+indexCount}`, with a trailing `name`/`color` = `null` run for triangles not claimed
+by any part) so the overlay can be built multi-material with per-part colours. The
+webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices,
+msg.elementGroups))` and renders the stats (counts + time) in the panel's status
+line.
 
 ```json
-{ "type": "meshingResult", "positions": "AAAA...", "indices": "BBBB...", "nodeCount": 421, "elementCount": 1893 }
+{
+  "type": "meshingResult", "positions": "AAAA...", "indices": "BBBB...",
+  "nodeCount": 421, "elementCount": 1893,
+  "elementGroups": [
+    { "name": "inlet", "color": "#ff0000", "indexStart": 0, "indexCount": 264 },
+    { "name": null, "color": null, "indexStart": 264, "indexCount": 5412 }
+  ],
+  "elapsedMs": 3217
+}
 ```
 
 ### `meshingError`

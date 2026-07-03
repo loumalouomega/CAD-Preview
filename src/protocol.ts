@@ -69,6 +69,8 @@ export type HostToWebview =
       nodeCount: number;
       elementCount: number;
       elementGroups: MeshElementGroup[];
+      /** Wall-clock duration of the generate call, for the panel's status line. */
+      elapsedMs: number;
     }
   | { type: "meshingError"; message: string };
 

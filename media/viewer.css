@@ -654,6 +654,162 @@ body {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+/* ── Large-mesh warning (above the size controls, always visible) ── */
+#meshing-warning {
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  font-size: 10px;
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-editorWarning-foreground, #cca700));
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700);
+  border-radius: 3px;
+}
+
+/* ── Primary size control: presets + coarser→finer slider + readout ── */
+.meshing-size {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.meshing-preset-row {
+  display: flex;
+  gap: 4px;
+}
+
+.meshing-preset {
+  flex: 1;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 0;
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.meshing-preset:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.meshing-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meshing-slider-end {
+  flex-shrink: 0;
+  font-size: 9px;
+  opacity: 0.6;
+}
+
+input[type="range"].meshing-slider {
+  flex: 1;
+  min-width: 40px;
+  height: 14px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+input[type="range"].meshing-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--vscode-scrollbarSlider-background, #4a4a4a);
+}
+input[type="range"].meshing-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  border: none;
+  background: var(--vscode-progressBar-background, #0e70c0);
+  cursor: pointer;
+}
+input[type="range"].meshing-slider:disabled::-webkit-slider-thumb {
+  background: var(--vscode-scrollbarSlider-background, #4a4a4a);
+  cursor: default;
+}
+input[type="range"].meshing-slider:focus {
+  outline: none;
+}
+
+.meshing-slider-readout {
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+/* ── Sections: "Part sizes" + collapsible "Advanced settings" ── */
+.meshing-section {
+  margin-bottom: 4px;
+}
+
+.meshing-section-title {
+  font-size: 10px;
+  opacity: 0.7;
+  margin: 4px 0 2px;
+}
+
+.meshing-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  margin: 4px 0 2px;
+  padding: 0;
+  font: inherit;
+  font-size: 10px;
+  color: inherit;
+  opacity: 0.8;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+.meshing-section-header:hover {
+  opacity: 1;
+}
+
+.meshing-section-chevron {
+  width: 10px;
+  flex-shrink: 0;
+}
+
+.meshing-section.collapsed .meshing-section-body {
+  display: none;
+}
+
+.meshing-part-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.meshing-part-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+}
+
+.meshing-part-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meshing-part-size {
+  flex: 0 0 64px;
+}
+
 #meshing-status {
   padding: 4px 8px;
   font-size: 10px;

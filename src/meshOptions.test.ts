@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateMeshOptions, applyStlPartSizeOverride, DEFAULT_MESH_OPTIONS } from "./meshOptions";
+import { validateMeshOptions, applyStlPartSizeOverride, DEFAULT_MESH_OPTIONS, SIZE_MAX_SENTINEL } from "./meshOptions";
 import type { Part } from "./protocol";
 
 function part(overrides: Partial<Part>): Part {
@@ -134,5 +134,14 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       optimize: true,
       stlAngle: 40,
     });
+  });
+
+  it("defaults sizeMax to the unbounded sentinel the webview seeds over", () => {
+    expect(DEFAULT_MESH_OPTIONS.sizeMax).toBe(SIZE_MAX_SENTINEL);
+  });
+
+  it("round-trips a seeded (finite, non-sentinel) sizeMax untouched", () => {
+    const seeded = { ...DEFAULT_MESH_OPTIONS, sizeMax: 4.21 };
+    expect(validateMeshOptions(seeded)).toEqual(seeded);
   });
 });

@@ -162,6 +162,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             return;
           }
           const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
+          const startedAt = Date.now();
           const result = await generateMesh(this.context.extensionPath, input, options, parts);
           post({
             type: "meshingResult",
@@ -170,6 +171,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             elementGroups: result.elementGroups,
             nodeCount: result.nodeCount,
             elementCount: result.elementCount,
+            elapsedMs: Date.now() - startedAt,
           });
         } catch (err) {
           post({ type: "meshingError", message: (err as Error).message });

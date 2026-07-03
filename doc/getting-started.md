@@ -189,21 +189,29 @@ for the full technical write-up.
 
 To generate a mesh:
 
-1. Set the meshing options in the panel: **Dimension** (1D/2D/3D), **Size min /
-   max**, **2D algorithm** / **3D algorithm**, **Element order** (linear/
-   quadratic), and **Optimize**.
+1. Pick a target element size with the **coarser→finer slider** (or a
+   **Coarse/Medium/Fine** preset). The default is derived from the model's
+   bounding box (diagonal / 20), and the readout below the slider shows the
+   current size plus a rough estimate of how many elements it will produce.
+   Fine-grained options (dimension, algorithms, element order, …) live in the
+   collapsed **Advanced settings** section.
 2. Click **▶ Generate**. The overlay appears and the panel's status line shows
-   `Nodes: N · Elements: M`, or an error message if generation fails.
+   `Nodes: N · Elements: M · 3.2 s`, or an error message if generation fails.
 3. Click **🔬 FE Mesh** in the toolbar to show/hide the overlay without
    discarding it; click **Clear** in the panel to remove it entirely.
 
 | FE Mesh control | Action |
 |---|---|
+| **Coarser→finer slider** | The primary control: sets the target element size (`Mesh.MeshSizeMax`), log-scaled between bbox-diagonal/5 (coarsest) and /200 (finest). The readout shows the size and an order-of-magnitude element-count estimate; a warning appears above the panel when the estimate exceeds ~1M elements |
+| **Coarse / Medium / Fine** | One-click presets: element size = bbox diagonal / 10, / 20 (the default), / 50 |
+| **Part sizes** | One size input per defined Part (visible once parts exist) — the same per-part target size as the Parts panel's input, mirrored here; blank inherits the global size |
+| **Advanced settings** (collapsed) | The raw Gmsh options below |
 | **Dimension** | 1D (edges only), 2D (surface triangulation), or 3D (volume tetrahedralization) |
-| **Size min / max** | Bounds on generated element size (`Mesh.MeshSizeMin`/`Mesh.MeshSizeMax`) |
+| **Size min / max** | Bounds on generated element size (`Mesh.MeshSizeMin`/`Mesh.MeshSizeMax`); **Size max** is the same value the slider drives, shown numerically (clearing it restores the bbox-derived default) |
 | **2D algorithm / 3D algorithm** | The Gmsh meshing algorithm to use for each dimension |
 | **Element order** | Linear (1) or quadratic (2) elements |
 | **Optimize** | Run Gmsh's mesh optimizer after generation |
+| **STL angle (°)** | Surface-classification angle for mesh/STL sources (disabled for B-rep documents, which never reclassify) |
 | **▶ Generate** | Run Gmsh now with the current options and show the result as an overlay |
 | **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), or OFF. Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and require linear (order 1) elements. |
 | **📤 Export** | Mesh with the current options and save the result in the format picked above, via a Save dialog (independent of whether **▶ Generate** was already clicked — it always (re)generates fresh) |
