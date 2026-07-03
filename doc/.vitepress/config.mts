@@ -4,6 +4,10 @@ export default defineConfig({
   title: 'CAD Preview',
   description: 'Interactive 3D CAD and mesh previews in VS Code',
   base: '/CAD-Preview/',
+  // Links out of doc/ to repo-root files (CLAUDE.md, README.md, LICENSE) are
+  // valid on disk/GitHub but outside VitePress's srcDir, so its dead-link
+  // checker can't resolve them — ignore just those.
+  ignoreDeadLinks: [/\.\.\/(CLAUDE|README|LICENSE)/],
   themeConfig: {
     nav: [
       { text: 'Home',            link: '/' },

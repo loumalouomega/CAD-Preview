@@ -345,8 +345,8 @@ format):
   material/property data of any kind, so there's never a second property id
   to reference.
 - **`mdpaGeometries` ("Geometries")** — tets → `Begin Geometries
-  Tetrahedra3D4`, triangles → `Begin Geometries Triangle3D3`, `<id> <n1> ...
-  <nk>` with **no property id** (the structural difference from the other
+  Tetrahedra3D4`, triangles → `Begin Geometries Triangle3D3`,
+  `<id> <n1> ... <nk>` with **no property id** (the structural difference from the other
   mode, confirmed against Kratos's own docs, not inferred) and no `Properties`
   block. Kratos's `Geometries` is a single container, so both geometry kinds
   **share one id space** — tets get `1..T`, triangles continue `T+1..T+G` in

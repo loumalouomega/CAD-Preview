@@ -695,8 +695,8 @@ function serializeMeshJson(sourceName: string, options: MeshOptions): string
 function generateGeoScript(sourceName: string, options: MeshOptions): string
 ```
 `generateGeoScript` templates a `.geo` Gmsh script directly from the `MeshOptions`
-JSON (`Merge "<source>"` + one `Mesh.*` assignment per field + a trailing `Mesh
-<dimension>;`) — this exists because GMSH-JS itself has no API to emit a clean,
+JSON (`Merge "<source>"` + one `Mesh.*` assignment per field + a trailing
+`Mesh <dimension>;`) — this exists because GMSH-JS itself has no API to emit a clean,
 parametric `.geo` file from in-memory model state (only the fully-expanded
 `.geo_unrolled` form via `gmsh.write()`, see `gmshService.ts` above). The
 generated file's own header comment states it is auto-generated; **hand-edits to
