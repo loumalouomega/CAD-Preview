@@ -1,5 +1,7 @@
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
+import type { MeshOptions } from "./meshOptions";
+import type { MeshExportFormatId } from "./meshExportFormats";
 
 export type { EditOp } from "./editOps";
 
@@ -45,6 +47,7 @@ export interface Part {
   surfaces: string[];  // face ids
   lines: string[];     // edge ids
   points: string[];    // point (vertex) ids
+  meshSize?: number;   // optional Gmsh target element size for local refinement
 }
 
 /** Messages sent from the extension host to the webview. */
@@ -57,7 +60,26 @@ export type HostToWebview =
   | { type: "status"; text: string }
   | { type: "error"; message: string }
   | { type: "editError"; message: string }
-  | { type: "exportMesh"; requestId: string; format: CadFormat };
+  | { type: "exportMesh"; requestId: string; format: CadFormat }
+  | { type: "meshingOptions"; options: MeshOptions }
+  | {
+      type: "meshingResult";
+      positions: string;
+      indices: string;
+      nodeCount: number;
+      elementCount: number;
+      elementGroups: MeshElementGroup[];
+    }
+  | { type: "meshingError"; message: string };
+
+/** One contiguous run of triangles in `meshingResult.indices` belonging to a
+ * single part (or, for `name === null`, the trailing ungrouped/default run). */
+export interface MeshElementGroup {
+  name: string | null;
+  color: string | null;
+  indexStart: number;
+  indexCount: number;
+}
 
 /** Messages sent from the webview to the extension host. */
 export type WebviewToHost =
@@ -67,7 +89,10 @@ export type WebviewToHost =
   | { type: "editsChanged"; ops: EditOp[] }
   | { type: "exportRequest" }
   | { type: "exportResult"; requestId: string; data: string; binary: boolean }
-  | { type: "exportError"; requestId: string; message: string };
+  | { type: "exportError"; requestId: string; message: string }
+  | { type: "meshingChanged"; options: MeshOptions }
+  | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
+  | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array): string {

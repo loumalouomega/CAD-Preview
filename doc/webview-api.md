@@ -22,6 +22,8 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/editsPanel.ts` | Edits panel DOM — transform composer + op list |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
+| `src/webview/meshingModel.ts` | Current FE-mesh `MeshOptions` store, DOM-free (unit-tested) |
+| `src/webview/meshingPanel.ts` | FE Mesh panel DOM — options form + Generate/Export/Clear buttons |
 
 ---
 
@@ -32,9 +34,9 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 **Startup sequence:**
 1. Acquire VS Code API: `const vscode = acquireVsCodeApi()`.
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
-3. Instantiate `TreePanel(document.getElementById('tree-panel'))`.
+3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, and `MeshingPanel(document.getElementById('meshing-panel'), ...)`.
 4. Call `setupViewControls(viewer)` (in a `try/catch` — a UI wiring failure must not block the ready handshake).
-5. Wire toolbar buttons (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`). The `#export` button posts `{ type: "exportRequest" }` — it doesn't show any UI itself; the host owns the quick-pick and save dialog.
+5. Wire toolbar buttons (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`, `#meshing-toggle`). The `#export` button posts `{ type: "exportRequest" }` — it doesn't show any UI itself; the host owns the quick-pick and save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible.
 6. Register `window.addEventListener('message', ...)` for host messages.
 7. Post `{ type: 'ready' }` to the host.
 
@@ -46,12 +48,24 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"tree"` | `TreePanel.render(msg.root)` |
 | `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `splitMeshesIntoFacets(obj)` → `viewer.setModel(model)`, pick modes `volume` + `surface` |
 | `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` |
+| `"edits"` | `EditsModel.load(msg.ops)` → (mesh sources) `rebuildMeshModel()` → `EditsPanel.render()` |
 | `"status"` | Set `#status-text` content |
 | `"error"` | Show `#error-overlay` with message |
+| `"editError"` | Show `#error-overlay` with message (same rendering as `"error"`, distinct only by intent) |
 | `"exportMesh"` | `exportModel(viewer.getModel(), msg.format)` → posts back `"exportResult"` (with `data`/`binary`) or `"exportError"` on failure, correlated by `msg.requestId` |
+| `"meshingOptions"` | `MeshingModel.load(msg.options)` (hydration only) → `MeshingPanel.render()` |
+| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices))` → `MeshingPanel.render(..., { nodeCount, elementCount })` |
+| `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
 
 The webview also posts `{ type: "partsChanged", parts }` whenever the user edits
-parts; the host debounces and writes the sidecar.
+parts, `{ type: "editsChanged", ops }` whenever the op-stack mutates, and
+`{ type: "meshingChanged", options }` whenever a mesh-option control changes;
+the host debounces each independently and writes the matching sidecar(s). See
+`meshingModel.ts`/`meshingPanel.ts` below for the FE-mesh wiring, including
+`currentStlIfMeshSource()` — the helper that snapshots the displayed model to
+base64 STL (via `meshExporters.ts`'s `exportModel`) for `meshingGenerate`/
+`meshingExport` on mesh-format documents, since the host has no B-rep to
+re-export for those.
 
 **Helper functions:**
 
@@ -113,6 +127,36 @@ Replaces the current model. Calls `clearModel()`, adds the new object to the sce
 clearModel(): void
 ```
 Removes the current model from the scene, disposes all geometries and materials (recursive), and resets the root reference.
+
+```typescript
+setMeshOverlay(obj: THREE.Object3D | null): void
+```
+Replaces the generated FE-mesh overlay (from `geometryBuilder.buildFEMesh()`).
+Disposes the previous overlay's geometries/materials and removes it from the
+scene — the overlay is a **sibling of `model`**, never one of its children, so
+toggling it off leaves the original geometry completely untouched. Pass `null`
+to just clear the overlay. `setModel()` calls `this.setMeshOverlay(null)` as its
+very first line: a previously-generated overlay was computed from the *old*
+geometry and must not linger looking valid over a newly-loaded model.
+
+`setMeshOverlay()` also toggles the model's shaded faces via the private
+`setModelFacesVisible()` helper: showing an overlay (`obj !== null`) hides every
+mesh tagged `userData.entityType === "surface"` (leaving edges/points visible as
+a feature-line reference), and clearing it (`obj === null`) restores them. Two
+opaque solids occupying the same space are illegible layered on top of each
+other; this is display-only (`Object3D.visible`), never touches geometry.
+
+```typescript
+setMeshOverlayVisible(visible: boolean): void
+```
+Shows/hides the *current* overlay in place (`Object3D.visible`) without
+disposing it, mirroring the model-faces visibility via the same
+`setModelFacesVisible()` helper. This is what the toolbar's FE Mesh toggle
+calls — switching it off then back on must redisplay the same generated mesh
+instantly, with no re-run of Generate needed. A no-op when `meshOverlay` is
+`null` (nothing generated yet). Distinct from `setMeshOverlay(null)`, which
+actually disposes the overlay and is reserved for a new model loading, the
+panel's Clear button, or a fresh Generate replacing it with a new one.
 
 **Camera operations:**
 
@@ -350,6 +394,28 @@ function mergeAndBuild(meshes: { positions: Float32Array; indices: Uint32Array }
 ```
 Concatenates positions and remaps indices from multiple buffers into a single `THREE.BufferGeometry`. Calls `geometry.computeVertexNormals()`. Returns a `THREE.Mesh` via `meshFromGeometry()` (imported from `viewer.ts`).
 
+```typescript
+function buildFEMesh(positionsB64: string, indicesB64: string): THREE.Group
+```
+Builds the display group for a generated FE-mesh surface (a `meshingResult`
+message's boundary triangulation), shown via `Viewer.setMeshOverlay()` — distinct
+from the model's own B-rep/native faces. Decodes the buffers, builds a
+`THREE.BufferGeometry`, and returns a `"feMesh"`-named `THREE.Group` containing:
+a shaded `THREE.Mesh` (`MeshStandardMaterial`, color `0x4ea1ff` — a distinct hue
+from the default face color so the overlay reads as separate from the model) plus
+a `THREE.LineSegments` wireframe (`WireframeGeometry` + `LineBasicMaterial`,
+color `0x1a3d66`) over the same geometry. Both are tagged
+`userData.entityType = "mesh"` — deliberately **not** `"surface"`/`"line"`, so
+the existing picking/parts-colouring code (which only recognizes
+`"volume"|"surface"|"line"|"point"`) never tries to pick or colour the overlay.
+The shaded mesh uses an unlit `MeshBasicMaterial` (not `MeshStandardMaterial`
+like other face materials) — a tet-mesh boundary's many small, irregularly
+oriented triangles shade unevenly under scene lighting, which looks like
+scattered holes even on a complete, watertight mesh; flat color avoids that.
+It also sets `polygonOffset: true` (`polygonOffsetFactor`/`polygonOffsetUnits:
+1`) because its wireframe is built from that exact same geometry — perfectly
+coincident triangles/lines z-fight without it.
+
 **Decode helpers:**
 
 ```typescript
@@ -558,3 +624,86 @@ and never collide with the loaded file's `node-N` ids. `baseAlignedMatrix`/
 the op's `axis` via `Quaternion.setFromUnitVectors`, then translate; get the
 rotate-then-translate order wrong and non-canonical-axis primitives land off-centre
 (regression-tested with a tilted-axis cylinder in `meshEdits.test.ts`).
+
+## `src/webview/meshingModel.ts`
+
+### `MeshingModel`
+
+The in-webview store for the current FE-mesh generation options. Pure data (no
+DOM), mirroring `EditsModel`/`PartsModel`'s pattern but simpler: since options are
+a single flat bag rather than a list, there is no undo/redo/redo-buffer — just a
+current value that `update()` patches in place.
+
+```typescript
+class MeshingModel {
+  constructor(onChange: () => void)
+  load(options: MeshOptions): void        // hydrate from host — does NOT fire onChange
+  get(): MeshOptions                       // a copy; mutating it does not affect internal state
+  update(patch: Partial<MeshOptions>): void // merge + fire onChange
+}
+```
+
+Every `update()` fires `onChange`, wired in `main.ts` to post `meshingChanged`
+(persisting the sidecar host-side) and re-render the panel — clearing any stale
+stats/error readout, since changing options doesn't itself produce a new result
+until the next **Generate**. `load()` does **not** fire — it is the initial
+host→webview hydration (from the sidecar or `DEFAULT_MESH_OPTIONS`) and must not
+echo back as a write.
+
+## `src/webview/meshingPanel.ts`
+
+### `MeshingPanel`
+
+Manages the `#meshing-panel` DOM: a form (dimension, size min/max, 2D/3D
+algorithm dropdowns, element order, optimize checkbox) plus a Generate button, an
+export-format `<select>` (populated from `MESH_EXPORT_FORMATS` in
+`src/meshExportFormats.ts` — one shared registry instead of one button per
+format) + Export button, a Clear button, and a status line. Pure DOM, no
+business logic, no `prompt()`/`alert()` (VS Code webviews block those — same
+constraint as the Parts/Edits panels).
+
+```typescript
+interface MeshingStats { nodeCount: number; elementCount: number }
+interface MeshingError { error: string }
+
+interface MeshingPanelCallbacks {
+  onOptionsChange: (patch: Partial<MeshOptions>) => void
+  onGenerate: () => void
+  onExport: (format: MeshExportFormatId) => void  // the format currently picked in the `<select>`
+  onClear: () => void
+}
+
+class MeshingPanel {
+  constructor(panel: HTMLElement, cb: MeshingPanelCallbacks)
+  render(options: MeshOptions, status?: MeshingStats | MeshingError): void
+  setBusy(busy: boolean): void
+}
+```
+
+`render()` syncs every form control to `options` and updates the status line:
+blank when `status` is omitted, `Nodes: N · Elements: M` for a `MeshingStats`, or
+the error string (with an error CSS class) for a `MeshingError`. The 2D/3D
+algorithm dropdowns are populated from small curated, **not exhaustive**, lists
+of well-known GMSH algorithm ids (`Mesh.Algorithm`/`Mesh.Algorithm3D`) — e.g.
+Frontal-Delaunay (`6`) for 2D and Frontal (`4`, the default) for 3D — rather than
+every id GMSH supports.
+
+`setBusy(true)` disables `#meshing-generate` (a slow WASM call can't be
+re-triggered mid-flight) and shows the indeterminate `#meshing-progress` bar
+(CSS keyframe sweep — GMSH's `generate()` is one opaque blocking call with no
+progress hook to report a real percentage from) plus a `"Generating…"` status
+line; `setBusy(false)` reverses both. `main.ts`'s `onGenerate` calls
+`setBusy(true)` before posting `meshingGenerate`, and the `meshingResult`/
+`meshingError` handlers call `setBusy(false)` before rendering the outcome.
+Export (`onExport`) is not wired to `setBusy` — its
+save-dialog-driven completion surfaces through the generic `status`/`error`
+messages (`setStatus()`, the toolbar status bar), not this panel.
+
+In `main.ts`, `onGenerate`/`onExport` each independently call an
+async `currentStlIfMeshSource()` helper before posting (returns `undefined` for
+B-rep documents, since the host re-exports STEP itself), then post
+`meshingGenerate`/`meshingExport` with the current `MeshingModel.get()` snapshot
+plus that optional `stl`. `onClear` calls `viewer.setMeshOverlay(null)` directly,
+resets the toolbar toggle's `meshingEnabled`/`.active` state (same
+toggle-truthfulness rule `meshingResult`/`meshingError` follow), and re-renders
+the panel with no status.

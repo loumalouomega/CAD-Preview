@@ -65,6 +65,23 @@ describe("PartsModel", () => {
     expect(m.entitiesOf(0)).toEqual([{ entityType: "volume", entityId: "solid-0" }]);
   });
 
+  it("sets and clears a part's meshSize, firing onChange", () => {
+    const onChange = vi.fn();
+    const m = new PartsModel(onChange);
+    m.create();
+    m.setMeshSize(0, 0.75);
+    expect(m.list()[0].meshSize).toBe(0.75);
+    m.setMeshSize(0, undefined);
+    expect(m.list()[0].meshSize).toBeUndefined();
+    expect(onChange).toHaveBeenCalledTimes(3); // create + 2 setMeshSize calls
+  });
+
+  it("preserves meshSize through clone() on list()/load()", () => {
+    const m = new PartsModel(() => {});
+    m.load([{ name: "X", color: "#abcdef", volumes: [], surfaces: [], lines: [], points: [], meshSize: 1.5 }]);
+    expect(m.list()[0].meshSize).toBe(1.5);
+  });
+
   it("isolates internal state via clones", () => {
     const m = new PartsModel(() => {});
     m.create();

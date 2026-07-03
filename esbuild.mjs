@@ -22,7 +22,17 @@ const wasmPathPlugin = {
 };
 
 /** Extension host bundle: Node/CJS.  opencascade.js is bundled (not external)
- *  so esbuild converts its ESM to CJS. `vscode` stays external. */
+ *  so esbuild converts its ESM to CJS. `vscode` stays external.
+ *
+ *  `banner` + `define` restore a real `import.meta.url` for bundled ESM deps.
+ *  esbuild's ESM→CJS conversion replaces `import.meta` with an empty stub
+ *  object, so any bundled code that reads `import.meta.url` (e.g.
+ *  @loumalouomega/gmsh-wasm's emscripten-generated gmsh-core.mjs, which uses
+ *  it to locate its own script directory under Node) gets `undefined` and
+ *  throws. This is esbuild's documented workaround: inject a real file URL
+ *  for the bundle's own location, and substitute every `import.meta.url`
+ *  reference in the bundle (including inside third-party deps) with it.
+ *  opencascade.js has no `import.meta` references, so this is a no-op there. */
 const extensionConfig = {
   entryPoints: ["src/extension.ts"],
   bundle: true,
@@ -32,6 +42,12 @@ const extensionConfig = {
   outfile: "dist/extension.js",
   external: ["vscode"],
   plugins: [wasmPathPlugin],
+  banner: {
+    js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
+  },
+  define: {
+    "import.meta.url": "import_meta_url",
+  },
   sourcemap: true,
   logLevel: "info",
 };
@@ -48,16 +64,19 @@ const webviewConfig = {
   logLevel: "info",
 };
 
-/** Copy the WASM binary to dist/ so it ships with the packaged extension. */
+/** Copy the WASM binaries to dist/ so they ship with the packaged extension. */
 function copyWasm() {
-  const src = path.join(
-    __dirname,
-    "node_modules/opencascade.js/dist/opencascade.wasm.wasm"
-  );
-  const dst = path.join(__dirname, "dist/opencascade.wasm.wasm");
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.copyFileSync(src, dst);
-  console.log(`Copied opencascade.wasm.wasm → dist/ (${(fs.statSync(dst).size / 1e6).toFixed(1)} MB)`);
+  const binaries = [
+    ["node_modules/opencascade.js/dist/opencascade.wasm.wasm", "dist/opencascade.wasm.wasm"],
+    ["node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-core.wasm", "dist/gmsh-core.wasm"],
+  ];
+  for (const [srcRel, dstRel] of binaries) {
+    const src = path.join(__dirname, srcRel);
+    const dst = path.join(__dirname, dstRel);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(src, dst);
+    console.log(`Copied ${srcRel.split("/").pop()} → ${dstRel} (${(fs.statSync(dst).size / 1e6).toFixed(1)} MB)`);
+  }
 }
 
 if (watch) {

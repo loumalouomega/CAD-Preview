@@ -7,8 +7,13 @@ import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL } from "./exportTarget
 import { readParts, writeParts } from "./partsStore";
 import { readEdits, writeEdits } from "./editsStore";
 import type { EditOp } from "./editOps";
+import { readMeshOptions, writeMeshOptions, writeGeoScript } from "./meshOptionsStore";
+import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
+import { meshExportFormat } from "./meshExportFormats";
+import { applyStlPartSizeOverride } from "./meshOptions";
+import type { MeshOptions } from "./meshOptions";
 
-/** Debounce window for autosaving the parts/edits sidecars after changes. */
+/** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
 
 const BREP_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
@@ -69,6 +74,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const pending = new Map<string, PendingExport>();
     let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
     // The live edit op-list. Loaded from the sidecar on `ready`, updated on every
     // `editsChanged`. Threaded into the B-rep load + export so the view and Export
@@ -102,6 +108,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         loadModel();
         post({ type: "edits", ops: currentEdits });
         void this.sendParts(document.uri, post);
+        void this.sendMeshOptions(document.uri, post);
         return;
       }
 
@@ -131,6 +138,118 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // B-rep edits are applied in the host, so re-tessellate immediately. Mesh
         // edits are applied in the webview itself, which already updated the view.
         if (route && route.strategy === "occt") loadModel();
+        return;
+      }
+
+      if (msg.type === "meshingChanged") {
+        const options = msg.options;
+        // Debounced sidecar autosave (separate timer/files from parts and edits).
+        if (meshSaveTimer) clearTimeout(meshSaveTimer);
+        meshSaveTimer = setTimeout(() => {
+          void Promise.all([writeMeshOptions(document.uri, options), writeGeoScript(document.uri, options)]).then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save mesh options: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      if (msg.type === "meshingGenerate") {
+        try {
+          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl);
+          if (!input) {
+            post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
+            return;
+          }
+          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
+          const result = await generateMesh(this.context.extensionPath, input, options, parts);
+          post({
+            type: "meshingResult",
+            positions: encodeBuffer(result.positions),
+            indices: encodeBuffer(result.indices),
+            elementGroups: result.elementGroups,
+            nodeCount: result.nodeCount,
+            elementCount: result.elementCount,
+          });
+        } catch (err) {
+          post({ type: "meshingError", message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "meshingExport") {
+        try {
+          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl);
+          if (!input) {
+            post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
+            return;
+          }
+          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
+          if (msg.target === "msh") {
+            const result = await generateMesh(this.context.extensionPath, input, options, parts);
+            await this.promptSaveAndWrite(
+              document.uri,
+              "msh",
+              "GMSH Mesh",
+              async () => Buffer.from(result.mshText, "utf8"),
+              post
+            );
+          } else if (msg.target === "geoUnrolled") {
+            const geo = await exportGeoUnrolled(this.context.extensionPath, input, options, parts);
+            await this.promptSaveAndWrite(
+              document.uri,
+              "geo_unrolled",
+              "GMSH Unrolled Geometry",
+              async (saveUri) => {
+                if (!geo.xao) return Buffer.from(geo.text, "utf8");
+                // B-rep geometry can't be textually unrolled — gmsh.write() emitted a
+                // `Merge "<memfs path>.xao";` stub. Write the real content (the XAO
+                // companion) as a sibling of the saved file and fix the reference up
+                // to a relative name so it actually resolves when reopened.
+                const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
+                const xaoName = `${saveName}.xao`;
+                const xaoUri = vscode.Uri.joinPath(saveUri, "..", xaoName);
+                await vscode.workspace.fs.writeFile(xaoUri, geo.xao);
+                const fixedText = geo.text.replace(/Merge "[^"]*\.xao";/, `Merge "${xaoName}";`);
+                return Buffer.from(fixedText, "utf8");
+              },
+              post
+            );
+          } else if (msg.target === "mdpaElements" || msg.target === "mdpaGeometries") {
+            // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
+            // exportMdpa's doc comment), unlike every other format below.
+            const format = meshExportFormat(msg.target)!;
+            const text = await exportMdpa(
+              this.context.extensionPath,
+              input,
+              options,
+              parts,
+              msg.target === "mdpaElements" ? "elements" : "geometries"
+            );
+            await this.promptSaveAndWrite(
+              document.uri,
+              format.extension,
+              format.filterLabel,
+              async () => Buffer.from(text, "utf8"),
+              post
+            );
+          } else {
+            // Every other registered format (VTK/UNV/Abaqus/Nastran/SU2/etc.) — a
+            // plain generate-then-write with no companion file, see `exportMeshFormat`.
+            const format = meshExportFormat(msg.target);
+            if (!format) throw new Error(`Unknown mesh export format: ${msg.target}`);
+            const text = await exportMeshFormat(this.context.extensionPath, input, options, parts, msg.target);
+            await this.promptSaveAndWrite(
+              document.uri,
+              format.extension,
+              format.filterLabel,
+              async () => Buffer.from(text, "utf8"),
+              post
+            );
+          }
+        } catch (err) {
+          post({ type: "error", message: `Export failed: ${(err as Error).message}` });
+        }
         return;
       }
 
@@ -197,6 +316,61 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     }
   }
 
+  /** Loads the mesh-options sidecar (if any) and sends it to the webview. */
+  private async sendMeshOptions(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
+    const options = await readMeshOptions(uri);
+    post({ type: "meshingOptions", options });
+  }
+
+  /**
+   * Resolves the geometry `generateMesh`/`exportGeoUnrolled` need, per the
+   * document's route: B-rep sources are re-exported to STEP (via the existing
+   * `exportBRep`, so live edits are reflected); mesh sources need the webview's
+   * already-triangulated data, passed in as base64 `stl`. Returns `undefined`
+   * when a mesh-format document has no `stl` payload — callers should treat
+   * that as a graceful "nothing to mesh yet", not a thrown error.
+   */
+  private async resolveMeshInput(
+    uri: vscode.Uri,
+    route: FileRoute | undefined,
+    ops: EditOp[],
+    stl: string | undefined
+  ): Promise<MeshGenerationInput | undefined> {
+    if (route && route.strategy === "occt") {
+      const sourceBytes = await vscode.workspace.fs.readFile(uri);
+      const stepBytes = await exportBRep(
+        this.context.extensionPath,
+        sourceBytes,
+        route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+        "step",
+        ops
+      );
+      return { kind: "brep", stepBytes };
+    }
+
+    if (!stl) return undefined;
+    return { kind: "stl", stlBytes: Buffer.from(stl, "base64") };
+  }
+
+  /**
+   * Reads the parts sidecar and shapes it per `input`'s kind: B-rep sources
+   * pass `parts` straight through to `generateMesh`/`exportGeoUnrolled` (which
+   * turn them into physical groups + per-part sizing fields); STL/mesh
+   * sources can't get true physical groups (see `gmshPartsMap.ts`), so `parts`
+   * is dropped ([]) and `options` instead gets `applyStlPartSizeOverride`'s
+   * one-off sizing degrade for just this call — never persisted back to the
+   * `.mesh.json` sidecar.
+   */
+  private async resolveMeshPartsAndOptions(
+    uri: vscode.Uri,
+    input: MeshGenerationInput,
+    options: MeshOptions
+  ): Promise<{ parts: Part[]; options: MeshOptions }> {
+    const parts = await readParts(uri);
+    if (input.kind === "brep") return { parts, options };
+    return { parts: [], options: applyStlPartSizeOverride(options, parts) };
+  }
+
   /**
    * Prompts for a target format and destination, then writes the export. B-rep
    * targets are written directly via OCCT; mesh targets are serialized in the
@@ -223,37 +397,56 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     if (!picked) return;
 
     const targetFormat = picked.format;
-    const ext = EXPORT_EXTENSION[targetFormat];
-    const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
-    const defaultUri = vscode.Uri.joinPath(uri, "..", `${baseName}.${ext}`);
 
-    const saveUri = await vscode.window.showSaveDialog({
-      defaultUri,
-      filters: { [EXPORT_LABEL[targetFormat]]: [ext] },
-    });
-    if (!saveUri) return;
-
-    try {
-      let bytes: Uint8Array;
+    await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async (_saveUri) => {
       if (BREP_FORMATS.has(targetFormat)) {
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
-        bytes = await exportBRep(
+        return exportBRep(
           this.context.extensionPath,
           sourceBytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
           ops
         );
-      } else {
-        const requestId = `${Date.now()}-${Math.random()}`;
-        const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
-          pending.set(requestId, { resolve, reject });
-          post({ type: "exportMesh", requestId, format: targetFormat });
-        });
-        bytes = result.binary
-          ? Buffer.from(result.data, "base64")
-          : Buffer.from(result.data, "utf8");
       }
+
+      const requestId = `${Date.now()}-${Math.random()}`;
+      const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
+        pending.set(requestId, { resolve, reject });
+        post({ type: "exportMesh", requestId, format: targetFormat });
+      });
+      return result.binary ? Buffer.from(result.data, "base64") : Buffer.from(result.data, "utf8");
+    }, post);
+  }
+
+  /**
+   * Shared save-dialog + write flow used by `handleExport` and `meshingExport`:
+   * computes a default filename beside the source (`<baseName>.<ext>`), prompts
+   * `showSaveDialog`, invokes `getBytes(saveUri)` to produce the file's contents
+   * (the chosen `saveUri` is passed through so a caller needing to write a
+   * sibling companion file — e.g. the `.geo_unrolled` export's XAO companion —
+   * can derive its name/location from it), writes it, and posts a
+   * `status`/`error` message — so the caller doesn't have to duplicate the
+   * dialog/write/error-post boilerplate.
+   */
+  private async promptSaveAndWrite(
+    uri: vscode.Uri,
+    ext: string,
+    filterLabel: string,
+    getBytes: (saveUri: vscode.Uri) => Promise<Uint8Array>,
+    post: (msg: HostToWebview) => void
+  ): Promise<void> {
+    const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+    const defaultUri = vscode.Uri.joinPath(uri, "..", `${baseName}.${ext}`);
+
+    const saveUri = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { [filterLabel]: [ext] },
+    });
+    if (!saveUri) return;
+
+    try {
+      const bytes = await getBytes(saveUri);
       await vscode.workspace.fs.writeFile(saveUri, bytes);
       post({ type: "status", text: `Exported to ${saveUri.fsPath}` });
     } catch (err) {
@@ -312,8 +505,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             <button id="edits-clear" title="Clear all edits" disabled>Clear</button>
           </div>
         </div>
-        <div id="edits-compose"></div>
-        <div id="edits-body"></div>
+        <div id="edits-scroll">
+          <div id="edits-compose"></div>
+          <div id="edits-body"></div>
+        </div>
+      </div>
+      <div id="meshing-panel">
+        <div id="meshing-header">
+          <span id="meshing-title">FE Mesh</span>
+          <div id="meshing-actions">
+            <button id="meshing-generate" title="Generate mesh">▶ Generate</button>
+            <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
+            <button id="meshing-export" title="Export mesh">📤 Export</button>
+            <button id="meshing-clear" title="Clear generated mesh">Clear</button>
+          </div>
+        </div>
+        <div id="meshing-progress"></div>
+        <div id="meshing-body"></div>
+        <div id="meshing-status"></div>
       </div>
     </div>
     <div id="app"></div>
@@ -324,6 +533,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="grid" title="Toggle grid">▦ Grid</button>
     <button id="export" title="Export model">📤 Export</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">🌳 Tree</button>
+    <button id="meshing-toggle" title="Toggle FE mesh overlay">🔬 FE Mesh</button>
     <div id="select-group" title="Pick entities in the view to assign to a part">
       <button id="sel-toggle" title="Toggle selection mode">🖱️ Select</button>
       <button class="sel-mode" data-mode="point" title="Pick points (vertices)">📍 Point</button>

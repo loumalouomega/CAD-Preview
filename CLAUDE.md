@@ -19,6 +19,17 @@ of the change, not a follow-up. Concretely:
 If a change is purely internal refactoring with no observable behavior or API
 difference, docs don't need to move — use judgment, but default to checking.
 
+## License
+
+This project is licensed **GPL-2.0-or-later** (not MIT) because it bundles
+`@loumalouomega/gmsh-wasm`, which statically links the GPL-2.0-or-later-licensed Gmsh
+(and OpenCASCADE) into its shipped WASM binary — distributing that binary makes
+CAD-Preview a combined/derivative work bound by the same terms. **Before adding any
+new dependency that gets bundled into the shipped extension** (i.e. anything that
+ends up in the packaged `.vsix`, not just a dev/build-time tool), check its license
+for GPL compatibility first — see the README's "Licensing" section for the current
+rationale and attribution.
+
 ## Architecture (non-negotiable invariants)
 
 - **OpenCascade.js (OCCT WASM) runs in the Node extension host**, never in the webview.
@@ -390,13 +401,17 @@ be incoherent (same rationale as the 2D profile sketches above).
   is a *consistency* choice: Vol/Surf/Line already show everything (original +
   added), so Point mode doing the same is the coherent design, not a corner-cut —
   confirmed 8 unique corners on a plain box, 64 on `bull.stp`.
-- **Points are NEVER resolved as operands by any other op** — `addLine`/`addArc`
-  take typed `Vec3` coordinates, not point-id references, matching every other
-  creation op in this codebase (Box/Sphere/.../Circle/Rectangle/Polygon all take
-  pure numeric params). This means point extraction is **display-only** — there
-  is **no `collectVertices` in `occtOperations.ts`**, and therefore **none of the
-  lockstep-pipeline-pair risk** the free-face fix had (nothing needs to resolve a
-  `point-N` id back to a live vertex during editing).
+- **Points are NEVER resolved as operands by any other *editing* op** —
+  `addLine`/`addArc` take typed `Vec3` coordinates, not point-id references,
+  matching every other creation op in this codebase (Box/Sphere/.../Circle/
+  Rectangle/Polygon all take pure numeric params). So for edit-op replay, point
+  extraction is **display-only** — none of the lockstep-pipeline-pair risk the
+  free-face fix had (nothing needs to resolve a `point-N` id back to a live
+  vertex during editing). This is no longer *globally* true, though: `collectVertices`
+  **was** added to `occtOperations.ts` for the Gmsh parts-preservation feature
+  (`src/gmshPartsMap.ts`, see the Meshing section below), which does need to
+  resolve a part's `point-N` ids back to live vertices for physical-group/sizing
+  creation — mirrors `extractVertices`' exact `HashCode`+`IsSame` dedup order.
 - **Point rendering: `THREE.Sprite`**, not `THREE.Points`/`PointsMaterial` (which
   packs every point into one `BufferGeometry` and raycasts to an index, not a
   distinct `Object3D` — breaking the "one entity, one tagged object" invariant
@@ -472,6 +487,280 @@ be incoherent (same rationale as the 2D profile sketches above).
   structurally invalid selection — same graceful-degradation rule as every
   other op in this file.
 
+## Meshing (GMSH-JS)
+
+Users can generate a finite-element mesh (nodes + triangles/tetrahedra) of the
+currently displayed model with [Gmsh](https://gmsh.info) compiled to WebAssembly
+via `@loumalouomega/gmsh-wasm`, shown as an overlay on top of the existing view.
+Non-negotiable invariants:
+
+- **GMSH runs host-only, never in the webview** — a second, independent
+  Emscripten module from OCCT's, but the same architectural rule: `src/gmshService.ts`
+  holds the singleton, `src/webview/*` only ever sees the resulting triangulation
+  buffers over the postMessage protocol, never the GMSH API itself.
+- **Lazy WASM init, mirroring OCCT's.** Never call the factory in `activate()`.
+  `getGmsh(extensionPath)` initializes on the first call — i.e. the first click of
+  **▶ Generate** or **📤 Export** (any format), never on file open —
+  and memoizes the resolved promise as a module singleton. Subsequent generations
+  reuse it; per-generation state resets via `gmsh.clear()` + `gmsh.model.add(...)`,
+  never a second `gmsh.initialize()`.
+- **`wasmBinary` must be passed explicitly — same Node fetch-path lesson as OCCT.**
+  `getGmsh` reads `dist/gmsh-core.wasm` via `fs.readFileSync` and passes it as
+  `wasmBinary` to the raw Emscripten factory; letting the factory try to resolve
+  its own path fails the same way `initOpenCascade`'s zero-arg wrapper does (see
+  "WASM loading" above).
+- **Default 3D algorithm is Frontal (`Mesh.Algorithm3D = 4`), not GMSH's own
+  default.** The WASM build has a documented 3D Delaunay boundary-recovery bug on
+  geometry re-imported via `gmsh.model.occ.importShapes` — i.e. every B-rep source
+  this feature meshes, by definition, since it's always imported that way. Frontal
+  avoids the failure mode for the common case (opening a STEP/IGES/BREP file) out
+  of the box; users can still pick Delaunay (`1`) from the 3D algorithm dropdown
+  for cases it doesn't affect. See `doc/gmsh-integration.md`'s "Known limitations"
+  for the full verification trail (GMSH-JS's own README documents this upstream).
+- **Sidecar pair `<model>.mesh.json` + `<model>.geo`, beside parts/edits.** The
+  FE-mesh options (`MeshOptions` — a flat bag, not an op-list) autosave (~500 ms,
+  its own debounce timer, separate from parts/edits) to `<model>.mesh.json` via
+  `src/meshOptionsStore.ts`; parse/serialize live in the vscode-free
+  `src/meshOptionsSidecar.ts` so they unit-test. `validateMeshOptions` is the
+  single tolerance gate — an individually invalid field falls back to
+  `DEFAULT_MESH_OPTIONS` for that field alone, never rejecting the whole object.
+- **The `.geo` file is ONE-WAY generated — hand-edits are never read back.** On
+  the same debounce, `writeGeoScript()` regenerates `<model>.geo` wholesale from
+  the current `MeshOptions` (`generateGeoScript` in `meshOptionsSidecar.ts`).
+  GMSH-JS has no API to emit a clean, parametric `.geo` script from in-memory
+  state — only the fully-expanded `.geo_unrolled` form via `gmsh.write()`, which
+  is what picking "Gmsh Geometry (.geo_unrolled)" in the panel's export
+  `<select>` and clicking **📤 Export** actually produces (`exportGeoUnrolled`
+  in `gmshService.ts`), a *different* file from the autogenerated sidecar
+  `.geo`. The sidecar `.geo`'s own header comment says as much; any manual edit
+  to it is silently overwritten on the next options change.
+- **Export formats are a single shared registry, not one button per format.**
+  `src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` (`{id, label, extension,
+  filterLabel}[]`) is imported by both the host (picks the MEMFS write
+  extension `gmsh.write()` dispatches on, and the save-dialog filter) and the
+  webview (`meshingPanel.ts` populates the export `<select>` from it) — the
+  original design had one button per format (`📤 .msh`, `📤 .geo`), which
+  doesn't scale once more formats are added. Every format id except `"msh"`
+  (reuses `generateMesh`'s `mshText`), `"geoUnrolled"` (its own XAO-companion
+  handling, see below), and `"mdpaElements"`/`"mdpaGeometries"` (see next
+  bullet) routes through `gmshService.ts`'s generic `exportMeshFormat()`:
+  mesh, then `gmsh.write("/out.<extension>")`, then read back as text —
+  confirmed against the live WASM build for all 10 other registered formats
+  (`msh2`, `vtk`, `unv`, `inp`, `bdf`, `su2`, `mesh`, `stl`, `diff`, `off`).
+  CGNS and MED are recognized by Gmsh's writer-dispatch table but throw
+  `"...compiled without CGNS support"`/`"...must be compiled with MED
+  support..."` in this build (need HDF5-backed libs not linked in) — excluded
+  from the registry rather than offered as an always-failing option. See
+  `doc/gmsh-integration.md`'s "Export formats" section for the full probe
+  results and which other formats were excluded as unusable/redundant.
+- **Kratos MDPA is hand-written — the one export format with no `gmsh.write()`
+  support at all.** `mdpaElements`/`mdpaGeometries` are listed *first* in
+  `MESH_EXPORT_FORMATS`, making `mdpaElements` the default-selected export
+  format. `src/mdpaWriter.ts` (pure, vscode/WASM-free, unit-tested in
+  `mdpaWriter.test.ts` against hand-built fixtures — mirrors `partsSidecar.ts`/
+  `editOps.ts`'s pure-module convention) serializes a plain `MdpaMesh`
+  (`{nodes, tets, triangles, groups}`) to ASCII text; `gmshService.ts`'s
+  `exportMdpa()` + private `extractMdpaMesh()` pull that data off the live
+  gmsh model after `mesh.generate()` (per-entity-tag `getElements(dim, tag)`
+  loops, same pattern as `extractBoundaryFaces`/`appendTriangles2D`) and hand
+  it to `writeMdpa()` — no MEMFS write/read-back round trip. Two mutually
+  exclusive modes: `"elements"` writes `Element3D4N`/`SurfaceCondition3D3N`
+  under `Begin Elements`/`Begin Conditions`, each `<id> <prop_id> <n1..nk>`
+  with `prop_id` always `0` (this codebase has no material/property data) in
+  a single `Begin Properties 0` block; `"geometries"` writes
+  `Tetrahedra3D4`/`Triangle3D3` under `Begin Geometries` instead, `<id>
+  <n1..nk>` with **no** property id, and — since Kratos's `Geometries` is one
+  container — tets and triangles **share one id space** (tets `1..T`,
+  triangles continue `T+1..T+G`). A cell type's root block and its matching
+  `SubModelPart*` sub-block are omitted entirely when empty (e.g. a
+  `dimension: 2` generate has triangles but no tets) rather than writing an
+  empty pair; `options.elementOrder !== 1` is rejected with an actionable
+  error before `mesh.generate()` runs (a 10-node tet/6-node triangle can't be
+  `Element3D4N`/`Tetrahedra3D4`), and `extractMdpaMesh()` throws as a
+  defensive backstop if it ever finds any other 3D/2D element type.
+  **Node ordering**: Kratos's `Tetrahedra3D4`/`Triangle3D3` reference-element
+  node order (confirmed against Kratos's own node-ordering docs) is the
+  standard simplex convention Gmsh's own element types 4/2 already use — 1:1,
+  no permutation — but since that couldn't be verified byte-for-byte against
+  Gmsh's *own* node-ordering docs (an automated fetch didn't return the
+  diagrams), `mdpaWriter.ts`'s `orientTet()` defensively recomputes each tet's
+  signed volume and swaps the last two output node ids if negative, so every
+  emitted tet has a positive Jacobian regardless. **SubModelParts** map 1:1 to
+  `Part[]` — always flat (no nesting concept exists anywhere in this
+  codebase's `Part[]`), B-rep sources only (mesh/STL documents get `parts:
+  []` before reaching `gmshService.ts`, same as every other parts-preservation
+  feature). `extractMdpaMesh()`'s private `groupPartsAcrossDims()` (the 4-map
+  generalization of `groupTagsByPart`) reuses `PartGroupMaps` from
+  `applyPartsToGmshModel` — never recomputed — to bucket cells per part and
+  resolve `lines`/`points` selections to extra node ids via `getNodes(1,
+  curveTag, /*includeBoundary*/ true)`/`getNodes(0, pointTag)` (edges/points
+  contribute only to `SubModelPartNodes`, never their own element/condition/
+  geometry entries — this exporter's cell scope is strictly linear tets and
+  triangles). A SubModelPart's `SubModelPartNodes` is always the **union** of
+  its explicit point/curve selections and every node its grouped cells
+  reference, never just one or the other. Output is deterministic: node ids
+  sort by source tag ascending, cell ids sort by each cell's own renumbered
+  node-id tuple ascending — byte-identical regardless of gmsh's internal
+  (not contractually stable) enumeration order. Verified end-to-end against
+  the live WASM build on `angle1.stp` with a 2-part `Part[]`: correct
+  per-part element/condition claiming, no dangling node references, and
+  the `elementOrder: 2` pre-flight rejection. See
+  `doc/gmsh-integration.md`'s "Kratos MDPA" section for the full write-up.
+- **Two input paths converge on the same options step.** B-rep documents
+  (`kind: "brep"`) re-export the live OCCT shape to STEP bytes via the existing
+  `exportBRep()` (so unsaved edits are reflected) and load them with
+  `gmsh.model.occ.importShapes` + `synchronize`. Mesh documents (`kind: "stl"`)
+  have no B-rep to re-export, so the *webview* serializes the currently displayed
+  `THREE.Object3D` to STL (`currentStlIfMeshSource()` in `main.ts`, reusing the
+  same `exportModel(..., "stl")` Export already uses) and sends it up as a base64
+  `stl` field on `meshingGenerate`/`meshingExport`; the host then reclassifies the
+  raw triangle soup into surfaces (`classifySurfaces` → `createGeometry` →
+  `addSurfaceLoop`/`addVolume` → `synchronize`) since STL has no volume topology.
+- **The mesh overlay is a scene sibling of the model, never mutating the original
+  geometry.** `geometryBuilder.buildFEMesh(positionsB64, indicesB64)` builds a
+  freestanding `THREE.Group` (a shaded mesh + wireframe, both tagged
+  `userData.entityType = "mesh"` — deliberately not `"surface"`/`"line"`, so
+  existing picking/parts-colouring code never touches it). `Viewer.setMeshOverlay()`
+  adds/replaces it as a sibling of `model` in the scene (never a child), disposing
+  the previous overlay's geometries/materials on swap. **It is auto-cleared when a
+  new model loads** — `setModel()` calls `setMeshOverlay(null)` as its very first
+  line, since a previously-generated overlay was computed from the *old* geometry
+  and must not linger looking valid. The toolbar's **🔬 FE Mesh** toggle
+  show/hides the *existing* overlay in place (`Viewer.setMeshOverlayVisible()`,
+  `Object3D.visible`, no dispose) rather than clearing it — toggling off then
+  back on must redisplay the same generated mesh instantly, with no need to
+  re-run Generate. Only three things actually dispose the overlay: a new model
+  loading (above), the panel's **Clear** button, and a fresh **Generate**
+  replacing it with a new one; all three also reset the toggle's `.active`
+  state to stay truthful about what's currently displayed (same rule
+  `meshingResult`/`meshingError` already followed for Generate — the toggle
+  must never claim "on" for content that isn't actually shown). The FE Mesh
+  panel itself is always present in the sidebar regardless of toggle state.
+- **The overlay's shaded mesh is unlit (`MeshBasicMaterial`, one per
+  `elementGroups` entry — see below), not `MeshStandardMaterial` like every
+  other face material in this codebase.** A tet-mesh boundary is
+  thousands of small, irregularly-oriented triangles — unlike a B-rep face's
+  smooth NURBS-tessellated triangulation — so a lit material shades each one
+  differently under the scene's directional/hemisphere lights; triangles
+  facing away from the light go dark/near-black, which reads as scattered
+  holes even though the geometry is a complete, watertight surface (verified:
+  re-running the STEP-export→GMSH-tetrahedralize→boundary-extraction pipeline
+  standalone on `examples/STP/angle1.stp` and rendering the raw output
+  triangles headlessly showed a complete boundary from every angle — the
+  "holes" were a shading artifact, not a gap in the GMSH-generated geometry).
+  A flat unlit color removes that per-facet brightness variation entirely.
+  `buildFEMesh`'s `THREE.LineSegments` wireframe is also a `WireframeGeometry`
+  derived directly from the shaded mesh's `BufferGeometry` — perfectly
+  coincident with its triangles, unlike the base model (whose edges are
+  separate B-rep curve geometry, never literally on top of a face mesh) — so
+  the shaded material also needs `polygonOffset: true` (+
+  `polygonOffsetFactor`/`polygonOffsetUnits: 1`) or the GPU depth test can't
+  reliably resolve filled-triangle-vs-coincident-line-on-top per pixel,
+  compounding the same holes-that-aren't-holes look with z-fighting.
+- **`setMeshOverlay()` also hides the model's shaded faces while an overlay is
+  shown** (`entityType === "surface"` meshes get `.visible = false`; edges/points
+  stay visible as a feature-line reference), restoring them when the overlay is
+  cleared. Two opaque solids occupying the same space are unreadable stacked on
+  each other — display-only, never touches geometry, same "never mutate the
+  original" invariant as the overlay itself.
+- **Generate has no progress reporting from GMSH itself** — `gmsh.model.mesh.
+  generate()` is one opaque blocking WASM call with no progress hook (`GmshLogger`
+  only exposes post-hoc wall/CPU time). `MeshingPanel.setBusy(true/false)`
+  (called from `onGenerate` before posting, and from the `meshingResult`/
+  `meshingError` handlers) is therefore an indeterminate signal only: it disables
+  `#meshing-generate` and shows a CSS keyframe-sweep progress bar
+  (`#meshing-progress`) plus a `"Generating…"` status line. **📤 Export** (any
+  format) isn't wired to it — its save-dialog completion already surfaces
+  through the generic toolbar status bar.
+- **Parts are preserved in generated meshes as Gmsh physical groups —
+  B-rep sources only**, matching the existing `BREP_ONLY_OPS` scope (Gmsh's STL
+  reclassification pipeline produces brand-new surface/volume tags with zero
+  correlation to a mesh document's original ids, so there is no reliable
+  per-part correlation for STL/OBJ/PLY/glTF sources). `src/gmshPartsMap.ts`'s
+  `applyPartsToGmshModel` resolves each part's `face-N`/`edge-N`/`solid-N`/
+  `point-N` ids to Gmsh `(dim,tag)` entities **geometrically** — bounding-box
+  centre matching between CAD-Preview's own OCCT (`bboxCenter`, already used by
+  `explodeSolids`) and Gmsh's own `getBoundingBox`, both computed from the
+  *same* STEP bytes (their two independent, separately-versioned OCCT builds
+  give no ordering guarantee, so `importShapes`'s `outDimTags` order is
+  deliberately **not** relied on) — within a tolerance of `1e-3 × model bbox
+  diagonal`, accepted only if unambiguous. An unresolved/ambiguous entity is
+  silently skipped, same graceful-degradation rule as every other unresolved-id
+  path in this codebase. Resolved entities become one
+  `gmsh.model.addPhysicalGroup(dim, tags, -1, part.name)` per part per
+  dimension, which lands in `.msh` output's `$PhysicalNames` section
+  automatically once created. **`gmsh.write()`'s `Mesh.SaveAll` option must be
+  forced to `1`** (`loadGeometryAndApplyOptions`, unconditionally, parts or no
+  parts) — Gmsh's own default (`0`) writes only elements belonging to *some*
+  physical group once *any* physical group exists, so the instant one part
+  resolves one entity, every other entity's elements would otherwise vanish
+  from `.msh`/`.geo_unrolled` output (physical groups are meant to tag a subset
+  of a full mesh here, never filter it — confirmed as a real, silent regression
+  before this override was added: one part on 1 of 15 surfaces produced a
+  `.msh` containing only that surface's 88 triangles). The **live** overlay is
+  unaffected by `Mesh.SaveAll` either way — it's built from `getNodes()`/
+  `getElements()` calls directly against Gmsh's in-memory model, not from
+  re-reading a written file. **Confirmed against the live WASM**
+  (`examples/STP/angle1.stp`): a no-parts baseline generate produced 499 nodes;
+  the same geometry with one volume-scoped part's `meshSize: 0.5` produced
+  235,088 nodes (clear, correctly-directed local refinement, not a silent
+  no-op), and the resulting `.msh`'s `$PhysicalNames` section listed both a
+  volume- and a surface-scoped part by name at the right dimension. One
+  confirmed gap from that same pass: for a **3D** (`dimension === 3`) generate,
+  a **surface**-scoped part still gets its own `Physical Surface` in `.msh`
+  output correctly, but does **not** get its own overlay colour range
+  (`buildIndices3D` only groups triangles by their owning *volume*, since
+  Gmsh's tet-boundary triangles carry no parent-B-rep-surface link) — it falls
+  into the default-blue trailing range instead. **2D** generates are
+  unaffected (`buildIndices2D` groups directly by surface). **`.geo_unrolled`
+  output does NOT carry `Physical Volume(...)`/`Physical Surface(...)` as
+  textual statements for B-rep sources at all** — see the next bullet for why
+  and how it's made to round-trip them anyway. See `doc/gmsh-integration.md`'s
+  "Parts → physical groups" section for the full write-up.
+- **`gmsh.write("*.geo_unrolled")` cannot textually inline OCC-imported B-rep
+  geometry** — confirmed against the live WASM: for every B-rep source, it
+  writes a single-line stub (`Merge "/out.geo_unrolled.xao";`) referencing a
+  companion **XAO** file (Gmsh's own OCC-preserving exchange format, which does
+  preserve shapes + physical groups + mesh-size fields) it wrote alongside in
+  MEMFS — a path this code originally never read back, so the exported
+  `.geo_unrolled` was a dangling reference to a file that didn't exist on the
+  user's disk. `gmshService.ts`'s `exportGeoUnrolled` now returns `{ text, xao
+  }` (`xao` is `null` for the STL/GEO-kernel path, which unrolls fully inline
+  with no companion needed); `provider.ts`'s `meshingExport` "geo" branch
+  writes the XAO bytes as a sibling of the chosen save path and rewrites the
+  stub's `Merge` reference to that sibling's relative filename before writing
+  the `.geo_unrolled` text, so the pair is self-contained. Verified end-to-end:
+  reopening the rewritten pair in a fresh Gmsh model restored the same
+  volume/surface counts, the same physical groups, and — after re-running
+  `mesh.generate()` — the same node count as the original sized-part generate.
+- **A part's optional `meshSize` (a single target size, not min/max) becomes a
+  Gmsh `Constant` field** scoped to that part's resolved entities (`VIn` +
+  `PointsList`/`CurvesList`/`SurfacesList`/`VolumesList`), and all parts'
+  Constant fields combine via a `Min` field set as the background mesh — so the
+  smallest requested size wins on overlap, and unsized regions keep the global
+  `sizeMin`/`sizeMax` clamps. **STL/mesh sources can't get per-entity sizing**
+  (no correlation, same as physical groups above) — instead
+  `meshOptions.ts`'s `applyStlPartSizeOverride` applies a one-off
+  `sizeMin`/`sizeMax` override for that one generate/export call **only** when
+  *exactly one* part in the document has `meshSize` set (never persisted to
+  `<model>.mesh.json`; 0 or 2+ sized parts is ambiguous and silently no-ops).
+- **The mesh overlay is multi-material, one `MeshBasicMaterial` per
+  `meshingResult.elementGroups` entry** (`{name,color,indexStart,indexCount}`,
+  via `THREE.BufferGeometry.addGroup`) — `gmshService.ts`'s `buildIndices` scopes
+  `getElements(dim, tag)` to one entity at a time (instead of one global call)
+  to bucket triangles into contiguous per-part ranges, with an always-present
+  trailing ungrouped range (`name`/`color` both `null`, rendered in the
+  original default blue) for anything not claimed by a part. For `dimension
+  === 3` this buckets **per volume** — `getElements(3, tag)` limits tets to
+  one volume before the shared-tet-face dedup runs — which stays correct even
+  for two touching part-volumes, since Gmsh tags each tet by its single owning
+  volume regardless of geometric adjacency.
+- Bundling gmsh-wasm is *why this project is GPL-2.0-or-later, not MIT* — see the
+  "License" section above and the README's "Licensing" section for the full
+  rationale. Full technical write-up (input paths, GMSH API call sequences,
+  protocol messages, licensing, and the upstream GMSH-JS gaps found while
+  building this): `doc/gmsh-integration.md`.
+
 ## Build & test
 
 ```bash
@@ -545,6 +834,73 @@ reopen the output → the points/lines/arcs/surfaces/volumes are baked in. On
 `cube.stl`, confirm the **📍 Point** button and the wireframe/build composers are
 disabled. Apply/undo repeatedly + open/close → host memory stays flat (OCCT
 handle-leak check, same as above).
+
+Then exercise **Meshing (GMSH-JS)**: on `bull.stp`, click the toolbar **🔬 FE Mesh**
+toggle (this just arms overlay display — the **FE Mesh** panel is already visible in
+the sidebar). Set options (try 2D vs 3D dimension, a smaller **Size max**, a different
+2D/3D algorithm), click **▶ Generate** → while the WASM call runs, confirm the
+`#meshing-generate` button disables and an indeterminate progress bar/`"Generating…"`
+status appear; once done, confirm a blue mesh overlay appears (the original model's
+shaded faces auto-hide so they don't visually compete with the overlay, but its edges
+stay visible as a feature-line reference — unchanged geometry, `.visible` toggle only)
+and the panel status line shows `Nodes: N · Elements: M`. Confirm the export
+`<select>`'s default selection is "Kratos MDPA — Elements + Conditions (.mdpa)". Pick
+each of that, "Kratos MDPA — Geometries (.mdpa)", "Gmsh Mesh (.msh)", "Gmsh Mesh v2,
+Legacy (.msh2)", and "Gmsh Geometry (.geo_unrolled)" in the export `<select>` and click
+**📤 Export** for each, saving and reopening them (both MDPA modes should contain
+`Begin Nodes`/`Begin Elements`+`Begin Conditions` or `Begin Geometries` blocks and, if
+any Parts exist, `Begin SubModelPart` blocks; `.msh`/`.msh2` are GMSH's native mesh
+formats at two schema versions; `.geo_unrolled` is the fully-expanded script, not the
+sidecar `.geo` — see below) to confirm they contain real content. Also pick a couple
+of the other formats (e.g. VTK, Abaqus `.inp`, or STL) and confirm those export and
+reopen too. Set **Element order** to Quadratic (2) and try exporting either MDPA
+format → confirm a clear error message instead of a corrupt file. Close and reopen the tab → confirm
+`bull.stp.mesh.json` (the options) and `bull.stp.geo` (the generated, editable script)
+exist next to the source, are valid JSON/text, and the CAD file itself is untouched;
+hand-edit `bull.stp.geo` and change an option in the panel → confirm your hand-edit is
+overwritten (one-way generation, by design). Toggle **🔬 FE Mesh** off → confirm the
+overlay disappears and the original model is completely unaffected (no geometry
+change, still editable/exportable normally); toggle back on **without regenerating**
+→ confirm the same overlay reappears instantly. Click **Clear** → confirm the overlay
+is disposed and the toggle turns itself off. Repeat on `cube.stl` (a mesh-format source — Generate
+should still work, reclassifying the STL's triangle soup into a volume before
+meshing). Apply **Generate** repeatedly, toggle on/off, and open/close the tab
+repeatedly → watch extension-host memory stay flat (same OCCT-style leak check as
+above; the GMSH-wasm singleton is reused across generations, only per-generation MEMFS
+files are cleaned up).
+
+Then exercise **parts-preserving meshing**: on `angle1.stp` (or another multi-face
+STEP), create 2+ parts covering different faces/solids and set one part's **mesh
+size** field (in its row in the Parts panel) to a value noticeably smaller than the
+model's default size. Click **▶ Generate** → confirm the overlay recolours per part
+(each part's assigned faces/solids render in that part's colour, everything else in
+the original default blue) and the sized part's region visibly refines. Pick "Gmsh
+Mesh (.msh)" and click **📤 Export**, save, and open the file in a text editor →
+confirm a `$PhysicalNames` section listing the part names, AND confirm the
+`$Elements` section has more than one entity block (i.e. the *whole* model was
+written, not just the sized/assigned part — `Mesh.SaveAll` must be forced on once
+any part exists, or every other entity's elements silently vanish from the file
+even though the live overlay still looks correct). Pick "Kratos MDPA — Elements +
+Conditions" and export it → open the `.mdpa` file and confirm one `Begin SubModelPart
+<name>` per part (names matching the Parts panel, sanitized), each with a non-empty
+`SubModelPartNodes` list and the correct `SubModelPartElements`/`SubModelPartConditions`
+membership for that part's assigned faces/solids; repeat for "Kratos MDPA — Geometries"
+and confirm the equivalent `SubModelPartGeometries` blocks. Pick "Gmsh Geometry
+(.geo_unrolled)" and export it — a companion `<name>.geo_unrolled.xao`
+file is written alongside it (B-rep sources only; this is expected and required, not
+an error) — then reopen the `.geo_unrolled` in a real Gmsh install (or via this
+repo's own `gmsh.open(...)`) with the `.xao` sibling present and confirm the full
+geometry, physical groups, and any per-part sizing field all come back (the
+`.geo_unrolled` text itself has no textual `Physical Volume(...)`/`Physical
+Surface(...)` statements for B-rep sources — OCC geometry can't be unrolled to native
+GEO primitives, so the XAO companion carries that data instead). Reassign/rename/
+recolour a part and regenerate → confirm the overlay and exports pick up the change. On
+`cube.stl`, set a single part's mesh size → confirm Generate applies it as a global
+size override for that one run (no per-part overlay colouring, no physical groups —
+expected, since STL sources can't correlate parts) and `cube.stl.mesh.json` is
+unaffected; set two parts' mesh sizes → confirm it silently falls back to the panel's
+own global size (ambiguous, ignored). Apply/regenerate repeatedly + open/close the
+tab → watch extension-host memory stay flat (same leak check as above).
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.

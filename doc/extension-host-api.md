@@ -18,6 +18,10 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/editOps.ts` | The `EditOp` union + `validateEditOp` tolerance gate (vscode-free) |
 | `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
 | `src/editsSidecar.ts` | Pure parse/serialize for the edits sidecar (vscode-free, unit-tested) |
+| `src/gmshService.ts` | Lazy GMSH-wasm singleton, FE mesh generation + `.geo_unrolled` export |
+| `src/meshOptions.ts` | The `MeshOptions` bag + `validateMeshOptions` tolerance gate (vscode-free) |
+| `src/meshOptionsStore.ts` | Read/write the `<model>.mesh.json` sidecar + generated `<model>.geo` (vscode fs) |
+| `src/meshOptionsSidecar.ts` | Pure parse/serialize for the mesh-options sidecar + `.geo` script generation (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 
 ---
@@ -58,17 +62,39 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 1. Sets the webview options (`enableScripts: true`, `localResourceRoots`).
 2. Sets `webviewPanel.webview.html` to the result of `getHtml()`.
 3. Registers a `webviewPanel.webview.onDidReceiveMessage` listener (a per-panel
-   `pending: Map<string, { resolve; reject }>` correlates export round-trips, and a
-   per-panel debounce timer batches sidecar writes) that handles `"ready"`,
-   `"partsChanged"`, `"exportRequest"`, `"exportResult"`, and `"exportError"`.
-4. On `"ready"`: calls `routeFile()`, dispatches to `handleBRep()` or posts `"loadUrl"`, then calls `sendParts()`.
+   `pending: Map<string, { resolve; reject }>` correlates export round-trips, and
+   **three separate** per-panel debounce timers batch parts/edits/mesh-options
+   sidecar writes) that handles `"ready"`, `"partsChanged"`, `"editsChanged"`,
+   `"meshingChanged"`, `"meshingGenerate"`, `"meshingExport"`, `"exportRequest"`,
+   `"exportResult"`, and `"exportError"`.
+4. On `"ready"`: reads the edits sidecar, calls `routeFile()`, dispatches to
+   `handleBRep()` (which applies the loaded edits) or posts `"loadUrl"`, then
+   posts `"edits"` and calls `sendParts()`/`sendMeshOptions()`.
 5. On `"partsChanged"`: debounces (~500 ms) then `writeParts()` to the sidecar. The CAD file is never written.
-6. On `"exportRequest"`: dispatches to `handleExport()`.
-7. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
+6. On `"editsChanged"`: debounces (~500 ms, its own timer) then `writeEdits()`; for B-rep sources also re-tessellates immediately with the new op-list.
+7. On `"meshingChanged"`: debounces (~500 ms, its own timer) then writes **both**
+   `writeMeshOptions()` and `writeGeoScript()`.
+8. On `"meshingGenerate"`/`"meshingExport"`: resolves the mesh input via
+   `resolveMeshInput()` (re-exports STEP for B-rep sources; uses the message's
+   `stl` field for mesh sources) and calls `generateMesh()`/`exportGeoUnrolled()`,
+   posting `"meshingResult"`/`"meshingError"` (Generate) or writing the file via
+   `promptSaveAndWrite()` (Export).
+9. On `"exportRequest"`: dispatches to `handleExport()`.
+10. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
 
-**`handleBRep(extensionPath, bytes, format, webview)`** — Private method. Calls `loadBRep()`, posts `"status"` progress messages, then posts `"geometry"` (faces + edges) + `"tree"` messages. Posts `"error"` on failure.
+**`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. Posts `"error"` on failure.
 
 **`sendParts(uri, post)`** — Private method. Reads the parts sidecar via `readParts()` and posts a `"parts"` message (empty array when no sidecar exists).
+
+**`sendMeshOptions(uri, post)`** — Private method. Reads the mesh-options sidecar via `readMeshOptions()` and posts a `"meshingOptions"` message (`DEFAULT_MESH_OPTIONS` when no sidecar exists).
+
+**`resolveMeshInput(uri, route, ops, stl)`** — Private method. Builds the
+`MeshGenerationInput` `generateMesh`/`exportGeoUnrolled` need: for a B-rep
+document, re-exports the source to STEP via the existing `exportBRep()` (so live
+edits are reflected); for a mesh document, decodes the caller-supplied base64
+`stl` field. Returns `undefined` when a mesh document has no `stl` payload yet —
+callers treat this as a graceful "nothing to mesh", posting `"meshingError"`
+rather than throwing.
 
 **`handleExport(uri, route, post, pending)`** — Private method. The whole "Export" toolbar button flow:
 1. `exportTargetsFor(route)` → `vscode.window.showQuickPick()` of compatible formats; bails if cancelled.
@@ -81,9 +107,9 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 - A strict CSP nonce.
 - The compiled `media/viewer.js` bundle (IIFE).
 - The `media/viewer.css` stylesheet.
-- Static toolbar HTML (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`, and the `#select-group` selection-mode controls).
+- Static toolbar HTML (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`, `#meshing-toggle`, and the `#select-group` selection-mode controls).
 - Static view-controls panel HTML (`#view-controls`, `#vc-toggle`).
-- Sidebar (`#side`) containing the tree panel (`#tree-panel`) and the Parts panel (`#parts-panel`).
+- Sidebar (`#side`) containing the tree panel (`#tree-panel`), the Parts panel (`#parts-panel`), the Edits panel (`#edits-panel`), and the FE Mesh panel (`#meshing-panel`).
 - Status/error overlay divs.
 
 ---
@@ -391,6 +417,134 @@ every op through `validateEditOp`, dropping malformed ones, preserving order) an
 
 ---
 
+## `src/gmshService.ts`
+
+Manages the GMSH-wasm singleton (a **second**, independent Emscripten module from
+OCCT's) and performs finite-element mesh generation. See
+[GMSH Integration](./gmsh-integration.md) for the full write-up (input paths,
+options, sidecars, protocol messages, and known WASM-build limitations); this
+section covers the module's API surface only.
+
+### Types
+
+```typescript
+type MeshGenerationInput =
+  | { kind: "brep"; stepBytes: Uint8Array }
+  | { kind: "stl"; stlBytes: Uint8Array }
+
+interface MeshResult {
+  positions: Float32Array   // boundary triangulation vertices
+  indices: Uint32Array      // boundary triangulation indices (0-based)
+  nodeCount: number         // full mesh node count
+  elementCount: number      // full mesh element count
+  mshText: string           // raw .msh file contents
+}
+```
+
+### Functions
+
+```typescript
+function getGmsh(extensionPath: string): Promise<GmshApi>
+```
+Returns the memoized GMSH-wasm module, mirroring `getOcct`'s lazy-init discipline:
+never called from `activate()`, initialized on the first call to `generateMesh`/
+`exportGeoUnrolled`/`exportMeshFormat` (i.e. the first time the user clicks
+**▶ Generate** or **📤 Export** — never on file open). Reads
+`dist/gmsh-core.wasm` and passes it as `wasmBinary` to the raw Emscripten factory
+(the same reason as OCCT: passing `wasmBinary` explicitly avoids Node's `fetch()`
+fallback, which cannot resolve a filesystem path), then calls the module's own
+`gmsh.initialize()` exactly once and memoizes the resolved promise. Subsequent
+mesh generations reuse this singleton — per-generation state is reset with
+`gmsh.clear()` + `gmsh.model.add(...)` inside `loadGeometryAndApplyOptions`
+(private), never a second `gmsh.initialize()`.
+
+```typescript
+function resetGmsh(): void
+```
+Resets the singleton (and the internal model-name counter) to its initial state.
+Used by tests and for future hot-reload support.
+
+```typescript
+async function generateMesh(
+  extensionPath: string,
+  input: MeshGenerationInput,
+  options: MeshOptions
+): Promise<MeshResult>
+```
+Loads `input`'s geometry into a fresh GMSH model, applies `options` (`Mesh.
+MeshSizeMin/Max`, `Mesh.Algorithm`, `Mesh.Algorithm3D`, `Mesh.ElementOrder`, `Mesh.
+Optimize`), calls `gmsh.model.mesh.generate(options.dimension)`, and reads the
+result back. For `dimension === 3` the returned `positions`/`indices` are the
+tetrahedral mesh's **boundary surface**, derived by enumerating each tet's 4
+triangular faces (keyed by sorted node tags so a face shared by two tets collides
+to the same key) and keeping only faces that occur exactly once; for `dimension
+=== 2` the generated triangles are used directly; for `dimension === 1` there is
+no triangle to display and both buffers are empty. Writes `/out.msh` to GMSH's
+MEMFS and reads it back as `mshText`. Cleans up (`FS.unlink`) both the input and
+output MEMFS paths in a `finally`, mirroring `occtService.ts`'s handle-cleanup
+discipline (though here the "handles" are MEMFS files, not Emscripten object
+handles — GMSH-wasm's JS API doesn't expose C++ object lifetimes the way OCCT's
+bindings do).
+
+```typescript
+async function exportGeoUnrolled(
+  extensionPath: string,
+  input: MeshGenerationInput,
+  options: MeshOptions
+): Promise<string>
+```
+Same geometry-import + options setup as `generateMesh` (via the shared private
+`loadGeometryAndApplyOptions`), but calls `gmsh.write("/out.geo_unrolled")`
+instead of meshing, and returns the resulting text — lets the FE Mesh panel's
+export `<select>`/**📤 Export** offer a `.geo_unrolled` target without a second
+`getGmsh`/import round trip. Note this is **not** the same file as the
+autogenerated `<model>.geo` sidecar (see `meshOptionsSidecar.ts` below) — GMSH-JS
+has no API to emit a clean, parametric `.geo` script from in-memory state, only
+this fully-expanded "unrolled" form.
+
+```typescript
+async function exportMeshFormat(
+  extensionPath: string,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[],
+  formatId: Exclude<MeshExportFormatId, "msh" | "geoUnrolled">
+): Promise<string>
+```
+The generic sibling of `generateMesh`/`exportGeoUnrolled` covering every other
+format in `src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` registry (VTK,
+I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF, and
+the legacy MSH v2 writer). Unlike `.geo_unrolled`, none of these formats have a
+companion file to handle — `gmsh.write()` dispatches purely by the output
+path's extension, so this is a thin `loadGeometryAndApplyOptions` →
+`mesh.generate(options.dimension)` → `gmsh.write("/out.<extension>")` →
+read-back-as-text. CGNS and MED are recognized by Gmsh's writer-dispatch table
+but throw `"...compiled without CGNS support"`/`"...must be compiled with MED
+support..."` in this WASM build (both need HDF5-backed libs not linked in) —
+excluded from the registry entirely rather than offered as a format that
+always fails; see [GMSH Integration](./gmsh-integration.md) for the full
+per-format probe results against the live WASM build.
+
+**Two input paths, both converging on the shared options step:**
+- **B-rep** (`kind: "brep"`) — `stepBytes` are written to GMSH's MEMFS as
+  `/model.step`, then `gmsh.model.occ.importShapes(tmpPath)` +
+  `gmsh.model.occ.synchronize()` load them.
+- **STL** (`kind: "stl"`) — `stlBytes` are written as `/model.stl`, then
+  `gmsh.merge(tmpPath)` + `gmsh.model.mesh.classifySurfaces(...)` +
+  `gmsh.model.mesh.createGeometry()` reclassify the raw triangle soup into
+  parametric surfaces, and `gmsh.model.geo.addSurfaceLoop`/`addVolume`/
+  `synchronize` declare a volume so a 3D mesh can be generated from a format
+  that otherwise has no volume topology.
+
+`src/provider.ts`'s `resolveMeshInput` decides which input a given document
+produces: B-rep documents call the existing `exportBRep()` to get `stepBytes`
+(so live, unsaved edits are baked in the same way normal Export does); mesh
+documents have no B-rep to re-export, so the *webview* serializes its currently
+displayed model to STL and sends it up as a base64 `stl` field on the
+`meshingGenerate`/`meshingExport` message.
+
+---
+
 ## `src/meshExtract.ts`
 
 Extracts WebGL-ready geometry buffers from an OCCT shape.
@@ -512,6 +666,57 @@ async function writeParts(modelUri, parts): Promise<void>
 
 `provider.ts` calls `readParts()` on open (posts a `parts` message) and, on each
 debounced `partsChanged` message (~500 ms), `writeParts()`.
+
+---
+
+## `src/meshOptions.ts`, `src/meshOptionsStore.ts`, `src/meshOptionsSidecar.ts`
+
+The FE-mesh options model and its sidecar pair, mirroring the parts/edits trios
+(see [GMSH Integration](./gmsh-integration.md) for the feature-level write-up).
+
+`src/meshOptions.ts` is **vscode-free** and holds the flat `MeshOptions` bag plus:
+
+```typescript
+const DEFAULT_MESH_OPTIONS: MeshOptions
+function validateMeshOptions(raw: unknown): MeshOptions | null   // single tolerance gate
+```
+Unlike `EditOp`'s validator, `validateMeshOptions` clamps/defaults **individual**
+invalid fields to the matching `DEFAULT_MESH_OPTIONS` field rather than rejecting
+the whole object — `raw` is only rejected outright (returns `null`) when it isn't
+an object at all. `sizeMin`/`sizeMax` are validated as a pair: if `sizeMin >
+sizeMax` after individually clamping each, both fall back to the defaults
+together rather than leaving an inconsistent pair.
+
+`src/meshOptionsSidecar.ts` is **vscode-free** (unit-tested):
+
+```typescript
+function parseMeshJson(text: string): MeshOptions          // tolerant: DEFAULT_MESH_OPTIONS on any failure
+function serializeMeshJson(sourceName: string, options: MeshOptions): string
+function generateGeoScript(sourceName: string, options: MeshOptions): string
+```
+`generateGeoScript` templates a `.geo` Gmsh script directly from the `MeshOptions`
+JSON (`Merge "<source>"` + one `Mesh.*` assignment per field + a trailing `Mesh
+<dimension>;`) — this exists because GMSH-JS itself has no API to emit a clean,
+parametric `.geo` file from in-memory model state (only the fully-expanded
+`.geo_unrolled` form via `gmsh.write()`, see `gmshService.ts` above). The
+generated file's own header comment states it is auto-generated; **hand-edits to
+`<model>.geo` are never read back by the extension** — it is regenerated
+wholesale from the sidecar on every options change.
+
+`src/meshOptionsStore.ts` wraps them with VS Code filesystem access:
+
+```typescript
+function meshOptionsSidecarUri(modelUri: vscode.Uri): vscode.Uri  // <model>.mesh.json
+async function readMeshOptions(modelUri): Promise<MeshOptions>     // DEFAULT_MESH_OPTIONS if missing/unreadable
+async function writeMeshOptions(modelUri, options): Promise<void>
+function geoScriptUri(modelUri: vscode.Uri): vscode.Uri            // <model>.geo
+async function writeGeoScript(modelUri, options): Promise<void>
+```
+`provider.ts` calls `readMeshOptions()` on `ready` (posts a `meshingOptions`
+message) and, on each debounced `meshingChanged` message (~500 ms, its own timer
+separate from parts/edits), calls **both** `writeMeshOptions()` and
+`writeGeoScript()` — the sidecar and the generated script are always kept in
+sync with each other. Neither the CAD file nor any other sidecar is touched.
 
 ---
 

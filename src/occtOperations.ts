@@ -843,7 +843,7 @@ function normalize(v: Vec3): void {
  * in the rare degenerate-face case an index could shift — accepted.)
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function collectFaces(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {
+export function collectFaces(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const out: any[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -982,7 +982,7 @@ function mateShape(oc: any, shape: any, op: Extract<EditOp, { op: "mate" }>, cle
 
 /** The bounding-box centre of a shape (via `Bnd_Box` corners). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function bboxCenter(oc: any, s: any, cleanup: Array<{ delete(): void }>): Vec3 {
+export function bboxCenter(oc: any, s: any, cleanup: Array<{ delete(): void }>): Vec3 {
   const box = new oc.Bnd_Box_1();
   cleanup.push(box);
   oc.BRepBndLib.Add(s, box, false);
@@ -1039,7 +1039,7 @@ function owningSolid(oc: any, shape: any, face: any, cleanup: Array<{ delete(): 
  * Deduped handles are kept alive in `cleanup` so `IsSame` stays valid.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function collectEdges(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {
+export function collectEdges(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {
   const HASH_UPPER = 1 << 30;
   const seen = new Map<number, Array<{ IsSame(o: unknown): boolean }>>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1079,7 +1079,7 @@ function edgeHasPolyline(oc: any, edge: any, cleanup: Array<{ delete(): void }>)
 
 /** Enumerates solids in deterministic explorer order, tagged `solid-N`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function collectSolids(oc: any, shape: any, cleanup: Array<{ delete(): void }>): Array<{ id: string; solid: any }> {
+export function collectSolids(oc: any, shape: any, cleanup: Array<{ delete(): void }>): Array<{ id: string; solid: any }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const out: Array<{ id: string; solid: any }> = [];
   const exp = new oc.TopExp_Explorer_2(
@@ -1093,6 +1093,38 @@ function collectSolids(oc: any, shape: any, cleanup: Array<{ delete(): void }>):
     const solid = oc.TopoDS.Solid_1(exp.Current());
     cleanup.push(solid);
     out.push({ id: `solid-${i++}`, solid });
+  }
+  return out;
+}
+
+/**
+ * Enumerates unique vertices in the SAME order `extractVertices`
+ * (`src/meshExtract.ts`) assigns `point-N` ids: `HashCode`+`IsSame` de-dup,
+ * unconditional over the whole shape (no solid-ownership split, unlike faces).
+ * Unlike `collectFaces`/`collectEdges`, this has no other caller today — points
+ * are never resolved as edit-op operands — but the Gmsh parts-correlation
+ * pipeline (`src/gmshPartsMap.ts`) needs it to resolve a part's `point-N` ids
+ * back to live vertices for physical-group/sizing-field creation.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function collectVertices(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const out: any[] = [];
+  const seen = new Map<number, Array<{ IsSame(o: unknown): boolean }>>();
+  const exp = new oc.TopExp_Explorer_2(
+    shape,
+    oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
+    oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+  );
+  cleanup.push(exp);
+  for (; exp.More(); exp.Next()) {
+    const vertex = oc.TopoDS.Vertex_1(exp.Current());
+    const hash = vertex.HashCode(HASH_UPPER);
+    const bucket = seen.get(hash);
+    if (bucket && bucket.some((v) => v.IsSame(vertex))) { vertex.delete(); continue; }
+    cleanup.push(vertex);
+    if (bucket) bucket.push(vertex); else seen.set(hash, [vertex]);
+    out.push(vertex);
   }
   return out;
 }

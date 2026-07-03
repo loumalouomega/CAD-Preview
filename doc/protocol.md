@@ -121,6 +121,29 @@ polygon, B-rep only, for use as a later feature-modeling `profile`), and
 bottom-up wireframe modeling (addPoint/addLine/addArc/addSurfaceFromLines/
 addVolumeFromSurfaces, B-rep only).
 
+### `MeshOptions`
+
+```typescript
+interface MeshOptions {
+  dimension: 1 | 2 | 3
+  sizeMin: number
+  sizeMax: number
+  algorithm2D: number   // Mesh.Algorithm
+  algorithm3D: number   // Mesh.Algorithm3D
+  elementOrder: 1 | 2
+  optimize: boolean
+  stlAngle: number       // classifySurfaces angle, degrees
+}
+```
+
+The flat options bag for GMSH FE-mesh generation (see
+[GMSH Integration](./gmsh-integration.md)). `validateMeshOptions` (`src/meshOptions.ts`)
+is the single tolerance gate — an individually invalid field falls back to
+`DEFAULT_MESH_OPTIONS` for that field alone, so a hand-edited or partially-corrupt
+`<model>.mesh.json` sidecar degrades gracefully rather than blocking meshing. Sent
+host → webview in `meshingOptions` (hydration) and webview → host in
+`meshingChanged`/`meshingGenerate`/`meshingExport`.
+
 ---
 
 ## Host → Webview Messages (`HostToWebview`)
@@ -131,9 +154,14 @@ type HostToWebview =
   | { type: 'tree';     root: TreeNode }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | { type: 'parts';    parts: Part[] }
+  | { type: 'edits';    ops: EditOp[] }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
+  | { type: 'editError'; message: string }
   | { type: 'exportMesh'; requestId: string; format: CadFormat }
+  | { type: 'meshingOptions'; options: MeshOptions }
+  | { type: 'meshingResult'; positions: string; indices: string; nodeCount: number; elementCount: number }
+  | { type: 'meshingError'; message: string }
 ```
 
 ### `geometry`
@@ -263,6 +291,46 @@ matching exporter from `three/examples/jsm/exporters/` and replies with
 { "type": "exportMesh", "requestId": "1234-0.56", "format": "stl" }
 ```
 
+### `meshingOptions`
+
+Sent once, right after `parts`, once the host has read the mesh-options sidecar
+(`<model>.mesh.json`). Carries the saved `MeshOptions` (`DEFAULT_MESH_OPTIONS` when no
+sidecar exists). The webview calls `MeshingModel.load()` (hydration only — does not
+echo back as a `meshingChanged` write) and renders the FE Mesh panel form.
+
+```json
+{
+  "type": "meshingOptions",
+  "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 }
+}
+```
+
+### `meshingResult`
+
+Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the
+target is `"msh"`) on a successful GMSH run. `positions`/`indices` are the base64
+`Float32Array`/`Uint32Array` boundary triangulation, encoded exactly like
+`EncodedMesh`'s buffers — for a 3D mesh these are the tetrahedra's boundary faces
+derived host-side, not the tetrahedra themselves. `nodeCount`/`elementCount` are the
+full node/element counts (not just the displayed boundary triangle count). The
+webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices))` and
+renders the stats in the panel's status line.
+
+```json
+{ "type": "meshingResult", "positions": "AAAA...", "indices": "BBBB...", "nodeCount": 421, "elementCount": 1893 }
+```
+
+### `meshingError`
+
+Sent in reply to `meshingGenerate`/`meshingExport` when GMSH throws or the
+document has no mesh geometry available yet (e.g. a mesh-format document before the
+webview has produced an STL snapshot). Rendered as an error string in the FE Mesh
+panel's status line — it does not use the general `#error-overlay` `error` message.
+
+```json
+{ "type": "meshingError", "message": "No mesh geometry available: missing STL data." }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -276,6 +344,9 @@ type WebviewToHost =
   | { type: 'exportRequest' }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
+  | { type: 'meshingChanged'; options: MeshOptions }
+  | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
+  | { type: 'meshingExport'; target: 'msh' | 'geoUnrolled'; options: MeshOptions; stl?: string }
 ```
 
 ### `partsChanged`
@@ -301,6 +372,61 @@ written — only the sidecar. See [`EditOp`](#editop) for op shapes.
 
 ```json
 { "type": "editsChanged", "ops": [ { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0] } ] }
+```
+
+### `meshingChanged`
+
+Sent whenever the user changes a mesh-options form control in the FE Mesh panel.
+Carries the full current `MeshOptions`. The host debounces these (~500 ms, on its
+own timer separate from parts/edits) and writes **two** files on the same tick:
+`<model>.mesh.json` via `writeMeshOptions()` and the regenerated `<model>.geo`
+script via `writeGeoScript()`. Neither generating nor changing options re-runs
+GMSH by itself — that only happens on `meshingGenerate`/`meshingExport`. See
+[GMSH Integration](./gmsh-integration.md).
+
+```json
+{ "type": "meshingChanged", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+```
+
+### `meshingGenerate`
+
+Sent when the user clicks **▶ Generate** in the FE Mesh panel. Carries the current
+`MeshOptions` and, for a mesh-format document only, a base64 `stl` field — a
+fresh snapshot of the currently displayed `THREE.Object3D`, serialized in the
+webview via the same `exportModel(..., "stl")` helper Export already uses (the
+host has no B-rep to re-export for a mesh-sourced document, so it has no other way
+to obtain triangulated geometry for GMSH). B-rep documents omit `stl`; the host
+re-exports the live OCCT shape to STEP itself. The host replies with
+`meshingResult` or `meshingError`.
+
+```json
+{ "type": "meshingGenerate", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+```
+
+### `meshingExport`
+
+Sent when the user picks a format in the FE Mesh panel's export `<select>` and
+clicks **📤 Export**. `target` is a `MeshExportFormatId` (see
+`src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` registry, the single source
+of truth shared by the host and the webview's `<select>` — `"mdpaElements"` is
+listed first and is therefore the default-selected format) selecting which
+output to write: `"msh"` runs `generateMesh` and saves the raw `.msh` text;
+`"geoUnrolled"` calls `exportGeoUnrolled` and saves the `.geo_unrolled` text
+(handling its XAO companion, see below); `"mdpaElements"`/`"mdpaGeometries"`
+run `exportMdpa`, a hand-written Kratos MDPA serializer with no `gmsh.write()`
+involved at all (see `doc/gmsh-integration.md`'s "Kratos MDPA" section); every
+other id (`"msh2"`, `"vtk"`, `"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`,
+`"stl"`, `"diff"`, `"off"`) runs `exportMeshFormat`, a generic
+mesh-then-`gmsh.write()` for whatever other Gmsh output formats this WASM
+build actually supports (confirmed by probing every format Gmsh's writer table
+recognizes — see `doc/gmsh-integration.md`). Same `options`/optional `stl`
+payload as `meshingGenerate`. The host prompts a save dialog (reusing the same
+`promptSaveAndWrite` helper Export uses) and writes the result directly —
+there is no `meshingResult` reply for this message; failures post the general
+`error` message instead of `meshingError`.
+
+```json
+{ "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
 ```
 
 ### `ready`

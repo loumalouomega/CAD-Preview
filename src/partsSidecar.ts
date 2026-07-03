@@ -42,6 +42,10 @@ export function parsePartsJson(text: string): Part[] {
       surfaces: asStringArray(p.surfaces),
       lines: asStringArray(p.lines),
       points: asStringArray(p.points), // [] for sidecars written before points existed
+      meshSize:
+        typeof p.meshSize === "number" && Number.isFinite(p.meshSize) && p.meshSize > 0
+          ? p.meshSize
+          : undefined,
     });
   }
   return parts;

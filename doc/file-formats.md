@@ -190,6 +190,72 @@ edits in** — the export pipeline re-applies the same ops to the exported geome
 > such an op may no longer resolve afterwards. The tolerant parts parser drops
 > unresolved ids on reload, so this degrades gracefully rather than erroring.
 
+## Mesh Options Sidecar (`<model>.mesh.json`) and Generated `.geo` Script
+
+The **FE Mesh** panel's finite-element mesh generation settings (via
+[Gmsh](https://gmsh.info) compiled to WebAssembly — see
+[GMSH Integration](./gmsh-integration.md)) are stored in a **third** JSON sidecar
+next to the CAD file — e.g. `bull.stp` → `bull.stp.mesh.json`. Like parts and
+edits, this never modifies the CAD file. It is read on open (`readMeshOptions()`)
+and autosaved, debounced (~500 ms, its own timer), on every options change
+(`writeMeshOptions()`), both in `src/meshOptionsStore.ts`; parse/serialize live in
+the vscode-free `src/meshOptionsSidecar.ts` so they are unit-tested.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "options": {
+    "dimension": 3,
+    "sizeMin": 0,
+    "sizeMax": 1e22,
+    "algorithm2D": 6,
+    "algorithm3D": 4,
+    "elementOrder": 1,
+    "optimize": true,
+    "stlAngle": 40
+  }
+}
+```
+
+On the same debounce, `writeGeoScript()` also (re)generates an editable Gmsh
+`.geo` script beside the sidecar — e.g. `bull.stp` → `bull.stp.geo` — merging the
+source file and setting one `Mesh.*` option per `MeshOptions` field:
+
+```
+Merge "bull.stp";
+Mesh.MeshSizeMin = 0;
+Mesh.MeshSizeMax = 1e22;
+Mesh.Algorithm = 6;
+Mesh.Algorithm3D = 4;
+Mesh.ElementOrder = 1;
+Mesh.Optimize = 1;
+Mesh 3;
+```
+
+**This `.geo` file is a one-way, generated **output**, not an input CAD-Preview
+reads back.** It exists so the mesh can be regenerated or tweaked directly in
+Gmsh outside the editor. Hand-edits made to it are silently overwritten the next
+time an option changes in the FE Mesh panel — CAD-Preview never parses `.geo`
+files itself. Parsing the sidecar is tolerant: a missing or hand-corrupted
+`<model>.mesh.json` falls back to `DEFAULT_MESH_OPTIONS` rather than blocking the
+panel from working.
+
+**Exported mesh artifacts:** the FE Mesh panel's export `<select>` + **📤 Export**
+write further output files via a native Save dialog, in whichever format is
+picked — hand-written Kratos `.mdpa` (the default; either an Elements +
+Conditions or a Geometries layout, see
+[GMSH Integration § Kratos MDPA](gmsh-integration.md#kratos-mdpa-hand-written-not-a-gmshwrite-format)),
+GMSH's native `.msh` mesh format (nodes + elements), the legacy `.msh2` (v2.2)
+variant, Gmsh's fully-expanded `.geo_unrolled` script, or any of VTK/I-DEAS
+Universal (`.unv`)/Abaqus (`.inp`)/Nastran (`.bdf`)/SU2 (`.su2`)/INRIA Medit
+(`.mesh`)/STL/Diffpack (`.diff`)/OFF — see
+[GMSH Integration § Export formats](gmsh-integration.md#export-formats) for the
+full registry and which formats this WASM build actually supports. Like every
+other Export target in this codebase, these are save-as artifacts the user
+places wherever they choose; they are not sidecars and are not read back by
+CAD-Preview.
+
 ## Export
 
 The toolbar **Export** button converts the currently displayed model into a

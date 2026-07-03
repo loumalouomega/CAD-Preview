@@ -5,7 +5,7 @@
 [![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.80-blue?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![Three.js](https://img.shields.io/badge/Three.js-r160-black?logo=threedotjs)](https://threejs.org/)
 [![OpenCascade.js](https://img.shields.io/badge/OpenCascade.js-1.x-orange)](https://ocjs.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 
 ![](https://raw.githubusercontent.com/loumalouomega/CAD-Preview/master/images/cad_preview.png)
@@ -61,6 +61,18 @@ loaders. Rendering is always Three.js.
   sketches, and the wireframe/build ops are B-rep only.)
 - **Export**: convert the open model to a compatible format and save it via a native
   Save dialog — see [Export](#export) below
+- **FE Meshing**: generate a finite-element mesh (nodes + triangles/tetrahedra) of the
+  open model with [Gmsh](https://gmsh.info) compiled to WebAssembly, shown as an
+  overlay on top of the existing view. Options (dimension, element size, algorithm,
+  element order) are set in the **FE Mesh** panel and autosaved to a
+  `<model>.mesh.json` sidecar alongside a generated, editable `<model>.geo` script;
+  **📤 Export** saves the mesh to disk in any format the panel's dropdown offers,
+  defaulting to **Kratos MDPA** (hand-written, in either an Elements+Conditions
+  or a Geometries layout, preserving named Parts as Kratos SubModelParts), or
+  Gmsh `.msh`/`.msh2`/`.geo_unrolled`, VTK, I-DEAS Universal, Abaqus, Nastran,
+  SU2, INRIA Medit, STL, Diffpack, OFF. The CAD file stays read-only. See
+  [GMSH Integration](https://loumalouomega.github.io/CAD-Preview/gmsh-integration)
+  for details.
 
 ## Export
 
@@ -137,6 +149,30 @@ See [`.github/workflows/docs.yml`](.github/workflows/docs.yml).
 GitHub Actions runs on every push and pull request to `master`:
 builds the extension, runs unit tests, and uploads a `.vsix` artifact.
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+## Licensing
+
+CAD-Preview bundles [`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomega/GMSH-JS),
+which compiles the Gmsh mesh generator and statically links it (together with
+OpenCASCADE Technology) into a single WebAssembly binary. Gmsh is distributed under the
+**GNU General Public License, version 2 or later** (GPL-2.0-or-later), with a linking
+exception that covers Netgen, METIS, OpenCASCADE, and ParaView. Because CAD-Preview
+ships that compiled binary as part of the extension, CAD-Preview itself is distributed
+under the **GPL-2.0-or-later** — see [LICENSE](LICENSE) for the full text.
+
+OpenCASCADE Technology (OCCT) is used in two places in this extension: directly, via
+[`opencascade.js`](https://github.com/donalffons/opencascade.js), for the native B-rep
+read/export pipeline, and indirectly, inside gmsh-wasm's meshing pipeline. OCCT is
+licensed under the **GNU Lesser General Public License, version 2.1**, with an
+additional exception granted by its authors.
+
+Anyone who needs to use Gmsh under terms other than the GPL can obtain a separate
+commercial license directly from its authors at [gmsh.info](https://gmsh.info).
+
+### Attribution
+
+- **Gmsh** — C. Geuzaine and J.-F. Remacle. <https://gmsh.info>
+- **OpenCASCADE Technology (OCCT)** — <https://dev.opencascade.org>
 
 ## License
 

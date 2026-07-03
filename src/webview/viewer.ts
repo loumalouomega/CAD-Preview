@@ -33,6 +33,8 @@ export class Viewer {
   private readonly gizmoSize = 96;
   private readonly gizmoMargin = 10;
   private model: THREE.Object3D | null = null;
+  /** The generated FE-mesh overlay (if any) — a scene sibling of `model`, never a child. */
+  private meshOverlay: THREE.Object3D | null = null;
   private wireframe = false;
   private readonly raycaster = new THREE.Raycaster();
   /** World-space half-thickness for picking thin edge lines; scaled per model. */
@@ -87,6 +89,9 @@ export class Viewer {
 
   /** Replaces the current model with `object`, recenters and fits the camera to it. */
   setModel(object: THREE.Object3D): void {
+    // A previously-generated FE mesh overlay was computed from the OLD geometry;
+    // it's now stale and must not linger looking valid over the new model.
+    this.setMeshOverlay(null);
     this.clearModel();
     this.model = object;
     this.applyWireframe();
@@ -105,6 +110,58 @@ export class Viewer {
       else if (mat) mat.dispose();
     });
     this.model = null;
+  }
+
+  /**
+   * Replaces the generated FE-mesh overlay. Disposes the previous overlay's
+   * geometries/materials and removes it from the scene (a sibling of `model`,
+   * never one of its children), so toggling meshing off leaves the original
+   * geometry completely untouched. Pass `null` to just clear the overlay.
+   */
+  setMeshOverlay(obj: THREE.Object3D | null): void {
+    if (this.meshOverlay) {
+      this.scene.remove(this.meshOverlay);
+      this.meshOverlay.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) mat.dispose();
+      });
+      this.meshOverlay = null;
+    }
+    if (obj) {
+      this.meshOverlay = obj;
+      this.scene.add(obj);
+    }
+    // Shaded faces and the FE-mesh overlay are both opaque solids at the same
+    // location — showing both makes neither legible (see the screenshot in the
+    // originating bug report). Hide the model's faces while an overlay is shown,
+    // keeping edges/points visible as a feature-line reference; restore them the
+    // moment the overlay is cleared. Display-only (Object3D.visible), never
+    // touches geometry.
+    this.setModelFacesVisible(this.meshOverlay === null);
+  }
+
+  /**
+   * Shows/hides the *current* overlay in place (`Object3D.visible`), without
+   * disposing it — unlike `setMeshOverlay(null)`, which tears the overlay down
+   * entirely. This is what the toolbar's FE Mesh toggle uses: switching it off
+   * then back on redisplays the same generated mesh instantly, with no need to
+   * re-run Generate. A no-op if nothing has been generated yet (`meshOverlay`
+   * is `null`) — the model's faces are left exactly as they were in that case.
+   */
+  setMeshOverlayVisible(visible: boolean): void {
+    if (!this.meshOverlay) return;
+    this.meshOverlay.visible = visible;
+    this.setModelFacesVisible(!visible);
+  }
+
+  /** Shows/hides the model's shaded face meshes (`entityType === "surface"`), leaving edges/points untouched. */
+  private setModelFacesVisible(visible: boolean): void {
+    this.model?.traverse((obj) => {
+      if (obj.userData.entityType === "surface") obj.visible = visible;
+    });
   }
 
   /** Frames the current model (or the scene) within the view along `direction`. */

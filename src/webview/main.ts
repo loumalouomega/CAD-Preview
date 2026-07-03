@@ -2,13 +2,15 @@ import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { exportModel } from "./meshExporters";
-import { buildGroupFromEncoded } from "./geometryBuilder";
+import { buildGroupFromEncoded, buildFEMesh } from "./geometryBuilder";
 import { splitMeshesIntoFacets } from "./meshFacets";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
 import { EditsModel } from "./editsModel";
 import { EditsPanel } from "./editsPanel";
+import { MeshingModel } from "./meshingModel";
+import { MeshingPanel } from "./meshingPanel";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
@@ -51,6 +53,7 @@ const partsPanel = new PartsPanel(document.getElementById("parts-panel")!, {
   onRemovePart: (index) => partsModel.remove(index),
   onRename: (index, name) => partsModel.rename(index, name),
   onRecolor: (index, color) => partsModel.recolor(index, color),
+  onMeshSize: (index, size) => partsModel.setMeshSize(index, size),
   onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
   onSelectPart: (index) => {
     previewPartIndex = index;
@@ -295,6 +298,46 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   },
 });
 
+// ── Meshing (GMSH FE-mesh generation) ────────────────────────────────────
+// The webview owns the options bag + panel; the host runs GMSH and posts back
+// a result/error. Mesh-source documents (pristineMesh !== null) must supply
+// an `stl` snapshot of the currently displayed model since the host has no
+// other way to get triangulated geometry for them — B-rep documents don't
+// need one, the host re-exports STEP itself from the live OCCT shape.
+const meshingModel = new MeshingModel(() => {
+  post({ type: "meshingChanged", options: meshingModel.get() });
+  // Options changed but nothing has been (re)generated yet — clear the stale
+  // stats/error readout rather than showing a result for the old options.
+  meshingPanel.render(meshingModel.get());
+});
+
+/** Snapshot of the displayed model as base64 STL, for mesh-source documents only. */
+async function currentStlIfMeshSource(): Promise<string | undefined> {
+  if (!pristineMesh) return undefined;
+  const model = viewer.getModel();
+  if (!model) return undefined;
+  return (await exportModel(model, "stl")).data;
+}
+
+const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!, {
+  onOptionsChange: (patch) => meshingModel.update(patch),
+  onGenerate: async () => {
+    meshingPanel.setBusy(true);
+    post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
+  },
+  onExport: async (format) => {
+    post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource() });
+  },
+  onClear: () => {
+    viewer.setMeshOverlay(null);
+    // Same toggle-truthfulness invariant as `meshingResult`/`meshingError`
+    // below: Clear disposes the overlay, so the toggle must stop claiming "on".
+    meshingEnabled = false;
+    meshingToggle?.classList.remove("active");
+    meshingPanel.render(meshingModel.get());
+  },
+});
+
 /** True when `a` and `b` are not (anti-)parallel — their cross product is non-zero. */
 function nonParallel(a: [number, number, number], b: [number, number, number]): boolean {
   const cx = a[1] * b[2] - a[2] * b[1];
@@ -468,6 +511,34 @@ try {
   post({ type: "log", message });
 }
 
+// ── Meshing toolbar toggle ────────────────────────────────────────────────
+// Toggling only controls whether the generated overlay is shown; the panel
+// itself is always present in the sidebar. A separate try/catch from the view
+// controls above, per the same invariant: a throw here must never block the
+// `ready` handshake / model loading below.
+// `meshingToggle` is hoisted out of the try block (mirroring `meshingEnabled`)
+// so the `meshingResult` handler below can also reflect "a mesh is currently
+// displayed" on the button, keeping the toggle's visual state truthful instead
+// of only ever being flipped by the click handler itself.
+let meshingEnabled = false;
+let meshingToggle: HTMLElement | null = null;
+try {
+  meshingToggle = document.getElementById("meshing-toggle");
+  meshingToggle?.addEventListener("click", () => {
+    meshingEnabled = !meshingEnabled;
+    meshingToggle?.classList.toggle("active", meshingEnabled);
+    // Show/hide in place (keeps the generated overlay alive) rather than
+    // `setMeshOverlay(null)`, which disposes it — otherwise toggling off then
+    // back on left the mesh gone until the next Generate. A no-op if nothing
+    // has been generated yet.
+    viewer.setMeshOverlayVisible(meshingEnabled);
+  });
+} catch (err) {
+  const message = `Meshing controls failed to initialize: ${(err as Error).message}`;
+  console.error(message, err);
+  post({ type: "log", message });
+}
+
 window.addEventListener("unload", () => {
   viewer.dispose();
 });
@@ -554,6 +625,32 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       } catch (err) {
         post({ type: "exportError", requestId: msg.requestId, message: (err as Error).message });
       }
+      break;
+
+    case "meshingOptions":
+      // Initial hydration from the host (or the reloaded sidecar) — does not echo back as a write.
+      meshingModel.load(msg.options);
+      meshingPanel.render(meshingModel.get());
+      break;
+
+    case "meshingResult":
+      meshingPanel.setBusy(false);
+      viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.elementGroups));
+      // A successful generate always results in a visible overlay, so bring the
+      // toggle's state in sync here (rather than optimistically in `onGenerate`,
+      // before the async round-trip even completes) — that way a failed generate
+      // never leaves the toggle falsely claiming "on" for content that was never
+      // displayed (see `meshingError` below, which deliberately leaves state alone).
+      meshingEnabled = true;
+      meshingToggle?.classList.add("active");
+      meshingPanel.render(meshingModel.get(), { nodeCount: msg.nodeCount, elementCount: msg.elementCount });
+      break;
+
+    case "meshingError":
+      // Nothing new was displayed on failure — leave `meshingEnabled`/the toggle's
+      // state exactly as it was (whatever overlay, if any, was already shown stays).
+      meshingPanel.setBusy(false);
+      meshingPanel.render(meshingModel.get(), { error: msg.message });
       break;
   }
 });

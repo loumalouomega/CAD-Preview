@@ -142,8 +142,17 @@ export async function exportBRep(
 ): Promise<Uint8Array> {
   const oc = await getOcct(extensionPath);
 
-  const inPath = `/export-in.${sourceFormat}`;
-  const outPath = `/export-out.${targetFormat}`;
+  // Short, single-character-basename paths: this OCCT WASM build's STEP
+  // path-handling (STEPControl_Reader/Writer, or lower-level XSTEP/IFSelect
+  // infrastructure) has a fixed-size internal C string buffer — total MEMFS
+  // path strings of 11+ characters consistently fail to read (`STEP ReadFile
+  // failed (code 2)`) and, worse, can *silently* corrupt writes (the writer
+  // reports success but the file is unreadable afterward). Verified: 10 chars
+  // OK, 11 FAIL, for all of step/iges/brep (each a 4-char extension). Distinct
+  // from loadBRep()'s `/in.${format}` since both run on the same shared,
+  // long-lived `getOcct()` singleton.
+  const inPath = `/e.${sourceFormat}`;
+  const outPath = `/o.${targetFormat}`;
   oc.FS.writeFile(inPath, bytes);
 
   const cleanup: Array<{ delete(): void }> = [];
