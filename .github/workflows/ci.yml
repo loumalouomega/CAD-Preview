@@ -72,6 +72,9 @@ jobs:
       - name: Package extension (.vsix)
         run: npm run package -- --out cad-preview-${{ github.ref_name }}.vsix
 
+      - name: Publish to VS Code Marketplace
+        run: npx vsce publish --packagePath cad-preview-${{ github.ref_name }}.vsix -p ${{ secrets.VSCE_PAT }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
