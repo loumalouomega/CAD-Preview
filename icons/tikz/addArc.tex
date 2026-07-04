@@ -1,0 +1,10 @@
+% Op icon: arc — a curved segment between two marked endpoints.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-10,0) .. controls (-4,10) and (4,10) .. (10,0);
+  \filldraw (-10,0) circle (1.6);
+  \filldraw (10,0) circle (1.6);
+\end{tikzpicture}
+\end{document}

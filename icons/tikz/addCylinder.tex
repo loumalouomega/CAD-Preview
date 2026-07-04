@@ -1,0 +1,11 @@
+% Op icon: cylinder — two ellipses joined by vertical tangent lines.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!15] (0,-6) ellipse (7 and 2.5);
+  \draw[thick] (-7,-6) -- (-7,6);
+  \draw[thick] (7,-6) -- (7,6);
+  \draw[thick, fill=gray!25] (0,6) ellipse (7 and 2.5);
+\end{tikzpicture}
+\end{document}

@@ -1,0 +1,13 @@
+% Op icon: loft — three stacked profiles (ellipse, ellipse, circle) skinned by connecting rails.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[gray] (-10,-10) .. controls (-7,-4) and (-3.5,4) .. (-3.5,9);
+  \draw[gray] (10,-10) .. controls (7,-4) and (3.5,4) .. (3.5,9);
+  \draw[gray] (0,-13) .. controls (0,-2.2) and (0,4.8) .. (0,12.5);
+  \draw[thick] (0,-10) ellipse (10 and 3);
+  \draw[thick] (0,0) ellipse (7 and 2.2);
+  \draw[thick] (0,9) circle (3.5);
+\end{tikzpicture}
+\end{document}

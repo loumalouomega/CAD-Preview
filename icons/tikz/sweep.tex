@@ -1,0 +1,10 @@
+% Op icon: sweep — a circular profile carried along a curved path to a second position.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-10,-8) to[out=60,in=200] (10,8);
+  \draw[thick, fill=gray!25] (-10,-8) circle (3);
+  \draw[dashed] (10,8) circle (3);
+\end{tikzpicture}
+\end{document}

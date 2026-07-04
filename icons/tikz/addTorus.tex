@@ -1,0 +1,9 @@
+% Op icon: torus — outer ring ellipse with a white inner-hole ellipse.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!20] (0,0) ellipse (10 and 5);
+  \draw[thick, fill=white] (0,0) ellipse (4 and 2);
+\end{tikzpicture}
+\end{document}

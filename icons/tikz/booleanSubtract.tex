@@ -1,0 +1,14 @@
+% Op icon: boolean subtract — crescent of A minus B; B shown dashed as the removed tool.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \fill[gray!25] (-3,0) circle (7);
+  \begin{scope}
+    \clip (3,0) circle (7);
+    \fill[white] (-3,0) circle (7);
+  \end{scope}
+  \draw (-3,0) circle (7);
+  \draw[dashed] (3,0) circle (7);
+\end{tikzpicture}
+\end{document}

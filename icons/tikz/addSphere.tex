@@ -1,0 +1,10 @@
+% Op icon: sphere — filled circle with equator + meridian ellipses (globe hint).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!15] (0,0) circle (10);
+  \draw[gray] (0,0) ellipse (10 and 3);
+  \draw[gray] (0,0) ellipse (3 and 10);
+\end{tikzpicture}
+\end{document}

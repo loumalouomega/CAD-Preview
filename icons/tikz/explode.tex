@@ -1,0 +1,16 @@
+% Op icon: explode — a central body spreading its parts outward along dashed rays.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!25] (-2,-2) rectangle (2,2);
+  \draw[thick, fill=gray!25] (-10,-10) rectangle (-6,-6);
+  \draw[thick, fill=gray!25] (6,-10) rectangle (10,-6);
+  \draw[thick, fill=gray!25] (-10,6) rectangle (-6,10);
+  \draw[thick, fill=gray!25] (6,6) rectangle (10,10);
+  \draw[dashed, ->] (-2,-2) -- (-6,-6);
+  \draw[dashed, ->] (2,-2) -- (6,-6);
+  \draw[dashed, ->] (-2,2) -- (-6,6);
+  \draw[dashed, ->] (2,2) -- (6,6);
+\end{tikzpicture}
+\end{document}

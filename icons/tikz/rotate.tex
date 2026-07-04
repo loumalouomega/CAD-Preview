@@ -1,0 +1,9 @@
+% Op icon: rotate — circular arrow sweeping ~250°, centre pivot dot.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \filldraw (0,0) circle (1.6);
+  \draw[->, thick] (0,10) arc (90:335:10);
+\end{tikzpicture}
+\end{document}
