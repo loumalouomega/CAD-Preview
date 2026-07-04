@@ -222,6 +222,106 @@ describe("applyEditsMesh primitives", () => {
   }
 });
 
+describe("applyEditsMesh holes (three-bvh-csg)", () => {
+  function boxRoot(size = 10): THREE.Object3D {
+    const root = new THREE.Group();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(size, size, size));
+    root.add(mesh);
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    return root;
+  }
+
+  function onlyMesh(root: THREE.Object3D): THREE.Mesh {
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    expect(meshes).toHaveLength(1);
+    return meshes[0];
+  }
+
+  /** Signed-tetrahedra volume of a closed triangle mesh (world-space via matrixWorld). */
+  function volumeOf(mesh: THREE.Mesh): number {
+    mesh.updateWorldMatrix(true, false);
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+    const idx = geo.index;
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    let v = 0;
+    const count = idx ? idx.count : pos.count;
+    for (let i = 0; i < count; i += 3) {
+      a.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(mesh.matrixWorld);
+      b.fromBufferAttribute(pos, idx ? idx.getX(i + 1) : i + 1).applyMatrix4(mesh.matrixWorld);
+      c.fromBufferAttribute(pos, idx ? idx.getX(i + 2) : i + 2).applyMatrix4(mesh.matrixWorld);
+      v += a.dot(b.clone().cross(c)) / 6;
+    }
+    return Math.abs(v);
+  }
+
+  it("addHole punches a through-hole (volume drops by ≈ π r² · depth)", () => {
+    const root = boxRoot(10); // 10³ = 1000, centred at origin
+    applyEditsMesh(root, [{
+      op: "addHole", targets: ["node-1"], position: [0, 0, 5], axis: [0, 0, -1], radius: 2, depth: 10,
+    }]);
+    const result = onlyMesh(root);
+    expect(result.userData.groupId).toBe("node-1"); // keeps the target's id
+    const vol = volumeOf(result);
+    // 1000 − (32-gon of r=2 area ≈ 12.49) × 10 ≈ 875
+    expect(vol).toBeGreaterThan(860);
+    expect(vol).toBeLessThan(890);
+    // bbox untouched — the hole is internal
+    const box = new THREE.Box3().setFromObject(result);
+    expect(box.min.z).toBeCloseTo(-5, 1);
+    expect(box.max.z).toBeCloseTo(5, 1);
+  });
+
+  it("addCounterboreHole on a tilted (−X) axis removes the extra mouth bore", () => {
+    const root = boxRoot(10);
+    applyEditsMesh(root, [{
+      op: "addCounterboreHole", targets: ["node-1"], position: [5, 0, 0], axis: [-1, 0, 0],
+      radius: 1, depth: 10, cbRadius: 2, cbDepth: 2,
+    }]);
+    const vol = volumeOf(onlyMesh(root));
+    // 1000 − (r=1 32-gon ≈ 3.12)·10 − ((r=2 area ≈ 12.49) − 3.12)·2 ≈ 950
+    expect(vol).toBeGreaterThan(940);
+    expect(vol).toBeLessThan(960);
+  });
+
+  it("addCountersinkHole removes more material than the plain hole", () => {
+    const plain = boxRoot(10);
+    applyEditsMesh(plain, [{
+      op: "addHole", targets: ["node-1"], position: [0, 0, 5], axis: [0, 0, -1], radius: 2, depth: 10,
+    }]);
+    const sunk = boxRoot(10);
+    applyEditsMesh(sunk, [{
+      op: "addCountersinkHole", targets: ["node-1"], position: [0, 0, 5], axis: [0, 0, -1],
+      radius: 2, depth: 10, csRadius: 3, csAngleDeg: 90,
+    }]);
+    expect(volumeOf(onlyMesh(sunk))).toBeLessThan(volumeOf(onlyMesh(plain)));
+  });
+
+  it("holes never consume a prim-{K} id (dispatch-order regression)", () => {
+    const root = boxRoot(10);
+    applyEditsMesh(root, [
+      { op: "addBox", center: [50, 0, 0], size: [1, 1, 1] },
+      { op: "addHole", targets: ["node-1"], position: [0, 0, 5], axis: [0, 0, -1], radius: 2, depth: 10 },
+      { op: "addSphere", center: [60, 0, 0], radius: 1 },
+    ]);
+    const ids: string[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) ids.push(o.userData.groupId as string); });
+    ids.sort();
+    // box → prim-0, sphere → prim-1 (NOT prim-2), hole result keeps node-1
+    expect(ids).toEqual(["node-1", "prim-0", "prim-1"]);
+  });
+
+  it("skips a hole whose target does not resolve", () => {
+    const root = boxRoot(10);
+    applyEditsMesh(root, [{
+      op: "addHole", targets: ["node-99"], position: [0, 0, 5], axis: [0, 0, -1], radius: 2, depth: 10,
+    }]);
+    expect(volumeOf(onlyMesh(root))).toBeCloseTo(1000, 0); // unchanged
+  });
+});
+
 describe("applyEditsMesh explode", () => {
   function twoSeparatedBoxes(): THREE.Object3D {
     const root = new THREE.Group();

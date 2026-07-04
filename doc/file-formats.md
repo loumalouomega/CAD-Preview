@@ -150,18 +150,30 @@ the vscode-free `src/editsSidecar.ts` so they are unit-tested.
 
 | Source pipeline | Edit engine | Supported ops (current) |
 |---|---|---|
-| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | translate, rotate, scale, mirror, boolean (unite/subtract/intersect), fillet, chamfer, extrude, revolve, sweep, loft, explode, mate, addBox, addSphere, addCylinder, addCone, addTorus, addPrism, addCircleProfile, addRectangleProfile, addPolygonProfile, addPoint, addLine, addArc, addSurfaceFromLines, addVolumeFromSurfaces |
-| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror, boolean (via `three-bvh-csg`), explode, addBox, addSphere, addCylinder, addCone, addTorus, addPrism — fillet/chamfer, feature-modeling, mate, the 2D profile ops, and the bottom-up wireframe ops (addPoint/addLine/addArc/addSurfaceFromLines/addVolumeFromSurfaces) are B-rep only |
+| B-rep (STEP/IGES/BREP) | host, OCCT (`applyEditsBRep`, `src/occtOperations.ts`) | every op kind: transforms, boolean, fillet/chamfer, extrude/revolve/sweep/loft, shell/splitByPlane/section, explode/mate, all primitives (incl. wedge) and holes, all 2D profile sketches, all curves, and the bottom-up wireframe/build ops |
+| Mesh (STL/OBJ/PLY/glTF) | webview, Three.js (`applyEditsMesh`, `src/webview/meshEdits.ts`) | translate, rotate, scale, mirror, boolean (via `three-bvh-csg`), explode, addBox, addSphere, addCylinder, addCone, addTorus, addPrism, and the hole family (addHole/addCounterboreHole/addCountersinkHole, via CSG subtraction) — everything else (fillet/chamfer, feature-modeling, shell/split/section, mate, wedge, the 2D profile ops, curves, and the bottom-up wireframe ops) is B-rep only |
 
 Primitive-creation ops (`addBox`/`addSphere`/`addCylinder`/`addCone`/`addTorus`/
-`addPrism`) are the one op family that needs **no existing operands** — they build a
+`addPrism`) are an op family that needs **no existing operands** — they build a
 new body from parameters alone and append it, on both pipelines, no B-rep-only
-restriction.
+restriction (`addWedge` is the exception: B-rep only). The hole ops
+(`addHole`/`addCounterboreHole`/`addCountersinkHole`) are the opposite of the
+other `add*` ops — **subtractive**: they cut a cylindrical (optionally
+counterbored/countersunk) hole into the selected target volumes, on both
+pipelines.
 
-The 2D profile ops (`addCircleProfile`/`addRectangleProfile`/`addPolygonProfile`)
-similarly need no operands, but build a **flat face** (no thickness) rather than a
-solid, and are B-rep only — their purpose is to be picked (Surf mode) as an
-`extrude`/`revolve`/`sweep`/`loft` profile afterward. They're grouped together under
+The 2D profile ops (`addCircleProfile`/`addRectangleProfile`/`addPolygonProfile`/
+`addEllipseProfile`/`addRoundedRectangleProfile`/`addSlotProfile`/
+`addTrapezoidProfile`) similarly need no operands, but build a **flat face** (no
+thickness) rather than a solid, and are B-rep only — their purpose is to be
+picked (Surf mode) as an `extrude`/`revolve`/`sweep`/`loft` profile afterward.
+The curve ops (`addPolyline`/`addThreePointArc`/`addSpline`/`addBezier`/
+`addEllipseArc`/`addHelix`) append standalone edges the same way the wireframe
+ops below do (B-rep only; `addSpline` is an approximating, endpoint-exact fit).
+The modify ops (`shell`/`splitByPlane`/`section`, B-rep only) reshape existing
+solids: shell hollows the solids owning the selected opening faces, split cuts
+the targets by a plane keeping one or both sides, and section appends the
+planar cross-section as a sketch face without touching the solids. They're grouped together under
 a `"Sketches"` pseudo-body in the Components tree/view, made visible by a "free-face"
 pass in the tessellation pipeline (see `doc/extension-host-api.md`). Extruding/
 revolving/sweeping/lofting a sketch consumes it into the resulting solid — it doesn't

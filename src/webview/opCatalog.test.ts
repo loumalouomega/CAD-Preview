@@ -1,0 +1,109 @@
+import { describe, expect, it } from "vitest";
+import { OP_CATALOG, allCatalogEntries, describeOp } from "./opCatalog";
+import { OP_ICONS } from "./opIcons";
+import { BREP_ONLY_OPS, type EditOp, type EditOpKind } from "../editOps";
+
+/** One representative well-formed op per kind, for describeOp coverage. */
+const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
+  translate: { op: "translate", targets: ["solid-0"], vec: [1, 2, 3] },
+  rotate: { op: "rotate", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 90 },
+  scale: { op: "scale", targets: ["solid-0"], center: [0, 0, 0], factors: [2, 2, 2] },
+  mirror: { op: "mirror", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [1, 0, 0] },
+  boolean: { op: "boolean", kind: "union", a: ["solid-0"], b: ["solid-1"] },
+  fillet: { op: "fillet", edges: ["edge-0"], radius: 1 },
+  chamfer: { op: "chamfer", edges: ["edge-0"], distance: 1 },
+  extrude: { op: "extrude", profile: "face-0", dir: [0, 0, 1], length: 10 },
+  revolve: { op: "revolve", profile: "face-0", axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 360 },
+  sweep: { op: "sweep", profile: "face-0", path: "edge-0" },
+  loft: { op: "loft", profiles: ["face-0", "face-1"] },
+  explode: { op: "explode", factor: 1 },
+  mate: { op: "mate", faceA: "face-0", faceB: "face-1" },
+  shell: { op: "shell", thickness: -1, openingFaces: ["face-0"] },
+  splitByPlane: { op: "splitByPlane", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1], keep: "both" },
+  section: { op: "section", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1] },
+  addBox: { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] },
+  addSphere: { op: "addSphere", center: [0, 0, 0], radius: 5 },
+  addCylinder: { op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, height: 10 },
+  addCone: { op: "addCone", center: [0, 0, 0], axis: [0, 0, 1], radius1: 5, radius2: 0, height: 10 },
+  addTorus: { op: "addTorus", center: [0, 0, 0], axis: [0, 0, 1], majorRadius: 10, minorRadius: 2 },
+  addPrism: { op: "addPrism", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, sides: 6, height: 10 },
+  addWedge: { op: "addWedge", center: [0, 0, 0], axis: [0, 0, 1], up: [1, 0, 0], dx: 10, dy: 6, dz: 4, ltx: 3 },
+  addHole: { op: "addHole", targets: ["solid-0"], position: [0, 0, 10], axis: [0, 0, -1], radius: 2, depth: 5 },
+  addCounterboreHole: { op: "addCounterboreHole", targets: ["solid-0"], position: [0, 0, 10], axis: [0, 0, -1], radius: 2, depth: 5, cbRadius: 4, cbDepth: 2 },
+  addCountersinkHole: { op: "addCountersinkHole", targets: ["solid-0"], position: [0, 0, 10], axis: [0, 0, -1], radius: 2, depth: 5, csRadius: 4, csAngleDeg: 90 },
+  addCircleProfile: { op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 5 },
+  addRectangleProfile: { op: "addRectangleProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 6 },
+  addPolygonProfile: { op: "addPolygonProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radius: 5, sides: 6 },
+  addEllipseProfile: { op: "addEllipseProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radiusX: 8, radiusY: 5 },
+  addRoundedRectangleProfile: { op: "addRoundedRectangleProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 6, cornerRadius: 1 },
+  addSlotProfile: { op: "addSlotProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], length: 12, width: 4 },
+  addTrapezoidProfile: { op: "addTrapezoidProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], bottomWidth: 10, topWidth: 6, height: 5 },
+  addPoint: { op: "addPoint", position: [1, 2, 3] },
+  addLine: { op: "addLine", start: [0, 0, 0], end: [10, 0, 0] },
+  addArc: { op: "addArc", center: [0, 0, 0], normal: [0, 0, 1], radius: 5, startAngleDeg: 0, endAngleDeg: 180 },
+  addPolyline: { op: "addPolyline", points: [[0, 0, 0], [10, 0, 0], [10, 10, 0]], closed: false },
+  addThreePointArc: { op: "addThreePointArc", p1: [0, 0, 0], p2: [5, 5, 0], p3: [10, 0, 0] },
+  addSpline: { op: "addSpline", points: [[0, 0, 0], [5, 5, 0], [10, 0, 0]] },
+  addBezier: { op: "addBezier", controlPoints: [[0, 0, 0], [5, 10, 0], [10, 0, 0]] },
+  addEllipseArc: { op: "addEllipseArc", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radiusX: 8, radiusY: 5, startAngleDeg: 0, endAngleDeg: 90 },
+  addHelix: { op: "addHelix", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, pitch: 3, turns: 2 },
+  addSurfaceFromLines: { op: "addSurfaceFromLines", edges: ["edge-0", "edge-1", "edge-2"] },
+  addVolumeFromSurfaces: { op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] },
+};
+
+describe("OP_CATALOG", () => {
+  it("has unique panel op ids across all tabs", () => {
+    const ids = allCatalogEntries().map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("has an icon for every catalog entry", () => {
+    for (const e of allCatalogEntries()) {
+      expect(OP_ICONS[e.id], `icon for ${e.id}`).toBeTruthy();
+    }
+  });
+
+  it("has no orphan icons (every icon key is a catalog entry)", () => {
+    const ids = new Set(allCatalogEntries().map((e) => e.id));
+    for (const key of Object.keys(OP_ICONS)) {
+      expect(ids.has(key as never), `catalog entry for icon ${key}`).toBe(true);
+    }
+  });
+
+  it("brepOnly flags agree with BREP_ONLY_OPS over each entry's kinds", () => {
+    for (const e of allCatalogEntries()) {
+      const expected = e.kinds.every((k) => BREP_ONLY_OPS.has(k));
+      expect(e.brepOnly, `brepOnly for ${e.id}`).toBe(expected);
+    }
+  });
+
+  it("reaches every EditOp kind from at least one button", () => {
+    const reachable = new Set(allCatalogEntries().flatMap((e) => e.kinds));
+    for (const kind of Object.keys(REPRESENTATIVE_OPS) as EditOpKind[]) {
+      expect(reachable.has(kind), `button emitting ${kind}`).toBe(true);
+    }
+  });
+
+  it("keeps every 2D-tab entry B-rep-only (the 2D subtab greys out wholesale for meshes)", () => {
+    for (const cat of OP_CATALOG.geometry2d) {
+      for (const e of cat.ops) {
+        expect(e.brepOnly, `${e.id} in 2D tab`).toBe(true);
+      }
+    }
+  });
+});
+
+describe("describeOp", () => {
+  it("returns a non-empty label for every op kind", () => {
+    for (const op of Object.values(REPRESENTATIVE_OPS)) {
+      const label = describeOp(op);
+      expect(typeof label).toBe("string");
+      expect(label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("returns distinct labels across kinds", () => {
+    const labels = Object.values(REPRESENTATIVE_OPS).map(describeOp);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+});

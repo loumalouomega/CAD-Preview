@@ -27,6 +27,13 @@ export function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Objec
     if (BREP_ONLY_OPS.has(op.op)) continue; // not meaningful on a triangle mesh
     if (op.op === "boolean") { applyMeshBoolean(root, op); continue; }
     if (op.op === "explode") { applyMeshExplode(root, op.factor); continue; }
+    // Holes MUST dispatch before the `add*` primitive branch below (their op
+    // names also start with "add") — they subtract from an existing target and
+    // never produce a `prim-{K}` body, so they don't touch `primCount` either.
+    if (op.op === "addHole" || op.op === "addCounterboreHole" || op.op === "addCountersinkHole") {
+      applyMeshHole(root, op);
+      continue;
+    }
     if (op.op.startsWith("add")) {
       const mesh = buildPrimitiveMesh(op);
       if (mesh) {
@@ -79,6 +86,56 @@ function applyMeshBoolean(root: THREE.Object3D, op: Extract<EditOp, { op: "boole
   for (const o of [...resolveMeshTargets(root, op.a), ...resolveMeshTargets(root, op.b)]) {
     o.parent?.remove(o);
   }
+  root.add(out);
+}
+
+/**
+ * Mesh hole (plain / counterbored / countersunk) via `three-bvh-csg`: subtracts
+ * a cylinder tool brush — plus, for the mouth feature, a second wider cylinder
+ * (counterbore) or a cone (countersink) as a second sequential SUBTRACTION —
+ * from the first mesh of the resolved targets, then replaces the target with
+ * the result (tagged with the target's node id, mirroring
+ * {@link applyMeshBoolean}). Tool placement reuses {@link baseAlignedMatrix}:
+ * the mouth sits at `position`, drilled along `axis` into the material.
+ * Unresolved targets are skipped.
+ */
+function applyMeshHole(
+  root: THREE.Object3D,
+  op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>
+): void {
+  const targetMesh = firstMesh(resolveMeshTargets(root, op.targets));
+  if (!targetMesh) return;
+
+  const toolBrush = (geo: THREE.BufferGeometry, height: number): Brush => {
+    const b = new Brush(geo);
+    b.matrix.copy(baseAlignedMatrix(op.position, op.axis, height));
+    b.matrixAutoUpdate = false;
+    return b;
+  };
+  const tools: Brush[] = [
+    toolBrush(new THREE.CylinderGeometry(op.radius, op.radius, op.depth, 32), op.depth),
+  ];
+  if (op.op === "addCounterboreHole") {
+    tools.push(toolBrush(new THREE.CylinderGeometry(op.cbRadius, op.cbRadius, op.cbDepth, 32), op.cbDepth));
+  } else if (op.op === "addCountersinkHole") {
+    // Cone from csRadius at the surface down to the hole radius; local +Y is
+    // the TOP in CylinderGeometry(rTop, rBottom, …), and baseAlignedMatrix puts
+    // the local −Y end (the wide csRadius base) at `position`.
+    const coneDepth = (op.csRadius - op.radius) / Math.tan((op.csAngleDeg * Math.PI) / 360);
+    tools.push(toolBrush(new THREE.CylinderGeometry(op.radius, op.csRadius, coneDepth, 32), coneDepth));
+  }
+
+  const targetBrush = new Brush(targetMesh.geometry);
+  targetMesh.updateWorldMatrix(true, false);
+  targetBrush.matrix.copy(targetMesh.matrixWorld);
+  targetBrush.matrixAutoUpdate = false;
+
+  let result = targetBrush;
+  for (const tool of tools) result = csg.evaluate(result, tool, SUBTRACTION);
+
+  const out = new THREE.Mesh(result.geometry, targetMesh.material);
+  out.userData.groupId = op.targets[0]; // keep a stable id for tagging/colouring
+  for (const o of resolveMeshTargets(root, op.targets)) o.parent?.remove(o);
   root.add(out);
 }
 

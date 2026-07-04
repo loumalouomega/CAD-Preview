@@ -393,6 +393,58 @@ suppressed (would need excluding specific faces from the compound rebuild, extra
 complexity for a cosmetic concern). Any op with unresolved operands, a builder
 throw, or (surface/volume specifically) a structurally invalid selection is skipped.
 
+**Extended sketch profiles (M9)** widen `buildProfileFace()` with ellipse
+(`gp_Elips_2(gp_Ax2_2(pnt, normal, xdir), major, minor)` → `MakeEdge_12` — the
+`gp_Ax2_2` overload pins the major axis to an explicit in-plane X; when
+`radiusY > radiusX` the basis rotates 90° and the radii swap, since `gp_Elips`
+requires major ≥ minor), rounded rectangle and slot (mixed straight edges +
+quarter/half-circle corner arcs via the shared `cornerArcEdge()` — explicit-X
+`gp_Ax2_2` + the already-verified `gp_Circ_2`/`MakeEdge_9` — assembled by
+`faceFromEdges()`), and trapezoid (4 computed corners → the existing
+`buildFlatFace()`). All flow through the same free-face pass; verified
+end-to-end (exact bboxes, tilted planes, radii-swap path, extrude-consumes).
+
+**Wedge + holes (M10):** `buildPrimitiveSolid()` gains `addWedge` —
+`BRepPrimAPI_MakeWedge_2(gp_Ax2_2(origin, axis, u), dx, dy, dz, ltx)`, where the
+Ax2 location is the wedge's local origin corner, so it's offset by
+−dx/2·u −dy/2·v to make the op's `center` the base-rectangle centre (B-rep only;
+no Three.js wedge). The hole family is applied by `cutHole()`/`buildHoleTool()`:
+a cylinder (plus a fused wider mouth cylinder for counterbore, or a mouth cone
+for countersink — cone depth derived from the included angle) subtracted from
+the resolved targets via the verified `Cut_3`, rebuilt with untargeted solids
+preserved (the `booleanSolids` skeleton). Holes run on **both engines**
+(`meshEdits.applyMeshHole` mirrors it with CSG). Verified: through/blind/
+counterbore/countersink volumes all match analytic expectations.
+
+**Curves (M11)** extend `buildWireframePrimitive()`: polyline (a wire of
+verified `MakeEdge_3` segments — each segment gets its own pickable `edge-N`),
+three-point arc (`GC_MakeArcOfCircle_4(p1, p2, p3)`; `IsDone()` false for a
+collinear triple), spline (`GeomAPI_PointsToBSpline_2(TColgp_Array1OfPnt_2, 3,
+8, GeomAbs_C2, 1e-6)` — an approximating, endpoint-exact fit;
+`GeomAPI_Interpolate` is **not bound** in this build), Bézier
+(`Geom_BezierCurve_1(arr)`), ellipse arc (trimmed `MakeEdge_13(elips, a1, a2)`,
+with a −90° angle shift when the radii swap so trim angles stay measured from
+`up`), and helix (a 2D segment in the (angle, height) parameter space of a
+`Geom_CylindricalSurface_1`, `MakeEdge_30(h2dcurve, hsurface)`, then
+`BRepLib.BuildCurves3d_2(edge)` builds the real 3D curve). Geom-handle curves
+become edges via the shared `edgeFromCurveHandle()` (`Handle_Geom_Curve_2` +
+`MakeEdge_24`).
+
+**Modify ops (M12)**, all B-rep only: `shellSolids()` hollows the solid(s)
+owning the selected opening faces via `BRepOffsetAPI_MakeThickSolid_1()` +
+`MakeThickSolidByJoin(solid, TopTools_ListOfShape, offset, tol, BRepOffset_Skin,
+false, false, GeomAbs_Arc, false)` — 9 args, no progress arg; **an empty closing
+list does NOT hollow** (it yields the plain offset solid), which is why the op
+requires ≥1 opening face and derives each face's owning solid itself.
+`splitSolidsByPlane()` is a **half-space cut with zero new bindings**: an
+axis-aligned box spanning the negative side of z=0 (10× bbox diagonal) is moved
+onto the split plane with the mate-verified `SetDisplacement`, then
+`positive → Cut_3`, `negative → Common_3`, `both → compound of both`.
+`sectionSolids()` intersects a large `buildFlatFace()` plane with the targets
+via `Common_3` (verified to return exactly the trimmed cross-section face) and
+**appends** the result non-destructively — it lands under `"Sketches"` via the
+free-face pass, pickable like any sketch; a plane that misses appends nothing.
+
 ---
 
 ## `src/editOps.ts`, `src/editsStore.ts`, `src/editsSidecar.ts`

@@ -873,17 +873,6 @@ input[type="range"].meshing-slider:focus {
   margin-bottom: 4px;
 }
 
-.compose-kind {
-  flex: 1;
-  font: inherit;
-  font-size: 11px;
-  color: var(--vscode-dropdown-foreground, #ccc);
-  background: var(--vscode-dropdown-background, #3c3c3c);
-  border: 1px solid var(--vscode-dropdown-border, #3c3c3c);
-  border-radius: 3px;
-  padding: 2px 4px;
-}
-
 .compose-apply {
   font: inherit;
   font-size: 11px;
@@ -895,12 +884,6 @@ input[type="range"].meshing-slider:focus {
   cursor: pointer;
 }
 .compose-apply:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
-
-.compose-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
 
 .compose-field {
   display: flex;
@@ -932,10 +915,17 @@ input[type="range"].meshing-slider:focus {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
-.compose-bool {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+.compose-select {
+  width: 0;
+  flex: 1;
+  min-width: 28px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--vscode-dropdown-foreground, #ccc);
+  background: var(--vscode-dropdown-background, #3c3c3c);
+  border: 1px solid var(--vscode-dropdown-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 1px 3px;
 }
 
 .compose-bool-a {
@@ -945,39 +935,139 @@ input[type="range"].meshing-slider:focus {
   margin-top: 2px;
 }
 
-.compose-feature,
-.compose-primitive,
-.compose-profile,
-.compose-wireframe {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
-}
-
-/* .compose-primitive is deliberately excluded here — primitives work on every
-   source format, so the composer is never disabled via setBRepOnly(). */
-.compose-feature.disabled,
-.compose-profile.disabled,
-.compose-wireframe.disabled,
-.compose-row.disabled {
-  opacity: 0.4;
-  pointer-events: none;
-}
-
 .compose-hint {
   font-size: 10px;
   opacity: 0.6;
   padding: 2px 0;
 }
 
-.compose-assembly,
-.compose-mate {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+/* ── Edits panel: GEOMETRY / EDIT tabs + op-button grids ──────────────── */
+
+.edits-tabs,
+.edits-subtabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 4px;
 }
-.compose-mate { border-top: none; padding-top: 0; }
-.compose-row.disabled { opacity: 0.4; pointer-events: none; }
+
+.edits-tab,
+.edits-subtab {
+  flex: 1;
+  font: inherit;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 0;
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.edits-subtab {
+  font-size: 10px;
+  padding: 2px 0;
+}
+.edits-tab:hover,
+.edits-subtab:hover { opacity: 1; }
+.edits-tab.active,
+.edits-subtab.active {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  opacity: 1;
+}
+.edits-subtab.disabled { opacity: 0.4; pointer-events: none; }
+
+.op-cat-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+  margin: 6px 0 2px;
+}
+
+.op-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+}
+
+.op-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 1px 3px;
+  font: inherit;
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.op-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+.op-btn.active {
+  border-color: var(--vscode-focusBorder, #007fd4);
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+.op-btn.disabled { opacity: 0.4; pointer-events: none; }
+
+.op-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.op-name {
+  font-size: 9px;
+  line-height: 1.1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Dynamic point-list widget (polyline/spline/bezier forms). */
+.point-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.point-row {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.point-remove,
+.point-add {
+  font: inherit;
+  font-size: 10px;
+  padding: 1px 5px;
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.point-remove:disabled { opacity: 0.35; cursor: default; }
+.point-add {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.point-remove:hover:not(:disabled),
+.point-add:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+
+/* The single shared parameter form under the grids. */
+#edits-params {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+}
+#edits-params:empty { margin-top: 0; }
 
 /* ── Selection-mode toolbar group ───────────────────────────────────── */
 

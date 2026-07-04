@@ -65,20 +65,41 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
       return explodeSolids(oc, shape, op.factor, cleanup);
     case "mate":
       return mateShape(oc, shape, op, cleanup);
+    case "shell":
+      return shellSolids(oc, shape, op, cleanup);
+    case "splitByPlane":
+      return splitSolidsByPlane(oc, shape, op, cleanup);
+    case "section":
+      return sectionSolids(oc, shape, op, cleanup);
     case "addBox":
     case "addSphere":
     case "addCylinder":
     case "addCone":
     case "addTorus":
     case "addPrism":
+    case "addWedge":
       return addPrimitive(oc, shape, op, cleanup);
+    case "addHole":
+    case "addCounterboreHole":
+    case "addCountersinkHole":
+      return cutHole(oc, shape, op, cleanup);
     case "addCircleProfile":
     case "addRectangleProfile":
     case "addPolygonProfile":
+    case "addEllipseProfile":
+    case "addRoundedRectangleProfile":
+    case "addSlotProfile":
+    case "addTrapezoidProfile":
       return addProfile(oc, shape, op, cleanup);
     case "addPoint":
     case "addLine":
     case "addArc":
+    case "addPolyline":
+    case "addThreePointArc":
+    case "addSpline":
+    case "addBezier":
+    case "addEllipseArc":
+    case "addHelix":
       return addWireframePrimitive(oc, shape, op, cleanup);
     case "addSurfaceFromLines":
       return addSurfaceFromLines(oc, shape, op, cleanup);
@@ -228,6 +249,74 @@ function booleanSolids(oc: any, shape: any, op: Extract<EditOp, { op: "boolean" 
   builder.Add(comp, result);
   for (const s of leftovers) builder.Add(comp, s);
   return comp;
+}
+
+/**
+ * Cuts a hole (plain / counterbored / countersunk) into the target solids: the
+ * tool solid — a cylinder, optionally fused (`BRepAlgoAPI_Fuse_3`) with a wider
+ * mouth cylinder (counterbore) or a mouth cone (countersink) — is subtracted
+ * via the already-verified `BRepAlgoAPI_Cut_3`, and the result replaces the
+ * targets in a rebuilt compound alongside the untargeted solids (the exact
+ * {@link booleanSolids} skeleton). Unresolved targets / a failed tool build /
+ * `IsDone()` false all skip gracefully.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function cutHole(oc: any, shape: any, op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>, cleanup: Array<{ delete(): void }>): any {
+  const solids = collectSolids(oc, shape, cleanup);
+  const byId = new Map(solids.map((s) => [s.id, s.solid]));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const targets = op.targets.map((id) => byId.get(id)).filter((s): s is any => s != null);
+  if (targets.length === 0) return shape;
+
+  const tool = buildHoleTool(oc, op, cleanup);
+  if (!tool) return shape;
+
+  const a = combineSolids(oc, targets, cleanup);
+  const algo = new oc.BRepAlgoAPI_Cut_3(a, tool);
+  cleanup.push(algo);
+  if (!algo.IsDone()) return shape;
+  const result = algo.Shape();
+  cleanup.push(result);
+
+  const used = new Set(op.targets);
+  const leftovers = solids.filter((s) => !used.has(s.id)).map((s) => s.solid);
+  if (leftovers.length === 0) return result;
+
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  builder.Add(comp, result);
+  for (const s of leftovers) builder.Add(comp, s);
+  return comp;
+}
+
+/** Builds the hole's tool solid (to subtract), or null on builder failure. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildHoleTool(oc: any, op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const ax2 = keep(new oc.gp_Ax2_3(keep(pnt(oc, op.position)), keep(dir(oc, op.axis))));
+    const main = keep(keep(new oc.BRepPrimAPI_MakeCylinder_3(ax2, op.radius, op.depth)).Shape());
+    if (op.op === "addHole") return main;
+
+    // The mouth feature: a wider coaxial cylinder (counterbore) or a cone
+    // tapering from csRadius at the surface down to the hole radius
+    // (countersink; depth from the included angle).
+    const mouth =
+      op.op === "addCounterboreHole"
+        ? keep(keep(new oc.BRepPrimAPI_MakeCylinder_3(ax2, op.cbRadius, op.cbDepth)).Shape())
+        : keep(keep(new oc.BRepPrimAPI_MakeCone_3(
+          ax2, op.csRadius, op.radius,
+          (op.csRadius - op.radius) / Math.tan((op.csAngleDeg * Math.PI) / 360)
+        )).Shape());
+    const fuse = keep(new oc.BRepAlgoAPI_Fuse_3(main, mouth));
+    if (!fuse.IsDone()) return null;
+    return keep(fuse.Shape());
+  } catch {
+    return null;
+  }
 }
 
 /** A single operand shape from one-or-more solids (compound when more than one). */
@@ -449,6 +538,17 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
         const extrudeVec = keep(new oc.gp_Vec_4(ax * s, ay * s, az * s));
         return keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, extrudeVec, false, true)).Shape());
       }
+      case "addWedge": {
+        // `BRepPrimAPI_MakeWedge_2(gp_Ax2, dx, dy, dz, ltx)`, verified against
+        // the live WASM: the Ax2 location is the wedge's local ORIGIN corner
+        // (local x → Ax2 X-dir, local z → Ax2 main dir), so offset it by
+        // −dx/2·u −dy/2·v to make `center` the centre of the base rectangle —
+        // matching the base-centre convention of the other extruded primitives.
+        const [u, v] = inPlaneBasis(op.axis, op.up);
+        const origin = addScaled(op.center, u, -op.dx / 2, v, -op.dy / 2);
+        const ax2 = keep(new oc.gp_Ax2_2(keep(pnt(oc, origin)), keep(dir(oc, op.axis)), keep(dir(oc, u))));
+        return keep(keep(new oc.BRepPrimAPI_MakeWedge_2(ax2, op.dx, op.dy, op.dz, op.ltx)).Shape());
+      }
       default:
         return null;
     }
@@ -556,12 +656,110 @@ function buildProfileFace(oc: any, op: EditOp, cleanup: Array<{ delete(): void }
         const [u, v] = inPlaneBasis(op.normal, op.up);
         return buildFlatFace(oc, regularPolygonPoints(op.center, u, v, op.radius, op.sides), cleanup);
       }
+      case "addEllipseProfile": {
+        // `gp_Elips_2(ax2, major, minor)` requires major ≥ minor; when radiusY
+        // is the larger, rotate the in-plane basis 90° (major axis along `v`)
+        // and swap the radii instead. `gp_Ax2_2(pnt, normal, xdir)` pins the
+        // ellipse's major axis to an explicit in-plane X direction (verified:
+        // it projects/normalizes the given X into the plane).
+        const [u, v] = inPlaneBasis(op.normal, op.up);
+        const swap = op.radiusY > op.radiusX;
+        const major = swap ? op.radiusY : op.radiusX;
+        const minor = swap ? op.radiusX : op.radiusY;
+        const xdir = swap ? v : u;
+        const ax2 = keep(new oc.gp_Ax2_2(keep(pnt(oc, op.center)), keep(dir(oc, op.normal)), keep(dir(oc, xdir))));
+        const elips = keep(new oc.gp_Elips_2(ax2, major, minor));
+        const edge = keep(keep(new oc.BRepBuilderAPI_MakeEdge_12(elips)).Edge());
+        return faceFromEdges(oc, [edge], cleanup);
+      }
+      case "addRoundedRectangleProfile": {
+        // 4 straight edges + 4 quarter-circle corner arcs. Corner-arc angles
+        // are measured from each arc's own `gp_Ax2_2` explicit X direction
+        // (`u`), which makes the quadrant math deterministic pure JS.
+        const [u, v] = inPlaneBasis(op.normal, op.up);
+        const at = (du: number, dv: number): Vec3 => addScaled(op.center, u, du, v, dv);
+        const hw = op.width / 2, hh = op.height / 2, r = op.cornerRadius;
+        const arc = (c: Vec3, a1: number, a2: number) => cornerArcEdge(oc, c, op.normal, u, r, a1, a2, cleanup);
+        const line = (p1: Vec3, p2: Vec3) =>
+          keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(keep(pnt(oc, p1)), keep(pnt(oc, p2)))).Edge());
+        const edges = [
+          line(at(-(hw - r), -hh), at(hw - r, -hh)),          // bottom
+          arc(at(hw - r, -(hh - r)), -Math.PI / 2, 0),        // bottom-right corner
+          line(at(hw, -(hh - r)), at(hw, hh - r)),            // right
+          arc(at(hw - r, hh - r), 0, Math.PI / 2),            // top-right corner
+          line(at(hw - r, hh), at(-(hw - r), hh)),            // top
+          arc(at(-(hw - r), hh - r), Math.PI / 2, Math.PI),   // top-left corner
+          line(at(-hw, hh - r), at(-hw, -(hh - r))),          // left
+          arc(at(-(hw - r), -(hh - r)), Math.PI, Math.PI * 1.5), // bottom-left corner
+        ];
+        return faceFromEdges(oc, edges, cleanup);
+      }
+      case "addSlotProfile": {
+        // A stadium: two straight edges + two semicircular end caps, overall
+        // `length` along `u` (so `up` is the slot's long axis).
+        const [u, v] = inPlaneBasis(op.normal, op.up);
+        const at = (du: number, dv: number): Vec3 => addScaled(op.center, u, du, v, dv);
+        const r = op.width / 2;
+        const cx = op.length / 2 - r; // end-cap centres at ±cx
+        const arc = (c: Vec3, a1: number, a2: number) => cornerArcEdge(oc, c, op.normal, u, r, a1, a2, cleanup);
+        const line = (p1: Vec3, p2: Vec3) =>
+          keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(keep(pnt(oc, p1)), keep(pnt(oc, p2)))).Edge());
+        const edges = [
+          line(at(-cx, -r), at(cx, -r)),                   // bottom
+          arc(at(cx, 0), -Math.PI / 2, Math.PI / 2),       // right cap
+          line(at(cx, r), at(-cx, r)),                     // top
+          arc(at(-cx, 0), Math.PI / 2, Math.PI * 1.5),     // left cap
+        ];
+        return faceFromEdges(oc, edges, cleanup);
+      }
+      case "addTrapezoidProfile": {
+        const [u, v] = inPlaneBasis(op.normal, op.up);
+        const hb = op.bottomWidth / 2, ht = op.topWidth / 2, hh = op.height / 2;
+        const corners: Vec3[] = [
+          addScaled(op.center, u, -hb, v, -hh),
+          addScaled(op.center, u, hb, v, -hh),
+          addScaled(op.center, u, ht, v, hh),
+          addScaled(op.center, u, -ht, v, hh),
+        ];
+        return buildFlatFace(oc, corners, cleanup);
+      }
       default:
         return null;
     }
   } catch {
     return null;
   }
+}
+
+/**
+ * A circular-arc edge for rounded-wire profiles: the circle of `radius` at
+ * `center`, in the plane of `normal`, with angles measured from the explicit
+ * in-plane X direction `xdir` — `gp_Ax2_2(pnt, normal, xdir)` (verified against
+ * the live WASM: the given X is projected into the plane and normalized) +
+ * the already-verified `gp_Circ_2` + `BRepBuilderAPI_MakeEdge_9(circ, a1, a2)`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function cornerArcEdge(oc: any, center: Vec3, normal: Vec3, xdir: Vec3, radius: number, a1: number, a2: number, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const ax2 = keep(new oc.gp_Ax2_2(keep(pnt(oc, center)), keep(dir(oc, normal)), keep(dir(oc, xdir))));
+  const circ = keep(new oc.gp_Circ_2(ax2, radius));
+  return keep(keep(new oc.BRepBuilderAPI_MakeEdge_9(circ, a1, a2)).Edge());
+}
+
+/**
+ * Assembles pre-built edges into a wire and caps it with a face — the shared
+ * tail of every mixed line/arc profile (`MakeWire_1` auto-orders the edges by
+ * shared vertices, so build order is forgiving; `MakeFace_15(wire, true)`).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function faceFromEdges(oc: any, edges: any[], cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+  for (const e of edges) mkWire.Add_1(e);
+  if (!mkWire.IsDone()) return null;
+  const wire = keep(mkWire.Wire());
+  const face = keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face();
+  return face.IsNull() ? null : keep(face);
 }
 
 /**
@@ -625,12 +823,107 @@ function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete():
         const edge = keep(new oc.BRepBuilderAPI_MakeEdge_9(circ, alpha1, alpha2)).Edge();
         return edge.IsNull() ? null : keep(edge);
       }
+      case "addPolyline": {
+        // A wire of straight segments (the wire's edges are individually
+        // enumerated by the unrestricted edge extraction, so each segment gets
+        // its own pickable `edge-N`).
+        const pts = op.points.map((p) => keep(pnt(oc, p)));
+        const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+        const last = op.closed ? pts.length : pts.length - 1;
+        for (let i = 0; i < last; i++) {
+          const edge = keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(pts[i], pts[(i + 1) % pts.length])).Edge());
+          mkWire.Add_1(edge);
+        }
+        if (!mkWire.IsDone()) return null;
+        const wire = keep(mkWire.Wire());
+        return wire.IsNull() ? null : wire;
+      }
+      case "addThreePointArc": {
+        // `GC_MakeArcOfCircle_4(p1, p2, p3)` (verified against the live WASM) —
+        // `IsDone()` is false for a collinear triple, the graceful-skip gate.
+        const mk = keep(new oc.GC_MakeArcOfCircle_4(keep(pnt(oc, op.p1)), keep(pnt(oc, op.p2)), keep(pnt(oc, op.p3))));
+        if (!mk.IsDone()) return null;
+        return edgeFromCurveHandle(oc, keep(mk.Value()), cleanup);
+      }
+      case "addSpline": {
+        // `GeomAPI_PointsToBSpline_2(arr, 3, 8, GeomAbs_C2, 1e-6)` (verified):
+        // an approximating fit through the points, endpoint-exact —
+        // `GeomAPI_Interpolate` is not bound in this build.
+        const arr = keep(new oc.TColgp_Array1OfPnt_2(1, op.points.length));
+        op.points.forEach((p, i) => arr.SetValue(i + 1, keep(pnt(oc, p))));
+        const fit = keep(new oc.GeomAPI_PointsToBSpline_2(arr, 3, 8, oc.GeomAbs_Shape.GeomAbs_C2, 1e-6));
+        return edgeFromCurveHandle(oc, keep(fit.Curve()), cleanup);
+      }
+      case "addBezier": {
+        // `TColgp_Array1OfPnt_2(1, n)` + `Geom_BezierCurve_1(arr)` (verified).
+        const arr = keep(new oc.TColgp_Array1OfPnt_2(1, op.controlPoints.length));
+        op.controlPoints.forEach((p, i) => arr.SetValue(i + 1, keep(pnt(oc, p))));
+        const bez = new oc.Geom_BezierCurve_1(arr); // owned by the handle below
+        const hCurve = keep(new oc.Handle_Geom_Curve_2(bez));
+        const mkEdge = keep(new oc.BRepBuilderAPI_MakeEdge_24(hCurve));
+        if (!mkEdge.IsDone()) return null;
+        const edge = keep(mkEdge.Edge());
+        return edge.IsNull() ? null : edge;
+      }
+      case "addEllipseArc": {
+        // Same major≥minor radii-swap as addEllipseProfile; when swapped the
+        // parametric angle is measured from the rotated major axis (`v`), so
+        // shift both trim angles by −90° to keep them measured from `up`.
+        const [u, v] = inPlaneBasis(op.normal, op.up);
+        const swap = op.radiusY > op.radiusX;
+        const major = swap ? op.radiusY : op.radiusX;
+        const minor = swap ? op.radiusX : op.radiusY;
+        const xdir = swap ? v : u;
+        const shift = swap ? -Math.PI / 2 : 0;
+        const ax2 = keep(new oc.gp_Ax2_2(keep(pnt(oc, op.center)), keep(dir(oc, op.normal)), keep(dir(oc, xdir))));
+        const elips = keep(new oc.gp_Elips_2(ax2, major, minor));
+        const a1 = (op.startAngleDeg * Math.PI) / 180 + shift;
+        const a2 = (op.endAngleDeg * Math.PI) / 180 + shift;
+        const edge = keep(keep(new oc.BRepBuilderAPI_MakeEdge_13(elips, a1, a2)).Edge());
+        return edge.IsNull() ? null : edge;
+      }
+      case "addHelix": {
+        // Verified chain: a 2D line segment in the (angle, height) parameter
+        // space of a `Geom_CylindricalSurface`, turned into a real 3D edge by
+        // `BRepLib.BuildCurves3d_2`. `MakeEdge_30(h2dcurve, hsurface)` is the
+        // curve-on-surface overload (found by probing all 35 indices).
+        const ax3 = keep(new oc.gp_Ax3_4(keep(pnt(oc, op.center)), keep(dir(oc, op.axis))));
+        const cyl = new oc.Geom_CylindricalSurface_1(ax3, op.radius); // owned by the handle below
+        const hSurf = keep(new oc.Handle_Geom_Surface_2(cyl));
+        const p2a = keep(new oc.gp_Pnt2d_3(0, 0));
+        const p2b = keep(new oc.gp_Pnt2d_3(2 * Math.PI * op.turns, op.pitch * op.turns));
+        const seg = keep(new oc.GCE2d_MakeSegment_1(p2a, p2b));
+        if (!seg.IsDone()) return null;
+        const hSeg = keep(seg.Value());
+        const h2d = keep(new oc.Handle_Geom2d_Curve_2(hSeg.get()));
+        const mkEdge = keep(new oc.BRepBuilderAPI_MakeEdge_30(h2d, hSurf));
+        if (!mkEdge.IsDone()) return null;
+        const edge = keep(mkEdge.Edge());
+        if (edge.IsNull()) return null;
+        oc.BRepLib.BuildCurves3d_2(edge);
+        return edge;
+      }
       default:
         return null;
     }
   } catch {
     return null;
   }
+}
+
+/**
+ * Wraps a `Handle_Geom_TrimmedCurve`/`Handle_Geom_BSplineCurve` (any Geom curve
+ * handle with `.get()`) into a `TopoDS_Edge` via `Handle_Geom_Curve_2` +
+ * `BRepBuilderAPI_MakeEdge_24` (both verified against the live WASM).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const hCurve = keep(new oc.Handle_Geom_Curve_2(handle.get()));
+  const mkEdge = keep(new oc.BRepBuilderAPI_MakeEdge_24(hCurve));
+  if (!mkEdge.IsDone()) return null;
+  const edge = keep(mkEdge.Edge());
+  return edge.IsNull() ? null : edge;
 }
 
 /**
@@ -978,6 +1271,220 @@ function mateShape(oc: any, shape: any, op: Extract<EditOp, { op: "mate" }>, cle
   builder.Add(comp, transform(own.owner));
   for (const o of own.others) builder.Add(comp, o);
   return comp;
+}
+
+/**
+ * Hollows out the solid(s) owning the selected opening faces: those faces are
+ * removed and the rest of each owning solid's boundary grows walls of
+ * `|thickness|` (negative = inward, the usual hollow — verified: closing the
+ * top of a 10-box with thickness −1 leaves volume 1000 − 8·8·9 = 424).
+ *
+ * OCCT API, verified against the live WASM: `new BRepOffsetAPI_MakeThickSolid_1()`
+ * (no-arg ctor) → `.MakeThickSolidByJoin(solid, closingFaces, offset, tol,
+ * BRepOffset_Mode.BRepOffset_Skin, false, false, GeomAbs_JoinType.GeomAbs_Arc,
+ * false)` — exactly 9 args; the 10th `Message_ProgressRange` is not
+ * constructible in this build (the same quirk as booleans/BREP read) and must
+ * be omitted. Closing faces travel in a `TopTools_ListOfShape_1()` via
+ * `.Append_1(face)` (`.Size()`, not `.Extent()`, reads it back). **An EMPTY
+ * closing list does NOT hollow** — it returns the plain inner offset solid
+ * (verified: volume 512, i.e. the shrunk 8-box, not 1000−512) — which is why
+ * `validateEditOp` requires ≥ 1 opening face. Unresolved faces, faces not
+ * owned by any solid, or a failed/`!IsDone()` build skip gracefully (the
+ * affected solid stays unshelled).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const faces = collectFaces(oc, shape, cleanup);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const picked = op.openingFaces.map((id) => faces[faceIndex(id)]).filter((f): f is any => f != null);
+    if (picked.length === 0) return shape;
+    const solids = collectSolids(oc, shape, cleanup);
+    if (solids.length === 0) return shape;
+
+    // Group the opening faces by owning solid (a face can only belong to one).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const openingsBySolid = new Map<number, any[]>();
+    for (const face of picked) {
+      for (let i = 0; i < solids.length; i++) {
+        const exp = keep(new oc.TopExp_Explorer_2(
+          solids[i].solid, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+        ));
+        let owned = false;
+        for (; exp.More(); exp.Next()) {
+          const f = keep(oc.TopoDS.Face_1(exp.Current()));
+          if (f.IsSame(face)) { owned = true; break; }
+        }
+        if (owned) {
+          const list = openingsBySolid.get(i) ?? [];
+          list.push(face);
+          openingsBySolid.set(i, list);
+          break;
+        }
+      }
+    }
+    if (openingsBySolid.size === 0) return shape;
+
+    const mode = oc.BRepOffset_Mode.BRepOffset_Skin;
+    const join = oc.GeomAbs_JoinType.GeomAbs_Arc;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const replaced = new Map<number, any>();
+    for (const [i, openings] of openingsBySolid) {
+      try {
+        const list = keep(new oc.TopTools_ListOfShape_1());
+        for (const f of openings) list.Append_1(f);
+        const mk = keep(new oc.BRepOffsetAPI_MakeThickSolid_1());
+        mk.MakeThickSolidByJoin(solids[i].solid, list, op.thickness, 1e-3, mode, false, false, join, false);
+        if (mk.IsDone()) replaced.set(i, keep(mk.Shape()));
+      } catch {
+        // this solid stays unshelled
+      }
+    }
+    if (replaced.size === 0) return shape;
+    if (solids.length === 1) return replaced.get(0) ?? shape;
+
+    const comp = new oc.TopoDS_Compound();
+    cleanup.push(comp);
+    const builder = new oc.BRep_Builder();
+    cleanup.push(builder);
+    builder.MakeCompound(comp);
+    solids.forEach((s, i) => builder.Add(comp, replaced.get(i) ?? s.solid));
+    return comp;
+  } catch {
+    return shape;
+  }
+}
+
+/**
+ * Splits the target solids by a plane, keeping the piece on the normal side
+ * ("positive"), the opposite piece ("negative"), or both. Implemented as a
+ * **half-space cut with only already-verified bindings** (deliberately avoiding
+ * a `BRepAlgoAPI_Splitter` binding probe): an axis-aligned box spanning the
+ * NEGATIVE side of the canonical z=0 plane (extent 10× the model's bbox
+ * diagonal) is moved onto the split plane with the mate-verified
+ * `gp_Trsf.SetDisplacement(gp_Ax3, gp_Ax3)`, then `positive → Cut_3(targets,
+ * box)`, `negative → Common_3(targets, box)`, `both → compound of both`.
+ * Unresolved targets or a failed boolean skip gracefully.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "splitByPlane" }>, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const solids = collectSolids(oc, shape, cleanup);
+    const byId = new Map(solids.map((s) => [s.id, s.solid]));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const targets = op.targets.map((id) => byId.get(id)).filter((s): s is any => s != null);
+    if (targets.length === 0) return shape;
+
+    const d = Math.max(bboxDiagonal(oc, shape, cleanup), 1) * 10;
+    const rawBox = keep(keep(new oc.BRepPrimAPI_MakeBox_3(
+      keep(pnt(oc, [-d / 2, -d / 2, -d])), keep(pnt(oc, [d / 2, d / 2, 0]))
+    )).Shape());
+    const t = keep(new oc.gp_Trsf_1());
+    t.SetDisplacement(
+      keep(new oc.gp_Ax3_4(keep(pnt(oc, [0, 0, 0])), keep(dir(oc, [0, 0, 1])))),
+      keep(new oc.gp_Ax3_4(keep(pnt(oc, op.planePoint)), keep(dir(oc, op.planeNormal))))
+    );
+    const halfSpace = rigid(oc, t, cleanup)(rawBox);
+
+    const a = combineSolids(oc, targets, cleanup);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pieces: any[] = [];
+    if (op.keep === "positive" || op.keep === "both") {
+      const cut = keep(new oc.BRepAlgoAPI_Cut_3(a, halfSpace));
+      if (!cut.IsDone()) return shape;
+      pieces.push(keep(cut.Shape()));
+    }
+    if (op.keep === "negative" || op.keep === "both") {
+      const common = keep(new oc.BRepAlgoAPI_Common_3(a, halfSpace));
+      if (!common.IsDone()) return shape;
+      pieces.push(keep(common.Shape()));
+    }
+
+    const used = new Set(op.targets);
+    const leftovers = solids.filter((s) => !used.has(s.id)).map((s) => s.solid);
+    if (pieces.length === 1 && leftovers.length === 0) return pieces[0];
+
+    const comp = new oc.TopoDS_Compound();
+    cleanup.push(comp);
+    const builder = new oc.BRep_Builder();
+    cleanup.push(builder);
+    builder.MakeCompound(comp);
+    for (const p of pieces) builder.Add(comp, p);
+    for (const s of leftovers) builder.Add(comp, s);
+    return comp;
+  } catch {
+    return shape;
+  }
+}
+
+/**
+ * Appends the planar cross-section of the target solids as a standalone flat
+ * face — non-destructive (the solids stay untouched); the section face shows
+ * up under "Sketches" via the free-face tessellation pass, pickable for
+ * extrude/revolve like any other sketch. Implemented with verified bindings
+ * only: a large plane face (`buildFlatFace`, 10× bbox diagonal) intersected
+ * with the targets via `BRepAlgoAPI_Common_3(planeFace, targets)` (probe:
+ * exactly the trimmed cross-section face). A plane that misses the targets
+ * (no faces in the result) or a failed boolean skips gracefully.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" }>, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const solids = collectSolids(oc, shape, cleanup);
+    const byId = new Map(solids.map((s) => [s.id, s.solid]));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const targets = op.targets.map((id) => byId.get(id)).filter((s): s is any => s != null);
+    if (targets.length === 0) return shape;
+
+    const d = Math.max(bboxDiagonal(oc, shape, cleanup), 1) * 10;
+    const [u, v] = planeBasis(op.planeNormal);
+    const corners: Vec3[] = [
+      addScaled(op.planePoint, u, -d / 2, v, -d / 2),
+      addScaled(op.planePoint, u, d / 2, v, -d / 2),
+      addScaled(op.planePoint, u, d / 2, v, d / 2),
+      addScaled(op.planePoint, u, -d / 2, v, d / 2),
+    ];
+    const planeFace = buildFlatFace(oc, corners, cleanup);
+    if (!planeFace) return shape;
+
+    const a = combineSolids(oc, targets, cleanup);
+    const algo = keep(new oc.BRepAlgoAPI_Common_3(planeFace, a));
+    if (!algo.IsDone()) return shape;
+    const section = keep(algo.Shape());
+
+    // The plane must actually cross the targets — an empty result appends nothing.
+    const faceExp = keep(new oc.TopExp_Explorer_2(
+      section, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    ));
+    if (!faceExp.More()) return shape;
+
+    const comp = new oc.TopoDS_Compound();
+    cleanup.push(comp);
+    const builder = new oc.BRep_Builder();
+    cleanup.push(builder);
+    builder.MakeCompound(comp);
+    builder.Add(comp, shape);
+    builder.Add(comp, section);
+    return comp;
+  } catch {
+    return shape;
+  }
+}
+
+/** The bounding-box diagonal length of a shape (via `Bnd_Box` corners). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function bboxDiagonal(oc: any, s: any, cleanup: Array<{ delete(): void }>): number {
+  const box = new oc.Bnd_Box_1();
+  cleanup.push(box);
+  oc.BRepBndLib.Add(s, box, false);
+  const mn = box.CornerMin();
+  cleanup.push(mn);
+  const mx = box.CornerMax();
+  cleanup.push(mx);
+  return Math.hypot(mx.X() - mn.X(), mx.Y() - mn.Y(), mx.Z() - mn.Z());
 }
 
 /** The bounding-box centre of a shape (via `Bnd_Box` corners). */
