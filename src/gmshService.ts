@@ -49,6 +49,41 @@ export function resetGmsh(): void {
   _modelCounter = 0;
 }
 
+/** Emscripten aborts (out-of-bounds access, unreachable, null function pointer,
+ * heap exhaustion) surface as opaque `RuntimeError`s. Recognize them so they can
+ * be turned into an actionable message instead of the raw "memory access out of
+ * bounds" that reaches the panel today. */
+function isWasmAbort(message: string): boolean {
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+}
+
+/**
+ * Wraps `gmsh.model.mesh.generate` so an internal gmsh WASM crash becomes an
+ * actionable error rather than a bare "memory access out of bounds". Two things
+ * matter here: (1) an aborted Emscripten instance is **corrupt** — every later
+ * call would keep throwing — so we discard the singleton (`resetGmsh()`) to force
+ * a fresh module on the next attempt; (2) the message hints at the most common
+ * cause: the 3D Delaunay algorithm's documented boundary-recovery crash on
+ * imported CAD geometry in this build (which is why Frontal is the default). We
+ * do NOT hard-block the option combination — Delaunay meshes many models fine,
+ * and a crash can equally come from too fine a size (heap exhaustion), so there
+ * is no reliable static "incompatible" matrix to gate on.
+ */
+function runMeshGenerate(gmsh: GmshApi, options: MeshOptions): void {
+  try {
+    gmsh.model.mesh.generate(options.dimension);
+  } catch (err) {
+    const raw = ((err as Error)?.message ?? String(err)).trim();
+    if (!isWasmAbort(raw)) throw err;
+    resetGmsh();
+    const hint =
+      options.dimension === 3 && options.algorithm3D === 1
+        ? " The 3D Delaunay algorithm is known to crash on imported CAD geometry in this build — switch the 3D algorithm to Frontal (4) in Advanced settings."
+        : " Try a coarser Size max, a different meshing algorithm, or linear (order 1) elements.";
+    throw new Error(`Gmsh crashed while meshing (${raw || "WASM abort"}).${hint}`);
+  }
+}
+
 export type MeshGenerationInput =
   | { kind: "brep"; stepBytes: Uint8Array }
   | { kind: "stl"; stlBytes: Uint8Array };
@@ -154,7 +189,7 @@ export async function generateMesh(
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    gmsh.model.mesh.generate(options.dimension);
+    runMeshGenerate(gmsh, options);
 
     const nodes = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
     const { positions, tagToIndex } = buildPositions(nodes);
@@ -271,7 +306,7 @@ export async function exportMeshFormat(
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    gmsh.model.mesh.generate(options.dimension);
+    runMeshGenerate(gmsh, options);
     gmsh.write(outPath);
     return gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
   } finally {
@@ -308,7 +343,7 @@ export async function exportMdpa(
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    gmsh.model.mesh.generate(options.dimension);
+    runMeshGenerate(gmsh, options);
     const mesh = extractMdpaMesh(gmsh, loaded.groupMaps);
 
     if (mode === "elements") {

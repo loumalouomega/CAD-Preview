@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, type MeshOptions } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions } from "../meshOptions";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import type { Part } from "../protocol";
@@ -306,6 +306,21 @@ export class MeshingPanel {
     this.stlAngleInput.addEventListener("change", () => {
       cb.onOptionsChange({ stlAngle: Number(this.stlAngleInput.value) || 0 });
     });
+
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "meshing-reset";
+    resetBtn.textContent = "Reset to defaults";
+    resetBtn.title = "Restore every meshing option to its default value.";
+    resetBtn.addEventListener("click", () => {
+      // A full options object passed as a patch resets every field. Re-seed
+      // sizeMax from the model's bbox instead of leaving the "unbounded"
+      // sentinel, so the slider stays usable right after a reset.
+      const patch: MeshOptions = { ...DEFAULT_MESH_OPTIONS };
+      if (this.extents) patch.sizeMax = defaultTargetSize(this.extents.diagonal);
+      cb.onOptionsChange(patch);
+    });
+    form.appendChild(resetBtn);
 
     advSection.appendChild(form);
     this.body.appendChild(advSection);
