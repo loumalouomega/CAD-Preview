@@ -1,0 +1,9 @@
+% Op icon: point — a solid dot with a thin target ring.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw (0,0) circle (8);
+  \filldraw (0,0) circle (1.8);
+\end{tikzpicture}
+\end{document}

@@ -1,0 +1,11 @@
+% Op icon: split by plane — a box separated into two pieces, each showing its cut face.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-13,-8) rectangle (-3,8);
+  \draw[gray, fill=gray!25] (-3,-8) rectangle (-1,8);
+  \draw[thick] (1,-8) rectangle (11,8);
+  \draw[gray, fill=gray!25] (1,-8) rectangle (3,8);
+\end{tikzpicture}
+\end{document}

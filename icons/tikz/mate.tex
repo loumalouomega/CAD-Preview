@@ -1,0 +1,10 @@
+% Op icon: mate — two faces facing each other with a converging double arrow.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!25] (-12,-6) rectangle (-6,6);
+  \draw[thick, fill=gray!25] (6,-6) rectangle (12,6);
+  \draw[<->, thick] (-5,0) -- (5,0);
+\end{tikzpicture}
+\end{document}

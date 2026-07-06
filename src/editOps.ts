@@ -51,18 +51,52 @@ export interface AddConeOp { op: "addCone"; center: Vec3; axis: Vec3; radius1: n
 export interface AddTorusOp { op: "addTorus"; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number; }
 /** Add a regular `sides`-gon prism of circumradius `radius`/`height` with base at `center` along `axis`. */
 export interface AddPrismOp { op: "addPrism"; center: Vec3; axis: Vec3; radius: number; sides: number; height: number; }
+/** Add a right-angular wedge (OCCT `MakeWedge` semantics): base rectangle `dx`×`dy` centred at `center` in the plane ⟂ `axis`, extruded `dz` along `axis`; the far edge (at local y=dy) narrows to `ltx` along local x. `up` orients local x in the base plane. B-rep only. */
+export interface AddWedgeOp { op: "addWedge"; center: Vec3; axis: Vec3; up: Vec3; dx: number; dy: number; dz: number; ltx: number; }
+/** Cut a cylindrical hole into the target solids: mouth at `position`, drilled `depth` along `axis` (which points INTO the material), radius `radius`. */
+export interface AddHoleOp { op: "addHole"; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; }
+/** Cut a counterbored hole: the plain hole plus a coaxial wider bore (`cbRadius` > radius) of depth `cbDepth` (< depth) at the mouth. */
+export interface AddCounterboreHoleOp { op: "addCounterboreHole"; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; cbRadius: number; cbDepth: number; }
+/** Cut a countersunk hole: the plain hole plus a conical mouth from `csRadius` (> radius) tapering at included angle `csAngleDeg` (0 < angle < 180) down to `radius`. */
+export interface AddCountersinkHoleOp { op: "addCountersinkHole"; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number; }
 /** Add a standalone flat circular profile face (no thickness), for later use as an extrude/revolve/sweep/loft profile. */
 export interface AddCircleProfileOp { op: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number; }
 /** Add a standalone flat rectangular profile face. `up` (with `normal`) fixes its in-plane orientation. */
 export interface AddRectangleProfileOp { op: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; }
 /** Add a standalone flat regular `sides`-gon profile face of circumradius `radius`. */
 export interface AddPolygonProfileOp { op: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; }
+/** Add a standalone flat elliptical profile face: `radiusX` along the in-plane `up` axis, `radiusY` perpendicular to it. */
+export interface AddEllipseProfileOp { op: "addEllipseProfile"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; }
+/** Add a standalone flat rectangle profile face with all four corners rounded to `cornerRadius` (0 < 2·cornerRadius < min(width, height) — the stadium limit case is what `addSlotProfile` is for). */
+export interface AddRoundedRectangleProfileOp { op: "addRoundedRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number; }
+/** Add a standalone flat stadium/slot profile face: overall `length` (including the semicircular end caps) along the in-plane `up` axis, `width` across (length > width > 0). */
+export interface AddSlotProfileOp { op: "addSlotProfile"; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; }
+/** Add a standalone flat isosceles-trapezoid profile face: `bottomWidth` along the in-plane `up` axis at the bottom, `topWidth` at the top, `height` between them. */
+export interface AddTrapezoidProfileOp { op: "addTrapezoidProfile"; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; }
 /** Add a standalone point (vertex) at `position`. Never resolved as an operand by any other op — display-only. */
 export interface AddPointOp { op: "addPoint"; position: Vec3; }
 /** Add a standalone straight-line edge from `start` to `end`. */
 export interface AddLineOp { op: "addLine"; start: Vec3; end: Vec3; }
 /** Add a standalone circular-arc edge: the circle at (`center`,`normal`,`radius`), trimmed from `startAngleDeg` to `endAngleDeg` (sweeping counterclockwise about `normal`, wrapping through 0° if `endAngleDeg < startAngleDeg`). */
 export interface AddArcOp { op: "addArc"; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; }
+/** Add a standalone polyline: straight edges through `points` in order (≥ 2; ≥ 3 when `closed`, which adds the last→first edge). */
+export interface AddPolylineOp { op: "addPolyline"; points: Vec3[]; closed: boolean; }
+/** Add a standalone circular-arc edge through three points (must not be collinear — a collinear triple is skipped by the engine). */
+export interface AddThreePointArcOp { op: "addThreePointArc"; p1: Vec3; p2: Vec3; p3: Vec3; }
+/** Add a standalone smooth B-spline curve through `points` (approximating fit, endpoint-exact — this OCCT build has no exact interpolator bound). */
+export interface AddSplineOp { op: "addSpline"; points: Vec3[]; }
+/** Add a standalone Bézier curve with the given control points (curve passes through the first and last only). */
+export interface AddBezierOp { op: "addBezier"; controlPoints: Vec3[]; }
+/** Add a standalone elliptical-arc edge: `radiusX` along the in-plane `up` axis, `radiusY` perpendicular, trimmed from `startAngleDeg` to `endAngleDeg` (counterclockwise about `normal`). 0→360 is the full ellipse. */
+export interface AddEllipseArcOp { op: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; }
+/** Add a standalone helical edge: `turns` revolutions of `pitch` height each around the `axis` through `center` (the helix starts at the base), on a cylinder of `radius`. */
+export interface AddHelixOp { op: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; }
+/** Hollow out the solid(s) owning `openingFaces`, removing those faces and leaving walls of `|thickness|` (negative = walls grow inward — the usual hollow; positive = outward). At least one opening face is required: this OCCT build's ThickSolid with an empty closing list yields a plain offset solid, not a hollow (verified). */
+export interface ShellOp { op: "shell"; thickness: number; openingFaces: string[]; }
+/** Split the target solids by the plane (`planePoint`, `planeNormal`), keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. */
+export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePoint: Vec3; planeNormal: Vec3; keep: "both" | "positive" | "negative"; }
+/** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`) as a standalone face (under "Sketches"), leaving the solids untouched. */
+export interface SectionOp { op: "section"; targets: string[]; planePoint: Vec3; planeNormal: Vec3; }
 /** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
 export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
 /** Build a new solid by sewing the selected faces into a closed shell. */
@@ -73,25 +107,41 @@ export type EditOp =
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
+  | ShellOp | SplitByPlaneOp | SectionOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
+  | AddWedgeOp | AddHoleOp | AddCounterboreHoleOp | AddCountersinkHoleOp
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
-  | AddPointOp | AddLineOp | AddArcOp | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp;
+  | AddEllipseProfileOp | AddRoundedRectangleProfileOp | AddSlotProfileOp | AddTrapezoidProfileOp
+  | AddPointOp | AddLineOp | AddArcOp
+  | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
+  | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp;
 
 export type EditOpKind = EditOp["op"];
 
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
+  "shell", "splitByPlane", "section",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
+  "addWedge", "addHole", "addCounterboreHole", "addCountersinkHole",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
-  "addPoint", "addLine", "addArc", "addSurfaceFromLines", "addVolumeFromSurfaces",
+  "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
+  "addPoint", "addLine", "addArc",
+  "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
+  "addSurfaceFromLines", "addVolumeFromSurfaces",
 ]);
 
-/** Ops only available for B-rep sources (meshes have no sketch/exact topology). */
+/** Ops only available for B-rep sources (meshes have no sketch/exact topology).
+ * The hole family is deliberately NOT here — the mesh engine cuts holes via CSG. */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
+  "shell", "splitByPlane", "section",
+  "addWedge",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
-  "addPoint", "addLine", "addArc", "addSurfaceFromLines", "addVolumeFromSurfaces",
+  "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
+  "addPoint", "addLine", "addArc",
+  "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
+  "addSurfaceFromLines", "addVolumeFromSurfaces",
 ]);
 
 function isFiniteNumber(v: unknown): v is number {
@@ -125,6 +175,20 @@ function asNonZeroVec3(v: unknown): Vec3 | null {
 /** True when `a` and `b` are exactly equal component-wise (for rejecting degenerate zero-length lines). */
 function vecEqual(a: Vec3, b: Vec3): boolean {
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
+/** An array of ≥ `min` Vec3s; consecutive duplicates rejected when `distinctConsecutive`
+ * (a zero-length polyline/spline segment is degenerate; Bézier control points may repeat). */
+function asVec3Array(v: unknown, min: number, distinctConsecutive = true): Vec3[] | null {
+  if (!Array.isArray(v) || v.length < min) return null;
+  const out: Vec3[] = [];
+  for (const item of v) {
+    const p = asVec3(item);
+    if (!p) return null;
+    if (distinctConsecutive && out.length > 0 && vecEqual(out[out.length - 1], p)) return null;
+    out.push(p);
+  }
+  return out;
 }
 
 /** True when `a` and `b` are not (anti-)parallel — i.e. their cross product is non-zero. */
@@ -219,6 +283,30 @@ export function validateEditOp(raw: unknown): EditOp | null {
         ? { op: "mate", faceA: o.faceA, faceB: o.faceB }
         : null;
     }
+    case "shell": {
+      const openingFaces = asIdArray(o.openingFaces);
+      return openingFaces && isFiniteNumber(o.thickness) && o.thickness !== 0
+        ? { op: "shell", thickness: o.thickness, openingFaces }
+        : null;
+    }
+    case "splitByPlane": {
+      const targets = asIdArray(o.targets);
+      const planePoint = asVec3(o.planePoint);
+      const planeNormal = asNonZeroVec3(o.planeNormal);
+      const keep = o.keep;
+      const ok = keep === "both" || keep === "positive" || keep === "negative";
+      return targets && planePoint && planeNormal && ok
+        ? { op: "splitByPlane", targets, planePoint, planeNormal, keep }
+        : null;
+    }
+    case "section": {
+      const targets = asIdArray(o.targets);
+      const planePoint = asVec3(o.planePoint);
+      const planeNormal = asNonZeroVec3(o.planeNormal);
+      return targets && planePoint && planeNormal
+        ? { op: "section", targets, planePoint, planeNormal }
+        : null;
+    }
     case "addBox": {
       const center = asVec3(o.center);
       const size = asVec3(o.size);
@@ -287,6 +375,81 @@ export function validateEditOp(raw: unknown): EditOp | null {
         ? { op: "addPolygonProfile", center, normal, up, radius: o.radius, sides: o.sides }
         : null;
     }
+    case "addWedge": {
+      const center = asVec3(o.center);
+      const axis = asNonZeroVec3(o.axis);
+      const up = asNonZeroVec3(o.up);
+      return center && axis && up && notParallel(axis, up)
+        && isPositive(o.dx) && isPositive(o.dy) && isPositive(o.dz)
+        && isFiniteNumber(o.ltx) && o.ltx >= 0
+        ? { op: "addWedge", center, axis, up, dx: o.dx, dy: o.dy, dz: o.dz, ltx: o.ltx }
+        : null;
+    }
+    case "addHole": {
+      const targets = asIdArray(o.targets);
+      const position = asVec3(o.position);
+      const axis = asNonZeroVec3(o.axis);
+      return targets && position && axis && isPositive(o.radius) && isPositive(o.depth)
+        ? { op: "addHole", targets, position, axis, radius: o.radius, depth: o.depth }
+        : null;
+    }
+    case "addCounterboreHole": {
+      const targets = asIdArray(o.targets);
+      const position = asVec3(o.position);
+      const axis = asNonZeroVec3(o.axis);
+      return targets && position && axis && isPositive(o.radius) && isPositive(o.depth)
+        && isPositive(o.cbRadius) && o.cbRadius > o.radius
+        && isPositive(o.cbDepth) && o.cbDepth < o.depth
+        ? { op: "addCounterboreHole", targets, position, axis, radius: o.radius, depth: o.depth, cbRadius: o.cbRadius, cbDepth: o.cbDepth }
+        : null;
+    }
+    case "addCountersinkHole": {
+      const targets = asIdArray(o.targets);
+      const position = asVec3(o.position);
+      const axis = asNonZeroVec3(o.axis);
+      return targets && position && axis && isPositive(o.radius) && isPositive(o.depth)
+        && isPositive(o.csRadius) && o.csRadius > o.radius
+        && isFiniteNumber(o.csAngleDeg) && o.csAngleDeg > 0 && o.csAngleDeg < 180
+        ? { op: "addCountersinkHole", targets, position, axis, radius: o.radius, depth: o.depth, csRadius: o.csRadius, csAngleDeg: o.csAngleDeg }
+        : null;
+    }
+    case "addEllipseProfile": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      const up = asNonZeroVec3(o.up);
+      return center && normal && up && notParallel(normal, up)
+        && isPositive(o.radiusX) && isPositive(o.radiusY)
+        ? { op: "addEllipseProfile", center, normal, up, radiusX: o.radiusX, radiusY: o.radiusY }
+        : null;
+    }
+    case "addRoundedRectangleProfile": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      const up = asNonZeroVec3(o.up);
+      return center && normal && up && notParallel(normal, up)
+        && isPositive(o.width) && isPositive(o.height) && isPositive(o.cornerRadius)
+        && 2 * o.cornerRadius < Math.min(o.width, o.height)
+        ? { op: "addRoundedRectangleProfile", center, normal, up, width: o.width, height: o.height, cornerRadius: o.cornerRadius }
+        : null;
+    }
+    case "addSlotProfile": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      const up = asNonZeroVec3(o.up);
+      return center && normal && up && notParallel(normal, up)
+        && isPositive(o.length) && isPositive(o.width) && o.length > o.width
+        ? { op: "addSlotProfile", center, normal, up, length: o.length, width: o.width }
+        : null;
+    }
+    case "addTrapezoidProfile": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      const up = asNonZeroVec3(o.up);
+      return center && normal && up && notParallel(normal, up)
+        && isPositive(o.bottomWidth) && isPositive(o.topWidth) && isPositive(o.height)
+        ? { op: "addTrapezoidProfile", center, normal, up, bottomWidth: o.bottomWidth, topWidth: o.topWidth, height: o.height }
+        : null;
+    }
     case "addPoint": {
       const position = asVec3(o.position);
       return position ? { op: "addPoint", position } : null;
@@ -303,6 +466,48 @@ export function validateEditOp(raw: unknown): EditOp | null {
         && isFiniteNumber(o.startAngleDeg) && isFiniteNumber(o.endAngleDeg)
         && o.startAngleDeg !== o.endAngleDeg
         ? { op: "addArc", center, normal, radius: o.radius, startAngleDeg: o.startAngleDeg, endAngleDeg: o.endAngleDeg }
+        : null;
+    }
+    case "addPolyline": {
+      const closed = o.closed === true;
+      const points = asVec3Array(o.points, closed ? 3 : 2);
+      // A closed polyline also needs distinct first/last (the closing edge is implicit).
+      return points && (!closed || !vecEqual(points[0], points[points.length - 1]))
+        ? { op: "addPolyline", points, closed }
+        : null;
+    }
+    case "addThreePointArc": {
+      const p1 = asVec3(o.p1);
+      const p2 = asVec3(o.p2);
+      const p3 = asVec3(o.p3);
+      return p1 && p2 && p3 && !vecEqual(p1, p2) && !vecEqual(p2, p3) && !vecEqual(p1, p3)
+        ? { op: "addThreePointArc", p1, p2, p3 }
+        : null;
+    }
+    case "addSpline": {
+      const points = asVec3Array(o.points, 2);
+      return points ? { op: "addSpline", points } : null;
+    }
+    case "addBezier": {
+      const controlPoints = asVec3Array(o.controlPoints, 2, false);
+      return controlPoints ? { op: "addBezier", controlPoints } : null;
+    }
+    case "addEllipseArc": {
+      const center = asVec3(o.center);
+      const normal = asNonZeroVec3(o.normal);
+      const up = asNonZeroVec3(o.up);
+      return center && normal && up && notParallel(normal, up)
+        && isPositive(o.radiusX) && isPositive(o.radiusY)
+        && isFiniteNumber(o.startAngleDeg) && isFiniteNumber(o.endAngleDeg)
+        && o.startAngleDeg !== o.endAngleDeg
+        ? { op: "addEllipseArc", center, normal, up, radiusX: o.radiusX, radiusY: o.radiusY, startAngleDeg: o.startAngleDeg, endAngleDeg: o.endAngleDeg }
+        : null;
+    }
+    case "addHelix": {
+      const center = asVec3(o.center);
+      const axis = asNonZeroVec3(o.axis);
+      return center && axis && isPositive(o.radius) && isPositive(o.pitch) && isPositive(o.turns)
+        ? { op: "addHelix", center, axis, radius: o.radius, pitch: o.pitch, turns: o.turns }
         : null;
     }
     case "addSurfaceFromLines": {

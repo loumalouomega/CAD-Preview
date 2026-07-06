@@ -8,7 +8,10 @@
 [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 
-![](https://raw.githubusercontent.com/loumalouomega/CAD-Preview/master/images/cad_preview.png)
+<div style="display: flex; justify-content: space-around; align-items: flex-start;">
+  <img src="https://raw.githubusercontent.com/loumalouomega/CAD-Preview/master/images/cad_preview.png" alt="CAD Preview" style="width: 48%;">
+  <img src="https://raw.githubusercontent.com/loumalouomega/CAD-Preview/master/images/mesh_generation.png" alt="Mesh Generation" style="width: 48%;">
+</div>
 
 A Visual Studio Code extension that previews 3D CAD and mesh files directly in the
 editor. Open a supported file and CAD-Preview renders an interactive 3D view

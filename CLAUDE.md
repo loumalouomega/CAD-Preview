@@ -487,6 +487,88 @@ be incoherent (same rationale as the 2D profile sketches above).
   structurally invalid selection — same graceful-degradation rule as every
   other op in this file.
 
+## Edits panel redesign (GEOMETRY/EDIT tabs) + extended op catalog
+
+The Edits panel is a single panel with two top-level tabs — **GEOMETRY**
+(creation, with **2D**/**3D** subtabs) and **EDIT** (modification, one
+categorized list) — sharing the one op stack, undo/redo/Clear header, and
+history list. Op buttons render as icon grids; clicking one opens its param
+form in the shared `#edits-params` area. Non-negotiable invariants:
+
+- **`src/webview/opCatalog.ts` is the single source of truth for the tab
+  structure** (pure, DOM-free, unit-tested). A `PanelOpId` is one op *button*
+  (booleans are 3 buttons over the one `boolean` kind; each entry's `kinds`
+  ties it back to `EditOpKind`s). `describeOp` lives here now (re-exported from
+  `editsPanel.ts`). `opCatalog.test.ts` locks: unique ids, icon completeness,
+  `brepOnly` ↔ `BREP_ONLY_OPS` agreement over `kinds`, every `EditOpKind`
+  reachable from ≥1 button, and **every 2D-tab entry B-rep-only** (that last
+  one is what makes greying the whole 2D subtab for meshes valid).
+- **`src/webview/opIcons.ts` is the ONE file to edit to swap in real icons**
+  (`Record<PanelOpId, string>` — a missing icon is a compile error). Values
+  render as `<span class="op-icon">` text; placeholders are unicode glyphs.
+- `setBRepOnly` works per op-button (each brepOnly button is in `brepOnlyEls`,
+  held by reference) plus the whole **2D subtab**; disabling also collapses an
+  open B-rep-only form and auto-switches 2D→3D. The callback-draft
+  architecture is unchanged (`main.ts` merges live selection into drafts).
+- **Hole ops (`addHole`/`addCounterboreHole`/`addCountersinkHole`) are
+  subtractive and run on BOTH engines** (host `cutHole()` via verified `Cut_3`;
+  mesh `applyMeshHole()` via three-bvh-csg). **meshEdits dispatch-order trap:**
+  their names start with `add`, so `applyEditsMesh` MUST handle them *before*
+  the `op.op.startsWith("add")` primitive branch, and they never increment the
+  `prim-{K}` counter — both regression-tested in `meshEdits.test.ts`.
+- **`shell` requires ≥1 opening face** — verified: `MakeThickSolidByJoin` with
+  an EMPTY closing list returns the plain inner offset solid (volume 512 for a
+  −1 offset of a 10-box), NOT a hollow solid; with a closing face it hollows
+  correctly (424 = 1000 − 8·8·9). The op has no `targets` — the host derives
+  each opening face's owning solid.
+- **`splitByPlane` is a half-space cut with zero new bindings** (deliberately
+  not a `BRepAlgoAPI_Splitter` probe): an axis-aligned box on the negative
+  side of z=0 (10× bbox diagonal) moved onto the plane with the mate-verified
+  `gp_Trsf.SetDisplacement(gp_Ax3, gp_Ax3)`; positive→`Cut_3`,
+  negative→`Common_3`, both→compound. `section` intersects a big
+  `buildFlatFace` plane with the targets via `Common_3` (verified: exactly the
+  trimmed cross-section face) and appends it — it shows up under "Sketches"
+  via the existing free-face pass, extrudable like any sketch.
+- **`addSpline` is an approximating fit, not exact interpolation** —
+  `GeomAPI_Interpolate` (and the `TColgp_HArray1OfPnt` ctor it needs) is NOT
+  bound in this build; `GeomAPI_PointsToBSpline_2` is endpoint-exact with tol
+  1e-6, which is what the op uses. Label it "Spline", don't promise exactness.
+- **OCCT APIs verified against the live WASM for the new ops** (exact
+  suffixes; found by the usual brute-force overload probing):
+  - explicit-X placement `gp_Ax2_2(gp_Pnt, gp_Dir n, gp_Dir vx)` — the given X
+    is projected into the plane and normalized (verified numerically);
+  - ellipse `gp_Elips_2(ax2, major, minor)` (major ≥ minor **enforced by
+    OCCT** — swap the in-plane basis 90° + radii when radiusY > radiusX; for a
+    *trimmed* arc also shift both angles by −90° so they stay measured from
+    `up`) → full `BRepBuilderAPI_MakeEdge_12(elips)` / trimmed
+    `MakeEdge_13(elips, a1, a2)` (radians, CCW from the Ax2 X-dir);
+  - point array `TColgp_Array1OfPnt_2(1, n)` + `.SetValue(i, pnt)` (1-based);
+  - Bézier `Geom_BezierCurve_1(arr)`; any Geom curve handle → edge via
+    `Handle_Geom_Curve_2(handle.get())` + `MakeEdge_24(hCurve)`
+    (`edgeFromCurveHandle` in `occtOperations.ts`);
+  - 3-point arc `GC_MakeArcOfCircle_4(p1, p2, p3)` → `.Value()` →
+    `edgeFromCurveHandle` (`IsDone()` false for collinear = the skip gate);
+  - spline `GeomAPI_PointsToBSpline_2(arr, 3, 8, GeomAbs_Shape.GeomAbs_C2,
+    1e-6)` → `.Curve()`;
+  - helix `gp_Ax3_4` → `Geom_CylindricalSurface_1(ax3, r)` →
+    `Handle_Geom_Surface_2`; `gp_Pnt2d_3(u, v)` (u = angle rad, v = height) →
+    `GCE2d_MakeSegment_1` → `Handle_Geom2d_Curve_2` →
+    `MakeEdge_30(h2dcurve, hsurface)` → `BRepLib.BuildCurves3d_2(edge)`
+    (static, 1-arg; `BuildCurves3d_1` wants 5 args);
+  - wedge `BRepPrimAPI_MakeWedge_1(dx, dy, dz, ltx)` /
+    `MakeWedge_2(ax2, dx, dy, dz, ltx)` — the Ax2 location is the local
+    ORIGIN CORNER (offset by −dx/2·u −dy/2·v to centre the base on `center`);
+  - shape list `TopTools_ListOfShape_1()` + `.Append_1(shape)` + `.Size()`
+    (there is NO `.Extent()`);
+  - shell `new BRepOffsetAPI_MakeThickSolid_1()` + `.MakeThickSolidByJoin(
+    solid, list, offset, tol, BRepOffset_Mode.BRepOffset_Skin, false, false,
+    GeomAbs_JoinType.GeomAbs_Arc, false)` — exactly 9 args, the 10th progress
+    arg is the usual unconstructible `Message_ProgressRange`.
+- New-op families follow every existing rule: single `validateEditOp` gate,
+  graceful skip on unresolved operands / builder throw / `IsDone()` false,
+  `compound(existing + new)` append for creation ops, `booleanSolids`-style
+  target-replacement for holes/split.
+
 ## Meshing (GMSH-JS)
 
 Users can generate a finite-element mesh (nodes + triangles/tetrahedra) of the
@@ -784,6 +866,50 @@ Non-negotiable invariants:
   protocol messages, licensing, and the upstream GMSH-JS gaps found while
   building this): `doc/gmsh-integration.md`.
 
+## Toolbar/panel icons — generated, theme-adaptive SVG
+
+The toolbar and a few panels (tree-close, parts delete/remove, the meshing
+large-mesh warning) used plain-color emoji (📤🔍🕸️🌳🔬🖱️📍🧊◼️📏▶, plus ⚠/✕) as
+button icons. These are now monochrome, `currentColor`-based inline SVG that
+track VS Code's light/dark theme automatically, replacing the emoji.
+
+- **`src/toolbarIcons.ts` is GENERATED — never hand-edit it.** It's produced
+  wholesale by `icons/build-toolbar-icons.mjs` from `icons/svg-ui/*.svg`
+  (themselves built from `icons/tikz-ui/*.tex` via `pdflatex` +
+  `pdftocairo -svg`). To change an icon: edit its `.tex` source, then
+  `cd icons && make ts`. See `icons/README.md` for the full pipeline — it's a
+  separate, differently-wired set from the 46 `icons/tikz/*.tex` Edits-panel
+  op icons (those stay flat PNG, still unwired into the running extension;
+  this toolbar set is SVG and *is* wired in).
+- **Every icon is `currentColor`-based, not a fixed color** — the generator
+  strips `pdftocairo`'s literal black (`rgb(0%, 0%, 0%)`) stroke/fill down to
+  `currentColor`, and any gray shading fill (from a TikZ `gray!N` fill) down
+  to `currentColor` + a proportional `fill-opacity` (`(100-N)/100`), so an
+  icon's relative internal shading survives (e.g. `volume`'s front/top/side
+  faces) instead of flattening to one constant tint. The fixed `width`/
+  `height` `pdftocairo` emits are stripped too — only `viewBox` survives, so
+  CSS (`.toolbar-icon svg { width: 1em; height: 1em; }` in `media/viewer.css`)
+  controls the rendered size, and the icon inherits whatever `color` its
+  containing button/text already has (VS Code already themes those) instead
+  of setting its own.
+- **Gotcha, hit once and now regression-tested:** `pdftocairo -svg` always
+  emits a fill as a `fill="rgb(...)" fill-opacity="1"` *pair*. A first-pass
+  regex that only rewrote the `fill="rgb(...)"` part left the original
+  `fill-opacity="1"` trailing right after the new one — two `fill-opacity`
+  attributes on one `<path>`, and the second (unwanted) one silently won,
+  erasing the intended partial-opacity shading. The generator's regex now
+  consumes both in one match. `src/toolbarIcons.test.ts` asserts no generated
+  path ever has more than one `fill-opacity` attribute.
+- Since this module has **no `vscode`/DOM dependency**, both the host
+  (`provider.ts`, building static HTML) and the webview
+  (`partsPanel.ts`/`meshingPanel.ts`) import it directly — no bundling or
+  `asWebviewUri` needed, the SVG markup is just inlined into whatever HTML
+  string or `innerHTML` assignment needs it.
+- Chevrons (`▾▸⌄⌃`), plain arrows (`↑↓←→`), and the zoom `−`/`+` are
+  deliberately NOT covered by this — they already render as clean monochrome
+  glyphs in every renderer, unlike real emoji, so replacing them would add
+  icons for no visual benefit.
+
 ## Build & test
 
 ```bash
@@ -803,6 +929,15 @@ wireframe toggle. Exercise the view-manipulation panel (stepped rotate/pan/zoom,
 Ctr), the orientation cube (faces snap the view), and the **⌄ / ⌃** hide/show toggle.
 Open/close repeatedly and watch extension-host memory stay flat (leak check). Additional
 fixtures: `examples/OBJ/cube.obj`, `examples/PLY/cube.ply`, `examples/GLTF/cube.gltf`.
+
+Confirm the toolbar/panel icons (Fit, Wireframe, Export, Tree, FE Mesh, Select,
+Point/Vol/Surf/Line, the FE Mesh panel's Generate/Export, tree-close, Parts
+delete/remove, and the large-mesh warning) render crisply and legibly at their
+actual small size — this is the one thing automated tests can't check. Then
+switch VS Code to a light theme (`Ctrl+K Ctrl+T` → e.g. "Light+") and confirm
+every one of those icons re-colors to match (dark strokes on the now-light
+toolbar buttons) without needing a reload; switch back to a dark theme and
+confirm the reverse.
 
 Exercise **Export**: on `bull.stp`, confirm the quick-pick offers IGES/BREP/STL/OBJ/
 PLY/glTF (not STEP again); on `cube.stl`, confirm it offers only OBJ/PLY/glTF. Export
@@ -857,6 +992,25 @@ reopen the output → the points/lines/arcs/surfaces/volumes are baked in. On
 `cube.stl`, confirm the **📍 Point** button and the wireframe/build composers are
 disabled. Apply/undo repeatedly + open/close → host memory stays flat (OCCT
 handle-leak check, same as above).
+
+Then exercise the **GEOMETRY/EDIT tab redesign + new ops**: on `bull.stp`, confirm
+the Edits panel shows GEOMETRY|EDIT tabs (2D|3D subtabs under GEOMETRY), each op as
+an icon button that opens its param form below the grid (clicking again collapses
+it), and that one op from every pre-existing family still behaves identically from
+its new home. Then the new ops — **2D sketches**: Ellipse (try radiusY > radiusX),
+Rounded rect (near-limit corner radius), Slot, Trapezoid → each under "Sketches",
+extrudable and consumed on extrude. **Curves**: Polyline (add/remove point rows;
+open + closed), 3-Pt Arc (collinear → graceful skip), Spline, Bezier, Ellipse Arc
+(non-default Up), Helix → each pickable in Line mode. **3D**: Wedge (tilted axis);
+Hole/Counterbore/Countersink into a selected volume (tilted axis too) → correctly
+placed cuts. **EDIT → Modify**: Shell (select opening faces in Surf mode; walls of
+|thickness|), Split (all three Keep modes), Section (face under "Sketches"; plane
+that misses → no-op). On `cube.stl`: the 2D subtab is greyed with a tooltip;
+Wedge/Volume-from-Surfaces/Fillet/Features/Modify/Mate are greyed; Box…Prism and
+all three holes work (mesh CSG placements match the B-rep path); loading the mesh
+while a B-rep-only form is open collapses it. Undo/redo/clear, reload → replay
+from `bull.stp.edits.json`, export → baked in, and the usual host-memory leak
+check — all unchanged.
 
 Then exercise **Meshing (GMSH-JS)**: on `bull.stp`, click the toolbar **🔬 FE Mesh**
 toggle (this just arms overlay display — the **FE Mesh** panel is already visible in

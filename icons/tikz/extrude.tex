@@ -1,0 +1,12 @@
+% Op icon: extrude — flat profile at bottom, arrow up, swept solid outline above.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!25] (-8,-12) rectangle (8,-6);
+  \draw[dashed] (-8,-6) -- (-8,6);
+  \draw[dashed] (8,-6) -- (8,6);
+  \draw[->, thick] (0,-5) -- (0,5);
+  \draw[thick] (-8,6) rectangle (8,12);
+\end{tikzpicture}
+\end{document}

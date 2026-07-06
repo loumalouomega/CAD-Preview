@@ -133,47 +133,78 @@ operations** to the model. Edits never touch the CAD file — they are saved as 
 ordered, replayable op-list in a `<model>.edits.json` sidecar and re-applied each
 time you open the file.
 
+The panel is organised into two top-level tabs — **GEOMETRY** (create new
+entities) and **EDIT** (modify existing ones) — sharing one undo/redo/Clear
+header and one operation-history list. The GEOMETRY tab is further split into
+**2D** (points, lines, curves, sketch profiles) and **3D** (solid primitives,
+holes) subtabs. Each tab shows a grid of operation buttons (icon + name);
+clicking a button opens its parameter form below the grid, and clicking it
+again collapses the form. For mesh sources the whole **2D** subtab and every
+other B-rep-only button grey out.
+
 To apply a transform:
 
 1. Click **Select**, choose **Vol** mode, and click one or more volumes (solids).
-2. In the **Edits** panel pick an operation — **Move**, **Rotate**, **Scale**, or
-   **Mirror** — and fill in the numeric fields.
+2. In the **Edits** panel open the **EDIT** tab and pick an operation — **Move**,
+   **Rotate**, **Scale**, or **Mirror** — and fill in the numeric fields.
 3. Click **Apply**. The model updates live and the operation is added to the list.
 
-| Edits control | Action |
+**GEOMETRY → 2D** (all B-rep only; each is typed-in, no selection needed unless noted):
+
+| Op | Action |
 |---|---|
-| **Move / Rotate / Scale / Mirror** | Choose the transform, enter parameters, **Apply** it to the selected volumes |
-| **Unite / Subtract / Intersect** | Select operand-A volumes and click **Set A**, then select operand-B volumes and click **Apply** |
-| **Fillet / Chamfer** | Select edges (**Line** mode), enter the radius / setback, and **Apply** (B-rep only) |
+| **Point / Line / Arc** | Appends a standalone point / straight line / circular arc you can select later (**Point**/**Line** mode) |
+| **Polyline** | Appends straight edges through an editable list of points (**+ Add point** / **−** rows); **Closed** adds the last→first edge |
+| **3-Pt Arc** | Appends the circular arc through three typed points (a collinear triple is skipped) |
+| **Spline** | Appends a smooth curve through the point list (endpoint-exact fit) |
+| **Bezier** | Appends a Bézier curve over the control-point list (passes through first and last only) |
+| **Ell. Arc** | Appends an elliptical arc — Radius X along **Up**, Radius Y perpendicular, trimmed Start°→End° |
+| **Helix** | Appends a helix: `Turns` revolutions of `Pitch` height around `Axis` from `Base`, radius `Radius` |
+| **Circle / Rectangle / Polygon / Ellipse / Rounded / Slot / Trapezoid** | **Sketch** — appends a flat profile face you can later select (**Surf** mode) and feed into Extrude/Revolve/Sweep/Loft. Rectangle-family shapes take an **Up** direction for in-plane orientation |
+| **Surface** (Build from selection) | Select ≥3 lines (**Line** mode) that close into a loop and **Build** — assembles them into a new flat face under "Sketches" |
+
+**GEOMETRY → 3D**:
+
+| Op | Action |
+|---|---|
+| **Box / Sphere / Cylinder / Cone / Torus / Prism** | **Add** — appends a new body at that placement (no selection needed; all formats) |
+| **Wedge** | **Add** — appends a right-angular wedge: base `Size X`×`Size Y` centred at `Base ctr` in the plane ⟂ `Axis`, extruded `Height`; the far edge narrows to `Top X` (B-rep only) |
+| **Hole / C'bore / C'sink** | Select target volume(s) (**Vol** mode), place the mouth (`Mouth` + `Axis` pointing into the material), and **Cut** — drills a plain, counterbored, or countersunk hole (all formats) |
+| **Volume** (Build from selection) | Select ≥4 surfaces (**Surf** mode) that close into a shell and **Build** — sews them into a new closed solid (B-rep only) |
+
+**EDIT**:
+
+| Op | Action |
+|---|---|
+| **Move / Rotate / Scale / Mirror** | Enter parameters, **Apply** to the selected volumes (all formats) |
+| **Unite / Subtract / Intersect** | Select operand-A volumes and click **Set A**, then select operand-B volumes and click **Apply** (all formats) |
+| **Fillet / Chamfer** | Select edges (**Line** mode), enter the radius / setback, **Apply** (B-rep only) |
 | **Extrude / Revolve / Sweep / Loft** | Select a profile face (**Surf** mode; a path edge too for Sweep, 2+ faces for Loft), set parameters, **Apply** — builds a new body (B-rep only) |
+| **Shell** | Select the opening face(s) (**Surf** mode), enter a wall thickness (negative = walls grow inward, the usual hollow), **Apply** — hollows the solid(s) owning those faces (B-rep only) |
+| **Split** | Select volumes (**Vol** mode), define the plane, choose which side(s) to **Keep**, **Apply** (B-rep only) |
+| **Section** | Select volumes (**Vol** mode), define the plane, **Apply** — appends the planar cross-section as a sketch face, leaving the solids untouched (B-rep only) |
 | **Explode** | Enter a spread factor and **Apply** — spreads the bodies radially from the model centre (all formats) |
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
-| **Box / Sphere / Cylinder / Cone / Torus / Prism** | Choose the primitive, enter its centre/axis/dimensions, and **Add** — appends a new body at that placement (no selection needed; all formats) |
-| **Circle / Rectangle / Polygon** | Choose the shape, enter its centre/normal/dimensions (Rectangle & Polygon also take an **Up** direction), and **Sketch** — appends a flat profile face you can later select (**Surf** mode) and feed into Extrude/Revolve/Sweep/Loft (no selection needed; B-rep only) |
-| **Point / Line / Arc** | Choose the entity, enter its coordinates (typed, not picked), and **Add** — appends a standalone point/line/arc you can select later (**Point**/**Line** mode) (no selection needed; B-rep only) |
-| **Build → Surface** | Select ≥3 lines (**Line** mode) that close into a loop and click **Surface** — assembles them into a new flat face under "Sketches" (B-rep only) |
-| **Build → Volume** | Select ≥4 surfaces (**Surf** mode) that close into a shell and click **Volume** — sews them into a new closed solid (B-rep only) |
-| **↶ / ↷** | Undo / redo the last operation |
-| **Clear** | Remove all operations (back to the original model) |
 
-The current release ships **transforms** (move/rotate/scale/mirror), **booleans**
-(unite/subtract/intersect), **fillet/chamfer**, **feature modeling**
-(extrude/revolve/sweep/loft), **assembly** ops (explode/mate), **primitive creation**
-(box/cube, sphere, cylinder, cone, torus, N-sided prism), **2D profile sketches**
-(circle, rectangle, N-sided polygon), and **bottom-up wireframe modeling** (points,
-lines, arcs → surfaces built from a set of lines → volumes built from a set of
-surfaces). Transforms, booleans, explode, and primitive creation work on both B-rep
-and mesh files; fillet/chamfer, feature-modeling, mate, 2D profile sketches, and the
-wireframe/build ops are available only for B-rep sources (the panel disables them
-for meshes). Feature-modeling ops and primitives **append a new body** to the model —
-they never cut or fuse the source. For primitives, `center` is the body's geometric
-centre (box/sphere/torus) or its base centre (cylinder/cone/prism, extruded along
-`Axis`) — matching how the underlying CAD kernel places them. A 2D profile sketch
-builds a flat face, not a body — it's meant to be picked and extruded/revolved/swept/
-lofted; doing so consumes the sketch into the new solid rather than leaving a
-duplicate flat face behind. Building a Surface or Volume needs an already-closed
-selection (a loop of lines, a sealed set of surfaces); an open selection is silently
-skipped rather than producing a malformed body.
+Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all
+operations (back to the original model).
+
+Transforms, booleans, explode, primitives, and the hole family work on both B-rep
+and mesh files; everything else is B-rep only (the panel disables those buttons —
+and the whole 2D subtab — for meshes). Creation ops **append a new body** to the
+model; holes are the exception — they **cut into** the selected volumes. For
+primitives, `center` is the body's geometric centre (box/sphere/torus) or its base
+centre (cylinder/cone/prism/wedge, extruded along `Axis`) — matching how the
+underlying CAD kernel places them. A 2D profile sketch builds a flat face, not a
+body — it's meant to be picked and extruded/revolved/swept/lofted; doing so
+consumes the sketch into the new solid rather than leaving a duplicate flat face
+behind. Building a Surface or Volume needs an already-closed selection (a loop of
+lines, a sealed set of surfaces); an open selection is silently skipped rather
+than producing a malformed body — the same graceful-skip rule every op follows
+when its inputs don't resolve.
+
+The operation buttons' icons are placeholder glyphs — they live in one file,
+`src/webview/opIcons.ts`, made to be swapped for real icons.
 
 When you **Export** an edited model, the edits are baked into the output file. See
 [Edits Sidecar](./file-formats.md#edits-sidecar-modeleditsjson) for the format.

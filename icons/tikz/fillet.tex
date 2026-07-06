@@ -1,0 +1,11 @@
+% Op icon: fillet — sharp corner ghosted dashed, rounded corner overlaid solid.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[dashed, gray] (-10,-10) -- (-10,10) -- (10,10);
+  \draw[very thick] (-10,-10) -- (-10,2);
+  \draw[very thick] (-10,2) arc (180:90:8);
+  \draw[very thick] (2,10) -- (10,10);
+\end{tikzpicture}
+\end{document}

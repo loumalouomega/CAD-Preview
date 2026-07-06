@@ -41,6 +41,33 @@ describe("parseEditsJson", () => {
   });
 });
 
+describe("parseEditsJson — new op families round-trip", () => {
+  it("round-trips one op per family added with the GEOMETRY/EDIT redesign", () => {
+    const ops: EditOp[] = [
+      { op: "addSlotProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], length: 12, width: 4 },
+      { op: "addWedge", center: [0, 0, 0], axis: [0, 0, 1], up: [1, 0, 0], dx: 10, dy: 6, dz: 4, ltx: 3 },
+      { op: "addCounterboreHole", targets: ["solid-0"], position: [0, 0, 10], axis: [0, 0, -1], radius: 2, depth: 5, cbRadius: 4, cbDepth: 2 },
+      { op: "addPolyline", points: [[0, 0, 0], [10, 0, 0], [10, 10, 0]], closed: true },
+      { op: "addHelix", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, pitch: 3, turns: 2 },
+      { op: "shell", thickness: -1, openingFaces: ["face-5"] },
+      { op: "splitByPlane", targets: ["solid-0"], planePoint: [5, 5, 4], planeNormal: [0, 0, 1], keep: "both" },
+      { op: "section", targets: ["solid-0"], planePoint: [5, 5, 5], planeNormal: [0, 0, 1] },
+    ];
+    expect(parseEditsJson(serializeEditsJson("model.step", ops))).toEqual(ops);
+  });
+
+  it("drops only the op with a malformed points array, keeping its neighbours", () => {
+    const text = JSON.stringify({
+      ops: [
+        { op: "addSpline", points: [[0, 0, 0], [5, 5, 0]] },       // ok
+        { op: "addSpline", points: [[0, 0, 0], [1, "x", 0]] },     // malformed point → dropped
+        { op: "addBezier", controlPoints: [[0, 0, 0], [1, 1, 0]] }, // ok
+      ],
+    });
+    expect(parseEditsJson(text).map((o) => o.op)).toEqual(["addSpline", "addBezier"]);
+  });
+});
+
 describe("serializeEditsJson", () => {
   it("round-trips through parse and stamps version + source", () => {
     const ops: EditOp[] = [{ op: "explode", factor: 1.5 }];

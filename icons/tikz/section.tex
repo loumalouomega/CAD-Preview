@@ -1,0 +1,11 @@
+% Op icon: section — a box with a shaded cutting plane through it, solids untouched.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-10,-8) rectangle (10,8);
+  \draw[gray, fill=gray!30] (-4,-11) rectangle (4,11);
+  \draw[thick] (-4,-8) -- (-4,8);
+  \draw[thick] (4,-8) -- (4,8);
+\end{tikzpicture}
+\end{document}

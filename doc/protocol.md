@@ -103,9 +103,35 @@ type EditOp =
   | { op: 'loft'; profiles: string[] }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
+  | { op: 'shell'; thickness: number; openingFaces: string[] }        // >= 1 face id; negative = walls inward
+  | { op: 'splitByPlane'; targets: string[]; planePoint: Vec3; planeNormal: Vec3; keep: 'both' | 'positive' | 'negative' }
+  | { op: 'section'; targets: string[]; planePoint: Vec3; planeNormal: Vec3 }
+  | { op: 'addBox'; center: Vec3; size: Vec3 }
+  | { op: 'addSphere'; center: Vec3; radius: number }
+  | { op: 'addCylinder'; center: Vec3; axis: Vec3; radius: number; height: number }
+  | { op: 'addCone'; center: Vec3; axis: Vec3; radius1: number; radius2: number; height: number }
+  | { op: 'addTorus'; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number }
+  | { op: 'addPrism'; center: Vec3; axis: Vec3; radius: number; sides: number; height: number }
+  | { op: 'addWedge'; center: Vec3; axis: Vec3; up: Vec3; dx: number; dy: number; dz: number; ltx: number }
+  | { op: 'addHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number }
+  | { op: 'addCounterboreHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; cbRadius: number; cbDepth: number }
+  | { op: 'addCountersinkHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number }
+  | { op: 'addCircleProfile'; center: Vec3; normal: Vec3; radius: number }
+  | { op: 'addRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number }
+  | { op: 'addPolygonProfile'; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number }
+  | { op: 'addEllipseProfile'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number }
+  | { op: 'addRoundedRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number }
+  | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number }
+  | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number }
   | { op: 'addPoint'; position: Vec3 }
   | { op: 'addLine'; start: Vec3; end: Vec3 }
   | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number }
+  | { op: 'addPolyline'; points: Vec3[]; closed: boolean }            // >= 2 points (>= 3 when closed)
+  | { op: 'addThreePointArc'; p1: Vec3; p2: Vec3; p3: Vec3 }
+  | { op: 'addSpline'; points: Vec3[] }                               // approximating, endpoint-exact fit
+  | { op: 'addBezier'; controlPoints: Vec3[] }
+  | { op: 'addEllipseArc'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number }
+  | { op: 'addHelix'; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
   | { op: 'addSurfaceFromLines'; edges: string[] }   // >= 3 edge ids, must close into a loop
   | { op: 'addVolumeFromSurfaces'; faces: string[] } // >= 4 face ids, must sew into a closed shell
 ```
@@ -115,11 +141,14 @@ same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the sing
 tolerance gate — malformed ops are dropped, never thrown. The list is persisted in
 the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md). All op
 kinds are implemented: transforms, booleans, fillet/chamfer, feature modeling
-(extrude/revolve/sweep/loft), assembly (explode/mate), primitive creation
-(box/sphere/cylinder/cone/torus/prism), 2D profile sketches (circle/rectangle/
-polygon, B-rep only, for use as a later feature-modeling `profile`), and
-bottom-up wireframe modeling (addPoint/addLine/addArc/addSurfaceFromLines/
-addVolumeFromSurfaces, B-rep only).
+(extrude/revolve/sweep/loft), modify ops (shell/split-by-plane/section, B-rep
+only), assembly (explode/mate), primitive creation (box/sphere/cylinder/cone/
+torus/prism/wedge), subtractive holes (plain/counterbore/countersink — cut into
+the target volumes on both pipelines), 2D profile sketches (circle/rectangle/
+polygon/ellipse/rounded-rectangle/slot/trapezoid, B-rep only, for use as a later
+feature-modeling `profile`), curves (polyline/three-point arc/spline/bezier/
+ellipse arc/helix, B-rep only), and bottom-up wireframe modeling
+(addPoint/addLine/addArc/addSurfaceFromLines/addVolumeFromSurfaces, B-rep only).
 
 ### `MeshOptions`
 

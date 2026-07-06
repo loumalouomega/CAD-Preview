@@ -1,0 +1,10 @@
+% Op icon: box — three-face isometric cube (front, top, side parallelograms).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!25] (-6,-8) rectangle (2,0);
+  \draw[thick, fill=gray!10] (-6,0) -- (2,0) -- (6,4) -- (-2,4) -- cycle;
+  \draw[thick, fill=gray!40] (2,-8) -- (6,-4) -- (6,4) -- (2,0) -- cycle;
+\end{tikzpicture}
+\end{document}

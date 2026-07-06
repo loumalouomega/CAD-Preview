@@ -1,4 +1,5 @@
 import { SIZE_MAX_SENTINEL, type MeshOptions } from "../meshOptions";
+import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import type { Part } from "../protocol";
 import {
@@ -444,7 +445,7 @@ export class MeshingPanel {
     const estimate = estimateElementCount(this.extents.size, size, dimension);
     this.sliderReadout.textContent = `Size: ${formatSize(size)} · ${formatCount(estimate)} elements`;
     if (estimate > LARGE_ELEMENT_COUNT) {
-      this.warningEl.textContent = `⚠ Estimated ${formatCount(estimate)} elements — generation may be slow or run out of memory.`;
+      this.warningEl.innerHTML = `<span class="toolbar-icon">${TOOLBAR_ICONS.warning}</span> Estimated ${formatCount(estimate)} elements — generation may be slow or run out of memory.`;
       this.warningEl.hidden = false;
     } else {
       this.warningEl.hidden = true;

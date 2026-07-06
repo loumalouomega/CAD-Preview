@@ -1,0 +1,11 @@
+% Op icon: hole — block cross-section with a plain drilled channel through it.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!15] (-10,-8) rectangle (10,8);
+  \fill[white] (-3,-8) rectangle (3,8);
+  \draw[dashed] (-3,-8) -- (-3,8);
+  \draw[dashed] (3,-8) -- (3,8);
+\end{tikzpicture}
+\end{document}

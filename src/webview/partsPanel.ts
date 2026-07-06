@@ -1,4 +1,5 @@
 import type { Part } from "../protocol";
+import { TOOLBAR_ICONS } from "../toolbarIcons";
 
 export interface PartsPanelCallbacks {
   onCreate: () => void;
@@ -102,7 +103,7 @@ export class PartsPanel {
 
     const del = document.createElement("button");
     del.className = "part-btn";
-    del.textContent = "✕";
+    del.innerHTML = TOOLBAR_ICONS.close;
     del.title = "Delete part";
     del.addEventListener("click", (e) => { e.stopPropagation(); this.cb.onRemovePart(index); });
     row.appendChild(del);
@@ -150,7 +151,7 @@ export class PartsPanel {
 
       const rm = document.createElement("button");
       rm.className = "entity-remove";
-      rm.textContent = "✕";
+      rm.innerHTML = TOOLBAR_ICONS.close;
       rm.title = "Remove from part";
       rm.addEventListener("click", (e) => { e.stopPropagation(); this.cb.onRemoveEntity(index, type, id); });
       li.appendChild(rm);

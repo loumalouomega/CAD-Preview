@@ -19,7 +19,9 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
 | `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
-| `src/webview/editsPanel.ts` | Edits panel DOM — transform composer + op list |
+| `src/webview/opCatalog.ts` | Op catalog: GEOMETRY/EDIT tab structure + `describeOp`, DOM-free (unit-tested) |
+| `src/webview/opIcons.ts` | Per-op icon placeholders — the one file to edit for real icons |
+| `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 | `src/webview/meshingModel.ts` | Current FE-mesh `MeshOptions` store, DOM-free (unit-tested) |
@@ -546,58 +548,100 @@ Every mutation fires `onChange`, wired in `main.ts` to post `editsChanged`, rend
 the panel, and (for mesh files) rebuild the displayed model. `load` does **not**
 fire — it is the initial sidecar load and must not echo back as a write.
 
+## `src/webview/opCatalog.ts`
+
+The **op catalog** — the single source of truth for the Edits panel's tab
+structure. Pure and DOM-free (unit-tested in `opCatalog.test.ts`).
+
+```typescript
+type PanelOpId = "translate" | "booleanUnion" | ... | "buildVolume"  // one id per op BUTTON
+interface CatalogEntry { id: PanelOpId; label: string; brepOnly: boolean; kinds: EditOpKind[] }
+interface CatalogCategory { title: string; ops: CatalogEntry[] }
+const OP_CATALOG: { geometry2d: CatalogCategory[]; geometry3d: CatalogCategory[]; edit: CatalogCategory[] }
+function allCatalogEntries(): CatalogEntry[]
+function describeOp(op: EditOp): string   // moved here from editsPanel.ts (re-exported there)
+```
+
+A `PanelOpId` is one op **button** — usually 1:1 with an `EditOpKind`, but the
+three booleans are separate buttons over the single `boolean` op kind, and the
+two Build buttons emit `addSurfaceFromLines`/`addVolumeFromSurfaces`. Each
+entry's `kinds` lists the EditOp kind(s) the button can emit; `brepOnly` is
+derived from `BREP_ONLY_OPS` over `kinds` and the agreement is locked by a test,
+as are icon completeness (every id keyed in `OP_ICONS`) and full `EditOpKind`
+reachability.
+
+## `src/webview/opIcons.ts`
+
+`OP_ICONS: Record<PanelOpId, string>` — the **one file to edit to swap in real
+icons**. Each value renders as the text of the button's `<span class="op-icon">`;
+the current values are placeholder unicode glyphs. The `Record` type makes a
+missing icon a compile error.
+
 ## `src/webview/editsPanel.ts`
 
 ### `EditsPanel`
 
-Manages the `#edits-panel` DOM: a **transform composer** (a `Move/Rotate/Scale/
-Mirror` dropdown with numeric `<input>`s and an **Apply** button), an
-Undo/Redo/Clear control row, and the ordered op list with a one-line summary each
-(`describeOp`). VS Code webviews block `prompt()`, so all input is via numeric
-fields.
+Manages the `#edits-panel` DOM: two top-level tabs — **GEOMETRY** (creation ops,
+split into **2D**/**3D** subtabs) and **EDIT** (modification ops, one
+categorized list) — each rendered from `OP_CATALOG` as grids of icon op-buttons
+(`.op-grid`/`.op-btn`), a single shared parameter-form area (`#edits-params`)
+under the grids, the Undo/Redo/Clear control row, and the ordered op-history
+list with a one-line summary each (`describeOp`). Clicking an op button renders
+its parameter form; clicking it again collapses it. There is only one op stack
+regardless of which tab an op came from. VS Code webviews block `prompt()`, so
+all input is via numeric fields.
 
 ```typescript
 class EditsPanel {
   constructor(panel: HTMLElement, cb: EditsPanelCallbacks)
   render(ops: EditOp[], canUndo: boolean, canRedo: boolean): void
+  setBRepOnly(enabled: boolean): void
 }
 ```
 
-`onApplyTransform(draft: TransformDraft)` hands a transform op **without targets**
-to `main.ts`, which injects the selected volume ids before pushing it to the
-`EditsModel`. The boolean composer uses `onCaptureBooleanA()` (captures the current
-selection as operand A, returns its size for display) and `onApplyBoolean(kind)`
-(applies captured-A against the live selection as operand B). The fillet/chamfer
-composer uses `onApplyFillet(kind, amount)` (applies to the selected edges) and the
-feature composer uses `onApplyFeature(draft)` (extrude/revolve/sweep/loft from the
-selected profile face(s)/path edge); both are **B-rep-only** sections that
-`setBRepOnly(enabled)` disables for mesh sources. The assembly composer uses
-`onApplyExplode(factor)` (all formats) and `onApplyMate()` (aligns the two selected
-faces, B-rep only). The **primitive composer** uses `onApplyPrimitive(draft:
-PrimitiveDraft)` — the only op-creation callback that needs **no selection at all**;
-`draft` already carries every parameter (`center`/`axis`/dimensions), so `main.ts`
-just validates positivity and pushes the op straight through. This composer is
-deliberately never registered in `brepOnlyEls`, since primitives work on both
-engines. The **2D profile composer** (Circle/Rectangle/Polygon) similarly uses
-`onApplyProfile(draft: ProfileDraft)` — also no selection needed — but IS registered
-in `brepOnlyEls` (2D sketches are B-rep only). Rectangle/Polygon drafts carry an
-explicit `up: Vec3` (besides `normal`) so the sketch's in-plane orientation is
-user-controlled; `main.ts` rejects a draft where `up` is (anti-)parallel to `normal`
-before pushing (mirroring `validateEditOp`'s `notParallel` check). A sketch is
-created to be picked afterward (Surf mode) and fed into the feature composer's
-`profile` field — the two composers work together, not independently.
+**Callback-draft architecture:** each form's Apply handler builds a params-only
+draft and hands it to a callback; `main.ts` merges the live selection (target
+volumes, edges, faces) into it, applies a light client-side guard mirroring the
+matching `validateEditOp` rule (with a human status message), and pushes the
+`EditOp` into `EditsModel`. The callbacks:
 
-The **wireframe composer** (Point/Line/Arc) uses `onApplyWireframe(draft:
-WireframeDraft)` — no selection needed, just typed coordinates — and IS registered
-in `brepOnlyEls`. A separate **build composer** — a single row of "Surface" and
-"Volume" buttons, reusing `.compose-row` — calls `onBuildSurfaceFromLines()` /
-`onBuildVolumeFromSurfaces()` directly with **no capture step**, unlike the boolean
-composer's two-operand "Set A then Apply" pattern: `main.ts` reads the live
-selection (`selection.list()` filtered to `entityType==="line"` or `"surface"`)
-at click time, since each op needs exactly one operand set, which is already
-what's currently selected in Line/Surf mode. Both guard a minimum count
-client-side (`>=3` lines, `>=4` faces) before pushing, matching `validateEditOp`'s
-gate so a rejected click never silently no-ops without feedback.
+- `onApplyTransform(TransformDraft)` — Move/Rotate/Scale/Mirror; targets = selected volumes.
+- `onCaptureBooleanA()` / `onApplyBoolean(kind)` — the boolean two-step: **Set A**
+  captures the selection (count echoed in the form; the panel mirrors it in
+  `booleanACount` so it survives form re-renders), **Apply** uses the live
+  selection as operand B. Three buttons (Unite/Subtract/Intersect) share one form.
+- `onApplyFillet(kind, amount)` — selected edges (B-rep only).
+- `onApplyFeature(FeatureDraft)` — Extrude/Revolve/Sweep/Loft from the selected
+  profile face(s)/path edge (B-rep only).
+- `onApplyModify(ModifyDraft)` — Shell (opening faces = selected surfaces; the
+  host derives each face's owning solid), Split-by-plane and Section (targets =
+  selected volumes). B-rep only.
+- `onApplyExplode(factor)` / `onApplyMate()` — assembly ops.
+- `onApplyPrimitive(PrimitiveDraft)` — Box/Sphere/Cylinder/Cone/Torus/Prism/Wedge;
+  self-contained placement, **no selection needed**. All-formats except Wedge
+  (B-rep only).
+- `onApplyHole(HoleDraft)` — Hole/Counterbore/Countersink; subtractive, cut into
+  the selected volumes (all formats — the mesh engine cuts via CSG).
+- `onApplyProfile(ProfileDraft)` — Circle/Rectangle/Polygon/Ellipse/Rounded
+  rect/Slot/Trapezoid sketches; no selection needed, B-rep only. The
+  rectangle-family drafts carry an explicit `up: Vec3` so in-plane orientation is
+  user-controlled. A sketch is created to be picked afterward (Surf mode) and fed
+  into a feature op's `profile`.
+- `onApplyWireframe(WireframeDraft)` — Point/Line/Arc plus the curve family
+  (Polyline/3-Pt Arc/Spline/Bezier/Ellipse Arc/Helix); typed coordinates, B-rep
+  only. Polyline/Spline/Bezier use the panel's **dynamic point-list widget**
+  (`pointListField`): `.point-row`s of vec triples with per-row `−` remove
+  buttons (disabled at the minimum count) and a trailing `+ Add point`;
+  `readPoints()` walks rows in DOM order at emit time.
+- `onBuildSurfaceFromLines()` / `onBuildVolumeFromSurfaces()` — the Build
+  buttons; no capture step — `main.ts` reads the live Line/Surf selection at
+  click time and guards the minimum count (≥3 lines, ≥4 faces).
+
+**B-rep gating:** every `CatalogEntry.brepOnly` button is pushed into
+`brepOnlyEls`, plus the whole **2D subtab** (every 2D op is B-rep-only — locked
+by a catalog test) with a tooltip. `setBRepOnly(false)` also collapses an open
+B-rep-only form and auto-switches an active 2D subtab to 3D. Elements are held
+by reference, so the tab re-parenting is transparent to the mechanism.
 
 ## `src/webview/meshEdits.ts`
 
@@ -635,6 +679,18 @@ the op's `axis` via `Quaternion.setFromUnitVectors`, then translate; get the
 rotate-then-translate order wrong and non-canonical-axis primitives land off-centre
 (regression-tested with a tilted-axis cylinder in `meshEdits.test.ts`).
 
+**Holes** (`addHole`/`addCounterboreHole`/`addCountersinkHole`) go through
+`applyMeshHole`, which subtracts a cylinder tool brush — plus a second wider
+cylinder (counterbore) or cone (countersink) as a sequential second
+`SUBTRACTION` — from the first mesh of the resolved targets, then replaces the
+target with the result (tagged with the target's node id, mirroring
+`applyMeshBoolean`). Tool placement reuses `baseAlignedMatrix` (mouth at
+`position`, drilled along `axis`). **Dispatch-order invariant:** hole op names
+start with `add`, so `applyEditsMesh` must handle them *before* the generic
+`op.op.startsWith("add")` primitive branch, and they never increment the
+`prim-{K}` counter (they don't create a body) — both locked by regression tests
+in `meshEdits.test.ts`.
+
 ## `src/webview/meshingModel.ts`
 
 ### `MeshingModel`
@@ -665,7 +721,10 @@ echo back as a write.
 ### `MeshingPanel`
 
 Manages the `#meshing-panel` DOM, top to bottom: a large-mesh warning strip
-(`#meshing-warning`); the primary size control (Coarse/Medium/Fine preset
+(`#meshing-warning`, its icon from `TOOLBAR_ICONS.warning` — see
+`doc/extension-host-api.md`'s `src/toolbarIcons.ts` section — set via
+`innerHTML` since it's mixed with formatted text, not `textContent`); the
+primary size control (Coarse/Medium/Fine preset
 buttons, a coarser→finer log-scale slider driving `sizeMax`, and a
 `Size: X · ~N elements` readout); a "Part sizes" section mirroring the Parts
 panel's per-part `meshSize` inputs (hidden while no parts exist); a

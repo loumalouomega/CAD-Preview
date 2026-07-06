@@ -1,0 +1,11 @@
+% Toolbar icon: line pick-mode — a segment with two endpoint dots (same
+% language as the Edits-panel addLine op icon, icons/tikz/addLine.tex).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-9,-6) -- (9,6);
+  \filldraw (-9,-6) circle (1.6);
+  \filldraw (9,6) circle (1.6);
+\end{tikzpicture}
+\end{document}

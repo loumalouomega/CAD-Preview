@@ -1,0 +1,11 @@
+% Op icon: three-point arc — a curve through three marked points.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-10,-4) .. controls (-6,9) and (6,9) .. (10,-4);
+  \filldraw (-10,-4) circle (1.4);
+  \filldraw (0,6) circle (1.4);
+  \filldraw (10,-4) circle (1.4);
+\end{tikzpicture}
+\end{document}

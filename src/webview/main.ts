@@ -175,6 +175,42 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "mate", faceA: faces[0], faceB: faces[1] });
     setStatus("");
   },
+  onApplyModify: (draft) => {
+    // Shell takes its opening faces from the Surf selection; split/section take
+    // their target volumes from the Vol selection. B-rep only.
+    let op: EditOp;
+    switch (draft.kind) {
+      case "shell": {
+        const openingFaces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+        if (openingFaces.length === 0) {
+          setStatus("Select the opening face(s) (Surf mode) before shelling.", true);
+          return;
+        }
+        if (draft.thickness === 0) { setStatus("Thickness must be non-zero.", true); return; }
+        op = { op: "shell", thickness: draft.thickness, openingFaces };
+        break;
+      }
+      case "splitByPlane": {
+        const targets = selectedVolumes();
+        if (targets.length === 0) { setStatus("Select one or more volumes (Vol mode) to split.", true); return; }
+        if (!draft.planeNormal.some((v) => v !== 0)) { setStatus("Plane normal must be non-zero.", true); return; }
+        op = {
+          op: "splitByPlane", targets, planePoint: draft.planePoint,
+          planeNormal: draft.planeNormal, keep: draft.keep,
+        };
+        break;
+      }
+      case "section": {
+        const targets = selectedVolumes();
+        if (targets.length === 0) { setStatus("Select one or more volumes (Vol mode) to section.", true); return; }
+        if (!draft.planeNormal.some((v) => v !== 0)) { setStatus("Plane normal must be non-zero.", true); return; }
+        op = { op: "section", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal };
+        break;
+      }
+    }
+    editsModel.push(op);
+    setStatus("");
+  },
   onApplyPrimitive: (draft) => {
     // Primitives are self-contained placements — no selection/operand needed.
     // A light client-side guard avoids silently pushing an op that
@@ -219,6 +255,49 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
           radius: draft.radius, sides: draft.sides, height: draft.height,
         };
         break;
+      case "addWedge":
+        if (draft.dx <= 0 || draft.dy <= 0 || draft.dz <= 0) { setStatus("Wedge sizes must be positive.", true); return; }
+        if (draft.ltx < 0) { setStatus("Top X extent must be ≥ 0.", true); return; }
+        if (!nonParallel(draft.axis, draft.up)) { setStatus("Up must not be parallel to Axis.", true); return; }
+        op = {
+          op: "addWedge", center: draft.center, axis: draft.axis, up: draft.up,
+          dx: draft.dx, dy: draft.dy, dz: draft.dz, ltx: draft.ltx,
+        };
+        break;
+    }
+    editsModel.push(op);
+    setStatus("");
+  },
+  onApplyHole: (draft) => {
+    // Holes are subtractive: they cut into the selected volumes, so a target
+    // selection is required (unlike the self-contained primitives above).
+    const targets = selectedVolumes();
+    if (targets.length === 0) {
+      setStatus("Select one or more volumes (Vol mode) to cut the hole into.", true);
+      return;
+    }
+    if (draft.radius <= 0 || draft.depth <= 0) { setStatus("Radius and depth must be positive.", true); return; }
+    let op: EditOp;
+    switch (draft.kind) {
+      case "addHole":
+        op = { op: "addHole", targets, position: draft.position, axis: draft.axis, radius: draft.radius, depth: draft.depth };
+        break;
+      case "addCounterboreHole":
+        if (draft.cbRadius <= draft.radius) { setStatus("Counterbore radius must exceed the hole radius.", true); return; }
+        if (draft.cbDepth <= 0 || draft.cbDepth >= draft.depth) { setStatus("Counterbore depth must satisfy 0 < depth < hole depth.", true); return; }
+        op = {
+          op: "addCounterboreHole", targets, position: draft.position, axis: draft.axis,
+          radius: draft.radius, depth: draft.depth, cbRadius: draft.cbRadius, cbDepth: draft.cbDepth,
+        };
+        break;
+      case "addCountersinkHole":
+        if (draft.csRadius <= draft.radius) { setStatus("Countersink radius must exceed the hole radius.", true); return; }
+        if (draft.csAngleDeg <= 0 || draft.csAngleDeg >= 180) { setStatus("Countersink angle must be between 0° and 180°.", true); return; }
+        op = {
+          op: "addCountersinkHole", targets, position: draft.position, axis: draft.axis,
+          radius: draft.radius, depth: draft.depth, csRadius: draft.csRadius, csAngleDeg: draft.csAngleDeg,
+        };
+        break;
     }
     editsModel.push(op);
     setStatus("");
@@ -250,6 +329,48 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
           up: draft.up, radius: draft.radius, sides: draft.sides,
         };
         break;
+      case "addEllipseProfile":
+        if (draft.radiusX <= 0 || draft.radiusY <= 0) { setStatus("Both radii must be positive.", true); return; }
+        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
+        op = {
+          op: "addEllipseProfile", center: draft.center, normal: draft.normal,
+          up: draft.up, radiusX: draft.radiusX, radiusY: draft.radiusY,
+        };
+        break;
+      case "addRoundedRectangleProfile":
+        if (draft.width <= 0 || draft.height <= 0) { setStatus("Width and height must be positive.", true); return; }
+        if (draft.cornerRadius <= 0 || 2 * draft.cornerRadius >= Math.min(draft.width, draft.height)) {
+          setStatus("Corner radius must satisfy 0 < 2·r < min(width, height).", true);
+          return;
+        }
+        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
+        op = {
+          op: "addRoundedRectangleProfile", center: draft.center, normal: draft.normal,
+          up: draft.up, width: draft.width, height: draft.height, cornerRadius: draft.cornerRadius,
+        };
+        break;
+      case "addSlotProfile":
+        if (draft.width <= 0 || draft.length <= draft.width) {
+          setStatus("Slot needs length > width > 0.", true);
+          return;
+        }
+        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
+        op = {
+          op: "addSlotProfile", center: draft.center, normal: draft.normal,
+          up: draft.up, length: draft.length, width: draft.width,
+        };
+        break;
+      case "addTrapezoidProfile":
+        if (draft.bottomWidth <= 0 || draft.topWidth <= 0 || draft.height <= 0) {
+          setStatus("Trapezoid widths and height must be positive.", true);
+          return;
+        }
+        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
+        op = {
+          op: "addTrapezoidProfile", center: draft.center, normal: draft.normal,
+          up: draft.up, bottomWidth: draft.bottomWidth, topWidth: draft.topWidth, height: draft.height,
+        };
+        break;
     }
     editsModel.push(op);
     setStatus("");
@@ -274,6 +395,49 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
         op = {
           op: "addArc", center: draft.center, normal: draft.normal, radius: draft.radius,
           startAngleDeg: draft.startAngleDeg, endAngleDeg: draft.endAngleDeg,
+        };
+        break;
+      case "addPolyline": {
+        const min = draft.closed ? 3 : 2;
+        if (draft.points.length < min) { setStatus(`A ${draft.closed ? "closed " : ""}polyline needs ${min}+ points.`, true); return; }
+        if (hasRepeatedConsecutive(draft.points)) { setStatus("Consecutive points must differ.", true); return; }
+        op = { op: "addPolyline", points: draft.points, closed: draft.closed };
+        break;
+      }
+      case "addThreePointArc": {
+        const { p1, p2, p3 } = draft;
+        const same = (a: number[], b: number[]) => a.every((v, i) => v === b[i]);
+        if (same(p1, p2) || same(p2, p3) || same(p1, p3)) { setStatus("The three points must be distinct.", true); return; }
+        op = { op: "addThreePointArc", p1, p2, p3 };
+        break;
+      }
+      case "addSpline":
+        if (draft.points.length < 2) { setStatus("A spline needs 2+ points.", true); return; }
+        if (hasRepeatedConsecutive(draft.points)) { setStatus("Consecutive points must differ.", true); return; }
+        op = { op: "addSpline", points: draft.points };
+        break;
+      case "addBezier":
+        if (draft.controlPoints.length < 2) { setStatus("A Bézier needs 2+ control points.", true); return; }
+        op = { op: "addBezier", controlPoints: draft.controlPoints };
+        break;
+      case "addEllipseArc":
+        if (draft.radiusX <= 0 || draft.radiusY <= 0) { setStatus("Both radii must be positive.", true); return; }
+        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
+        if (draft.startAngleDeg === draft.endAngleDeg) { setStatus("Start and end angle must differ.", true); return; }
+        op = {
+          op: "addEllipseArc", center: draft.center, normal: draft.normal, up: draft.up,
+          radiusX: draft.radiusX, radiusY: draft.radiusY,
+          startAngleDeg: draft.startAngleDeg, endAngleDeg: draft.endAngleDeg,
+        };
+        break;
+      case "addHelix":
+        if (draft.radius <= 0 || draft.pitch <= 0 || draft.turns <= 0) {
+          setStatus("Helix radius, pitch, and turns must all be positive.", true);
+          return;
+        }
+        op = {
+          op: "addHelix", center: draft.center, axis: draft.axis,
+          radius: draft.radius, pitch: draft.pitch, turns: draft.turns,
         };
         break;
     }
@@ -362,6 +526,14 @@ function syncMeshSizeSeed(): void {
   if (meshingModel.get().sizeMax !== SIZE_MAX_SENTINEL) return;
   meshingModel.load({ ...meshingModel.get(), sizeMax: defaultTargetSize(extents.diagonal) });
   meshingPanel.render(meshingModel.get());
+}
+
+/** True when any two consecutive points coincide (a degenerate polyline/spline segment). */
+function hasRepeatedConsecutive(points: Array<[number, number, number]>): boolean {
+  for (let i = 1; i < points.length; i++) {
+    if (points[i].every((v, k) => v === points[i - 1][k])) return true;
+  }
+  return false;
 }
 
 /** True when `a` and `b` are not (anti-)parallel — their cross product is non-zero. */
