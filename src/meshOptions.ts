@@ -10,6 +10,17 @@
 
 import type { Part } from "./protocol";
 
+/**
+ * The element *geometry* to generate. `"simplex"` is Gmsh's native
+ * triangles/tetrahedra; `"subdivided"` recombines into all-quadrilateral (2D)
+ * / all-hexahedral (3D) cells. A hex-*dominant* mixed mode (tets+prisms+
+ * pyramids+hexes via `Mesh.Recombine3DAll`) is deliberately NOT offered — it is
+ * completely non-functional in the bundled gmsh-wasm build (every variant
+ * probed produced pure tetrahedra or threw), so exposing it would be an
+ * always-broken option. See `doc/gmsh-integration.md`'s "Element shapes".
+ */
+export type MeshElementShape = "simplex" | "subdivided";
+
 export interface MeshOptions {
   dimension: 1 | 2 | 3;
   sizeMin: number;
@@ -17,6 +28,7 @@ export interface MeshOptions {
   algorithm2D: number; // Mesh.Algorithm
   algorithm3D: number; // Mesh.Algorithm3D
   elementOrder: 1 | 2;
+  elementShape: MeshElementShape;
   optimize: boolean;
   stlAngle: number; // classifySurfaces angle, degrees
 }
@@ -37,9 +49,36 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   algorithm2D: 6 /* Frontal-Delaunay */,
   algorithm3D: 4 /* Frontal */,
   elementOrder: 1,
+  elementShape: "simplex",
   optimize: true,
   stlAngle: 40,
 };
+
+/**
+ * Maps an {@link MeshElementShape} to the Gmsh recombination/subdivision option
+ * values, given the mesh `dimension`. Shared by `gmshService.ts`'s
+ * `loadGeometryAndApplyOptions` (live meshing) and `meshOptionsSidecar.ts`'s
+ * `generateGeoScript` (the emitted `.geo`), so the two can never drift.
+ *
+ * The recipe is **dimension-dependent and verified against the live gmsh-wasm
+ * build** (see `doc/gmsh-integration.md`): 2D quads come out cleanest from
+ * Blossom recombination (`RecombineAll`), while 3D hexes require the
+ * subdivision algorithm (`SubdivisionAlgorithm = 2`) — the 3D `RecombineAll`
+ * path throws "Cannot use frontal 3D algorithm with quadrangles on boundary".
+ * Both fields are always returned (never left implicit) because the gmsh
+ * singleton persists options across `clear()`, so a prior run's values must be
+ * overwritten every time.
+ */
+export function gmshShapeOptions(
+  shape: MeshElementShape,
+  dimension: 1 | 2 | 3
+): { recombineAll: number; subdivisionAlgorithm: number } {
+  if (shape === "subdivided") {
+    if (dimension === 3) return { recombineAll: 0, subdivisionAlgorithm: 2 };
+    if (dimension === 2) return { recombineAll: 1, subdivisionAlgorithm: 0 };
+  }
+  return { recombineAll: 0, subdivisionAlgorithm: 0 };
+}
 
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
@@ -63,6 +102,11 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const elementOrder: MeshOptions["elementOrder"] =
     o.elementOrder === 1 || o.elementOrder === 2 ? o.elementOrder : DEFAULT_MESH_OPTIONS.elementOrder;
 
+  const elementShape: MeshOptions["elementShape"] =
+    o.elementShape === "simplex" || o.elementShape === "subdivided"
+      ? o.elementShape
+      : DEFAULT_MESH_OPTIONS.elementShape;
+
   const sizeMinRaw = isFiniteNumber(o.sizeMin) && o.sizeMin >= 0 ? o.sizeMin : DEFAULT_MESH_OPTIONS.sizeMin;
   const sizeMaxRaw = isFiniteNumber(o.sizeMax) && o.sizeMax >= 0 ? o.sizeMax : DEFAULT_MESH_OPTIONS.sizeMax;
   // The pair must be internally consistent; if not, fall back to the default pair.
@@ -78,7 +122,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
 
-  return { dimension, sizeMin, sizeMax, algorithm2D, algorithm3D, elementOrder, optimize, stlAngle };
+  return { dimension, sizeMin, sizeMax, algorithm2D, algorithm3D, elementOrder, elementShape, optimize, stlAngle };
 }
 
 /**

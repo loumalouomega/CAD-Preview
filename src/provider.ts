@@ -174,6 +174,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             type: "meshingResult",
             positions: encodeBuffer(result.positions),
             indices: encodeBuffer(result.indices),
+            edges: encodeBuffer(result.edges),
             elementGroups: result.elementGroups,
             nodeCount: result.nodeCount,
             elementCount: result.elementCount,

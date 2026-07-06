@@ -85,8 +85,21 @@ describe("estimateElementCount", () => {
     expect(estimateElementCount([1, 1, 1], 0.1, 2)).toBe(1200);
   });
 
-  it("estimates diagonal segments in 1D", () => {
+  it("defaults to the simplex factors when shape is omitted", () => {
+    expect(estimateElementCount([1, 1, 1], 0.1, 3)).toBe(estimateElementCount([1, 1, 1], 0.1, 3, "simplex"));
+  });
+
+  it("estimates ~1 hex per h-cube for a subdivided 3D mesh", () => {
+    expect(estimateElementCount([1, 1, 1], 0.1, 3, "subdivided")).toBe(1000);
+  });
+
+  it("estimates ~1 quad per h-square for a subdivided 2D mesh", () => {
+    expect(estimateElementCount([1, 1, 1], 0.1, 2, "subdivided")).toBe(600);
+  });
+
+  it("estimates diagonal segments in 1D, shape-independent", () => {
     expect(estimateElementCount([3, 4, 0], 0.5, 1)).toBe(10);
+    expect(estimateElementCount([3, 4, 0], 0.5, 1, "subdivided")).toBe(10);
   });
 
   it("returns 0 for a degenerate target size", () => {

@@ -4,11 +4,20 @@ import * as path from "path";
 // mirroring opencascade.js's raw factory shape (see occtService.ts) — pass the
 // wasm binary explicitly rather than letting it try to fetch() a filesystem path.
 import initialize from "@loumalouomega/gmsh-wasm";
-import type { MeshOptions } from "./meshOptions";
+import { gmshShapeOptions, type MeshOptions } from "./meshOptions";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
 import { meshExportFormat, type MeshExportFormatId } from "./meshExportFormats";
-import { writeMdpa, type MdpaMesh, type MdpaMode, type MdpaNode, type MdpaTet, type MdpaTriangle, type MdpaGroup } from "./mdpaWriter";
+import { writeMdpa, type MdpaMesh, type MdpaMode, type MdpaNode, type MdpaCell, type MdpaGroup } from "./mdpaWriter";
+import {
+  GMSH_ELEMENT_TYPES,
+  MDPA_KIND_INFO,
+  surfaceTriangles,
+  boundaryTriangles,
+  surfaceEdges,
+  boundaryEdges,
+  type GmshElementsResult,
+} from "./gmshElementTypes";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -42,6 +51,41 @@ export function resetGmsh(): void {
   _modelCounter = 0;
 }
 
+/** Emscripten aborts (out-of-bounds access, unreachable, null function pointer,
+ * heap exhaustion) surface as opaque `RuntimeError`s. Recognize them so they can
+ * be turned into an actionable message instead of the raw "memory access out of
+ * bounds" that reaches the panel today. */
+function isWasmAbort(message: string): boolean {
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+}
+
+/**
+ * Wraps `gmsh.model.mesh.generate` so an internal gmsh WASM crash becomes an
+ * actionable error rather than a bare "memory access out of bounds". Two things
+ * matter here: (1) an aborted Emscripten instance is **corrupt** — every later
+ * call would keep throwing — so we discard the singleton (`resetGmsh()`) to force
+ * a fresh module on the next attempt; (2) the message hints at the most common
+ * cause: the 3D Delaunay algorithm's documented boundary-recovery crash on
+ * imported CAD geometry in this build (which is why Frontal is the default). We
+ * do NOT hard-block the option combination — Delaunay meshes many models fine,
+ * and a crash can equally come from too fine a size (heap exhaustion), so there
+ * is no reliable static "incompatible" matrix to gate on.
+ */
+function runMeshGenerate(gmsh: GmshApi, options: MeshOptions): void {
+  try {
+    gmsh.model.mesh.generate(options.dimension);
+  } catch (err) {
+    const raw = ((err as Error)?.message ?? String(err)).trim();
+    if (!isWasmAbort(raw)) throw err;
+    resetGmsh();
+    const hint =
+      options.dimension === 3 && options.algorithm3D === 1
+        ? " The 3D Delaunay algorithm is known to crash on imported CAD geometry in this build — switch the 3D algorithm to Frontal (4) in Advanced settings."
+        : " Try a coarser Size max, a different meshing algorithm, or linear (order 1) elements.";
+    throw new Error(`Gmsh crashed while meshing (${raw || "WASM abort"}).${hint}`);
+  }
+}
+
 export type MeshGenerationInput =
   | { kind: "brep"; stepBytes: Uint8Array }
   | { kind: "stl"; stlBytes: Uint8Array };
@@ -49,6 +93,10 @@ export type MeshGenerationInput =
 export interface MeshResult {
   positions: Float32Array;
   indices: Uint32Array;
+  /** True element-edge line segments (index pairs) for the wireframe — quad
+   * perimeters for hexes, triangle edges for tets — so the overlay shows the
+   * actual element shape, not the triangulated fill's diagonals. */
+  edges: Uint32Array;
   elementGroups: MeshElementGroup[];
   nodeCount: number;
   elementCount: number;
@@ -106,6 +154,13 @@ async function loadGeometryAndApplyOptions(
   gmsh.option.setNumber("Mesh.Algorithm", options.algorithm2D);
   gmsh.option.setNumber("Mesh.Algorithm3D", options.algorithm3D);
   gmsh.option.setNumber("Mesh.ElementOrder", options.elementOrder);
+  // Element geometry (simplex vs. quad/hex subdivision). Both option values are
+  // set every time — the gmsh singleton persists options across `clear()`, so a
+  // prior run's shape must be overwritten, not left implicit. See
+  // `gmshShapeOptions` for the dimension-dependent, WASM-verified recipe.
+  const shape = gmshShapeOptions(options.elementShape, options.dimension);
+  gmsh.option.setNumber("Mesh.RecombineAll", shape.recombineAll);
+  gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", shape.subdivisionAlgorithm);
   gmsh.option.setNumber("Mesh.Optimize", options.optimize ? 1 : 0);
   // Gmsh's default (0) writes only elements belonging to a physical group once
   // ANY physical group exists in the model — i.e. the instant one part has a
@@ -140,12 +195,13 @@ export async function generateMesh(
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    gmsh.model.mesh.generate(options.dimension);
+    runMeshGenerate(gmsh, options);
 
     const nodes = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
     const { positions, tagToIndex } = buildPositions(nodes);
 
     const { indices, elementGroups } = buildIndices(gmsh, options.dimension, tagToIndex, loaded.groupMaps);
+    const edges = buildEdges(gmsh, options.dimension, tagToIndex);
 
     gmsh.write(outPath);
     const mshText = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
@@ -153,6 +209,7 @@ export async function generateMesh(
     return {
       positions,
       indices,
+      edges,
       elementGroups,
       nodeCount: nodes.nodeTags.length,
       elementCount: countElements(gmsh, options.dimension),
@@ -257,7 +314,7 @@ export async function exportMeshFormat(
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    gmsh.model.mesh.generate(options.dimension);
+    runMeshGenerate(gmsh, options);
     gmsh.write(outPath);
     return gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
   } finally {
@@ -268,15 +325,18 @@ export async function exportMeshFormat(
   }
 }
 
-const MDPA_TET_TYPE = 4; // 4-node tetrahedron (same element-type id used throughout this file)
-const MDPA_TRI_TYPE = 2; // 3-node triangle
-
 /**
  * Meshes `input` per `options`/`parts` and hand-serializes the result as
  * Kratos MDPA text via `mdpaWriter.ts`'s pure `writeMdpa()`. Unlike every
  * other export format in this file, MDPA has no `gmsh.write()` support at
  * all — there is no MEMFS write/read-back round trip here; `extractMdpaMesh`
  * reads nodes/elements directly off the live model instead.
+ *
+ * Supports linear and quadratic simplex/hex/prism/pyramid/quad cells (see
+ * `gmshElementTypes.ts`). In `"elements"` mode, some Kratos `Element`/
+ * `Condition` names for the newer kinds are not yet confirmed — a pre-flight
+ * throws with an actionable message (use `"geometries"` mode, whose names are
+ * certain) if the generated mesh contains such a kind.
  */
 export async function exportMdpa(
   extensionPath: string,
@@ -285,23 +345,35 @@ export async function exportMdpa(
   parts: Part[],
   mode: MdpaMode
 ): Promise<string> {
-  if (options.elementOrder !== 1) {
-    throw new Error(
-      'Kratos MDPA export only supports linear (order 1) elements — Element3D4N/Tetrahedra3D4 and ' +
-        'SurfaceCondition3D3N/Triangle3D3 are both 1st-order simplices. Set "Element order" to Linear ' +
-        "in the FE Mesh panel and export again."
-    );
-  }
-
   const gmsh = await getGmsh(extensionPath);
   let tmpPath: string | null = null;
   try {
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    gmsh.model.mesh.generate(options.dimension);
+    runMeshGenerate(gmsh, options);
     const mesh = extractMdpaMesh(gmsh, loaded.groupMaps);
-    return writeMdpa(mesh, mode);
+
+    if (mode === "elements") {
+      for (const cell of mesh.volumeCells) {
+        if (MDPA_KIND_INFO[cell.kind].elementName === null) {
+          throw new Error(
+            `Kratos MDPA "Elements" mode has no confirmed Element name for a ${cell.kind} cell. ` +
+              'Export in "Geometries" mode instead (its geometry names are certain).'
+          );
+        }
+      }
+      for (const cell of mesh.surfaceCells) {
+        if (MDPA_KIND_INFO[cell.kind].conditionName === null) {
+          throw new Error(
+            `Kratos MDPA "Elements" mode has no confirmed Condition name for a ${cell.kind} cell. ` +
+              'Export in "Geometries" mode instead (its geometry names are certain).'
+          );
+        }
+      }
+    }
+
+    return writeMdpa(mesh, mode, (msg) => console.warn(`[CAD-Preview MDPA] ${msg}`));
   } finally {
     if (tmpPath) {
       try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
@@ -310,16 +382,16 @@ export async function exportMdpa(
 }
 
 /**
- * Pulls the live gmsh model's linear tet/triangle mesh, plus `groupMaps`'
- * part groupings, into the plain gmsh-free `MdpaMesh` shape `writeMdpa`
- * consumes. Must run after `mesh.generate()`. Loops per-entity-tag (like
- * `extractBoundaryFaces`/`appendTriangles2D` above) rather than one
- * whole-model `getElements(dim)` call, since each cell's owning
- * volume/surface tag is needed to resolve which part it belongs to. Throws
- * if any 3D element type other than the 4-node tet, or 2D type other than
- * the 3-node triangle, is found — a defensive backstop behind `exportMdpa`'s
- * `elementOrder` pre-flight check (that check alone doesn't cover every
- * conceivable non-simplex element a future option might enable).
+ * Pulls the live gmsh model's mesh, plus `groupMaps`' part groupings, into the
+ * plain gmsh-free `MdpaMesh` shape `writeMdpa` consumes. Must run after
+ * `mesh.generate()`. Loops per-entity-tag (like `extractBoundaryFaces`/
+ * `appendTriangles2D` above) rather than one whole-model `getElements(dim)`
+ * call, since each cell's owning volume/surface tag is needed to resolve which
+ * part it belongs to. Every element type is resolved through the shared
+ * `gmshElementTypes.ts` table — its `permutation` reorders each cell's nodes
+ * into Kratos order (and truncates complete order-2 prisms/pyramids to Kratos's
+ * shorter geometry). A genuinely unmapped element type throws an actionable
+ * error (graceful defensive backstop).
  */
 function extractMdpaMesh(gmsh: GmshApi, groupMaps: PartGroupMaps | null): MdpaMesh {
   const nodesRaw = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
@@ -330,62 +402,26 @@ function extractMdpaMesh(gmsh: GmshApi, groupMaps: PartGroupMaps | null): MdpaMe
     z: nodesRaw.coord[i * 3 + 2],
   }));
 
-  const tets: MdpaTet[] = [];
-  const tetVolumeTag: number[] = [];
-  const volumeTags = (gmsh.model.getEntities(3).dimTags as number[]) ?? [];
-  for (let i = 0; i < volumeTags.length; i += 2) {
-    const tag = volumeTags[i + 1];
-    const els = gmsh.model.mesh.getElements(3, tag) as { elementTypes: number[]; nodeTags: number[][] };
-    for (let t = 0; t < els.elementTypes.length; t++) {
-      const type = els.elementTypes[t];
-      if (type !== MDPA_TET_TYPE) {
-        throw new Error(
-          `Kratos MDPA export only supports 4-node tetrahedra, but volume ${tag} contains an ` +
-            `unsupported 3D element type (${type}). Adjust the mesh options and try again.`
-        );
-      }
-      const tagsForType = els.nodeTags[t];
-      for (let n = 0; n < tagsForType.length; n += 4) {
-        tets.push({ nodeTags: [tagsForType[n], tagsForType[n + 1], tagsForType[n + 2], tagsForType[n + 3]] });
-        tetVolumeTag.push(tag);
-      }
-    }
-  }
+  const volumeCells: MdpaCell[] = [];
+  const cellVolumeTag: number[] = [];
+  collectCells(gmsh, 3, volumeCells, cellVolumeTag);
 
-  const triangles: MdpaTriangle[] = [];
-  const triSurfaceTag: number[] = [];
-  const surfaceTags = (gmsh.model.getEntities(2).dimTags as number[]) ?? [];
-  for (let i = 0; i < surfaceTags.length; i += 2) {
-    const tag = surfaceTags[i + 1];
-    const els = gmsh.model.mesh.getElements(2, tag) as { elementTypes: number[]; nodeTags: number[][] };
-    for (let t = 0; t < els.elementTypes.length; t++) {
-      const type = els.elementTypes[t];
-      if (type !== MDPA_TRI_TYPE) {
-        throw new Error(
-          `Kratos MDPA export only supports 3-node triangles, but surface ${tag} contains an ` +
-            `unsupported 2D element type (${type}). Adjust the mesh options and try again.`
-        );
-      }
-      const tagsForType = els.nodeTags[t];
-      for (let n = 0; n < tagsForType.length; n += 3) {
-        triangles.push({ nodeTags: [tagsForType[n], tagsForType[n + 1], tagsForType[n + 2]] });
-        triSurfaceTag.push(tag);
-      }
-    }
-  }
+  const surfaceCells: MdpaCell[] = [];
+  const cellSurfaceTag: number[] = [];
+  collectCells(gmsh, 2, surfaceCells, cellSurfaceTag);
 
   const groups: MdpaGroup[] = [];
   if (groupMaps) {
     for (const bucket of groupPartsAcrossDims(groupMaps)) {
       const volumeTagSet = new Set(bucket.volumeTags);
       const surfaceTagSet = new Set(bucket.surfaceTags);
-      const tetIndices: number[] = [];
-      tetVolumeTag.forEach((vTag, idx) => {
-        if (volumeTagSet.has(vTag)) tetIndices.push(idx);
+      const volumeCellIndices: number[] = [];
+      cellVolumeTag.forEach((vTag, idx) => {
+        if (volumeTagSet.has(vTag)) volumeCellIndices.push(idx);
       });
-      const triangleIndices: number[] = [];
-      triSurfaceTag.forEach((sTag, idx) => {
-        if (surfaceTagSet.has(sTag)) triangleIndices.push(idx);
+      const surfaceCellIndices: number[] = [];
+      cellSurfaceTag.forEach((sTag, idx) => {
+        if (surfaceTagSet.has(sTag)) surfaceCellIndices.push(idx);
       });
 
       const extraNodeTags: number[] = [];
@@ -398,11 +434,37 @@ function extractMdpaMesh(gmsh: GmshApi, groupMaps: PartGroupMaps | null): MdpaMe
         extraNodeTags.push(...cn.nodeTags);
       }
 
-      groups.push({ name: bucket.info.name, tetIndices, triangleIndices, extraNodeTags });
+      groups.push({ name: bucket.info.name, volumeCellIndices, surfaceCellIndices, extraNodeTags });
     }
   }
 
-  return { nodes, tets, triangles, groups };
+  return { nodes, volumeCells, surfaceCells, groups };
+}
+
+/** Walks every `dim`-D entity, resolving each element through the shared
+ * `gmshElementTypes.ts` table into a Kratos-ordered {@link MdpaCell}, and
+ * records each cell's owning entity tag in the parallel `ownerTags` array. */
+function collectCells(gmsh: GmshApi, dim: 2 | 3, out: MdpaCell[], ownerTags: number[]): void {
+  const entities = (gmsh.model.getEntities(dim).dimTags as number[]) ?? [];
+  for (let i = 0; i < entities.length; i += 2) {
+    const tag = entities[i + 1];
+    const els = gmsh.model.mesh.getElements(dim, tag) as { elementTypes: number[]; nodeTags: number[][] };
+    for (let t = 0; t < els.elementTypes.length; t++) {
+      const type = els.elementTypes[t];
+      const info = GMSH_ELEMENT_TYPES.get(type);
+      if (!info || info.dim !== dim) {
+        throw new Error(
+          `Kratos MDPA export: unsupported ${dim}D gmsh element type (${type}) in entity ${tag}. ` +
+            "Adjust the mesh options and try again."
+        );
+      }
+      const tagsForType = els.nodeTags[t];
+      for (let n = 0; n + info.numNodes <= tagsForType.length; n += info.numNodes) {
+        out.push({ kind: info.mdpa.kind, nodeTags: info.mdpa.permutation.map((p) => tagsForType[n + p]) });
+        ownerTags.push(tag);
+      }
+    }
+  }
 }
 
 /** 4-map generalization of {@link groupTagsByPart} below — buckets a part's
@@ -469,22 +531,39 @@ function buildPositions(nodes: { nodeTags: number[]; coord: number[] }): {
  * single-global-`getElements`-call behavior.
  *
  * - `1`: no triangle exists for a line mesh; return an empty buffer.
- * - `2`: the generated type-2 (3-node triangle) elements are already the
- *   surface triangulation — remap their node tags to compacted indices
- *   directly, per surface entity when grouping.
+ * - `2`: the generated surface elements (triangles AND recombined quads, linear
+ *   or quadratic) are already the surface — their corner triangulation is
+ *   remapped to compacted indices directly, per surface entity when grouping
+ *   (see `gmshElementTypes.ts`'s {@link surfaceTriangles}).
  * - `3`: derive the boundary surface from the volume mesh by enumerating each
- *   tetrahedron's 4 triangular faces (by node tags), keying each face by its
- *   3 node tags *sorted* (an order-independent identity so a face shared by
- *   two adjacent tets collides to the same key regardless of which tet's local
- *   winding produced it), and keeping only faces that occur in exactly one
- *   tet — a face shared by two tets is interior and both copies are dropped.
- *   The kept triangle's *unsorted* (original) winding from its owning tet's
- *   local face definition is preserved in the output so normals stay outward.
- *   When grouping, this runs per-volume (`getElements(3, tag)` scoped to one
- *   volume's own tets) — correct even for two touching part-volumes, since
- *   Gmsh tags each tet by its single owning volume regardless of geometric
- *   adjacency, so a shared face is independently each volume's own boundary.
+ *   3D cell's boundary faces (tetrahedra, hexahedra, prisms, pyramids), keying
+ *   each face by its *corner* node tags *sorted* (an order-independent identity,
+ *   with mid-side nodes excluded so order-1/order-2 faces dedup identically),
+ *   and keeping only faces that occur in exactly one cell — a face shared by two
+ *   cells is interior and both copies drop. Quad faces triangulate into two
+ *   triangles. When grouping, this runs per-volume (`getElements(3, tag)` scoped
+ *   to one volume) — correct even for two touching part-volumes, since Gmsh tags
+ *   each cell by its single owning volume, so a shared face is independently
+ *   each volume's own boundary. See {@link boundaryTriangles}.
  */
+/**
+ * Builds the overlay's **wireframe** line-index buffer: the true element edges
+ * (quad perimeters for hexes/quads, triangle edges for tets/tris), NOT the
+ * triangulated fill's diagonals. Ungrouped (a single-colour wireframe), so it
+ * uses one whole-model `getElements(dim)` call rather than the per-part loops
+ * `buildIndices` needs. Empty for `dimension === 1`.
+ */
+function buildEdges(
+  gmsh: GmshApi,
+  dimension: MeshOptions["dimension"],
+  tagToIndex: Map<number, number>
+): Uint32Array {
+  if (dimension === 1) return new Uint32Array(0);
+  const els = gmsh.model.mesh.getElements(dimension) as GmshElementsResult;
+  const edges = dimension === 3 ? boundaryEdges(els, tagToIndex) : surfaceEdges(els, tagToIndex);
+  return new Uint32Array(edges);
+}
+
 function buildIndices(
   gmsh: GmshApi,
   dimension: MeshOptions["dimension"],
@@ -543,15 +622,13 @@ function buildIndices2D(
 }
 
 /** Appends one surface entity's (or, with `tag === undefined`, every surface
- * entity's) type-2 triangle node tags, remapped via `tagToIndex`, onto `out`. */
+ * entity's) corner triangulation, remapped via `tagToIndex`, onto `out`. Handles
+ * every 2D element kind (triangles AND recombined quadrilaterals, linear or
+ * quadratic) via the shared `gmshElementTypes.ts` table — see
+ * {@link surfaceTriangles}. */
 function appendTriangles2D(gmsh: GmshApi, tag: number | undefined, tagToIndex: Map<number, number>, out: number[]): void {
-  const els = gmsh.model.mesh.getElements(2, tag) as { elementTypes: number[]; nodeTags: number[][] };
-  const triType = els.elementTypes.indexOf(2); // 2 == 3-node triangle
-  if (triType < 0) return;
-  const triNodeTags = els.nodeTags[triType];
-  for (let i = 0; i < triNodeTags.length; i++) {
-    out.push(tagToIndex.get(triNodeTags[i]) ?? 0);
-  }
+  const els = gmsh.model.mesh.getElements(2, tag) as GmshElementsResult;
+  out.push(...surfaceTriangles(els, tagToIndex));
 }
 
 function buildIndices3D(
@@ -596,58 +673,14 @@ function buildIndices3D(
   return { indices: new Uint32Array(out), elementGroups };
 }
 
-/** The boundary triangles of one volume's (or, with `tag === undefined`,
- * every volume's) own tetrahedra — see {@link buildIndices}'s doc comment for
- * the shared-face dedup algorithm. */
+/** The boundary triangles of one volume's (or, with `tag === undefined`, every
+ * volume's) own 3D cells — handles tetrahedra AND recombined hexahedra (plus
+ * prisms/pyramids and any quadratic variant) via the shared `gmshElementTypes.ts`
+ * table's per-cell boundary-face decomposition and corner-key shared-face dedup.
+ * See {@link boundaryTriangles}. */
 function extractBoundaryFaces(gmsh: GmshApi, tag: number | undefined, tagToIndex: Map<number, number>): number[] {
-  const els = gmsh.model.mesh.getElements(3, tag) as { elementTypes: number[]; nodeTags: number[][] };
-  const tetType = els.elementTypes.indexOf(4); // 4 == 4-node tetrahedron
-  if (tetType < 0) return [];
-  const tetNodeTags = els.nodeTags[tetType];
-
-  // The 4 triangular faces of a tet [a, b, c, d], each face's local winding
-  // chosen so that, for a positively-oriented tet, all 4 faces' normals point
-  // outward (standard tet face enumeration).
-  const FACES = [
-    [0, 1, 2],
-    [0, 1, 3],
-    [1, 2, 3],
-    [0, 2, 3],
-  ];
-
-  // key (sorted tags, order-independent) -> { winding (original tags), seenCount }
-  const faceMap = new Map<string, { winding: [number, number, number]; count: number }>();
-
-  const numTets = tetNodeTags.length / 4;
-  for (let t = 0; t < numTets; t++) {
-    const base = t * 4;
-    const tet = [tetNodeTags[base], tetNodeTags[base + 1], tetNodeTags[base + 2], tetNodeTags[base + 3]];
-    for (const [i0, i1, i2] of FACES) {
-      const a = tet[i0];
-      const b = tet[i1];
-      const c = tet[i2];
-      const sorted = [a, b, c].sort((x, y) => x - y);
-      const key = `${sorted[0]}_${sorted[1]}_${sorted[2]}`;
-      const existing = faceMap.get(key);
-      if (existing) {
-        existing.count++;
-      } else {
-        faceMap.set(key, { winding: [a, b, c], count: 1 });
-      }
-    }
-  }
-
-  const boundaryTris: number[] = [];
-  for (const { winding, count } of faceMap.values()) {
-    if (count === 1) {
-      boundaryTris.push(
-        tagToIndex.get(winding[0]) ?? 0,
-        tagToIndex.get(winding[1]) ?? 0,
-        tagToIndex.get(winding[2]) ?? 0
-      );
-    }
-  }
-  return boundaryTris;
+  const els = gmsh.model.mesh.getElements(3, tag) as GmshElementsResult;
+  return boundaryTriangles(els, tagToIndex);
 }
 
 /** Groups a tag->part map into per-part tag buckets, ordered by each part's
