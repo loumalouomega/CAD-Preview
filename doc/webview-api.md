@@ -415,8 +415,9 @@ from the model's own B-rep/native faces. Decodes the buffers, builds a
 `THREE.BufferGeometry`, and returns a `"feMesh"`-named `THREE.Group` containing:
 a shaded `THREE.Mesh` (`MeshStandardMaterial`, color `0x4ea1ff` — a distinct hue
 from the default face color so the overlay reads as separate from the model) plus
-a `THREE.LineSegments` wireframe (`WireframeGeometry` + `LineBasicMaterial`,
-color `0x1a3d66`) over the same geometry. Both are tagged
+a `THREE.LineSegments` wireframe (built from the host's true element-edge
+`edges` buffer + `LineBasicMaterial`, color `0x1a3d66` — quad perimeters for
+hexes, triangle edges for tets, never the triangulated fill's diagonals). Both are tagged
 `userData.entityType = "mesh"` — deliberately **not** `"surface"`/`"line"`, so
 the existing picking/parts-colouring code (which only recognizes
 `"volume"|"surface"|"line"|"point"`) never tries to pick or colour the overlay.

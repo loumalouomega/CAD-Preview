@@ -14,6 +14,8 @@ import {
   MDPA_KIND_INFO,
   surfaceTriangles,
   boundaryTriangles,
+  surfaceEdges,
+  boundaryEdges,
   type GmshElementsResult,
 } from "./gmshElementTypes";
 
@@ -91,6 +93,10 @@ export type MeshGenerationInput =
 export interface MeshResult {
   positions: Float32Array;
   indices: Uint32Array;
+  /** True element-edge line segments (index pairs) for the wireframe — quad
+   * perimeters for hexes, triangle edges for tets — so the overlay shows the
+   * actual element shape, not the triangulated fill's diagonals. */
+  edges: Uint32Array;
   elementGroups: MeshElementGroup[];
   nodeCount: number;
   elementCount: number;
@@ -195,6 +201,7 @@ export async function generateMesh(
     const { positions, tagToIndex } = buildPositions(nodes);
 
     const { indices, elementGroups } = buildIndices(gmsh, options.dimension, tagToIndex, loaded.groupMaps);
+    const edges = buildEdges(gmsh, options.dimension, tagToIndex);
 
     gmsh.write(outPath);
     const mshText = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
@@ -202,6 +209,7 @@ export async function generateMesh(
     return {
       positions,
       indices,
+      edges,
       elementGroups,
       nodeCount: nodes.nodeTags.length,
       elementCount: countElements(gmsh, options.dimension),
@@ -538,6 +546,24 @@ function buildPositions(nodes: { nodeTags: number[]; coord: number[] }): {
  *   each cell by its single owning volume, so a shared face is independently
  *   each volume's own boundary. See {@link boundaryTriangles}.
  */
+/**
+ * Builds the overlay's **wireframe** line-index buffer: the true element edges
+ * (quad perimeters for hexes/quads, triangle edges for tets/tris), NOT the
+ * triangulated fill's diagonals. Ungrouped (a single-colour wireframe), so it
+ * uses one whole-model `getElements(dim)` call rather than the per-part loops
+ * `buildIndices` needs. Empty for `dimension === 1`.
+ */
+function buildEdges(
+  gmsh: GmshApi,
+  dimension: MeshOptions["dimension"],
+  tagToIndex: Map<number, number>
+): Uint32Array {
+  if (dimension === 1) return new Uint32Array(0);
+  const els = gmsh.model.mesh.getElements(dimension) as GmshElementsResult;
+  const edges = dimension === 3 ? boundaryEdges(els, tagToIndex) : surfaceEdges(els, tagToIndex);
+  return new Uint32Array(edges);
+}
+
 function buildIndices(
   gmsh: GmshApi,
   dimension: MeshOptions["dimension"],

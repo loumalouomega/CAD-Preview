@@ -545,17 +545,22 @@ between order 1 and order 2 of the same shape.
   `Viewer.getModelExtents()`, pushed in by `main.ts` on each model load
   (`setModelExtents`).
 - **`src/webview/geometryBuilder.ts`**'s `buildFEMesh(positionsB64, indicesB64,
-  elementGroups)` decodes the base64 buffers from a `meshingResult` message into a
-  `THREE.Group` containing a shaded, multi-material `MeshBasicMaterial` mesh
-  (unlit — see the code comment for why) plus a `WireframeGeometry` overlay of the
-  same triangulation, tagged `userData.entityType = "mesh"`. Each `elementGroups`
-  entry becomes one `geometry.addGroup(indexStart, indexCount, materialIndex)`
-  range and its own material — `part.color` for a resolved part, or the default
-  blue `0x4ea1ff` for the trailing ungrouped range (or the single implicit range
-  when `elementGroups` is empty, e.g. an STL source or a document with no parts) —
-  so the overlay reads per-part just like the model's own faces do. The wireframe
-  is unaffected by grouping (`WireframeGeometry` is pure line topology) and stays a
-  single `LineBasicMaterial`.
+  edgesB64, elementGroups)` decodes the base64 buffers from a `meshingResult`
+  message into a `THREE.Group` containing a shaded, multi-material
+  `MeshBasicMaterial` mesh (unlit — see the code comment for why) plus a
+  `LineSegments` wireframe, tagged `userData.entityType = "mesh"`. Each
+  `elementGroups` entry becomes one `geometry.addGroup(indexStart, indexCount,
+  materialIndex)` range and its own material — `part.color` for a resolved part,
+  or the default blue `0x4ea1ff` for the trailing ungrouped range (or the single
+  implicit range when `elementGroups` is empty, e.g. an STL source or a document
+  with no parts) — so the overlay reads per-part just like the model's own faces
+  do. **The wireframe is built from the host's `edges` buffer (true element edges),
+  not `THREE.WireframeGeometry` of the triangulated fill** — otherwise a
+  recombined hex mesh (quad faces split into 2 fill triangles) would show the
+  quad-splitting diagonal and look identical to a tet mesh. `gmshElementTypes.ts`'s
+  `boundaryEdges`/`surfaceEdges` emit only polygon perimeters (deduplicated), so
+  hexes draw as quads and tets as triangles. It's unaffected by grouping and stays
+  a single `LineBasicMaterial`.
 - **`src/webview/viewer.ts`**'s `Viewer.setMeshOverlay(obj)` adds/replaces that
   group as a **sibling of `model`** in the scene (never a child) and disposes the
   previous overlay's geometries/materials before swapping — so toggling the FE

@@ -6,8 +6,20 @@ import {
   SURFACE_KIND_ORDER,
   surfaceTriangles,
   boundaryTriangles,
+  surfaceEdges,
+  boundaryEdges,
   type MdpaCellKind,
 } from "./gmshElementTypes";
+
+/** Undirected edge set (sorted "a_b" keys) from a flat line-index buffer. */
+const edgeSet = (buf: number[]): Set<string> => {
+  const s = new Set<string>();
+  for (let i = 0; i < buf.length; i += 2) {
+    const [a, b] = buf[i] < buf[i + 1] ? [buf[i], buf[i + 1]] : [buf[i + 1], buf[i]];
+    s.add(`${a}_${b}`);
+  }
+  return s;
+};
 
 describe("GMSH_ELEMENT_TYPES table invariants", () => {
   it("each face ring references only corner indices, in bounds", () => {
@@ -141,5 +153,42 @@ describe("boundaryTriangles", () => {
   it("skips unknown and 2D types", () => {
     const out = boundaryTriangles({ elementTypes: [2, 999], nodeTags: [[0, 1, 2], [0, 1, 2]] }, identityMap(2));
     expect(out).toEqual([]);
+  });
+});
+
+describe("surfaceEdges", () => {
+  it("emits triangle perimeter edges (3), no extras", () => {
+    const s = edgeSet(surfaceEdges({ elementTypes: [2], nodeTags: [[0, 1, 2]] }, identityMap(2)));
+    expect(s).toEqual(new Set(["0_1", "1_2", "0_2"]));
+  });
+
+  it("emits quad perimeter edges (4) with NO diagonal", () => {
+    const s = edgeSet(surfaceEdges({ elementTypes: [3], nodeTags: [[0, 1, 2, 3]] }, identityMap(3)));
+    expect(s).toEqual(new Set(["0_1", "1_2", "2_3", "0_3"]));
+    expect(s.has("0_2")).toBe(false); // diagonal must not appear
+    expect(s.has("1_3")).toBe(false);
+  });
+
+  it("uses only corner nodes for a quad9 (no mid-side edges)", () => {
+    const s = edgeSet(surfaceEdges({ elementTypes: [10], nodeTags: [[0, 1, 2, 3, 4, 5, 6, 7, 8]] }, identityMap(8)));
+    expect(s).toEqual(new Set(["0_1", "1_2", "2_3", "0_3"]));
+  });
+});
+
+describe("boundaryEdges", () => {
+  it("a single hex yields 12 unique quad-perimeter edges (no diagonals)", () => {
+    const s = edgeSet(boundaryEdges({ elementTypes: [5], nodeTags: [[0, 1, 2, 3, 4, 5, 6, 7]] }, identityMap(7)));
+    expect(s.size).toBe(12); // a cube has 12 edges
+    // face diagonals like 0_2 / 1_3 must never appear
+    expect(s.has("0_2")).toBe(false);
+    expect(s.has("4_6")).toBe(false);
+  });
+
+  it("shares edges between adjacent boundary faces (drawn once)", () => {
+    // two tets sharing face {1,2,3}; the outer boundary is an octahedron-ish
+    // surface — every emitted edge is unique.
+    const out = boundaryEdges({ elementTypes: [4], nodeTags: [[0, 1, 2, 3, 1, 2, 3, 4]] }, identityMap(4));
+    const s = edgeSet(out);
+    expect(s.size).toBe(out.length / 2); // no duplicate line segments
   });
 });

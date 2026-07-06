@@ -766,14 +766,21 @@ Non-negotiable invariants:
   triangles headlessly showed a complete boundary from every angle — the
   "holes" were a shading artifact, not a gap in the GMSH-generated geometry).
   A flat unlit color removes that per-facet brightness variation entirely.
-  `buildFEMesh`'s `THREE.LineSegments` wireframe is also a `WireframeGeometry`
-  derived directly from the shaded mesh's `BufferGeometry` — perfectly
-  coincident with its triangles, unlike the base model (whose edges are
-  separate B-rep curve geometry, never literally on top of a face mesh) — so
-  the shaded material also needs `polygonOffset: true` (+
-  `polygonOffsetFactor`/`polygonOffsetUnits: 1`) or the GPU depth test can't
-  reliably resolve filled-triangle-vs-coincident-line-on-top per pixel,
-  compounding the same holes-that-aren't-holes look with z-fighting.
+  `buildFEMesh`'s `THREE.LineSegments` wireframe is built from the host-supplied
+  **true element-edge** buffer (`MeshResult.edges` → `meshingResult.edges`),
+  NOT a `THREE.WireframeGeometry` of the triangulated fill. This matters for
+  recombined meshes: a hex boundary is quad faces, each split into 2 triangles
+  for the shaded fill — `WireframeGeometry` would draw the diagonal across every
+  quad, making a hex mesh look identical to a tet mesh. `gmshElementTypes.ts`'s
+  `boundaryEdges`/`surfaceEdges` emit only the polygon perimeters (quad → its 4
+  edges, tri → 3), deduplicated across shared faces, so hexes render as quads and
+  tets as triangles (verified on `angle1.stp`: subdivided gives edges = quad
+  perimeters with no diagonals, ratio 1.0 edges-per-fill-triangle vs 1.5 for
+  tets). The wireframe shares the fill's `positions` (own line index buffer) and
+  is perfectly coincident with the triangles, so the shaded material still needs
+  `polygonOffset: true` (+ `polygonOffsetFactor`/`polygonOffsetUnits: 1`) or the
+  GPU depth test can't reliably resolve filled-triangle-vs-coincident-line per
+  pixel (z-fighting speckle).
 - **`setMeshOverlay()` also hides the model's shaded faces while an overlay is
   shown** (`entityType === "surface"` meshes get `.visible = false`; edges/points
   stay visible as a feature-line reference), restoring them when the overlay is

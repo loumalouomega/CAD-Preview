@@ -66,6 +66,9 @@ export type HostToWebview =
       type: "meshingResult";
       positions: string;
       indices: string;
+      /** True element-edge line segments (base64 `Uint32Array` index pairs) for
+       * the wireframe — quad perimeters for hexes, triangle edges for tets. */
+      edges: string;
       nodeCount: number;
       elementCount: number;
       elementGroups: MeshElementGroup[];

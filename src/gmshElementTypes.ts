@@ -267,7 +267,22 @@ export function surfaceTriangles(els: GmshElementsResult, tagToIndex: Map<number
  * corners). Unknown / non-3D types are skipped.
  */
 export function boundaryTriangles(els: GmshElementsResult, tagToIndex: Map<number, number>): number[] {
-  // key (sorted corner tags) -> { ring (original corner tags), count }
+  const out: number[] = [];
+  for (const ring of boundaryFaceRings(els)) {
+    const tris = ring.length === 3 ? TRI_TRIANGULATION : QUAD_TRIANGULATION;
+    for (const tri of tris) {
+      for (const c of tri) out.push(tagToIndex.get(ring[c]) ?? 0);
+    }
+  }
+  return out;
+}
+
+/** The kept boundary faces of a volume mesh, each as its corner-tag ring — the
+ * shared core of {@link boundaryTriangles} (which triangulates them) and
+ * {@link boundaryEdges} (which takes their perimeters). A face keyed by its
+ * sorted corner tags that appears exactly once is on the boundary; a face shared
+ * by two cells (appears twice) is interior and dropped. */
+function boundaryFaceRings(els: GmshElementsResult): number[][] {
   const faceMap = new Map<string, { ring: number[]; count: number }>();
   for (let t = 0; t < els.elementTypes.length; t++) {
     const info = GMSH_ELEMENT_TYPES.get(els.elementTypes[t]);
@@ -283,14 +298,53 @@ export function boundaryTriangles(els: GmshElementsResult, tagToIndex: Map<numbe
       }
     }
   }
+  const rings: number[][] = [];
+  for (const { ring, count } of faceMap.values()) if (count === 1) rings.push(ring);
+  return rings;
+}
 
+/** Emits deduplicated **polygon-perimeter** line segments (index pairs) for a set
+ * of corner-tag rings — a quad ring yields its 4 edges, a triangle its 3, and NO
+ * internal triangulation diagonal. This is what makes the FE-mesh wireframe show
+ * the *actual* element shape (quads for hexes, triangles for tets) instead of the
+ * triangulated fill's diagonals. Edges shared by adjacent faces are drawn once. */
+function polygonEdges(rings: number[][], tagToIndex: Map<number, number>): number[] {
+  const seen = new Set<string>();
   const out: number[] = [];
-  for (const { ring, count } of faceMap.values()) {
-    if (count !== 1) continue;
-    const tris = ring.length === 3 ? TRI_TRIANGULATION : QUAD_TRIANGULATION;
-    for (const tri of tris) {
-      for (const c of tri) out.push(tagToIndex.get(ring[c]) ?? 0);
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(tagToIndex.get(a) ?? 0, tagToIndex.get(b) ?? 0);
     }
   }
   return out;
+}
+
+/** True element edges of a volume mesh's boundary (quad perimeters for hexes,
+ * triangle edges for tets) — the wireframe counterpart of {@link boundaryTriangles}. */
+export function boundaryEdges(els: GmshElementsResult, tagToIndex: Map<number, number>): number[] {
+  return polygonEdges(boundaryFaceRings(els), tagToIndex);
+}
+
+/** True element edges of a surface mesh (quad perimeters for quads, triangle
+ * edges for tris) — the wireframe counterpart of {@link surfaceTriangles}. Uses
+ * each element's corner ring (its first `numCorners` nodes, already in perimeter
+ * order); mid-side nodes are ignored. */
+export function surfaceEdges(els: GmshElementsResult, tagToIndex: Map<number, number>): number[] {
+  const rings: number[][] = [];
+  for (let t = 0; t < els.elementTypes.length; t++) {
+    const info = GMSH_ELEMENT_TYPES.get(els.elementTypes[t]);
+    if (!info || info.dim !== 2) continue;
+    const tags = els.nodeTags[t];
+    for (let base = 0; base + info.numNodes <= tags.length; base += info.numNodes) {
+      const ring: number[] = [];
+      for (let c = 0; c < info.numCorners; c++) ring.push(tags[base + c]);
+      rings.push(ring);
+    }
+  }
+  return polygonEdges(rings, tagToIndex);
 }

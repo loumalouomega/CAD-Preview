@@ -127,13 +127,24 @@ const DEFAULT_MESH_COLOR = 0x4ea1ff;
  * `geometry.addGroup` range + its own `MeshBasicMaterial`, so the shaded mesh
  * renders multi-material. An empty `elementGroups` (no parts resolved) falls
  * back to a single default-blue range covering the whole buffer — identical
- * to the pre-parts behavior. The wireframe is unaffected by grouping (its
- * `WireframeGeometry` is pure line topology, no per-triangle colour) and stays
- * a single `LineBasicMaterial`, same as before.
+ * to the pre-parts behavior. The wireframe is unaffected by grouping (it's a
+ * single `LineBasicMaterial`, no per-element colour).
+ *
+ * `edges` is the host-supplied **true element-edge** line buffer (quad
+ * perimeters for hexes/quads, triangle edges for tets/tris). The wireframe is
+ * built from it — NOT from a `THREE.WireframeGeometry` of the triangulated fill,
+ * which would draw the diagonal splitting every quad and make a hex mesh look
+ * identical to a tet mesh.
  */
-export function buildFEMesh(positionsB64: string, indicesB64: string, elementGroups: MeshElementGroup[]): THREE.Group {
+export function buildFEMesh(
+  positionsB64: string,
+  indicesB64: string,
+  edgesB64: string,
+  elementGroups: MeshElementGroup[]
+): THREE.Group {
   const positions = decodeF32(positionsB64);
   const indices = decodeU32(indicesB64);
+  const edges = decodeU32(edgesB64);
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -168,7 +179,11 @@ export function buildFEMesh(positionsB64: string, indicesB64: string, elementGro
   const mesh = new THREE.Mesh(geometry, materials);
   mesh.userData.entityType = "mesh";
 
-  const wireGeometry = new THREE.WireframeGeometry(geometry);
+  // Wireframe from the true element edges (shared `positions`, own line index),
+  // so hexes draw as quads and tets as triangles — no triangulation diagonals.
+  const wireGeometry = new THREE.BufferGeometry();
+  wireGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  wireGeometry.setIndex(new THREE.BufferAttribute(edges, 1));
   const wireMaterial = new THREE.LineBasicMaterial({ color: 0x1a3d66 });
   const wireframe = new THREE.LineSegments(wireGeometry, wireMaterial);
   wireframe.userData.entityType = "mesh";
