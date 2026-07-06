@@ -1,0 +1,11 @@
+% Toolbar icon: export — open tray with an upward arrow exiting it.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-8,-8) -- (-8,-2);
+  \draw[thick] (8,-8) -- (8,-2);
+  \draw[thick] (-8,-8) -- (8,-8);
+  \draw[->, thick] (0,-6) -- (0,9);
+\end{tikzpicture}
+\end{document}

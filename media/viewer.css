@@ -185,6 +185,21 @@ body {
   background: var(--vscode-button-hoverBackground, #1177bb);
 }
 
+/* Generated, currentColor-based icons (src/toolbarIcons.ts) — used in the
+ * toolbar, the tree/parts panel close/remove buttons, and the meshing
+ * warning line. Deliberately sets no color of its own: it inherits `color`
+ * from whatever button/text it's placed in, so it tracks that element's
+ * (already theme-aware) foreground automatically in both light and dark
+ * themes. Sized in `em` so it tracks each context's own font-size. */
+.toolbar-icon {
+  display: inline-flex;
+  vertical-align: middle;
+}
+.toolbar-icon svg {
+  width: 1em;
+  height: 1em;
+}
+
 /* ── View-manipulation control panel ────────────────────────────────── */
 
 #view-controls {

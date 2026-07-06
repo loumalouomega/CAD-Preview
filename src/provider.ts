@@ -12,6 +12,12 @@ import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type Mes
 import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
+import { TOOLBAR_ICONS } from "./toolbarIcons";
+
+/** `<span>` wrapping a generated, currentColor-based toolbar icon (see toolbarIcons.ts). */
+function icon(id: keyof typeof TOOLBAR_ICONS): string {
+  return `<span class="toolbar-icon">${TOOLBAR_ICONS[id]}</span>`;
+}
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -487,7 +493,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       <div id="tree-panel">
         <div id="tree-header">
           <span id="tree-title">Components</span>
-          <button id="tree-close" title="Close panel">✕</button>
+          <button id="tree-close" title="Close panel">${icon("close")}</button>
         </div>
         <div id="tree-body"></div>
       </div>
@@ -516,9 +522,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         <div id="meshing-header">
           <span id="meshing-title">FE Mesh</span>
           <div id="meshing-actions">
-            <button id="meshing-generate" title="Generate mesh">▶ Generate</button>
+            <button id="meshing-generate" title="Generate mesh">${icon("generate")} Generate</button>
             <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
-            <button id="meshing-export" title="Export mesh">📤 Export</button>
+            <button id="meshing-export" title="Export mesh">${icon("export")} Export</button>
             <button id="meshing-clear" title="Clear generated mesh">Clear</button>
           </div>
         </div>
@@ -530,18 +536,18 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <div id="app"></div>
   </div>
   <div id="toolbar">
-    <button id="fit" title="Fit to view">🔍 Fit</button>
-    <button id="wireframe" title="Toggle wireframe">🕸️ Wireframe</button>
+    <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
+    <button id="wireframe" title="Toggle wireframe">${icon("wireframe")} Wireframe</button>
     <button id="grid" title="Toggle grid">▦ Grid</button>
-    <button id="export" title="Export model">📤 Export</button>
-    <button id="tree-toggle" title="Toggle component tree" style="display:none">🌳 Tree</button>
-    <button id="meshing-toggle" title="Toggle FE mesh overlay">🔬 FE Mesh</button>
+    <button id="export" title="Export model">${icon("export")} Export</button>
+    <button id="tree-toggle" title="Toggle component tree" style="display:none">${icon("tree")} Tree</button>
+    <button id="meshing-toggle" title="Toggle FE mesh overlay">${icon("feMesh")} FE Mesh</button>
     <div id="select-group" title="Pick entities in the view to assign to a part">
-      <button id="sel-toggle" title="Toggle selection mode">🖱️ Select</button>
-      <button class="sel-mode" data-mode="point" title="Pick points (vertices)">📍 Point</button>
-      <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">🧊 Vol</button>
-      <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">◼️ Surf</button>
-      <button class="sel-mode" data-mode="line" title="Pick lines (edges)">📏 Line</button>
+      <button id="sel-toggle" title="Toggle selection mode">${icon("select")} Select</button>
+      <button class="sel-mode" data-mode="point" title="Pick points (vertices)">${icon("point")} Point</button>
+      <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">${icon("volume")} Vol</button>
+      <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">${icon("surface")} Surf</button>
+      <button class="sel-mode" data-mode="line" title="Pick lines (edges)">${icon("line")} Line</button>
     </div>
   </div>
   <div id="view-controls">

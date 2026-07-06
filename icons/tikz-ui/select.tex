@@ -1,0 +1,12 @@
+% Toolbar icon: select — filled pointer/cursor arrow. First attempt (a
+% hand-drawn 6-point barb) looked blobby/jagged at real icon size (reported
+% after visual review in-app); this uses the same silhouette shape as
+% Material Symbols' "arrow_selector_tool" (a well-tested production pointer
+% icon), rescaled into this file's coordinate convention.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=black] (-9,9) -- (-9,-9) -- (-3.5,-4) -- (-0.4,-9.6) -- (2,-8.3) -- (-1.1,-2.7) -- (6,-2.5) -- cycle;
+\end{tikzpicture}
+\end{document}

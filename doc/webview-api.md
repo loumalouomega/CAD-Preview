@@ -721,7 +721,10 @@ echo back as a write.
 ### `MeshingPanel`
 
 Manages the `#meshing-panel` DOM, top to bottom: a large-mesh warning strip
-(`#meshing-warning`); the primary size control (Coarse/Medium/Fine preset
+(`#meshing-warning`, its icon from `TOOLBAR_ICONS.warning` — see
+`doc/extension-host-api.md`'s `src/toolbarIcons.ts` section — set via
+`innerHTML` since it's mixed with formatted text, not `textContent`); the
+primary size control (Coarse/Medium/Fine preset
 buttons, a coarser→finer log-scale slider driving `sizeMax`, and a
 `Size: X · ~N elements` readout); a "Part sizes" section mirroring the Parts
 panel's per-part `meshSize` inputs (hidden while no parts exist); a

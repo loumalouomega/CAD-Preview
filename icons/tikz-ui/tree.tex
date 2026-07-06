@@ -1,0 +1,14 @@
+% Toolbar icon: component tree — root node branching to 3 children.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (0,9) -- (-7,-5);
+  \draw[thick] (0,9) -- (0,-5);
+  \draw[thick] (0,9) -- (7,-5);
+  \filldraw (-7,-5) circle (1.8);
+  \filldraw (0,-5) circle (1.8);
+  \filldraw (7,-5) circle (1.8);
+  \filldraw (0,9) circle (1.8);
+\end{tikzpicture}
+\end{document}

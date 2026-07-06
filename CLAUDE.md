@@ -866,6 +866,50 @@ Non-negotiable invariants:
   protocol messages, licensing, and the upstream GMSH-JS gaps found while
   building this): `doc/gmsh-integration.md`.
 
+## Toolbar/panel icons — generated, theme-adaptive SVG
+
+The toolbar and a few panels (tree-close, parts delete/remove, the meshing
+large-mesh warning) used plain-color emoji (📤🔍🕸️🌳🔬🖱️📍🧊◼️📏▶, plus ⚠/✕) as
+button icons. These are now monochrome, `currentColor`-based inline SVG that
+track VS Code's light/dark theme automatically, replacing the emoji.
+
+- **`src/toolbarIcons.ts` is GENERATED — never hand-edit it.** It's produced
+  wholesale by `icons/build-toolbar-icons.mjs` from `icons/svg-ui/*.svg`
+  (themselves built from `icons/tikz-ui/*.tex` via `pdflatex` +
+  `pdftocairo -svg`). To change an icon: edit its `.tex` source, then
+  `cd icons && make ts`. See `icons/README.md` for the full pipeline — it's a
+  separate, differently-wired set from the 46 `icons/tikz/*.tex` Edits-panel
+  op icons (those stay flat PNG, still unwired into the running extension;
+  this toolbar set is SVG and *is* wired in).
+- **Every icon is `currentColor`-based, not a fixed color** — the generator
+  strips `pdftocairo`'s literal black (`rgb(0%, 0%, 0%)`) stroke/fill down to
+  `currentColor`, and any gray shading fill (from a TikZ `gray!N` fill) down
+  to `currentColor` + a proportional `fill-opacity` (`(100-N)/100`), so an
+  icon's relative internal shading survives (e.g. `volume`'s front/top/side
+  faces) instead of flattening to one constant tint. The fixed `width`/
+  `height` `pdftocairo` emits are stripped too — only `viewBox` survives, so
+  CSS (`.toolbar-icon svg { width: 1em; height: 1em; }` in `media/viewer.css`)
+  controls the rendered size, and the icon inherits whatever `color` its
+  containing button/text already has (VS Code already themes those) instead
+  of setting its own.
+- **Gotcha, hit once and now regression-tested:** `pdftocairo -svg` always
+  emits a fill as a `fill="rgb(...)" fill-opacity="1"` *pair*. A first-pass
+  regex that only rewrote the `fill="rgb(...)"` part left the original
+  `fill-opacity="1"` trailing right after the new one — two `fill-opacity`
+  attributes on one `<path>`, and the second (unwanted) one silently won,
+  erasing the intended partial-opacity shading. The generator's regex now
+  consumes both in one match. `src/toolbarIcons.test.ts` asserts no generated
+  path ever has more than one `fill-opacity` attribute.
+- Since this module has **no `vscode`/DOM dependency**, both the host
+  (`provider.ts`, building static HTML) and the webview
+  (`partsPanel.ts`/`meshingPanel.ts`) import it directly — no bundling or
+  `asWebviewUri` needed, the SVG markup is just inlined into whatever HTML
+  string or `innerHTML` assignment needs it.
+- Chevrons (`▾▸⌄⌃`), plain arrows (`↑↓←→`), and the zoom `−`/`+` are
+  deliberately NOT covered by this — they already render as clean monochrome
+  glyphs in every renderer, unlike real emoji, so replacing them would add
+  icons for no visual benefit.
+
 ## Build & test
 
 ```bash
@@ -885,6 +929,15 @@ wireframe toggle. Exercise the view-manipulation panel (stepped rotate/pan/zoom,
 Ctr), the orientation cube (faces snap the view), and the **⌄ / ⌃** hide/show toggle.
 Open/close repeatedly and watch extension-host memory stay flat (leak check). Additional
 fixtures: `examples/OBJ/cube.obj`, `examples/PLY/cube.ply`, `examples/GLTF/cube.gltf`.
+
+Confirm the toolbar/panel icons (Fit, Wireframe, Export, Tree, FE Mesh, Select,
+Point/Vol/Surf/Line, the FE Mesh panel's Generate/Export, tree-close, Parts
+delete/remove, and the large-mesh warning) render crisply and legibly at their
+actual small size — this is the one thing automated tests can't check. Then
+switch VS Code to a light theme (`Ctrl+K Ctrl+T` → e.g. "Light+") and confirm
+every one of those icons re-colors to match (dark strokes on the now-light
+toolbar buttons) without needing a reload; switch back to a dark theme and
+confirm the reverse.
 
 Exercise **Export**: on `bull.stp`, confirm the quick-pick offers IGES/BREP/STL/OBJ/
 PLY/glTF (not STEP again); on `cube.stl`, confirm it offers only OBJ/PLY/glTF. Export

@@ -37,5 +37,7 @@ yarn-error.log
 doc/.vitepress/dist
 doc/.vitepress/cache
 
-# TikZ icon build intermediates (icons/png/*.png previews are committed)
+# TikZ icon build intermediates (icons/png/*.png and icons/svg-ui/*.svg
+# previews are committed; only the LaTeX build scratch dirs are ignored)
 icons/build/
+icons/build-ui/
