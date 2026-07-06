@@ -622,6 +622,19 @@ Non-negotiable invariants:
   sizes" section routing to the same `PartsModel.setMeshSize`) and tucks the
   raw options form — including the STL angle field, disabled for B-rep sources
   via `setSourceKind` — into a collapsed-by-default "Advanced settings" section.
+- **Element shape & order.** `MeshOptions.elementOrder: 1|2` → `Mesh.ElementOrder`
+  (quadratic adds mid-side nodes; the overlay draws corner geometry only).
+  `MeshOptions.elementShape: "simplex"|"subdivided"` → `Mesh.RecombineAll` +
+  `Mesh.SubdivisionAlgorithm` via the shared `gmshShapeOptions(shape, dimension)`
+  helper (`src/meshOptions.ts`), reused by both `loadGeometryAndApplyOptions` and
+  `generateGeoScript` so they can't drift. Recipe is **dimension-dependent and
+  WASM-verified**: 2D quads via Blossom `RecombineAll=1`; 3D hexes via
+  `SubdivisionAlgorithm=2` (3D `RecombineAll` throws). Both option values are set
+  every generate (the singleton persists options across `clear()`). **A
+  hex-*dominant* mixed mode is deliberately NOT offered** — `Mesh.Recombine3DAll`
+  is completely non-functional in the bundled gmsh-wasm build (every variant
+  probed produced pure tets or threw); `validateMeshOptions` rejects
+  `"hexDominant"`. See `doc/gmsh-integration.md`'s "Known limitations".
 - **Sidecar pair `<model>.mesh.json` + `<model>.geo`, beside parts/edits.** The
   FE-mesh options (`MeshOptions` — a flat bag, not an op-list) autosave (~500 ms,
   its own debounce timer, separate from parts/edits) to `<model>.mesh.json` via
@@ -664,53 +677,52 @@ Non-negotiable invariants:
   format. `src/mdpaWriter.ts` (pure, vscode/WASM-free, unit-tested in
   `mdpaWriter.test.ts` against hand-built fixtures — mirrors `partsSidecar.ts`/
   `editOps.ts`'s pure-module convention) serializes a plain `MdpaMesh`
-  (`{nodes, tets, triangles, groups}`) to ASCII text; `gmshService.ts`'s
-  `exportMdpa()` + private `extractMdpaMesh()` pull that data off the live
-  gmsh model after `mesh.generate()` (per-entity-tag `getElements(dim, tag)`
-  loops, same pattern as `extractBoundaryFaces`/`appendTriangles2D`) and hand
-  it to `writeMdpa()` — no MEMFS write/read-back round trip. Two mutually
-  exclusive modes: `"elements"` writes `Element3D4N`/`SurfaceCondition3D3N`
-  under `Begin Elements`/`Begin Conditions`, each `<id> <prop_id> <n1..nk>`
-  with `prop_id` always `0` (this codebase has no material/property data) in
-  a single `Begin Properties 0` block; `"geometries"` writes
-  `Tetrahedra3D4`/`Triangle3D3` under `Begin Geometries` instead, `<id>
-  <n1..nk>` with **no** property id, and — since Kratos's `Geometries` is one
-  container — tets and triangles **share one id space** (tets `1..T`,
-  triangles continue `T+1..T+G`). A cell type's root block and its matching
-  `SubModelPart*` sub-block are omitted entirely when empty (e.g. a
-  `dimension: 2` generate has triangles but no tets) rather than writing an
-  empty pair; `options.elementOrder !== 1` is rejected with an actionable
-  error before `mesh.generate()` runs (a 10-node tet/6-node triangle can't be
-  `Element3D4N`/`Tetrahedra3D4`), and `extractMdpaMesh()` throws as a
-  defensive backstop if it ever finds any other 3D/2D element type.
-  **Node ordering**: Kratos's `Tetrahedra3D4`/`Triangle3D3` reference-element
-  node order (confirmed against Kratos's own node-ordering docs) is the
-  standard simplex convention Gmsh's own element types 4/2 already use — 1:1,
-  no permutation — but since that couldn't be verified byte-for-byte against
-  Gmsh's *own* node-ordering docs (an automated fetch didn't return the
-  diagrams), `mdpaWriter.ts`'s `orientTet()` defensively recomputes each tet's
-  signed volume and swaps the last two output node ids if negative, so every
-  emitted tet has a positive Jacobian regardless. **SubModelParts** map 1:1 to
-  `Part[]` — always flat (no nesting concept exists anywhere in this
-  codebase's `Part[]`), B-rep sources only (mesh/STL documents get `parts:
-  []` before reaching `gmshService.ts`, same as every other parts-preservation
-  feature). `extractMdpaMesh()`'s private `groupPartsAcrossDims()` (the 4-map
-  generalization of `groupTagsByPart`) reuses `PartGroupMaps` from
-  `applyPartsToGmshModel` — never recomputed — to bucket cells per part and
-  resolve `lines`/`points` selections to extra node ids via `getNodes(1,
-  curveTag, /*includeBoundary*/ true)`/`getNodes(0, pointTag)` (edges/points
-  contribute only to `SubModelPartNodes`, never their own element/condition/
-  geometry entries — this exporter's cell scope is strictly linear tets and
-  triangles). A SubModelPart's `SubModelPartNodes` is always the **union** of
-  its explicit point/curve selections and every node its grouped cells
-  reference, never just one or the other. Output is deterministic: node ids
-  sort by source tag ascending, cell ids sort by each cell's own renumbered
-  node-id tuple ascending — byte-identical regardless of gmsh's internal
-  (not contractually stable) enumeration order. Verified end-to-end against
-  the live WASM build on `angle1.stp` with a 2-part `Part[]`: correct
-  per-part element/condition claiming, no dangling node references, and
-  the `elementOrder: 2` pre-flight rejection. See
-  `doc/gmsh-integration.md`'s "Kratos MDPA" section for the full write-up.
+  (`{nodes, volumeCells, surfaceCells, groups}`, where each `MdpaCell` is
+  `{kind, nodeTags}`) to ASCII text; `gmshService.ts`'s `exportMdpa()` +
+  private `extractMdpaMesh()` pull that data off the live gmsh model after
+  `mesh.generate()` (per-entity-tag `getElements(dim, tag)` loops, same
+  pattern as `extractBoundaryFaces`/`appendTriangles2D`) and hand it to
+  `writeMdpa()` — no MEMFS write/read-back round trip. Two mutually exclusive
+  modes: `"elements"` writes one `Element*` block per volume kind +
+  `Condition*` per surface kind (each `<id> <prop_id> <n1..nk>`, `prop_id`
+  always `0` in a single `Begin Properties 0` block); `"geometries"` writes
+  `Geometries` blocks (`<id> <n1..nk>`, **no** property id) which, per Kratos's
+  single `Geometries` container, **share one id space** (all volume kinds
+  `1..V`, then all surface kinds `V+1..V+S`). A kind's root block and its
+  matching `SubModelPart*` sub-block are omitted when empty.
+- **The full cell catalogue (linear + quadratic tet/hex/prism/pyramid/tri/quad)
+  flows through the single `src/gmshElementTypes.ts` table** — the ONE source of
+  truth for every gmsh type's stride, corner count, boundary-face decomposition,
+  Kratos block names, and gmsh→Kratos node permutation. Both the overlay builders
+  (`surfaceTriangles`/`boundaryTriangles`, now the guts of `appendTriangles2D`/
+  `extractBoundaryFaces`) AND `extractMdpaMesh` resolve types through it, so they
+  can never drift (replaces the old duplicated-and-must-stay-in-lockstep risk).
+  A genuinely unmapped type throws (graceful backstop). **Permutations were
+  DERIVED by coordinate-matching against the live WASM** (`getElementProperties().
+  localNodeCoord`, not docs): linear cells + `tri6`/`quad9` are identity, `tet10`
+  is `[0,1,2,3,4,5,6,7,9,8]`, `hex20`/`hex27`/`prism15`/`pyramid13` are non-trivial.
+  Complete order-2 prism18/pyramid14 **truncate** to Kratos `Prism3D15`/`Pyramid3D13`
+  (their leading nodes coincide — verified). Geometry block names are certain;
+  the newer kinds' `Element*`/`Condition*` names are best-guess transcriptions
+  pending Kratos-dev confirmation, so `"elements"` mode pre-flights an actionable
+  "use Geometries mode" throw if any produced kind's element/condition name is
+  `null` (all filled today, so the guard is dormant).
+- **Node ordering / orientation**: `mdpaWriter.ts`'s `orientCell()` recomputes each
+  cell's signed volume (divergence theorem over the kind's OUTWARD boundary faces —
+  `signedVolume` in `gmshElementTypes.ts`) and, for a negative tet, applies the
+  well-defined `tet4`/`tet10` flip (`[0,1,3,2]` / `[0,1,3,2,4,8,7,6,5,9]`); a
+  negative hex/prism/pyramid (which gmsh shouldn't emit) is passed through with an
+  `onWarning` callback, no unsafe reshuffle. **SubModelParts** map 1:1 to `Part[]`
+  (flat, B-rep only). `extractMdpaMesh()`'s `groupPartsAcrossDims()` reuses
+  `PartGroupMaps` to bucket cells per part + resolve `lines`/`points` to extra
+  node ids (edges/points contribute only to `SubModelPartNodes`). `SubModelPartNodes`
+  is the **union** of explicit point/curve selections and every node (incl.
+  mid-side) of the grouped cells. Deterministic: node ids by source tag, cell ids
+  by canonical node-tuple within a kind, kinds in fixed `VOLUME_KIND_ORDER`/
+  `SURFACE_KIND_ORDER`. Verified end-to-end on `angle1.stp` across all four
+  `{simplex, subdivided} × {order 1, 2}` combos (watertight overlays, no orient
+  warnings, all block names present). See `doc/gmsh-integration.md`'s "Kratos MDPA"
+  + "Element shapes & order" sections.
 - **Two input paths converge on the same options step.** B-rep documents
   (`kind: "brep"`) re-export the live OCCT shape to STEP bytes via the existing
   `exportBRep()` (so unsaved edits are reflected) and load them with
@@ -1054,6 +1066,28 @@ meshing). Apply **Generate** repeatedly, toggle on/off, and open/close the tab
 repeatedly → watch extension-host memory stay flat (same OCCT-style leak check as
 above; the GMSH-wasm singleton is reused across generations, only per-generation MEMFS
 files are cleaned up).
+
+Then exercise **element shapes + quadratic meshing**: on `bull.stp`, in Advanced
+settings set **Element shape** to "Quads / Hexahedra" and **▶ Generate** → confirm the
+overlay shows an all-quad surface pattern (each quad rendered as two coplanar triangles
+under the wireframe) with **no holes** (watertight). Switch **Element order** to
+Quadratic (2) for each of the two shapes and regenerate → confirm the overlay still
+renders complete (corner-node display; the node count in the status line jumps
+markedly). Confirm the slider's element estimate visibly drops when switching to
+"Quads / Hexahedra" (≈1 hex per h-cube vs ≈6 tets), and that `bull.stp.geo` gains
+matching `Mesh.RecombineAll` / `Mesh.SubdivisionAlgorithm` lines. Export **both Kratos
+MDPA modes** for: simplex+order2 (`Tetrahedra3D10`/`Triangle3D6` geometries, or
+`Element3D10N`/`SurfaceCondition3D6N` elements), subdivided+order1
+(`Hexahedra3D8`/`Quadrilateral3D4`), and subdivided+order2
+(`Hexahedra3D27`/`Quadrilateral3D9`) → open each `.mdpa` and confirm the expected block
+names, that geometries-mode ids form one continuous space across kinds, and (with 2+
+parts assigned) per-part `SubModelPart` blocks still appear with non-empty membership.
+Set **Dimension** to 2D with shape "Quads / Hexahedra" → confirm an all-quad 2D overlay
+and a `Quadrilateral3D4`/`SurfaceCondition3D4N` MDPA. Repeat one subdivided generate on
+`cube.stl` (reclassified STL path — hexes still generate). Note: only "Triangles /
+Tetrahedra" and "Quads / Hexahedra" are offered — hex-dominant mixed meshing is
+unavailable in this WASM build (see `doc/gmsh-integration.md`'s Known limitations).
+Regenerate across shapes/orders repeatedly → host memory stays flat (same leak check).
 
 Then exercise **parts-preserving meshing**: on `angle1.stp` (or another multi-face
 STEP), create 2+ parts covering different faces/solids and set one part's **mesh

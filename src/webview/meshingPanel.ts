@@ -93,6 +93,7 @@ export class MeshingPanel {
   private readonly algorithm2DSelect: HTMLSelectElement;
   private readonly algorithm3DSelect: HTMLSelectElement;
   private readonly elementOrderSelect: HTMLSelectElement;
+  private readonly elementShapeSelect: HTMLSelectElement;
   private readonly optimizeCheckbox: HTMLInputElement;
   private readonly stlAngleInput: HTMLInputElement;
 
@@ -269,6 +270,16 @@ export class MeshingPanel {
       cb.onOptionsChange({ algorithm3D: Number(this.algorithm3DSelect.value) });
     });
 
+    this.elementShapeSelect = this.select(form, "Element shape", [
+      ["simplex", "Triangles / Tetrahedra"],
+      ["subdivided", "Quads / Hexahedra"],
+    ]);
+    this.elementShapeSelect.title =
+      "Quads/Hexahedra recombines the mesh into quadrilaterals (2D) or hexahedra (3D).";
+    this.elementShapeSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ elementShape: this.elementShapeSelect.value as MeshOptions["elementShape"] });
+    });
+
     this.elementOrderSelect = this.select(form, "Element order", [
       ["1", "Linear (1)"],
       ["2", "Quadratic (2)"],
@@ -311,6 +322,7 @@ export class MeshingPanel {
     this.setSelectValue(this.algorithm2DSelect, options.algorithm2D);
     this.setSelectValue(this.algorithm3DSelect, options.algorithm3D);
     this.elementOrderSelect.value = String(options.elementOrder);
+    this.elementShapeSelect.value = options.elementShape;
     this.optimizeCheckbox.checked = options.optimize;
     this.stlAngleInput.value = String(options.stlAngle);
 
@@ -442,7 +454,8 @@ export class MeshingPanel {
       return;
     }
     const dimension = this.lastOptions?.dimension ?? 3;
-    const estimate = estimateElementCount(this.extents.size, size, dimension);
+    const shape = this.lastOptions?.elementShape ?? "simplex";
+    const estimate = estimateElementCount(this.extents.size, size, dimension, shape);
     this.sliderReadout.textContent = `Size: ${formatSize(size)} · ${formatCount(estimate)} elements`;
     if (estimate > LARGE_ELEMENT_COUNT) {
       this.warningEl.innerHTML = `<span class="toolbar-icon">${TOOLBAR_ICONS.warning}</span> Estimated ${formatCount(estimate)} elements — generation may be slow or run out of memory.`;

@@ -729,8 +729,8 @@ buttons, a coarser→finer log-scale slider driving `sizeMax`, and a
 `Size: X · ~N elements` readout); a "Part sizes" section mirroring the Parts
 panel's per-part `meshSize` inputs (hidden while no parts exist); a
 collapsed-by-default "Advanced settings" section with the raw options form
-(dimension, size min/max, 2D/3D algorithm dropdowns, element order, optimize
-checkbox, STL angle) — plus a Generate button, an export-format `<select>`
+(dimension, size min/max, 2D/3D algorithm dropdowns, element shape, element
+order, optimize checkbox, STL angle) — plus a Generate button, an export-format `<select>`
 (populated from `MESH_EXPORT_FORMATS` in `src/meshExportFormats.ts` — one
 shared registry instead of one button per format) + Export button, a Clear
 button, and a status line. Pure DOM, no business logic (size math delegates to

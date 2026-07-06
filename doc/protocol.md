@@ -160,6 +160,7 @@ interface MeshOptions {
   algorithm2D: number   // Mesh.Algorithm
   algorithm3D: number   // Mesh.Algorithm3D
   elementOrder: 1 | 2
+  elementShape: 'simplex' | 'subdivided'  // triangles/tets vs quads/hexes
   optimize: boolean
   stlAngle: number       // classifySurfaces angle, degrees
 }
@@ -331,7 +332,7 @@ echo back as a `meshingChanged` write) and renders the FE Mesh panel form.
 ```json
 {
   "type": "meshingOptions",
-  "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 }
+  "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "elementShape": "simplex", "optimize": true, "stlAngle": 40 }
 }
 ```
 

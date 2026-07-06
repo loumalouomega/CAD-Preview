@@ -96,10 +96,47 @@ export type MeshGenerationInput =
 
 Both paths converge on the shared options application in
 `loadGeometryAndApplyOptions` (`Mesh.MeshSizeMin/Max`, `Mesh.Algorithm`,
-`Mesh.Algorithm3D`, `Mesh.ElementOrder`, `Mesh.Optimize`, all via
-`gmsh.option.setNumber`), then `generateMesh` calls `gmsh.model.mesh.generate
-(options.dimension)` and reads the result back with `gmsh.model.mesh.getNodes()` /
-`gmsh.model.mesh.getElements()`.
+`Mesh.Algorithm3D`, `Mesh.ElementOrder`, `Mesh.RecombineAll`,
+`Mesh.SubdivisionAlgorithm`, `Mesh.Optimize`, all via `gmsh.option.setNumber`),
+then `generateMesh` calls `gmsh.model.mesh.generate(options.dimension)` and reads
+the result back with `gmsh.model.mesh.getNodes()` / `gmsh.model.mesh.getElements()`.
+
+## Element shapes & order
+
+Two options control the generated cell geometry:
+
+- **`elementOrder`** (`1` linear / `2` quadratic) → `Mesh.ElementOrder`. Quadratic
+  meshes carry mid-side/-face nodes (tet → tet10, hex → hex27, triangle → tri6,
+  quad → quad9). The display overlay renders **corner nodes only** (mid nodes are
+  present in the position buffer but unreferenced by the triangulation — a
+  quadratic mesh looks the same as its linear skeleton in the overlay).
+- **`elementShape`** (`"simplex"` / `"subdivided"`) → `Mesh.RecombineAll` +
+  `Mesh.SubdivisionAlgorithm`, via the shared, dimension-dependent
+  `gmshShapeOptions(shape, dimension)` helper (`src/meshOptions.ts`), reused by
+  both the live-mesh path and the `.geo` generator so they can't drift:
+
+  | shape | 2D | 3D |
+  |---|---|---|
+  | `simplex` | triangles (`RecombineAll=0`) | tetrahedra |
+  | `subdivided` | quads (`RecombineAll=1`, Blossom) | hexahedra (`SubdivisionAlgorithm=2`) |
+
+  The recipe is **dimension-dependent by necessity, verified against the live
+  gmsh-wasm build**: 2D quads come out cleanest from Blossom recombination, but the
+  3D `RecombineAll` path throws *"Cannot use frontal 3D algorithm with quadrangles
+  on boundary"* — all-hex 3D instead needs the subdivision algorithm. `subdivided`
+  works with both the Delaunay (`Algorithm3D=1`) and Frontal (`4`) 3D algorithms.
+
+  A **hex-*dominant* mixed mode** (tets+prisms+pyramids+hexes, via
+  `Mesh.Recombine3DAll`) is deliberately **not offered** — see
+  [Known limitations](#known-limitations).
+
+The single generic per-element-type table `src/gmshElementTypes.ts`
+(`GMSH_ELEMENT_TYPES`) is the source of truth for every supported gmsh type's
+stride, corner count, boundary-face decomposition, and Kratos mapping. Both the
+overlay builders and the MDPA extractor resolve types through it, so the overlay
+triangulation and MDPA connectivity can never diverge. Its node-order data and the
+gmsh→Kratos permutations were **derived by coordinate-matching against the live
+WASM** (`getElementProperties().localNodeCoord`), not from documentation.
 
 ## Parts → physical groups (B-rep only)
 
@@ -231,6 +268,7 @@ export interface MeshOptions {
   algorithm2D: number; // Mesh.Algorithm
   algorithm3D: number; // Mesh.Algorithm3D
   elementOrder: 1 | 2;
+  elementShape: "simplex" | "subdivided"; // triangles/tets vs quads/hexes
   optimize: boolean;
   stlAngle: number; // classifySurfaces angle, degrees
 }
@@ -284,6 +322,8 @@ parse/serialize functions):
   Mesh.Algorithm = 6;
   Mesh.Algorithm3D = 4;
   Mesh.ElementOrder = 1;
+  Mesh.RecombineAll = 0;
+  Mesh.SubdivisionAlgorithm = 0;
   Mesh.Optimize = 1;
   Mesh 3;
   ```
@@ -365,44 +405,63 @@ deliberately listed **first** so `mdpaElements` is the default-selected export
 format):
 
 - **`mdpaElements` ("Elements + Conditions")** — the solver-ready shape.
-  Tets → `Begin Elements Element3D4N`, triangles → `Begin Conditions
-  SurfaceCondition3D3N`, both `<id> <prop_id> <n1> ... <nk>` with `prop_id`
-  always `0` under a single `Begin Properties 0` block — this codebase has no
-  material/property data of any kind, so there's never a second property id
-  to reference.
-- **`mdpaGeometries` ("Geometries")** — tets → `Begin Geometries
-  Tetrahedra3D4`, triangles → `Begin Geometries Triangle3D3`,
-  `<id> <n1> ... <nk>` with **no property id** (the structural difference from the other
-  mode, confirmed against Kratos's own docs, not inferred) and no `Properties`
-  block. Kratos's `Geometries` is a single container, so both geometry kinds
-  **share one id space** — tets get `1..T`, triangles continue `T+1..T+G` in
-  the same block sequence, not restarting at 1.
+  Volume cells → `Begin Elements <ElementName>`, surface cells → `Begin
+  Conditions <ConditionName>`, both `<id> <prop_id> <n1> ... <nk>` with
+  `prop_id` always `0` under a single `Begin Properties 0` block — this codebase
+  has no material/property data of any kind, so there's never a second property
+  id to reference.
+- **`mdpaGeometries` ("Geometries")** — volume cells → `Begin Geometries
+  <GeometryName>`, surface cells → `Begin Geometries <GeometryName>`,
+  `<id> <n1> ... <nk>` with **no property id** (the structural difference from
+  the other mode) and no `Properties` block. Kratos's `Geometries` is a single
+  container, so **all** kinds **share one id space** — volume kinds get `1..V`,
+  surface kinds continue `V+1..V+S`, not restarting at 1.
 
-Both a cell type's root block (`Elements`/`Conditions`/`Geometries`) and its
-matching `SubModelPart*` sub-block are **omitted entirely when there are zero
-members** (e.g. a `dimension: 2` generate produces triangles but no tets) —
-never an empty `Begin`/`End` pair. `options.elementOrder !== 1` (quadratic) is
-rejected with an actionable error *before* `mesh.generate()` even runs, since
-a 10-node tet/6-node triangle can't be represented as `Element3D4N`/
-`Tetrahedra3D4`; `extractMdpaMesh()` also throws if it ever finds a 3D element
-type other than the linear tet or a 2D type other than the linear triangle,
-as a defensive backstop behind that pre-flight check.
+**Supported cell kinds** (linear + quadratic), each mapped by the shared
+`gmshElementTypes.ts` table to its Kratos block name and gmsh→Kratos node
+permutation:
 
-**Node ordering.** Kratos's reference `Tetrahedra3D4`/`Triangle3D3` local node
-order — confirmed against the [official node-ordering
-docs](https://kratosmultiphysics.github.io/Kratos/pages/Kratos/For_Developers/Data_Structures/Mesh_Node_Ordering.html)
-— is the standard simplex reference-element convention (nodes 0/1/2 the base,
-node 3 the tet's apex; nodes 0/1 the triangle's base, node 2 its apex) that
-Gmsh's own element types 4/2 already use, so `getElements()`'s raw node order
-maps 1:1 with no permutation needed. As a defensive measure (Gmsh's own
-node-ordering page didn't return its diagrams through automated fetching, so
-this couldn't be verified byte-for-byte against Gmsh's own docs the same way),
-`mdpaWriter.ts`'s `orientTet()` independently recomputes each tet's signed
-volume (scalar triple product from node 0) after mapping and swaps the last
-two output node ids if it's negative — every emitted tet has a positive
-Jacobian regardless of any subtle ordering mismatch. Triangles pass through
-unchanged; there's no single universally "correct" winding for an arbitrary
-boundary condition surface to check against.
+| family | linear (geometry / element·condition) | quadratic |
+|---|---|---|
+| tetrahedron | `Tetrahedra3D4` / `Element3D4N` | `Tetrahedra3D10` / `Element3D10N` |
+| hexahedron | `Hexahedra3D8` / `Element3D8N` | `Hexahedra3D27` / `Element3D27N` |
+| prism | `Prism3D6` / `Element3D6N` | `Prism3D15` / `Element3D15N` |
+| pyramid | `Pyramid3D5` / `Element3D5N` | `Pyramid3D13` / `Element3D13N` |
+| triangle | `Triangle3D3` / `SurfaceCondition3D3N` | `Triangle3D6` / `SurfaceCondition3D6N` |
+| quadrilateral | `Quadrilateral3D4` / `SurfaceCondition3D4N` | `Quadrilateral3D9` / `SurfaceCondition3D9N` |
+
+The **geometry** names are certain; the **element/condition** names for the
+newer kinds (everything but `Element3D4N`/`SurfaceCondition3D3N`) are best-effort
+transcriptions from Kratos's registered types and still want a Kratos-core-dev
+confirmation. Until then, `"elements"` mode runs a pre-flight that throws an
+actionable *"export in Geometries mode instead"* error if the generated mesh
+contains a kind whose element/condition name is unset — `"geometries"` mode is
+always safe. (In the current table every name is filled in, so the guard only
+fires if a name is later reset to `null` pending review.)
+
+A complete order-2 **prism** (gmsh PRI18, 18 nodes) and **pyramid** (PYR14, 14)
+are **truncated** to Kratos's `Prism3D15` / `Pyramid3D13` — verified against the
+live WASM that PRI18's first 15 / PYR14's first 13 reference-node coordinates
+coincide with the shorter element's, so dropping the extra face nodes is exact.
+The dropped nodes remain in `Begin Nodes` (possibly unreferenced). This only
+matters for a hex-dominant order-2 mesh, which this WASM build can't produce
+anyway (see Known limitations).
+
+Both a kind's root block and its `SubModelPart*` sub-block are **omitted when
+empty** — never an empty `Begin`/`End` pair. A genuinely unmapped element type
+throws an actionable error in `extractMdpaMesh()` (defensive backstop).
+
+**Node ordering.** The gmsh→Kratos node permutation for every kind was
+**derived by coordinate-matching** `getElementProperties().localNodeCoord`
+against transcribed Kratos reference-element local coordinates (linear cells,
+`tri6`, and `quad9` are identity; `tet10`, `hex20`, `hex27`, `prism15`,
+`pyramid13` are non-trivial). Applied during extraction so `mdpaWriter.ts`
+always receives Kratos-ordered nodes. As a defensive backstop, `orientCell()`
+recomputes each cell's signed volume (divergence theorem over the kind's
+outward boundary faces) and, for a negative tetrahedron, applies the
+well-defined `tet4`/`tet10` re-orientation swap; a negative hex/prism/pyramid
+(which gmsh shouldn't emit) is passed through unchanged with an `onWarning`
+callback rather than an unsafe reshuffle.
 
 **SubModelParts** map 1:1 to `Part[]` (B-rep sources only — mesh/STL
 documents get `parts: []` before reaching `gmshService.ts`, same as every
@@ -439,8 +498,16 @@ with a 2-part `Part[]` (one volume-scoped, one surface-scoped): 1899 tets /
 surface-scoped one claimed the matching triangles and none of the elements;
 every connectivity line had the expected column count with no node id
 outside `[1, nodeCount]`; Mode B's triangle geometry ids all came out strictly
-after its tet geometry ids (confirming the shared id space); and
-`elementOrder: 2` threw the documented pre-flight error.
+after its tet geometry ids (confirming the shared id space).
+
+Re-verified end-to-end after the element-shape/order extension, on
+`angle1.stp` across all four `{simplex, subdivided} × {order 1, 2}` combos
+(`Mesh.Algorithm3D=1`): every combo produced a **watertight** overlay (zero
+odd boundary edges — `simplex` → tet4/tri3 & tet10/tri6, `subdivided` →
+hex8/quad4 & hex27/quad9), no `orientCell` warnings, no negative tets, and
+both MDPA modes emitted every expected block name with all connectivity ids in
+range. Corner-only overlay display makes the boundary-triangle count identical
+between order 1 and order 2 of the same shape.
 
 ## Webview: panel, model, and overlay display
 
@@ -536,6 +603,22 @@ gmsh-wasm's presence in the extension bundle, not by whether a given user ever
 opens the FE Mesh panel.
 
 ## Known limitations
+
+- **No working 3D recombination (hex-dominant meshing) in the bundled WASM build.**
+  The all-hex `subdivided` shape works (via `Mesh.SubdivisionAlgorithm=2`), but a
+  hex-*dominant* mixed mesh (tets+prisms+pyramids+hexes via
+  `Mesh.Recombine3DAll`) is completely non-functional here: every variant probed —
+  `Recombine3DAll=1` alone, combined with `RecombineAll`, with
+  `Recombine3DConformity`/`Recombine3DLevel`, under Delaunay or Frontal —
+  produced **pure tetrahedra** (no recombination at all) or threw *"Cannot use
+  frontal 3D algorithm with quadrangles on boundary"*. This build was evidently
+  compiled without the experimental 3D recombination support. So `elementShape` is
+  restricted to `simplex`/`subdivided` and no hex-dominant option is offered
+  (`validateMeshOptions` rejects `"hexDominant"` to a default). The
+  `gmshElementTypes.ts` table still carries prism/pyramid rows (their permutations
+  are verified) so the pipeline is ready if a rebuilt WASM ever enables it — they
+  are simply unreachable today. `Mesh.Algorithm3D=10` (HXT) is separately broken in
+  this build too (empty mesh), unrelated to this feature.
 
 Per the original goal of this integration — flag anything GMSH-JS is missing so it
 can be reported upstream — five real gaps were found while building this feature

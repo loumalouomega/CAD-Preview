@@ -52,22 +52,33 @@ export function sizeToSlider(size: number, diagonal: number): number {
   return clamp01(t);
 }
 
+import type { MeshElementShape } from "../meshOptions";
+
 /**
  * Order-of-magnitude estimate of how many elements a generate would produce —
- * from the bounding box only (knowingly overestimates non-boxy models):
- * 3D ≈ 6 tets per h-cube of bbox volume; 2D ≈ 2 triangles per h-square of
- * bbox surface area; 1D ≈ segments along the diagonal. Never invokes gmsh.
+ * from the bounding box only (knowingly overestimates non-boxy models). Never
+ * invokes gmsh. The per-h-cell factor depends on `shape`: a `"simplex"` mesh
+ * packs ≈6 tets per h-cube / ≈2 triangles per h-square, while a `"subdivided"`
+ * (all-hex/all-quad) mesh packs ≈1 hex per h-cube / ≈1 quad per h-square. 1D is
+ * shape-independent (segments along the diagonal).
  */
 export function estimateElementCount(
   bboxSize: [number, number, number],
   targetSize: number,
-  dimension: 1 | 2 | 3
+  dimension: 1 | 2 | 3,
+  shape: MeshElementShape = "simplex"
 ): number {
   const [x, y, z] = bboxSize;
   const h = targetSize;
   if (!(h > 0)) return 0;
-  if (dimension === 3) return Math.round(((x * y * z) / (h * h * h)) * 6);
-  if (dimension === 2) return Math.round(((2 * (x * y + y * z + z * x)) / (h * h)) * 2);
+  if (dimension === 3) {
+    const perCell = shape === "subdivided" ? 1 : 6;
+    return Math.round(((x * y * z) / (h * h * h)) * perCell);
+  }
+  if (dimension === 2) {
+    const perCell = shape === "subdivided" ? 1 : 2;
+    return Math.round(((2 * (x * y + y * z + z * x)) / (h * h)) * perCell);
+  }
   return Math.round(Math.sqrt(x * x + y * y + z * z) / h);
 }
 

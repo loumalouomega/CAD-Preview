@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { validateMeshOptions, applyStlPartSizeOverride, DEFAULT_MESH_OPTIONS, SIZE_MAX_SENTINEL } from "./meshOptions";
+import {
+  validateMeshOptions,
+  applyStlPartSizeOverride,
+  gmshShapeOptions,
+  DEFAULT_MESH_OPTIONS,
+  SIZE_MAX_SENTINEL,
+} from "./meshOptions";
 import type { Part } from "./protocol";
 
 function part(overrides: Partial<Part>): Part {
@@ -15,6 +21,7 @@ describe("validateMeshOptions", () => {
       algorithm2D: 5,
       algorithm3D: 1,
       elementOrder: 2,
+      elementShape: "subdivided" as const,
       optimize: false,
       stlAngle: 30,
     };
@@ -41,6 +48,7 @@ describe("validateMeshOptions", () => {
       algorithm2D: "x", // invalid -> default
       algorithm3D: null, // invalid -> default
       elementOrder: 3, // invalid -> default
+      elementShape: "hexDominant", // invalid (excluded) -> default
       optimize: "yes", // invalid -> default
       stlAngle: 400, // invalid -> default
     });
@@ -60,6 +68,14 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ elementOrder: 2 })?.elementOrder).toBe(2);
     expect(validateMeshOptions({ elementOrder: 3 })?.elementOrder).toBe(DEFAULT_MESH_OPTIONS.elementOrder);
     expect(validateMeshOptions({ elementOrder: 0 })?.elementOrder).toBe(DEFAULT_MESH_OPTIONS.elementOrder);
+  });
+
+  it("defaults elementShape unless it is exactly 'simplex' or 'subdivided'", () => {
+    expect(validateMeshOptions({ elementShape: "simplex" })?.elementShape).toBe("simplex");
+    expect(validateMeshOptions({ elementShape: "subdivided" })?.elementShape).toBe("subdivided");
+    // hexDominant is intentionally excluded (broken in the WASM build) -> default
+    expect(validateMeshOptions({ elementShape: "hexDominant" })?.elementShape).toBe(DEFAULT_MESH_OPTIONS.elementShape);
+    expect(validateMeshOptions({ elementShape: 2 })?.elementShape).toBe(DEFAULT_MESH_OPTIONS.elementShape);
   });
 
   it("defaults sizeMin/sizeMax when negative or non-finite, and defaults both when sizeMin > sizeMax", () => {
@@ -118,6 +134,23 @@ describe("applyStlPartSizeOverride", () => {
   });
 });
 
+describe("gmshShapeOptions", () => {
+  it("simplex never recombines or subdivides, any dimension", () => {
+    for (const d of [1, 2, 3] as const) {
+      expect(gmshShapeOptions("simplex", d)).toEqual({ recombineAll: 0, subdivisionAlgorithm: 0 });
+    }
+  });
+
+  it("subdivided uses Blossom recombination in 2D and hex subdivision in 3D", () => {
+    expect(gmshShapeOptions("subdivided", 2)).toEqual({ recombineAll: 1, subdivisionAlgorithm: 0 });
+    expect(gmshShapeOptions("subdivided", 3)).toEqual({ recombineAll: 0, subdivisionAlgorithm: 2 });
+  });
+
+  it("subdivided in 1D degrades to plain simplex options", () => {
+    expect(gmshShapeOptions("subdivided", 1)).toEqual({ recombineAll: 0, subdivisionAlgorithm: 0 });
+  });
+});
+
 describe("DEFAULT_MESH_OPTIONS", () => {
   it("is itself valid", () => {
     expect(validateMeshOptions(DEFAULT_MESH_OPTIONS)).toEqual(DEFAULT_MESH_OPTIONS);
@@ -131,6 +164,7 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       algorithm2D: 6,
       algorithm3D: 4,
       elementOrder: 1,
+      elementShape: "simplex",
       optimize: true,
       stlAngle: 40,
     });

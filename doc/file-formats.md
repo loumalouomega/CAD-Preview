@@ -241,6 +241,8 @@ Mesh.MeshSizeMax = 1e22;
 Mesh.Algorithm = 6;
 Mesh.Algorithm3D = 4;
 Mesh.ElementOrder = 1;
+Mesh.RecombineAll = 0;
+Mesh.SubdivisionAlgorithm = 0;
 Mesh.Optimize = 1;
 Mesh 3;
 ```

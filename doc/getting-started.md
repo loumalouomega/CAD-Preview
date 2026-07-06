@@ -224,8 +224,8 @@ To generate a mesh:
    **Coarse/Medium/Fine** preset). The default is derived from the model's
    bounding box (diagonal / 20), and the readout below the slider shows the
    current size plus a rough estimate of how many elements it will produce.
-   Fine-grained options (dimension, algorithms, element order, …) live in the
-   collapsed **Advanced settings** section.
+   Fine-grained options (dimension, algorithms, element shape, element order, …)
+   live in the collapsed **Advanced settings** section.
 2. Click **▶ Generate**. The overlay appears and the panel's status line shows
    `Nodes: N · Elements: M · 3.2 s`, or an error message if generation fails.
 3. Click **🔬 FE Mesh** in the toolbar to show/hide the overlay without
@@ -240,11 +240,12 @@ To generate a mesh:
 | **Dimension** | 1D (edges only), 2D (surface triangulation), or 3D (volume tetrahedralization) |
 | **Size min / max** | Bounds on generated element size (`Mesh.MeshSizeMin`/`Mesh.MeshSizeMax`); **Size max** is the same value the slider drives, shown numerically (clearing it restores the bbox-derived default) |
 | **2D algorithm / 3D algorithm** | The Gmsh meshing algorithm to use for each dimension |
-| **Element order** | Linear (1) or quadratic (2) elements |
+| **Element shape** | **Triangles / Tetrahedra** (default) or **Quads / Hexahedra** (recombines the mesh into quadrilaterals in 2D / hexahedra in 3D) |
+| **Element order** | Linear (1) or quadratic (2) elements — quadratic adds mid-side nodes (the overlay still draws the corner geometry) |
 | **Optimize** | Run Gmsh's mesh optimizer after generation |
 | **STL angle (°)** | Surface-classification angle for mesh/STL sources (disabled for B-rep documents, which never reclassify) |
 | **▶ Generate** | Run Gmsh now with the current options and show the result as an overlay |
-| **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), or OFF. Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and require linear (order 1) elements. |
+| **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), or OFF. Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and support linear or quadratic tetrahedra/hexahedra/triangles/quadrilaterals. |
 | **📤 Export** | Mesh with the current options and save the result in the format picked above, via a Save dialog (independent of whether **▶ Generate** was already clicked — it always (re)generates fresh) |
 | **Clear** | Remove the mesh overlay (the original model is unaffected either way) |
 

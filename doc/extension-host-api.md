@@ -19,7 +19,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
 | `src/editsSidecar.ts` | Pure parse/serialize for the edits sidecar (vscode-free, unit-tested) |
 | `src/gmshService.ts` | Lazy GMSH-wasm singleton, FE mesh generation + `.geo_unrolled` export |
-| `src/meshOptions.ts` | The `MeshOptions` bag + `validateMeshOptions` tolerance gate (vscode-free) |
+| `src/gmshElementTypes.ts` | Single source of truth for gmsh element types: stride/faces/Kratos mapping + pure overlay-triangulation helpers (vscode/WASM-free, unit-tested) |
+| `src/mdpaWriter.ts` | Pure Kratos MDPA serializer over the generic `MdpaCell` catalogue (vscode/WASM-free, unit-tested) |
+| `src/meshOptions.ts` | The `MeshOptions` bag + `validateMeshOptions` tolerance gate + `gmshShapeOptions` (vscode-free) |
 | `src/meshOptionsStore.ts` | Read/write the `<model>.mesh.json` sidecar + generated `<model>.geo` (vscode fs) |
 | `src/meshOptionsSidecar.ts` | Pure parse/serialize for the mesh-options sidecar + `.geo` script generation (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
@@ -559,12 +561,15 @@ async function generateMesh(
 ```
 Loads `input`'s geometry into a fresh GMSH model, applies `options` (`Mesh.
 MeshSizeMin/Max`, `Mesh.Algorithm`, `Mesh.Algorithm3D`, `Mesh.ElementOrder`, `Mesh.
-Optimize`), calls `gmsh.model.mesh.generate(options.dimension)`, and reads the
-result back. For `dimension === 3` the returned `positions`/`indices` are the
-tetrahedral mesh's **boundary surface**, derived by enumerating each tet's 4
-triangular faces (keyed by sorted node tags so a face shared by two tets collides
-to the same key) and keeping only faces that occur exactly once; for `dimension
-=== 2` the generated triangles are used directly; for `dimension === 1` there is
+RecombineAll`, `Mesh.SubdivisionAlgorithm`, `Mesh.Optimize`), calls
+`gmsh.model.mesh.generate(options.dimension)`, and reads the result back. For
+`dimension === 3` the returned `positions`/`indices` are the volume mesh's
+**boundary surface**, derived by enumerating each 3D cell's boundary faces
+(tetrahedra, hexahedra, prisms, pyramids — via the shared `src/gmshElementTypes.ts`
+table) keyed by *sorted corner* node tags so a face shared by two cells collides to
+the same key, keeping only faces that occur exactly once (quad faces triangulate
+into two); for `dimension === 2` the generated surface elements (triangles or
+recombined quads) are used directly; for `dimension === 1` there is
 no triangle to display and both buffers are empty. Writes `/out.msh` to GMSH's
 MEMFS and reads it back as `mshText`. Cleans up (`FS.unlink`) both the input and
 output MEMFS paths in a `finally`, mirroring `occtService.ts`'s handle-cleanup

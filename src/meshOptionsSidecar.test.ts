@@ -16,6 +16,7 @@ describe("parseMeshJson", () => {
       algorithm2D: 5,
       algorithm3D: 1,
       elementOrder: 2,
+      elementShape: "subdivided",
       optimize: false,
       stlAngle: 25,
     };
@@ -68,6 +69,7 @@ describe("generateGeoScript", () => {
       algorithm2D: 6,
       algorithm3D: 4,
       elementOrder: 1,
+      elementShape: "simplex",
       optimize: true,
       stlAngle: 40,
     };
@@ -79,8 +81,22 @@ describe("generateGeoScript", () => {
     expect(script).toContain("Mesh.Algorithm = 6;");
     expect(script).toContain("Mesh.Algorithm3D = 4;");
     expect(script).toContain("Mesh.ElementOrder = 1;");
+    expect(script).toContain("Mesh.RecombineAll = 0;");
+    expect(script).toContain("Mesh.SubdivisionAlgorithm = 0;");
     expect(script).toContain("Mesh.Optimize = 1;");
     expect(script.trim().endsWith("Mesh 2;")).toBe(true);
+  });
+
+  it("emits Blossom recombination for a 2D subdivided (quad) mesh", () => {
+    const script = generateGeoScript("bull.stp", { ...DEFAULT_MESH_OPTIONS, dimension: 2, elementShape: "subdivided" });
+    expect(script).toContain("Mesh.RecombineAll = 1;");
+    expect(script).toContain("Mesh.SubdivisionAlgorithm = 0;");
+  });
+
+  it("emits hex subdivision for a 3D subdivided mesh", () => {
+    const script = generateGeoScript("bull.stp", { ...DEFAULT_MESH_OPTIONS, dimension: 3, elementShape: "subdivided" });
+    expect(script).toContain("Mesh.RecombineAll = 0;");
+    expect(script).toContain("Mesh.SubdivisionAlgorithm = 2;");
   });
 
   it("encodes optimize=false as 0", () => {

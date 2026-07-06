@@ -8,7 +8,22 @@
  * every other mesh export format, which routes through Gmsh's own `gmsh.write()`)
  * — see `doc/gmsh-integration.md`'s "Kratos MDPA" section for the full spec
  * citations (block syntax, node ordering) this module was built against.
+ *
+ * Handles the full cell catalogue of {@link MdpaCellKind} — linear and quadratic
+ * tetrahedra, hexahedra, prisms, pyramids (volume) and triangles, quadrilaterals
+ * (surface) — via the shared `gmshElementTypes.ts` table, which supplies each
+ * kind's Kratos block names and node counts. Callers must pass cells whose
+ * `nodeTags` are already in **Kratos node order** (`gmshService.ts` applies the
+ * gmsh→Kratos permutation during extraction).
  */
+
+import {
+  MDPA_KIND_INFO,
+  VOLUME_KIND_ORDER,
+  SURFACE_KIND_ORDER,
+  signedVolume,
+  type MdpaCellKind,
+} from "./gmshElementTypes";
 
 export type MdpaMode = "elements" | "geometries";
 
@@ -20,91 +35,112 @@ export interface MdpaNode {
   z: number;
 }
 
-/** 4 source node tags, in the mesh generator's own local order (gmsh element type 4). */
-export interface MdpaTet {
-  nodeTags: [number, number, number, number];
-}
-
-/** 3 source node tags, in the mesh generator's own local order (gmsh element type 2). */
-export interface MdpaTriangle {
-  nodeTags: [number, number, number];
+/** One finite element / condition / geometry. `nodeTags` are source node tags in
+ *  **Kratos** node order (length must equal `MDPA_KIND_INFO[kind].numNodes`). */
+export interface MdpaCell {
+  kind: MdpaCellKind;
+  nodeTags: number[];
 }
 
 /** One named region (from a CAD-Preview `Part`) to emit as a Kratos SubModelPart. */
 export interface MdpaGroup {
   name: string;
-  /** Indices into the `tets` array passed to {@link writeMdpa}. */
-  tetIndices: number[];
-  /** Indices into the `triangles` array passed to {@link writeMdpa}. */
-  triangleIndices: number[];
+  /** Indices into {@link MdpaMesh.volumeCells}. */
+  volumeCellIndices: number[];
+  /** Indices into {@link MdpaMesh.surfaceCells}. */
+  surfaceCellIndices: number[];
   /** Node tags from the part's own point/curve selections, beyond what its
-   * tets/triangles already reference — see the node-consistency rule below. */
+   * cells already reference — see the node-consistency rule below. */
   extraNodeTags: number[];
 }
 
 export interface MdpaMesh {
   nodes: MdpaNode[];
-  tets: MdpaTet[];
-  triangles: MdpaTriangle[];
-  /** Flat — this codebase's `Part[]` has no nesting concept, so SubModelParts
-   * are never nested either; one top-level block per entry, in array order. */
+  /** 3D cells → `Elements` (elements mode) or volume `Geometries` (geometries mode). */
+  volumeCells: MdpaCell[];
+  /** 2D cells → `Conditions` (elements mode) or surface `Geometries` (geometries mode). */
+  surfaceCells: MdpaCell[];
+  /** Flat — this codebase's `Part[]` has no nesting concept. */
   groups: MdpaGroup[];
 }
 
+interface Coord {
+  x: number;
+  y: number;
+  z: number;
+}
+
 /**
- * Serializes `mesh` to MDPA ASCII text. `"elements"` writes `Element3D4N`/
- * `SurfaceCondition3D3N` (each carrying a `prop_id`, always `0` — this codebase
- * has no material/property data) under a `Begin Properties 0` block;
- * `"geometries"` writes `Tetrahedra3D4`/`Triangle3D3` `Geometries` blocks
- * instead (no property id — the key structural difference between the two
- * modes) which, per Kratos's single `Geometries` container, **share one id
- * space** (tets get `1..T`, triangles continue `T+1..T+G`).
+ * Serializes `mesh` to MDPA ASCII text. `"elements"` writes one `Element*`
+ * block per volume kind (each cell carrying a `prop_id`, always `0` — this
+ * codebase has no material/property data) under a `Begin Properties 0` block,
+ * plus one `Condition*` block per surface kind; `"geometries"` writes
+ * `Geometries` blocks instead (no property id) which, per Kratos's single
+ * `Geometries` container, **share one id space** across every kind.
  *
- * Deterministic: node ids are assigned by sorting on source `tag` ascending;
- * element/condition/geometry ids by sorting each cell's own (already-
- * renumbered) node-id tuple ascending, lexicographically — so output is
- * byte-identical for the same geometry regardless of the mesh generator's
- * internal (not contractually ordered) enumeration order. A cell type with
- * zero members omits its block entirely rather than writing an empty pair.
+ * Deterministic: node ids by source `tag` ascending; cell ids by each cell's
+ * own (renumbered) node-id tuple ascending within a kind, kinds emitted in the
+ * fixed {@link VOLUME_KIND_ORDER}/{@link SURFACE_KIND_ORDER} — so output is
+ * byte-identical for the same mesh regardless of the generator's internal (not
+ * contractually ordered) enumeration. An empty kind omits its block entirely.
+ *
+ * `onWarning` (optional) receives a message when a non-tetrahedral cell is found
+ * with a negative signed volume — such cells are emitted unchanged (there is no
+ * simple safe re-ordering for a hex/prism/pyramid); tetrahedra are silently
+ * re-oriented instead.
  */
-export function writeMdpa(mesh: MdpaMesh, mode: MdpaMode): string {
+export function writeMdpa(mesh: MdpaMesh, mode: MdpaMode, onWarning?: (msg: string) => void): string {
   const { nodeIdOf, sortedNodes } = buildNodeIdMap(mesh.nodes);
-  const coordOf = (id: number): { x: number; y: number; z: number } => sortedNodes[id - 1];
+  const coordOf = (id: number): Coord => sortedNodes[id - 1];
 
-  const tetIds: Array<[number, number, number, number]> = mesh.tets.map((t) =>
-    orientTet(t.nodeTags.map((tag) => nodeIdOf.get(tag)!) as [number, number, number, number], coordOf)
+  // Resolve every cell to Kratos-ordered, oriented output node ids.
+  const volumeResolved = mesh.volumeCells.map((c) =>
+    orientCell(c.kind, c.nodeTags.map((tag) => nodeIdOf.get(tag)!), coordOf, onWarning)
   );
-  const triIds: Array<[number, number, number]> = mesh.triangles.map(
-    (t) => t.nodeTags.map((tag) => nodeIdOf.get(tag)!) as [number, number, number]
-  );
+  const surfaceResolved = mesh.surfaceCells.map((c) => c.nodeTags.map((tag) => nodeIdOf.get(tag)!));
 
-  const tetAssign = assignIds(tetIds, 1);
-  const triStartId = mode === "geometries" ? tetIds.length + 1 : 1;
-  const triAssign = assignIds(triIds, triStartId);
+  // Assign ids. Elements/Conditions have separate id spaces; Geometries share one.
+  const volumes = assignBlocks(
+    mesh.volumeCells.map((c, i) => ({ kind: c.kind, ids: volumeResolved[i], originalIndex: i })),
+    VOLUME_KIND_ORDER,
+    1
+  );
+  const surfaceStart = mode === "geometries" ? volumes.nextId : 1;
+  const surfaces = assignBlocks(
+    mesh.surfaceCells.map((c, i) => ({ kind: c.kind, ids: surfaceResolved[i], originalIndex: i })),
+    SURFACE_KIND_ORDER,
+    surfaceStart
+  );
 
   const lines: string[] = [
     "// File generated by CAD-Preview — Kratos MDPA export",
     mode === "elements" ? "// Mode: Elements + Conditions" : "// Mode: Geometries",
     "",
   ];
-
-  if (mode === "elements") {
-    lines.push("Begin Properties 0", "End Properties", "");
-  }
-
+  if (mode === "elements") lines.push("Begin Properties 0", "End Properties", "");
   lines.push(...writeNodesBlock(sortedNodes), "");
 
   if (mode === "elements") {
-    if (tetIds.length > 0) lines.push(...writeCellBlock("Elements", "Element3D4N", tetAssign, tetIds, true), "");
-    if (triIds.length > 0) lines.push(...writeCellBlock("Conditions", "SurfaceCondition3D3N", triAssign, triIds, true), "");
+    for (const block of volumes.blocks) {
+      const name = MDPA_KIND_INFO[block.kind].elementName!;
+      lines.push(...writeCellBlock("Elements", name, block.entries, true), "");
+    }
+    for (const block of surfaces.blocks) {
+      const name = MDPA_KIND_INFO[block.kind].conditionName!;
+      lines.push(...writeCellBlock("Conditions", name, block.entries, true), "");
+    }
   } else {
-    if (tetIds.length > 0) lines.push(...writeCellBlock("Geometries", "Tetrahedra3D4", tetAssign, tetIds, false), "");
-    if (triIds.length > 0) lines.push(...writeCellBlock("Geometries", "Triangle3D3", triAssign, triIds, false), "");
+    for (const block of [...volumes.blocks, ...surfaces.blocks]) {
+      const name = MDPA_KIND_INFO[block.kind].geometryName;
+      lines.push(...writeCellBlock("Geometries", name, block.entries, false), "");
+    }
   }
 
   const usedNames = new Set<string>();
   for (const group of mesh.groups) {
-    lines.push(...writeSubModelPartBlock(group, mode, nodeIdOf, tetIds, triIds, tetAssign.idOf, triAssign.idOf, usedNames));
+    lines.push(
+      ...writeSubModelPartBlock(group, mode, nodeIdOf, volumeResolved, surfaceResolved, volumes.idOf, surfaces.idOf, usedNames)
+    );
   }
 
   return lines.join("\n").trimEnd() + "\n";
@@ -118,32 +154,30 @@ function buildNodeIdMap(nodes: MdpaNode[]): { nodeIdOf: Map<number, number>; sor
   return { nodeIdOf, sortedNodes };
 }
 
+const TET4_FLIP = [0, 1, 3, 2];
+const TET10_FLIP = [0, 1, 3, 2, 4, 8, 7, 6, 5, 9];
+
 /**
- * Kratos's `Tetrahedra3D4`/reference-tet node order matches the standard
- * simplex convention the mesh generator's own element type already uses (see
- * `doc/gmsh-integration.md`), so no permutation is normally needed — this is
- * a defensive backstop, not a routine correction: computes the signed volume
- * (scalar triple product of the edges from node 0) and, only if negative,
- * swaps the last two ids so every emitted tet has a positive Jacobian
- * regardless of any subtle ordering mismatch that slipped past that
- * documentation-only verification.
+ * Ensures a cell has a positive Jacobian. Tetrahedra with a negative signed
+ * volume are re-oriented by the appropriate corner/mid-edge swap (`TET*_FLIP`) —
+ * a well-defined correction. Other volume kinds have no simple safe flip; an
+ * inverted one is emitted unchanged and `onWarning` is called. Surface cells and
+ * correctly-oriented cells pass through untouched.
  */
-function orientTet(
-  ids: [number, number, number, number],
-  coordOf: (id: number) => { x: number; y: number; z: number }
-): [number, number, number, number] {
-  const p0 = coordOf(ids[0]);
-  const p1 = coordOf(ids[1]);
-  const p2 = coordOf(ids[2]);
-  const p3 = coordOf(ids[3]);
-  const ax = p1.x - p0.x, ay = p1.y - p0.y, az = p1.z - p0.z;
-  const bx = p2.x - p0.x, by = p2.y - p0.y, bz = p2.z - p0.z;
-  const cx = p3.x - p0.x, cy = p3.y - p0.y, cz = p3.z - p0.z;
-  const crossX = ay * bz - az * by;
-  const crossY = az * bx - ax * bz;
-  const crossZ = ax * by - ay * bx;
-  const signedVolume = crossX * cx + crossY * cy + crossZ * cz;
-  return signedVolume < 0 ? [ids[0], ids[1], ids[3], ids[2]] : ids;
+function orientCell(
+  kind: MdpaCellKind,
+  ids: number[],
+  coordOf: (id: number) => Coord,
+  onWarning?: (msg: string) => void
+): number[] {
+  const info = MDPA_KIND_INFO[kind];
+  const corners = ids.slice(0, info.numCorners).map(coordOf);
+  const vol = signedVolume(kind, corners);
+  if (vol >= 0) return ids;
+  if (kind === "tet4") return TET4_FLIP.map((i) => ids[i]);
+  if (kind === "tet10") return TET10_FLIP.map((i) => ids[i]);
+  onWarning?.(`Emitting an inverted ${kind} cell (negative signed volume) unchanged — no safe re-orientation.`);
+  return ids;
 }
 
 /** Lexicographic sort key over an id tuple, zero-padded so numeric order and
@@ -152,31 +186,56 @@ function canonicalCellKey(ids: readonly number[]): string {
   return ids.map((id) => id.toString().padStart(12, "0")).join("_");
 }
 
-/** Assigns dense output ids starting at `startId`, in ascending
- * {@link canonicalCellKey} order — the "deterministic regardless of input
- * order" half of {@link writeMdpa}'s contract. */
-function assignIds(
-  cells: readonly (readonly number[])[],
-  startId: number
-): { orderedOriginalIndices: number[]; idOf: Map<number, number> } {
-  const withIndex = cells.map((ids, originalIndex) => ({ originalIndex, ids }));
-  withIndex.sort((a, b) => {
-    const ka = canonicalCellKey(a.ids);
-    const kb = canonicalCellKey(b.ids);
-    return ka < kb ? -1 : ka > kb ? 1 : 0;
-  });
-  const idOf = new Map<number, number>();
-  const orderedOriginalIndices = withIndex.map((c, i) => {
-    idOf.set(c.originalIndex, startId + i);
-    return c.originalIndex;
-  });
-  return { orderedOriginalIndices, idOf };
+interface CellEntry {
+  id: number;
+  ids: number[];
+}
+interface KindBlock {
+  kind: MdpaCellKind;
+  entries: CellEntry[];
 }
 
-/** Scientific notation, full round-trip precision (no fixed digit count —
- * `toExponential()` with no argument emits exactly as many digits as needed
- * to uniquely represent the double, same fidelity as the default `toString()`
- * this used to use, just always in `<mantissa>e±<exp>` form). */
+/**
+ * Buckets cells by kind (in `kindOrder`), assigns dense output ids from
+ * `startId` continuously across the kinds, sorting within each kind by
+ * {@link canonicalCellKey} — the deterministic half of {@link writeMdpa}'s
+ * contract. Returns the ordered non-empty blocks, a per-original-index id map
+ * (for SubModelPart cross-referencing), and the next free id.
+ */
+function assignBlocks(
+  cells: Array<{ kind: MdpaCellKind; ids: number[]; originalIndex: number }>,
+  kindOrder: readonly MdpaCellKind[],
+  startId: number
+): { blocks: KindBlock[]; idOf: Map<number, number>; nextId: number } {
+  const byKind = new Map<MdpaCellKind, Array<{ ids: number[]; originalIndex: number }>>();
+  for (const c of cells) {
+    let bucket = byKind.get(c.kind);
+    if (!bucket) byKind.set(c.kind, (bucket = []));
+    bucket.push({ ids: c.ids, originalIndex: c.originalIndex });
+  }
+
+  const blocks: KindBlock[] = [];
+  const idOf = new Map<number, number>();
+  let nextId = startId;
+  for (const kind of kindOrder) {
+    const bucket = byKind.get(kind);
+    if (!bucket || bucket.length === 0) continue;
+    bucket.sort((a, b) => {
+      const ka = canonicalCellKey(a.ids);
+      const kb = canonicalCellKey(b.ids);
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+    const entries: CellEntry[] = bucket.map((c) => {
+      const id = nextId++;
+      idOf.set(c.originalIndex, id);
+      return { id, ids: c.ids };
+    });
+    blocks.push({ kind, entries });
+  }
+  return { blocks, idOf, nextId };
+}
+
+/** Scientific notation, full round-trip precision. */
 function formatCoord(v: number): string {
   return v.toExponential();
 }
@@ -188,20 +247,16 @@ function writeNodesBlock(sortedNodes: MdpaNode[]): string[] {
   return out;
 }
 
-/** Writes one `Begin <blockKeyword> <name> ... End <blockKeyword>` block —
- * shared by Elements/Conditions (`withPropertyId`, always property `0`) and
- * Geometries (`!withPropertyId`, id directly followed by connectivity). */
+/** Writes one `Begin <blockKeyword> <name> ... End <blockKeyword>` block. */
 function writeCellBlock(
   blockKeyword: "Elements" | "Conditions" | "Geometries",
   name: string,
-  assign: { orderedOriginalIndices: number[]; idOf: Map<number, number> },
-  cells: readonly (readonly number[])[],
+  entries: CellEntry[],
   withPropertyId: boolean
 ): string[] {
   const out = [`Begin ${blockKeyword} ${name}`];
-  for (const originalIndex of assign.orderedOriginalIndices) {
-    const id = assign.idOf.get(originalIndex)!;
-    const conn = cells[originalIndex].join(" ");
+  for (const { id, ids } of entries) {
+    const conn = ids.join(" ");
     out.push(withPropertyId ? `${id} 0 ${conn}` : `${id} ${conn}`);
   }
   out.push(`End ${blockKeyword}`);
@@ -212,28 +267,28 @@ function writeSubModelPartBlock(
   group: MdpaGroup,
   mode: MdpaMode,
   nodeIdOf: Map<number, number>,
-  tetIds: ReadonlyArray<readonly number[]>,
-  triIds: ReadonlyArray<readonly number[]>,
-  tetIdOf: Map<number, number>,
-  triIdOf: Map<number, number>,
+  volumeResolved: number[][],
+  surfaceResolved: number[][],
+  volumeIdOf: Map<number, number>,
+  surfaceIdOf: Map<number, number>,
   usedNames: Set<string>
 ): string[] {
   const name = sanitizeSubModelPartName(group.name, usedNames);
   const out = [`Begin SubModelPart ${name}`];
 
-  const elementIds = group.tetIndices.map((i) => tetIdOf.get(i)!).sort((a, b) => a - b);
-  const conditionIds = group.triangleIndices.map((i) => triIdOf.get(i)!).sort((a, b) => a - b);
+  const elementIds = group.volumeCellIndices.map((i) => volumeIdOf.get(i)!).sort((a, b) => a - b);
+  const conditionIds = group.surfaceCellIndices.map((i) => surfaceIdOf.get(i)!).sort((a, b) => a - b);
 
-  // Node-consistency rule: every node used by a grouped element/condition/
-  // geometry must also appear in this SubModelPart's own SubModelPartNodes —
-  // computed as (explicitly-selected nodes) ∪ (nodes of all grouped cells).
+  // Node-consistency rule: every node used by a grouped cell must also appear in
+  // this SubModelPart's SubModelPartNodes — (explicitly-selected nodes) ∪ (all
+  // nodes, incl. mid-side, of every grouped cell).
   const nodeIdSet = new Set<number>();
   for (const tag of group.extraNodeTags) {
     const id = nodeIdOf.get(tag);
     if (id !== undefined) nodeIdSet.add(id);
   }
-  for (const i of group.tetIndices) for (const id of tetIds[i]) nodeIdSet.add(id);
-  for (const i of group.triangleIndices) for (const id of triIds[i]) nodeIdSet.add(id);
+  for (const i of group.volumeCellIndices) for (const id of volumeResolved[i]) nodeIdSet.add(id);
+  for (const i of group.surfaceCellIndices) for (const id of surfaceResolved[i]) nodeIdSet.add(id);
   const nodeIds = [...nodeIdSet].sort((a, b) => a - b);
 
   out.push("    Begin SubModelPartNodes");
@@ -249,8 +304,8 @@ function writeSubModelPartBlock(
     for (const id of conditionIds) out.push(`    ${id}`);
     out.push("    End SubModelPartConditions");
   } else {
-    // Tetrahedra3D4 and Triangle3D3 share one Geometries id space (see
-    // writeMdpa's doc comment), so a group's geometry ids are just their union.
+    // All kinds share one Geometries id space, so a group's geometry ids are the
+    // union of its volume + surface cell ids.
     const geometryIds = [...elementIds, ...conditionIds].sort((a, b) => a - b);
     out.push("    Begin SubModelPartGeometries");
     for (const id of geometryIds) out.push(`    ${id}`);
@@ -261,12 +316,9 @@ function writeSubModelPartBlock(
   return out;
 }
 
-/** Replaces anything but `[A-Za-z0-9_]` with `_` (the documented MDPA-safe
- * replacement rule — no spaces/newlines in a SubModelPart name), prefixes a
- * name that doesn't start with a letter/underscore (e.g. all-digits or
- * empty) with `Part_`, and guarantees uniqueness among siblings via a `_2`,
- * `_3`, … numeric suffix — `used` accumulates across calls so later groups
- * in the same {@link writeMdpa} run see earlier ones' final names. */
+/** Replaces anything but `[A-Za-z0-9_]` with `_`, prefixes a name that doesn't
+ * start with a letter/underscore with `Part_`, and guarantees uniqueness among
+ * siblings via a `_2`, `_3`, … numeric suffix. */
 function sanitizeSubModelPartName(name: string, used: Set<string>): string {
   let base = name.replace(/[^A-Za-z0-9_]/g, "_");
   if (base === "" || !/^[A-Za-z_]/.test(base)) base = `Part_${base}`;
