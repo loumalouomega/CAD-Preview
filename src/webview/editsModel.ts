@@ -6,10 +6,11 @@ import type { EditOp } from "../editOps";
  * buffer; the host stays dumb and just persists / re-tessellates whatever list
  * this produces.
  *
- * Every mutation ({@link push}/{@link undo}/{@link redo}/{@link clear}) fires
- * `onChange`, which the wiring uses to post `editsChanged`, persist the sidecar,
- * and request a re-apply. {@link load} replaces the list WITHOUT firing — it is
- * the initial load from disk and must not echo straight back as a write.
+ * Every mutation ({@link push}/{@link undo}/{@link redo}/{@link clear}/
+ * {@link remove}) fires `onChange`, which the wiring uses to post
+ * `editsChanged`, persist the sidecar, and request a re-apply. {@link load}
+ * replaces the list WITHOUT firing — it is the initial load from disk and
+ * must not echo straight back as a write.
  */
 export class EditsModel {
   private ops: EditOp[] = [];
@@ -67,6 +68,21 @@ export class EditsModel {
   clear(): void {
     if (this.ops.length === 0 && this.redoBuffer.length === 0) return;
     this.ops = [];
+    this.redoBuffer = [];
+    this.onChange();
+  }
+
+  /**
+   * Removes a single op at `index` from anywhere in the applied list (unlike
+   * {@link undo}, which only pops the last one). Clears the redo buffer, same
+   * as {@link push} — a deliberate edit like this abandons any pending redo
+   * rather than leaving it to replay against a list it was never undone from.
+   * Topology-changing ops after the removed one may reassign ids on reload —
+   * same accepted "entity-id drift" risk as undo/redo already carries.
+   */
+  remove(index: number): void {
+    if (index < 0 || index >= this.ops.length) return;
+    this.ops.splice(index, 1);
     this.redoBuffer = [];
     this.onChange();
   }

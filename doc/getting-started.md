@@ -187,7 +187,10 @@ To apply a transform:
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
 
 Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all
-operations (back to the original model).
+operations (back to the original model). To remove one specific operation without
+discarding everything applied after it, hover its row in the history list and click
+the **✕** that appears — unlike Undo, which only pops the most recent operation,
+this removes any row directly.
 
 Transforms, booleans, explode, primitives, and the hole family work on both B-rep
 and mesh files; everything else is B-rep only (the panel disables those buttons —

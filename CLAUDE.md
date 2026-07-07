@@ -203,9 +203,13 @@ on top of the source model. Non-negotiable invariants:
   `applyEditsMesh`). Feature-modeling ops are **B-rep only** (`BREP_ONLY_OPS`) —
   meshes have no sketch/exact topology — and the panel disables them for meshes.
 - **The webview owns the op-stack** (`src/webview/editsModel.ts`: push/undo/redo/
-  clear + redo buffer, DOM-free, unit-tested); the host stays dumb and just
-  persists + (for B-rep) re-tessellates whatever list it receives. `editsPanel.ts`
-  is the DOM (transform composer + op list); numeric `<input>`s, not `prompt()`.
+  clear/**remove** + redo buffer, DOM-free, unit-tested); the host stays dumb and
+  just persists + (for B-rep) re-tessellates whatever list it receives. `remove
+  (index)` splices a single op out of anywhere in the list (a per-row ✕ button
+  in the history, revealed on hover) — the only way to drop one specific op
+  without discarding everything applied after it, since `undo` only pops the
+  end. It clears the redo buffer, same as `push`. `editsPanel.ts` is the DOM
+  (transform composer + op list); numeric `<input>`s, not `prompt()`.
 - **Mesh replay is non-destructive:** `main.ts` caches the pristine tagged
   `Object3D` and rebuilds the displayed model from a clone on every edit
   (`rebuildMeshModel`), so ops replay cleanly. B-rep replay happens in the host.

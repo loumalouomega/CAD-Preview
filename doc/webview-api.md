@@ -541,6 +541,7 @@ class EditsModel {
   undo(): void                // pop last → redo buffer
   redo(): void                // re-apply most recently undone
   clear(): void               // empty both stacks
+  remove(index: number): void // splice out a single op from anywhere in the list; clears the redo buffer
   get size(): number
   get canUndo(): boolean
   get canRedo(): boolean
@@ -679,6 +680,13 @@ matching `validateEditOp` rule (with a human status message), and pushes the
 - `onBuildSurfaceFromLines()` / `onBuildVolumeFromSurfaces()` — the Build
   buttons; no capture step — `main.ts` reads the live Line/Surf selection at
   click time and guards the minimum count (≥3 lines, ≥4 faces).
+- `onRemoveOp(index)` — a small ✕ button on each history row (revealed on row
+  hover), wired straight to `EditsModel.remove(index)`. Unlike **↶ Undo**,
+  which only pops the last op, this splices a single op out of anywhere in the
+  list — the only way to drop one specific op without discarding everything
+  applied after it. Clears the redo buffer, same as `push`; topology-changing
+  ops after the removed one carry the same accepted "entity-id drift" risk as
+  undo/redo (see [File Formats](./file-formats.md#edits-sidecar-modeleditsjson)).
 
 **B-rep gating:** every `CatalogEntry.brepOnly` button is pushed into
 `brepOnlyEls`, plus the whole **2D subtab** (every 2D op is B-rep-only — locked

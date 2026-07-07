@@ -2,6 +2,7 @@ import type { EditOp, ExprMap, Vec3 } from "../editOps";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS, DEFAULT_OP_ICON } from "./opIcons";
+import { TOOLBAR_ICONS } from "../toolbarIcons";
 
 // Re-exported for compatibility — `describeOp` now lives in the pure, headless-
 // testable opCatalog module.
@@ -92,6 +93,8 @@ export interface EditsPanelCallbacks {
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
+  /** Remove a single op from anywhere in the history list (not just the last one). */
+  onRemoveOp: (index: number) => void;
   /** Apply a transform to the current selection (the wiring supplies targets). */
   onApplyTransform: (draft: TransformDraft) => void;
   /** Capture the current selection as boolean operand A; returns its size. */
@@ -299,8 +302,14 @@ export class EditsPanel {
       const label = document.createElement("span");
       label.className = "edit-label";
       label.textContent = describeOp(op);
+      const del = document.createElement("button");
+      del.className = "edit-remove";
+      del.innerHTML = TOOLBAR_ICONS.close;
+      del.title = "Remove this edit";
+      del.addEventListener("click", () => this.cb.onRemoveOp(i));
       li.appendChild(idx);
       li.appendChild(label);
+      li.appendChild(del);
       ol.appendChild(li);
     });
     this.body.appendChild(ol);

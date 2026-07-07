@@ -966,6 +966,27 @@ input[type="range"].meshing-slider:focus {
   opacity: 0.9;
 }
 
+.edit-remove {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+}
+.edit-row:hover .edit-remove { opacity: 0.7; }
+.edit-remove:hover {
+  opacity: 1 !important;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
+}
+
 #edits-compose {
   padding: 6px 8px;
   border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);

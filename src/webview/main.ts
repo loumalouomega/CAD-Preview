@@ -138,6 +138,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onUndo: () => editsModel.undo(),
   onRedo: () => editsModel.redo(),
   onClear: () => editsModel.clear(),
+  onRemoveOp: (index) => editsModel.remove(index),
   onApplyTransform: (draft) => {
     // Transforms act on whole volumes. Use the selected volume ids; require at
     // least one so an edit is never silently a no-op.
