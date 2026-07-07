@@ -187,7 +187,10 @@ To apply a transform:
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
 
 Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all
-operations (back to the original model).
+operations (back to the original model). To remove one specific operation without
+discarding everything applied after it, hover its row in the history list and click
+the **✕** that appears — unlike Undo, which only pops the most recent operation,
+this removes any row directly.
 
 Transforms, booleans, explode, primitives, and the hole family work on both B-rep
 and mesh files; everything else is B-rep only (the panel disables those buttons —
@@ -208,6 +211,39 @@ The operation buttons' icons are placeholder glyphs — they live in one file,
 
 When you **Export** an edited model, the edits are baked into the output file. See
 [Edits Sidecar](./file-formats.md#edits-sidecar-modeleditsjson) for the format.
+
+### Parametric Variables
+
+The **Variables** table at the top of the Edits panel makes the model
+parametric: define named values once, reference them in any numeric field of
+any edit operation, and change them later to rebuild the geometry on the fly.
+
+1. Click **＋ New** in the Variables header. A variable appears with an
+   auto-generated name (`L1`, …) — rename it inline and set its expression
+   (e.g. `20`). The computed value shows to the right of the row.
+2. In any op's parameter form, type the variable name — or an arithmetic
+   expression like `L/2 + 1` — instead of a number, then **Apply**/**Add** as
+   usual. The op is created with the current value and remembers the
+   expression (the history line shows it as `[length = L/2 + 1]`).
+3. Edit the variable's expression in the table — every operation referencing
+   it re-resolves and the model rebuilds immediately.
+
+Expressions support numbers, variable names, `+ - * / ^`, parentheses,
+`sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the
+angle fields), and `pi`. A variable's own expression may reference the
+variables defined **above** it in the table (so `W = L/2` works; reordering
+isn't supported). Because the fields are free-text, they no longer have
+browser spinner arrows — type the value.
+
+If an expression can't be evaluated at Apply time (unknown name, syntax
+error), the apply is blocked with an inline message. If a *referenced*
+variable is later deleted or renamed, affected operations keep their last
+computed values — a warning names the missing variable, and re-adding it
+restores the parametric link. The delete button's tooltip warns when a
+variable is still referenced. Variables persist in the same
+`<model>.edits.json` sidecar as the operations
+([format](./file-formats.md#parametric-variables)); variable edits are not
+part of the op undo/redo history.
 
 ### Generating an FE Mesh
 

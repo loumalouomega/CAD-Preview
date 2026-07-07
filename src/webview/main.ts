@@ -9,6 +9,10 @@ import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
 import { EditsModel } from "./editsModel";
 import { EditsPanel } from "./editsPanel";
+import { VariablesModel } from "./variablesModel";
+import { VariablesPanel } from "./variablesPanel";
+import { evaluateVariables, resolveEditOps } from "../editVariables";
+import { extractIdentifiers } from "../paramExpr";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { defaultTargetSize } from "./meshSizeHeuristics";
@@ -65,14 +69,64 @@ const partsPanel = new PartsPanel(document.getElementById("parts-panel")!, {
   },
 });
 
-// ── Edits (replayable op-stack) ───────────────────────────────────────────
+// ── Edits (replayable op-stack) + parametric variables ───────────────────
 // The webview owns the op-stack; the host persists it and (for B-rep) re-applies
 // it via OCCT. Mesh edits are replayed locally by rebuilding from the pristine
 // loaded object (see rebuildMeshModel).
-const editsModel = new EditsModel(() => {
-  post({ type: "editsChanged", ops: editsModel.list() });
-  editsPanel.render(editsModel.list(), editsModel.canUndo, editsModel.canRedo);
+//
+// Resolution is on-read: `currentResolvedOps()` re-evaluates every op's
+// expression annotations against the current variable values at every
+// consumption point (post to host, panel render, mesh rebuild), so stale
+// numbers are structurally impossible — including for ops sitting in the
+// undo/redo buffers, which no eager patch pass could reach. The host receives
+// only already-resolved ops.
+const editsModel = new EditsModel(syncEdits);
+const variablesModel = new VariablesModel(syncEdits);
+
+/** The op list with every expression re-evaluated against the current variables. */
+function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
+  const { values } = evaluateVariables(variablesModel.list());
+  return resolveEditOps(editsModel.list(), values);
+}
+
+/** How many op-expression fields reference each variable (for delete warnings). */
+function variableUsage(): Map<string, number> {
+  const usage = new Map<string, number>();
+  for (const op of editsModel.list()) {
+    for (const expr of Object.values(op.exprs ?? {})) {
+      for (const ident of extractIdentifiers(expr)) {
+        usage.set(ident, (usage.get(ident) ?? 0) + 1);
+      }
+    }
+  }
+  return usage;
+}
+
+/** Re-renders the Edits + Variables panels from the models (no host post). */
+function renderEditsUi(): void {
+  const { values, errors } = evaluateVariables(variablesModel.list());
+  const { ops } = resolveEditOps(editsModel.list(), values);
+  editsPanel.setVariables(values);
+  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo);
+  variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
+}
+
+/** Fired on every op-stack or variable mutation: resolve, persist, re-display. */
+function syncEdits(): void {
+  const { ops, issues } = currentResolvedOps();
+  post({ type: "editsChanged", ops, variables: variablesModel.list() });
+  renderEditsUi();
+  // Ops whose expressions can't resolve keep their last-good values — surface
+  // the first problem without blocking the rest of the replay.
+  if (issues.length > 0) setStatus(issues[0], true);
   if (pristineMesh) rebuildMeshModel();
+}
+
+const variablesPanel = new VariablesPanel(document.getElementById("variables-section")!, {
+  onAdd: () => variablesModel.add(),
+  onRename: (index, name) => variablesModel.rename(index, name),
+  onSetExpr: (index, expr) => variablesModel.setExpr(index, expr),
+  onRemove: (index) => variablesModel.remove(index),
 });
 
 /** Captured boolean operand A (volume ids); operand B is the live selection. */
@@ -84,6 +138,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onUndo: () => editsModel.undo(),
   onRedo: () => editsModel.redo(),
   onClear: () => editsModel.clear(),
+  onRemoveOp: (index) => editsModel.remove(index),
   onApplyTransform: (draft) => {
     // Transforms act on whole volumes. Use the selected volume ids; require at
     // least one so an edit is never silently a no-op.
@@ -99,6 +154,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       case "scale": op = { op: "scale", targets, center: draft.center, factors: draft.factors }; break;
       case "mirror": op = { op: "mirror", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal }; break;
     }
+    if (draft.exprs) op.exprs = draft.exprs;
     editsModel.push(op);
     setStatus("");
   },
@@ -121,7 +177,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     renderHighlight();
     setStatus("");
   },
-  onApplyFillet: (kind, amount) => {
+  onApplyFillet: (kind, amount, exprs) => {
     // Fillet/chamfer act on selected edges (Line mode), B-rep only.
     const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
     if (edges.length === 0) {
@@ -129,9 +185,11 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       return;
     }
     if (amount <= 0) { setStatus("Enter a positive radius / setback.", true); return; }
-    editsModel.push(
-      kind === "fillet" ? { op: "fillet", edges, radius: amount } : { op: "chamfer", edges, distance: amount }
-    );
+    const op: EditOp =
+      kind === "fillet" ? { op: "fillet", edges, radius: amount } : { op: "chamfer", edges, distance: amount };
+    // The panel's shared field is named `amount`; remap onto the op's real field.
+    if (exprs?.amount) op.exprs = { [kind === "fillet" ? "radius" : "distance"]: exprs.amount };
+    editsModel.push(op);
     setStatus("");
   },
   onApplyFeature: (draft) => {
@@ -158,11 +216,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
         op = { op: "loft", profiles: faces };
         break;
     }
+    if (draft.exprs) op.exprs = draft.exprs;
     editsModel.push(op);
     setStatus("");
   },
-  onApplyExplode: (factor) => {
-    editsModel.push({ op: "explode", factor });
+  onApplyExplode: (factor, exprs) => {
+    const op: EditOp = { op: "explode", factor };
+    if (exprs) op.exprs = exprs;
+    editsModel.push(op);
     setStatus("");
   },
   onApplyMate: () => {
@@ -208,6 +269,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
         break;
       }
     }
+    if (draft.exprs) op.exprs = draft.exprs;
     editsModel.push(op);
     setStatus("");
   },
@@ -265,6 +327,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
         };
         break;
     }
+    if (draft.exprs) op.exprs = draft.exprs;
     editsModel.push(op);
     setStatus("");
   },
@@ -299,6 +362,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
         };
         break;
     }
+    if (draft.exprs) op.exprs = draft.exprs;
     editsModel.push(op);
     setStatus("");
   },
@@ -372,6 +436,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
         };
         break;
     }
+    if (draft.exprs) op.exprs = draft.exprs;
     editsModel.push(op);
     setStatus("");
   },
@@ -441,6 +506,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
         };
         break;
     }
+    if (draft.exprs) op.exprs = draft.exprs;
     editsModel.push(op);
     setStatus("");
   },
@@ -562,10 +628,10 @@ function renderHighlight(): void {
 // the op-list replays cleanly (B-rep replay happens in the host instead).
 let pristineMesh: THREE.Object3D | null = null;
 
-/** Rebuilds the displayed mesh model: clone pristine → apply ops → facet-split. */
+/** Rebuilds the displayed mesh model: clone pristine → apply resolved ops → facet-split. */
 function rebuildMeshModel(): void {
   if (!pristineMesh) return;
-  const edited = applyEditsMesh(pristineMesh.clone(), editsModel.list());
+  const edited = applyEditsMesh(pristineMesh.clone(), currentResolvedOps().ops);
   const model = splitMeshesIntoFacets(edited);
   viewer.setModel(model);
   refreshColors();
@@ -779,9 +845,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "edits":
-      // Hydrate the op-stack from the sidecar (does not echo back as a write).
+      // Hydrate the op-stack + variables from the sidecar (does not echo back
+      // as a write — both `load`s deliberately skip onChange).
+      variablesModel.load(msg.variables);
       editsModel.load(msg.ops);
-      editsPanel.render(editsModel.list(), editsModel.canUndo, editsModel.canRedo);
+      renderEditsUi();
       // B-rep arrives already-tessellated with these ops; mesh replays locally.
       if (pristineMesh) rebuildMeshModel();
       showSidebar();

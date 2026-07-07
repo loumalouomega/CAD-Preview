@@ -7,6 +7,7 @@ import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL } from "./exportTarget
 import { readParts, writeParts } from "./partsStore";
 import { readEdits, writeEdits } from "./editsStore";
 import type { EditOp } from "./editOps";
+import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript } from "./meshOptionsStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
@@ -82,10 +83,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
-    // The live edit op-list. Loaded from the sidecar on `ready`, updated on every
-    // `editsChanged`. Threaded into the B-rep load + export so the view and Export
-    // both reflect the edits. The source CAD file is never modified.
+    // The live edit op-list + parametric variables. Loaded from the sidecar on
+    // `ready`, updated on every `editsChanged`. Ops arrive from the webview
+    // already resolved against the variables (resolve-on-read), so they are
+    // threaded as-is into the B-rep load + export; the variables are only
+    // persisted and echoed back. The source CAD file is never modified.
     let currentEdits: EditOp[] = [];
+    let currentVariables: ParamVariable[] = [];
 
     /** (Re)tessellates a B-rep source with the current edits, or (re)loads a mesh. */
     const loadModel = () => {
@@ -110,9 +114,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           return;
         }
         // Load edits before the model so a B-rep source is tessellated already-edited.
-        currentEdits = await readEdits(document.uri);
+        const parsed = await readEdits(document.uri);
+        currentEdits = parsed.ops;
+        currentVariables = parsed.variables;
         loadModel();
-        post({ type: "edits", ops: currentEdits });
+        post({ type: "edits", ops: currentEdits, variables: currentVariables });
         void this.sendParts(document.uri, post);
         void this.sendMeshOptions(document.uri, post);
         return;
@@ -133,10 +139,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "editsChanged") {
         currentEdits = msg.ops;
+        currentVariables = msg.variables;
         // Debounced sidecar autosave (separate timer/file from parts).
         if (editsSaveTimer) clearTimeout(editsSaveTimer);
         editsSaveTimer = setTimeout(() => {
-          void writeEdits(document.uri, currentEdits).then(
+          void writeEdits(document.uri, currentEdits, currentVariables).then(
             undefined,
             (err) => post({ type: "error", message: `Could not save edits: ${(err as Error).message}` })
           );
@@ -515,6 +522,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           </div>
         </div>
         <div id="edits-scroll">
+          <div id="variables-section">
+            <div id="variables-header">
+              <span id="variables-title">Variables</span>
+              <button id="variables-add" title="New variable">＋ New</button>
+            </div>
+            <div id="variables-body"></div>
+          </div>
           <div id="edits-compose"></div>
           <div id="edits-body"></div>
         </div>

@@ -203,9 +203,13 @@ on top of the source model. Non-negotiable invariants:
   `applyEditsMesh`). Feature-modeling ops are **B-rep only** (`BREP_ONLY_OPS`) —
   meshes have no sketch/exact topology — and the panel disables them for meshes.
 - **The webview owns the op-stack** (`src/webview/editsModel.ts`: push/undo/redo/
-  clear + redo buffer, DOM-free, unit-tested); the host stays dumb and just
-  persists + (for B-rep) re-tessellates whatever list it receives. `editsPanel.ts`
-  is the DOM (transform composer + op list); numeric `<input>`s, not `prompt()`.
+  clear/**remove** + redo buffer, DOM-free, unit-tested); the host stays dumb and
+  just persists + (for B-rep) re-tessellates whatever list it receives. `remove
+  (index)` splices a single op out of anywhere in the list (a per-row ✕ button
+  in the history, revealed on hover) — the only way to drop one specific op
+  without discarding everything applied after it, since `undo` only pops the
+  end. It clears the redo buffer, same as `push`. `editsPanel.ts` is the DOM
+  (transform composer + op list); numeric `<input>`s, not `prompt()`.
 - **Mesh replay is non-destructive:** `main.ts` caches the pristine tagged
   `Object3D` and rebuilds the displayed model from a clone on every edit
   (`rebuildMeshModel`), so ops replay cleanly. B-rep replay happens in the host.
@@ -568,6 +572,59 @@ form in the shared `#edits-params` area. Non-negotiable invariants:
   graceful skip on unresolved operands / builder throw / `IsDone()` false,
   `compound(existing + new)` append for creation ops, `booleanSolids`-style
   target-replacement for holes/split.
+
+## Parametric variables (expressions in edit-op fields)
+
+Users define named variables (`L = 20`) in a table at the top of the Edits panel
+and type expressions (`L*2`) into any numeric op field; changing a variable
+re-resolves and rebuilds the geometry live. Non-negotiable invariants:
+
+- **Expressions are an annotation, numeric fields are last-good caches.** An op
+  may carry `exprs?: Record<fieldPath, exprString>` (`length`, `size[1]`,
+  `points[2][0]`); the addressed numeric fields always hold the most recent
+  successful evaluation. Every consumer (`validateEditOp` invariants, both edit
+  engines, export, meshing) keeps operating on plain numbers — only
+  `resolveEditOps` (`src/editVariables.ts`) reads `exprs`. `validateEditOp`
+  sanitizes the annotation (keys must address a finite numeric slot of the
+  *validated* op; values must be syntactically valid, size-capped) and carries
+  it onto the clean op.
+- **Resolution happens at exactly two sites** — `parseEditsJson` (heals stale
+  caches in hand-edited sidecars) and the webview's resolve-on-read
+  (`currentResolvedOps()` in `src/webview/main.ts`, re-run at every consumption
+  point: the `editsChanged` post, panel render, mesh rebuild). The host
+  receives already-resolved ops and never evaluates expressions at runtime;
+  `EditsModel` is deliberately not variables-aware. Resolve-on-read (rather
+  than eagerly patching stored ops on a variable change) is what keeps
+  redo-buffer ops from resurfacing with stale numbers — don't "optimize" it
+  into a patch pass.
+- **The evaluator is a hand-written recursive-descent interpreter**
+  (`src/paramExpr.ts`, pure + unit-tested) — webview CSP blocks `eval()`, never
+  reintroduce it. Trig functions take **degrees** (every op angle field is
+  `*Deg`).
+- **Variables live in the same `<model>.edits.json`** (optional `variables`
+  field, omitted when empty; `version` stays 1 — the parser never checked it
+  and tolerates the missing field). A variable is `{name, expr, value}` where
+  `value` is its own last-good cache. A variable's expression may reference
+  only variables defined **above it** in the list — derived values (`W = L/2`)
+  with zero cycle-detection machinery, since cycles are unrepresentable.
+- **Failures freeze, never crash** (same graceful rule as unresolved operand
+  ids): a failing variable keeps its cached `value`; an op whose expression
+  fails keeps that field's cache (other fields still apply); an op whose
+  *resolved* values would violate a cross-field invariant (torus
+  `minorRadius ≥ majorRadius`) is kept wholly at its previous values —
+  `resolveEditOps` re-validates the patched clone and reverts on failure,
+  recording a human-readable issue that main.ts surfaces via `setStatus`.
+- **Variable mutations are NOT undoable ops** — `VariablesModel` mirrors
+  `PartsModel` (own `onChange`, silent `load()`), outside the op stack.
+- **Panel plumbing:** numeric inputs are `type="text"` (`inputmode=decimal`);
+  the field readers (`readNum`/`readVec`/`rowVec`) evaluate non-numeric text
+  and side-collect the raw strings keyed by op field path;
+  `EditsPanel.wrapCallbacks` (constructor) attaches the collected map to the
+  outgoing draft — or aborts the apply on an eval error — so the ~40 per-op
+  apply closures stay untouched. **Exprs keys must equal op field names**:
+  main.ts copies `draft.exprs` verbatim onto the pushed op; the one mismatch is
+  fillet/chamfer's shared `amount` field, remapped to `radius`/`distance` in
+  `onApplyFillet`. Keep that alignment when adding ops.
 
 ## Meshing (GMSH-JS)
 
@@ -1030,6 +1087,27 @@ all three holes work (mesh CSG placements match the B-rep path); loading the mes
 while a B-rep-only form is open collapses it. Undo/redo/clear, reload → replay
 from `bull.stp.edits.json`, export → baked in, and the usual host-memory leak
 check — all unchanged.
+
+Then exercise **parametric variables**: on `bull.stp`, click **＋ New** in the
+Edits panel's **Variables** table, rename the variable to `L`, set its expression
+to `20` → the row shows `= 20`. Add a **Box** with size `(L, L/2, 5)` and an
+**Extrude** on a sketch face with length `L*2` → both apply at the current value
+and the history lines show the `[… = …]` binding suffix. Change `L` to `40` in
+the table → the box and extrusion rebuild live (B-rep round-trips through the
+host; on `cube.stl` the same works locally for mesh-legal ops). Add a derived
+variable `W = L/2` **below** `L` → works; move the reference the other way
+(a variable referencing one defined below it) → its row shows ⚠ and keeps its
+last value. Type an unknown name into an op field → Apply is blocked with an
+inline error. Delete `L` while referenced → the delete tooltip warns, geometry
+freezes at the last values with a status warning, and re-adding `L` restores the
+parametric link. Undo/redo ops after a variable change → redone ops use the
+*current* value, not the one they were created with. Close and reopen the tab →
+variables + expressions reload from `bull.stp.edits.json` (inspect: a
+`variables` array plus per-op `exprs`; CAD file untouched); hand-edit `L`'s
+expression in the sidecar and reopen → the geometry reflects the new value
+(parse-time re-resolution). **Export** → the current resolved values are baked
+in. Rapid variable changes + open/close → host memory stays flat (same leak
+check as above).
 
 Then exercise **Meshing (GMSH-JS)**: on `bull.stp`, click the toolbar **🔬 FE Mesh**
 toggle (this just arms overlay display — the **FE Mesh** panel is already visible in

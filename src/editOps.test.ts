@@ -412,3 +412,48 @@ describe("validateEditOp", () => {
     }
   });
 });
+
+describe("validateEditOp exprs annotation", () => {
+  it("preserves valid exprs entries", () => {
+    const op = validateEditOp({
+      op: "extrude", profile: "face-1", dir: [0, 0, 1], length: 5,
+      exprs: { "length": "L*2", "dir[2]": "H" },
+    });
+    expect(op).toMatchObject({ op: "extrude", length: 5, exprs: { "length": "L*2", "dir[2]": "H" } });
+  });
+
+  it("drops entries with bad keys, paths, or syntax", () => {
+    const op = validateEditOp({
+      op: "addBox", center: [0, 0, 0], size: [1, 2, 3],
+      exprs: {
+        "size[1]": "W",          // kept
+        "size[5]": "W",          // out-of-range index
+        "op": "W",               // non-numeric slot
+        "targets[0]": "W",       // structural field (not on this op anyway)
+        "__proto__": "W",        // unsafe key shape
+        "center[0]": "1 +",      // syntax error
+        "center[1]": 5,          // non-string value
+      },
+    });
+    expect(op?.exprs).toEqual({ "size[1]": "W" });
+  });
+
+  it("omits exprs entirely when nothing survives", () => {
+    const op = validateEditOp({
+      op: "addBox", center: [0, 0, 0], size: [1, 2, 3],
+      exprs: { "nope": "W" },
+    });
+    expect(op).not.toBeNull();
+    expect(op && "exprs" in op).toBe(false);
+    const noAnn = validateEditOp({ op: "addBox", center: [0, 0, 0], size: [1, 2, 3] });
+    expect(noAnn && "exprs" in noAnn).toBe(false);
+  });
+
+  it("caps oversized expressions", () => {
+    const op = validateEditOp({
+      op: "addSphere", center: [0, 0, 0], radius: 5,
+      exprs: { "radius": "1+".repeat(200) + "1" },
+    });
+    expect(op && "exprs" in op).toBe(false);
+  });
+});

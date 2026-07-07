@@ -18,6 +18,8 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/editOps.ts` | The `EditOp` union + `validateEditOp` tolerance gate (vscode-free) |
 | `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
 | `src/editsSidecar.ts` | Pure parse/serialize for the edits sidecar (vscode-free, unit-tested) |
+| `src/paramExpr.ts` | Parametric expression evaluator + `exprs` field-path addressing (vscode/DOM-free, unit-tested) |
+| `src/editVariables.ts` | `ParamVariable` validate/evaluate + `resolveEditOps` op resolver (vscode/DOM-free, unit-tested) |
 | `src/gmshService.ts` | Lazy GMSH-wasm singleton, FE mesh generation + `.geo_unrolled` export |
 | `src/gmshElementTypes.ts` | Single source of truth for gmsh element types: stride/faces/Kratos mapping + pure overlay-triangulation helpers (vscode/WASM-free, unit-tested) |
 | `src/mdpaWriter.ts` | Pure Kratos MDPA serializer over the generic `MdpaCell` catalogue (vscode/WASM-free, unit-tested) |
@@ -490,18 +492,70 @@ The edit-operation model and its sidecar, mirroring the parts trio.
 `src/editOps.ts` is **vscode-free** and holds the `EditOp` discriminated union plus:
 
 ```typescript
+type ExprMap = Record<string, string>                    // field path → expression string
 function validateEditOp(raw: unknown): EditOp | null   // single tolerance gate
 const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOp["op"]>  // re-id faces/edges on reload
 const BREP_ONLY_OPS: ReadonlySet<EditOp["op"]>          // disabled for mesh files
 ```
 
-`src/editsSidecar.ts` is **vscode-free** (unit-tested): `parseEditsJson(text)` (runs
-every op through `validateEditOp`, dropping malformed ones, preserving order) and
-`serializeEditsJson(sourceName, ops)` (version-stamped, trailing newline).
+Every `EditOp` may carry an optional parametric annotation `exprs?: ExprMap`
+(see [File Formats](./file-formats.md#parametric-variables)); `validateEditOp`
+sanitizes it against the already-validated op (only keys addressing a finite
+numeric slot, only syntactically valid expressions, size-capped) and carries it
+onto the clean op.
+
+`src/editsSidecar.ts` is **vscode-free** (unit-tested): `parseEditsJson(text)`
+returns `{ ops, variables }` — it runs every op through `validateEditOp` and the
+variables through `validateVariables`, then **re-resolves** the ops' expressions
+against the variables (`resolveEditOps`), healing stale cached numbers in a
+hand-edited sidecar. `serializeEditsJson(sourceName, ops, variables)` is
+version-stamped with a trailing newline; `variables` is omitted when empty.
 
 `src/editsStore.ts` wraps them with VS Code filesystem access: `editsSidecarUri()`
-(`<model>.edits.json`), `readEdits()` (tolerant — `[]` on missing/unreadable), and
-`writeEdits()` (writes only the sidecar; the CAD file is never touched).
+(`<model>.edits.json`), `readEdits()` (tolerant — empty lists on
+missing/unreadable), and `writeEdits(uri, ops, variables)` (writes only the
+sidecar; the CAD file is never touched).
+
+---
+
+## `src/paramExpr.ts`, `src/editVariables.ts`
+
+The parametric layer — both **vscode/DOM-free** (unit-tested), imported by the
+host (sidecar parsing) and the webview (input parsing, resolve-on-read).
+
+`src/paramExpr.ts` is a hand-written recursive-descent expression evaluator
+(webview CSP blocks `eval()`): numbers, variable identifiers, `+ - * / ^`,
+unary minus, parentheses, `sqrt/abs/min/max/floor/ceil/round/sin/cos/tan`
+(degrees) and `pi`. Plus field-path addressing for `exprs` keys:
+
+```typescript
+function evalExpr(src: string, vars: Record<string, number>): { ok: true; value: number } | { ok: false; error: string }
+function parseExprSyntax(src: string): boolean       // unknown identifiers allowed
+function extractIdentifiers(src: string): string[]
+function isValidVariableName(s: string): boolean
+function parseFieldPath(path: string): (string | number)[] | null  // "size[1]", "points[2][0]"
+function getNumericField(op: unknown, path: FieldPath): number | null
+function setNumericField(op: unknown, path: FieldPath, v: number): boolean  // only into finite-number slots
+```
+
+`src/editVariables.ts` holds `ParamVariable` (`{name, expr, value}` — `value`
+is the cached last-good evaluation) and:
+
+```typescript
+function validateVariables(raw: unknown): ParamVariable[]  // tolerance gate (names, dupes, size caps)
+function evaluateVariables(vars: ParamVariable[]): { values: Record<string, number>; errors: Map<string, string> }
+function resolveEditOps(ops: EditOp[], values: Record<string, number>): { ops: EditOp[]; issues: string[] }
+```
+
+`evaluateVariables` runs in list order against earlier-defined names only
+(derived variables work, cycles are unrepresentable); a failing variable keeps
+its cached `value`. `resolveEditOps` clones each annotated op, patches the
+addressed fields, and re-runs `validateEditOp` on the result — an op whose
+resolved values violate a cross-field invariant is kept at its previous values
+(issue recorded, replay never hard-fails). Resolution runs at exactly two
+sites: `parseEditsJson` (host) and the webview's resolve-on-read
+(`currentResolvedOps` in `src/webview/main.ts`) — the host otherwise receives
+already-resolved ops and never evaluates expressions at runtime.
 
 ---
 

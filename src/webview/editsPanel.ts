@@ -1,62 +1,74 @@
-import type { EditOp, Vec3 } from "../editOps";
+import type { EditOp, ExprMap, Vec3 } from "../editOps";
+import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS, DEFAULT_OP_ICON } from "./opIcons";
+import { TOOLBAR_ICONS } from "../toolbarIcons";
 
 // Re-exported for compatibility — `describeOp` now lives in the pure, headless-
 // testable opCatalog module.
 export { describeOp };
 
 /** A transform op without its `targets` — the panel collects params; the wiring
- * injects the selected entity ids before pushing it to the op-stack. */
-export type TransformDraft =
+ * injects the selected entity ids before pushing it to the op-stack.
+ *
+ * Every draft may carry an `exprs` annotation (field path → expression string)
+ * for numeric fields the user typed as expressions over the document's
+ * variables — the panel evaluates them for the numeric values and the wiring
+ * copies `exprs` onto the pushed op so the binding survives. */
+export type TransformDraft = (
   | { kind: "translate"; vec: Vec3 }
   | { kind: "rotate"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "scale"; center: Vec3; factors: Vec3 }
-  | { kind: "mirror"; planePoint: Vec3; planeNormal: Vec3 };
+  | { kind: "mirror"; planePoint: Vec3; planeNormal: Vec3 }
+) & { exprs?: ExprMap };
 
 export type BooleanKind = "union" | "subtract" | "intersect";
 
 /** A feature-modeling op minus its profile/path operands (the wiring supplies those
  * from the selected faces/edges before pushing to the op-stack). */
-export type FeatureDraft =
+export type FeatureDraft = (
   | { kind: "extrude"; dir: Vec3; length: number }
   | { kind: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "sweep" }
-  | { kind: "loft" };
+  | { kind: "loft" }
+) & { exprs?: ExprMap };
 
 /** A primitive-creation draft — self-contained (no selection needed), pushed
  * straight to an `EditOp` by the wiring. */
-export type PrimitiveDraft =
+export type PrimitiveDraft = (
   | { kind: "addBox"; center: Vec3; size: Vec3 }
   | { kind: "addSphere"; center: Vec3; radius: number }
   | { kind: "addCylinder"; center: Vec3; axis: Vec3; radius: number; height: number }
   | { kind: "addCone"; center: Vec3; axis: Vec3; radius1: number; radius2: number; height: number }
   | { kind: "addTorus"; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number }
   | { kind: "addPrism"; center: Vec3; axis: Vec3; radius: number; sides: number; height: number }
-  | { kind: "addWedge"; center: Vec3; axis: Vec3; up: Vec3; dx: number; dy: number; dz: number; ltx: number };
+  | { kind: "addWedge"; center: Vec3; axis: Vec3; up: Vec3; dx: number; dy: number; dz: number; ltx: number }
+) & { exprs?: ExprMap };
 
 /** A hole draft minus its `targets` (the wiring injects the selected volumes) —
  * subtractive, cut into existing bodies. Works on every format (mesh CSG too). */
-export type HoleDraft =
+export type HoleDraft = (
   | { kind: "addHole"; position: Vec3; axis: Vec3; radius: number; depth: number }
   | { kind: "addCounterboreHole"; position: Vec3; axis: Vec3; radius: number; depth: number; cbRadius: number; cbDepth: number }
-  | { kind: "addCountersinkHole"; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number };
+  | { kind: "addCountersinkHole"; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number }
+) & { exprs?: ExprMap };
 
 /** A 2D profile draft — self-contained (no selection needed), builds a standalone
  * flat face you can later pick (Surf mode) as a profile for Extrude/Revolve/
  * Sweep/Loft. B-rep only (meshes have no sketch/exact topology). */
-export type ProfileDraft =
+export type ProfileDraft = (
   | { kind: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number }
   | { kind: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number }
   | { kind: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number }
   | { kind: "addEllipseProfile"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number }
   | { kind: "addRoundedRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number }
   | { kind: "addSlotProfile"; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number }
-  | { kind: "addTrapezoidProfile"; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number };
+  | { kind: "addTrapezoidProfile"; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number }
+) & { exprs?: ExprMap };
 
 /** A wireframe-primitive draft — self-contained (no selection needed), builds a
  * standalone point/line/arc. B-rep only (meshes have no sketch/exact topology). */
-export type WireframeDraft =
+export type WireframeDraft = (
   | { kind: "addPoint"; position: Vec3 }
   | { kind: "addLine"; start: Vec3; end: Vec3 }
   | { kind: "addArc"; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number }
@@ -65,32 +77,38 @@ export type WireframeDraft =
   | { kind: "addSpline"; points: Vec3[] }
   | { kind: "addBezier"; controlPoints: Vec3[] }
   | { kind: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number }
-  | { kind: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number };
+  | { kind: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
+) & { exprs?: ExprMap };
 
 /** A modify-op draft minus its selection operands: shell's `openingFaces` come
  * from the selected surfaces, split/section `targets` from the selected
  * volumes (the wiring injects both). B-rep only. */
-export type ModifyDraft =
+export type ModifyDraft = (
   | { kind: "shell"; thickness: number }
   | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; keep: "both" | "positive" | "negative" }
-  | { kind: "section"; planePoint: Vec3; planeNormal: Vec3 };
+  | { kind: "section"; planePoint: Vec3; planeNormal: Vec3 }
+) & { exprs?: ExprMap };
 
 export interface EditsPanelCallbacks {
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
+  /** Remove a single op from anywhere in the history list (not just the last one). */
+  onRemoveOp: (index: number) => void;
   /** Apply a transform to the current selection (the wiring supplies targets). */
   onApplyTransform: (draft: TransformDraft) => void;
   /** Capture the current selection as boolean operand A; returns its size. */
   onCaptureBooleanA: () => number;
   /** Apply a boolean of captured-A against the current selection (operand B). */
   onApplyBoolean: (kind: BooleanKind) => void;
-  /** Apply a fillet/chamfer of the given amount to the selected edges (B-rep only). */
-  onApplyFillet: (kind: "fillet" | "chamfer", amount: number) => void;
+  /** Apply a fillet/chamfer of the given amount to the selected edges (B-rep only).
+   * `exprs` (if any) keys the amount as `"amount"` — the wiring remaps it to the
+   * op's real field name (`radius`/`distance`). */
+  onApplyFillet: (kind: "fillet" | "chamfer", amount: number, exprs?: ExprMap) => void;
   /** Apply a feature-modeling op; operands come from the selected faces/edges (B-rep only). */
   onApplyFeature: (draft: FeatureDraft) => void;
   /** Explode the assembly: spread bodies radially by `factor` (all formats). */
-  onApplyExplode: (factor: number) => void;
+  onApplyExplode: (factor: number, exprs?: ExprMap) => void;
   /** Mate: align the first selected face onto the second (B-rep only). */
   onApplyMate: () => void;
   /** Apply a modify op (shell/split/section); operands come from the selection (B-rep only). */
@@ -120,8 +138,16 @@ type SubtabId = "2d" | "3d";
  * single shared `#edits-params` area below the grid; clicking it again
  * collapses the form. The shared undo/redo/Clear header and the single op-
  * history list are unchanged — there is only one op stack regardless of which
- * tab an op came from. Numeric inputs are used throughout (VS Code webviews
+ * tab an op came from. Inline inputs are used throughout (VS Code webviews
  * block `prompt()`).
+ *
+ * Numeric fields accept expressions over the document's variables (`L*2`): the
+ * field readers ({@link readNum}/{@link readVec}/{@link rowVec}) evaluate them
+ * against {@link setVariables}' values and side-collect the raw strings into
+ * `pendingExprs`; the callbacks are wrapped once in the constructor
+ * ({@link wrapCallbacks}) to attach the collected map to the outgoing draft —
+ * or abort the apply with an inline error if any expression failed — so the
+ * ~40 per-op apply closures stay untouched.
  */
 export class EditsPanel {
   private readonly body: HTMLElement;
@@ -148,10 +174,20 @@ export class EditsPanel {
   private brepOnlyEls: HTMLElement[] = [];
   private brepOnlyIds = new Set<PanelOpId>();
 
+  /** Evaluated variable name → value map for expression fields (see setVariables). */
+  private variableValues: Record<string, number> = {};
+  /** Expressions collected by the field readers during the current apply click. */
+  private pendingExprs: ExprMap = {};
+  /** Evaluation failures collected during the current apply click (abort the apply). */
+  private pendingErrors: string[] = [];
+
+  private readonly cb: EditsPanelCallbacks;
+
   constructor(
     private readonly panel: HTMLElement,
-    private readonly cb: EditsPanelCallbacks
+    cb: EditsPanelCallbacks
   ) {
+    this.cb = this.wrapCallbacks(cb);
     this.body = panel.querySelector("#edits-body")!;
     this.compose = panel.querySelector("#edits-compose")!;
     this.undoBtn = panel.querySelector("#edits-undo")!;
@@ -161,6 +197,84 @@ export class EditsPanel {
     this.redoBtn.addEventListener("click", () => cb.onRedo());
     this.clearBtn.addEventListener("click", () => cb.onClear());
     this.buildComposer();
+  }
+
+  /** Updates the evaluated variable values expression fields resolve against.
+   * The wiring calls this on load and after every variable change. */
+  setVariables(values: Record<string, number>): void {
+    this.variableValues = values;
+  }
+
+  /**
+   * Wraps the draft-carrying callbacks so every apply click transparently
+   * attaches the expressions collected by the field readers (or aborts with an
+   * inline error when one failed). `onApplyFillet`/`onApplyExplode` take bare
+   * numbers instead of a draft, so their exprs travel as an extra argument.
+   */
+  private wrapCallbacks(cb: EditsPanelCallbacks): EditsPanelCallbacks {
+    const withExprs = <T extends { exprs?: ExprMap }>(apply: (draft: T) => void) => (draft: T): void => {
+      const exprs = this.finishRead();
+      if (exprs === null) return;
+      apply(exprs ? { ...draft, exprs } : draft);
+    };
+    return {
+      ...cb,
+      onApplyTransform: withExprs(cb.onApplyTransform),
+      onApplyFeature: withExprs(cb.onApplyFeature),
+      onApplyModify: withExprs(cb.onApplyModify),
+      onApplyPrimitive: withExprs(cb.onApplyPrimitive),
+      onApplyHole: withExprs(cb.onApplyHole),
+      onApplyProfile: withExprs(cb.onApplyProfile),
+      onApplyWireframe: withExprs(cb.onApplyWireframe),
+      onApplyFillet: (kind, amount) => {
+        const exprs = this.finishRead();
+        if (exprs !== null) cb.onApplyFillet(kind, amount, exprs);
+      },
+      onApplyExplode: (factor) => {
+        const exprs = this.finishRead();
+        if (exprs !== null) cb.onApplyExplode(factor, exprs);
+      },
+    };
+  }
+
+  /**
+   * Drains the expression state collected since the last apply click: `null`
+   * aborts the apply (an expression failed to evaluate — shown inline),
+   * `undefined` means all fields were plain numbers, else the exprs map.
+   */
+  private finishRead(): ExprMap | null | undefined {
+    const errors = this.pendingErrors;
+    const exprs = this.pendingExprs;
+    this.pendingErrors = [];
+    this.pendingExprs = {};
+    const msgEl = this.paramsEl.querySelector(".expr-error-msg");
+    if (errors.length > 0) {
+      const el = msgEl ?? this.paramsEl.appendChild(document.createElement("div"));
+      el.className = "expr-error-msg";
+      el.textContent = errors[0];
+      return null;
+    }
+    msgEl?.remove();
+    return Object.keys(exprs).length > 0 ? exprs : undefined;
+  }
+
+  /**
+   * One numeric input's value: a plain number parses directly; anything else is
+   * evaluated as an expression over the current variables, recording the raw
+   * string under `path` in `pendingExprs` (or the failure in `pendingErrors`).
+   */
+  private parseNumeric(raw: string, path: string): number {
+    const trimmed = raw.trim();
+    if (trimmed === "") return 0;
+    const n = Number(trimmed);
+    if (Number.isFinite(n)) return n;
+    const r = evalExpr(trimmed, this.variableValues);
+    if (r.ok) {
+      this.pendingExprs[path] = trimmed;
+      return r.value;
+    }
+    this.pendingErrors.push(`${path}: ${r.error}`);
+    return 0;
   }
 
   render(ops: EditOp[], canUndo: boolean, canRedo: boolean): void {
@@ -188,8 +302,14 @@ export class EditsPanel {
       const label = document.createElement("span");
       label.className = "edit-label";
       label.textContent = describeOp(op);
+      const del = document.createElement("button");
+      del.className = "edit-remove";
+      del.innerHTML = TOOLBAR_ICONS.close;
+      del.title = "Remove this edit";
+      del.addEventListener("click", () => this.cb.onRemoveOp(i));
       li.appendChild(idx);
       li.appendChild(label);
+      li.appendChild(del);
       ol.appendChild(li);
     });
     this.body.appendChild(ol);
@@ -837,16 +957,25 @@ export class EditsPanel {
     span.textContent = label;
     row.appendChild(span);
     for (let i = 0; i < 3; i++) {
-      const input = document.createElement("input");
-      input.type = "number";
-      input.step = "any";
-      input.className = "compose-num";
+      const input = this.numericInput();
       input.dataset.name = name;
       input.dataset.i = String(i);
       input.value = String(def[i]);
       row.appendChild(input);
     }
     return row;
+  }
+
+  /** A numeric-or-expression input: text (not `type=number`) so variable
+   * expressions like `L*2` are typable; the readers evaluate them. */
+  private numericInput(): HTMLInputElement {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.className = "compose-num";
+    return input;
   }
 
   private numField(name: string, label: string, def: number): HTMLElement {
@@ -856,10 +985,7 @@ export class EditsPanel {
     span.className = "compose-label";
     span.textContent = label;
     row.appendChild(span);
-    const input = document.createElement("input");
-    input.type = "number";
-    input.step = "any";
-    input.className = "compose-num";
+    const input = this.numericInput();
     input.dataset.name = name;
     input.value = String(def);
     row.appendChild(input);
@@ -895,16 +1021,14 @@ export class EditsPanel {
       rows.querySelectorAll<HTMLButtonElement>(".point-remove").forEach((b) => { b.disabled = disable; });
     };
 
-    const addRow = (val: Vec3) => {
+    // Rows hold raw strings so expression text survives the seed-from-last-row copy.
+    const addRow = (val: [string, string, string]) => {
       const row = document.createElement("div");
       row.className = "point-row";
       for (let i = 0; i < 3; i++) {
-        const input = document.createElement("input");
-        input.type = "number";
-        input.step = "any";
-        input.className = "compose-num";
+        const input = this.numericInput();
         input.dataset.i = String(i);
-        input.value = String(val[i]);
+        input.value = val[i];
         row.appendChild(input);
       }
       const remove = document.createElement("button");
@@ -919,31 +1043,38 @@ export class EditsPanel {
       rows.appendChild(row);
       updateRemoveState();
     };
-    for (const p of initial) addRow(p);
+    for (const p of initial) addRow([String(p[0]), String(p[1]), String(p[2])]);
 
     const add = document.createElement("button");
     add.className = "point-add";
     add.textContent = "+ Add point";
     add.addEventListener("click", () => {
       const last = rows.lastElementChild;
-      const seed: Vec3 = last ? this.rowVec(last as HTMLElement) : [0, 0, 0];
+      const seed: [string, string, string] = ["0", "0", "0"];
+      last?.querySelectorAll<HTMLInputElement>("input").forEach((inp) => {
+        seed[Number(inp.dataset.i)] = inp.value;
+      });
       addRow(seed);
     });
     wrap.appendChild(add);
     return wrap;
   }
 
-  /** The points of a {@link pointListField}, in current DOM (display) order. */
+  /** The points of a {@link pointListField}, in current DOM (display) order —
+   * which is exactly the emitted op's `points` order, so the expression paths
+   * `name[row][i]` recorded here line up with the final array. */
   private readPoints(name: string): Vec3[] {
     const wrap = this.paramsEl.querySelector<HTMLElement>(`.point-list[data-name="${name}"]`);
     if (!wrap) return [];
-    return Array.from(wrap.querySelectorAll<HTMLElement>(".point-row")).map((row) => this.rowVec(row));
+    return Array.from(wrap.querySelectorAll<HTMLElement>(".point-row"))
+      .map((row, r) => this.rowVec(row, `${name}[${r}]`));
   }
 
-  private rowVec(row: HTMLElement): Vec3 {
+  private rowVec(row: HTMLElement, pathPrefix: string): Vec3 {
     const v: number[] = [0, 0, 0];
     row.querySelectorAll<HTMLInputElement>("input").forEach((inp) => {
-      v[Number(inp.dataset.i)] = Number(inp.value) || 0;
+      const i = Number(inp.dataset.i);
+      v[i] = this.parseNumeric(inp.value, `${pathPrefix}[${i}]`);
     });
     return [v[0], v[1], v[2]];
   }
@@ -997,13 +1128,16 @@ export class EditsPanel {
   private readVec(name: string): Vec3 {
     const inputs = this.paramsEl.querySelectorAll<HTMLInputElement>(`input[data-name="${name}"]`);
     const v: number[] = [0, 0, 0];
-    inputs.forEach((inp) => { v[Number(inp.dataset.i)] = Number(inp.value) || 0; });
+    inputs.forEach((inp) => {
+      const i = Number(inp.dataset.i);
+      v[i] = this.parseNumeric(inp.value, `${name}[${i}]`);
+    });
     return [v[0], v[1], v[2]];
   }
 
   private readNum(name: string): number {
     const inp = this.paramsEl.querySelector<HTMLInputElement>(`input[data-name="${name}"]`);
-    return inp ? Number(inp.value) || 0 : 0;
+    return inp ? this.parseNumeric(inp.value, name) : 0;
   }
 }
 

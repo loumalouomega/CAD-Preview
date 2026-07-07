@@ -9,9 +9,21 @@
  * with every op folded over it in order. {@link validateEditOp} is the single
  * tolerant gate — both the sidecar parser and any incoming message run through
  * it, so a malformed op is dropped rather than corrupting the list.
+ *
+ * Parametric fields: an op may carry an optional `exprs` annotation mapping a
+ * numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression
+ * string over the document's named variables. The numeric field itself always
+ * holds the last-good evaluated number (a cache), so every consumer of ops —
+ * validation invariants, both engines, export — keeps operating on plain
+ * numbers; only `resolveEditOps` (src/editVariables.ts) reads `exprs`.
  */
 
+import { parseFieldPath, getNumericField, parseExprSyntax } from "./paramExpr";
+
 export type Vec3 = [number, number, number];
+
+/** Field path → expression string, e.g. `{ "length": "L*2", "size[0]": "W" }`. */
+export type ExprMap = Record<string, string>;
 
 /** Translate the target entities along `vec`. */
 export interface TranslateOp { op: "translate"; targets: string[]; vec: Vec3; }
@@ -102,7 +114,7 @@ export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: strin
 /** Build a new solid by sewing the selected faces into a closed shell. */
 export interface AddVolumeFromSurfacesOp { op: "addVolumeFromSurfaces"; faces: string[]; }
 
-export type EditOp =
+export type EditOp = (
   | TranslateOp | RotateOp | ScaleOp | MirrorOp
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
@@ -114,7 +126,8 @@ export type EditOp =
   | AddEllipseProfileOp | AddRoundedRectangleProfileOp | AddSlotProfileOp | AddTrapezoidProfileOp
   | AddPointOp | AddLineOp | AddArcOp
   | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
-  | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp;
+  | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp
+) & { exprs?: ExprMap };
 
 export type EditOpKind = EditOp["op"];
 
@@ -199,12 +212,49 @@ function notParallel(a: Vec3, b: Vec3): boolean {
   return cx * cx + cy * cy + cz * cz > 0;
 }
 
+/** Cap on `exprs` entries per op / expression length — a hand-edited sidecar can't balloon memory. */
+const MAX_EXPRS_PER_OP = 64;
+const MAX_EXPR_LENGTH = 256;
+
+/**
+ * Sanitize a raw `exprs` annotation against the already-validated op: keep only
+ * entries whose key addresses a finite numeric slot of `clean` (this rejects
+ * structural fields like `targets[0]` and out-of-range point indices — so an
+ * expr for a removed point row self-heals on the next validate) and whose value
+ * is a syntactically valid expression (unknown identifiers allowed — the
+ * variable may be defined later). Bad entries are dropped silently, same
+ * tolerance-gate style as the op fields themselves.
+ */
+function sanitizeExprs(raw: unknown, clean: EditOp): ExprMap | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: ExprMap = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (count >= MAX_EXPRS_PER_OP) break;
+    const path = parseFieldPath(key);
+    if (!path || getNumericField(clean, path) === null) continue;
+    if (typeof value !== "string" || value.length > MAX_EXPR_LENGTH || !parseExprSyntax(value)) continue;
+    out[key] = value;
+    count++;
+  }
+  return count > 0 ? out : null;
+}
+
 /**
  * Validates one raw object into a clean {@link EditOp}, or `null` if it is
  * malformed. This is the single tolerance gate for the whole feature — keep all
- * structural checks here so callers never have to re-validate.
+ * structural checks here so callers never have to re-validate. A valid `exprs`
+ * annotation (see {@link sanitizeExprs}) is carried onto the clean op.
  */
 export function validateEditOp(raw: unknown): EditOp | null {
+  const clean = validateEditOpCore(raw);
+  if (!clean) return null;
+  const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
+  if (exprs) clean.exprs = exprs;
+  return clean;
+}
+
+function validateEditOpCore(raw: unknown): EditOp | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
 
