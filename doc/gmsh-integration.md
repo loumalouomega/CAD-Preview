@@ -405,17 +405,16 @@ deliberately listed **first** so `mdpaElements` is the default-selected export
 format):
 
 - **`mdpaElements` ("Elements + Conditions")** — the solver-ready shape.
-  Volume cells → `Begin Elements <ElementName>`, surface cells → `Begin
-  Conditions <ConditionName>`, both `<id> <prop_id> <n1> ... <nk>` with
-  `prop_id` always `0` under a single `Begin Properties 0` block — this codebase
-  has no material/property data of any kind, so there's never a second property
-  id to reference.
-- **`mdpaGeometries` ("Geometries")** — volume cells → `Begin Geometries
-  <GeometryName>`, surface cells → `Begin Geometries <GeometryName>`,
-  `<id> <n1> ... <nk>` with **no property id** (the structural difference from
-  the other mode) and no `Properties` block. Kratos's `Geometries` is a single
-  container, so **all** kinds **share one id space** — volume kinds get `1..V`,
-  surface kinds continue `V+1..V+S`, not restarting at 1.
+  Volume cells → `Begin Elements <ElementName>`, surface cells → `Begin Conditions <ConditionName>`,
+  both `<id> <prop_id> <n1> ... <nk>` with `prop_id` always `0` under a single
+  `Begin Properties 0` block — this codebase has no material/property data of
+  any kind, so there's never a second property id to reference.
+- **`mdpaGeometries` ("Geometries")** — volume cells → `Begin Geometries <GeometryName>`,
+  surface cells → `Begin Geometries <GeometryName>`, `<id> <n1> ... <nk>` with
+  **no property id** (the structural difference from the other mode) and no
+  `Properties` block. Kratos's `Geometries` is a single container, so **all**
+  kinds **share one id space** — volume kinds get `1..V`, surface kinds
+  continue `V+1..V+S`, not restarting at 1.
 
 **Supported cell kinds** (linear + quadratic), each mapped by the shared
 `gmshElementTypes.ts` table to its Kratos block name and gmsh→Kratos node
