@@ -106,4 +106,14 @@ describe("describeOp", () => {
     const labels = Object.values(REPRESENTATIVE_OPS).map(describeOp);
     expect(new Set(labels).size).toBe(labels.length);
   });
+
+  it("appends the expression bindings for parametric ops", () => {
+    const plain = describeOp({ op: "extrude", profile: "face-1", dir: [0, 0, 1], length: 40 });
+    const parametric = describeOp({
+      op: "extrude", profile: "face-1", dir: [0, 0, 1], length: 40,
+      exprs: { "length": "L*2" },
+    });
+    expect(plain).not.toContain("[");
+    expect(parametric).toBe(`${plain} [length = L*2]`);
+  });
 });

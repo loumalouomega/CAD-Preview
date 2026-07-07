@@ -451,6 +451,79 @@ body {
   flex-shrink: 0;
 }
 
+/* Parametric variables table (inside the Edits panel scroll area). */
+#variables-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vscode-sideBarSectionHeader-foreground, #bbb);
+}
+#variables-body { padding-bottom: 4px; }
+#variables-section {
+  border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+.variable-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+}
+.variable-row:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06)); }
+
+.variable-name,
+.variable-expr {
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+.variable-name { flex: 1; }
+.variable-expr { flex: 2; }
+.variable-name:hover,
+.variable-expr:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.variable-name:focus,
+.variable-expr:focus {
+  outline: none;
+  background: var(--vscode-input-background, #1e1e1e);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.variable-eq {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.variable-value {
+  flex-shrink: 0;
+  font-size: 10px;
+  opacity: 0.6;
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.variable-value.variable-error {
+  color: var(--vscode-errorForeground, #f48771);
+  opacity: 1;
+}
+
+/* Inline expression-evaluation failure under an op param form. */
+.expr-error-msg {
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--vscode-errorForeground, #f48771);
+}
+
 .part-btn {
   flex-shrink: 0;
   font: inherit;

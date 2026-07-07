@@ -139,7 +139,26 @@ type EditOp =
 An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the
 same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single
 tolerance gate — malformed ops are dropped, never thrown. The list is persisted in
-the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md). All op
+the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md).
+
+Every op may additionally carry an optional **parametric annotation**
+`exprs?: Record<string, string>` mapping a numeric field path (`length`,
+`size[1]`, `points[2][0]`) to an expression over the document's named variables
+(`ParamVariable`, below). The addressed numeric fields always hold the
+last-good evaluated numbers — a cache — so every consumer that ignores `exprs`
+still sees a fully-resolved op; only `resolveEditOps` (`src/editVariables.ts`)
+reads it. `validateEditOp` sanitizes `exprs` (bad paths / non-numeric slots /
+syntax errors dropped per entry).
+
+```typescript
+interface ParamVariable {
+  name: string    // identifier ([A-Za-z_][A-Za-z0-9_]*, not a function/constant name)
+  expr: string    // defining expression; may reference variables defined ABOVE it only
+  value: number   // cached last-good evaluation (kept when re-evaluation fails)
+}
+```
+
+All op
 kinds are implemented: transforms, booleans, fillet/chamfer, feature modeling
 (extrude/revolve/sweep/loft), modify ops (shell/split-by-plane/section, B-rep
 only), assembly (explode/mate), primitive creation (box/sphere/cylinder/cone/
@@ -184,7 +203,7 @@ type HostToWebview =
   | { type: 'tree';     root: TreeNode }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | { type: 'parts';    parts: Part[] }
-  | { type: 'edits';    ops: EditOp[] }
+  | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
   | { type: 'editError'; message: string }
@@ -268,16 +287,25 @@ and renders the Parts panel.
 ### `edits`
 
 Sent after geometry, once the host has read the edits sidecar
-(`<model>.edits.json`). Carries the saved, ordered edit op-list (empty array when
-no sidecar exists). The webview hydrates `EditsModel` and renders the Edits panel.
-For B-rep the geometry already arrives with these ops applied (the host folds them
-in before tessellating); for mesh formats the webview replays them locally.
+(`<model>.edits.json`). Carries the saved, ordered edit op-list plus the named
+parametric variables (both empty arrays when no sidecar exists). The webview
+hydrates `EditsModel` + `VariablesModel` and renders the Edits panel. For B-rep
+the geometry already arrives with these ops applied (the host folds them in
+before tessellating); for mesh formats the webview replays them locally.
+
+An op may carry an optional `exprs` annotation (field path → expression string,
+e.g. `{ "length": "L*2" }`); its numeric fields always hold the last-good
+evaluated numbers, so consumers that ignore `exprs` still see a fully-resolved
+op. See [File Formats](./file-formats.md#edits-sidecar-modeleditsjson).
 
 ```json
 {
   "type": "edits",
   "ops": [
-    { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0] }
+    { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0], "exprs": { "vec[0]": "L/2" } }
+  ],
+  "variables": [
+    { "name": "L", "expr": "20", "value": 20 }
   ]
 }
 ```
@@ -384,7 +412,7 @@ type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
   | { type: 'partsChanged'; parts: Part[] }
-  | { type: 'editsChanged'; ops: EditOp[] }
+  | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'exportRequest' }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
@@ -406,16 +434,27 @@ itself is never written — only the sidecar.
 
 ### `editsChanged`
 
-Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear).
-Carries the full ordered op-list. The host debounces these (~500 ms, on a separate
-timer from `partsChanged`) and writes them to the `<model>.edits.json` sidecar via
-`writeEdits()`. For B-rep sources the host also re-tessellates immediately with the
-new ops and pushes a fresh `geometry` + `tree`; for mesh sources the webview has
-already replayed the ops locally, so the host only persists. The CAD file is never
-written — only the sidecar. See [`EditOp`](#editop) for op shapes.
+Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear)
+**or the parametric variables** (add / rename / change expression / delete —
+which re-resolves every op's `exprs` and so changes the displayed geometry).
+Carries the full ordered op-list plus the full variables list. The ops arrive
+**already resolved** against the variables (the webview resolves on read — see
+`src/editVariables.ts` `resolveEditOps`), so the host never evaluates
+expressions at runtime; the numeric fields are the current values and `exprs`
+rides along for persistence. The host debounces these (~500 ms, on a separate
+timer from `partsChanged`) and writes both to the `<model>.edits.json` sidecar
+via `writeEdits()`. For B-rep sources the host also re-tessellates immediately
+with the new ops and pushes a fresh `geometry` + `tree`; for mesh sources the
+webview has already replayed the ops locally, so the host only persists. The
+CAD file is never written — only the sidecar. See [`EditOp`](#editop) for op
+shapes.
 
 ```json
-{ "type": "editsChanged", "ops": [ { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0] } ] }
+{
+  "type": "editsChanged",
+  "ops": [ { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0], "exprs": { "vec[0]": "L/2" } } ],
+  "variables": [ { "name": "L", "expr": "20", "value": 20 } ]
+}
 ```
 
 ### `meshingChanged`

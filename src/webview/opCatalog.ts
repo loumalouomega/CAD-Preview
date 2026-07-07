@@ -190,8 +190,18 @@ export function allCatalogEntries(): CatalogEntry[] {
     .flatMap((cat) => cat.ops);
 }
 
-/** A short, human-readable one-line summary of an op for the panel's history list. */
+/** A short, human-readable one-line summary of an op for the panel's history
+ * list. Parametric ops (with an `exprs` annotation) get a compact
+ * `[field = expr, …]` suffix so the history reveals which numbers are
+ * variable-driven rather than literal. */
 export function describeOp(op: EditOp): string {
+  const base = describeOpBase(op);
+  if (!op.exprs) return base;
+  const bindings = Object.entries(op.exprs).map(([k, v]) => `${k} = ${v}`).join(", ");
+  return bindings ? `${base} [${bindings}]` : base;
+}
+
+function describeOpBase(op: EditOp): string {
   switch (op.op) {
     case "translate": return `Move ${op.targets.length} (${op.vec.join(", ")})`;
     case "rotate": return `Rotate ${op.targets.length} ${op.angleDeg}°`;

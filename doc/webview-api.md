@@ -19,6 +19,8 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
 | `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
+| `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
+| `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
 | `src/webview/opCatalog.ts` | Op catalog: GEOMETRY/EDIT tab structure + `describeOp`, DOM-free (unit-tested) |
 | `src/webview/opIcons.ts` | Per-op icon placeholders — the one file to edit for real icons |
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
@@ -545,9 +547,35 @@ class EditsModel {
 }
 ```
 
-Every mutation fires `onChange`, wired in `main.ts` to post `editsChanged`, render
-the panel, and (for mesh files) rebuild the displayed model. `load` does **not**
-fire — it is the initial sidecar load and must not echo back as a write.
+Every mutation fires `onChange`, wired in `main.ts` to the shared `syncEdits()`:
+resolve the ops against the current variables, post `editsChanged` (resolved ops
++ variables), render the panels, and (for mesh files) rebuild the displayed
+model. `load` does **not** fire — it is the initial sidecar load and must not
+echo back as a write.
+
+**Resolve-on-read:** `EditsModel` itself is deliberately not
+variables-aware. `main.ts`'s `currentResolvedOps()` re-runs `resolveEditOps`
+(`src/editVariables.ts`) over `list()` at every consumption point, so ops
+sitting in the redo buffer can never resurface with stale numbers — no eager
+patch pass could reach them.
+
+## `src/webview/variablesModel.ts`, `src/webview/variablesPanel.ts`
+
+`VariablesModel` mirrors `PartsModel`/`EditsModel` (pure data, `onChange` on
+every mutation, `load()` silent): `add()` (auto-names `L1, L2, …`, expr `"0"`),
+`rename(i, name)` (returns `false` for an invalid/duplicate name so the panel
+restores the input), `setExpr(i, expr)`, `remove(i)`, `list()` (clones).
+Variable mutations are **not** undoable ops — they live outside the
+`EditsModel` stack; undone/redone ops re-resolve against the current values.
+
+`VariablesPanel` renders the `#variables-section` table (static markup from
+`provider.ts` `getHtml`, above the op composer): one row per variable with
+inline name/expression `<input>`s (webviews block `prompt()`), a computed
+`= value` span (or an ⚠ with the evaluation error and the retained last-good
+value in its tooltip), and a delete button whose tooltip warns when any op
+expression references the variable (usage computed by the wiring via
+`extractIdentifiers`). Stateless — the wiring re-calls
+`render(vars, values, errors, usage)` after every change.
 
 ## `src/webview/opCatalog.ts`
 
@@ -560,7 +588,8 @@ interface CatalogEntry { id: PanelOpId; label: string; brepOnly: boolean; kinds:
 interface CatalogCategory { title: string; ops: CatalogEntry[] }
 const OP_CATALOG: { geometry2d: CatalogCategory[]; geometry3d: CatalogCategory[]; edit: CatalogCategory[] }
 function allCatalogEntries(): CatalogEntry[]
-function describeOp(op: EditOp): string   // moved here from editsPanel.ts (re-exported there)
+function describeOp(op: EditOp): string   // moved here from editsPanel.ts (re-exported there);
+                                          // parametric ops get a "[field = expr, …]" suffix
 ```
 
 A `PanelOpId` is one op **button** — usually 1:1 with an `EditOpKind`, but the
@@ -590,15 +619,28 @@ under the grids, the Undo/Redo/Clear control row, and the ordered op-history
 list with a one-line summary each (`describeOp`). Clicking an op button renders
 its parameter form; clicking it again collapses it. There is only one op stack
 regardless of which tab an op came from. VS Code webviews block `prompt()`, so
-all input is via numeric fields.
+all input is via inline fields.
 
 ```typescript
 class EditsPanel {
   constructor(panel: HTMLElement, cb: EditsPanelCallbacks)
   render(ops: EditOp[], canUndo: boolean, canRedo: boolean): void
   setBRepOnly(enabled: boolean): void
+  setVariables(values: Record<string, number>): void  // evaluated values for expression fields
 }
 ```
+
+**Expression fields:** every numeric input is `type="text"` (`inputmode=
+decimal`) and accepts either a plain number or an expression over the
+document's variables (`L*2`). The field readers (`readNum`/`readVec`/`rowVec`)
+evaluate non-numeric text against `setVariables`' values and side-collect the
+raw strings (keyed by op field path — `length`, `size[1]`, `points[2][0]`)
+into a pending `ExprMap`; the callbacks are **wrapped once in the constructor**
+so every apply transparently attaches the collected map to the outgoing draft
+as `draft.exprs` — or aborts with an inline `.expr-error-msg` when an
+expression failed — leaving the ~40 per-op apply closures untouched. `main.ts`
+copies `draft.exprs` onto the pushed op (remapping fillet/chamfer's shared
+`amount` field to the op's real `radius`/`distance` key).
 
 **Callback-draft architecture:** each form's Apply handler builds a params-only
 draft and hands it to a callback; `main.ts` merges the live selection (target
@@ -611,13 +653,13 @@ matching `validateEditOp` rule (with a human status message), and pushes the
   captures the selection (count echoed in the form; the panel mirrors it in
   `booleanACount` so it survives form re-renders), **Apply** uses the live
   selection as operand B. Three buttons (Unite/Subtract/Intersect) share one form.
-- `onApplyFillet(kind, amount)` — selected edges (B-rep only).
+- `onApplyFillet(kind, amount, exprs?)` — selected edges (B-rep only).
 - `onApplyFeature(FeatureDraft)` — Extrude/Revolve/Sweep/Loft from the selected
   profile face(s)/path edge (B-rep only).
 - `onApplyModify(ModifyDraft)` — Shell (opening faces = selected surfaces; the
   host derives each face's owning solid), Split-by-plane and Section (targets =
   selected volumes). B-rep only.
-- `onApplyExplode(factor)` / `onApplyMate()` — assembly ops.
+- `onApplyExplode(factor, exprs?)` / `onApplyMate()` — assembly ops.
 - `onApplyPrimitive(PrimitiveDraft)` — Box/Sphere/Cylinder/Cone/Torus/Prism/Wedge;
   self-contained placement, **no selection needed**. All-formats except Wedge
   (B-rep only).

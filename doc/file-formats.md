@@ -139,12 +139,45 @@ the vscode-free `src/editsSidecar.ts` so they are unit-tested.
 {
   "version": 1,
   "source": "bull.stp",
+  "variables": [
+    { "name": "L", "expr": "20", "value": 20 },
+    { "name": "W", "expr": "L/2", "value": 10 }
+  ],
   "ops": [
     { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0] },
-    { "op": "rotate", "targets": ["solid-0"], "axisPoint": [0, 0, 0], "axisDir": [0, 0, 1], "angleDeg": 45 }
+    { "op": "rotate", "targets": ["solid-0"], "axisPoint": [0, 0, 0], "axisDir": [0, 0, 1], "angleDeg": 45 },
+    { "op": "addBox", "center": [0, 0, 0], "size": [20, 10, 5], "exprs": { "size[0]": "L", "size[1]": "W" } }
   ]
 }
 ```
+
+### Parametric variables
+
+The optional top-level `variables` array holds the document's named **parametric
+variables** (`{name, expr, value}`), and any op may carry an optional `exprs`
+annotation mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to
+an expression string over them. Editing a variable in the panel re-resolves every
+annotated op and rebuilds the geometry live. Rules:
+
+- **Numeric fields are last-good caches.** The addressed field always holds the
+  most recent successful evaluation, so a consumer that ignores `exprs` (or an
+  older extension version) still sees a fully-resolved op. Parsing re-resolves
+  ops against the variables (`parseEditsJson`), so hand-editing a variable's
+  `expr` in the sidecar takes effect on the next open.
+- **Expressions** support numbers, variable names, `+ - * / ^`, parentheses,
+  `sqrt/abs/min/max/floor/ceil/round/sin/cos/tan` (trig in **degrees**, matching
+  the `*Deg` angle fields), and `pi`. Evaluation is a small closed interpreter
+  (`src/paramExpr.ts`) — never `eval()`.
+- **A variable may reference only variables defined above it** in the list
+  (derived values like `W = L/2` work; cycles are unrepresentable). A variable
+  whose expression fails keeps its cached `value`.
+- **Failures freeze, never crash:** an op whose expression references a deleted
+  variable — or whose resolved values would violate a cross-field invariant
+  (e.g. a torus with `minorRadius ≥ majorRadius`) — keeps its previous numbers
+  and a warning is shown; replay continues.
+- `variables` is omitted when empty, so pre-parametric sidecars are unchanged.
+  The `version` stays `1`. Note: an **older** extension version rewriting the
+  sidecar drops `variables` and `exprs` (it serializes only what it knows).
 
 **Where ops are applied** mirrors the read/export split:
 

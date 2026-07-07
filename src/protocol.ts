@@ -1,9 +1,11 @@
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
+import type { ParamVariable } from "./editVariables";
 import type { MeshOptions } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 
 export type { EditOp } from "./editOps";
+export type { ParamVariable } from "./editVariables";
 
 /** A node in the model component tree sent from host → webview. */
 export interface TreeNode {
@@ -56,7 +58,7 @@ export type HostToWebview =
   | { type: "tree"; root: TreeNode }
   | { type: "loadUrl"; url: string; format: CadFormat }
   | { type: "parts"; parts: Part[] }
-  | { type: "edits"; ops: EditOp[] }
+  | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
   | { type: "editError"; message: string }
@@ -91,7 +93,7 @@ export type WebviewToHost =
   | { type: "ready" }
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
-  | { type: "editsChanged"; ops: EditOp[] }
+  | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "exportRequest" }
   | { type: "exportResult"; requestId: string; data: string; binary: boolean }
   | { type: "exportError"; requestId: string; message: string }
