@@ -2,7 +2,7 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside VS Code.",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "publisher": "kratos-multiphysics",
   "license": "GPL-2.0-or-later",
   "icon": "images/icon.png",
@@ -129,7 +129,8 @@
     "reinstall": "bash scripts/reinstall-local.sh",
     "docs:dev": "vitepress dev doc",
     "docs:build": "vitepress build doc",
-    "docs:preview": "vitepress preview doc"
+    "docs:preview": "vitepress preview doc",
+    "docs:screenshots": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/screenshots/capture.mjs"
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.1.2",
@@ -143,6 +144,7 @@
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^2.24.0",
     "esbuild": "^0.20.0",
+    "playwright": "^1.61.1",
     "typescript": "^5.4.0",
     "vitepress": "^1.3.4",
     "vitest": "^1.4.0"

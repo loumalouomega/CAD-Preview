@@ -27,6 +27,34 @@ npm install
 | `npm run docs:dev` | Serve the VitePress documentation site locally |
 | `npm run docs:build` | Build the static documentation site to `doc/.vitepress/dist/` |
 | `npm run docs:preview` | Preview the built documentation site locally |
+| `npm run docs:screenshots` | Regenerate every feature screenshot under `doc/public/screenshots/` |
+
+## Regenerating Documentation Screenshots
+
+The per-feature screenshots embedded in the docs are generated automatically —
+they are **not** hand-captured — so they stay in lockstep with the real UI:
+
+```bash
+npm run docs:screenshots   # runs build → fixtures → capture
+```
+
+The pipeline lives in `scripts/screenshots/`:
+
+1. **`make-fixtures.mjs`** runs the *real* extension-host geometry pipeline in
+   plain Node — OpenCascade tessellation + a Gmsh mesh of `examples/STP/bull.stp`
+   — and writes the exact `geometry`/`tree`/`meshingResult`/`parts`/`edits`
+   message payloads (plus the shared viewer DOM) to `scripts/screenshots/fixtures/`
+   (git-ignored).
+2. **`capture.mjs`** loads the shipped webview bundle (`media/viewer.js`) into a
+   headless Chromium via Playwright, stubs `acquireVsCodeApi`, posts those
+   fixtures so the UI shows genuine geometry (WebGL renders through SwiftShader —
+   no display server needed), drives each panel, and writes one PNG per feature
+   to `doc/public/screenshots/`. It also refreshes the two README hero images.
+
+The webview DOM is shared with the real extension via `src/viewerDom.ts`
+(`viewerBodyHtml()`), which `provider.ts` also uses, so a UI change can never
+leave the screenshots showing stale markup. First run needs the Playwright
+browser: `npx playwright install chromium`.
 
 ## Running in the Extension Development Host
 

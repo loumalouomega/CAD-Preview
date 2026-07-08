@@ -43,6 +43,10 @@ Open any supported file — for example, from the Explorer or via `File > Open F
 
 ## User Interface
 
+![The CAD Preview editor: 3D viewer with orientation cube, the Components/Parts/Edits/FE&nbsp;Mesh sidebar, toolbar, and view-controls panel.](/screenshots/viewer-main.png)
+
+*The full editor — here previewing `bull.stp` with three colour-coded parts assigned, parametric variables, and every panel populated.*
+
 ### Camera Interaction
 
 | Action | Control |
@@ -65,6 +69,8 @@ dropdown:
 | **Save As…** | Convert the model to a new file/format via the [Export](#exporting-a-model) flow | Ctrl+Shift+S |
 | **Export…** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) | Ctrl+E |
 
+![The File dropdown open, showing Open, Save, Save As, and Export.](/screenshots/file-menu.png)
+
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette).
 The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't
 override VS Code's global Open/Save elsewhere.
@@ -72,6 +78,8 @@ override VS Code's global Open/Save elsewhere.
 ### Toolbar
 
 The toolbar appears at the top-right of the editor, just below the menu bar:
+
+![The viewer toolbar: Fit, Wireframe, Grid, Tree, FE Mesh, and the Select / Point·Vol·Surf·Line pick modes.](/screenshots/toolbar.png)
 
 | Button | Action |
 |--------|--------|
@@ -93,6 +101,8 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Fit** — Same as the toolbar Fit button (reframe in current orientation).
 - **Ctr** — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
 
+![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, and Fit/Ctr.](/screenshots/view-controls.png)
+
 ### Orientation Cube
 
 A labeled orientation cube sits in the top-left corner of the 3D view. It mirrors the current camera direction in real time.
@@ -108,6 +118,8 @@ Click any face of the cube to snap the camera to that standard view:
 ### Component Tree Panel
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
+
+![The Components tree, showing the STEP root and its solid with a face-count badge.](/screenshots/components-tree.png)
 
 ### Defining Parts
 
@@ -130,6 +142,8 @@ Each part has an editable name, a colour swatch (click to recolour), and a
 painted in the part's colour in the 3D view. Expand a part to see and remove
 individual entities; click a part row to highlight all of its entities. The
 **✕** on a part deletes it.
+
+![The Parts panel with three colour-coded parts expanded to show their assigned volumes, surfaces, and edges.](/screenshots/parts-panel.png)
 
 Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD
 file and reloaded when you reopen it — the CAD file itself is never modified. See
@@ -156,6 +170,13 @@ holes) subtabs. Each tab shows a grid of operation buttons (icon + name);
 clicking a button opens its parameter form below the grid, and clicking it
 again collapses the form. For mesh sources the whole **2D** subtab and every
 other B-rep-only button grey out.
+
+<div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
+  <img src="/screenshots/edits-geometry.png" alt="The GEOMETRY tab, 3D subtab: solid-primitive creation ops (Box selected)." style="max-width:280px; flex:1 1 240px;" />
+  <img src="/screenshots/edits-edit.png" alt="The EDIT tab: Transform (Move/Rotate/Scale/Mirror) and Boolean (Unite/Subtract/Intersect) ops." style="max-width:280px; flex:1 1 240px;" />
+</div>
+
+*Left: **GEOMETRY → 3D** primitive creation. Right: the **EDIT** tab's modification ops.*
 
 To apply a transform:
 
@@ -207,6 +228,8 @@ discarding everything applied after it, hover its row in the history list and cl
 the **✕** that appears — unlike Undo, which only pops the most recent operation,
 this removes any row directly.
 
+![The operation-history list — an ordered, individually-removable stack of applied edits.](/screenshots/edit-history.png)
+
 Transforms, booleans, explode, primitives, and the hole family work on both B-rep
 and mesh files; everything else is B-rep only (the panel disables those buttons —
 and the whole 2D subtab — for meshes). Creation ops **append a new body** to the
@@ -242,6 +265,8 @@ any edit operation, and change them later to rebuild the geometry on the fly.
    expression (the history line shows it as `[length = L/2 + 1]`).
 3. Edit the variable's expression in the table — every operation referencing
    it re-resolves and the model rebuilds immediately.
+
+![The Variables table with two variables — L = 20 and the derived H = L / 2 = 10.](/screenshots/variables.png)
 
 Expressions support numbers, variable names, `+ - * / ^`, parentheses,
 `sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the
@@ -282,12 +307,19 @@ To generate a mesh:
 3. Click **🔬 FE Mesh** in the toolbar to show/hide the overlay without
    discarding it; click **Clear** in the panel to remove it entirely.
 
+<div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
+  <img src="/screenshots/fe-mesh-panel.png" alt="The FE Mesh panel: coarser→finer size slider, presets, per-part sizes." style="max-width:300px; flex:1 1 260px;" />
+  <img src="/screenshots/mesh-overlay.png" alt="A generated tetrahedral mesh overlaid on the model." style="max-width:520px; flex:2 1 380px;" />
+</div>
+
+*The FE Mesh panel and a generated 3D tetrahedral overlay (`Nodes: 2975 · Elements: 12952`), colour-scoped by part.*
+
 | FE Mesh control | Action |
 |---|---|
 | **Coarser→finer slider** | The primary control: sets the target element size (`Mesh.MeshSizeMax`), log-scaled between bbox-diagonal/5 (coarsest) and /200 (finest). The readout shows the size and an order-of-magnitude element-count estimate; a warning appears above the panel when the estimate exceeds ~1M elements |
 | **Coarse / Medium / Fine** | One-click presets: element size = bbox diagonal / 10, / 20 (the default), / 50 |
 | **Part sizes** | One size input per defined Part (visible once parts exist) — the same per-part target size as the Parts panel's input, mirrored here; blank inherits the global size |
-| **Advanced settings** (collapsed) | The raw Gmsh options below |
+| **Advanced settings** (collapsed) | The raw Gmsh options below — expand to reveal them ([shown here](/screenshots/fe-mesh-advanced.png)) |
 | **Dimension** | 1D (edges only), 2D (surface triangulation), or 3D (volume tetrahedralization) |
 | **Size min / max** | Bounds on generated element size (`Mesh.MeshSizeMin`/`Mesh.MeshSizeMax`); **Size max** is the same value the slider drives, shown numerically (clearing it restores the bbox-derived default) |
 | **2D algorithm / 3D algorithm** | The Gmsh meshing algorithm to use for each dimension |
@@ -299,6 +331,13 @@ To generate a mesh:
 | **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), or OFF. Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and support linear or quadratic tetrahedra/hexahedra/triangles/quadrilaterals. |
 | **📤 Export** | Mesh with the current options and save the result in the format picked above, via a Save dialog (independent of whether **▶ Generate** was already clicked — it always (re)generates fresh) |
 | **Clear** | Remove the mesh overlay (the original model is unaffected either way) |
+
+<div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
+  <img src="/screenshots/part-sizes.png" alt="Per-part mesh-size inputs mirrored in the FE Mesh panel." style="max-width:260px; flex:1 1 220px;" />
+  <img src="/screenshots/export-formats.png" alt="The export-format picker: Kratos MDPA, Gmsh, VTK, Abaqus, and more." style="max-width:220px; flex:1 1 200px;" />
+</div>
+
+*Left: per-part local sizing. Right: the mesh export-format picker (Kratos MDPA is the default).*
 
 Mesh options are saved automatically to a `<model>.mesh.json` sidecar next to the
 CAD file, and an editable `<model>.geo` Gmsh script is regenerated alongside it on

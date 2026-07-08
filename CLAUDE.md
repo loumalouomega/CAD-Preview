@@ -19,6 +19,18 @@ of the change, not a follow-up. Concretely:
 If a change is purely internal refactoring with no observable behavior or API
 difference, docs don't need to move — use judgment, but default to checking.
 
+**Screenshots are generated, not hand-captured.** The per-feature images under
+`doc/public/screenshots/` (and the two `images/` README heroes) come from
+`npm run docs:screenshots` (`scripts/screenshots/`): a Node fixture generator runs
+the *real* OCCT/Gmsh host pipeline on `examples/STP/bull.stp`, then a Playwright
+headless-Chromium harness loads the shipped `media/viewer.js` and captures each
+panel. The harness renders the **exact** shipped DOM via `src/viewerDom.ts`'s
+`viewerBodyHtml()` — the single source of truth `provider.ts` also uses — so **any
+change to the viewer markup, toolbar, or a panel means re-running
+`npm run docs:screenshots`** to refresh the images (don't hand-edit the PNGs). See
+`doc/development.md`'s "Regenerating Documentation Screenshots" and
+`scripts/screenshots/README.md`.
+
 ## License
 
 This project is licensed **GPL-2.0-or-later** (not MIT) because it bundles

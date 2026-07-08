@@ -58,6 +58,18 @@ features:
     details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry. Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as hand-written Kratos MDPA (the default, preserving named Parts as SubModelParts) or any Gmsh format the panel offers (.msh, .msh2, .geo_unrolled, VTK, I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF). The CAD file stays read-only.
 ---
 
+## See It in Action
+
+[![The CAD Preview editor — 3D viewer, orientation cube, Components/Parts/Edits/FE Mesh sidebar, toolbar, and view controls.](/screenshots/viewer-main.png)](/getting-started)
+
+<p style="text-align:center; opacity:0.75; margin-top:-0.5rem;"><em>Previewing a STEP model with colour-coded parts, parametric variables, and every panel live. See the <a href="/getting-started">Getting Started</a> guide for a walkthrough of each feature.</em></p>
+
+<div style="display:flex; gap:1rem; flex-wrap:wrap; justify-content:center; margin-top:1.5rem;">
+  <img src="/screenshots/edits-geometry.png" alt="Geometry creation ops" style="max-width:240px; flex:0 1 220px;" />
+  <img src="/screenshots/parts-panel.png" alt="Named colour-coded parts" style="max-width:240px; flex:0 1 220px;" />
+  <img src="/screenshots/mesh-overlay.png" alt="Generated FE mesh overlay" style="max-width:400px; flex:0 1 360px;" />
+</div>
+
 ## Supported Formats
 
 | Format | Extensions | Pipeline |
