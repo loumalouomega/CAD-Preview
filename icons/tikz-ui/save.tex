@@ -1,0 +1,14 @@
+% Toolbar icon: save — floppy disk (outer body with clipped corner, label
+% slot at top, write-protect shutter at bottom).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  % Outer body, top-right corner clipped.
+  \draw[thick] (-9,-9) -- (-9,9) -- (5,9) -- (9,5) -- (9,-9) -- cycle;
+  % Top label slot (the metal shutter area).
+  \draw[thick] (-4,9) -- (-4,3) -- (3,3) -- (3,9);
+  % Bottom inner label rectangle.
+  \draw[thick] (-6,-9) -- (-6,-2) -- (6,-2) -- (6,-9);
+\end{tikzpicture}
+\end{document}

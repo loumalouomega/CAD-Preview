@@ -8,7 +8,7 @@ see whichever section applies before editing.
 
 | | `tikz/` (Edits panel) | `tikz-ui/` (toolbar/panels) |
 |---|---|---|
-| Count | 46, one per `PanelOpId` | 13, one per toolbar/panel icon |
+| Count | 46, one per `PanelOpId` | 17, one per toolbar/panel icon |
 | Output format | PNG (flat, fixed gray/black) | inline SVG (`currentColor`-based) |
 | Wired into the running extension? | **No** — still unicode-glyph placeholders in `opIcons.ts` | **Yes** — replaces the emoji that used to be there |
 | Theme-adaptive? | No (fixed colors) | Yes (tracks VS Code light/dark via `currentColor`) |
@@ -40,7 +40,7 @@ bundling `icons/png/*.png` into `media/`, changing `opIcons.ts`'s value type
 to an image path, and `editsPanel.ts` setting the icon `<span>`'s
 `background-image` (or an `<img>`) instead of `textContent`.
 
-## `tikz-ui/` — toolbar/panel icons (13, SVG, wired in)
+## `tikz-ui/` — toolbar/panel icons (17, SVG, wired in)
 
 One TikZ file per toolbar/panel icon (`tikz-ui/<id>.tex`), matching the
 `ToolbarIconId` keys in the **generated, committed** module
@@ -48,7 +48,8 @@ One TikZ file per toolbar/panel icon (`tikz-ui/<id>.tex`), matching the
 `provider.ts`, `partsPanel.ts`, and `meshingPanel.ts` actually import and
 render. These replaced the toolbar's plain-color emoji (📤🔍🕸️🌳🔬🖱️📍🧊◼️📏▶,
 plus ⚠/✕) — see `docs/superpowers/specs/2026-07-06-toolbar-icons-design.md`
-for the full design rationale.
+for the full design rationale. The `home` / `open` / `save` / `saveAs` icons
+back the top **File** menu (Open / Save / Save As); `export` is reused there too.
 
 Pipeline: `pdflatex` → `pdftocairo -svg` (both already needed for the `tikz/`
 set above; no extra dependency) → `build-toolbar-icons.mjs` post-processes

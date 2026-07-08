@@ -413,6 +413,8 @@ type WebviewToHost =
   | { type: 'log'; message: string }
   | { type: 'partsChanged'; parts: Part[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: 'openFile' }
+  | { type: 'saveSidecars' }
   | { type: 'exportRequest' }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
@@ -528,12 +530,38 @@ Sent by the webview for diagnostic messages. The host writes them to the VS Code
 { "type": "log", "message": "Model loaded: 3 solids, 47,000 triangles" }
 ```
 
+### `openFile`
+
+Sent when the user picks **File ▸ Open…** in the top menu bar. The host shows an
+open dialog (filtered to the supported CAD/mesh extensions) and hands the chosen
+file to this custom editor via `vscode.openWith`. The same action backs the
+`cad-preview.open` command (Ctrl+O). Nothing is sent back to the webview.
+
+```json
+{ "type": "openFile" }
+```
+
+### `saveSidecars`
+
+Sent when the user picks **File ▸ Save** in the top menu bar. The CAD file is
+read-only and never written; this forces an immediate flush of the
+`<model>.parts.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`)
+sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status`
+message (`"Saved"`) on success or `error` on failure. The same action backs the
+`cad-preview.save` command (Ctrl+S).
+
+```json
+{ "type": "saveSidecars" }
+```
+
 ### `exportRequest`
 
-Sent when the user clicks the toolbar **Export** button. The host computes the
-compatible target formats for the open document (`exportTargetsFor()` in
-`src/exportTargets.ts`), shows a quick-pick and a save dialog, then either writes the
-file itself (B-rep targets) or follows up with `exportMesh` (mesh targets).
+Sent when the user clicks the toolbar **Export** button (or picks **File ▸ Save
+As… / Export…** in the top menu bar, or triggers the `cad-preview.saveAs` /
+`cad-preview.export` command). The host computes the compatible target formats
+for the open document (`exportTargetsFor()` in `src/exportTargets.ts`), shows a
+quick-pick and a save dialog, then either writes the file itself (B-rep targets)
+or follows up with `exportMesh` (mesh targets).
 
 ```json
 { "type": "exportRequest" }

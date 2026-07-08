@@ -986,6 +986,39 @@ track VS Code's light/dark theme automatically, replacing the emoji.
   glyphs in every renderer, unlike real emoji, so replacing them would add
   icons for no visual benefit.
 
+## Top File menu (Open / Save / Save As / Export)
+
+A full-width `#menubar` sits at the very top of the webview (`getHtml` in
+`provider.ts`) with a single **File ▾** dropdown. Two trigger surfaces converge
+on the same host code — the in-webview dropdown buttons (which `postMessage`)
+and real VS Code commands/keybindings — so they must stay in lockstep.
+Non-negotiable invariants:
+
+- **The CAD file is still never written.** "Save" (`saveSidecars` message /
+  `cad-preview.save` / Ctrl+S) only force-flushes the parts/edits/mesh sidecars
+  immediately (clearing the three debounce timers, then `writeParts`/
+  `writeEdits`/`writeMeshOptions`+`writeGeoScript` on the retained
+  `currentParts`/`currentEdits`/`currentVariables`/`currentMeshOptions`). "Save
+  As…" and "Export…" both reuse the existing `exportRequest` → `handleExport`
+  flow — do not invent a second export path. "Open…" (`openFile` message /
+  `cad-preview.open` / Ctrl+O) is host-only: `showOpenDialog` + `vscode.openWith`
+  into `cad-preview.mesh` (`openFileDialog()`), the only File action that works
+  with no editor focused.
+- **Commands reach the focused editor via `activeSession`.** Each
+  `resolveCustomEditor` builds an `EditorSession` (`{uri, export(), save()}`) and
+  registers it as `this.activeSession` on `onDidChangeViewState` when
+  `webviewPanel.active`, clearing it on dispose. `save`/`saveAs`/`export`
+  commands no-op when nothing is focused; keybindings are scoped
+  `when: activeCustomEditorId == 'cad-preview.mesh'` so Ctrl+O/Ctrl+S don't
+  clobber VS Code's globals. Commands are registered in `register()` alongside
+  the custom-editor provider and disposed with it.
+- **`#toolbar` is offset below the menubar** (`top: 42px` in `viewer.css`) since
+  it's `position:absolute` on the body and the in-flow menubar would otherwise
+  overlap it. The dropdown wiring (`setupFileMenu()` in `main.ts`) lives inside
+  the same `try/catch` as the other view-control setup so a failure can't block
+  the `ready` handshake. The File icons (`home`/`open`/`save`/`saveAs`) are part
+  of the generated `tikz-ui` toolbar-icon set — see the section above.
+
 ## Build & test
 
 ```bash
@@ -1005,6 +1038,16 @@ wireframe toggle. Exercise the view-manipulation panel (stepped rotate/pan/zoom,
 Ctr), the orientation cube (faces snap the view), and the **⌄ / ⌃** hide/show toggle.
 Open/close repeatedly and watch extension-host memory stay flat (leak check). Additional
 fixtures: `examples/OBJ/cube.obj`, `examples/PLY/cube.ply`, `examples/GLTF/cube.gltf`.
+
+Exercise the top **File ▾** menu: confirm the bar spans the top and the toolbar sits
+just below it (no overlap). **Open…** shows a dialog and opens the picked file.
+Make an edit + assign a Part, click **Save** → status shows "Saved" and the
+`.edits.json`/`.parts.json` sidecars are written immediately (before the debounce),
+CAD file untouched. **Save As…** and **Export…** both open the export quick-pick +
+save dialog. With the tab focused, `Ctrl+O`/`Ctrl+S`/`Ctrl+Shift+S`/`Ctrl+E` fire the
+same actions (and `Ctrl+S` must NOT trigger VS Code's own read-only-save error), and
+the `CAD Preview: …` commands appear in the Command Palette. The dropdown closes on
+item click, outside click, and Escape.
 
 Confirm the toolbar/panel icons (Fit, Wireframe, Export, Tree, FE Mesh, Select,
 Point/Vol/Surf/Line, the FE Mesh panel's Generate/Export, tree-close, Parts

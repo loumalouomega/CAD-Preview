@@ -53,9 +53,25 @@ Open any supported file — for example, from the Explorer or via `File > Open F
 
 Camera movement uses Three.js `OrbitControls` with damping enabled for smooth deceleration.
 
+### File Menu
+
+A full-width menu bar sits at the very top of the editor with a single **File ▾**
+dropdown:
+
+| Item | Action | Shortcut |
+|------|--------|----------|
+| **Open…** | Pick another CAD/mesh file and open it in CAD Preview | Ctrl+O |
+| **Save** | Immediately flush the parts/edits/mesh sidecars (`.parts.json` / `.edits.json` / `.mesh.json`). The CAD file itself is read-only and never written; the sidecars also autosave on a ~500 ms debounce, so this just forces an immediate write. | Ctrl+S |
+| **Save As…** | Convert the model to a new file/format via the [Export](#exporting-a-model) flow | Ctrl+Shift+S |
+| **Export…** | Same as the toolbar **Export** button | Ctrl+E |
+
+Every item is also a VS Code command (`CAD Preview: …` in the Command Palette).
+The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't
+override VS Code's global Open/Save elsewhere.
+
 ### Toolbar
 
-The toolbar appears at the top of the editor:
+The toolbar appears at the top-right of the editor, just below the menu bar:
 
 | Button | Action |
 |--------|--------|

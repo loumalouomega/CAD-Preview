@@ -36,6 +36,11 @@ loaders. Rendering is always Three.js.
 
 ## Features
 
+- **File menu**: a top menu bar with a **File ▾** dropdown — **Open…** (open another
+  CAD/mesh file), **Save** (flush the parts/edits/mesh sidecars now; the CAD file
+  itself stays read-only), **Save As…** and **Export…** (both run the Export flow).
+  Every item is also a VS Code command with a keyboard shortcut (Ctrl+O / Ctrl+S /
+  Ctrl+Shift+S / Ctrl+E, scoped to a focused CAD Preview tab).
 - Interactive camera: orbit, pan, zoom (OrbitControls with damping)
 - View-manipulation panel: stepped rotate (15° / 45° / 90°), pan, zoom, **Fit**
   (reframe in place) and **Ctr** (reset to the default isometric view). The panel is

@@ -770,9 +770,53 @@ function setupViewControls(): void {
   on("view-reset", () => viewer.resetView());
 }
 
+// ── File menu (top menu bar) ──────────────────────────────────────────────
+// A "File ▾" dropdown with Open / Save / Save As / Export. Save flushes the
+// sidecars (the CAD file is read-only); Save As and Export both reuse the
+// existing export flow. Wired inside the same guard as the view controls so a
+// failure here can never block the `ready` handshake below.
+function setupFileMenu(): void {
+  const btn = document.getElementById("file-menu");
+  const dropdown = document.getElementById("file-dropdown");
+  if (!btn || !dropdown) return;
+
+  const setOpen = (open: boolean) => {
+    dropdown.classList.toggle("hidden", !open);
+    btn.setAttribute("aria-expanded", String(open));
+  };
+  const close = () => setOpen(false);
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setOpen(dropdown.classList.contains("hidden"));
+  });
+
+  const item = (id: string, msg: () => void) =>
+    document.getElementById(id)?.addEventListener("click", () => {
+      close();
+      msg();
+    });
+
+  item("menu-open", () => post({ type: "openFile" }));
+  item("menu-save", () => post({ type: "saveSidecars" }));
+  item("menu-saveas", () => post({ type: "exportRequest" }));
+  item("menu-export", () => post({ type: "exportRequest" }));
+
+  // Close on outside click or Escape.
+  window.addEventListener("pointerdown", (e) => {
+    if (!dropdown.classList.contains("hidden") && !dropdown.contains(e.target as Node) && e.target !== btn) {
+      close();
+    }
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+}
+
 try {
   setupViewControls();
   setupSelectionControls();
+  setupFileMenu();
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
   console.error(message, err);

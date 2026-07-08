@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { TOOLBAR_ICONS, type ToolbarIconId } from "./toolbarIcons";
 
 const EXPECTED_IDS: ToolbarIconId[] = [
-  "close", "export", "feMesh", "fit", "generate", "line",
-  "point", "select", "surface", "tree", "volume", "warning", "wireframe",
+  "close", "export", "feMesh", "fit", "generate", "home", "line", "open",
+  "point", "save", "saveAs", "select", "surface", "tree", "volume", "warning", "wireframe",
 ];
 
 describe("TOOLBAR_ICONS", () => {

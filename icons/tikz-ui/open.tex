@@ -1,0 +1,12 @@
+% Toolbar icon: open — an open folder (back flap + slanted front face).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  % Back of the folder with the tab.
+  \draw[thick] (-10,-7) -- (-10,7) -- (-2,7) -- (0,4) -- (10,4);
+  % Front (open) face, slanted outward.
+  \draw[thick] (-10,-7) -- (10,-7) -- (12,4) -- (10,4);
+  \draw[thick] (-10,-7) -- (-8,4) -- (10,4);
+\end{tikzpicture}
+\end{document}
