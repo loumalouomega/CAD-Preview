@@ -716,7 +716,6 @@ function setSelectableModes(modes: EntityType[]): void {
 
 document.getElementById("fit")?.addEventListener("click", () => viewer.fitView());
 document.getElementById("grid")?.addEventListener("click", () => viewer.toggleGrid());
-document.getElementById("export")?.addEventListener("click", () => post({ type: "exportRequest" }));
 document.getElementById("tree-close")?.addEventListener("click", () => {
   treePanel.hide();
   window.dispatchEvent(new Event("resize"));

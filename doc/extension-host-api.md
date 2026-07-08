@@ -101,7 +101,7 @@ edits are reflected); for a mesh document, decodes the caller-supplied base64
 callers treat this as a graceful "nothing to mesh", posting `"meshingError"`
 rather than throwing.
 
-**`handleExport(uri, route, post, pending)`** — Private method. The whole "Export" toolbar button flow:
+**`handleExport(uri, route, post, pending)`** — Private method. The whole Export flow (triggered by **File ▸ Export… / Save As…**):
 1. `exportTargetsFor(route)` → `vscode.window.showQuickPick()` of compatible formats; bails if cancelled.
 2. `vscode.window.showSaveDialog()` defaulting to the source's folder + new extension (`EXPORT_EXTENSION`); bails if cancelled.
 3. If the target is a B-rep format (STEP/IGES/BREP): reads the source bytes and calls `exportBRep()` directly — no webview round-trip.

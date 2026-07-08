@@ -63,7 +63,7 @@ dropdown:
 | **Open…** | Pick another CAD/mesh file and open it in CAD Preview | Ctrl+O |
 | **Save** | Immediately flush the parts/edits/mesh sidecars (`.parts.json` / `.edits.json` / `.mesh.json`). The CAD file itself is read-only and never written; the sidecars also autosave on a ~500 ms debounce, so this just forces an immediate write. | Ctrl+S |
 | **Save As…** | Convert the model to a new file/format via the [Export](#exporting-a-model) flow | Ctrl+Shift+S |
-| **Export…** | Same as the toolbar **Export** button | Ctrl+E |
+| **Export…** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) | Ctrl+E |
 
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette).
 The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't
@@ -78,7 +78,6 @@ The toolbar appears at the top-right of the editor, just below the menu bar:
 | **Fit** | Reframe the model to fill the viewport (keeps current camera orientation) |
 | **Wireframe** | Toggle wireframe rendering on/off |
 | **Grid** | Show/hide the world-space grid and axis helpers |
-| **Export** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) |
 | **Tree** | Show/hide the component tree panel (visible only for models with multiple components) |
 | **🔬 FE Mesh** | Toggle the generated finite-element mesh overlay on/off (see [Generating an FE Mesh](#generating-an-fe-mesh)). The **FE Mesh** panel itself is always visible in the sidebar; this button only shows/clears the overlay. |
 | **Select / Point·Vol·Surf·Line** | Toggle entity selection mode and choose what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). |
@@ -317,8 +316,8 @@ script. Neither file modifies the source CAD file.
 
 ### Exporting a Model
 
-Click **Export** in the toolbar to convert the open model and save it as a different
-file. The list of offered target formats depends on the file you opened:
+Pick **File ▸ Export…** (or press Ctrl+E) to convert the open model and save it as a
+different file. The list of offered target formats depends on the file you opened:
 
 | You opened | You can export to |
 |---|---|

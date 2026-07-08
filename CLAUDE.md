@@ -1049,9 +1049,10 @@ same actions (and `Ctrl+S` must NOT trigger VS Code's own read-only-save error),
 the `CAD Preview: …` commands appear in the Command Palette. The dropdown closes on
 item click, outside click, and Escape.
 
-Confirm the toolbar/panel icons (Fit, Wireframe, Export, Tree, FE Mesh, Select,
-Point/Vol/Surf/Line, the FE Mesh panel's Generate/Export, tree-close, Parts
-delete/remove, and the large-mesh warning) render crisply and legibly at their
+Confirm the toolbar/panel icons (Fit, Wireframe, Tree, FE Mesh, Select,
+Point/Vol/Surf/Line, the File menu's Open/Save/Save As/Export, the FE Mesh panel's
+Generate/Export, tree-close, Parts delete/remove, and the large-mesh warning) render
+crisply and legibly at their
 actual small size — this is the one thing automated tests can't check. Then
 switch VS Code to a light theme (`Ctrl+K Ctrl+T` → e.g. "Light+") and confirm
 every one of those icons re-colors to match (dark strokes on the now-light

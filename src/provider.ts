@@ -666,7 +666,6 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
     <button id="wireframe" title="Toggle wireframe">${icon("wireframe")} Wireframe</button>
     <button id="grid" title="Toggle grid">▦ Grid</button>
-    <button id="export" title="Export model">${icon("export")} Export</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">${icon("tree")} Tree</button>
     <button id="meshing-toggle" title="Toggle FE mesh overlay">${icon("feMesh")} FE Mesh</button>
     <div id="select-group" title="Pick entities in the view to assign to a part">

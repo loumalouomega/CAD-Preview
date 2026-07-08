@@ -84,8 +84,8 @@ loaders. Rendering is always Three.js.
 
 ## Export
 
-The toolbar **Export** button converts the currently displayed model to a compatible
-format. Available targets depend on the source file's pipeline:
+The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displayed model
+to a compatible format. Available targets depend on the source file's pipeline:
 
 | Source pipeline | Export targets |
 | ---------------- | --------------- |

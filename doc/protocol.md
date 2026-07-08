@@ -556,9 +556,9 @@ message (`"Saved"`) on success or `error` on failure. The same action backs the
 
 ### `exportRequest`
 
-Sent when the user clicks the toolbar **Export** button (or picks **File ▸ Save
-As… / Export…** in the top menu bar, or triggers the `cad-preview.saveAs` /
-`cad-preview.export` command). The host computes the compatible target formats
+Sent when the user picks **File ▸ Save As… / Export…** in the top menu bar (or
+triggers the `cad-preview.saveAs` / `cad-preview.export` command / Ctrl+Shift+S /
+Ctrl+E). The host computes the compatible target formats
 for the open document (`exportTargetsFor()` in `src/exportTargets.ts`), shows a
 quick-pick and a save dialog, then either writes the file itself (B-rep targets)
 or follows up with `exportMesh` (mesh targets).
@@ -631,7 +631,7 @@ Host                                    Webview
 ```
 Host                                    Webview
  │                                         │
- │  ◀── { type: "exportRequest" } ────────  │  (Export button clicked)
+ │  ◀── { type: "exportRequest" } ────────  │  (File ▸ Export / Save As chosen)
  │                                         │
  │  [showQuickPick + showSaveDialog]       │
  │                                         │
