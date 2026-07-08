@@ -30,6 +30,19 @@ interface PendingExport {
   reject: (err: Error) => void;
 }
 
+/**
+ * Handle to the currently-focused CAD-Preview editor, so the VS Code
+ * commands/keybindings (which carry no per-document context) can drive the
+ * same actions as the in-webview File menu.
+ */
+interface EditorSession {
+  readonly uri: vscode.Uri;
+  /** Export the model (quick-pick + save dialog) — shared by Save As and Export. */
+  export(): void;
+  /** Immediately flush the parts/edits/mesh sidecars (bypassing the debounce). */
+  save(): Promise<void>;
+}
+
 /** Read-only custom document: previews hold no editable state beyond their URI. */
 class CadDocument implements vscode.CustomDocument {
   constructor(public readonly uri: vscode.Uri) {}
@@ -48,17 +61,51 @@ class CadDocument implements vscode.CustomDocument {
 export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocument> {
   public static readonly viewType = "cad-preview.mesh";
 
+  /** The focused editor, tracked so commands/keybindings can reach it. */
+  private activeSession?: EditorSession;
+
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   public static register(context: vscode.ExtensionContext): vscode.Disposable {
-    return vscode.window.registerCustomEditorProvider(
+    const provider = new CadPreviewProvider(context);
+    const editorDisposable = vscode.window.registerCustomEditorProvider(
       CadPreviewProvider.viewType,
-      new CadPreviewProvider(context),
+      provider,
       {
         webviewOptions: { retainContextWhenHidden: true },
         supportsMultipleEditorsPerDocument: false,
       }
     );
+    return vscode.Disposable.from(editorDisposable, ...provider.registerCommands());
+  }
+
+  /**
+   * Registers the File-menu commands. `open` is standalone (host-only); the
+   * others delegate to whichever editor is focused (`activeSession`) so the
+   * keybindings and Command Palette entries mirror the in-webview File menu.
+   */
+  private registerCommands(): vscode.Disposable[] {
+    const withSession = (fn: (s: EditorSession) => void) => () => {
+      if (this.activeSession) fn(this.activeSession);
+    };
+    return [
+      vscode.commands.registerCommand("cad-preview.open", () => void this.openFileDialog()),
+      vscode.commands.registerCommand("cad-preview.save", withSession((s) => void s.save())),
+      vscode.commands.registerCommand("cad-preview.saveAs", withSession((s) => s.export())),
+      vscode.commands.registerCommand("cad-preview.export", withSession((s) => s.export())),
+    ];
+  }
+
+  /** Shows an open dialog and hands the chosen file to this custom editor. */
+  private async openFileDialog(): Promise<void> {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      openLabel: "Open in CAD Preview",
+      filters: { "CAD / Mesh": ["stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep"] },
+    });
+    if (uris?.[0]) {
+      await vscode.commands.executeCommand("vscode.openWith", uris[0], CadPreviewProvider.viewType);
+    }
   }
 
   openCustomDocument(uri: vscode.Uri): CadDocument {
@@ -90,6 +137,30 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     // persisted and echoed back. The source CAD file is never modified.
     let currentEdits: EditOp[] = [];
     let currentVariables: ParamVariable[] = [];
+    // Latest parts / mesh options received from the webview, retained so the
+    // File-menu "Save" can flush all three sidecars immediately. The webview
+    // re-sends these on every change, so these copies are always current.
+    let currentParts: Part[] = [];
+    let currentMeshOptions: MeshOptions | undefined;
+
+    /** Immediately writes the parts/edits/mesh sidecars, bypassing the debounce. */
+    const flushSidecars = async (): Promise<void> => {
+      if (partsSaveTimer) clearTimeout(partsSaveTimer);
+      if (editsSaveTimer) clearTimeout(editsSaveTimer);
+      if (meshSaveTimer) clearTimeout(meshSaveTimer);
+      try {
+        await Promise.all([
+          writeParts(document.uri, currentParts),
+          writeEdits(document.uri, currentEdits, currentVariables),
+          ...(currentMeshOptions
+            ? [writeMeshOptions(document.uri, currentMeshOptions), writeGeoScript(document.uri, currentMeshOptions)]
+            : []),
+        ]);
+        post({ type: "status", text: "Saved" });
+      } catch (err) {
+        post({ type: "error", message: `Save failed: ${(err as Error).message}` });
+      }
+    };
 
     /** (Re)tessellates a B-rep source with the current edits, or (re)loads a mesh. */
     const loadModel = () => {
@@ -106,6 +177,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         );
       }
     };
+
+    // Track this editor as the active one while it is focused, so the
+    // File-menu commands/keybindings can reach it.
+    const session: EditorSession = {
+      uri: document.uri,
+      export: () => {
+        if (route) this.handleExport(document.uri, route, post, pending, currentEdits);
+      },
+      save: flushSidecars,
+    };
+    const track = () => {
+      if (webviewPanel.active) this.activeSession = session;
+    };
+    track();
+    webviewPanel.onDidChangeViewState(track);
+    webviewPanel.onDidDispose(() => {
+      if (this.activeSession === session) this.activeSession = undefined;
+    });
 
     webviewPanel.webview.onDidReceiveMessage(async (msg: WebviewToHost) => {
       if (msg.type === "ready") {
@@ -127,6 +216,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (msg.type === "partsChanged") {
         // Debounced autosave; the CAD file itself is never written, only the sidecar.
         const parts: Part[] = msg.parts;
+        currentParts = parts;
         if (partsSaveTimer) clearTimeout(partsSaveTimer);
         partsSaveTimer = setTimeout(() => {
           void writeParts(document.uri, parts).then(
@@ -156,6 +246,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "meshingChanged") {
         const options = msg.options;
+        currentMeshOptions = options;
         // Debounced sidecar autosave (separate timer/files from parts and edits).
         if (meshSaveTimer) clearTimeout(meshSaveTimer);
         meshSaveTimer = setTimeout(() => {
@@ -266,6 +357,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         } catch (err) {
           post({ type: "error", message: `Export failed: ${(err as Error).message}` });
         }
+        return;
+      }
+
+      if (msg.type === "openFile") {
+        void this.openFileDialog();
+        return;
+      }
+
+      if (msg.type === "saveSidecars") {
+        void flushSidecars();
         return;
       }
 
@@ -496,6 +597,17 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   <title>CAD Preview</title>
 </head>
 <body>
+  <div id="menubar">
+    <div id="file-menu-wrap">
+      <button id="file-menu" title="File menu" aria-haspopup="true" aria-expanded="false">${icon("home")} File ▾</button>
+      <div id="file-dropdown" class="hidden" role="menu">
+        <button id="menu-open" role="menuitem" title="Open a CAD/mesh file">${icon("open")} Open…</button>
+        <button id="menu-save" role="menuitem" title="Save parts/edits/mesh sidecars now">${icon("save")} Save</button>
+        <button id="menu-saveas" role="menuitem" title="Export the model to a new file/format">${icon("saveAs")} Save As…</button>
+        <button id="menu-export" role="menuitem" title="Export the model to a new file/format">${icon("export")} Export…</button>
+      </div>
+    </div>
+  </div>
   <div id="layout">
     <div id="side">
       <div id="tree-panel">
@@ -554,7 +666,6 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
     <button id="wireframe" title="Toggle wireframe">${icon("wireframe")} Wireframe</button>
     <button id="grid" title="Toggle grid">▦ Grid</button>
-    <button id="export" title="Export model">${icon("export")} Export</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">${icon("tree")} Tree</button>
     <button id="meshing-toggle" title="Toggle FE mesh overlay">${icon("feMesh")} FE Mesh</button>
     <div id="select-group" title="Pick entities in the view to assign to a part">

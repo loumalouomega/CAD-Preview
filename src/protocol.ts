@@ -94,6 +94,8 @@ export type WebviewToHost =
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: "openFile" }
+  | { type: "saveSidecars" }
   | { type: "exportRequest" }
   | { type: "exportResult"; requestId: string; data: string; binary: boolean }
   | { type: "exportError"; requestId: string; message: string }

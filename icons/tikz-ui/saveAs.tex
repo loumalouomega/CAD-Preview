@@ -1,0 +1,14 @@
+% Toolbar icon: save as — floppy disk with a small upward arrow overlay
+% (write to a new/other file).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  % Floppy body, top-right corner clipped.
+  \draw[thick] (-9,-9) -- (-9,9) -- (5,9) -- (9,5) -- (9,-9) -- cycle;
+  % Top label slot.
+  \draw[thick] (-4,9) -- (-4,3) -- (3,3) -- (3,9);
+  % Upward arrow overlay in the lower label area (the "as" / new destination).
+  \draw[->, thick] (0,-8) -- (0,-1);
+\end{tikzpicture}
+\end{document}

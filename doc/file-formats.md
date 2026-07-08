@@ -311,8 +311,8 @@ CAD-Preview.
 
 ## Export
 
-The toolbar **Export** button converts the currently displayed model into a
-compatible format and saves it via a native VS Code save dialog. The available
+The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displayed
+model into a compatible format and saves it via a native VS Code save dialog. The available
 targets depend on the source file's pipeline (`exportTargetsFor()` in
 `src/exportTargets.ts`):
 
