@@ -19,6 +19,29 @@ of the change, not a follow-up. Concretely:
 If a change is purely internal refactoring with no observable behavior or API
 difference, docs don't need to move — use judgment, but default to checking.
 
+**Keep the MCP server in sync with extension features.** `src/mcpServer.ts` /
+`src/mcpTools.ts` expose the same headless pipeline the extension uses; when that
+pipeline's surface changes, the MCP server and `doc/mcp-server.md` are part of the
+change, not a follow-up. Concretely:
+- New/changed `EditOp` kind in `src/editOps.ts` → the tool schemas need no edit
+  (raw ops pass through `validateEditOp`), but add/update its `OP_PARAM_DOCS`
+  entry in `src/mcpTools.ts` (`mcpTools.test.ts` fails until you do) and check
+  `doc/mcp-server.md`'s notes if the kind is B-rep-only.
+- New/changed `MeshOptions` field (`src/meshOptions.ts`) or mesh export format
+  (`src/meshExportFormats.ts`) → `set_mesh_options` / `export_mesh` inherit them
+  from the shared registries automatically; verify `describe_capabilities`'
+  output and `doc/mcp-server.md` still describe them accurately.
+- New/changed sidecar schema (`src/editsSidecar.ts` / `src/partsSidecar.ts` /
+  `src/meshOptionsSidecar.ts`) or sidecar filename → update `src/mcpSidecars.ts`
+  in the same commit; it must stay byte-compatible with what `provider.ts` reads
+  on reopen.
+- New/changed `provider.ts` export/meshing flow (e.g. a new companion-file rule
+  like the `.geo_unrolled` XAO sibling) → mirror it in `src/mcpTools.ts` and
+  extend `scripts/mcp-smoke/run.mjs`.
+- A feature moving between headless-capable and webview-only (in either
+  direction) → update the capability matrix in `doc/mcp-server.md` and the
+  limitation messages in `src/mcpTools.ts`.
+
 **Screenshots are generated, not hand-captured.** The per-feature images under
 `doc/public/screenshots/` (and the two `images/` README heroes) come from
 `npm run docs:screenshots` (`scripts/screenshots/`): a Node fixture generator runs
@@ -1031,13 +1054,58 @@ Non-negotiable invariants:
   the `ready` handshake. The File icons (`home`/`open`/`save`/`saveAs`) are part
   of the generated `tikz-ui` toolbar-icon set — see the section above.
 
+## MCP server (headless agent access)
+
+A standalone stdio MCP server (`src/mcpServer.ts` → third esbuild bundle
+`dist/mcp-server.js`) exposes the load/edit/mesh/export pipeline to AI agents with
+no VS Code — registration + tool reference in `doc/mcp-server.md`. Non-negotiable
+invariants:
+
+- **stdout IS the JSON-RPC channel.** Both Emscripten WASM modules print through
+  `console.log`, so `mcpServer.ts`'s **very first statements** rebind
+  `console.log/info/warn/debug` to stderr — before anything can initialize a WASM
+  factory. Never add a plain `console.log`/`process.stdout.write` anywhere the MCP
+  bundle can reach; `npm run mcp:smoke` fails on any stdout pollution (it breaks
+  the JSON-RPC framing immediately).
+- **Module split for testability:** `mcpServer.ts` (SDK wiring + zod schemas, the
+  only file that imports the real `occtService`/`gmshService` functions) →
+  `mcpTools.ts` (the 11 tool handlers over an injected `Pipeline` object;
+  imports **only `import type`** from `occtService`/`gmshService` — their `.wasm`
+  imports resolve under esbuild's wasm-path plugin, never under vitest) →
+  `mcpSidecars.ts` (node-fs sidecar store over the same pure `*Sidecar.ts`
+  parsers the extension uses; must stay byte-compatible with `provider.ts`).
+- **Stateless per call, sidecars are the state.** Every tool re-reads the model +
+  sidecars fresh and writes sidecars back — the same `<model>.edits.json` /
+  `.parts.json` / `.mesh.json` / `.geo` files the extension reads on reopen, so
+  agent and extension edits interoperate. The WASM singletons are already
+  memoized module-level, so statelessness costs one file read.
+- **The CAD source file is still never written** — every caller-chosen output
+  path goes through `mcpSidecars.assertNotSourcePath`.
+- **Ops are raw JSON through `validateEditOp`** (not per-op tool schemas, which
+  would drift against the 43-kind union). The one hand-maintained piece is
+  `OP_PARAM_DOCS` in `mcpTools.ts` (per-kind parameter docs for
+  `describe_capabilities`), locked to the live op catalog by `mcpTools.test.ts`.
+- **Headless scope:** B-rep sources get the full pipeline (edits baked via
+  `exportBRep(...,"step")` before meshing, mirroring `provider.ts`'s
+  `resolveMeshInput`); `.stl` is meshable from raw file bytes (edits NOT baked —
+  warned); `.obj`/`.ply`/`.gltf` can't be meshed/exported headless (their
+  serialization is the webview's Three.js). Mesh-legal ops are still persisted
+  to the sidecar for mesh sources (the webview replays them); `BREP_ONLY_OPS`
+  are rejected.
+- `extensionPath` resolves to the bundle dir's parent (`dist/` holds the WASM
+  binaries beside the bundle), overridable via `CAD_PREVIEW_ROOT`.
+- `@modelcontextprotocol/sdk` + `zod` are MIT (GPL-compatible, per the License
+  section's bundled-dependency rule) and are bundled only into
+  `dist/mcp-server.js`, never `dist/extension.js`.
+
 ## Build & test
 
 ```bash
 npm install        # or: npm ci (CI)
-npm run build      # esbuild: extension (node/cjs) + webview (browser/iife) + tsc --noEmit
+npm run build      # esbuild: extension (node/cjs) + MCP server (node/cjs) + webview (browser/iife) + tsc --noEmit
 npm run watch      # rebuild on change
 npm test           # unit tests via vitest
+npm run mcp:smoke  # build + real-WASM end-to-end MCP server test over stdio (bull.stp)
 ```
 
 - Integration tests need a display server; CI runs them under `xvfb-run` on Linux.
@@ -1263,6 +1331,17 @@ expected, since STL sources can't correlate parts) and `cube.stl.mesh.json` is
 unaffected; set two parts' mesh sizes → confirm it silently falls back to the panel's
 own global size (ambiguous, ignored). Apply/regenerate repeatedly + open/close the
 tab → watch extension-host memory stay flat (same leak check as above).
+
+Then exercise the **MCP server**: `npm run mcp:smoke` must pass (it drives the real
+`dist/mcp-server.js` over stdio against a temp copy of `bull.stp`: load → an
+`addBox` edit → Gmsh generate → export `.msh` + `.geo_unrolled`/`.xao` + `.brep`,
+asserting the CAD source stays byte-identical and stdout stays pure JSON-RPC).
+For the sidecar round-trip through the real extension: register the server with an
+MCP client (`claude mcp add cad-preview -- node $PWD/dist/mcp-server.js`), have the
+agent `apply_edit_ops` on a copy of `bull.stp`, then open that file in the F5
+Extension Development Host → the agent's edit appears (replayed from
+`bull.stp.edits.json`), and edits made in the extension show up in the agent's
+`get_state` after a Save.
 
 On **VS Code Remote/SSH**, the running extension is the installed copy in
 `~/.vscode-server/extensions/`, not the workspace `dist/` — rebuilds alone won't show up.
