@@ -52,6 +52,30 @@ const extensionConfig = {
   logLevel: "info",
 };
 
+/** MCP server bundle: same Node/CJS recipe as the extension host (it reuses
+ *  the exact same OCCT/GMSH pipeline modules, so it needs the same wasm-path
+ *  plugin and `import.meta.url` restoration), but entered from the stdio
+ *  server instead of `activate()`. Ships to `dist/` so the WASM binaries
+ *  copied by `copyWasm()` sit beside it. */
+const mcpConfig = {
+  entryPoints: ["src/mcpServer.ts"],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  target: "node18",
+  outfile: "dist/mcp-server.js",
+  external: ["vscode"],
+  plugins: [wasmPathPlugin],
+  banner: {
+    js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
+  },
+  define: {
+    "import.meta.url": "import_meta_url",
+  },
+  sourcemap: true,
+  logLevel: "info",
+};
+
 /** Webview bundle: browser/IIFE, Three.js bundled in.  No OCCT here. */
 const webviewConfig = {
   entryPoints: ["src/webview/main.ts"],
@@ -81,13 +105,15 @@ function copyWasm() {
 
 if (watch) {
   const ctxExt = await esbuild.context(extensionConfig);
+  const ctxMcp = await esbuild.context(mcpConfig);
   const ctxWv = await esbuild.context(webviewConfig);
-  await Promise.all([ctxExt.watch(), ctxWv.watch()]);
+  await Promise.all([ctxExt.watch(), ctxMcp.watch(), ctxWv.watch()]);
   copyWasm();
   console.log("esbuild: watching…");
 } else {
   await Promise.all([
     esbuild.build(extensionConfig),
+    esbuild.build(mcpConfig),
     esbuild.build(webviewConfig),
   ]);
   copyWasm();

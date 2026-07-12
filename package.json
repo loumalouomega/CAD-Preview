@@ -127,6 +127,8 @@
     "test:watch": "vitest",
     "package": "vsce package",
     "reinstall": "bash scripts/reinstall-local.sh",
+    "mcp": "node dist/mcp-server.js",
+    "mcp:smoke": "npm run build && node scripts/mcp-smoke/run.mjs",
     "docs:dev": "vitepress dev doc",
     "docs:build": "vitepress build doc",
     "docs:preview": "vitepress preview doc",
@@ -134,9 +136,11 @@
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.1.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "opencascade.js": "^1.1.1",
     "three": "^0.160.0",
-    "three-bvh-csg": "^0.0.16"
+    "three-bvh-csg": "^0.0.16",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",
@@ -151,5 +155,11 @@
   },
   "overrides": {
     "undici": "^6.21.0"
+  },
+  "allowScripts": {
+    "@vscode/vsce-sign@2.0.9": true,
+    "esbuild@0.20.2": true,
+    "esbuild@0.21.5": true,
+    "keytar@7.9.0": true
   }
 }

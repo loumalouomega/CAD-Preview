@@ -31,6 +31,7 @@ export default defineConfig({
           { text: 'Webview API',             link: '/webview-api' },
           { text: 'Host ↔ Webview Protocol', link: '/protocol' },
           { text: 'GMSH Integration',        link: '/gmsh-integration' },
+          { text: 'MCP Server',              link: '/mcp-server' },
         ],
       },
       {

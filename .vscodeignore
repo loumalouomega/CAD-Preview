@@ -9,6 +9,7 @@ examples/**
 doc/**
 icons/**
 scripts/screenshots/**
+scripts/mcp-smoke/**
 **/*.ts
 **/*.map
 esbuild.mjs

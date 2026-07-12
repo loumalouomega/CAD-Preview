@@ -81,6 +81,10 @@ loaders. Rendering is always Three.js.
   SU2, INRIA Medit, STL, Diffpack, OFF. The CAD file stays read-only. See
   [GMSH Integration](https://loumalouomega.github.io/CAD-Preview/gmsh-integration)
   for details.
+- **MCP server**: a standalone [Model Context Protocol](https://modelcontextprotocol.io)
+  server (`dist/mcp-server.js`) exposes the same load/edit/mesh/export pipeline to AI
+  agents (e.g. Claude Code) headless, persisting to the same sidecar files the
+  extension reads — see [MCP Server](#mcp-server) below.
 
 ## Export
 
@@ -98,6 +102,23 @@ already-tessellated Three.js model (there is no way to promote a triangle mesh b
 into a B-rep). glTF export always produces a single binary `.glb` file. See
 [File Formats → Export](https://loumalouomega.github.io/CAD-Preview/file-formats#export)
 for details.
+
+## MCP Server
+
+CAD-Preview ships a standalone MCP (Model Context Protocol) stdio server so AI agents
+can drive the same pipeline headless — load models, apply edit operations, manage
+parts and parametric variables, and generate/export FE meshes — with no VS Code
+involved. It persists to the same `.edits.json`/`.parts.json`/`.mesh.json` sidecars
+the extension reads, so agent edits show up when you open the file (and never touches
+the CAD source file). After `npm run build`, register it with e.g. Claude Code:
+
+```bash
+claude mcp add cad-preview -- node /absolute/path/to/CAD-Preview/dist/mcp-server.js
+```
+
+B-rep sources (STEP/IGES/BREP) get the full pipeline; mesh-format sources are more
+limited headless. See [MCP Server](https://loumalouomega.github.io/CAD-Preview/mcp-server)
+for the tool reference and capability matrix.
 
 ## Architecture
 
@@ -176,6 +197,11 @@ additional exception granted by its authors.
 
 Anyone who needs to use Gmsh under terms other than the GPL can obtain a separate
 commercial license directly from its authors at [gmsh.info](https://gmsh.info).
+
+The MCP server bundle additionally includes
+[`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk)
+and [`zod`](https://github.com/colinhacks/zod), both distributed under the **MIT
+License** — GPL-compatible, so bundling them into the shipped extension is fine.
 
 ### Attribution
 
