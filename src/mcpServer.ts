@@ -50,7 +50,7 @@ const ctx: ToolContext = {
   pipeline: { loadBRep, exportBRep, generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled },
 };
 
-const server = new McpServer({ name: "cad-preview", version: "0.7.5" });
+const server = new McpServer({ name: "cad-preview", version: "0.8.0" });
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
