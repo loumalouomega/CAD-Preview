@@ -19,7 +19,7 @@ npm install
 
 | Command | Description |
 |---------|-------------|
-| `npm run build` | Bundle extension host + webview (esbuild) and type-check (tsc) |
+| `npm run build` | Bundle extension host + MCP server + webview (esbuild) and type-check (tsc) |
 | `npm run watch` | Rebuild incrementally on file changes |
 | `npm test` | Run unit tests with Vitest (headless, no display server needed) |
 | `npm run test:watch` | Run Vitest in watch mode |
@@ -28,6 +28,8 @@ npm install
 | `npm run docs:build` | Build the static documentation site to `doc/.vitepress/dist/` |
 | `npm run docs:preview` | Preview the built documentation site locally |
 | `npm run docs:screenshots` | Regenerate every feature screenshot under `doc/public/screenshots/` |
+| `npm run mcp` | Run the standalone MCP server (`dist/mcp-server.js`; requires a prior build) |
+| `npm run mcp:smoke` | Build, then run the real-WASM end-to-end MCP smoke test (see [MCP Server](./mcp-server.md)) |
 
 ## Regenerating Documentation Screenshots
 

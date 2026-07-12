@@ -28,6 +28,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/meshOptionsSidecar.ts` | Pure parse/serialize for the mesh-options sidecar + `.geo` script generation (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 | `src/toolbarIcons.ts` | **Generated** — monochrome, `currentColor`-based toolbar/panel icons (vscode-free) |
+| `src/mcpServer.ts` | Standalone stdio MCP server entry (own `dist/mcp-server.js` bundle, not part of the extension) |
+| `src/mcpTools.ts` | MCP tool handlers over the headless pipeline (MCP-SDK/WASM-free, unit-tested) |
+| `src/mcpSidecars.ts` | Node-fs sidecar store for the MCP server — mirrors the three `*Store.ts` wrappers (vscode-free, unit-tested) |
 
 ---
 
@@ -877,3 +880,31 @@ function encodeBuffer(arr: Float32Array | Uint32Array): string
 Encodes a typed array as a base64 string for safe `postMessage` transport. Uses `Buffer.from(arr.buffer).toString('base64')` (Node.js `Buffer` — host-side only).
 
 The corresponding decode helpers (`decodeF32`, `decodeU32`) live in `src/webview/geometryBuilder.ts` and use browser `atob`.
+
+---
+
+## `src/mcpServer.ts`, `src/mcpTools.ts`, `src/mcpSidecars.ts`
+
+The standalone MCP server — a third esbuild bundle (`dist/mcp-server.js`) that
+exposes the same headless pipeline (`loadBRep`/`exportBRep`/`generateMesh`/
+`exportMeshFormat`/`exportMdpa`/`exportGeoUnrolled`) to AI agents over stdio
+JSON-RPC, with no VS Code involved.
+
+- **`mcpServer.ts`** is the entry: it rebinds `console.log/info/warn/debug` to
+  stderr *before anything else* (the Emscripten WASM modules print through
+  `console.log`, and stdout is the JSON-RPC channel), resolves `extensionPath`
+  (`CAD_PREVIEW_ROOT` env var or the bundle dir's parent), and registers the
+  eleven tools with the `@modelcontextprotocol/sdk` `McpServer` +
+  `StdioServerTransport`.
+- **`mcpTools.ts`** holds the tool handlers as plain async functions over an
+  injected `Pipeline` object (defaulting to the real OCCT/Gmsh functions in the
+  server, faked in `mcpTools.test.ts` — the `.wasm` imports only resolve under
+  esbuild's plugin, never vitest). Ops arrive as raw JSON gated by
+  `validateEditOp`; results are stats/summaries, never geometry buffers.
+- **`mcpSidecars.ts`** is the node-fs counterpart of `editsStore.ts`/
+  `partsStore.ts`/`meshOptionsStore.ts` over the same pure `*Sidecar.ts`
+  parsers — byte-compatible with what `provider.ts` reads on reopen — plus the
+  `assertNotSourcePath` guard enforcing the CAD-file-is-never-written invariant.
+
+See [MCP Server](./mcp-server.md) for registration, the tool reference, and the
+headless capability matrix.
