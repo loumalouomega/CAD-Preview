@@ -40,11 +40,15 @@ const extensionConfig = {
   format: "cjs",
   target: "node18",
   outfile: "dist/extension.js",
-  // "ws" is required by @loumalouomega/gmsh-wasm's Emscripten-generated
-  // SOCKFS shim (Node POSIX-socket emulation) — dead code for our usage
-  // (headless WASM calls, no networking), but esbuild still needs it marked
-  // external or bundling fails outright since "ws" isn't a dependency here.
-  external: ["vscode", "ws"],
+  // @loumalouomega/gmsh-wasm must NEVER be bundled — see the long comment in
+  // gmshService.ts. Its Emscripten pthread pool spawns Node worker_threads
+  // that re-execute whatever file they believe is their own script; bundled
+  // into dist/extension.js, that's the whole VS Code extension, which crashes
+  // every spawned worker on `require("vscode")` and hangs mesh generation
+  // forever. Left external + shipped as real node_modules files (see the
+  // `!node_modules/...` carve-out in .vscodeignore), its workers correctly
+  // re-execute the real, standalone, vscode-free gmsh-core.cjs instead.
+  external: ["vscode", "@loumalouomega/gmsh-wasm"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
@@ -69,7 +73,7 @@ const mcpConfig = {
   target: "node18",
   outfile: "dist/mcp-server.js",
   // See the matching comment in extensionConfig above.
-  external: ["vscode", "ws"],
+  external: ["vscode", "@loumalouomega/gmsh-wasm"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,

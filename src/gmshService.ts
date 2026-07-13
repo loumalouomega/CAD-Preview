@@ -3,21 +3,37 @@ import * as path from "path";
 // The gmsh-wasm package's default export is an async emscripten-style factory,
 // mirroring opencascade.js's raw factory shape (see occtService.ts) — pass the
 // wasm binary explicitly rather than letting it try to fetch() a filesystem path.
-// Loaded via a literal `require()`, not a static `import`, so esbuild resolves
-// the package's "require" export condition (./dist/gmsh.cjs) instead of
-// "import" (./dist/gmsh.mjs) — the .mjs build's pthread-worker bootstrap uses
-// a top-level `await import('worker_threads')`, which the "cjs" output format
-// this bundle is built with cannot represent. IMPORTANT: this must stay a
-// literal `require("...")` call, NOT `createRequire(__filename)("...")` —
-// esbuild only bundles module references it can statically see (a literal
-// `import`/`require`); a `createRequire(...)`-obtained function call is
-// opaque to it, so the module silently never gets inlined into the bundle.
-// That broke every packaged (.vsix) install — `node_modules` is excluded from
-// packaging, so the extension crashed on activation with "Cannot find module
-// '@loumalouomega/gmsh-wasm'" for every file type, even though it worked fine
-// under `npm run watch`/F5 where `node_modules` is still on disk.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const initialize: (opts: unknown) => Promise<GmshApi> = require("@loumalouomega/gmsh-wasm");
+//
+// IMPORTANT: this package must stay `external` in esbuild.mjs — NEVER bundled
+// into dist/extension.js — and must be shipped as real files under
+// node_modules/ in the packaged .vsix (see the `!node_modules/...` carve-out
+// in .vscodeignore). Two independent reasons, both verified against the live
+// WASM build:
+//  1. A bundled copy resolves esbuild's static `import` to the package's
+//     "import" condition (./dist/gmsh.mjs), whose pthread-worker bootstrap
+//     uses a top-level `await import('worker_threads')` that the "cjs" output
+//     format this bundle is built with cannot represent (build fails).
+//  2. Far worse, if that's dodged some other way (e.g. a literal `require()`
+//     forcing the "require" condition so it CAN be bundled): gmsh's Emscripten
+//     pthread pool spawns Node `worker_threads.Worker`s *eagerly*, right at
+//     `gmsh.initialize()` — confirmed 4 workers spawned immediately, before
+//     any mesh generation call. Each worker re-executes whatever file it
+//     believes is its own script (`_scriptName`, effectively `__filename` of
+//     the bundle gmsh-core.cjs's code ends up in). If that file is the WHOLE
+//     bundled dist/extension.js, every worker re-runs the entire VS Code
+//     extension from scratch and immediately crashes on `require("vscode")`
+//     (that global only exists inside the real extension host process, not a
+//     plain worker_thread) — the main thread then blocks forever waiting for
+//     a pthread pool that can never come up. This is the actual cause of
+//     "Generate never finishes": not a slow/broken mesher, a dead worker pool.
+//     Keeping the package external means `_scriptName` resolves to the real,
+//     standalone, vscode-free `node_modules/@loumalouomega/gmsh-wasm/dist/
+//     gmsh-core.cjs`, so its workers start cleanly.
+// A plain external `import` is enough — no `createRequire`/literal-`require`
+// trickery needed: esbuild leaves an external import as a real `require()` in
+// the "cjs" output, which Node resolves at actual runtime (honoring the
+// package's "require" export condition), sidestepping both problems above.
+import initialize from "@loumalouomega/gmsh-wasm";
 import { gmshShapeOptions, type MeshOptions } from "./meshOptions";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";

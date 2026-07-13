@@ -5,6 +5,22 @@
 src/**
 test/**
 node_modules/**
+# @loumalouomega/gmsh-wasm must ship as real files, NOT bundled into
+# dist/extension.js — see the comment in gmshService.ts/esbuild.mjs (its
+# pthread workers re-execute their own script file; bundled, that's the whole
+# extension, which crashes every worker on require("vscode") and hangs mesh
+# generation forever). Whitelist only the exact files actually needed at
+# runtime (the "require" condition's .cjs chain + package.json for the
+# exports-map lookup) — deliberately NOT gmsh-core.wasm: we already ship one
+# copy at dist/gmsh-core.wasm (copied by esbuild.mjs) and pass it explicitly
+# as `wasmBinary`, so the package's own bundled copy is dead weight (a
+# second, redundant 41MB). Listing exact files, rather than `!dir/**` plus a
+# re-exclude, sidesteps vsce's ignore-pattern precedence entirely.
+!node_modules/@loumalouomega/gmsh-wasm/package.json
+!node_modules/@loumalouomega/gmsh-wasm/dist/gmsh.cjs
+!node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-core.cjs
+!node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-descriptor.cjs
+!node_modules/@loumalouomega/gmsh-wasm/dist/runtime.cjs
 examples/**
 doc/**
 icons/**
