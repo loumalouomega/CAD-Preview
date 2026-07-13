@@ -40,7 +40,11 @@ const extensionConfig = {
   format: "cjs",
   target: "node18",
   outfile: "dist/extension.js",
-  external: ["vscode"],
+  // "ws" is required by @loumalouomega/gmsh-wasm's Emscripten-generated
+  // SOCKFS shim (Node POSIX-socket emulation) — dead code for our usage
+  // (headless WASM calls, no networking), but esbuild still needs it marked
+  // external or bundling fails outright since "ws" isn't a dependency here.
+  external: ["vscode", "ws"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
@@ -64,7 +68,8 @@ const mcpConfig = {
   format: "cjs",
   target: "node18",
   outfile: "dist/mcp-server.js",
-  external: ["vscode"],
+  // See the matching comment in extensionConfig above.
+  external: ["vscode", "ws"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
