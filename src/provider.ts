@@ -4,16 +4,20 @@ import { loadBRep, exportBRep } from "./occtService";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL } from "./exportTargets";
-import { readParts, writeParts } from "./partsStore";
-import { readEdits, writeEdits } from "./editsStore";
+import { readParts, writeParts, sidecarUri } from "./partsStore";
+import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import { readMeshOptions, writeMeshOptions, writeGeoScript } from "./meshOptionsStore";
+import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
+import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
+import { parsePartsJson } from "./partsSidecar";
+import { parseEditsJson } from "./editsSidecar";
+import { parseMeshJson } from "./meshOptionsSidecar";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -36,6 +40,8 @@ interface EditorSession {
   export(): void;
   /** Immediately flush the parts/edits/mesh sidecars (bypassing the debounce). */
   save(): Promise<void>;
+  /** Flushes sidecars, then packages the source + whichever sidecars exist into a `.zip`. */
+  savePreprocess(): void;
 }
 
 /** Read-only custom document: previews hold no editable state beyond their URI. */
@@ -88,6 +94,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.save", withSession((s) => void s.save())),
       vscode.commands.registerCommand("cad-preview.saveAs", withSession((s) => s.export())),
       vscode.commands.registerCommand("cad-preview.export", withSession((s) => s.export())),
+      vscode.commands.registerCommand("cad-preview.savePreprocess", withSession((s) => s.savePreprocess())),
+      vscode.commands.registerCommand("cad-preview.loadPreprocess", () => void this.loadPreprocessDialog()),
     ];
   }
 
@@ -181,6 +189,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         if (route) this.handleExport(document.uri, route, post, pending, currentEdits);
       },
       save: flushSidecars,
+      savePreprocess: () => {
+        void flushSidecars().then(() => this.handleSavePreprocess(document.uri, post));
+      },
     };
     const track = () => {
       if (webviewPanel.active) this.activeSession = session;
@@ -367,6 +378,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "exportRequest") {
         if (route) this.handleExport(document.uri, route, post, pending, currentEdits);
+        return;
+      }
+
+      if (msg.type === "savePreprocessRequest") {
+        void flushSidecars().then(() => this.handleSavePreprocess(document.uri, post));
+        return;
+      }
+
+      if (msg.type === "loadPreprocessRequest") {
+        void this.loadPreprocessDialog();
         return;
       }
 
@@ -563,6 +584,102 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({ type: "status", text: `Exported to ${saveUri.fsPath}` });
     } catch (err) {
       post({ type: "error", message: `Export failed: ${(err as Error).message}` });
+    }
+  }
+
+  /**
+   * Packages the CAD source plus whichever of its parts/edits/mesh-options/geo
+   * sidecars exist on disk into a single `.zip` (File ▸ Save Preprocess…).
+   * Callers must flush pending debounced sidecar writes first (see the two
+   * call sites) so the archive reflects the latest in-memory state, not a
+   * stale on-disk one; which sidecars are included is otherwise purely
+   * file-existence-driven — a sidecar that was never created (e.g. no
+   * meshing options ever set) is simply omitted, never a hard error.
+   */
+  private async handleSavePreprocess(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
+    const sourceName = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+    const baseName = sourceName.replace(/\.[^.]+$/, "");
+    const defaultUri = vscode.Uri.joinPath(uri, "..", `${baseName}.preprocess.zip`);
+
+    const saveUri = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: { "Preprocess Archive": ["zip"] },
+    });
+    if (!saveUri) return;
+
+    try {
+      const readOptional = async (sidecar: vscode.Uri): Promise<string | undefined> => {
+        try {
+          return Buffer.from(await vscode.workspace.fs.readFile(sidecar)).toString("utf8");
+        } catch {
+          return undefined;
+        }
+      };
+      const [source, parts, edits, meshOptions, geo] = await Promise.all([
+        vscode.workspace.fs.readFile(uri),
+        readOptional(sidecarUri(uri)),
+        readOptional(editsSidecarUri(uri)),
+        readOptional(meshOptionsSidecarUri(uri)),
+        readOptional(geoScriptUri(uri)),
+      ]);
+      const zipBytes = buildPreprocessZip({ sourceName, source, parts, edits, meshOptions, geo });
+      await vscode.workspace.fs.writeFile(saveUri, zipBytes);
+      post({ type: "status", text: `Saved preprocess archive to ${saveUri.fsPath}` });
+    } catch (err) {
+      post({ type: "error", message: `Save preprocess failed: ${(err as Error).message}` });
+    }
+  }
+
+  /**
+   * Restores a `.zip` built by `handleSavePreprocess` (File ▸ Load Preprocess…):
+   * prompts for the archive, then for a destination path for the restored CAD
+   * file (defaulting to the archive's own manifest filename beside the
+   * archive), writes the source bytes and whichever sidecars the archive
+   * contains, and opens the result. Host-only, like `openFileDialog` — it
+   * needs no already-open editor, so errors surface via `showErrorMessage`
+   * rather than a webview `post`. The `.geo` script is deliberately NOT
+   * restored verbatim from the archive; mesh options are re-written through
+   * `writeMeshOptions`/`writeGeoScript` so the one-way-generated script stays
+   * in lockstep with the (re-validated) options, same as every other write path.
+   */
+  private async loadPreprocessDialog(): Promise<void> {
+    const zipUris = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      openLabel: "Load Preprocess Archive",
+      filters: { "Preprocess Archive": ["zip"] },
+    });
+    const zipUri = zipUris?.[0];
+    if (!zipUri) return;
+
+    try {
+      const zipBytes = await vscode.workspace.fs.readFile(zipUri);
+      const contents = readPreprocessZip(zipBytes);
+
+      const ext = contents.manifest.source.slice(contents.manifest.source.lastIndexOf(".") + 1);
+      const destUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(zipUri, "..", contents.manifest.source),
+        saveLabel: "Restore To",
+        filters: { "CAD / Mesh": [ext] },
+      });
+      if (!destUri) return;
+
+      await vscode.workspace.fs.writeFile(destUri, contents.source);
+      if (contents.parts !== undefined) {
+        await writeParts(destUri, parsePartsJson(contents.parts));
+      }
+      if (contents.edits !== undefined) {
+        const parsed = parseEditsJson(contents.edits);
+        await writeEdits(destUri, parsed.ops, parsed.variables);
+      }
+      if (contents.meshOptions !== undefined) {
+        const options = parseMeshJson(contents.meshOptions);
+        await writeMeshOptions(destUri, options);
+        await writeGeoScript(destUri, options);
+      }
+
+      await vscode.commands.executeCommand("vscode.openWith", destUri, CadPreviewProvider.viewType);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Load preprocess failed: ${(err as Error).message}`);
     }
   }
 

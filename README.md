@@ -38,9 +38,11 @@ loaders. Rendering is always Three.js.
 
 - **File menu**: a top menu bar with a **File ▾** dropdown — **Open…** (open another
   CAD/mesh file), **Save** (flush the parts/edits/mesh sidecars now; the CAD file
-  itself stays read-only), **Save As…** and **Export…** (both run the Export flow).
+  itself stays read-only), **Save As…** and **Export…** (both run the Export flow),
+  and **Save Preprocess…** / **Load Preprocess…** (bundle/restore the CAD file plus
+  whichever parts/edits/mesh sidecars exist as a single portable `.zip`).
   Every item is also a VS Code command with a keyboard shortcut (Ctrl+O / Ctrl+S /
-  Ctrl+Shift+S / Ctrl+E, scoped to a focused CAD Preview tab).
+  Ctrl+Shift+S / Ctrl+E / Ctrl+Alt+S / Ctrl+Alt+O, scoped to a focused CAD Preview tab).
 - Interactive camera: orbit, pan, zoom (OrbitControls with damping)
 - View-manipulation panel: stepped rotate (15° / 45° / 90°), pan, zoom, **Fit**
   (reframe in place) and **Ctr** (reset to the default isometric view). The panel is
@@ -202,6 +204,9 @@ The MCP server bundle additionally includes
 [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk)
 and [`zod`](https://github.com/colinhacks/zod), both distributed under the **MIT
 License** — GPL-compatible, so bundling them into the shipped extension is fine.
+[`fflate`](https://github.com/101arrowz/fflate) (used to build/read the Save/Load
+Preprocess `.zip` archives, in both the extension and MCP server bundles) is also
+**MIT**-licensed.
 
 ### Attribution
 

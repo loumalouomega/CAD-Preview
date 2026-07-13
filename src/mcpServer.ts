@@ -35,6 +35,8 @@ import {
   generateMeshTool,
   exportMeshTool,
   exportBRepTool,
+  savePreprocessTool,
+  loadPreprocessTool,
   type ToolContext,
 } from "./mcpTools";
 import type { MeshOptions } from "./meshOptions";
@@ -225,6 +227,32 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; targetFormat: string; outputPath: string }) => exportBRepTool(ctx, args))
+);
+
+server.registerTool(
+  "save_preprocess",
+  {
+    description:
+      "Package the CAD source file plus its edits/parts/mesh-options sidecars (whichever currently exist on disk) into a single portable .zip archive at outputPath. Mirrors the extension's File ▸ Save Preprocess…",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Destination .zip path (must not be the CAD source)"),
+    },
+  },
+  wrap((args: { path: string; outputPath: string }) => savePreprocessTool(args))
+);
+
+server.registerTool(
+  "load_preprocess",
+  {
+    description:
+      "Restore a CAD source file + its edits/parts/mesh-options sidecars from a .zip built by save_preprocess (or the extension's File ▸ Save Preprocess…), writing them to outputPath (and its matching sidecar filenames). Mirrors the extension's File ▸ Load Preprocess…",
+    inputSchema: {
+      zipPath: z.string().describe("Path to the .preprocess.zip archive"),
+      outputPath: z.string().describe("Destination path for the restored CAD file (sidecars are written alongside it)"),
+    },
+  },
+  wrap((args: { zipPath: string; outputPath: string }) => loadPreprocessTool(args))
 );
 
 async function main(): Promise<void> {

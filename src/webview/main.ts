@@ -800,6 +800,8 @@ function setupFileMenu(): void {
   item("menu-save", () => post({ type: "saveSidecars" }));
   item("menu-saveas", () => post({ type: "exportRequest" }));
   item("menu-export", () => post({ type: "exportRequest" }));
+  item("menu-save-preprocess", () => post({ type: "savePreprocessRequest" }));
+  item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
 
   // Close on outside click or Escape.
   window.addEventListener("pointerdown", (e) => {

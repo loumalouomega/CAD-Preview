@@ -309,6 +309,49 @@ other Export target in this codebase, these are save-as artifacts the user
 places wherever they choose; they are not sidecars and are not read back by
 CAD-Preview.
 
+## Preprocess Archive (`.zip`)
+
+**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus
+whichever of its three sidecars — `<model>.parts.json`, `<model>.edits.json`,
+`<model>.mesh.json` — and the generated `<model>.geo` script currently exist on
+disk into a single `.zip`, so the whole working state of a document can be
+shared, archived, or moved as one file. Which pieces are included is purely
+file-existence-driven: a document that never had meshing options set simply
+has no `.mesh.json`/`.geo` in the archive — this is normal, not an error.
+Pending debounced sidecar writes are flushed immediately before packaging
+(the same flush **Save** triggers), so the archive always reflects the
+current in-editor state, not a stale on-disk one.
+
+The archive's internal layout (built by the pure, vscode-free
+`src/preprocessArchive.ts`, shared by the extension and the MCP server):
+
+```
+manifest.json         { "version": 1, "source": "bull.stp" }
+bull.stp              (the CAD source, byte-identical)
+bull.stp.parts.json   (only if it exists)
+bull.stp.edits.json   (only if it exists)
+bull.stp.mesh.json    (only if it exists)
+bull.stp.geo          (only if it exists)
+```
+
+**File ▸ Load Preprocess…** (Ctrl+Alt+O) is the inverse: pick a `.zip`, then
+pick a destination path for the restored CAD file (defaulting to the
+manifest's `source` filename, beside the archive), and CAD-Preview writes the
+source bytes plus every sidecar the archive contains — named to match the
+chosen destination, not the archive's original filename — then opens the
+result. The archive's `.geo` text is **not** restored verbatim: if a
+`.mesh.json` is present, its options are re-written through the normal
+`writeMeshOptions`/`writeGeoScript` path instead, so the one-way-generated
+script stays in lockstep with the (re-validated) options, same rule every
+other options write follows. Loading an archive never touches the CAD file it
+was originally saved from — it always creates a separate file at the chosen
+destination.
+
+The headless MCP server exposes the same behavior as `save_preprocess`/
+`load_preprocess` (see [MCP Server](mcp-server.md)), sharing the identical
+`preprocessArchive.ts` build/read logic — an archive saved from the extension
+loads via the MCP tool and vice versa.
+
 ## Export
 
 The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displayed

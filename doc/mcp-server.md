@@ -63,6 +63,8 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | `generate_mesh` | Run Gmsh and return statistics only (node/element counts, element groups, timing) — nothing written. |
 | `export_mesh` | Generate and write the mesh in any registered format (`mdpaElements`, `mdpaGeometries`, `msh`, `msh2`, `geoUnrolled`, `vtk`, `unv`, `inp`, `bdf`, `su2`, `mesh`, `stl`, `diff`, `off`). `geoUnrolled` also writes the required `.xao` companion beside the output for B-rep sources. |
 | `export_brep` | Export a B-rep source to another B-rep format (STEP/IGES/BREP) with all edits baked in. |
+| `save_preprocess` | Bundle the CAD source plus whichever of its `.parts.json`/`.edits.json`/`.mesh.json`/`.geo` sidecars currently exist into a single `.zip` archive. Mirrors the extension's File ▸ Save Preprocess…. |
+| `load_preprocess` | Restore a `.zip` from `save_preprocess` (or the extension's File ▸ Save Preprocess…) to a new CAD file path plus its matching sidecar filenames. Mirrors the extension's File ▸ Load Preprocess…. |
 
 Edit ops are passed as **raw JSON** (e.g.
 `{"op": "addBox", "center": [0,0,0], "size": [20,10,5]}`) and validated by the
@@ -86,6 +88,14 @@ State persists to the same sidecars the extension reads on open:
 This makes the workflow bidirectional: ask an agent to model something, then open
 the file in VS Code to inspect it — or set up parts interactively and let the
 agent mesh and export.
+
+`save_preprocess`/`load_preprocess` package/restore the CAD source plus
+whichever of these four sidecars exist on disk as a single portable `.zip` — a
+missing sidecar (e.g. mesh options never set) is simply omitted from the
+archive, never an error. The `.geo` script inside the archive is never
+restored verbatim on `load_preprocess`; the mesh options sidecar (if any) is
+re-written through the normal options path instead, which regenerates `.geo`
+fresh — same one-way-generation rule as every other write path.
 
 ## Headless capability matrix
 
@@ -122,5 +132,6 @@ part's `meshSize` acts as a one-off global size override.
   pipeline (no WASM).
 - `npm run mcp:smoke` runs the real end-to-end scenario over actual stdio
   JSON-RPC against `examples/STP/bull.stp` (build → load → edit → mesh →
-  export `.msh` + `.geo_unrolled`/`.xao` + `.brep`), asserting the source file
-  stays byte-identical.
+  export `.msh` + `.geo_unrolled`/`.xao` + `.brep` → `save_preprocess` →
+  `load_preprocess`), asserting the source file stays byte-identical and that
+  the preprocess archive round-trips the source + edits sidecar into a fresh copy.

@@ -74,6 +74,14 @@
       {
         "command": "cad-preview.export",
         "title": "CAD Preview: Export…"
+      },
+      {
+        "command": "cad-preview.savePreprocess",
+        "title": "CAD Preview: Save Preprocess (.zip)…"
+      },
+      {
+        "command": "cad-preview.loadPreprocess",
+        "title": "CAD Preview: Load Preprocess (.zip)…"
       }
     ],
     "keybindings": [
@@ -100,6 +108,18 @@
         "key": "ctrl+e",
         "mac": "cmd+e",
         "when": "activeCustomEditorId == 'cad-preview.mesh'"
+      },
+      {
+        "command": "cad-preview.savePreprocess",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "activeCustomEditorId == 'cad-preview.mesh'"
+      },
+      {
+        "command": "cad-preview.loadPreprocess",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o",
+        "when": "activeCustomEditorId == 'cad-preview.mesh'"
       }
     ],
     "menus": {
@@ -114,6 +134,10 @@
         },
         {
           "command": "cad-preview.export",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.savePreprocess",
           "when": "activeCustomEditorId == 'cad-preview.mesh'"
         }
       ]
@@ -137,6 +161,7 @@
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.1.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "fflate": "^0.8.3",
     "opencascade.js": "^1.1.1",
     "three": "^0.160.0",
     "three-bvh-csg": "^0.0.16",

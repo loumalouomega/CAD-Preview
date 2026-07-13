@@ -97,6 +97,8 @@ export type WebviewToHost =
   | { type: "openFile" }
   | { type: "saveSidecars" }
   | { type: "exportRequest" }
+  | { type: "savePreprocessRequest" }
+  | { type: "loadPreprocessRequest" }
   | { type: "exportResult"; requestId: string; data: string; binary: boolean }
   | { type: "exportError"; requestId: string; message: string }
   | { type: "meshingChanged"; options: MeshOptions }
