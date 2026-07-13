@@ -683,6 +683,37 @@ Non-negotiable invariants:
   `wasmBinary` to the raw Emscripten factory; letting the factory try to resolve
   its own path fails the same way `initOpenCascade`'s zero-arg wrapper does (see
   "WASM loading" above).
+- **`@loumalouomega/gmsh-wasm` must be loaded via `require()`, not a static
+  `import` — verified against the 0.2.0 package.** Its `"exports"` map offers
+  both an `"import"` (`dist/gmsh.mjs`) and a `"require"` (`dist/gmsh.cjs`)
+  condition; esbuild picks between them based on the *statement kind*
+  (`import`/`require`), not the `conditions` build option (tried and
+  confirmed a no-op here). `dist/gmsh.mjs`'s dependency chain pulls in
+  `dist/gmsh-core.mjs`, whose Node pthread-worker bootstrap tail (new in
+  0.2.0) has a genuine top-level `await import('worker_threads')` — something
+  the extension/MCP bundles' `"cjs"` esbuild output format cannot represent,
+  so a static `import initialize from "@loumalouomega/gmsh-wasm"` fails the
+  build outright. `gmshService.ts` instead loads it with
+  `createRequire(__filename)("@loumalouomega/gmsh-wasm")`, which resolves the
+  `"require"` condition to `dist/gmsh.cjs` → `dist/gmsh-core.cjs`, whose
+  equivalent pthread check uses a plain synchronous `require('worker_threads')`
+  — no top-level await, builds cleanly.
+- **`initialize()` must be called with explicit `print`/`printErr` overrides
+  — verified against the 0.2.0 package, and load-bearing for the MCP server.**
+  0.1.x's Emscripten Node default routed both through `console.log`/
+  `console.error`, which `mcpServer.ts`'s top-of-file console rebinding (see
+  "MCP server" below) could intercept. 0.2.0 changed the Node default to
+  `fs.writeSync(1, …)`/`fs.writeSync(2, …)` — writing straight to the raw fds,
+  bypassing `console.*` entirely — so every `gmsh.model.mesh.generate()` call
+  started dumping `Info :`/`Warning :` lines directly onto **fd 1**, corrupting
+  the MCP JSON-RPC stream the instant a model meshed (confirmed via
+  `npm run mcp:smoke`, which failed with a stdout-protocol-pollution error
+  before this fix). `getGmsh` now passes
+  `print: (...a) => console.error(...a)` and `printErr: (...a) =>
+  console.error(...a)` explicitly to `initialize({ wasmBinary, print,
+  printErr })`, so gmsh's log output goes through `console.error` (and, in the
+  MCP server, is still safely on stderr) regardless of which stream this
+  package's own default would pick in a future version.
 - **Default 3D algorithm is Frontal (`Mesh.Algorithm3D = 4`), not GMSH's own
   default.** The WASM build has a documented 3D Delaunay boundary-recovery bug on
   geometry re-imported via `gmsh.model.occ.importShapes` — i.e. every B-rep source
@@ -1061,10 +1092,13 @@ A standalone stdio MCP server (`src/mcpServer.ts` → third esbuild bundle
 no VS Code — registration + tool reference in `doc/mcp-server.md`. Non-negotiable
 invariants:
 
-- **stdout IS the JSON-RPC channel.** Both Emscripten WASM modules print through
-  `console.log`, so `mcpServer.ts`'s **very first statements** rebind
-  `console.log/info/warn/debug` to stderr — before anything can initialize a WASM
-  factory. Never add a plain `console.log`/`process.stdout.write` anywhere the MCP
+- **stdout IS the JSON-RPC channel.** OCCT prints through `console.log`, so
+  `mcpServer.ts`'s **very first statements** rebind `console.log/info/warn/debug`
+  to stderr — before anything can initialize a WASM factory. gmsh-wasm (0.2.0+)
+  no longer goes through `console.*` on Node at all — see `getGmsh`'s explicit
+  `print`/`printErr` overrides in the "Meshing (GMSH-JS)" section above, which
+  route it back through `console.error` so this same rebinding still applies to
+  it. Never add a plain `console.log`/`process.stdout.write` anywhere the MCP
   bundle can reach; `npm run mcp:smoke` fails on any stdout pollution (it breaks
   the JSON-RPC framing immediately).
 - **Module split for testability:** `mcpServer.ts` (SDK wiring + zod schemas, the

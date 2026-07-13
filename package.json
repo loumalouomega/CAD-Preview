@@ -2,7 +2,7 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside VS Code.",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "publisher": "kratos-multiphysics",
   "license": "GPL-2.0-or-later",
   "icon": "images/icon.png",
@@ -159,7 +159,7 @@
     "docs:screenshots": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/screenshots/capture.mjs"
   },
   "dependencies": {
-    "@loumalouomega/gmsh-wasm": "^0.1.2",
+    "@loumalouomega/gmsh-wasm": "^0.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fflate": "^0.8.3",
     "opencascade.js": "^1.1.1",

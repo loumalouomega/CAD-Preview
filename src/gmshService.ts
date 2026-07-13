@@ -1,9 +1,16 @@
 import * as fs from "fs";
 import * as path from "path";
+import { createRequire } from "module";
 // The gmsh-wasm package's default export is an async emscripten-style factory,
 // mirroring opencascade.js's raw factory shape (see occtService.ts) — pass the
 // wasm binary explicitly rather than letting it try to fetch() a filesystem path.
-import initialize from "@loumalouomega/gmsh-wasm";
+// Loaded via `require()`, not a static `import`, so esbuild resolves the
+// package's "require" export condition (./dist/gmsh.cjs) instead of "import"
+// (./dist/gmsh.mjs) — the .mjs build's pthread-worker bootstrap uses a
+// top-level `await import('worker_threads')`, which the "cjs" output format
+// this bundle is built with cannot represent.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const initialize: (opts: unknown) => Promise<GmshApi> = createRequire(__filename)("@loumalouomega/gmsh-wasm");
 import { gmshShapeOptions, type MeshOptions } from "./meshOptions";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
@@ -37,7 +44,19 @@ export function getGmsh(extensionPath: string): Promise<GmshApi> {
   if (!_gmshPromise) {
     const wasmPath = path.join(extensionPath, "dist", "gmsh-core.wasm");
     const wasmBinary = fs.readFileSync(wasmPath);
-    _gmshPromise = initialize({ wasmBinary }).then((gmsh) => {
+    // gmsh-wasm 0.2.0's Node default for `print`/`printErr` writes straight to
+    // fd 1/2 via `fs.writeSync` (verified against the live build), bypassing
+    // console.log/console.error entirely — 0.1.x used console.log, which
+    // mcpServer.ts's top-of-file console rebinding could intercept, but this
+    // new default writes to stdout directly and corrupts the MCP JSON-RPC
+    // stream the instant a model generates. Route both through console.error
+    // so mcpServer.ts's rebinding (or, in the extension host, plain stderr)
+    // still applies regardless of which stream gmsh's own default would use.
+    _gmshPromise = initialize({
+      wasmBinary,
+      print: (...args: unknown[]) => console.error(...args),
+      printErr: (...args: unknown[]) => console.error(...args),
+    }).then((gmsh) => {
       gmsh.initialize();
       return gmsh;
     });
