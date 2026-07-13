@@ -51,7 +51,15 @@ import {
   readMeshOptions,
   writeMeshOptions,
   assertNotSourcePath,
+  editsSidecarPath,
+  partsSidecarPath,
+  meshOptionsSidecarPath,
+  geoScriptPath,
 } from "./mcpSidecars";
+import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
+import { parsePartsJson } from "./partsSidecar";
+import { parseEditsJson } from "./editsSidecar";
+import { parseMeshJson } from "./meshOptionsSidecar";
 
 type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
 
@@ -748,6 +756,88 @@ export async function exportBRepTool(
     bytes: bytes.byteLength,
     extension: EXPORT_EXTENSION[target],
     editsBaked: ops.length,
+    warnings: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// save_preprocess / load_preprocess (headless counterpart of provider.ts's
+// File ▸ Save/Load Preprocess…, sharing the same pure preprocessArchive.ts)
+
+async function readOptionalFile(filePath: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+export async function savePreprocessTool(params: { path: string; outputPath: string }) {
+  const modelPath = params.path;
+  requireRoute(modelPath);
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(modelPath, outputPath);
+
+  const sourceName = path.basename(modelPath);
+  const [source, parts, edits, meshOptions, geo] = await Promise.all([
+    readModelBytes(modelPath),
+    readOptionalFile(partsSidecarPath(modelPath)),
+    readOptionalFile(editsSidecarPath(modelPath)),
+    readOptionalFile(meshOptionsSidecarPath(modelPath)),
+    readOptionalFile(geoScriptPath(modelPath)),
+  ]);
+
+  const zipBytes = buildPreprocessZip({ sourceName, source, parts, edits, meshOptions, geo });
+  await fs.writeFile(outputPath, zipBytes);
+  return {
+    written: outputPath,
+    bytes: zipBytes.byteLength,
+    included: {
+      source: sourceName,
+      parts: parts !== undefined,
+      edits: edits !== undefined,
+      meshOptions: meshOptions !== undefined,
+      geo: geo !== undefined,
+    },
+    warnings: [],
+  };
+}
+
+export async function loadPreprocessTool(params: { zipPath: string; outputPath: string }) {
+  const zipPath = path.resolve(params.zipPath);
+  const outputPath = path.resolve(params.outputPath);
+  if (zipPath === outputPath) {
+    throw new Error("outputPath must be different from zipPath.");
+  }
+  requireRoute(outputPath);
+
+  const zipBytes = new Uint8Array(await fs.readFile(zipPath));
+  const contents = readPreprocessZip(zipBytes);
+
+  await fs.writeFile(outputPath, contents.source);
+  if (contents.parts !== undefined) {
+    await writeParts(outputPath, parsePartsJson(contents.parts));
+  }
+  if (contents.edits !== undefined) {
+    const parsed = parseEditsJson(contents.edits);
+    await writeEdits(outputPath, parsed.ops, parsed.variables);
+  }
+  if (contents.meshOptions !== undefined) {
+    // mcpSidecars' writeMeshOptions writes <out>.mesh.json AND regenerates the
+    // one-way <out>.geo script in one call — the archive's own raw .geo text
+    // (if any) is intentionally not restored verbatim, same rule as every
+    // other options write path.
+    await writeMeshOptions(outputPath, parseMeshJson(contents.meshOptions));
+  }
+
+  return {
+    written: outputPath,
+    manifestSource: contents.manifest.source,
+    restored: {
+      parts: contents.parts !== undefined,
+      edits: contents.edits !== undefined,
+      meshOptions: contents.meshOptions !== undefined,
+    },
     warnings: [],
   };
 }

@@ -68,8 +68,10 @@ dropdown:
 | **Save** | Immediately flush the parts/edits/mesh sidecars (`.parts.json` / `.edits.json` / `.mesh.json`). The CAD file itself is read-only and never written; the sidecars also autosave on a ~500 ms debounce, so this just forces an immediate write. | Ctrl+S |
 | **Save As…** | Convert the model to a new file/format via the [Export](#exporting-a-model) flow | Ctrl+Shift+S |
 | **Export…** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) | Ctrl+E |
+| **Save Preprocess…** | Bundle the CAD file plus whichever of its `.parts.json` / `.edits.json` / `.mesh.json` / `.geo` sidecars currently exist into a single `.zip` archive, so the whole working state can be shared or archived as one file | Ctrl+Alt+S |
+| **Load Preprocess…** | Restore a `.zip` built by Save Preprocess: pick a destination for the CAD file, write back whichever sidecars it contains, and open the result | Ctrl+Alt+O |
 
-![The File dropdown open, showing Open, Save, Save As, and Export.](/screenshots/file-menu.png)
+![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, and Load Preprocess.](/screenshots/file-menu.png)
 
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette).
 The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't

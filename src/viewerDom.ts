@@ -26,6 +26,8 @@ export function viewerBodyHtml(): string {
         <button id="menu-save" role="menuitem" title="Save parts/edits/mesh sidecars now">${icon("save")} Save</button>
         <button id="menu-saveas" role="menuitem" title="Export the model to a new file/format">${icon("saveAs")} Save As…</button>
         <button id="menu-export" role="menuitem" title="Export the model to a new file/format">${icon("export")} Export…</button>
+        <button id="menu-save-preprocess" role="menuitem" title="Bundle the CAD file + edits/parts/mesh sidecars into a single .zip">${icon("save")} Save Preprocess…</button>
+        <button id="menu-load-preprocess" role="menuitem" title="Restore a CAD file + its sidecars from a .zip and open it">${icon("open")} Load Preprocess…</button>
       </div>
     </div>
   </div>

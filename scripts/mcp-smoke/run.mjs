@@ -3,10 +3,12 @@
  * spawns the real `dist/mcp-server.js` (real OCCT + Gmsh WASM) and drives it
  * over actual stdio JSON-RPC — initialize → tools/list → load_model →
  * apply_edit_ops → generate_mesh → export_mesh (msh + geoUnrolled) →
- * export_brep — against a temp copy of `examples/STP/bull.stp`, asserting
- * real geometry/mesh output, sidecar validity, and that the CAD source is
- * byte-identical afterward. Any WASM stdout pollution breaks the JSON-RPC
- * framing immediately, so this doubles as the stdout-rebind regression test.
+ * export_brep → save_preprocess → load_preprocess — against a temp copy of
+ * `examples/STP/bull.stp`, asserting real geometry/mesh output, sidecar
+ * validity, that the CAD source is byte-identical afterward, and that a
+ * preprocess archive round-trips the source + edits sidecar into a fresh
+ * copy. Any WASM stdout pollution breaks the JSON-RPC framing immediately,
+ * so this doubles as the stdout-rebind regression test.
  *
  * Prerequisite: `npm run build` (the `mcp:smoke` npm script chains it).
  */
@@ -110,7 +112,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 11, `tools/list exposes 11 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 13, `tools/list exposes 13 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -152,6 +154,33 @@ try {
   const brepOut = path.join(dir, "out.brep");
   const breped = await call("export_brep", { path: model, targetFormat: "brep", outputPath: brepOut });
   assert(breped.editsBaked === 1 && fs.statSync(brepOut).size > 0, "export_brep writes with the edit baked in");
+
+  await call("set_part", { path: model, name: "Bull", volumes: ["solid-0"] });
+
+  const zipOut = path.join(dir, "bull.preprocess.zip");
+  const saved = await call("save_preprocess", { path: model, outputPath: zipOut });
+  assert(
+    saved.included.edits && saved.included.parts && fs.statSync(zipOut).size > 0,
+    "save_preprocess writes a non-empty .zip including the edits + parts sidecars"
+  );
+  assert(!saved.included.meshOptions, "save_preprocess omits mesh options never explicitly set via set_mesh_options");
+
+  const restoredDir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-preview-mcp-smoke-restore-"));
+  const restoredModel = path.join(restoredDir, "bull-restored.stp");
+  const loaded2 = await call("load_preprocess", { zipPath: zipOut, outputPath: restoredModel });
+  assert(
+    loaded2.manifestSource === "bull.stp" && loaded2.restored.edits && loaded2.restored.parts,
+    "load_preprocess restores the manifest + edits/parts flags"
+  );
+  assert(
+    Buffer.compare(fs.readFileSync(restoredModel), originalBytes) === 0,
+    "load_preprocess restores a byte-identical CAD source copy"
+  );
+  const restoredEdits = JSON.parse(fs.readFileSync(`${restoredModel}.edits.json`, "utf8"));
+  assert(restoredEdits.ops.length === 1 && restoredEdits.ops[0].op === "addBox", "load_preprocess restores the edits sidecar");
+  const restoredParts = JSON.parse(fs.readFileSync(`${restoredModel}.parts.json`, "utf8"));
+  assert(restoredParts.parts.length === 1 && restoredParts.parts[0].name === "Bull", "load_preprocess restores the parts sidecar");
+  fs.rmSync(restoredDir, { recursive: true, force: true });
 
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");
 

@@ -17,10 +17,12 @@ import {
   exportMeshTool,
   exportBRepTool,
   rewriteGeoMerge,
+  savePreprocessTool,
+  loadPreprocessTool,
   type Pipeline,
   type ToolContext,
 } from "./mcpTools";
-import { readEdits, readParts, editsSidecarPath, geoScriptPath } from "./mcpSidecars";
+import { readEdits, readParts, editsSidecarPath, geoScriptPath, partsSidecarPath } from "./mcpSidecars";
 import { MESH_EXPORT_FORMATS } from "./meshExportFormats";
 import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
@@ -418,5 +420,60 @@ describe("rewriteGeoMerge", () => {
       'Merge "model.geo_unrolled.xao";\n'
     );
     expect(rewriteGeoMerge("// no merge\n", "x.xao")).toBe("// no merge\n");
+  });
+});
+
+describe("save_preprocess", () => {
+  it("bundles the source + whichever sidecars exist, omitting the rest", async () => {
+    await applyEditOps(ctx(), { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    await setPart({ path: stpModel, name: "P", volumes: ["solid-0"] });
+    // Mesh options sidecar deliberately never written for this model.
+
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    const result = await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+
+    expect(result.included).toEqual({ source: "model.stp", parts: true, edits: true, meshOptions: false, geo: false });
+    expect((await fs.stat(zipOut)).size).toBeGreaterThan(0);
+  });
+
+  it("refuses to write the archive over the CAD source file", async () => {
+    await expect(savePreprocessTool({ path: stpModel, outputPath: stpModel })).rejects.toThrow(/source/i);
+  });
+});
+
+describe("load_preprocess", () => {
+  it("round-trips the source + edits + parts sidecars to a new location", async () => {
+    await applyEditOps(ctx(), { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    await setPart({ path: stpModel, name: "P", volumes: ["solid-0"] });
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+
+    const restored = path.join(dir, "restored.stp");
+    const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
+
+    expect(result.manifestSource).toBe("model.stp");
+    expect(result.restored).toEqual({ parts: true, edits: true, meshOptions: false });
+    expect(await fs.readFile(restored, "utf8")).toBe(await fs.readFile(stpModel, "utf8"));
+
+    const restoredEdits = await readEdits(restored);
+    expect(restoredEdits.ops).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
+    const restoredParts = await readParts(restored);
+    expect(restoredParts[0].name).toBe("P");
+    await expect(fs.access(partsSidecarPath(restored))).resolves.toBeUndefined();
+    await expect(fs.access(editsSidecarPath(restored))).resolves.toBeUndefined();
+  });
+
+  it("refuses when zipPath and outputPath are the same file", async () => {
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+    await expect(loadPreprocessTool({ zipPath: zipOut, outputPath: zipOut })).rejects.toThrow(/different/i);
+  });
+
+  it("rejects an outputPath with an unsupported extension", async () => {
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+    await expect(
+      loadPreprocessTool({ zipPath: zipOut, outputPath: path.join(dir, "restored.txt") })
+    ).rejects.toThrow(/unsupported/i);
   });
 });
