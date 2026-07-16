@@ -172,7 +172,7 @@
     "@types/three": "^0.160.0",
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^2.24.0",
-    "esbuild": "^0.20.0",
+    "esbuild": "^0.28.1",
     "playwright": "^1.61.1",
     "typescript": "^5.4.0",
     "vitepress": "^1.3.4",
