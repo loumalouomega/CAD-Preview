@@ -181,6 +181,12 @@ GitHub Actions runs on every push and pull request to `master`:
 builds the extension, runs unit tests, and uploads a `.vsix` artifact.
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
+Dependencies are kept current and vetted by two mechanisms in `.github/`:
+[Dependabot](.github/dependabot.yml) opens weekly update PRs (and raises security
+alerts) for `npm` and GitHub Actions dependencies, and the
+[Dependency Review](.github/workflows/dependency-review.yml) workflow blocks any pull
+request that introduces a package with a known moderate-or-worse vulnerability.
+
 ## Licensing
 
 CAD-Preview bundles [`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomega/GMSH-JS),

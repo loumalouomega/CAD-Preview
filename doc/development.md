@@ -120,9 +120,12 @@ CAD-Preview/
 ├── examples/                 # Sample CAD/mesh fixtures
 ├── esbuild.mjs               # Build configuration
 ├── tsconfig.json             # TypeScript configuration (noEmit)
-└── .github/workflows/
-    ├── ci.yml                # Build + test + release CI
-    └── docs.yml              # Docs build + GitHub Pages deploy
+└── .github/
+    ├── dependabot.yml            # Automated dependency-update PRs (npm + GitHub Actions)
+    └── workflows/
+        ├── ci.yml                # Build + test + release CI
+        ├── docs.yml              # Docs build + GitHub Pages deploy
+        └── dependency-review.yml # Blocks PRs introducing vulnerable/risky dependencies
 ```
 
 ## Build System Details
@@ -198,6 +201,25 @@ See `.github/workflows/ci.yml`. Two jobs:
 2. `npx vsce package --out cad-preview-<tag>.vsix`
 3. Create a GitHub Release with auto-generated release notes
 4. Attach the `.vsix` as a release asset
+
+## Dependency Hygiene
+
+Two mechanisms keep dependencies current and non-malicious, configured in `.github/`:
+
+- **`dependabot.yml`** opens weekly PRs for outdated `npm` packages (dev-dependency
+  minor/patch bumps grouped into one PR) and GitHub Actions versions. It also drives
+  GitHub's native Dependabot security alerts/PRs for the `npm` ecosystem regardless of
+  the update schedule.
+- **`dependency-review.yml`** runs `actions/dependency-review-action` on every PR to
+  `master` and fails the check (`fail-on-severity: moderate`) if the diff introduces a
+  package with a known moderate-or-worse vulnerability, posting a summary comment on
+  the PR.
+
+Before adding any new **bundled** dependency (see the License section in
+[`CLAUDE.md`](../CLAUDE.md) — anything that ends up in the packaged `.vsix`, not just a
+dev/build-time tool), check its license for GPL compatibility first regardless of what
+these two checks report, since they scan for vulnerabilities/version currency, not
+license terms.
 
 **`docs`** (see `.github/workflows/docs.yml`, every push to `master`):
 1. Checkout + Node 20 setup
