@@ -168,7 +168,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^18.19.0",
+    "@types/node": "^26.1.1",
     "@types/three": "^0.160.0",
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^2.24.0",
