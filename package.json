@@ -163,13 +163,13 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fflate": "^0.8.3",
     "opencascade.js": "^1.1.1",
-    "three": "^0.160.0",
+    "three": "^0.185.1",
     "three-bvh-csg": "^0.0.16",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
-    "@types/three": "^0.160.0",
+    "@types/three": "^0.185.1",
     "@types/vscode": "^1.80.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.1",
