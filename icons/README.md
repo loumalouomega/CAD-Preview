@@ -1,17 +1,18 @@
 # Icon sources
 
-This directory holds two independent TikZ-drawn icon sets for CAD-Preview.
-Both follow the same visual language (`line width=1.3pt, line cap=round,
-line join=round, >=Stealth, x=1mm,y=1mm` on the `tikzpicture`, canvas
-coordinates roughly -13..13), but they're built and wired very differently —
-see whichever section applies before editing.
+This directory holds three independent TikZ-drawn icon sets for CAD-Preview.
+The two panel/toolbar sets follow the same visual language (`line width=1.3pt,
+line cap=round, line join=round, >=Stealth, x=1mm,y=1mm` on the `tikzpicture`,
+canvas coordinates roughly -13..13); the extension icon is a separate,
+full-color design. They're built and wired very differently — see whichever
+section applies before editing.
 
-| | `tikz/` (Edits panel) | `tikz-ui/` (toolbar/panels) |
-|---|---|---|
-| Count | 46, one per `PanelOpId` | 17, one per toolbar/panel icon |
-| Output format | PNG (flat, fixed gray/black) | inline SVG (`currentColor`-based) |
-| Wired into the running extension? | **No** — still unicode-glyph placeholders in `opIcons.ts` | **Yes** — replaces the emoji that used to be there |
-| Theme-adaptive? | No (fixed colors) | Yes (tracks VS Code light/dark via `currentColor`) |
+| | `tikz/` (Edits panel) | `tikz-ui/` (toolbar/panels) | `tikz-icon/` (extension icon) |
+|---|---|---|---|
+| Count | 46, one per `PanelOpId` | 17, one per toolbar/panel icon | 1 |
+| Output format | PNG (flat, fixed gray/black) | inline SVG (`currentColor`-based) | PNG (fixed teal/white, 512x512) |
+| Wired into the running extension? | **No** — still unicode-glyph placeholders in `opIcons.ts` | **Yes** — replaces the emoji that used to be there | **Yes** — `package.json`'s `"icon"` field |
+| Theme-adaptive? | No (fixed colors) | Yes (tracks VS Code light/dark via `currentColor`) | No (fixed teal-on-white/transparent) |
 
 ## `tikz/` — Edits panel op icons (46, PNG, not yet wired)
 
@@ -86,3 +87,46 @@ update by hand), then import `TOOLBAR_ICONS.newId` where you need it.
 `src/toolbarIcons.test.ts` enforces the generated file's invariants (valid
 non-empty SVG, no stray hardcoded `width`/`height`, no literal black, no
 duplicate `fill-opacity`) — run `npm test` after regenerating.
+
+## `tikz-icon/` — extension icon (`images/icon.png` / `icon_transparency.png`)
+
+The marketplace logo is a separate, full-color TikZ source — `tikz-icon/icon.tex`
+— rendered straight to PNG rather than through the `currentColor` SVG pipeline
+above (it's a fixed teal-on-white/transparent bitmap, not a theme-adaptive
+toolbar glyph). It shares its cube geometry and build pipeline with the
+sibling project [MDPA-Preview](../../VSCode-MDPA-Preview/icons/tikz-icon/icon.tex):
+the same isometric L-tromino of three unit cubes in cabinet projection — two
+plain hexahedra on top and one tetrahedralized cube (bottom-right, split into
+6 tets by fanning its three visible-face diagonals from one shared vertex) —
+a nod to hex-dominant meshing with local tet refinement.
+
+The two logos diverge only in the badge over the tet-meshed cube: MDPA-Preview
+draws a magnifier (a *preview* of mesh detail); CAD-Preview draws a
+**drafting compass** instead — the classic tool for striking circles/arcs on a
+drawing board, a more fitting nod for an extension that reads/edits B-rep CAD
+geometry than a magnifying glass would be. The needle leg plants on a point,
+the pencil leg trails a shallow crescent arc, both over the same opaque white
+contrast disc trick MDPA's lens uses (legible against both the teal mesh and
+the white/transparent page).
+
+```bash
+cd icons
+make icon       # tikz-icon/icon.tex → PDF → 512x512 PNGs, needs pdflatex + pdftocairo
+```
+
+`make icon` writes both `../images/icon.png` (white background) and
+`../images/icon_transparency.png` (transparent) — the only difference is
+`pdftocairo`'s `-transparent` flag. Note `-transparent` is a *coverage* mask,
+not true per-pixel alpha: any fill-opacity blending (e.g. the compass badge's
+translucent disc) is flattened against white first, and only pixels no shape
+ever touched stay transparent — so the badge still shows as a faint flattened
+patch if `icon_transparency.png` is composited onto a non-white background.
+This matches MDPA-Preview's own shipped `icon_transparency.png`, not a bug
+specific to this file.
+
+To change the logo: edit `tikz-icon/icon.tex`, run `make icon`, and commit the
+two regenerated PNGs (there's no checked-in SVG intermediate for this one,
+unlike the toolbar icons — the PDF build artifacts live in the gitignored
+`build-icon/`). `package.json`'s `"icon"` field points at `images/icon.png`;
+`icon_transparency.png` isn't referenced by the manifest but is kept for
+parity with MDPA-Preview and any future use that needs a transparent asset.

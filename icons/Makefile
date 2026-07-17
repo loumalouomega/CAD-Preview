@@ -17,7 +17,13 @@ UI_SVGDIR := svg-ui
 UI_TEX := $(wildcard $(UI_TEXDIR)/*.tex)
 UI_SVG := $(patsubst $(UI_TEXDIR)/%.tex,$(UI_SVGDIR)/%.svg,$(UI_TEX))
 
-.PHONY: all ui ts clean
+# ── Extension icon (the marketplace logo): tikz-icon/icon.tex → PDF →
+#    ../images/icon.png (white bg) + icon_transparency.png (transparent),
+#    both 512x512. Needs pdflatex + pdftocairo (poppler); `-transparent`
+#    is the only difference between the two renders. ──
+ICON_BUILDDIR := build-icon
+
+.PHONY: all ui ts icon clean
 all: $(PNG)
 ui: $(UI_SVG)
 
@@ -37,5 +43,13 @@ $(UI_SVGDIR)/%.svg: $(UI_TEXDIR)/%.tex
 ts: ui
 	node build-toolbar-icons.mjs
 
+icon:
+	@mkdir -p $(ICON_BUILDDIR)
+	pdflatex -interaction=nonstopmode -halt-on-error -output-directory=$(ICON_BUILDDIR) tikz-icon/icon.tex >/dev/null
+	pdftocairo -png -singlefile -transparent -scale-to 512 $(ICON_BUILDDIR)/icon.pdf $(ICON_BUILDDIR)/icon_transparency
+	pdftocairo -png -singlefile -scale-to 512 $(ICON_BUILDDIR)/icon.pdf $(ICON_BUILDDIR)/icon
+	cp $(ICON_BUILDDIR)/icon_transparency.png ../images/icon_transparency.png
+	cp $(ICON_BUILDDIR)/icon.png ../images/icon.png
+
 clean:
-	rm -rf $(BUILDDIR) $(PNGDIR) $(UI_BUILDDIR) $(UI_SVGDIR)
+	rm -rf $(BUILDDIR) $(PNGDIR) $(UI_BUILDDIR) $(UI_SVGDIR) $(ICON_BUILDDIR)

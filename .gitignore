@@ -41,6 +41,7 @@ doc/.vitepress/cache
 # previews are committed; only the LaTeX build scratch dirs are ignored)
 icons/build/
 icons/build-ui/
+icons/build-icon/
 
 # Docs screenshot pipeline scratch (the generated PNGs under
 # doc/public/screenshots/ ARE committed; only these intermediates are ignored)
