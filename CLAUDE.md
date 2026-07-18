@@ -19,6 +19,14 @@ of the change, not a follow-up. Concretely:
 If a change is purely internal refactoring with no observable behavior or API
 difference, docs don't need to move — use judgment, but default to checking.
 
+**Update `CHANGELOG.md` with every new version tag.** Whenever `package.json`'s
+`version` is bumped for a release (i.e. a new `vX.Y.Z` tag is about to be or has
+just been cut), add a matching `## [X.Y.Z] - YYYY-MM-DD` section at the top of
+`CHANGELOG.md` (Keep a Changelog style, most recent first) summarizing the
+user-visible changes since the previous tag, plus its compare-link reference at
+the bottom of the file. Base the entry on the actual commits/PRs since the last
+tag, not on the commit message of the version-bump commit alone.
+
 **Keep the MCP server in sync with extension features.** `src/mcpServer.ts` /
 `src/mcpTools.ts` expose the same headless pipeline the extension uses; when that
 pipeline's surface changes, the MCP server and `doc/mcp-server.md` are part of the
