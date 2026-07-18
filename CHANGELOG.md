@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved
 fast and bundled multiple features per bump).
 
+## [1.0.4] - 2026-07-18
+
+### Added
+- A "What's New" panel that opens automatically the first time you use the
+  extension after an update, summarizing everything that changed since the
+  version you last had installed. It won't show again until the next update;
+  reopen it anytime via **CAD Preview: Show What's New** in the Command
+  Palette (which always shows the full changelog).
+
 ## [1.0.3] - 2026-07-17
 
 ### Changed
@@ -150,6 +159,7 @@ fast and bundled multiple features per bump).
   OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and
   Three.js in the webview for rendering.
 
+[1.0.4]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.0...v1.0.1
