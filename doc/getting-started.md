@@ -77,6 +77,16 @@ Every item is also a VS Code command (`CAD Preview: …` in the Command Palette)
 The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't
 override VS Code's global Open/Save elsewhere.
 
+### What's New
+
+The first time you open a CAD file (or run any `CAD Preview: …` command) after
+an update, a **What's New** tab opens beside the editor summarizing everything
+that changed since the version you last had installed — just close it (or
+click **Got it**) and keep working. It won't show again until the next update.
+You can reopen it anytime via **CAD Preview: Show What's New** in the Command
+Palette, which shows the full changelog rather than only what's new since your
+last session.
+
 ### Toolbar
 
 The toolbar appears at the top-right of the editor, just below the menu bar:

@@ -82,6 +82,10 @@
       {
         "command": "cad-preview.loadPreprocess",
         "title": "CAD Preview: Load Preprocess (.zip)…"
+      },
+      {
+        "command": "cad-preview.whatsNew",
+        "title": "CAD Preview: Show What's New"
       }
     ],
     "keybindings": [

@@ -28,6 +28,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/meshOptionsSidecar.ts` | Pure parse/serialize for the mesh-options sidecar + `.geo` script generation (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 | `src/toolbarIcons.ts` | **Generated** — monochrome, `currentColor`-based toolbar/panel icons (vscode-free) |
+| `src/nonce.ts` | Shared CSP script-nonce generator, used by every webview HTML builder |
+| `src/changelogParser.ts` | Pure `CHANGELOG.md` parser + markdown→HTML renderer for the What's New panel (vscode-free, unit-tested) |
+| `src/whatsNew.ts` | Version-upgrade check (`context.globalState`) + the standalone "What's New" webview panel |
 | `src/mcpServer.ts` | Standalone stdio MCP server entry (own `dist/mcp-server.js` bundle, not part of the extension) |
 | `src/mcpTools.ts` | MCP tool handlers over the headless pipeline (MCP-SDK/WASM-free, unit-tested) |
 | `src/mcpSidecars.ts` | Node-fs sidecar store for the MCP server — mirrors the three `*Store.ts` wrappers (vscode-free, unit-tested) |
@@ -43,7 +46,59 @@ export function activate(context: vscode.ExtensionContext): void
 export function deactivate(): void
 ```
 
-`activate` calls `CadPreviewProvider.register(context)` and nothing else. `deactivate` is a no-op (resources are disposed with the webview panels via VS Code's disposable system).
+`activate` calls `CadPreviewProvider.register(context)`, then fires
+`maybeShowWhatsNew(context)` (see `src/whatsNew.ts` below) without awaiting it —
+a fire-and-forget check that must never delay or block activation. `deactivate`
+is a no-op (resources are disposed with the webview panels via VS Code's
+disposable system).
+
+---
+
+## `src/whatsNew.ts` and `src/changelogParser.ts`
+
+Shows a "What's New" webview panel after a version upgrade, so users notice
+what changed instead of silently getting a new build.
+
+```typescript
+// changelogParser.ts (pure)
+export interface ChangelogEntry { version: string; date: string; bodyMarkdown: string }
+export function parseChangelog(text: string): ChangelogEntry[]
+export function compareVersions(a: string, b: string): number
+export function entriesSince(entries: readonly ChangelogEntry[], lastVersion: string): ChangelogEntry[]
+export function renderEntryHtml(entry: ChangelogEntry): string
+
+// whatsNew.ts (vscode-dependent)
+export async function maybeShowWhatsNew(context: vscode.ExtensionContext): Promise<void>
+export async function showLatestWhatsNew(context: vscode.ExtensionContext): Promise<void>
+export function showWhatsNewPanel(context, version, entries: readonly ChangelogEntry[]): void
+```
+
+- `maybeShowWhatsNew` runs once per `activate()`. It compares
+  `context.extension.packageJSON.version` against the version stashed in
+  `context.globalState` under `"cadPreview.lastVersion"` (this project's first
+  use of `globalState`/`workspaceState` — everything else persists via
+  sidecar files instead). On a fresh install (no stored value) it silently
+  records the current version and shows nothing — there's nothing to diff
+  against yet. On an upgrade, it reads and parses the repo-root
+  `CHANGELOG.md` (already shipped in the packaged `.vsix` — nothing in
+  `.vscodeignore` excludes it) and shows every entry newer than the
+  last-seen version, falling back to just the latest entry if none qualify
+  (e.g. the stored version predates everything still in the file). A same
+  version or a downgrade just updates the stored value, silently. Every
+  failure path (missing/corrupt `CHANGELOG.md`, anything else) is swallowed —
+  this check must never throw out of `activate()`.
+- `showLatestWhatsNew` backs the manual `cad-preview.whatsNew` command
+  (registered in `provider.ts`, standalone like `cad-preview.open`) — it
+  always shows the **full** changelog, not just what's new since last seen.
+- `showWhatsNewPanel` is the first (and only) standalone
+  `vscode.window.createWebviewPanel` in this extension — every other webview
+  goes through `CustomReadonlyEditorProvider`. It opens in
+  `vscode.ViewColumn.Beside` (never `Active`), so it can never contend with a
+  CAD file's own custom-editor tab for the same slot when both open around
+  the same time. It builds its own small nonce-gated CSP HTML string (shares
+  `getNonce()` from `src/nonce.ts` with `provider.ts`'s `getHtml`, styled
+  entirely with `var(--vscode-*)` theme variables, no external stylesheet
+  needed) and never touches `CHANGELOG.md` — this feature only ever reads it.
 
 ---
 

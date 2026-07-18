@@ -18,6 +18,8 @@ import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
+import { getNonce } from "./nonce";
+import { showLatestWhatsNew } from "./whatsNew";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -81,9 +83,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   }
 
   /**
-   * Registers the File-menu commands. `open` is standalone (host-only); the
-   * others delegate to whichever editor is focused (`activeSession`) so the
-   * keybindings and Command Palette entries mirror the in-webview File menu.
+   * Registers the File-menu commands. `open` and `whatsNew` are standalone
+   * (host-only, no focused editor needed); the others delegate to whichever
+   * editor is focused (`activeSession`) so the keybindings and Command
+   * Palette entries mirror the in-webview File menu.
    */
   private registerCommands(): vscode.Disposable[] {
     const withSession = (fn: (s: EditorSession) => void) => () => {
@@ -96,6 +99,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.export", withSession((s) => s.export())),
       vscode.commands.registerCommand("cad-preview.savePreprocess", withSession((s) => s.savePreprocess())),
       vscode.commands.registerCommand("cad-preview.loadPreprocess", () => void this.loadPreprocessDialog()),
+      vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
     ];
   }
 
@@ -714,13 +718,4 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 </body>
 </html>`;
   }
-}
-
-function getNonce(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let text = "";
-  for (let i = 0; i < 32; i++) {
-    text += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return text;
 }

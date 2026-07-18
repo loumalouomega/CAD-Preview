@@ -1093,6 +1093,54 @@ Non-negotiable invariants:
   the `ready` handshake. The File icons (`home`/`open`/`save`/`saveAs`) are part
   of the generated `tikz-ui` toolbar-icon set — see the section above.
 
+## What's New panel (post-update changelog)
+
+`activate()` (`src/extension.ts`) fires `maybeShowWhatsNew(context)`
+(`src/whatsNew.ts`), fire-and-forget (never `await`ed — it must not delay or
+block activation), which pops a "What's New" webview panel after an update.
+
+- **First use of `context.globalState`/`workspaceState` in this codebase.**
+  Everything else persists via sidecar JSON files next to the source
+  document; this is the one exception, since there's no per-document source
+  to attach a "last version seen" fact to. Key: `"cadPreview.lastVersion"`.
+- **Fresh installs are silent.** No stored value means nothing to diff
+  against, so `maybeShowWhatsNew` just records the current version and shows
+  nothing — it does NOT dump the entire changelog history on a brand-new
+  user.
+- **`CHANGELOG.md` is read-only from this feature, and only ever read, never
+  written** — same "one-way" spirit as the generated `.geo` sidecar, but in
+  the opposite direction: this feature has zero write path to it. It already
+  ships inside the packaged `.vsix` (nothing in `.vscodeignore` excludes
+  root-level `.md` files), so no build step was needed to make it available
+  at runtime via `vscode.workspace.fs.readFile`.
+- **Version comparison is hand-rolled, not a semver dependency**
+  (`compareVersions` in `src/changelogParser.ts`, plain numeric `x.y.z`
+  triples) — this project's versions are always simple triples, so adding a
+  bundled semver package would just be another dependency to license-check
+  for no real benefit.
+- **`src/changelogParser.ts` is vscode-free and unit-tested**
+  (`parseChangelog`/`entriesSince`/`renderEntryHtml`), mirroring this
+  project's parse-vs-store split (`partsSidecar.ts`/`partsStore.ts`, etc.);
+  `src/whatsNew.ts` is the `vscode`-dependent half (globalState check + the
+  actual `createWebviewPanel` call).
+- **The panel opens in `vscode.ViewColumn.Beside`, never `Active`** — the
+  check runs from `activate()`, which VS Code triggers exactly when a CAD
+  file's custom editor is also about to open (there's no `onStartupFinished`
+  activation event in `package.json`, only the implicit
+  `contributes.customEditors`/`contributes.commands` ones) — `Beside` means
+  the two never fight over the same tab slot.
+- **This is the first standalone `vscode.window.createWebviewPanel` in the
+  extension** — every other webview goes through
+  `CustomReadonlyEditorProvider`. It gets its own small nonce-gated CSP HTML
+  (styled with `var(--vscode-*)` theme variables, no external stylesheet),
+  sharing only `getNonce()` — pulled out to `src/nonce.ts` — with
+  `provider.ts`'s `getHtml`.
+- A manual **`CAD Preview: Show What's New`** command
+  (`cad-preview.whatsNew`, standalone like `cad-preview.open`, registered in
+  `provider.ts`'s `registerCommands()`) always shows the **full** changelog
+  via `showLatestWhatsNew`, regardless of `globalState` — distinct semantics
+  from the automatic "since you last looked" popup.
+
 ## MCP server (headless agent access)
 
 A standalone stdio MCP server (`src/mcpServer.ts` → third esbuild bundle
@@ -1170,6 +1218,15 @@ save dialog. With the tab focused, `Ctrl+O`/`Ctrl+S`/`Ctrl+Shift+S`/`Ctrl+E` fir
 same actions (and `Ctrl+S` must NOT trigger VS Code's own read-only-save error), and
 the `CAD Preview: …` commands appear in the Command Palette. The dropdown closes on
 item click, outside click, and Escape.
+
+Exercise the **What's New** panel: run **CAD Preview: Show What's New** from the
+Command Palette → confirm a panel opens beside the editor with the full changelog
+(headings/bullets/inline code rendered, theme-matched in both light and dark), and
+**Got it** closes it. Then temporarily bump `package.json`'s `version` to a fake
+newer value (e.g. `"9.9.9"`), reload the Extension Development Host window
+(Ctrl+R), and open any CAD file or run any `cad-preview.*` command → confirm the
+panel now appears **automatically** (the upgrade path); reload again unchanged →
+confirm it does **not** reappear. Revert the temporary version edit afterward.
 
 Confirm the toolbar/panel icons (Fit, Wireframe, Tree, FE Mesh, Select,
 Point/Vol/Surf/Line, the File menu's Open/Save/Save As/Export, the FE Mesh panel's
