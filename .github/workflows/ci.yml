@@ -76,7 +76,7 @@ jobs:
         run: npx vsce publish --packagePath cad-preview-${{ github.ref_name }}.vsix -p ${{ secrets.VSCE_PAT }}
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
           generate_release_notes: true
