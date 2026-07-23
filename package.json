@@ -2,7 +2,7 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside VS Code.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "kratos-multiphysics",
   "license": "GPL-2.0-or-later",
   "icon": "images/icon.png",
@@ -183,7 +183,10 @@
     "vitest": "^4.1.10"
   },
   "overrides": {
-    "undici": "^6.21.0"
+    "undici": "^6.21.0",
+    "vite": "^6.4.3",
+    "fast-uri": "^3.1.4",
+    "@hono/node-server": "^2.0.11"
   },
   "allowScripts": {
     "@vscode/vsce-sign@2.0.9": true,
