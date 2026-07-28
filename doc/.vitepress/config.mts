@@ -39,6 +39,7 @@ export default defineConfig({
         items: [
           { text: 'Development Guide', link: '/development' },
           { text: 'Contributing',      link: '/contributing' },
+          { text: 'Roadmap',           link: '/roadmap' },
         ],
       },
     ],

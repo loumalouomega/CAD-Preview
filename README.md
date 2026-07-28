@@ -175,6 +175,8 @@ Source lives in the [`doc/`](doc/) folder, built with [VitePress](https://vitepr
 deployed automatically to GitHub Pages on every push to `master`.
 See [`.github/workflows/docs.yml`](.github/workflows/docs.yml).
 
+Planned and candidate features are tracked in the [Roadmap](doc/roadmap.md).
+
 ## CI
 
 GitHub Actions runs on every push and pull request to `master`:
