@@ -120,6 +120,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     }
   }
 
+  /** Opens a file dropped onto the viewer (drag-and-drop) at an already-known path. */
+  private async openPathInEditor(path: string): Promise<void> {
+    await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(path), CadPreviewProvider.viewType);
+  }
+
   openCustomDocument(uri: vscode.Uri): CadDocument {
     return new CadDocument(uri);
   }
@@ -296,6 +301,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             nodeCount: result.nodeCount,
             elementCount: result.elementCount,
             elapsedMs: Date.now() - startedAt,
+            quality: result.quality,
           });
         } catch (err) {
           post({ type: "meshingError", message: (err as Error).message });
@@ -381,6 +387,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "openFile") {
         void this.openFileDialog();
+        return;
+      }
+
+      if (msg.type === "openPath") {
+        void this.openPathInEditor(msg.path);
         return;
       }
 

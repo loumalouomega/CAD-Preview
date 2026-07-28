@@ -43,20 +43,29 @@ loaders. Rendering is always Three.js.
   whichever parts/edits/mesh sidecars exist as a single portable `.zip`).
   Every item is also a VS Code command with a keyboard shortcut (Ctrl+O / Ctrl+S /
   Ctrl+Shift+S / Ctrl+E / Ctrl+Alt+S / Ctrl+Alt+O, scoped to a focused CAD Preview tab).
-- Interactive camera: orbit, pan, zoom (OrbitControls with damping)
+  You can also drag a file onto the 3D view to open it, falling back to the **Open…**
+  dialog if the drop doesn't expose a filesystem path.
+- Interactive camera: orbit, pan, zoom (OrbitControls with damping); an **Ortho/Persp**
+  toggle switches between orthographic and perspective projection at any time
 - View-manipulation panel: stepped rotate (15° / 45° / 90°), pan, zoom, **Fit**
-  (reframe in place) and **Ctr** (reset to the default isometric view). The panel is
+  (reframe in place) and **Ctr** (reset to the default isometric view); a **Clip**
+  group with a live, uncapped section plane along X/Y/Z; an **Appearance** group
+  for a session-only background colour override, whole-model opacity, and the
+  ortho/perspective toggle. The panel is
   collapsible — use the **⌄ / ⌃** button to hide or show it.
 - Orientation cube: a labeled gizmo in the top-left corner that mirrors the current
   view; click a face to snap to that standard view
 - Fit-to-view on open and on demand
-- Shaded / wireframe toggle
+- Shaded / wireframe toggle; edges can be shown/hidden independently of faces
 - Axes and grid helpers
 - Loading status indicator and error reporting
 - **Parts**: define named groups by clicking volumes / surfaces / lines / points in
   the 3D view and assigning them to a part; assignments are colour-highlighted,
   listed in a tree panel, and saved to a `<model>.parts.json` sidecar (the CAD file
-  stays read-only)
+  stays read-only). Each part has a per-row eye-toggle, and a panel-level
+  **⊙ Isolate** button shows only the selected part; both are display-only and
+  compose with each other (never persisted). The Components tree has a matching
+  per-row eye-toggle and a name filter.
 - **Edits**: apply non-destructive operations — **transforms** (move / rotate / scale /
   mirror), **booleans** (unite / subtract / intersect), **fillet/chamfer**, **feature
   modeling** (extrude / revolve / sweep / loft), **assembly** (explode / mate),
@@ -64,7 +73,8 @@ loaders. Rendering is always Three.js.
   **2D profile sketches** (circle, rectangle, N-sided polygon — pick one later as an
   extrude/revolve/sweep/loft profile), and **bottom-up wireframe modeling** (points,
   lines, arcs → build a surface from a set of lines → build a volume from a set of
-  surfaces); operations are undoable, replayable, and saved
+  surfaces); Explode has a live-preview slider that spreads the bodies as you drag
+  before you commit it with Apply; operations are undoable, replayable, and saved
   to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are
   baked in only on **Export**. (Transforms, booleans, explode, and primitive creation
   work on both B-rep and mesh; fillet/chamfer, feature modeling, mate, 2D profile
@@ -76,6 +86,8 @@ loaders. Rendering is always Three.js.
   overlay on top of the existing view. Options (dimension, element size, algorithm,
   element order) are set in the **FE Mesh** panel and autosaved to a
   `<model>.mesh.json` sidecar alongside a generated, editable `<model>.geo` script;
+  a generate also reports an element-quality summary (min/mean `minSICN` plus a
+  histogram) alongside the node/element counts;
   **📤 Export** saves the mesh to disk in any format the panel's dropdown offers,
   defaulting to **Kratos MDPA** (hand-written, in either an Elements+Conditions
   or a Geometries layout, preserving named Parts as Kratos SubModelParts), or

@@ -42,6 +42,11 @@ CAD Preview activates automatically via the VS Code [Custom Editor API](https://
 
 Open any supported file — for example, from the Explorer or via `File > Open File…`. VS Code routes it to the CAD Preview custom editor and the 3D view renders immediately.
 
+You can also drag a file from the OS file explorer (or another editor tab) and
+drop it onto the 3D view to open it the same way. If the browser drop event
+doesn't expose a real filesystem path for the dropped item, CAD Preview falls
+back to showing the normal **Open…** dialog instead of silently failing.
+
 ### Supported Formats
 
 | Format | Extensions | Rendering Pipeline |
@@ -106,12 +111,13 @@ last session.
 
 The toolbar appears at the top-right of the editor, just below the menu bar:
 
-![The viewer toolbar: Fit, Wireframe, Grid, Tree, FE Mesh, and the Select / Point·Vol·Surf·Line pick modes.](/screenshots/toolbar.png)
+![The viewer toolbar: Fit, Wireframe, Edges, Grid, Tree, FE Mesh, and the Select / Point·Vol·Surf·Line pick modes.](/screenshots/toolbar.png)
 
 | Button | Action |
 |--------|--------|
 | **Fit** | Reframe the model to fill the viewport (keeps current camera orientation) |
 | **Wireframe** | Toggle wireframe rendering on/off |
+| **Edges** | Show/hide edge lines independently of the shaded faces |
 | **Grid** | Show/hide the world-space grid and axis helpers |
 | **📷 Screenshot** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
 | **Tree** | Show/hide the component tree panel (visible only for models with multiple components) |
@@ -136,8 +142,20 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Zoom buttons** — Dolly in or out by a fixed factor.
 - **Fit** — Same as the toolbar Fit button (reframe in current orientation).
 - **Ctr** — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
+- **Clip group** — Enable a live section/clipping plane along **X**, **Y**, or
+  **Z**, then drag the offset slider to sweep it across the model's bounding
+  box (`-1` = min face, `0` = centre, `1` = max face). The cut is uncapped
+  (see-through at the cross-section, not solid-filled) and also applies to the
+  FE Mesh overlay when shown. Nothing is written anywhere — turning it off (or
+  reloading) instantly restores the full model.
+- **Appearance group** — A background-colour swatch (live preview only — the
+  session-only override always wins over the [`cadPreview.background`
+  setting](#settings) until you reload), an opacity slider for the whole
+  model, and a **Persp / Ortho** button toggling between perspective and
+  orthographic projection (orbit/pan/zoom, picking, and the orientation cube
+  all keep working under either projection).
 
-![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, and Fit/Ctr.](/screenshots/view-controls.png)
+![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, and Appearance.](/screenshots/view-controls.png)
 
 ### Orientation Cube
 
@@ -154,6 +172,13 @@ Click any face of the cube to snap the camera to that standard view:
 ### Component Tree Panel
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
+
+Type into the filter field above the tree to narrow the list to rows whose
+name matches (case-insensitive substring) — matching rows and their ancestors
+stay visible so a match is never hidden inside a collapsed-looking branch;
+clear the field to show everything again. Each row also has an eye-toggle to
+hide/show that solid/mesh (and its edges/points) in the 3D view — a display-only
+toggle, same as the Parts panel's (see below), never saved to a sidecar.
 
 ![The Components tree, showing the STEP root and its solid with a face-count badge.](/screenshots/components-tree.png)
 
@@ -195,11 +220,19 @@ To assign geometry to a part:
 3. Click **＋ New** in the Parts panel to create a part, then click the **＋**
    on that part's row to assign the current selection to it.
 
-Each part has an editable name, a colour swatch (click to recolour), and a
-`v/s/l/p` badge counting its volumes / surfaces / lines / points. Assigned entities are
+Each part has an editable name, a colour swatch (click to recolour), an
+eye-toggle to hide/show just that part's entities, and a `v/s/l/p` badge
+counting its volumes / surfaces / lines / points. Assigned entities are
 painted in the part's colour in the 3D view. Expand a part to see and remove
 individual entities; click a part row to highlight all of its entities. The
 **✕** on a part deletes it.
+
+The panel header's **⊙ Isolate** button shows only the currently-selected
+part's entities, hiding everything else; click it again (or select a
+different part and click it again) to clear isolation. Isolating composes
+with the per-row eye-toggles rather than overriding them — a part you'd
+already hidden stays hidden after you clear isolation. Like the eye-toggles,
+isolation is display-only and is never written to `<model>.parts.json`.
 
 ![The Parts panel with three colour-coded parts expanded to show their assigned volumes, surfaces, and edges.](/screenshots/parts-panel.png)
 
@@ -277,7 +310,7 @@ To apply a transform:
 | **Shell** | Select the opening face(s) (**Surf** mode), enter a wall thickness (negative = walls grow inward, the usual hollow), **Apply** — hollows the solid(s) owning those faces (B-rep only) |
 | **Split** | Select volumes (**Vol** mode), define the plane, choose which side(s) to **Keep**, **Apply** (B-rep only) |
 | **Section** | Select volumes (**Vol** mode), define the plane, **Apply** — appends the planar cross-section as a sketch face, leaving the solids untouched (B-rep only) |
-| **Explode** | Enter a spread factor and **Apply** — spreads the bodies radially from the model centre (all formats) |
+| **Explode** | Drag the slider (or type the factor) for a live preview — bodies spread radially from the model centre as you drag, snapping back at 0 — then **Apply** to commit it as an operation (all formats) |
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
 
 Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all
@@ -362,6 +395,10 @@ To generate a mesh:
    live in the collapsed **Advanced settings** section.
 2. Click **▶ Generate**. The overlay appears and the panel's status line shows
    `Nodes: N · Elements: M · 3.2 s`, or an error message if generation fails.
+   Below the status line, a quality summary reports the minimum and mean
+   element quality (Gmsh's `minSICN` metric, 0–1, higher is better) plus a
+   small histogram of the distribution — useful for spotting a generate that
+   technically succeeded but produced a lot of sliver elements.
 3. Click **🔬 FE Mesh** in the toolbar to show/hide the overlay without
    discarding it; click **Clear** in the panel to remove it entirely.
 

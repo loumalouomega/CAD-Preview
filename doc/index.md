@@ -27,7 +27,7 @@ features:
 
   - icon: 🧭
     title: Orientation Cube & View Controls
-    details: A labeled orientation gizmo mirrors the current camera direction. Click any face to snap to that standard view. The collapsible view-controls panel lets you step-rotate, pan, zoom, fit, or reset the view without touching the mouse.
+    details: A labeled orientation gizmo mirrors the current camera direction. Click any face to snap to that standard view. The collapsible view-controls panel lets you step-rotate, pan, zoom, fit, or reset the view without touching the mouse — plus a live uncapped clipping plane, a background/opacity Appearance group, and a perspective/orthographic toggle.
 
   - icon: 🌲
     title: Component Tree Panel
@@ -35,7 +35,7 @@ features:
 
   - icon: 🏷️
     title: Define Parts (Volumes / Surfaces / Lines / Points)
-    details: Click solids, faces, edges, or vertices in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only.
+    details: Click solids, faces, edges, or vertices in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only. Per-part eye-toggles and a panel-level Isolate button (plus a matching filter/eye-toggle on the Components tree) let you focus on just the geometry you're working on, display-only and never persisted.
 
   - icon: ✏️
     title: Non-destructive Editing
@@ -55,7 +55,7 @@ features:
 
   - icon: 🧮
     title: FE Mesh Generation (Gmsh)
-    details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry. Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as hand-written Kratos MDPA (the default, preserving named Parts as SubModelParts) or any Gmsh format the panel offers (.msh, .msh2, .geo_unrolled, VTK, I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF). The CAD file stays read-only.
+    details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry, alongside a quality summary (min/mean element quality plus a histogram). Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as hand-written Kratos MDPA (the default, preserving named Parts as SubModelParts) or any Gmsh format the panel offers (.msh, .msh2, .geo_unrolled, VTK, I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF). The CAD file stays read-only.
 
   - icon: 🤖
     title: MCP Server for AI Agents

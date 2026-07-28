@@ -23,6 +23,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/paramExpr.ts` | Parametric expression evaluator + `exprs` field-path addressing (vscode/DOM-free, unit-tested) |
 | `src/editVariables.ts` | `ParamVariable` validate/evaluate + `resolveEditOps` op resolver (vscode/DOM-free, unit-tested) |
 | `src/gmshService.ts` | Lazy GMSH-wasm singleton, FE mesh generation + `.geo_unrolled` export |
+| `src/meshQuality.ts` | Pure per-element quality summary math (min/mean/histogram) (vscode/WASM-free, unit-tested) |
 | `src/gmshElementTypes.ts` | Single source of truth for gmsh element types: stride/faces/Kratos mapping + pure overlay-triangulation helpers (vscode/WASM-free, unit-tested) |
 | `src/mdpaWriter.ts` | Pure Kratos MDPA serializer over the generic `MdpaCell` catalogue (vscode/WASM-free, unit-tested) |
 | `src/meshOptions.ts` | The `MeshOptions` bag + `validateMeshOptions` tolerance gate + `gmshShapeOptions` (vscode-free) |
@@ -230,8 +231,8 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
    parts/edits/mesh-options sidecar writes) that handles `"ready"`,
    `"partsChanged"`, `"editsChanged"`, `"meshingChanged"`, `"meshingGenerate"`,
    `"meshingExport"`, `"exportRequest"`, `"exportResult"`, `"exportError"`,
-   `"screenshotButtonClicked"`, `"screenshotResult"`, `"screenshotError"`, and
-   `"massPropertiesRequest"`.
+   `"screenshotButtonClicked"`, `"screenshotResult"`, `"screenshotError"`,
+   `"massPropertiesRequest"`, `"openFile"`, and `"openPath"`.
 4. On `"ready"`: reads the edits sidecar, calls `routeFile()`, dispatches to
    `handleBRep()` (which applies the loaded edits) or posts `"loadUrl"`, then
    posts `"edits"` and calls `sendParts()`/`sendMeshOptions()`/`sendViewerDefaults()`.
@@ -257,6 +258,11 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
     calls `computeMassProperties()` (`src/massProperties.ts`) and posts
     `"massPropertiesResult"`/`"massPropertiesError"`. No caching — re-reads and
     re-parses the source on every call, consistent with the rest of this file.
+14. On `"openPath"` (a file dropped onto the viewer canvas, with a real
+    filesystem path exposed): calls `openPathInEditor(msg.path)` — the exact
+    same `vscode.commands.executeCommand("vscode.openWith", ...)` call
+    `openFileDialog()` makes, just from an already-known `Uri.file(path)`
+    rather than a fresh `showOpenDialog()` result.
 
 **`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. Posts `"error"` on failure.
 
@@ -755,6 +761,7 @@ interface MeshResult {
   nodeCount: number         // full mesh node count
   elementCount: number      // full mesh element count
   mshText: string           // raw .msh file contents
+  quality?: QualitySummary  // per-element quality summary — see computeMeshQuality below
 }
 ```
 
@@ -804,7 +811,41 @@ MEMFS and reads it back as `mshText`. Cleans up (`FS.unlink`) both the input and
 output MEMFS paths in a `finally`, mirroring `occtService.ts`'s handle-cleanup
 discipline (though here the "handles" are MEMFS files, not Emscripten object
 handles — GMSH-wasm's JS API doesn't expose C++ object lifetimes the way OCCT's
-bindings do).
+bindings do). Also calls the private `computeMeshQuality()` and includes its
+result as `quality`.
+
+```typescript
+function computeMeshQuality(gmsh: GmshApi, dimension: MeshOptions['dimension']): QualitySummary | undefined
+```
+Per-element quality summary over the mesh's top-dimension elements, via
+Gmsh's own `getElementQualities` — no host-side geometry math needed.
+**Verified against the live WASM** (the usual brute-force-probing convention):
+`gmsh.model.mesh.getElements(dim, -1)` (all entities at `dim`) returns a plain
+**object** `{elementTypes, elementTags, nodeTags}` — NOT a tuple, despite some
+Gmsh API references implying one — where `elementTags` is one array **per
+element type**, so callers flatten across types (same pattern
+`countElements()` already uses). `gmsh.model.mesh.getElementQualities(tags:
+number[], qualityType: string)` accepts a plain JS number array and returns
+`{elementsQuality: number[]}`, one value per input tag in the same order;
+verified with `"minSICN"` (Signed Inverse Condition Number, ≈[-1, 1], 1 =
+perfect, ≤ 0 = degenerate/inverted) — `"minSJ"`/`"gamma"`/`"minSIGE"`/
+`"volume"` are also accepted quality-type strings, an invalid string throws
+`"Unknown quality name '...'"`. **One anomalous verification run** returned an
+empty `elementsQuality` array for an otherwise-valid, full-size call (never
+reproduced across 5+ identical follow-up runs, including full end-to-end runs
+via `npm run mcp:smoke` against real multi-solid geometry) — `computeMeshQuality`
+defensively checks the returned array's length matches the input and returns
+`undefined` (quality omitted, not crashed) rather than trusting it blindly,
+matching this codebase's graceful-skip convention for every other WASM edge
+case. **A trivial box mesh with GMSH's own default 3D algorithm hung
+indefinitely during verification** (confirmed: 27+ minutes of pure CPU with
+no progress, on geometry simple enough to mesh in milliseconds) — this
+codebase's existing `Mesh.Algorithm3D = 4` (Frontal) default (see the Meshing
+section of `CLAUDE.md`) avoided it entirely, extending that documented
+limitation from "OCC-imported geometry" to, apparently, this WASM build's
+default 3D algorithm more broadly; `generateMesh()` already always sets it,
+so this is not a new invariant, just a confirmation of why the existing one
+matters.
 
 ```typescript
 async function exportGeoUnrolled(
@@ -1066,7 +1107,7 @@ AI agents over stdio JSON-RPC, with no VS Code involved.
   stderr *before anything else* (the Emscripten WASM modules print through
   `console.log`, and stdout is the JSON-RPC channel), resolves `extensionPath`
   (`CAD_PREVIEW_ROOT` env var or the bundle dir's parent), and registers the
-  twelve tools with the `@modelcontextprotocol/sdk` `McpServer` +
+  fourteen tools with the `@modelcontextprotocol/sdk` `McpServer` +
   `StdioServerTransport`.
 - **`mcpTools.ts`** holds the tool handlers as plain async functions over an
   injected `Pipeline` object (defaulting to the real OCCT/Gmsh functions in the

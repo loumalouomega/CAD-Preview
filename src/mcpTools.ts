@@ -675,6 +675,7 @@ export async function generateMeshTool(
     elementCount: result.elementCount,
     elapsedMs: Date.now() - started,
     elementGroups: result.elementGroups.map((g) => ({ name: g.name, color: g.color })),
+    quality: result.quality ?? null,
     options,
     warnings,
   };

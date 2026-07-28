@@ -36,6 +36,7 @@ export function viewerBodyHtml(): string {
       <div id="tree-panel">
         <div id="tree-header">
           <span id="tree-title">Components</span>
+          <input id="tree-filter" type="search" placeholder="Filter…" title="Filter components by name">
           <button id="tree-close" title="Close panel">${icon("close")}</button>
         </div>
         <div id="tree-body"></div>
@@ -43,7 +44,10 @@ export function viewerBodyHtml(): string {
       <div id="parts-panel">
         <div id="parts-header">
           <span id="parts-title">Parts</span>
-          <button id="parts-new" title="New part">＋ New</button>
+          <div id="parts-header-actions">
+            <button id="parts-isolate" title="Isolate the selected part (show only it)">⊙ Isolate</button>
+            <button id="parts-new" title="New part">＋ New</button>
+          </div>
         </div>
         <div id="parts-body"></div>
       </div>
@@ -81,6 +85,7 @@ export function viewerBodyHtml(): string {
         <div id="meshing-progress"></div>
         <div id="meshing-body"></div>
         <div id="meshing-status"></div>
+        <div id="meshing-quality"></div>
       </div>
       <div id="mass-panel">
         <div id="mass-header">
@@ -96,6 +101,7 @@ export function viewerBodyHtml(): string {
     <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
     <button id="wireframe" title="Toggle wireframe">${icon("wireframe")} Wireframe</button>
     <button id="grid" title="Toggle grid">▦ Grid</button>
+    <button id="edges" title="Toggle edge visibility">📐 Edges</button>
     <button id="screenshot" title="Save the current view as a PNG">📷 Screenshot</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">${icon("tree")} Tree</button>
     <button id="meshing-toggle" title="Toggle FE mesh overlay">${icon("feMesh")} FE Mesh</button>
@@ -156,6 +162,24 @@ export function viewerBodyHtml(): string {
       <div class="vc-row">
         <button id="view-fit" title="Fit to view">Fit</button>
         <button id="view-reset" title="Reset to default view">Ctr</button>
+      </div>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">Clip</span>
+      <div class="vc-segments">
+        <button class="clip-axis active" data-axis="x">X</button>
+        <button class="clip-axis" data-axis="y">Y</button>
+        <button class="clip-axis" data-axis="z">Z</button>
+      </div>
+      <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset">
+      <button id="clip-toggle" title="Toggle clipping">Off</button>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">Appearance</span>
+      <div class="vc-row">
+        <input type="color" id="vc-background" title="Background colour" value="#1e1e1e">
+        <input type="range" id="vc-opacity" class="meshing-slider" min="0" max="100" value="100" title="Model opacity">
+        <button id="vc-ortho" title="Toggle orthographic/perspective projection">Persp</button>
       </div>
     </div>
     </div>

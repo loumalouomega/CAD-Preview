@@ -210,6 +210,12 @@ interface MassProperties {
   centerOfMass: [number, number, number] | null
   momentsOfInertia: { ixx: number; iyy: number; izz: number; ixy: number; ixz: number; iyz: number } | null  // about the centroid
 }
+
+interface QualitySummary {
+  min: number
+  mean: number
+  histogram: number[]   // bucket i covers [i/N, (i+1)/N) of the quality range; see meshingResult below
+}
 ```
 
 `ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) —
@@ -237,7 +243,7 @@ type HostToWebview =
   | { type: 'exportMesh'; requestId: string; format: CadFormat }
   | { type: 'meshingOptions'; options: MeshOptions }
   | { type: 'meshingResult'; positions: string; indices: string; nodeCount: number; elementCount: number;
-      elementGroups: MeshElementGroup[]; elapsedMs: number }
+      elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary }
   | { type: 'meshingError'; message: string }
   | ({ type: 'viewerDefaults' } & ViewerDefaults)
   | { type: 'screenshotRequest'; requestId: string }
@@ -409,7 +415,12 @@ indexCount}`, with a trailing `name`/`color` = `null` run for triangles not clai
 by any part) so the overlay can be built multi-material with per-part colours. The
 webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices,
 msg.elementGroups))` and renders the stats (counts + time) in the panel's status
-line.
+line. `quality` (optional — omitted if it couldn't be computed, e.g. a 1D mesh)
+is a `{min, mean, histogram}` summary over the mesh's top-dimension elements'
+`minSICN` quality (via Gmsh's own `getElementQualities` — see
+`src/gmshService.ts`'s `computeMeshQuality` for the verified call shape),
+rendered as a small min/mean line + bar histogram below the FE Mesh panel's
+status line.
 
 ```json
 {
@@ -419,7 +430,8 @@ line.
     { "name": "inlet", "color": "#ff0000", "indexStart": 0, "indexCount": 264 },
     { "name": null, "color": null, "indexStart": 264, "indexCount": 5412 }
   ],
-  "elapsedMs": 3217
+  "elapsedMs": 3217,
+  "quality": { "min": 0.043, "mean": 0.71, "histogram": [1, 3, 8, 20, 45, 90, 210, 340, 180, 62] }
 }
 ```
 
@@ -494,6 +506,7 @@ type WebviewToHost =
   | { type: 'partsChanged'; parts: Part[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'openFile' }
+  | { type: 'openPath'; path: string }
   | { type: 'saveSidecars' }
   | { type: 'exportRequest' }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
@@ -623,6 +636,21 @@ file to this custom editor via `vscode.openWith`. The same action backs the
 
 ```json
 { "type": "openFile" }
+```
+
+### `openPath`
+
+Sent when a file is dropped onto the viewer canvas AND the browser `File`
+object exposed a real filesystem path (`file.path` — a legacy Electron
+extension to the standard `File` object, not guaranteed present in every VS
+Code/Electron version). The host opens it the same way `openFile` does
+(`vscode.openWith`), just from an already-known path instead of a fresh
+dialog. **Fallback**: when no path is exposed on drop, the webview posts the
+plain `openFile` message instead (opens the normal dialog) — drag-and-drop
+degrades to "just opens a dialog" rather than silently failing.
+
+```json
+{ "type": "openPath", "path": "/home/user/models/bull.stp" }
 ```
 
 ### `saveSidecars`

@@ -1297,6 +1297,151 @@ read-only-CAD-file invariant.
   visible. No protocol messages, no MCP tool — this feature has zero host
   involvement by design.
 
+## Visualization & UX depth (P2 roadmap features)
+
+Seven additive, mostly-webview-only features (`doc/roadmap.md`'s P2 tier):
+drag-and-drop open, per-part isolate/hide + Components-tree search, a live
+exploded-view slider, appearance controls (background/edges/opacity), live
+clipping/section planes, FE mesh quality statistics, and an orthographic/
+perspective camera toggle. Like P1, none of these touch the
+read-only-CAD-file invariant, and all new state (visibility, clip plane,
+opacity override, explode preview, background override, projection mode) is
+session-only — never written to a sidecar.
+
+- **Drag-and-drop's `File.path` availability is UNVERIFIED — do not treat it
+  as settled.** `main.ts`'s `setupDragAndDrop()` reads
+  `(file as File & {path?: string}).path` off the dropped `File` (a
+  long-standing Electron/VS-Code-webview extension to the DOM `File` API, not
+  a call ever exercised against a real F5 Extension Development Host in this
+  codebase's development so far). If `path` is falsy for any reason
+  (browser/VS Code version, sandboxing, a future Electron change), the code
+  **falls back to `post({type:"openFile"})`** (the normal Open dialog) rather
+  than failing silently — so the feature always degrades to "one extra click"
+  worst-case, never a dead drop target. Confirm the true-path branch actually
+  fires in a real session before relying on it; if it turns out never to
+  fire, the fallback-only behavior is still correct (if less convenient) and
+  needs no code change, only a doc correction here.
+- **Isolate/hide is transient state, deliberately NOT on `Part`/`PartsModel`.**
+  `src/webview/visibilityState.ts`'s `VisibilityState` (hidden-part indices +
+  at-most-one isolated index + hidden tree-group ids) mirrors `SelectionSet`'s
+  "transient, never serialized" precedent, not `PartsModel`'s persisted
+  `Part[]`. `main.ts`'s `applyVisibilityState()` recomputes the full
+  `Viewer.applyPartVisibility()`/`setGroupVisible()` input fresh from this
+  state + `PartsModel.entitiesOf()` on every call (including after every
+  model rebuild), since a freshly built `THREE.Object3D` tree starts fully
+  visible with no memory of prior hide/isolate state. Hiding and isolating
+  **compose** rather than one clobbering the other — clearing isolation never
+  un-hides a part you'd independently hidden.
+- **Composing opacity with selection dimming needed a shared baseline, not
+  two writers fighting over `material.opacity`.** `highlightGroup()`'s
+  dim-non-selected behavior and the new Appearance opacity slider both need
+  to scale a material's opacity, and naively writing `mat.opacity` directly
+  from both call sites means whichever runs last wins and silently erases the
+  other's effect. Fixed by tracking `material.userData.baseOpacity` (default
+  `1`, written only by `Viewer.setOpacity()`) and having `highlightGroup()`
+  multiply against it (`mat.opacity = baseOpacity * (dimmed ? factor : 1)`)
+  instead of overwriting — `applyOpacityBaseline()` seeds it on every
+  `setModel()`. Any future feature that dims/fades materials must follow the
+  same multiply-against-`baseOpacity` convention, not a raw assignment.
+- **The exploded-view slider previews live by re-deriving from a cached base
+  every frame, never compounding onto the previous frame's result.**
+  `src/webview/explodePreview.ts`'s `captureExplodeBase(root)` snapshots each
+  top-level `userData.groupId`-tagged child's pristine position once (on
+  slider focus/mousedown); every subsequent `applyExplodePreview(bases,
+  factor)` call recomputes each group's position as `basePosition +
+  offsetFromCentre * factor` from that same cached base — the correctness
+  trap a dedicated regression test in `explodePreview.test.ts` covers
+  directly (two consecutive calls with different factors must not compound).
+  It deliberately does **not** reposition a B-rep root's untagged top-level
+  edges/points groups (only `groupId`-tagged solids) — a known, accepted
+  limitation of the live preview only; the *committed* `explode` op still
+  repositions everything correctly since OCCT re-tessellates the whole shape
+  on replay. `editsPanel.ts`'s Apply handler always calls
+  `resetExplodePreview()` immediately before pushing the real op, so the
+  preview transform is never left stacked underneath the authoritative
+  replay; `selectOp()` (switching or collapsing any op form) unconditionally
+  fires the panel's `onExplodePreviewCancel` callback too, so navigating away
+  mid-drag without clicking Apply can't leave an orphaned, unpersisted
+  preview transform on screen.
+- **Clipping ships intentionally uncapped in this v1 — a scoped decision, not
+  an oversight.** `src/webview/clipping.ts`'s `planeForAxis(axis, offsetFrac,
+  box)` is pure `THREE.Plane`/`THREE.Box3` math (normal always points in the
+  **positive** axis direction; sweeping `offsetFrac` from `-1` to `1` moves
+  the cut from the box's min face to its max face). `Viewer.setClippingPlane()`
+  sets `renderer.localClippingEnabled` and assigns `material.clippingPlanes`
+  across every material on **both** `model` and `meshOverlay` (the FE Mesh
+  overlay explicitly needs the same plane per the roadmap item), and must be
+  re-applied from `setModel()`/`setMeshOverlay()` — `geometryBuilder.ts`'s
+  material factories build fresh materials with no clipping state of their
+  own, so the active plane is cached on `Viewer` and reapplied on every
+  (re)build. `MeshStandardMaterial` + `clippingPlanes` does **not**
+  automatically cap the cut cross-section with a solid face — three.js needs
+  a separate stencil-buffer cap technique for that, which this stage
+  deliberately does not implement; the cut face is see-through. A capped v2
+  is a candidate P3 follow-up, not scope creep to backfill here.
+- **FE mesh quality statistics use `gmsh.model.mesh.getElementQualities`,
+  confirmed bound and working in the bundled `@loumalouomega/gmsh-wasm`
+  build** (this was open discovery work — not assumed from upstream Gmsh
+  docs). `src/gmshService.ts`'s `computeMeshQuality(gmsh, dimension)`:
+  `gmsh.model.mesh.getElements(dim, -1)` returns a **plain object**
+  `{elementTypes, elementTags, nodeTags}` — `elementTags` is an array
+  *per element type*, so every type's tags must be concatenated into one flat
+  array before quality lookup, **not** destructured as a tuple (an early
+  attempt assuming array/tuple shape threw "object is not iterable").
+  `getElementQualities(tags, "minSICN")` returns `{elementsQuality:
+  number[]}`, one value per tag, in the same order — `"minSICN"` (0=degenerate,
+  1=ideal) is the metric used; `summarizeQuality()` (`src/meshQuality.ts`,
+  pure/host-side/unit-tested) reduces it to `{min, mean, histogram}`.
+  **Known unreproduced anomaly, handled defensively rather than assumed
+  fixed:** a single early probe run returned an empty quality array against a
+  real generated mesh; 5+ subsequent attempts (including varying whether the
+  tags array was reused vs. freshly copied, and a full `npm run mcp:smoke`
+  pass against complex multi-solid geometry with edits applied) never
+  reproduced it. `computeMeshQuality()` validates `values.length ===
+  tags.length` and returns `undefined` (never throws) on any mismatch, so a
+  future recurrence degrades to "no quality summary shown" rather than
+  crashing generation or reporting wrong numbers — `MeshResult.quality`
+  and the `meshingResult` protocol field are both `optional` for exactly
+  this reason. **Separately confirmed while probing this:** GMSH's own
+  default 3D meshing algorithm hangs indefinitely (confirmed via `ps aux`
+  at 27+ minutes / 98% CPU on a trivial box) not only for OCC-*imported*
+  geometry as previously documented above, but for geometry built directly
+  via `gmsh.model.occ.addBox()` too — i.e. the existing `Mesh.Algorithm3D =
+  4` (Frontal) default this codebase already sets is load-bearing for
+  **any** OCC-kernel-sourced 3D mesh, not just the STEP-import path.
+  Worst-element highlighting in the 3D overlay (colouring the worst-quality
+  tetrahedra) was explicitly scoped OUT of this stage: the 3D overlay only
+  renders **boundary** surface triangles, but bad-quality tets are frequently
+  interior and invisible in that overlay, so a naive implementation would be
+  either misleading or need new, fragile tet-to-boundary-face correlation
+  logic — shipped the quantitative min/mean/histogram summary only, which
+  was the roadmap item's core ask.
+- **Orthographic/perspective toggle uses a dual-camera-kept-alive-and-swapped
+  architecture** (`Viewer` gains a `readonly orthoCamera:
+  THREE.OrthographicCamera` alongside the existing `camera:
+  THREE.PerspectiveCamera`, plus an `activeCamera: ViewerCamera` field that
+  everything else — `frame()`, `render()`, `animate()`, the raycaster,
+  `getViewDirection()`/`getCameraUp()` — reads from instead of the old
+  hardcoded `this.camera`), not destroy/recreate-on-toggle, to avoid
+  disrupting `OrbitControls`' internal state and view continuity.
+  `setOrthographic(enabled)` copies position/near/far from the outgoing
+  camera to the incoming one, reassigns `this.controls.object` (three.js
+  supports retargeting `OrbitControls.object` at runtime — `controls` had to
+  be made non-`readonly` for this), and re-`frame()`s in the same view
+  direction. **Use `camera instanceof THREE.OrthographicCamera` to narrow the
+  `ViewerCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera` union —
+  NOT the `.isOrthographicCamera` flag property.** three.js's own type
+  declarations don't expose that flag consistently across the two classes in
+  this project's TypeScript setup (`tsc --noEmit` rejected every
+  `camera.isOrthographicCamera` call site with "property does not exist on
+  type PerspectiveCamera"); `instanceof` narrows correctly and compiles clean.
+  `cameraControls.ts`'s `pan()`/`dolly()` both gained an ortho branch:
+  `pan()`'s per-pixel amount uses the orthographic frustum's `(top-bottom)/
+  zoom/2` instead of the perspective FOV-tangent distance; `dolly()` under
+  orthographic scales `camera.zoom` (+ `updateProjectionMatrix()`) instead of
+  moving `camera.position`, since moving the camera is a visual no-op under
+  parallel projection.
+
 ## Build & test
 
 ```bash
@@ -1557,6 +1702,43 @@ line+label overlay appears that stays legible while zooming, Clear/tool-switch
 reset in-progress picks, and toggling Measure never leaves stray entries in the
 Parts `SelectionSet`. Repeat all of the above open/close a few times → watch
 extension-host memory stay flat (same leak check as above).
+
+Then exercise the **P2 visualization/UX features**: drag `bull.stp`/`cube.stl`
+from the OS file explorer onto the 3D view → confirm it opens the same as
+File▸Open (if the drop doesn't expose a path in this environment, confirm it
+falls back to the Open dialog instead of doing nothing). On `bull.stp` with
+2+ parts assigned, click each part's eye-toggle → confirm only that part's
+entities hide; click **⊙ Isolate** on a selected part → confirm only its
+entities show; clear isolation → confirm independently-hidden parts stay
+hidden (composition, not clobbering); confirm nothing is written to
+`bull.stp.parts.json` throughout. Type into the Components tree's filter
+field → confirm non-matching rows hide while matches and their ancestors stay
+visible, and each row's eye-toggle independently hides/shows that
+solid/mesh's entities including edges/points. In the Edits panel, open
+**Explode** and drag its slider → confirm the bodies spread live with no lag
+and no sidecar write, return to 0 → exact original layout, then **Apply** →
+confirm the op commits once (not a compounded double-spread) and Undo
+reverts cleanly; drag the slider then switch to a different op form without
+Apply → confirm the preview resets, not left stacked on the model. Toggle the
+toolbar **Edges** button → confirm only edge lines hide/show, faces
+unaffected. In the view-controls panel's new **Appearance** group, change the
+background swatch → confirm it updates live and reverts to the
+`cadPreview.background` setting's value on reload; drag the opacity slider →
+confirm the whole model fades, then select/isolate a part at partial opacity
+→ confirm dimming and the opacity baseline compose sensibly rather than one
+overriding the other. Click **Persp/Ortho** → confirm no camera jump, orbit/
+pan/zoom/picking/the orientation cube all keep working, resizing the window
+behaves correctly under both projections, and toggling back returns cleanly.
+In the new **Clip** group, enable each axis and drag the offset slider →
+confirm the model cuts away live (see-through at the cut face — expected,
+v1 is uncapped), the FE Mesh overlay (if shown) respects the same plane, and
+turning Clip off instantly restores the full model with no sidecar write. On
+the FE Mesh panel, **Generate** → confirm a quality summary (min/mean +
+histogram) appears below the node/element counts, updates on regenerate at a
+different size, and degrades gracefully (no summary, no crash) if the
+underlying WASM call ever returns an empty/mismatched result. Repeat
+open/close and toggle-heavy interaction a few times across all of the above →
+watch extension-host memory stay flat (same leak check as above).
 
 Then exercise the **MCP server**: `npm run mcp:smoke` must pass (it drives the real
 `dist/mcp-server.js` over stdio against a temp copy of `bull.stp`: load → an

@@ -112,7 +112,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 13, `tools/list exposes 13 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 14, `tools/list exposes 14 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");

@@ -35,6 +35,7 @@ import * as path from "path";
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
 import { gmshShapeOptions, type MeshOptions } from "./meshOptions";
+import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
 import { meshExportFormat, type MeshExportFormatId } from "./meshExportFormats";
@@ -143,6 +144,12 @@ export interface MeshResult {
   nodeCount: number;
   elementCount: number;
   mshText: string;
+  /** Per-element quality summary (min/mean/histogram) over the mesh's
+   * top-dimension elements (tets/hexes for a 3D generate, tris/quads for 2D) —
+   * `undefined` if quality couldn't be computed (e.g. a 1D mesh, or the one
+   * anomalous-empty-result case observed while verifying `getElementQualities`
+   * against the live WASM; see `computeMeshQuality`'s doc comment). */
+  quality?: QualitySummary;
 }
 
 /**
@@ -256,6 +263,7 @@ export async function generateMesh(
       nodeCount: nodes.nodeTags.length,
       elementCount: countElements(gmsh, options.dimension),
       mshText,
+      quality: computeMeshQuality(gmsh, options.dimension),
     };
   } finally {
     if (tmpPath) {
@@ -749,4 +757,43 @@ function countElements(gmsh: GmshApi, dimension: MeshOptions["dimension"]): numb
   let total = 0;
   for (const tags of els.elementTags) total += tags.length;
   return total;
+}
+
+/**
+ * Per-element quality summary over the mesh's top-dimension elements, via
+ * Gmsh's own `getElementQualities` — no host-side geometry math needed.
+ *
+ * **Verified against the live WASM** (brute-force probing, the usual
+ * convention — see CLAUDE.md): `gmsh.model.mesh.getElements(dim, -1)` (dim,
+ * ALL entities) returns a plain OBJECT `{elementTypes, elementTags,
+ * nodeTags}` — NOT the tuple/array shape some Gmsh JS API docs imply —
+ * where `elementTags` is one array PER element type, so callers must flatten
+ * across types (same pattern `countElements` above already uses).
+ * `gmsh.model.mesh.getElementQualities(tags: number[], qualityType: string)`
+ * accepts a plain JS number array (also confirmed accepting a typed array,
+ * but a plain array is simplest) and returns `{elementsQuality: number[]}`,
+ * one value per input tag IN THE SAME ORDER — confirmed with `"minSICN"`
+ * (Signed Inverse Condition Number, ~[-1, 1], 1 = perfect, <= 0 = degenerate/
+ * inverted) on a synthetic box mesh; `"minSJ"`/`"gamma"`/`"minSIGE"`/
+ * `"volume"` are also accepted quality-type strings, an invalid string
+ * throws `"Unknown quality name '...'"`. One anomalous run during
+ * verification returned an EMPTY `elementsQuality` array for a full-size,
+ * otherwise-valid call (never reproduced across 5+ follow-up runs with
+ * identical inputs) — defensively treated as "quality unavailable" (`return
+ * undefined`) rather than trusted blindly, matching this codebase's
+ * graceful-skip convention for every other WASM-call edge case.
+ */
+function computeMeshQuality(gmsh: GmshApi, dimension: MeshOptions["dimension"]): QualitySummary | undefined {
+  const dim = dimension === 1 ? 1 : dimension;
+  try {
+    const els = gmsh.model.mesh.getElements(dim, -1) as { elementTags: number[][] };
+    const tags: number[] = ([] as number[]).concat(...els.elementTags);
+    if (tags.length === 0) return undefined;
+    const result = gmsh.model.mesh.getElementQualities(tags, "minSICN") as { elementsQuality: number[] };
+    const values = result.elementsQuality;
+    if (!Array.isArray(values) || values.length !== tags.length) return undefined;
+    return summarizeQuality(values);
+  } catch {
+    return undefined;
+  }
 }

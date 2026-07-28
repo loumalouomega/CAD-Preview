@@ -1,4 +1,5 @@
 import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions } from "../meshOptions";
+import type { QualitySummary } from "../meshQuality";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import type { Part } from "../protocol";
@@ -24,6 +25,9 @@ export interface MeshingStats {
   nodeCount: number;
   elementCount: number;
   elapsedMs?: number;
+  /** Per-element quality summary (min/mean/histogram) — omitted if it
+   * couldn't be computed for this generate (e.g. a 1D mesh). */
+  quality?: QualitySummary;
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -75,6 +79,7 @@ const ALGORITHM_3D: Array<[number, string]> = [
 export class MeshingPanel {
   private readonly body: HTMLElement;
   private readonly statusEl: HTMLElement;
+  private readonly qualityEl: HTMLElement;
   private readonly progressEl: HTMLElement;
   private readonly generateBtn: HTMLButtonElement;
   private readonly exportFormatSelect: HTMLSelectElement;
@@ -108,6 +113,7 @@ export class MeshingPanel {
   ) {
     this.body = panel.querySelector("#meshing-body")!;
     this.statusEl = panel.querySelector("#meshing-status")!;
+    this.qualityEl = panel.querySelector("#meshing-quality")!;
     this.progressEl = panel.querySelector("#meshing-progress")!;
     this.generateBtn = panel.querySelector("#meshing-generate")!;
     this.exportFormatSelect = panel.querySelector("#meshing-export-format")!;
@@ -346,13 +352,43 @@ export class MeshingPanel {
     this.statusEl.classList.remove("meshing-status-error");
     if (!status) {
       this.statusEl.textContent = "";
+      this.renderQuality(undefined);
     } else if ("error" in status) {
       this.statusEl.textContent = status.error;
       this.statusEl.classList.add("meshing-status-error");
+      this.renderQuality(undefined);
     } else {
       const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
       this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}`;
+      this.renderQuality(status.quality);
     }
+  }
+
+  /** Renders the per-element quality summary as a min/mean line plus a
+   * compact text histogram — cleared (no row) when `quality` is `undefined`
+   * (nothing generated yet, an error, or a mesh dimension quality couldn't be
+   * computed for). Uses `textContent`, not `innerHTML`, for the same
+   * defensive-against-injection reason every other panel readout does. */
+  private renderQuality(quality: QualitySummary | undefined): void {
+    this.qualityEl.innerHTML = "";
+    if (!quality) return;
+    const summary = document.createElement("div");
+    summary.className = "meshing-quality-summary";
+    summary.textContent = `Quality (minSICN) — min: ${quality.min.toFixed(3)} · mean: ${quality.mean.toFixed(3)}`;
+    this.qualityEl.appendChild(summary);
+
+    const total = quality.histogram.reduce((a, b) => a + b, 0);
+    const bars = document.createElement("div");
+    bars.className = "meshing-quality-histogram";
+    quality.histogram.forEach((count, i) => {
+      const bar = document.createElement("div");
+      bar.className = "meshing-quality-bar";
+      const pct = total > 0 ? (count / total) * 100 : 0;
+      bar.style.height = `${Math.max(2, pct)}%`;
+      bar.title = `[${(i / quality.histogram.length).toFixed(1)}, ${((i + 1) / quality.histogram.length).toFixed(1)}): ${count} element${count === 1 ? "" : "s"}`;
+      bars.appendChild(bar);
+    });
+    this.qualityEl.appendChild(bars);
   }
 
   /**

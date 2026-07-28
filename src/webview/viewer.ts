@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import * as cam from "./cameraControls";
+import type { ViewerCamera } from "./cameraControls";
 import { OrientationCube } from "./orientationCube";
 import { collectTargets, resolvePick, collectMeasureTargets, resolveMeasurePick, type PickResult } from "./picking";
 import { DEFAULT_EDGE_COLOR, DEFAULT_FACE_COLOR, DEFAULT_POINT_COLOR } from "./geometryBuilder";
@@ -18,6 +19,11 @@ import type { UpAxis } from "../viewerDefaults";
 /** Emissive tint applied to the transiently-selected entities. */
 const SELECTION_COLOR = 0x3b82f6;
 
+/** `"type:id"` key, same convention `renderSelection`/`SelectionSet` use. */
+function entityKey(e: SelectedEntity): string {
+  return `${e.entityType}:${e.entityId}`;
+}
+
 /** Per-part colouring of entities, resolved by id. */
 export interface EntityColorMap {
   solids: Map<string, string>; // solidId → colour (applies to all its faces)
@@ -33,8 +39,19 @@ export interface EntityColorMap {
 export class Viewer {
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
+  /** A second camera kept in sync with `camera`'s position/target, swapped in
+   * as `activeCamera` by `setOrthographic` — NOT reconstructed on toggle, so
+   * `frame()`/`orbit`/`pan`/`dolly` all operate on `activeCamera` (a
+   * `PerspectiveCamera | OrthographicCamera` union) rather than the hardcoded
+   * perspective camera directly. */
+  private readonly orthoCamera: THREE.OrthographicCamera;
+  private activeCamera: ViewerCamera;
+  /** The ortho camera's last-framed half-height (world units, before zoom) —
+   * `frame()` sets it, `onResize` reuses it to recompute `left/right/top/
+   * bottom` for the new aspect ratio without needing a full reframe. */
+  private orthoHalfHeight = 5;
   private readonly renderer: THREE.WebGLRenderer;
-  private readonly controls: OrbitControls;
+  private controls: OrbitControls;
   private readonly grid: THREE.GridHelper;
   private readonly axes: THREE.AxesHelper;
   private readonly gizmo = new OrientationCube();
@@ -69,6 +86,19 @@ export class Viewer {
    * static shared by every `Object3D` including the gizmo/helpers) on the next
    * `setModel()` — see `applyDefaults()`. */
   private upAxis: UpAxis = "y";
+  /** The last `groupId` passed to `highlightGroup` (or `null`) — remembered so
+   * `setOpacity` can re-apply the same spotlight state on top of a new opacity
+   * baseline, since both features write `material.opacity` and must compose
+   * rather than clobber each other (see `setOpacity`'s doc comment). */
+  private highlightedGroupId: string | null = null;
+  /** The Appearance panel's global opacity (0–1, default fully opaque) —
+   * session-only, re-applied to every fresh material on `setModel()` (a model
+   * rebuild after an edit creates brand-new materials with no baseline). */
+  private modelOpacity = 1;
+  /** The live clipping plane (or `null` when clipping is off) — session-only,
+   * display-only, re-applied to `model`/`meshOverlay` materials whenever
+   * either is (re)built, since fresh materials carry no clipping state. */
+  private activeClippingPlane: THREE.Plane | null = null;
 
   constructor(private readonly container: HTMLElement) {
     const width = container.clientWidth;
@@ -79,12 +109,24 @@ export class Viewer {
     this.camera = new THREE.PerspectiveCamera(45, width / height, 0.01, 1e6);
     this.camera.position.set(5, 5, 5);
 
+    const aspect = width / height;
+    this.orthoCamera = new THREE.OrthographicCamera(
+      -this.orthoHalfHeight * aspect,
+      this.orthoHalfHeight * aspect,
+      this.orthoHalfHeight,
+      -this.orthoHalfHeight,
+      0.01,
+      1e6
+    );
+    this.orthoCamera.position.set(5, 5, 5);
+    this.activeCamera = this.camera;
+
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(width, height);
     container.appendChild(this.renderer.domElement);
 
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls = new OrbitControls(this.activeCamera, this.renderer.domElement);
     this.controls.enableDamping = true;
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.0));
@@ -145,7 +187,9 @@ export class Viewer {
     // defined in the camera's fixed Y-up world frame and stays meaningful either way.
     object.rotation.x = this.upAxis === "z" ? -Math.PI / 2 : 0;
     this.applyWireframe();
+    this.applyOpacityBaseline();
     this.scene.add(object);
+    this.applyClippingPlane(); // fresh model materials carry no clipping state yet
     this.resetView();
   }
 
@@ -198,6 +242,7 @@ export class Viewer {
     if (obj) {
       this.meshOverlay = obj;
       this.scene.add(obj);
+      this.applyClippingPlane(); // fresh overlay materials carry no clipping state yet
     }
     // Shaded faces and the FE-mesh overlay are both opaque solids at the same
     // location — showing both makes neither legible (see the screenshot in the
@@ -253,13 +298,31 @@ export class Viewer {
       }
     });
 
-    const fov = (this.camera.fov * Math.PI) / 180;
-    const distance = (radius / Math.sin(fov / 2)) * 1.5;
     const dir = direction.clone().normalize();
-    this.camera.position.copy(center).addScaledVector(dir, distance);
-    this.camera.near = distance / 100;
-    this.camera.far = distance * 100;
-    this.camera.updateProjectionMatrix();
+    if (this.activeCamera instanceof THREE.OrthographicCamera) {
+      // Parallel projection: apparent size comes from the frustum/zoom, not
+      // distance — pick a distance just far enough to keep near/far sane, and
+      // size the frustum from the model radius with the same 1.5x margin
+      // frame() uses for perspective's fov-based distance.
+      const distance = radius * 3;
+      this.orthoHalfHeight = radius * 1.5;
+      const aspect = this.container.clientWidth / this.container.clientHeight;
+      this.activeCamera.left = -this.orthoHalfHeight * aspect;
+      this.activeCamera.right = this.orthoHalfHeight * aspect;
+      this.activeCamera.top = this.orthoHalfHeight;
+      this.activeCamera.bottom = -this.orthoHalfHeight;
+      this.activeCamera.zoom = 1;
+      this.activeCamera.position.copy(center).addScaledVector(dir, distance);
+      this.activeCamera.near = distance / 100;
+      this.activeCamera.far = distance * 100;
+    } else {
+      const fov = (this.activeCamera.fov * Math.PI) / 180;
+      const distance = (radius / Math.sin(fov / 2)) * 1.5;
+      this.activeCamera.position.copy(center).addScaledVector(dir, distance);
+      this.activeCamera.near = distance / 100;
+      this.activeCamera.far = distance * 100;
+    }
+    this.activeCamera.updateProjectionMatrix();
     this.controls.target.copy(center);
     this.controls.update();
   }
@@ -277,50 +340,203 @@ export class Viewer {
 
   /** Orbits the camera around the target by the given degrees (azimuth, polar). */
   rotateView(azimuthDeg: number, polarDeg: number): void {
-    cam.orbit(this.camera, this.controls.target, azimuthDeg, polarDeg);
+    cam.orbit(this.activeCamera, this.controls.target, azimuthDeg, polarDeg);
     this.controls.update();
   }
 
   /** Pans the camera and target by fractions of the framed extent. */
   panView(dxFrac: number, dyFrac: number): void {
-    cam.pan(this.camera, this.controls.target, dxFrac, dyFrac);
+    cam.pan(this.activeCamera, this.controls.target, dxFrac, dyFrac);
     this.controls.update();
   }
 
   /** Dollies the camera toward (`factor` < 1) or away from (`> 1`) the target. */
   zoomView(factor: number): void {
-    cam.dolly(this.camera, this.controls.target, factor);
+    cam.dolly(this.activeCamera, this.controls.target, factor);
     this.controls.update();
   }
 
   /** Repositions the camera along `dir`, keeping the current target and distance. */
   setViewDirection(dir: THREE.Vector3): void {
-    cam.setDirection(this.camera, this.controls.target, dir);
+    cam.setDirection(this.activeCamera, this.controls.target, dir);
     this.controls.update();
   }
 
   /** Normalized direction from the orbit target to the camera. */
   getViewDirection(): THREE.Vector3 {
-    return cam.viewDirection(this.camera, this.controls.target);
+    return cam.viewDirection(this.activeCamera, this.controls.target);
   }
 
   /** The camera's current up vector. */
   getCameraUp(): THREE.Vector3 {
-    return this.camera.up.clone();
+    return this.activeCamera.up.clone();
+  }
+
+  /**
+   * Toggles between perspective and orthographic projection. NOT a
+   * reconstruction — `orthoCamera` is a second camera object kept alive the
+   * whole session; this only swaps which one is `activeCamera` (and which one
+   * `OrbitControls` targets, via `controls.object` — three.js supports
+   * retargeting at runtime, and `OrbitControls`' own dolly/zoom logic already
+   * branches on `camera.isPerspectiveCamera`/`isOrthographicCamera`, so mouse-
+   * wheel zoom keeps working correctly across the swap with no extra code).
+   * Copies position/near/far from the outgoing camera so the view doesn't
+   * jump, then calls `frame()` along the same view direction to size the
+   * newly-active camera's fov-based distance (perspective) or frustum/zoom
+   * (orthographic) correctly — `frame()` already contains that per-type
+   * logic, so this reuses it rather than duplicating it.
+   */
+  setOrthographic(enabled: boolean): void {
+    const next: ViewerCamera = enabled ? this.orthoCamera : this.camera;
+    if (next === this.activeCamera) return;
+    const prev = this.activeCamera;
+    next.position.copy(prev.position);
+    next.near = prev.near;
+    next.far = prev.far;
+    const dir = cam.viewDirection(prev, this.controls.target);
+    this.activeCamera = next;
+    this.controls.object = next;
+    this.frame(dir);
   }
 
   /**
    * Isolates `groupId` by dimming all other meshes, or restores full opacity
-   * when called with `null`.
+   * when called with `null`. Composes with the Appearance panel's global
+   * opacity slider (`setOpacity`) rather than clobbering it: both write
+   * `material.opacity`, so dimming multiplies against each material's
+   * `userData.baseOpacity` (the slider's chosen value, defaulting to 1) rather
+   * than overwriting it outright — dragging the slider to 0.5 then spotlighting
+   * a group keeps the rest at 0.5×0.08, not a hardcoded 0.08 that ignores the
+   * slider, and the spotlighted group stays at the slider's 0.5, not a
+   * hardcoded 1.0 that overrides it.
    */
   highlightGroup(groupId: string | null): void {
+    this.highlightedGroupId = groupId;
     this.model?.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
       const mat = obj.material as THREE.MeshStandardMaterial;
+      const base = (mat.userData.baseOpacity as number | undefined) ?? 1;
       const selected = groupId === null || obj.userData.groupId === groupId;
-      mat.opacity = selected ? 1.0 : 0.08;
-      mat.transparent = !selected;
+      mat.opacity = selected ? base : base * 0.08;
+      mat.transparent = mat.opacity < 1;
       mat.needsUpdate = true;
+    });
+  }
+
+  /** Live, session-only background override — same "always wins once set"
+   * precedent as `toggleGrid()` vs. `applyDefaults()`'s `showGridAndAxes`. */
+  setBackground(hex: string): void {
+    this.scene.background = new THREE.Color(hex);
+  }
+
+  /** Shows/hides every edge line, leaving faces and points untouched. */
+  setEdgesVisible(visible: boolean): void {
+    this.model?.traverse((obj) => {
+      if (obj.userData.entityType === "line") obj.visible = visible;
+    });
+  }
+
+  /**
+   * Sets every face material's baseline opacity (0–1), then re-applies
+   * whatever `highlightGroup` spotlight is currently active on top of it —
+   * see `highlightGroup`'s doc comment for why this composition, not a raw
+   * overwrite, is required.
+   */
+  setOpacity(value: number): void {
+    this.modelOpacity = value;
+    this.applyOpacityBaseline();
+    this.highlightGroup(this.highlightedGroupId);
+  }
+
+  /** Writes `modelOpacity` onto every current face material's `userData.baseOpacity`. */
+  private applyOpacityBaseline(): void {
+    this.model?.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      const mat = obj.material as THREE.MeshStandardMaterial;
+      mat.userData.baseOpacity = this.modelOpacity;
+    });
+  }
+
+  /**
+   * Sets/clears the live clipping plane — display-only, distinct from the
+   * `section` edit op (which produces real geometry through the op stack);
+   * this never touches the model. `null` disables clipping entirely. Applied
+   * to every material on both `model` AND `meshOverlay` (the FE-mesh overlay
+   * needs the same plane, per the roadmap's explicit note) — re-applied
+   * automatically from `setModel()`/`setMeshOverlay()` too, since fresh
+   * materials from a model/overlay rebuild carry no clipping state.
+   *
+   * v1 is deliberately UNCAPPED: `MeshStandardMaterial` + `clippingPlanes`
+   * does not auto-cap the cut cross-section (three.js needs a separate
+   * stencil-buffer technique for a solid-looking cut) — a clipped solid is
+   * see-through/hollow at the cut face, not filled. Still useful for "see
+   * inside the model"; capping is a documented follow-up, not in this cut.
+   */
+  setClippingPlane(plane: THREE.Plane | null): void {
+    this.activeClippingPlane = plane;
+    this.renderer.localClippingEnabled = plane !== null;
+    this.applyClippingPlane();
+  }
+
+  private applyClippingPlane(): void {
+    const planes = this.activeClippingPlane ? [this.activeClippingPlane] : [];
+    const apply = (obj: THREE.Object3D) => {
+      const mat = (obj as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+      const mats = Array.isArray(mat) ? mat : mat ? [mat] : [];
+      for (const m of mats) {
+        m.clippingPlanes = planes;
+        m.needsUpdate = true;
+      }
+    };
+    this.model?.traverse(apply);
+    this.meshOverlay?.traverse(apply);
+  }
+
+  /**
+   * Fully hides/shows every object tagged with `groupId` (a solid — the
+   * Components tree's per-node eye-toggle operates at this whole-solid
+   * granularity, the only depth the tree currently has). Distinct from
+   * `highlightGroup`'s opacity-dimming: this is `Object3D.visible`, gone
+   * entirely, not translucent — a different code path, not a parameterization.
+   */
+  setGroupVisible(groupId: string, visible: boolean): void {
+    this.model?.traverse((obj) => {
+      if (obj.userData.groupId === groupId) obj.visible = visible;
+    });
+  }
+
+  /**
+   * Applies the Parts panel's hide/isolate state in one pass: `hiddenEntities`
+   * are forced invisible; if `isolatedEntities` is non-null, ONLY those
+   * entities (and nothing else) are visible, overriding `hiddenEntities`
+   * entirely for this call — composition across repeated calls is the
+   * caller's job (`main.ts` recomputes both sets fresh from `VisibilityState`
+   * + `PartsModel.entitiesOf()` on every hide/isolate change, so a part
+   * hidden before an isolate stays hidden once isolate is cleared, without
+   * this method needing to remember any prior call). Handles surfaces (their
+   * own id OR their owning solid's `groupId`, matching `renderSelection`'s
+   * existing membership check), lines, and points — unlike `highlightGroup`,
+   * which only ever touches `THREE.Mesh`.
+   */
+  applyPartVisibility(hiddenEntities: SelectedEntity[], isolatedEntities: SelectedEntity[] | null): void {
+    const hideKeys = new Set(hiddenEntities.map(entityKey));
+    const isolateKeys = isolatedEntities ? new Set(isolatedEntities.map(entityKey)) : null;
+    this.model?.traverse((obj) => {
+      const ud = obj.userData;
+      let key: string | null = null;
+      let groupKey: string | null = null;
+      if (obj instanceof THREE.Mesh && ud.entityType === "surface") {
+        key = `surface:${ud.entityId}`;
+        groupKey = `volume:${ud.groupId}`;
+      } else if (obj instanceof THREE.Line && ud.entityType === "line") {
+        key = `line:${ud.entityId}`;
+      } else if (obj instanceof THREE.Sprite && ud.entityType === "point") {
+        key = `point:${ud.entityId}`;
+      } else {
+        return;
+      }
+      const owns = (set: Set<string>) => (key !== null && set.has(key)) || (groupKey !== null && set.has(groupKey));
+      obj.visible = isolateKeys ? owns(isolateKeys) : !owns(hideKeys);
     });
   }
 
@@ -439,7 +655,7 @@ export class Viewer {
 
   /** Forces an immediate render of the current frame (used right before a screenshot capture). */
   render(): void {
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.render(this.scene, this.activeCamera);
   }
 
   /**
@@ -486,8 +702,14 @@ export class Viewer {
   private onResize = (): void => {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
-    this.camera.aspect = width / height;
+    const aspect = width / height;
+    this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
+    this.orthoCamera.left = -this.orthoHalfHeight * aspect;
+    this.orthoCamera.right = this.orthoHalfHeight * aspect;
+    this.orthoCamera.top = this.orthoHalfHeight;
+    this.orthoCamera.bottom = -this.orthoHalfHeight;
+    this.orthoCamera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
   };
 
@@ -498,12 +720,15 @@ export class Viewer {
       // Constant on-screen size regardless of zoom — recomputed every frame
       // (unlike the point-sprite scale in `frame()`, which only updates on
       // fit/reset), since a label specifically needs to stay legible while
-      // continuously zooming.
-      const distance = this.camera.position.distanceTo(this.measurementLabel.position);
-      const s = distance * 0.06;
+      // continuously zooming. Under orthographic projection apparent size is
+      // NOT distance-dependent (unlike perspective), so the scale instead
+      // derives from the current frustum height / zoom.
+      const s = this.activeCamera instanceof THREE.OrthographicCamera
+        ? ((this.activeCamera.top - this.activeCamera.bottom) / this.activeCamera.zoom) * 0.06
+        : this.activeCamera.position.distanceTo(this.measurementLabel.position) * 0.06;
       this.measurementLabel.scale.set(s, s * 0.25, 1); // 4:1 label aspect ratio
     }
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.render(this.scene, this.activeCamera);
     this.renderGizmo();
   };
 
@@ -546,7 +771,7 @@ export class Viewer {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     const ndcY = 1 - ((event.clientY - rect.top) / rect.height) * 2;
-    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.activeCamera);
     this.raycaster.params.Line.threshold = this.pickThreshold;
 
     // Measurement takes priority for this click over the normal Parts/Edits

@@ -22,6 +22,9 @@ import { SIZE_MAX_SENTINEL } from "../meshOptions";
 import type { MeshSizePreset } from "../viewerDefaults";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
+import { VisibilityState } from "./visibilityState";
+import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
+import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
@@ -38,8 +41,26 @@ const panelEl = document.getElementById("tree-panel")!;
 const toggleBtn = document.getElementById("tree-toggle") as HTMLButtonElement;
 
 const viewer = new Viewer(app);
-const treePanel = new TreePanel(panelEl, (id) => {
-  viewer.highlightGroup(id);
+
+// ── Visibility (Parts hide/isolate, Tree per-node hide) ─────────────────────
+// Transient, session-only, never persisted — see visibilityState.ts.
+const visibilityState = new VisibilityState();
+
+const treePanel = new TreePanel(
+  panelEl,
+  (id) => {
+    viewer.highlightGroup(id);
+  },
+  (id) => {
+    visibilityState.toggleTreeGroupHidden(id);
+    viewer.setGroupVisible(id, !visibilityState.isTreeGroupHidden(id));
+    treePanel.refreshVisibility();
+  },
+  visibilityState
+);
+
+document.getElementById("tree-filter")?.addEventListener("input", (e) => {
+  treePanel.filter((e.target as HTMLInputElement).value);
 });
 
 // ── Parts / selection state ──────────────────────────────────────────────
@@ -50,29 +71,44 @@ const partsModel = new PartsModel(() => {
   // Fired on every parts mutation: persist, recolour, re-render (both the
   // Parts panel and the FE Mesh panel's mirrored "Part sizes" rows).
   post({ type: "partsChanged", parts: partsModel.list() });
-  refreshColors();
+  visibilityState.onPartCountChanged(partsModel.size);
+  refreshColors(); // also re-applies visibility state, see refreshColors()
   partsPanel.render(partsModel.list());
   meshingPanel.renderParts(partsModel.list());
 });
 
-const partsPanel = new PartsPanel(document.getElementById("parts-panel")!, {
-  onCreate: () => partsModel.create(),
-  onAssign: (index) => {
-    partsModel.assign(index, selection.list());
-    selection.clear();
-    previewPartIndex = null;
-    renderHighlight();
+const partsPanel = new PartsPanel(
+  document.getElementById("parts-panel")!,
+  {
+    onCreate: () => partsModel.create(),
+    onAssign: (index) => {
+      partsModel.assign(index, selection.list());
+      selection.clear();
+      previewPartIndex = null;
+      renderHighlight();
+    },
+    onRemovePart: (index) => partsModel.remove(index),
+    onRename: (index, name) => partsModel.rename(index, name),
+    onRecolor: (index, color) => partsModel.recolor(index, color),
+    onMeshSize: (index, size) => partsModel.setMeshSize(index, size),
+    onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
+    onSelectPart: (index) => {
+      previewPartIndex = index;
+      renderHighlight();
+    },
+    onToggleVisible: (index) => {
+      visibilityState.toggleHiddenPart(index);
+      applyVisibilityState();
+      partsPanel.render(partsModel.list());
+    },
+    onToggleIsolate: (index) => {
+      visibilityState.toggleIsolatedPart(index);
+      applyVisibilityState();
+      partsPanel.render(partsModel.list());
+    },
   },
-  onRemovePart: (index) => partsModel.remove(index),
-  onRename: (index, name) => partsModel.rename(index, name),
-  onRecolor: (index, color) => partsModel.recolor(index, color),
-  onMeshSize: (index, size) => partsModel.setMeshSize(index, size),
-  onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
-  onSelectPart: (index) => {
-    previewPartIndex = index;
-    renderHighlight();
-  },
-});
+  visibilityState
+);
 
 // ── Edits (replayable op-stack) + parametric variables ───────────────────
 // The webview owns the op-stack; the host persists it and (for B-rep) re-applies
@@ -138,6 +174,22 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
 let booleanA: string[] = [];
 const selectedVolumes = (): string[] =>
   selection.list().filter((e) => e.entityType === "volume").map((e) => e.entityId);
+
+/** Explode's live-preview state — `null` when no preview is in progress.
+ * Captured lazily on the first slider `input` event (see `onExplodePreview`
+ * below) so a session always starts from a fresh, pristine base. */
+let explodePreviewBases: ExplodeBase[] | null = null;
+
+/** Restores any in-progress Explode preview to its pristine positions and
+ * clears the session — called both when the user leaves the Explode form
+ * without applying, and right before the real op-stack commit (which
+ * rebuilds everything from the authoritative op-list anyway). */
+function cancelExplodePreview(): void {
+  if (!explodePreviewBases) return;
+  const model = viewer.getModel();
+  if (model) resetExplodePreview(explodePreviewBases);
+  explodePreviewBases = null;
+}
 
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onUndo: () => editsModel.undo(),
@@ -226,11 +278,19 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     setStatus("");
   },
   onApplyExplode: (factor, exprs) => {
+    cancelExplodePreview(); // discard the live preview — the real op replay rebuilds everything
     const op: EditOp = { op: "explode", factor };
     if (exprs) op.exprs = exprs;
     editsModel.push(op);
     setStatus("");
   },
+  onExplodePreview: (factor) => {
+    const model = viewer.getModel();
+    if (!model) return;
+    if (!explodePreviewBases) explodePreviewBases = captureExplodeBase(model);
+    applyExplodePreview(explodePreviewBases, factor);
+  },
+  onExplodePreviewCancel: cancelExplodePreview,
   onApplyMate: () => {
     // Mate aligns the first selected face onto the second (Surf mode), B-rep only.
     const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
@@ -697,6 +757,22 @@ function nonParallel(a: [number, number, number], b: [number, number, number]): 
 function refreshColors(): void {
   viewer.setEntityColors(partsModel.colorMap());
   renderHighlight();
+  applyVisibilityState();
+}
+
+/** Re-applies both the Parts hide/isolate state and the Tree per-node hide
+ * state to the (possibly freshly rebuilt) model — new `THREE.Object3D`s from
+ * a model reload start fully visible, so this must run on every model
+ * rebuild, not just when visibility itself changes. Called from
+ * `refreshColors()`, which every model-rebuild/parts-change path already
+ * calls, so a single hook here covers every call site. */
+function applyVisibilityState(): void {
+  const parts = partsModel.list();
+  const hidden = visibilityState.hiddenPartIndices().flatMap((i) => partsModel.entitiesOf(i));
+  const isolated = visibilityState.isolatedPartIndex();
+  const isolatedEntities = isolated !== null && isolated < parts.length ? partsModel.entitiesOf(isolated) : null;
+  viewer.applyPartVisibility(hidden, isolatedEntities);
+  for (const groupId of visibilityState.hiddenTreeGroupIds()) viewer.setGroupVisible(groupId, false);
 }
 
 /** Draws either the previewed part's entities or the working selection. */
@@ -717,6 +793,7 @@ function rebuildMeshModel(): void {
   const edited = applyEditsMesh(pristineMesh.clone(), currentResolvedOps().ops);
   const model = splitMeshesIntoFacets(edited);
   viewer.setModel(model);
+  explodePreviewBases = null; // stale references to the just-replaced model's objects
   refreshColors();
   // Edits can change the bounding box; keep the FE Mesh panel's element-count
   // estimate honest. (B-rep sources get the equivalent via the re-posted
@@ -1012,11 +1089,108 @@ function setupFileMenu(): void {
   });
 }
 
+/**
+ * Drop a CAD/mesh file onto the viewer to open it. `dragover` must call
+ * `preventDefault()` or the browser never fires `drop`. Whether the dropped
+ * `File` exposes a real filesystem path (`.path`, a legacy Electron
+ * extension to the standard `File` object) is VS Code/Electron-version
+ * dependent — when it isn't there, fall back to the plain `{type:"openFile"}`
+ * message (opens the normal dialog) rather than silently doing nothing.
+ */
+function setupDragAndDrop(): void {
+  app.addEventListener("dragover", (e) => {
+    e.preventDefault();
+  });
+  app.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    const path = (file as (File & { path?: string }) | undefined)?.path;
+    if (path) post({ type: "openPath", path });
+    else post({ type: "openFile" });
+  });
+}
+
+/**
+ * Appearance controls: Edges toolbar toggle (discrete on/off, like Wireframe/
+ * Grid), background swatch + opacity slider (continuous, `#view-controls`'
+ * "Appearance" group). All session-only — never persisted, mirroring
+ * `setWireframe`/`toggleGrid`'s "always wins once set" precedent.
+ */
+function setupAppearanceControls(): void {
+  let edgesVisible = true;
+  document.getElementById("edges")?.addEventListener("click", () => {
+    edgesVisible = !edgesVisible;
+    viewer.setEdgesVisible(edgesVisible);
+  });
+
+  document.getElementById("vc-background")?.addEventListener("input", (e) => {
+    viewer.setBackground((e.target as HTMLInputElement).value);
+  });
+
+  document.getElementById("vc-opacity")?.addEventListener("input", (e) => {
+    viewer.setOpacity(Number((e.target as HTMLInputElement).value) / 100);
+  });
+
+  let ortho = false;
+  const orthoBtn = document.getElementById("vc-ortho");
+  orthoBtn?.addEventListener("click", () => {
+    ortho = !ortho;
+    viewer.setOrthographic(ortho);
+    orthoBtn.textContent = ortho ? "Ortho" : "Persp";
+    orthoBtn.classList.toggle("active", ortho);
+  });
+}
+
+/**
+ * Live clipping/section plane — display-only, distinct from the `section`
+ * edit op. Every slider `input` applies immediately (no commit-gating, unlike
+ * the meshing size slider — there's nothing to persist here).
+ */
+function setupClippingControls(): void {
+  let clipAxis: ClipAxis = "x";
+  let clipEnabled = false;
+  const axisBtns = [...document.querySelectorAll<HTMLButtonElement>(".clip-axis")];
+  const offsetSlider = document.getElementById("clip-offset") as HTMLInputElement | null;
+  const toggleBtn = document.getElementById("clip-toggle");
+
+  const applyClip = () => {
+    if (!clipEnabled || !offsetSlider) {
+      viewer.setClippingPlane(null);
+      return;
+    }
+    const model = viewer.getModel();
+    const box = model ? new THREE.Box3().setFromObject(model) : null;
+    if (!box || box.isEmpty()) {
+      viewer.setClippingPlane(null);
+      return;
+    }
+    viewer.setClippingPlane(planeForAxis(clipAxis, Number(offsetSlider.value) / 100, box));
+  };
+
+  for (const btn of axisBtns) {
+    btn.addEventListener("click", () => {
+      clipAxis = btn.dataset.axis as ClipAxis;
+      axisBtns.forEach((b) => b.classList.toggle("active", b === btn));
+      applyClip();
+    });
+  }
+  offsetSlider?.addEventListener("input", applyClip);
+  toggleBtn?.addEventListener("click", () => {
+    clipEnabled = !clipEnabled;
+    toggleBtn.classList.toggle("active", clipEnabled);
+    toggleBtn.textContent = clipEnabled ? "On" : "Off";
+    applyClip();
+  });
+}
+
 try {
   setupViewControls();
   setupSelectionControls();
   setupMeasureControls();
   setupFileMenu();
+  setupDragAndDrop();
+  setupAppearanceControls();
+  setupClippingControls();
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
   console.error(message, err);
@@ -1063,6 +1237,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         setStatus("Building geometry…");
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group);
+        explodePreviewBases = null; // stale references to the just-replaced model's objects
         refreshColors();
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
@@ -1083,7 +1258,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "parts":
       partsModel.load(msg.parts);
-      refreshColors();
+      visibilityState.onPartCountChanged(partsModel.size);
+      refreshColors(); // also re-applies visibility state, see refreshColors()
       partsPanel.render(partsModel.list());
       meshingPanel.renderParts(partsModel.list());
       showSidebar();
@@ -1163,6 +1339,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshSizePreset = msg.meshSizePreset;
       viewer.applyDefaults(msg);
       syncMeshSizeSeed();
+      {
+        const bg = document.getElementById("vc-background") as HTMLInputElement | null;
+        if (bg) bg.value = msg.background;
+      }
       break;
 
     case "screenshotRequest":
@@ -1199,6 +1379,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         nodeCount: msg.nodeCount,
         elementCount: msg.elementCount,
         elapsedMs: msg.elapsedMs,
+        quality: msg.quality,
       });
       break;
 

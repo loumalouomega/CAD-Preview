@@ -358,6 +358,20 @@ describe("generate_mesh", () => {
     expect(result.nodeCount).toBe(42);
     expect(result.elementCount).toBe(99);
     expect(result).not.toHaveProperty("positions");
+    expect(result.quality).toBeNull(); // FAKE_MESH_RESULT has no quality field
+  });
+
+  it("surfaces the pipeline's quality summary when present", async () => {
+    const c = ctx(
+      fakePipeline({
+        generateMesh: vi.fn(async () => ({
+          ...FAKE_MESH_RESULT,
+          quality: { min: 0.2, mean: 0.7, histogram: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] },
+        })),
+      })
+    );
+    const result = await generateMeshTool(c, { path: stpModel });
+    expect(result.quality).toEqual({ min: 0.2, mean: 0.7, histogram: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] });
   });
 
   it("meshes raw STL bytes with the single-part size override and drops parts", async () => {

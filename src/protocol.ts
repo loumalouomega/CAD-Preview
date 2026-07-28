@@ -5,6 +5,7 @@ import type { MeshOptions } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
+import type { QualitySummary } from "./meshQuality";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -78,6 +79,10 @@ export type HostToWebview =
       elementGroups: MeshElementGroup[];
       /** Wall-clock duration of the generate call, for the panel's status line. */
       elapsedMs: number;
+      /** Per-element quality summary (min/mean/histogram) — `undefined` if it
+       * couldn't be computed (e.g. a 1D mesh); see `computeMeshQuality` in
+       * `src/gmshService.ts` for the verified `getElementQualities` call shape. */
+      quality?: QualitySummary;
     }
   | { type: "meshingError"; message: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)
@@ -101,6 +106,7 @@ export type WebviewToHost =
   | { type: "partsChanged"; parts: Part[] }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "openFile" }
+  | { type: "openPath"; path: string }
   | { type: "saveSidecars" }
   | { type: "exportRequest" }
   | { type: "savePreprocessRequest" }

@@ -61,7 +61,7 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | `set_variables` | Replace the named parametric variables (`L = 20`) and re-resolve every op expression — geometry rebuilds from the new values on next load/mesh. |
 | `set_part` | Create/update/remove a named part grouping entity ids; optional per-part `meshSize` for local refinement. |
 | `set_mesh_options` | Merge fields into the persisted mesh options (also regenerates the one-way `<model>.geo` script). |
-| `generate_mesh` | Run Gmsh and return statistics only (node/element counts, element groups, timing) — nothing written. |
+| `generate_mesh` | Run Gmsh and return statistics only (node/element counts, element groups, timing, an optional element-quality summary) — nothing written. |
 | `export_mesh` | Generate and write the mesh in any registered format (`mdpaElements`, `mdpaGeometries`, `msh`, `msh2`, `geoUnrolled`, `vtk`, `unv`, `inp`, `bdf`, `su2`, `mesh`, `stl`, `diff`, `off`). `geoUnrolled` also writes the required `.xao` companion beside the output for B-rep sources. |
 | `export_brep` | Export a B-rep source to another B-rep format (STEP/IGES/BREP) with all edits baked in. |
 | `save_preprocess` | Bundle the CAD source plus whichever of its `.parts.json`/`.edits.json`/`.mesh.json`/`.geo` sidecars currently exist into a single `.zip` archive. Mirrors the extension's File ▸ Save Preprocess…. |
