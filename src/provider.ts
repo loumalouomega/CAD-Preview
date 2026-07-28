@@ -14,6 +14,7 @@ import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
+import { normalizeViewerDefaults } from "./viewerDefaults";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseEditsJson } from "./editsSidecar";
@@ -44,6 +45,8 @@ interface EditorSession {
   save(): Promise<void>;
   /** Flushes sidecars, then packages the source + whichever sidecars exist into a `.zip`. */
   savePreprocess(): void;
+  /** Save the current 3D view as a PNG (save dialog). */
+  screenshot(): void;
 }
 
 /** Read-only custom document: previews hold no editable state beyond their URI. */
@@ -100,6 +103,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.savePreprocess", withSession((s) => s.savePreprocess())),
       vscode.commands.registerCommand("cad-preview.loadPreprocess", () => void this.loadPreprocessDialog()),
       vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
+      vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
     ];
   }
 
@@ -196,6 +200,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       savePreprocess: () => {
         void flushSidecars().then(() => this.handleSavePreprocess(document.uri, post));
       },
+      screenshot: () => {
+        void this.handleScreenshot(document.uri, post, pending);
+      },
     };
     const track = () => {
       if (webviewPanel.active) this.activeSession = session;
@@ -220,6 +227,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         post({ type: "edits", ops: currentEdits, variables: currentVariables });
         void this.sendParts(document.uri, post);
         void this.sendMeshOptions(document.uri, post);
+        this.sendViewerDefaults(post);
         return;
       }
 
@@ -401,6 +409,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         pending.delete(msg.requestId);
         if (msg.type === "exportResult") p.resolve(msg);
         else p.reject(new Error(msg.message));
+        return;
+      }
+
+      if (msg.type === "screenshotButtonClicked") {
+        void this.handleScreenshot(document.uri, post, pending);
+        return;
+      }
+
+      if (msg.type === "screenshotResult" || msg.type === "screenshotError") {
+        const p = pending.get(msg.requestId);
+        if (!p) return;
+        pending.delete(msg.requestId);
+        if (msg.type === "screenshotResult") p.resolve({ data: msg.data, binary: true });
+        else p.reject(new Error(msg.message));
       }
     });
 
@@ -457,6 +479,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   private async sendMeshOptions(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
     const options = await readMeshOptions(uri);
     post({ type: "meshingOptions", options });
+  }
+
+  /**
+   * Sends the cross-document `cadPreview.*` settings (background, grid/axes
+   * visibility, up-axis, mesh-size preset) as the webview's initial state.
+   * These are only ever defaults for a newly opened document — a persisted
+   * per-document sidecar value (e.g. an already-saved `.mesh.json` size) or a
+   * runtime toggle (the toolbar Grid button) always wins once set.
+   */
+  private sendViewerDefaults(post: (msg: HostToWebview) => void): void {
+    const cfg = vscode.workspace.getConfiguration("cadPreview");
+    const defaults = normalizeViewerDefaults({
+      background: cfg.get("background"),
+      meshSizePreset: cfg.get("defaultMeshSizePreset"),
+      showGridAndAxes: cfg.get("showGridAndAxesOnOpen"),
+      upAxis: cfg.get("upAxis"),
+    });
+    post({ type: "viewerDefaults", ...defaults });
   }
 
   /**
@@ -554,6 +594,33 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       });
       return result.binary ? Buffer.from(result.data, "base64") : Buffer.from(result.data, "utf8");
     }, post);
+  }
+
+  /**
+   * Saves the current 3D view as a PNG. Mirrors `handleExport`'s mesh-target
+   * branch exactly (a `screenshotRequest`/`screenshotResult` round trip
+   * through the same `pending` map), minus the format `showQuickPick` — the
+   * format is always PNG.
+   */
+  private async handleScreenshot(
+    uri: vscode.Uri,
+    post: (msg: HostToWebview) => void,
+    pending: Map<string, PendingExport>
+  ): Promise<void> {
+    await this.promptSaveAndWrite(
+      uri,
+      "png",
+      "PNG Image",
+      async () => {
+        const requestId = `${Date.now()}-${Math.random()}`;
+        const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
+          pending.set(requestId, { resolve, reject });
+          post({ type: "screenshotRequest", requestId });
+        });
+        return Buffer.from(result.data, "base64");
+      },
+      post
+    );
   }
 
   /**

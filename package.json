@@ -86,6 +86,10 @@
       {
         "command": "cad-preview.whatsNew",
         "title": "CAD Preview: Show What's New"
+      },
+      {
+        "command": "cad-preview.screenshot",
+        "title": "CAD Preview: Screenshot to PNG…"
       }
     ],
     "keybindings": [
@@ -124,6 +128,12 @@
         "key": "ctrl+alt+o",
         "mac": "cmd+alt+o",
         "when": "activeCustomEditorId == 'cad-preview.mesh'"
+      },
+      {
+        "command": "cad-preview.screenshot",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "activeCustomEditorId == 'cad-preview.mesh'"
       }
     ],
     "menus": {
@@ -143,8 +153,46 @@
         {
           "command": "cad-preview.savePreprocess",
           "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.screenshot",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
         }
       ]
+    },
+    "configuration": {
+      "title": "CAD Preview",
+      "properties": {
+        "cadPreview.background": {
+          "type": "string",
+          "default": "#1e1e1e",
+          "description": "Default 3D view background color (CSS hex) for newly opened models."
+        },
+        "cadPreview.defaultMeshSizePreset": {
+          "type": "string",
+          "enum": [
+            "coarse",
+            "medium",
+            "fine"
+          ],
+          "default": "medium",
+          "description": "Default FE mesh element-size preset seeded for models with no saved .mesh.json sidecar."
+        },
+        "cadPreview.showGridAndAxesOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the ground grid and axes helper when a model is opened."
+        },
+        "cadPreview.upAxis": {
+          "type": "string",
+          "enum": [
+            "y",
+            "z"
+          ],
+          "default": "y",
+          "description": "Default up-axis orientation for newly opened models."
+        }
+      }
     }
   },
   "scripts": {

@@ -6,6 +6,7 @@ import { collectTargets, resolvePick, type PickResult } from "./picking";
 import { DEFAULT_EDGE_COLOR, DEFAULT_FACE_COLOR, DEFAULT_POINT_COLOR } from "./geometryBuilder";
 import type { EntityType } from "../protocol";
 import type { SelectedEntity } from "./selection";
+import type { UpAxis } from "../viewerDefaults";
 
 /** Emissive tint applied to the transiently-selected entities. */
 const SELECTION_COLOR = 0x3b82f6;
@@ -45,6 +46,10 @@ export class Viewer {
   private onEntityPick: ((r: PickResult, additive: boolean) => void) | null = null;
   private onEmptyPick: (() => void) | null = null;
   private pointerDownPos: { x: number; y: number } | null = null;
+  /** Applied to the model ROOT (not `THREE.Object3D.DEFAULT_UP`, which is a
+   * static shared by every `Object3D` including the gizmo/helpers) on the next
+   * `setModel()` — see `applyDefaults()`. */
+  private upAxis: UpAxis = "y";
 
   constructor(private readonly container: HTMLElement) {
     const width = container.clientWidth;
@@ -112,9 +117,29 @@ export class Viewer {
     this.setMeshOverlay(null);
     this.clearModel();
     this.model = object;
+    // Z-up source data displayed in this Three.js (Y-up) scene: rotate the model
+    // ROOT, not THREE.Object3D.DEFAULT_UP (a static shared by every Object3D,
+    // including the gizmo/helpers) — resetView()'s isometric direction is
+    // defined in the camera's fixed Y-up world frame and stays meaningful either way.
+    object.rotation.x = this.upAxis === "z" ? -Math.PI / 2 : 0;
     this.applyWireframe();
     this.scene.add(object);
     this.resetView();
+  }
+
+  /**
+   * Applies the `cadPreview.*` cross-document settings: background color and
+   * grid/axes visibility take effect immediately (scene-level, independent of
+   * whether a model is loaded yet); up-axis is stored and applied at the next
+   * `setModel()` call (rotating a not-yet-loaded model root is meaningless).
+   * Only ever *initial* state — the toolbar Grid toggle remains a per-session
+   * runtime override on top of this, never persisted.
+   */
+  applyDefaults(d: { background: string; showGridAndAxes: boolean; upAxis: UpAxis }): void {
+    this.scene.background = new THREE.Color(d.background);
+    this.grid.visible = d.showGridAndAxes;
+    this.axes.visible = d.showGridAndAxes;
+    this.upAxis = d.upAxis;
   }
 
   private clearModel(): void {
@@ -337,6 +362,22 @@ export class Viewer {
         mat.color.setHex(keys.has(`point:${ud.entityId}`) ? SELECTION_COLOR : base);
       }
     });
+  }
+
+  /** Forces an immediate render of the current frame (used right before a screenshot capture). */
+  render(): void {
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Captures the current framebuffer as a base64 PNG (no `data:` prefix).
+   * Callers should call {@link render} immediately before this to guarantee a
+   * fresh frame — the renderer has no persistent `preserveDrawingBuffer`, so
+   * `toDataURL` reads whatever was drawn most recently.
+   */
+  captureScreenshotBase64(): string {
+    const dataUrl = this.renderer.domElement.toDataURL("image/png");
+    return dataUrl.slice(dataUrl.indexOf(",") + 1);
   }
 
   setWireframe(on: boolean): void {

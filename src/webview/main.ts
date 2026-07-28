@@ -15,8 +15,9 @@ import { evaluateVariables, resolveEditOps } from "../editVariables";
 import { extractIdentifiers } from "../paramExpr";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
-import { defaultTargetSize } from "./meshSizeHeuristics";
+import { targetSizeForPreset } from "./meshSizeHeuristics";
 import { SIZE_MAX_SENTINEL } from "../meshOptions";
+import type { MeshSizePreset } from "../viewerDefaults";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
@@ -575,10 +576,20 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
 });
 
 /**
- * Seeds a bbox-derived default target size while `sizeMax` is still the
- * "unbounded" sentinel. Called from the `geometry`, `loadUrl`, AND
- * `meshingOptions` handlers — model geometry and the options sidecar arrive
- * in no deterministic order (B-rep tessellation is async), so whichever lands
+ * The `cadPreview.defaultMeshSizePreset` setting, hydrated by the
+ * `viewerDefaults` handler below (arrives in no deterministic order relative
+ * to `geometry`/`loadUrl`/`meshingOptions`, same as the rest of the seed
+ * inputs) and consumed by `syncMeshSizeSeed`. `"medium"` reproduces the
+ * pre-setting behavior exactly (`PRESET_DIVISORS.medium === DEFAULT_SIZE_DIVISOR`).
+ */
+let meshSizePreset: MeshSizePreset = "medium";
+
+/**
+ * Seeds a bbox-derived default target size (scaled by {@link meshSizePreset})
+ * while `sizeMax` is still the "unbounded" sentinel. Called from the
+ * `geometry`, `loadUrl`, `meshingOptions`, AND `viewerDefaults` handlers —
+ * model geometry, the options sidecar, and the preset setting all arrive in
+ * no deterministic order (B-rep tessellation is async), so whichever lands
  * last completes the seed. A persisted user value (≠ sentinel) always wins,
  * and once seeded the repeat calls (e.g. re-tessellation after each B-rep
  * edit) are no-ops. Deliberately uses `load()` (which does NOT fire onChange)
@@ -590,7 +601,7 @@ function syncMeshSizeSeed(): void {
   const extents = viewer.getModelExtents();
   if (!extents) return;
   if (meshingModel.get().sizeMax !== SIZE_MAX_SENTINEL) return;
-  meshingModel.load({ ...meshingModel.get(), sizeMax: defaultTargetSize(extents.diagonal) });
+  meshingModel.load({ ...meshingModel.get(), sizeMax: targetSizeForPreset(extents.diagonal, meshSizePreset) });
   meshingPanel.render(meshingModel.get());
 }
 
@@ -716,6 +727,7 @@ function setSelectableModes(modes: EntityType[]): void {
 
 document.getElementById("fit")?.addEventListener("click", () => viewer.fitView());
 document.getElementById("grid")?.addEventListener("click", () => viewer.toggleGrid());
+document.getElementById("screenshot")?.addEventListener("click", () => post({ type: "screenshotButtonClicked" }));
 document.getElementById("tree-close")?.addEventListener("click", () => {
   treePanel.hide();
   window.dispatchEvent(new Event("resize"));
@@ -954,6 +966,24 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshingModel.load(msg.options);
       syncMeshSizeSeed();
       meshingPanel.render(meshingModel.get());
+      break;
+
+    case "viewerDefaults":
+      // Cross-document settings — only ever initial state; per-document sidecar
+      // values and runtime toggles (the toolbar Grid button) always win once set.
+      meshSizePreset = msg.meshSizePreset;
+      viewer.applyDefaults(msg);
+      syncMeshSizeSeed();
+      break;
+
+    case "screenshotRequest":
+      try {
+        viewer.render(); // force a fresh frame right before capture (no persistent preserveDrawingBuffer)
+        const data = viewer.captureScreenshotBase64();
+        post({ type: "screenshotResult", requestId: msg.requestId, data });
+      } catch (err) {
+        post({ type: "screenshotError", requestId: msg.requestId, message: (err as Error).message });
+      }
       break;
 
     case "meshingResult":
