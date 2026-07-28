@@ -7,6 +7,7 @@ import {
   allOpKinds,
   OP_PARAM_DOCS,
   loadModel,
+  getMassProperties,
   getState,
   applyEditOps,
   removeEditOp,
@@ -28,6 +29,7 @@ import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
+import type { MassProperties } from "./massProperties";
 
 let dir: string;
 let stpModel: string;
@@ -61,6 +63,14 @@ const FAKE_MESH_RESULT: MeshResult = {
   mshText: "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n",
 };
 
+const FAKE_MASS_PROPERTIES: MassProperties = {
+  volume: 24,
+  area: 52,
+  length: null,
+  centerOfMass: [1, 1.5, 2],
+  momentsOfInertia: { ixx: 50, iyy: 40, izz: 26, ixy: 0, ixz: 0, iyz: 0 },
+};
+
 function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   return {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
@@ -69,6 +79,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportMeshFormat: vi.fn(async () => "vtk-content"),
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
     exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "/out.geo_unrolled.xao";\n', xao: new Uint8Array([9]) })),
+    computeMassProperties: vi.fn(async () => FAKE_MASS_PROPERTIES),
     ...overrides,
   } as Pipeline;
 }
@@ -150,6 +161,42 @@ describe("load_model", () => {
 
   it("rejects unsupported extensions", async () => {
     await expect(loadModel(ctx(), { path: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
+  });
+});
+
+describe("get_mass_properties", () => {
+  it("computes whole-model mass properties for a B-rep source", async () => {
+    const c = ctx();
+    const result = await getMassProperties(c, { path: stpModel });
+    expect(c.pipeline.computeMassProperties).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], null);
+    expect(result).toMatchObject({ supported: true, entityId: "whole-model", volume: 24, area: 52 });
+  });
+
+  it("passes a resolved entityId through to the pipeline", async () => {
+    const c = ctx();
+    const result = await getMassProperties(c, { path: stpModel, entityId: "solid-0" });
+    expect(c.pipeline.computeMassProperties).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], "solid-0");
+    expect(result.entityId).toBe("solid-0");
+  });
+
+  it("replays sidecar ops before computing", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    await getMassProperties(c, { path: stpModel });
+    const lastCall = vi.mocked(c.pipeline.computeMassProperties).mock.lastCall!;
+    expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await getMassProperties(c, { path: stlModel });
+    expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/client-side/i);
+  });
+
+  it("rejects unsupported extensions", async () => {
+    await expect(getMassProperties(ctx(), { path: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
   });
 });
 

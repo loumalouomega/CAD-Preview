@@ -15,11 +15,15 @@ import { evaluateVariables, resolveEditOps } from "../editVariables";
 import { extractIdentifiers } from "../paramExpr";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
+import { MassPropertiesPanel } from "./massPropertiesPanel";
+import { computeMeshMassProperties } from "./meshMassProperties";
 import { targetSizeForPreset } from "./meshSizeHeuristics";
 import { SIZE_MAX_SENTINEL } from "../meshOptions";
 import type { MeshSizePreset } from "../viewerDefaults";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
+import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
+import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -575,6 +579,74 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   },
 });
 
+// ── Mass properties ──────────────────────────────────────────────────────
+// B-rep sources round-trip through the host (OCCT `BRepGProp`); mesh sources
+// compute entirely client-side (pure Three.js triangle math, no WASM
+// dependency) — see `computeAndRenderMeshMassProperties` below.
+let sourceKind: "brep" | "mesh" | null = null;
+let massPropertiesRequestId: string | null = null;
+
+const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mass-panel")!, {
+  onRefresh: () => {
+    const list = selection.list();
+    if (list.length > 1) {
+      massPropertiesPanel.renderMessage("Select exactly one entity, or none for the whole model.", true);
+      return;
+    }
+    const target = list[0] ?? null;
+    if (sourceKind === "mesh") {
+      computeAndRenderMeshMassProperties(target);
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random()}`;
+    massPropertiesRequestId = requestId;
+    massPropertiesPanel.renderMessage("Computing…");
+    post({ type: "massPropertiesRequest", requestId, entityId: target ? target.entityId : null });
+  },
+});
+
+/**
+ * Mesh-source mass properties: resolves `target` to the matching facet
+ * `THREE.Mesh`(es) in the currently displayed model and sums them via
+ * `computeMeshMassProperties` — entirely in the webview, no host round trip
+ * (mesh sources have no OCCT shape to query). A `null` target means the whole
+ * model; only a single open facet ("surface") lacks a meaningful volume, so
+ * only that case suppresses `volume`/uses the area-weighted centroid.
+ */
+function computeAndRenderMeshMassProperties(target: SelectedEntity | null): void {
+  const model = viewer.getModel();
+  if (!model) {
+    massPropertiesPanel.renderMessage("No model loaded.", true);
+    return;
+  }
+  if (target && target.entityType !== "volume" && target.entityType !== "surface") {
+    massPropertiesPanel.renderMessage("Mass properties aren't available for this entity type.", true);
+    return;
+  }
+
+  const meshes: THREE.Mesh[] = [];
+  model.traverse((o) => {
+    if (!(o instanceof THREE.Mesh) || o.userData.entityType !== "surface") return;
+    if (!target) meshes.push(o);
+    else if (target.entityType === "volume" && o.userData.groupId === target.entityId) meshes.push(o);
+    else if (target.entityType === "surface" && o.userData.entityId === target.entityId) meshes.push(o);
+  });
+  if (meshes.length === 0) {
+    massPropertiesPanel.renderMessage("Nothing to measure for this selection.", true);
+    return;
+  }
+
+  const isClosedTarget = target === null || target.entityType === "volume";
+  const { volume, area, volumeCentroid, areaCentroid } = computeMeshMassProperties(meshes);
+  massPropertiesPanel.render({
+    volume: isClosedTarget ? volume : null,
+    area,
+    length: null,
+    centerOfMass: isClosedTarget ? volumeCentroid : areaCentroid,
+    momentsOfInertia: null,
+  });
+}
+
 /**
  * The `cadPreview.defaultMeshSizePreset` setting, hydrated by the
  * `viewerDefaults` handler below (arrives in no deterministic order relative
@@ -725,6 +797,120 @@ function setSelectableModes(modes: EntityType[]): void {
   }
 }
 
+// ── Measurement toolbar (distance/edge length/angle/radius) ────────────────
+// Entirely webview-side, display-only overlay — never an edit op, never
+// persisted to any sidecar, never a host round trip.
+
+interface MeasurementResult {
+  text: string;
+  anchor: Vec3;
+  /** 2 points to connect with a line (distance/angle), or none (edgeLength/radius). */
+  linePoints: Vec3[];
+}
+
+function polylinePointAt(flat: Float32Array, i: number): Vec3 {
+  return [flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]];
+}
+
+function midpoint(a: Vec3, b: Vec3): Vec3 {
+  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+}
+
+function formatMeasure(n: number): string {
+  return Number.isFinite(n) ? String(Number(n.toPrecision(5))) : "—";
+}
+
+/** Dispatches the completed pick set to the matching pure math in `measurement.ts`. */
+function computeMeasurementResult(tool: MeasureTool, picks: MeasurementPick[]): MeasurementResult | null {
+  if (tool === "distance") {
+    const [a, b] = picks;
+    if (!a || !b) return null;
+    return { text: formatMeasure(pointDistance(a.point, b.point)), anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+  }
+  if (tool === "edgeLength") {
+    const [a] = picks;
+    if (!a?.polyline) return null;
+    return { text: `L = ${formatMeasure(polylineLength(a.polyline))}`, anchor: a.point, linePoints: [] };
+  }
+  if (tool === "angle") {
+    const [a, b] = picks;
+    if (!a?.direction || !b?.direction) return null;
+    const deg = angleBetweenVectors(a.direction, b.direction);
+    if (Number.isNaN(deg)) return null;
+    return { text: `${formatMeasure(deg)}°`, anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+  }
+  if (tool === "radius") {
+    const [a] = picks;
+    if (!a?.polyline || a.polyline.length < 9) return null;
+    const n = a.polyline.length / 3;
+    const r = circleRadiusFromArcPoints(
+      polylinePointAt(a.polyline, 0),
+      polylinePointAt(a.polyline, Math.floor(n / 2)),
+      polylinePointAt(a.polyline, n - 1)
+    );
+    return r === null ? null : { text: `R = ${formatMeasure(r)}`, anchor: a.point, linePoints: [] };
+  }
+  return null;
+}
+
+const measurementState = new MeasurementState();
+
+function setMeasureReadout(text: string, isError = false): void {
+  const el = document.getElementById("measure-readout");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("measure-readout-error", isError);
+}
+
+function setupMeasureControls(): void {
+  const toggle = document.getElementById("measure-toggle");
+  const toolSelect = document.getElementById("measure-tool") as HTMLSelectElement | null;
+  const clearBtn = document.getElementById("measure-clear");
+  let measuring = false;
+
+  viewer.setOnMeasurePick((pick) => {
+    const { done, picks } = measurementState.addPick(pick);
+    if (!done) {
+      viewer.showMeasurementMarker(new THREE.Vector3(...pick.point));
+      setMeasureReadout("Pick another point…");
+      return;
+    }
+    const result = computeMeasurementResult(measurementState.getTool(), picks);
+    if (!result) {
+      viewer.clearMeasurementOverlay();
+      setMeasureReadout("Couldn't compute a result for that pick — try a different entity.", true);
+      return;
+    }
+    viewer.showMeasurementOverlay(
+      result.linePoints.map((p) => new THREE.Vector3(...p)),
+      new THREE.Vector3(...result.anchor),
+      result.text
+    );
+    setMeasureReadout(result.text);
+  });
+
+  toggle?.addEventListener("click", () => {
+    measuring = !measuring;
+    toggle.classList.toggle("active", measuring);
+    viewer.setMeasureMode(measuring);
+    measurementState.clear();
+    viewer.clearMeasurementOverlay();
+    setMeasureReadout(measuring ? "Pick a point…" : "");
+  });
+
+  toolSelect?.addEventListener("change", () => {
+    measurementState.setTool(toolSelect.value as MeasureTool);
+    viewer.clearMeasurementOverlay();
+    setMeasureReadout(measuring ? "Pick a point…" : "");
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    measurementState.clear();
+    viewer.clearMeasurementOverlay();
+    setMeasureReadout("");
+  });
+}
+
 document.getElementById("fit")?.addEventListener("click", () => viewer.fitView());
 document.getElementById("grid")?.addEventListener("click", () => viewer.toggleGrid());
 document.getElementById("screenshot")?.addEventListener("click", () => post({ type: "screenshotButtonClicked" }));
@@ -829,6 +1015,7 @@ function setupFileMenu(): void {
 try {
   setupViewControls();
   setupSelectionControls();
+  setupMeasureControls();
   setupFileMenu();
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
@@ -879,6 +1066,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         refreshColors();
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
+        sourceKind = "brep";
         meshingPanel.setSourceKind("brep");
         meshingPanel.setModelExtents(viewer.getModelExtents());
         syncMeshSizeSeed();
@@ -927,6 +1115,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
         setSelectableModes(["volume", "surface"]);
         editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
+        sourceKind = "mesh";
         meshingPanel.setSourceKind("mesh");
         meshingPanel.setModelExtents(viewer.getModelExtents());
         syncMeshSizeSeed();
@@ -984,6 +1173,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       } catch (err) {
         post({ type: "screenshotError", requestId: msg.requestId, message: (err as Error).message });
       }
+      break;
+
+    case "massPropertiesResult":
+      if (msg.requestId !== massPropertiesRequestId) break; // stale — a newer refresh superseded it
+      massPropertiesPanel.render(msg.properties);
+      break;
+
+    case "massPropertiesError":
+      if (msg.requestId !== massPropertiesRequestId) break;
+      massPropertiesPanel.renderMessage(msg.message, true);
       break;
 
     case "meshingResult":

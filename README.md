@@ -87,6 +87,15 @@ loaders. Rendering is always Three.js.
   server (`dist/mcp-server.js`) exposes the same load/edit/mesh/export pipeline to AI
   agents (e.g. Claude Code) headless, persisting to the same sidecar files the
   extension reads — see [MCP Server](#mcp-server) below.
+- **Measurement tools**: measure distance, edge length, angle, and circle/arc radius
+  directly in the 3D view — a display-only overlay, never an edit operation, never
+  persisted anywhere.
+- **Mass properties**: volume, surface area, length, center of mass, and moments of
+  inertia for the whole model or a single selected entity — computed via OpenCascade.js's
+  `BRepGProp` for B-rep sources, or entirely client-side for mesh sources.
+- **Screenshot**: save the current 3D view as a PNG via a native Save dialog.
+- **Settings**: a handful of `cadPreview.*` VS Code settings (default background,
+  mesh-size preset, grid/axes visibility, up-axis) for newly opened documents.
 
 ## Export
 

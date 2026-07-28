@@ -54,6 +54,7 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | ---- | ------------ |
 | `describe_capabilities` | Op catalog (all edit-op kinds + parameter docs + B-rep-only/topology-changing flags), entity-id scheme, export target matrix, mesh export formats, mesh option defaults, headless limitations. |
 | `load_model` | Load the model (sidecar edits replayed) and return the component tree, entity-id inventory (`solid-N`/`face-N`/`edge-N`/`point-N` — the ids used as op operands and part members), bounding box, and sidecar summary. |
+| `get_mass_properties` | Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources only headless (OCCT `BRepGProp`); mesh formats return `supported: false`. |
 | `get_state` | The sidecar state without loading geometry: edit-op stack (indexed, described), variables (evaluated), parts, mesh options. |
 | `apply_edit_ops` | Validate and append raw `EditOp` JSON objects to the op stack; per-op accept/reject report; for B-rep sources returns the post-replay entity inventory. `dryRun` validates without persisting. |
 | `remove_edit_op` | Remove one op by 0-based index (the panel's per-row ✕ equivalent). |
@@ -113,6 +114,13 @@ when the file is opened in VS Code, not headless. B-rep-only ops are rejected.
 them by serializing the webview's displayed scene); the raw file is meshed and a
 warning is reported. Parts can't become physical groups for mesh sources; a single
 part's `meshSize` acts as a one-off global size override.
+
+`get_mass_properties` isn't a column above since it's read-only and orthogonal to
+the edit/mesh/export pipeline: B-rep sources get the full OCCT `BRepGProp`
+computation for any of the three format families; every mesh format (`.stl`
+included) returns `{supported: false}` with a warning — mass properties for mesh
+sources are computed client-side in the webview's Three.js scene, which has no
+headless equivalent.
 
 ## Troubleshooting
 

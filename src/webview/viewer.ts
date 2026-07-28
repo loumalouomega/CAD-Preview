@@ -2,8 +2,15 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import * as cam from "./cameraControls";
 import { OrientationCube } from "./orientationCube";
-import { collectTargets, resolvePick, type PickResult } from "./picking";
+import { collectTargets, resolvePick, collectMeasureTargets, resolveMeasurePick, type PickResult } from "./picking";
 import { DEFAULT_EDGE_COLOR, DEFAULT_FACE_COLOR, DEFAULT_POINT_COLOR } from "./geometryBuilder";
+import {
+  makeMeasureLabelSprite,
+  makeMeasureMarkerSprite,
+  buildMeasureLine,
+  disposeMeasureObject,
+} from "./measurementOverlay";
+import type { MeasurementPick } from "./measurementState";
 import type { EntityType } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
@@ -46,6 +53,18 @@ export class Viewer {
   private onEntityPick: ((r: PickResult, additive: boolean) => void) | null = null;
   private onEmptyPick: (() => void) | null = null;
   private pointerDownPos: { x: number; y: number } | null = null;
+  /** Measurement is a parallel interaction mode, deliberately independent of
+   * `selectionMode`/`SelectionSet` — see `setMeasureMode`. */
+  private measureMode = false;
+  private onMeasurePick: ((pick: MeasurementPick) => void) | null = null;
+  /** Display-only overlay (marker, line, label) for the in-progress/completed
+   * measurement — a scene sibling of `model`, same pattern as `meshOverlay`. */
+  private measurementOverlay: THREE.Object3D | null = null;
+  /** The overlay's label sprite, if any — rescaled every frame in `animate()`
+   * to stay a constant on-screen size regardless of camera distance/zoom
+   * (unlike point sprites, which only need to stay visible, a label
+   * specifically needs to stay legible while continuously zooming). */
+  private measurementLabel: THREE.Sprite | null = null;
   /** Applied to the model ROOT (not `THREE.Object3D.DEFAULT_UP`, which is a
    * static shared by every `Object3D` including the gizmo/helpers) on the next
    * `setModel()` — see `applyDefaults()`. */
@@ -113,8 +132,11 @@ export class Viewer {
   /** Replaces the current model with `object`, recenters and fits the camera to it. */
   setModel(object: THREE.Object3D): void {
     // A previously-generated FE mesh overlay was computed from the OLD geometry;
-    // it's now stale and must not linger looking valid over the new model.
+    // it's now stale and must not linger looking valid over the new model. Any
+    // in-progress/completed measurement is equally stale (its points refer to
+    // the old geometry) and must not linger either.
     this.setMeshOverlay(null);
+    this.clearMeasurementOverlay();
     this.clearModel();
     this.model = object;
     // Z-up source data displayed in this Three.js (Y-up) scene: rotate the model
@@ -315,6 +337,57 @@ export class Viewer {
     this.onEmptyPick = onEmpty;
   }
 
+  // ── Measurement (display-only overlay, never an edit op, never persisted) ──
+
+  /** Toggles measurement picking. Takes priority over `selectionMode` for a
+   * click when both happen to be active — see `onSelectPointerUp`. */
+  setMeasureMode(on: boolean): void {
+    this.measureMode = on;
+  }
+
+  /** Registers the callback fired on every measurement raycast hit. */
+  setOnMeasurePick(onPick: ((pick: MeasurementPick) => void) | null): void {
+    this.onMeasurePick = onPick;
+  }
+
+  /** Shows a single marker at `point` — an in-progress measurement's first pick(s). */
+  showMeasurementMarker(point: THREE.Vector3): void {
+    this.clearMeasurementOverlay();
+    const marker = makeMeasureMarkerSprite();
+    marker.position.copy(point);
+    this.measurementOverlay = marker;
+    this.scene.add(marker);
+  }
+
+  /**
+   * Shows the completed measurement: an optional line between `linePoints`
+   * (2 points — omit for a single-pick tool like edge length/radius, which
+   * has nothing to connect) plus a text label at `anchor`. Replaces (disposes)
+   * whatever marker/overlay was showing before.
+   */
+  showMeasurementOverlay(linePoints: THREE.Vector3[], anchor: THREE.Vector3, text: string): void {
+    this.clearMeasurementOverlay();
+    const group = new THREE.Group();
+    if (linePoints.length === 2) {
+      group.add(buildMeasureLine(linePoints[0], linePoints[1]));
+    }
+    const label = makeMeasureLabelSprite(text);
+    label.position.copy(anchor);
+    group.add(label);
+    this.measurementOverlay = group;
+    this.measurementLabel = label;
+    this.scene.add(group);
+  }
+
+  /** Disposes and removes the current measurement overlay (marker or line+label), if any. */
+  clearMeasurementOverlay(): void {
+    if (!this.measurementOverlay) return;
+    this.scene.remove(this.measurementOverlay);
+    disposeMeasureObject(this.measurementOverlay);
+    this.measurementOverlay = null;
+    this.measurementLabel = null;
+  }
+
   /**
    * Applies persistent per-part colours. Faces use their direct colour, else
    * their solid's colour, else the default; edges use their colour or default.
@@ -421,6 +494,15 @@ export class Viewer {
   private animate = (): void => {
     requestAnimationFrame(this.animate);
     this.controls.update();
+    if (this.measurementLabel) {
+      // Constant on-screen size regardless of zoom — recomputed every frame
+      // (unlike the point-sprite scale in `frame()`, which only updates on
+      // fit/reset), since a label specifically needs to stay legible while
+      // continuously zooming.
+      const distance = this.camera.position.distanceTo(this.measurementLabel.position);
+      const s = distance * 0.06;
+      this.measurementLabel.scale.set(s, s * 0.25, 1); // 4:1 label aspect ratio
+    }
     this.renderer.render(this.scene, this.camera);
     this.renderGizmo();
   };
@@ -457,7 +539,7 @@ export class Viewer {
   private onSelectPointerUp = (event: PointerEvent): void => {
     const down = this.pointerDownPos;
     this.pointerDownPos = null;
-    if (!down || this.selectionMode === null || !this.model) return;
+    if (!down || (!this.measureMode && this.selectionMode === null) || !this.model) return;
     // Ignore drags (orbit/pan) — only a near-stationary click selects.
     if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
 
@@ -467,6 +549,23 @@ export class Viewer {
     this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
     this.raycaster.params.Line.threshold = this.pickThreshold;
 
+    // Measurement takes priority for this click over the normal Parts/Edits
+    // selection pick — the two are deliberately independent modes, but a
+    // single click can only feed one of them.
+    if (this.measureMode) {
+      const targets = collectMeasureTargets(this.model);
+      const hits = this.raycaster.intersectObjects(targets, false);
+      for (const h of hits) {
+        const r = resolveMeasurePick(h.object.userData);
+        if (r) {
+          this.onMeasurePick?.(this.buildMeasurementPick(h, r));
+          return;
+        }
+      }
+      return;
+    }
+
+    if (this.selectionMode === null) return; // guaranteed non-null by the guard above, but keeps TS narrowing honest
     const targets = collectTargets(this.model, this.selectionMode);
     const hits = this.raycaster.intersectObjects(targets, false);
     for (const h of hits) {
@@ -478,6 +577,49 @@ export class Viewer {
     }
     this.onEmptyPick?.();
   };
+
+  /**
+   * Builds a {@link MeasurementPick} from a raycast intersection: the
+   * world-space hit point (discarded by the normal `onEntityPick` path, but
+   * exactly what a distance/angle measurement needs) plus, when applicable to
+   * the picked entity kind, a world-space direction (face normal via the
+   * intersection's local-space `face.normal` + normal matrix, or edge tangent
+   * from the two polyline points straddling the hit) and the picked edge's
+   * full world-space polyline (for edge length / radius).
+   */
+  private buildMeasurementPick(h: THREE.Intersection, r: PickResult): MeasurementPick {
+    const point: [number, number, number] = [h.point.x, h.point.y, h.point.z];
+    let direction: [number, number, number] | null = null;
+    let polyline: Float32Array | null = null;
+
+    if (r.entityType === "surface" && h.face) {
+      const normalMatrix = new THREE.Matrix3().getNormalMatrix(h.object.matrixWorld);
+      const n = h.face.normal.clone().applyMatrix3(normalMatrix).normalize();
+      direction = [n.x, n.y, n.z];
+    } else if (r.entityType === "line") {
+      const line = h.object as THREE.Line;
+      const pos = line.geometry.getAttribute("position");
+      const world = new Float32Array(pos.count * 3);
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(line.matrixWorld);
+        world[i * 3] = v.x;
+        world[i * 3 + 1] = v.y;
+        world[i * 3 + 2] = v.z;
+      }
+      polyline = world;
+
+      if (typeof h.index === "number" && pos.count >= 2) {
+        const i0 = Math.max(0, Math.min(h.index, pos.count - 2));
+        const a = new THREE.Vector3(world[i0 * 3], world[i0 * 3 + 1], world[i0 * 3 + 2]);
+        const b = new THREE.Vector3(world[(i0 + 1) * 3], world[(i0 + 1) * 3 + 1], world[(i0 + 1) * 3 + 2]);
+        const t = b.clone().sub(a).normalize();
+        direction = [t.x, t.y, t.z];
+      }
+    }
+
+    return { point, entityType: r.entityType, entityId: r.entityId, direction, polyline };
+  }
 
   private onGizmoPointerDown = (event: PointerEvent): void => {
     const rect = this.renderer.domElement.getBoundingClientRect();

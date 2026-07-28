@@ -59,7 +59,15 @@ features:
 
   - icon: 🤖
     title: MCP Server for AI Agents
-    details: A standalone Model Context Protocol stdio server (`dist/mcp-server.js`) exposes the same load/edit/mesh/export pipeline headless — no VS Code required. Agents like Claude Code can apply edit operations, manage parts and parametric variables, and generate/export FE meshes, persisting to the same sidecar files the extension reads. See the MCP Server reference page.
+    details: A standalone Model Context Protocol stdio server (`dist/mcp-server.js`) exposes the same load/edit/mesh/export pipeline headless — no VS Code required. Agents like Claude Code can apply edit operations, manage parts and parametric variables, generate/export FE meshes, and query mass properties, persisting to the same sidecar files the extension reads. See the MCP Server reference page.
+
+  - icon: 📏
+    title: Measurement & Mass Properties
+    details: Measure distance, edge length, angle, and circle/arc radius directly in the 3D view — a display-only overlay, never persisted. The Mass Properties panel computes volume, area, length, center of mass, and moments of inertia for the whole model or a single selected entity, via OpenCascade.js's BRepGProp for B-rep sources or client-side triangle math for mesh sources.
+
+  - icon: 📷
+    title: Screenshot & Settings
+    details: Save the current view as a PNG via the toolbar or Command Palette. A handful of cadPreview.* VS Code settings (background colour, mesh-size preset, grid/axes visibility, up-axis) set cross-document defaults for newly opened files.
 ---
 
 ## See It in Action

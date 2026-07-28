@@ -34,7 +34,12 @@ await esbuild.build({
   format: "cjs",
   target: "node18",
   outfile,
-  external: ["vscode"],
+  // This entry imports gmshService.ts (for the FE-mesh overlay fixture), so it
+  // needs the same external-ize-gmsh-wasm fix esbuild.mjs's extension/mcp
+  // configs already document: @loumalouomega/gmsh-wasm's Emscripten pthread
+  // bootstrap has a top-level `await import('worker_threads')` in its .mjs
+  // build that this "cjs" output format cannot represent.
+  external: ["vscode", "@loumalouomega/gmsh-wasm"],
   plugins: [wasmPathPlugin],
   banner: { js: `const import_meta_url = require("url").pathToFileURL(__filename).href;` },
   define: { "import.meta.url": "import_meta_url" },

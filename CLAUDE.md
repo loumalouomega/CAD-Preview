@@ -1188,6 +1188,115 @@ invariants:
   section's bundled-dependency rule) and are bundled only into
   `dist/mcp-server.js`, never `dist/extension.js`.
 
+## Settings, screenshot, mass properties, and measurement (P1 roadmap features)
+
+Four independent, additive features (`doc/roadmap.md`'s P1 tier): the first
+`contributes.configuration` settings surface, a view screenshot, a mass-
+properties readout, and webview-only measurement tools. None touches the
+read-only-CAD-file invariant.
+
+- **Settings are cross-document *defaults* only, never a per-document
+  override.** `src/viewerDefaults.ts` (`normalizeViewerDefaults`, same
+  clamp-per-field tolerance-gate style as `validateMeshOptions`) reads
+  `workspace.getConfiguration("cadPreview")` in `provider.ts`'s
+  `sendViewerDefaults()`, posted as a `viewerDefaults` message in the `ready`
+  handshake alongside `parts`/`meshingOptions` — arrival order relative to
+  `geometry`/`loadUrl` is **not** deterministic (same discipline as the
+  mesh-size-seed synchronization above), so the webview handler must tolerate
+  either order. `background`/`showGridAndAxes` apply immediately
+  (scene-level); `upAxis` is stored and applied at the next `setModel()`
+  call, rotating the **model root** (`object.rotation.x = -Math.PI/2` for
+  `"z"`) — deliberately NOT `THREE.Object3D.DEFAULT_UP`, a static shared by
+  every `Object3D` including the gizmo/helpers, which would silently affect
+  unrelated code. `resetView()`'s isometric direction is defined in the
+  camera's fixed Y-up world frame and stays meaningful regardless of the
+  setting. `defaultMeshSizePreset` feeds `syncMeshSizeSeed()` via
+  `meshSizeHeuristics.ts`'s `targetSizeForPreset()` (reusing the existing
+  `PRESET_DIVISORS` the Coarse/Medium/Fine buttons already use) — like every
+  other seed input, a persisted per-document `.mesh.json` value always wins.
+- **Screenshot reuses the `exportMesh`/`exportResult`/`exportError` +
+  `pending`-map pattern exactly**, just with the format fixed to PNG (no
+  `format` field) — `provider.ts`'s `handleScreenshot()` mirrors
+  `handleExport()`'s mesh-target branch, and the toolbar button
+  (`#screenshot`, posting `screenshotButtonClicked`) and the
+  `cad-preview.screenshot` command (via `EditorSession.screenshot()`) both
+  converge on it, so there is exactly one code path regardless of trigger
+  surface. The webview calls `Viewer.render()` (force a fresh frame) then
+  `captureScreenshotBase64()` (`renderer.domElement.toDataURL("image/png")`)
+  — no persistent `preserveDrawingBuffer: true` renderer flag.
+- **Mass properties (`src/massProperties.ts`) is the first `BRepGProp` usage
+  in this codebase — every call shape below is verified against the live
+  WASM**, not assumed from upstream OCCT docs, via the same brute-force
+  overload/arg-count probing convention as everything else in this file:
+  `new oc.GProp_GProps_1()` is the *only* accessible constructor (the
+  unsuffixed `GProp_GProps` has none). `oc.BRepGProp.VolumeProperties_1(
+  shape, props, onlyClosed, skipShared, useTriangulation)` takes exactly 5
+  args (all `false` verified correct — a 2×3×4 box gave `Mass()` = 24).
+  `oc.BRepGProp.SurfaceProperties_1(shape, props, skipShared,
+  useTriangulation)` takes exactly 4 (area 52 on the same box).
+  `oc.BRepGProp.LinearProperties(shape, props, skipShared, ?)` is
+  **unsuffixed** but still needs exactly 4 args in this binding, and must
+  only ever be called on a single already-resolved `TopoDS_Edge` — over an
+  entire B-rep shape it double-counts every edge shared by two faces (a
+  2×3×4 box's `LinearProperties` on the whole shape gave `72`, exactly
+  double the true 36-unit total edge length). `props.CentreOfMass()` returns
+  a `gp_Pnt`-like handle (`.X()/.Y()/.Z()`, needs `.delete()`).
+  `props.MatrixOfInertia()` returns a `gp_Mat`-like handle (`.Value(r, c)`,
+  1-based, needs `.delete()`) — **verified numerically to be about the
+  CENTROID, not the origin** (the same box gave `Ixx=50`, exactly
+  `(1/12)·24·(3²+4²)`, the standard centroid-based box formula; an
+  origin-based value would have been 200). Volume is only ever computed for
+  the whole model or a `solid-N` (`collectSolids`'s `TopAbs_SOLID` explorer
+  guarantees closure) — never `face-N`/`edge-N` — sidestepping the
+  documented open-shell "plausible-looking but wrong" `VolumeProperties`
+  trap noted near `addVolumeFromSurfaces` above. Entity resolution reuses
+  the **already-shared** `collectSolids`/`collectFaces`/`collectEdges`
+  (`occtOperations.ts`) — the same helpers every edit op uses, so no new
+  id-resolution logic was needed. Mesh sources compute the client-side
+  equivalent (`src/webview/meshMassProperties.ts`, promoted from
+  `meshEdits.test.ts`'s test-only `volumeOf()` signed-tetrahedra helper) with
+  **zero host round trip** — no protocol message is ever sent for a mesh
+  source, verified by the panel never posting `massPropertiesRequest` when
+  `sourceKind === "mesh"`. `mcpTools.ts`'s `get_mass_properties` follows the
+  same B-rep-only gate, returning `{supported: false}` with a warning for
+  mesh formats (no `OP_PARAM_DOCS` entry needed — that table is
+  `EditOpKind`-only).
+- **Measurement is entirely webview-side, display-only, and deliberately
+  independent of `SelectionSet`** — a measurement click must never populate
+  the Parts/Edits working selection, so `MeasurementState`
+  (`src/webview/measurementState.ts`) is its own small 0–2-pick buffer, not
+  `SelectionSet`. `Viewer.setMeasureMode()`/`onMeasurePick` is a **parallel**
+  pick path to `selectionMode`/`onEntityPick`, taking priority for a given
+  click when both happen to be active (`onSelectPointerUp`'s widened guard).
+  Measurement picking uses new unfiltered `picking.ts` helpers
+  (`collectMeasureTargets`/`resolveMeasurePick`) that never "resolve up" to a
+  parent solid, unlike `collectTargets`/`resolvePick` — a face hit stays a
+  face. The raycast intersection's **world-space hit point** (`h.point`) is
+  threaded through for the first time here — the normal `onEntityPick` path
+  only ever forwarded the resolved `{entityType, entityId}` and discarded it.
+  `Viewer.buildMeasurementPick()` also derives, when applicable to the hit
+  entity kind, a world-space direction (face normal via the intersection's
+  local `face.normal` + normal matrix, or edge tangent from the two polyline
+  points straddling the hit — used by the "angle" tool) and the picked
+  edge's full world-space polyline (used by "edgeLength"/"radius" —
+  `measurement.ts`'s `polylineLength`/`circleRadiusFromArcPoints` reuse data
+  already transmitted as `EncodedEdge.positions`, needing no new host work).
+  Exact BRep-precision entity-to-entity distance (`BRepExtrema_DistShapeShape`)
+  is explicitly out of scope — client-side triangulated-approximation
+  precision (tied to the existing 0.1 tessellation deflection tolerance) is
+  accepted for this display-only overlay. `measurementOverlay.ts`'s canvas
+  label/marker builders **must** follow `geometryBuilder.ts`'s `dotTexture()`
+  lazy-build-on-first-call discipline (no module-scope
+  `document.createElement("canvas")`) — this exact mistake already broke
+  headless tests once, per the Points feature's history above. The overlay's
+  label sprite is rescaled every `animate()` frame (`distance-to-camera ×
+  0.06`) to stay a constant on-screen size while zooming — deliberately
+  different from the point-sprite scale in `frame()`, which only updates on
+  fit/reset, since a label specifically needs to stay legible while
+  continuously zooming, unlike a point marker which only needs to stay
+  visible. No protocol messages, no MCP tool — this feature has zero host
+  involvement by design.
+
 ## Build & test
 
 ```bash
@@ -1430,6 +1539,24 @@ expected, since STL sources can't correlate parts) and `cube.stl.mesh.json` is
 unaffected; set two parts' mesh sizes → confirm it silently falls back to the panel's
 own global size (ambiguous, ignored). Apply/regenerate repeatedly + open/close the
 tab → watch extension-host memory stay flat (same leak check as above).
+
+Then exercise **Settings, Screenshot, Mass Properties, and Measurement**: in VS
+Code Settings UI, search "CAD Preview" → confirm all 4 `cadPreview.*` settings
+appear; set `background`/`showGridAndAxesOnOpen`/`upAxis` and open a fresh file
+→ confirm the new view reflects them (a per-document `.mesh.json` size still
+wins over `defaultMeshSizePreset`). Click the toolbar **📷 Screenshot** button
+and run **CAD Preview: Screenshot to PNG…** → both prompt a save dialog; rotate
++ toggle Wireframe before saving to confirm the PNG reflects the current view,
+not a stale/default frame. On `bull.stp`, open the **Mass Properties** panel,
+click **Compute** with nothing selected (whole model), then with exactly one
+solid/face/edge selected, then with 2+ selected (guidance message, no request
+sent) → confirm plausible, differing numbers each time; confirm `cube.stl`
+computes with **zero** `massPropertiesRequest` postMessages (DevTools). Click
+**📏 Measure**, try each of Distance/Edge Length/Angle/Radius → confirm a
+line+label overlay appears that stays legible while zooming, Clear/tool-switch
+reset in-progress picks, and toggling Measure never leaves stray entries in the
+Parts `SelectionSet`. Repeat all of the above open/close a few times → watch
+extension-host memory stay flat (same leak check as above).
 
 Then exercise the **MCP server**: `npm run mcp:smoke` must pass (it drives the real
 `dist/mcp-server.js` over stdio against a temp copy of `bull.stp`: load → an

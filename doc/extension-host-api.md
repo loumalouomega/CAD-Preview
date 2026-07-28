@@ -12,7 +12,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/exportTargets.ts` | Map a `FileRoute` to its compatible export formats |
 | `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export (op-list aware) |
 | `src/occtOperations.ts` | Host-side OCCT edit engine — folds the op-list over a `TopoDS_Shape` |
+| `src/massProperties.ts` | Volume/area/length/CoG/inertia for a B-rep shape via OCCT `BRepGProp` (vscode-free) |
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
+| `src/viewerDefaults.ts` | The `cadPreview.*` settings bag + `normalizeViewerDefaults` tolerance gate (vscode-free) |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
 | `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
 | `src/editOps.ts` | The `EditOp` union + `validateEditOp` tolerance gate (vscode-free) |
@@ -102,6 +104,104 @@ export function showWhatsNewPanel(context, version, entries: readonly ChangelogE
 
 ---
 
+## `src/viewerDefaults.ts`
+
+The cross-document defaults sourced from the `cadPreview.*` VS Code settings
+(`contributes.configuration` in `package.json`) — pure and `vscode`-free
+(mirrors `meshOptions.ts`'s parse-vs-store split).
+
+```typescript
+type MeshSizePreset = 'coarse' | 'medium' | 'fine'
+type UpAxis = 'y' | 'z'
+
+interface ViewerDefaults {
+  background: string          // CSS hex color
+  meshSizePreset: MeshSizePreset
+  showGridAndAxes: boolean
+  upAxis: UpAxis
+}
+
+const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults
+function normalizeViewerDefaults(raw: unknown): ViewerDefaults
+```
+
+`normalizeViewerDefaults` is the single tolerance gate, same clamp-per-field
+style as `validateMeshOptions` — each field individually falls back to its
+default rather than rejecting the whole object. `provider.ts`'s
+`sendViewerDefaults` reads `workspace.getConfiguration("cadPreview")`, passes
+it through this function, and posts the result as a `viewerDefaults` message
+in the `ready` handshake. These are **defaults only** — a persisted
+per-document `.mesh.json` value or the toolbar Grid toggle always wins once
+set; see [Webview API](./webview-api.md)'s `Viewer.applyDefaults`.
+
+---
+
+## `src/massProperties.ts`
+
+Volume/area/length + center-of-mass + moments-of-inertia for a B-rep shape,
+via OCCT `BRepGProp` — a new OCCT surface for this codebase (no prior
+`BRepGProp`/`GProp_GProps` usage anywhere). `vscode`-free (usable from both
+`provider.ts` and `mcpTools.ts`), following `occtService.ts`'s
+read-parse-cleanup skeleton.
+
+```typescript
+interface MomentsOfInertia { ixx: number; iyy: number; izz: number; ixy: number; ixz: number; iyz: number }
+
+interface MassProperties {
+  volume: number | null        // whole model or a solid-N only — never face-N/edge-N
+  area: number | null          // whole model, a solid-N (boundary area), or a face-N
+  length: number | null        // a single edge-N only
+  centerOfMass: [number, number, number] | null
+  momentsOfInertia: MomentsOfInertia | null   // about the CENTROID, not the origin
+}
+
+async function computeMassProperties(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: 'step' | 'iges' | 'brep',
+  ops: EditOp[],
+  entityId: string | null   // null = whole model; "solid-N"/"face-N"/"edge-N" = one entity
+): Promise<MassProperties>
+```
+
+Re-parses `bytes` and replays `ops` fresh on every call — like every other
+B-rep read path in this codebase, there is no shape/session cache. Resolves
+`entityId` via the **already-shared** `collectSolids`/`collectFaces`/
+`collectEdges` (`occtOperations.ts`) — the same id-resolution helpers every
+edit op already uses. Volume is only ever computed for the whole model or a
+`solid-N` (guaranteed closed by `collectSolids`'s `TopAbs_SOLID` explorer) —
+never for `face-N`/`edge-N` — sidestepping the documented open-shell
+"plausible-looking but wrong" `VolumeProperties` trap noted in
+`occtOperations.ts`'s sewing-verification comment.
+
+**OCCT `BRepGProp` API, verified against the live WASM** (brute-force
+overload/arg-count probing, the same convention as every other OCCT call
+recorded in `CLAUDE.md`): `new oc.GProp_GProps_1()` is the *only* accessible
+constructor (the unsuffixed `GProp_GProps` has none). `oc.BRepGProp.
+VolumeProperties_1(shape, props, onlyClosed, skipShared, useTriangulation)`
+takes exactly 5 args (all `false` verified correct — a 2×3×4 box gave
+`Mass()` = 24). `oc.BRepGProp.SurfaceProperties_1(shape, props, skipShared,
+useTriangulation)` takes exactly 4 (verified area 52 on the same box).
+`oc.BRepGProp.LinearProperties(shape, props, skipShared, ?)` is
+**unsuffixed** but still needs exactly 4 args in this binding — and must only
+ever be called on a single already-resolved `TopoDS_Edge`, never the whole
+shape (over a whole B-rep shape it double-counts every edge shared by two
+faces). `props.Mass()` holds volume/area/length depending which `*Properties`
+call ran; `props.CentreOfMass()` returns a `gp_Pnt`-like handle
+(`.X()/.Y()/.Z()`, needs `.delete()`); `props.MatrixOfInertia()` returns a
+`gp_Mat`-like handle (`.Value(r, c)`, 1-based, needs `.delete()`) — verified
+numerically equal to the standard box inertia formula computed **about the
+centroid** (e.g. `Ixx = 50` for the same box, matching `(1/12)·24·(3²+4²)`),
+not about the origin.
+
+`provider.ts` handles `massPropertiesRequest` for B-rep sources only (mesh
+sources compute the equivalent client-side in the webview — see
+[Webview API](./webview-api.md)); `mcpTools.ts`'s `get_mass_properties`
+follows the identical B-rep-only gate, returning `{supported: false}` with a
+warning for mesh formats.
+
+---
+
 ## `src/provider.ts`
 
 ### `CadPreviewProvider`
@@ -125,14 +225,16 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 1. Sets the webview options (`enableScripts: true`, `localResourceRoots`).
 2. Sets `webviewPanel.webview.html` to the result of `getHtml()`.
 3. Registers a `webviewPanel.webview.onDidReceiveMessage` listener (a per-panel
-   `pending: Map<string, { resolve; reject }>` correlates export round-trips, and
-   **three separate** per-panel debounce timers batch parts/edits/mesh-options
-   sidecar writes) that handles `"ready"`, `"partsChanged"`, `"editsChanged"`,
-   `"meshingChanged"`, `"meshingGenerate"`, `"meshingExport"`, `"exportRequest"`,
-   `"exportResult"`, and `"exportError"`.
+   `pending: Map<string, { resolve; reject }>` correlates export/screenshot
+   round-trips, and **three separate** per-panel debounce timers batch
+   parts/edits/mesh-options sidecar writes) that handles `"ready"`,
+   `"partsChanged"`, `"editsChanged"`, `"meshingChanged"`, `"meshingGenerate"`,
+   `"meshingExport"`, `"exportRequest"`, `"exportResult"`, `"exportError"`,
+   `"screenshotButtonClicked"`, `"screenshotResult"`, `"screenshotError"`, and
+   `"massPropertiesRequest"`.
 4. On `"ready"`: reads the edits sidecar, calls `routeFile()`, dispatches to
    `handleBRep()` (which applies the loaded edits) or posts `"loadUrl"`, then
-   posts `"edits"` and calls `sendParts()`/`sendMeshOptions()`.
+   posts `"edits"` and calls `sendParts()`/`sendMeshOptions()`/`sendViewerDefaults()`.
 5. On `"partsChanged"`: debounces (~500 ms) then `writeParts()` to the sidecar. The CAD file is never written.
 6. On `"editsChanged"`: debounces (~500 ms, its own timer) then `writeEdits()`; for B-rep sources also re-tessellates immediately with the new op-list.
 7. On `"meshingChanged"`: debounces (~500 ms, its own timer) then writes **both**
@@ -144,12 +246,25 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
    `promptSaveAndWrite()` (Export).
 9. On `"exportRequest"`: dispatches to `handleExport()`.
 10. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
+11. On `"screenshotButtonClicked"`: dispatches to `handleScreenshot()` — the
+    same method the `cad-preview.screenshot` command drives via
+    `EditorSession.screenshot()`, so there's exactly one code path regardless
+    of trigger surface.
+12. On `"screenshotResult"`/`"screenshotError"`: resolves/rejects the matching
+    `pending` entry, same as `exportResult`/`exportError`.
+13. On `"massPropertiesRequest"`: B-rep sources only (`route.strategy ===
+    "occt"`, else posts `"massPropertiesError"` with an explanatory message);
+    calls `computeMassProperties()` (`src/massProperties.ts`) and posts
+    `"massPropertiesResult"`/`"massPropertiesError"`. No caching — re-reads and
+    re-parses the source on every call, consistent with the rest of this file.
 
 **`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. Posts `"error"` on failure.
 
 **`sendParts(uri, post)`** — Private method. Reads the parts sidecar via `readParts()` and posts a `"parts"` message (empty array when no sidecar exists).
 
 **`sendMeshOptions(uri, post)`** — Private method. Reads the mesh-options sidecar via `readMeshOptions()` and posts a `"meshingOptions"` message (`DEFAULT_MESH_OPTIONS` when no sidecar exists).
+
+**`sendViewerDefaults(post)`** — Private method. Reads `workspace.getConfiguration("cadPreview")`, passes it through `normalizeViewerDefaults()` (`src/viewerDefaults.ts`), and posts a `"viewerDefaults"` message — synchronous, no `await`, since it's a pure settings read.
 
 **`resolveMeshInput(uri, route, ops, stl)`** — Private method. Builds the
 `MeshGenerationInput` `generateMesh`/`exportGeoUnrolled` need: for a B-rep
@@ -166,13 +281,15 @@ rather than throwing.
    If the target is a mesh format (STL/OBJ/PLY/glTF): registers a `requestId` in `pending`, posts `"exportMesh"`, and awaits the promise that the `onDidReceiveMessage` handler resolves/rejects when the webview replies.
 4. Decodes the result (base64 or UTF-8, per the `binary` flag) and writes it with `vscode.workspace.fs.writeFile()`. Posts `"status"` on success, `"error"` on failure.
 
+**`handleScreenshot(uri, post, pending)`** — Private method. Saves the current 3D view as a PNG (**File ▸ Screenshot**, the toolbar 📷 button, or the `cad-preview.screenshot` command). Mirrors `handleExport`'s mesh-target branch exactly — reuses the same `pending` map and `promptSaveAndWrite()` helper, registers a `requestId`, posts `"screenshotRequest"`, and awaits the webview's `"screenshotResult"`/`"screenshotError"` reply — minus the format `showQuickPick` (always PNG).
+
 **`getHtml(webview, extensionUri)`** — Private method. Generates the full webview HTML with:
 - A strict CSP nonce.
 - The compiled `media/viewer.js` bundle (IIFE).
 - The `media/viewer.css` stylesheet.
-- Static toolbar HTML (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`, `#meshing-toggle`, and the `#select-group` selection-mode controls) — most of these buttons' icons come from `TOOLBAR_ICONS` (see below), via a local `icon(id)` helper that wraps the markup in `<span class="toolbar-icon">`.
+- Static toolbar HTML (`#fit`, `#wireframe`, `#grid`, `#screenshot`, `#export`, `#tree-toggle`, `#meshing-toggle`, the `#select-group` selection-mode controls, and the `#measure-group` measurement controls) — most of these buttons' icons come from `TOOLBAR_ICONS` (see below), via a local `icon(id)` helper that wraps the markup in `<span class="toolbar-icon">`.
 - Static view-controls panel HTML (`#view-controls`, `#vc-toggle`).
-- Sidebar (`#side`) containing the tree panel (`#tree-panel`), the Parts panel (`#parts-panel`), the Edits panel (`#edits-panel`), and the FE Mesh panel (`#meshing-panel`).
+- Sidebar (`#side`) containing the tree panel (`#tree-panel`), the Parts panel (`#parts-panel`), the Edits panel (`#edits-panel`), the FE Mesh panel (`#meshing-panel`), and the Mass Properties panel (`#mass-panel`).
 - Status/error overlay divs.
 
 ---
@@ -942,14 +1059,14 @@ The corresponding decode helpers (`decodeF32`, `decodeU32`) live in `src/webview
 
 The standalone MCP server — a third esbuild bundle (`dist/mcp-server.js`) that
 exposes the same headless pipeline (`loadBRep`/`exportBRep`/`generateMesh`/
-`exportMeshFormat`/`exportMdpa`/`exportGeoUnrolled`) to AI agents over stdio
-JSON-RPC, with no VS Code involved.
+`exportMeshFormat`/`exportMdpa`/`exportGeoUnrolled`/`computeMassProperties`) to
+AI agents over stdio JSON-RPC, with no VS Code involved.
 
 - **`mcpServer.ts`** is the entry: it rebinds `console.log/info/warn/debug` to
   stderr *before anything else* (the Emscripten WASM modules print through
   `console.log`, and stdout is the JSON-RPC channel), resolves `extensionPath`
   (`CAD_PREVIEW_ROOT` env var or the bundle dir's parent), and registers the
-  eleven tools with the `@modelcontextprotocol/sdk` `McpServer` +
+  twelve tools with the `@modelcontextprotocol/sdk` `McpServer` +
   `StdioServerTransport`.
 - **`mcpTools.ts`** holds the tool handlers as plain async functions over an
   injected `Pipeline` object (defaulting to the real OCCT/Gmsh functions in the

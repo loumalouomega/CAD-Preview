@@ -193,6 +193,33 @@ is the single tolerance gate — an individually invalid field falls back to
 host → webview in `meshingOptions` (hydration) and webview → host in
 `meshingChanged`/`meshingGenerate`/`meshingExport`.
 
+### `ViewerDefaults` and `MassProperties`
+
+```typescript
+interface ViewerDefaults {
+  background: string                              // CSS hex color
+  meshSizePreset: 'coarse' | 'medium' | 'fine'
+  showGridAndAxes: boolean
+  upAxis: 'y' | 'z'
+}
+
+interface MassProperties {
+  volume: number | null            // whole model or a solid-N only (never face-N/edge-N)
+  area: number | null              // whole model, a solid-N (boundary area), or a face-N
+  length: number | null            // a single edge-N only
+  centerOfMass: [number, number, number] | null
+  momentsOfInertia: { ixx: number; iyy: number; izz: number; ixy: number; ixz: number; iyz: number } | null  // about the centroid
+}
+```
+
+`ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) —
+cross-document defaults only; a per-document sidecar value or a runtime toggle
+(the toolbar Grid button) always wins once set. `MassProperties` is computed
+via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources
+compute the equivalent client-side and never send it over this protocol at
+all (no host round trip) — see [Extension Host API](./extension-host-api.md)
+and [Webview API](./webview-api.md).
+
 ---
 
 ## Host → Webview Messages (`HostToWebview`)
@@ -212,6 +239,10 @@ type HostToWebview =
   | { type: 'meshingResult'; positions: string; indices: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number }
   | { type: 'meshingError'; message: string }
+  | ({ type: 'viewerDefaults' } & ViewerDefaults)
+  | { type: 'screenshotRequest'; requestId: string }
+  | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
+  | { type: 'massPropertiesError'; requestId: string; message: string }
 ```
 
 ### `geometry`
@@ -403,6 +434,55 @@ panel's status line — it does not use the general `#error-overlay` `error` mes
 { "type": "meshingError", "message": "No mesh geometry available: missing STL data." }
 ```
 
+### `viewerDefaults`
+
+Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading
+`workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s
+`normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as
+`validateMeshOptions`). Arrives in no deterministic order relative to
+`geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler
+must tolerate either order — `background`/`showGridAndAxes` apply immediately
+(scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()`
+call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()`
+already computes. These are cross-document **defaults only** — a persisted
+per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
+
+```json
+{ "type": "viewerDefaults", "background": "#1e1e1e", "meshSizePreset": "medium", "showGridAndAxes": true, "upAxis": "y" }
+```
+
+### `screenshotRequest`
+
+Sent in reply to `screenshotButtonClicked` or the `cad-preview.screenshot`
+command, mirroring `exportMesh`'s request/response shape exactly (same
+`pending` map, same `requestId` correlation) — just with the format fixed to
+PNG, so there's no `format` field. The webview force-renders a fresh frame
+(`Viewer.render()`, avoiding a persistent `preserveDrawingBuffer`) then reads
+`renderer.domElement.toDataURL("image/png")`, replying with
+`screenshotResult`/`screenshotError`.
+
+```json
+{ "type": "screenshotRequest", "requestId": "1234-0.56" }
+```
+
+### `massPropertiesResult` / `massPropertiesError`
+
+Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh
+sources compute `MassProperties` entirely client-side and never send this
+request at all (no host round trip, since there's no OCCT shape to query).
+`properties.volume` is only ever non-`null` for the whole model or a
+`solid-N`; a `face-N` gets `area` only, an `edge-N` gets `length` only. See
+[Extension Host API](./extension-host-api.md#src-massproperties-ts)'s verified
+`BRepGProp` call sequence.
+
+```json
+{ "type": "massPropertiesResult", "requestId": "1234-0.56", "properties": { "volume": 24, "area": 52, "length": null, "centerOfMass": [1, 1.5, 2], "momentsOfInertia": { "ixx": 50, "iyy": 40, "izz": 26, "ixy": 0, "ixz": 0, "iyz": 0 } } }
+```
+
+```json
+{ "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -421,6 +501,10 @@ type WebviewToHost =
   | { type: 'meshingChanged'; options: MeshOptions }
   | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
   | { type: 'meshingExport'; target: 'msh' | 'geoUnrolled'; options: MeshOptions; stl?: string }
+  | { type: 'screenshotButtonClicked' }
+  | { type: 'screenshotResult'; requestId: string; data: string }
+  | { type: 'screenshotError'; requestId: string; message: string }
+  | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
 ```
 
 ### `partsChanged`
@@ -580,6 +664,44 @@ writes the decoded bytes to the path chosen in the save dialog.
 
 ```json
 { "type": "exportError", "requestId": "1234-0.56", "message": "No model loaded" }
+```
+
+### `screenshotButtonClicked`
+
+Sent when the toolbar's **📷 Screenshot** button is clicked — the webview-initiated
+trigger for the same `handleScreenshot` flow the `cad-preview.screenshot`
+command drives, so there is exactly one code path regardless of trigger
+surface. The host prompts a save dialog and follows up with `screenshotRequest`.
+
+```json
+{ "type": "screenshotButtonClicked" }
+```
+
+### `screenshotResult` / `screenshotError`
+
+Sent in reply to `screenshotRequest`. `data` is always base64 PNG bytes (no
+`binary` field — unlike `exportResult`, the format is never anything else).
+Correlated to the pending save via `requestId`, same as `exportResult`.
+
+```json
+{ "type": "screenshotResult", "requestId": "1234-0.56", "data": "iVBORw0KGgo..." }
+```
+
+```json
+{ "type": "screenshotError", "requestId": "1234-0.56", "message": "No model loaded" }
+```
+
+### `massPropertiesRequest`
+
+Sent when the Mass Properties panel's **Compute** button is clicked, for a
+B-rep source only (mesh sources never send this — see `massPropertiesResult`
+above). `entityId` is `null` for the whole model, or the current selection's
+single entity id (`solid-N` / `face-N` / `edge-N`) — the panel refuses to
+guess when 2+ entities are selected, showing a guidance message instead of
+sending a request.
+
+```json
+{ "type": "massPropertiesRequest", "requestId": "1234-0.56", "entityId": "solid-0" }
 ```
 
 ---

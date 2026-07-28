@@ -23,9 +23,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { loadBRep, exportBRep } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
+import { computeMassProperties } from "./massProperties";
 import {
   describeCapabilities,
   loadModel,
+  getMassProperties,
   getState,
   applyEditOps,
   removeEditOp,
@@ -49,7 +51,7 @@ const extensionPath = process.env.CAD_PREVIEW_ROOT ?? path.join(__dirname, "..")
 
 const ctx: ToolContext = {
   extensionPath,
-  pipeline: { loadBRep, exportBRep, generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled },
+  pipeline: { loadBRep, exportBRep, generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled, computeMassProperties },
 };
 
 const server = new McpServer({ name: "cad-preview", version: "1.0.0" });
@@ -98,6 +100,22 @@ server.registerTool(
     inputSchema: { path: modelPath },
   },
   wrap((args: { path: string }) => loadModel(ctx, args))
+);
+
+server.registerTool(
+  "get_mass_properties",
+  {
+    description:
+      "Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources only headless (OCCT BRepGProp); mesh formats return supported: false (compute client-side in the webview instead).",
+    inputSchema: {
+      path: modelPath,
+      entityId: z
+        .string()
+        .optional()
+        .describe("solid-N / face-N / edge-N id from load_model's inventory; omit for the whole model"),
+    },
+  },
+  wrap((args: { path: string; entityId?: string }) => getMassProperties(ctx, args))
 );
 
 server.registerTool(

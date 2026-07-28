@@ -4,6 +4,7 @@ import type { ParamVariable } from "./editVariables";
 import type { MeshOptions } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
+import type { MassProperties } from "./massProperties";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -80,7 +81,9 @@ export type HostToWebview =
     }
   | { type: "meshingError"; message: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)
-  | { type: "screenshotRequest"; requestId: string };
+  | { type: "screenshotRequest"; requestId: string }
+  | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
+  | { type: "massPropertiesError"; requestId: string; message: string };
 
 /** One contiguous run of triangles in `meshingResult.indices` belonging to a
  * single part (or, for `name === null`, the trailing ungrouped/default run). */
@@ -109,7 +112,8 @@ export type WebviewToHost =
   | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string }
   | { type: "screenshotButtonClicked" }
   | { type: "screenshotResult"; requestId: string; data: string }
-  | { type: "screenshotError"; requestId: string; message: string };
+  | { type: "screenshotError"; requestId: string; message: string }
+  | { type: "massPropertiesRequest"; requestId: string; entityId: string | null };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array): string {

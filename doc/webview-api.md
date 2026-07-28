@@ -14,8 +14,13 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
-| `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity (unit-testable) |
+| `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity, plus mode-unfiltered measurement picking (unit-testable) |
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
+| `src/webview/measurement.ts` | Pure distance/length/angle/radius math over plain tuples (unit-tested) |
+| `src/webview/measurementState.ts` | 0–2-pick buffer for the in-progress measurement, DOM-free (unit-tested) |
+| `src/webview/measurementOverlay.ts` | Lazily-built marker/line/label Three.js objects for the measurement overlay |
+| `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
+| `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
 | `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
@@ -39,9 +44,9 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 **Startup sequence:**
 1. Acquire VS Code API: `const vscode = acquireVsCodeApi()`.
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
-3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, and `MeshingPanel(document.getElementById('meshing-panel'), ...)`.
-4. Call `setupViewControls(viewer)` (in a `try/catch` — a UI wiring failure must not block the ready handshake).
-5. Wire toolbar buttons (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`, `#meshing-toggle`). The `#export` button posts `{ type: "exportRequest" }` — it doesn't show any UI itself; the host owns the quick-pick and save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible.
+3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, and `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`.
+4. Call `setupViewControls(viewer)`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
+5. Wire toolbar buttons (`#fit`, `#wireframe`, `#grid`, `#screenshot`, `#export`, `#tree-toggle`, `#meshing-toggle`, `#measure-group`). `#export` posts `{ type: "exportRequest" }`; `#screenshot` posts `{ type: "screenshotButtonClicked" }` — neither shows any UI itself, the host owns the quick-pick/save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. `#measure-group`'s toggle/tool-`<select>`/Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted at all.
 6. Register `window.addEventListener('message', ...)` for host messages.
 7. Post `{ type: 'ready' }` to the host.
 
@@ -61,6 +66,10 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"meshingOptions"` | `MeshingModel.load(msg.options)` (hydration only) → `syncMeshSizeSeed()` → `MeshingPanel.render()` |
 | `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.elementGroups))` → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs })` |
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
+| `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`. Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
+| `"screenshotRequest"` | `viewer.render()` (force a fresh frame) → `viewer.captureScreenshotBase64()` → posts back `"screenshotResult"`/`"screenshotError"`, correlated by `msg.requestId` |
+| `"massPropertiesResult"` | `MassPropertiesPanel.render(msg.properties)` (ignored if `msg.requestId` doesn't match the latest request) |
+| `"massPropertiesError"` | `MassPropertiesPanel.renderMessage(msg.message, true)` (same stale-request guard) |
 
 The webview also posts `{ type: "partsChanged", parts }` whenever the user edits
 parts, `{ type: "editsChanged", ops }` whenever the op-stack mutates, and
@@ -141,6 +150,23 @@ Replaces the current model. Calls `clearModel()`, adds the new object to the sce
 clearModel(): void
 ```
 Removes the current model from the scene, disposes all geometries and materials (recursive), and resets the root reference.
+
+```typescript
+applyDefaults(d: { background: string; showGridAndAxes: boolean; upAxis: 'y' | 'z' }): void
+render(): void
+captureScreenshotBase64(): string
+```
+`applyDefaults` handles the `"viewerDefaults"` message: sets `scene.background`
+and `grid`/`axes.visible` immediately (scene-level, independent of whether a
+model is loaded), and stores `upAxis` to apply at the *next* `setModel()` call
+— `setModel()` rotates the loaded model **root** (`object.rotation.x = -π/2`
+for `upAxis === "z"`), never `THREE.Object3D.DEFAULT_UP` (a static shared by
+every `Object3D` including the gizmo/helpers). `resetView()`'s isometric
+direction is defined in the camera's fixed Y-up world frame and is unaffected
+either way. `render()` forces an immediate `renderer.render()` call and
+`captureScreenshotBase64()` reads `renderer.domElement.toDataURL("image/png")`
+(minus the `data:` prefix) — together they back the `"screenshotRequest"`
+handler, avoiding a persistent `preserveDrawingBuffer: true` renderer flag.
 
 ```typescript
 setMeshOverlay(obj: THREE.Object3D | null): void
@@ -243,6 +269,36 @@ Toggles the visibility of the `GridHelper` and `AxesHelper`.
 dispose(): void
 ```
 Full cleanup: disposes model, renderer, and removes the resize observer.
+
+**Measurement (display-only, never an edit op, never persisted):**
+
+```typescript
+setMeasureMode(on: boolean): void
+setOnMeasurePick(onPick: ((pick: MeasurementPick) => void) | null): void
+showMeasurementMarker(point: THREE.Vector3): void
+showMeasurementOverlay(linePoints: THREE.Vector3[], anchor: THREE.Vector3, text: string): void
+clearMeasurementOverlay(): void
+```
+`measureMode` is a **parallel interaction mode**, deliberately independent of
+`selectionMode`/`SelectionSet` — a click takes measurement priority over the
+normal Parts/Edits pick when both happen to be active (`onSelectPointerUp`).
+On a measure-mode hit, `buildMeasurementPick()` (private) assembles a
+`MeasurementPick` (`src/webview/measurementState.ts`) from the raycast
+intersection: the world-space hit point (available in the hit loop but
+normally discarded — the ordinary `onEntityPick` path only forwards the
+resolved `{entityType, entityId}`), a world-space direction for a
+`surface`/`line` hit (face normal via the intersection's local `face.normal` +
+normal matrix, or edge tangent from the two polyline points straddling the
+hit — used by the "angle" tool), and the picked edge's full world-space
+polyline (used by "edgeLength"/"radius"). `showMeasurementMarker`/
+`showMeasurementOverlay`/`clearMeasurementOverlay` manage a `measurementOverlay`
+scene-sibling `THREE.Object3D` (same pattern as `meshOverlay`), built via
+`measurementOverlay.ts`'s `makeMeasureMarkerSprite`/`buildMeasureLine`/
+`makeMeasureLabelSprite`. The overlay's label sprite is rescaled every
+`animate()` frame (`distance-to-camera × 0.06`) to stay a constant on-screen
+size while zooming — unlike the point-sprite scale in `frame()`, which only
+updates on fit/reset. `setModel()` clears any measurement overlay, same as it
+clears the FE-mesh overlay — both refer to geometry that's about to be replaced.
 
 **Internal:**
 
@@ -886,3 +942,159 @@ h-square of bbox surface area; 1D ≈ segments along the diagonal) — it knowin
 overestimates non-boxy models and exists to power the readout and the large-mesh
 warning, not to predict Gmsh's real output. The bbox comes from
 `Viewer.getModelExtents()`, pushed into the panel by `main.ts` on each model load.
+
+Also exports `targetSizeForPreset(diagonal, preset: keyof typeof PRESET_DIVISORS): number`
+— like `defaultTargetSize` but scaled by the `cadPreview.defaultMeshSizePreset`
+setting's divisor instead of the fixed `DEFAULT_SIZE_DIVISOR`; `"medium"`
+reproduces `defaultTargetSize` exactly since `PRESET_DIVISORS.medium ===
+DEFAULT_SIZE_DIVISOR`. Used by `main.ts`'s `syncMeshSizeSeed()` to seed a
+model with no saved `.mesh.json` sidecar.
+
+---
+
+## `src/webview/massPropertiesPanel.ts`
+
+The Mass Properties panel — a small bespoke DOM class following
+`MeshingPanel`'s status-line-readout convention, just with more than one line.
+
+```typescript
+interface MassPropertiesDisplay {
+  volume: number | null
+  area: number | null
+  length: number | null
+  centerOfMass: [number, number, number] | null
+  momentsOfInertia: { ixx: number; iyy: number; izz: number } | null  // diagonal only; null for mesh sources
+}
+
+class MassPropertiesPanel {
+  constructor(panel: HTMLElement, cb: { onRefresh: () => void })
+  renderMessage(text: string, isError?: boolean): void
+  render(props: MassPropertiesDisplay): void
+}
+```
+
+`main.ts`'s `onRefresh` reads the current `SelectionSet`: 0 entries → whole
+model (`entityId: null`), exactly 1 → that entity, 2+ → `renderMessage`s a
+"select exactly one, or none" guidance line without sending any request. For a
+B-rep source it posts `massPropertiesRequest` and awaits `massPropertiesResult`/
+`massPropertiesError` (guarded by a `massPropertiesRequestId` so a stale reply
+from a superseded refresh is ignored); for a mesh source it calls
+`computeAndRenderMeshMassProperties()` (below) with **no host round trip at
+all**. `momentsOfInertia` only shows its diagonal terms (`ixx`/`iyy`/`izz`) —
+the off-diagonal products of inertia are near-zero for most axis-aligned
+bodies and not worth the panel's space; mesh sources never populate this field
+(client-side inertia isn't computed, out of scope for the first cut).
+
+---
+
+## `src/webview/meshMassProperties.ts`
+
+Client-side volume/area/centroid for mesh-format sources (STL/OBJ/PLY/glTF) —
+pure Three.js triangle math, no host round trip (no OCCT shape to query).
+Promotes the signed-tetrahedra volume algorithm already proven in
+`meshEdits.test.ts`'s test-only `volumeOf()` helper to production code.
+
+```typescript
+interface MeshMassProperties {
+  volume: number                              // meaningful only if `meshes` is closed/watertight
+  area: number
+  volumeCentroid: [number, number, number]    // volume-weighted — the physically correct centroid for a closed body
+  areaCentroid: [number, number, number]      // area-weighted — correct for a single open facet ("surface" pick)
+}
+
+function computeMeshMassProperties(meshes: THREE.Mesh[]): MeshMassProperties
+```
+
+Decomposes each triangle into a tetrahedron with an apex at the origin: signed
+volume `a·(b×c)/6`, tetra centroid `(a+b+c)/4` (apex contributes 0); summing
+`Σ(vᵢ·cᵢ)/Σvᵢ` across every mesh's every triangle gives the volume-weighted
+center of mass, independent of coordinate origin — the same standard result
+`BRepGProp.VolumeProperties` computes for a B-rep solid. Passing multiple
+meshes (e.g. every facet of one "volume" pick, via `buildMeshFacetGroup`'s
+`userData.groupId`) sums their triangles together, so per-entity results fall
+out of the same function with no special-casing — `main.ts`'s
+`computeAndRenderMeshMassProperties()` resolves the target `THREE.Mesh[]` by
+traversing `viewer.getModel()` for `entityType === "surface"` objects matching
+the selection's `groupId` (a "volume" pick) or `entityId` (a "surface" pick),
+or every such object for the whole-model case, then picks `volumeCentroid`
+(closed target: whole model or a "volume" pick) vs. `areaCentroid` (an open
+single-facet "surface" pick, where a signed volume has no physical meaning).
+
+---
+
+## `src/webview/measurement.ts`, `src/webview/measurementState.ts`, `src/webview/measurementOverlay.ts`
+
+Measurement tools (distance, edge length, angle, circle/arc radius) — entirely
+webview-side, display-only overlay, never an edit op, never persisted, no
+protocol messages at all. Client-side triangulated-approximation precision is
+a deliberate scope boundary (tied to the existing 0.1 tessellation deflection
+tolerance, `meshExtract.ts`) — exact BRep `BRepExtrema_DistShapeShape`
+entity-to-entity distance is out of scope for this cut.
+
+**`measurement.ts`** — pure math over plain `[x,y,z]` tuples, no DOM/THREE
+(unit-tested headless, same convention as `picking.ts`/`selection.ts`):
+
+```typescript
+type Vec3 = [number, number, number]
+function pointDistance(a: Vec3, b: Vec3): number
+function polylineLength(points: ArrayLike<number>): number       // flat [x0,y0,z0, x1,y1,z1, …]
+function angleBetweenVectors(a: Vec3, b: Vec3): number            // degrees
+function circleRadiusFromArcPoints(p0: Vec3, p1: Vec3, p2: Vec3): number | null  // 3-point circumradius
+```
+
+`polylineLength` operates directly on an edge's already-transmitted polyline
+(`EncodedEdge.positions`, world-transformed by `Viewer`) — no new host work
+for edge length. `circleRadiusFromArcPoints` samples the first/middle/last
+points of a picked edge's polyline for the "radius" tool.
+
+**`measurementState.ts`** — a dedicated 0–2-pick buffer, deliberately **not**
+`SelectionSet` (measurement clicks must never pollute the Parts/Edits working
+selection):
+
+```typescript
+type MeasureTool = 'distance' | 'edgeLength' | 'angle' | 'radius'
+
+interface MeasurementPick {
+  point: [number, number, number]
+  entityType: EntityType | null
+  entityId: string | null
+  direction: [number, number, number] | null   // face normal / edge tangent — "angle" tool only
+  polyline: Float32Array | null                // full world-space edge polyline — "edgeLength"/"radius" only
+}
+
+class MeasurementState {
+  getTool(): MeasureTool
+  setTool(tool: MeasureTool): void       // discards any in-progress pick
+  getPicks(): MeasurementPick[]
+  addPick(pick: MeasurementPick): { done: boolean; picks: MeasurementPick[] }  // done → picks reset for the next measurement
+  clear(): void
+}
+```
+
+Required pick counts: `distance`/`angle` need 2, `edgeLength`/`radius` need 1
+(single-click tools resolve immediately).
+
+**`measurementOverlay.ts`** — lazily-built Three.js objects:
+
+```typescript
+function makeMeasureLabelSprite(text: string): THREE.Sprite
+function makeMeasureMarkerSprite(): THREE.Sprite
+function buildMeasureLine(a: THREE.Vector3, b: THREE.Vector3): THREE.Line
+function disposeMeasureObject(obj: THREE.Object3D): void
+```
+
+Follows `geometryBuilder.ts`'s `dotTexture()` lazy-build discipline exactly —
+canvases are built on first *call*, never at module load, since this module is
+reachable from pure-function tests with zero DOM/jsdom available (a
+module-scope `document.createElement("canvas")` already broke tests once in
+this codebase, per the Points feature's history). Only one measurement
+overlay is ever live at a time (a new pick or mode toggle disposes the
+previous one first), so repainting the single shared label canvas and
+wrapping it in a fresh `CanvasTexture` per call is safe.
+
+`main.ts`'s `setupMeasureControls()` wires the `#measure-group` toolbar
+(toggle/tool `<select>`/Clear/readout span), dispatches completed picks to
+`measurement.ts`'s functions via `computeMeasurementResult()`, and calls
+`Viewer.showMeasurementMarker`/`showMeasurementOverlay`/`clearMeasurementOverlay`
+to display the result. See [Extension Host API](./extension-host-api.md) — no
+entry there, since this feature has zero host involvement.

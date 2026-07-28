@@ -36,6 +36,7 @@ import { MESH_EXPORT_FORMATS, meshExportFormat } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
+import type { computeMassProperties, MassProperties } from "./massProperties";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -71,6 +72,7 @@ export interface Pipeline {
   exportMeshFormat: typeof exportMeshFormat;
   exportMdpa: typeof exportMdpa;
   exportGeoUnrolled: typeof exportGeoUnrolled;
+  computeMassProperties: typeof computeMassProperties;
 }
 
 export interface ToolContext {
@@ -182,6 +184,7 @@ export function describeCapabilities() {
       ],
     },
     headlessLimitations: [
+      "get_mass_properties (volume/area/length, center of mass, moments of inertia via OCCT BRepGProp) is B-rep sources only headless; mesh formats compute the equivalent client-side in the webview.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
@@ -299,6 +302,46 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     strategy: route.strategy,
     ...entitySummary(result),
     sidecars,
+    warnings: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// get_mass_properties
+
+export async function getMassProperties(
+  ctx: ToolContext,
+  params: { path: string; entityId?: string }
+): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[] } & Partial<MassProperties>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const entityId = params.entityId ?? null;
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      entityId: entityId ?? "whole-model",
+      supported: false,
+      warnings: [
+        `${route.format} is a mesh-format source: mass properties are computed client-side in the webview's Three.js scene, not available headless.`,
+      ],
+    };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const properties = await ctx.pipeline.computeMassProperties(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    ops,
+    entityId
+  );
+  return {
+    format: route.format,
+    entityId: entityId ?? "whole-model",
+    supported: true,
+    ...properties,
     warnings: [],
   };
 }

@@ -15,6 +15,7 @@ import { applyStlPartSizeOverride } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
 import { normalizeViewerDefaults } from "./viewerDefaults";
+import { computeMassProperties } from "./massProperties";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseEditsJson } from "./editsSidecar";
@@ -423,6 +424,27 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         pending.delete(msg.requestId);
         if (msg.type === "screenshotResult") p.resolve({ data: msg.data, binary: true });
         else p.reject(new Error(msg.message));
+        return;
+      }
+
+      if (msg.type === "massPropertiesRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Mass properties are computed for B-rep sources on the host; mesh sources compute this client-side.");
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const properties = await computeMassProperties(
+            this.context.extensionPath,
+            bytes,
+            route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+            currentEdits,
+            msg.entityId
+          );
+          post({ type: "massPropertiesResult", requestId: msg.requestId, properties });
+        } catch (err) {
+          post({ type: "massPropertiesError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
       }
     });
 

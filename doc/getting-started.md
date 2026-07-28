@@ -21,6 +21,21 @@ Or download and install the `.vsix` directly:
 code --install-extension cad-preview-<version>.vsix
 ```
 
+## Settings
+
+CAD Preview contributes a few cross-document defaults under **CAD Preview** in
+VS Code's Settings UI (`Ctrl+,`, search "CAD Preview"). These only affect
+*newly opened* documents — a document's own saved state (a `.mesh.json`
+sidecar's size, the toolbar Grid toggle for the current session) always wins
+once set.
+
+| Setting | Default | Effect |
+|---|---|---|
+| `cadPreview.background` | `#1e1e1e` | 3D view background color (CSS hex) |
+| `cadPreview.defaultMeshSizePreset` | `medium` | Seeds the FE Mesh panel's target size (Coarse/Medium/Fine) for a model with no saved mesh options yet |
+| `cadPreview.showGridAndAxesOnOpen` | `true` | Show the ground grid and axes helper when a model is opened |
+| `cadPreview.upAxis` | `y` | Default up-axis for newly opened models — set to `z` for Z-up source conventions |
+
 ## Opening a File
 
 CAD Preview activates automatically via the VS Code [Custom Editor API](https://code.visualstudio.com/api/extension-guides/custom-editors). There is nothing to configure.
@@ -98,9 +113,18 @@ The toolbar appears at the top-right of the editor, just below the menu bar:
 | **Fit** | Reframe the model to fill the viewport (keeps current camera orientation) |
 | **Wireframe** | Toggle wireframe rendering on/off |
 | **Grid** | Show/hide the world-space grid and axis helpers |
+| **📷 Screenshot** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
 | **Tree** | Show/hide the component tree panel (visible only for models with multiple components) |
 | **🔬 FE Mesh** | Toggle the generated finite-element mesh overlay on/off (see [Generating an FE Mesh](#generating-an-fe-mesh)). The **FE Mesh** panel itself is always visible in the sidebar; this button only shows/clears the overlay. |
 | **Select / Point·Vol·Surf·Line** | Toggle entity selection mode and choose what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). |
+| **📏 Measure / tool `<select>`** | Toggle measurement mode and choose what to measure — Distance, Edge Length, Angle, or Radius (see [Measuring](#measuring)) |
+
+### Taking a Screenshot
+
+Click **📷 Screenshot** in the toolbar (or run **CAD Preview: Screenshot to
+PNG…** from the Command Palette, `Ctrl+Alt+P`) to save the current 3D view —
+whatever orientation, wireframe state, and mesh overlay are currently
+shown — as a PNG. A native Save dialog defaults to the source file's folder.
 
 ### View-Controls Panel
 
@@ -132,6 +156,28 @@ Click any face of the cube to snap the camera to that standard view:
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
 
 ![The Components tree, showing the STEP root and its solid with a face-count badge.](/screenshots/components-tree.png)
+
+### Measuring
+
+The **📏 Measure** toolbar group lets you measure distances, edge lengths,
+angles, and circle/arc radii directly in the 3D view — display-only, never an
+edit operation, never saved anywhere.
+
+1. Click **📏 Measure** to enter measurement mode (orbit/pan/zoom still work
+   normally — a measurement pick is a click without a drag, same as part
+   selection).
+2. Pick a tool from the dropdown: **Distance** and **Angle** need two picks;
+   **Edge Length** and **Radius** resolve from a single click.
+3. Click in the view. **Distance**: click two points anywhere on the model. **Edge
+   Length**: click one edge. **Angle**: click two faces or edges. **Radius**: click
+   one circular/arc edge. A line (for Distance/Angle) plus a floating label with
+   the result appears, and stays readable while you zoom.
+4. Click **Clear** to remove the current result, or switch tools/toggle Measure
+   off to start over.
+
+Measurement precision follows the model's tessellation (the same 0.1 deflection
+tolerance used for display), not exact CAD geometry — fine for visual estimates,
+not for metrology-grade output.
 
 ### Defining Parts
 
@@ -364,6 +410,25 @@ script. Neither file modifies the source CAD file.
 > from, so the displayed triangle soup is first reclassified into surfaces at
 > sharp-angle boundaries (`classifySurfaces`, default 40°) and rebuilt into a
 > closed volume before a 3D mesh can be generated.
+
+### Mass Properties
+
+The **Mass Properties** panel (below the FE Mesh panel) computes volume,
+surface area, length, center of mass, and moments of inertia for the whole
+model or a single selected entity.
+
+1. With nothing selected, click **Compute** for whole-model properties. To
+   inspect one entity instead, enter **Select** mode, pick exactly one volume,
+   surface, or edge, then click **Compute** — selecting more than one entity
+   shows a guidance message instead of a (possibly misleading) combined result.
+2. The panel shows whichever fields apply: a volume/solid gets **Volume**,
+   **Area**, **Center of mass**, and **Ixx/Iyy/Izz**; a single face gets
+   **Area** only; a single edge gets **Length** only.
+
+For STEP/IGES/BREP files this runs in the extension host via OpenCascade.js's
+`BRepGProp`; for STL/OBJ/PLY/glTF files it's computed entirely in the webview
+from the displayed triangle mesh (no moments of inertia for mesh sources in
+this first cut).
 
 ### Exporting a Model
 

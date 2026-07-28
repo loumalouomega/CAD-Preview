@@ -82,6 +82,13 @@ export function viewerBodyHtml(): string {
         <div id="meshing-body"></div>
         <div id="meshing-status"></div>
       </div>
+      <div id="mass-panel">
+        <div id="mass-header">
+          <span id="mass-title">Mass Properties</span>
+          <button id="mass-refresh" title="Compute for the current selection, or the whole model if nothing is selected">${icon("generate")} Compute</button>
+        </div>
+        <div id="mass-body"></div>
+      </div>
     </div>
     <div id="app"></div>
   </div>
@@ -98,6 +105,17 @@ export function viewerBodyHtml(): string {
       <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">${icon("volume")} Vol</button>
       <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">${icon("surface")} Surf</button>
       <button class="sel-mode" data-mode="line" title="Pick lines (edges)">${icon("line")} Line</button>
+    </div>
+    <div id="measure-group" title="Measure distances, lengths, angles, and radii">
+      <button id="measure-toggle" title="Toggle measure mode">📏 Measure</button>
+      <select id="measure-tool" title="Measurement tool">
+        <option value="distance">Distance</option>
+        <option value="edgeLength">Edge Length</option>
+        <option value="angle">Angle</option>
+        <option value="radius">Radius</option>
+      </select>
+      <button id="measure-clear" title="Clear current measurement">Clear</button>
+      <span id="measure-readout"></span>
     </div>
   </div>
   <div id="view-controls">
