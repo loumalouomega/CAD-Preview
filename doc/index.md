@@ -42,8 +42,8 @@ features:
     details: Apply transforms (move / rotate / scale / mirror), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate), primitive creation (box/cube, sphere, cylinder, cone, torus, prism), 2D profile sketches (circle, rectangle, polygon) for use as extrude/revolve/sweep/loft profiles, and bottom-up wireframe modeling (points, lines, arcs → surfaces from lines → volumes from surfaces). Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
 
   - icon: 🔬
-    title: Wireframe & Grid Helpers
-    details: Toggle wireframe rendering, world-space axes, and a reference grid — all from the toolbar.
+    title: Display Modes & Grid Helpers
+    details: Five rendering modes — Shaded, Wireframe, X-Ray, Hidden Lines, and Flat/unlit — plus world-space axes and a reference grid, all from the view-controls panel and toolbar.
 
   - icon: 🚀
     title: Lazy WASM, Fast Activation

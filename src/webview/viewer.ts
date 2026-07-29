@@ -13,6 +13,8 @@ import {
 } from "./measurementOverlay";
 import type { MeasurementPick } from "./measurementState";
 import { drawLabel } from "./labelOverlay";
+import { compositeCanvas } from "./canvasComposite";
+import { type DisplayMode } from "./displayMode";
 import type { EntityType } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
@@ -100,6 +102,20 @@ export class Viewer {
    * display-only, re-applied to `model`/`meshOverlay` materials whenever
    * either is (re)built, since fresh materials carry no clipping state. */
   private activeClippingPlane: THREE.Plane | null = null;
+  /** The Appearance panel's display mode — session-only, re-applied to every
+   * fresh material on `setModel()`, same "materials carry no baseline state
+   * on rebuild" rule as opacity/clipping. See `setDisplayMode()`. */
+  private displayMode: DisplayMode = "shaded";
+  /** Hidden-lines-visible mode's dimmed, depth-test-disabled copies of every
+   * edge line — a scene sibling of `model` (never a child, same pattern as
+   * `meshOverlay`/`measurementOverlay`), built on demand and torn down the
+   * moment the mode changes or the model reloads. See `setDisplayMode()`. */
+  private hiddenLineGhosts: THREE.Group | null = null;
+  /** The Markup annotation overlay's `<canvas>` (owned/drawn-to by
+   * `main.ts`'s `setupMarkupControls()` — `Viewer` only needs a reference to
+   * composite it into a screenshot; see `captureScreenshotBase64()`). `null`
+   * until `setMarkupCanvas()` is called once at webview setup. */
+  private markupCanvas: HTMLCanvasElement | null = null;
 
   constructor(private readonly container: HTMLElement) {
     const width = container.clientWidth;
@@ -187,8 +203,7 @@ export class Viewer {
     // including the gizmo/helpers) — resetView()'s isometric direction is
     // defined in the camera's fixed Y-up world frame and stays meaningful either way.
     object.rotation.x = this.upAxis === "z" ? -Math.PI / 2 : 0;
-    this.applyWireframe();
-    this.applyOpacityBaseline();
+    this.applyDisplayMode();
     this.scene.add(object);
     this.applyClippingPlane(); // fresh model materials carry no clipping state yet
     this.resetView();
@@ -211,6 +226,7 @@ export class Viewer {
 
   private clearModel(): void {
     if (!this.model) return;
+    this.clearHiddenLineGhosts(); // references the model's edge geometries, about to be disposed
     this.scene.remove(this.model);
     this.model.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
@@ -218,6 +234,13 @@ export class Viewer {
       const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
       if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
       else if (mat) mat.dispose();
+      // Display-mode's Flat/Shaded material pair — dispose whichever one ISN'T
+      // the currently-active `mat` already disposed above, so a mode never
+      // used this session (or used and left behind) doesn't leak.
+      const std = mesh.userData.standardMaterial as THREE.Material | undefined;
+      const flat = mesh.userData.flatMaterial as THREE.Material | undefined;
+      if (std && std !== mat) std.dispose();
+      if (flat && flat !== mat) flat.dispose();
     });
     this.model = null;
   }
@@ -423,12 +446,13 @@ export class Viewer {
    */
   highlightGroup(groupId: string | null): void {
     this.highlightedGroupId = groupId;
+    const xrayFactor = this.displayOpacityFactor();
     this.model?.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
       const mat = obj.material as THREE.MeshStandardMaterial;
       const base = (mat.userData.baseOpacity as number | undefined) ?? 1;
       const selected = groupId === null || obj.userData.groupId === groupId;
-      mat.opacity = selected ? base : base * 0.08;
+      mat.opacity = base * xrayFactor * (selected ? 1 : 0.08);
       mat.transparent = mat.opacity < 1;
       mat.needsUpdate = true;
     });
@@ -501,6 +525,7 @@ export class Viewer {
     };
     this.model?.traverse(apply);
     this.meshOverlay?.traverse(apply);
+    this.hiddenLineGhosts?.traverse(apply);
   }
 
   /**
@@ -650,8 +675,16 @@ export class Viewer {
       const ud = obj.userData;
       if (obj instanceof THREE.Mesh && ud.entityType === "surface") {
         const on = keys.has(`surface:${ud.entityId}`) || keys.has(`volume:${ud.groupId}`);
-        const mat = obj.material as THREE.MeshStandardMaterial;
-        mat.emissive.setHex(on ? SELECTION_COLOR : 0x000000);
+        const mat = obj.material as THREE.Material;
+        // Flat mode's MeshBasicMaterial has no `.emissive` (unlike the
+        // standard shaded material) — fall back to the same direct-colour
+        // swap technique edges/points already use for selection.
+        if ("emissive" in mat) {
+          (mat as THREE.MeshStandardMaterial).emissive.setHex(on ? SELECTION_COLOR : 0x000000);
+        } else {
+          const base = (ud.baseColor as number | undefined) ?? DEFAULT_FACE_COLOR;
+          (mat as THREE.MeshBasicMaterial).color.setHex(on ? SELECTION_COLOR : base);
+        }
       } else if (obj instanceof THREE.Line && ud.entityType === "line") {
         const mat = obj.material as THREE.LineBasicMaterial;
         const base = (ud.baseColor as number | undefined) ?? DEFAULT_EDGE_COLOR;
@@ -669,24 +702,37 @@ export class Viewer {
     this.renderer.render(this.scene, this.activeCamera);
   }
 
+  /** Registers the Markup overlay's canvas so screenshots composite it in —
+   * see `markupCanvas`'s doc comment. Pass `null` to stop compositing it
+   * (not used today; the canvas is registered once at setup and left
+   * registered, since an empty/untouched markup canvas composites as a
+   * no-op transparent layer). */
+  setMarkupCanvas(canvas: HTMLCanvasElement | null): void {
+    this.markupCanvas = canvas;
+  }
+
   /**
-   * Captures the current framebuffer as a base64 PNG (no `data:` prefix).
-   * Callers should call {@link render} immediately before this to guarantee a
-   * fresh frame — the renderer has no persistent `preserveDrawingBuffer`, so
-   * `toDataURL` reads whatever was drawn most recently.
+   * Captures the current framebuffer — with the Markup annotation overlay
+   * composited on top, if any strokes exist (`canvasComposite.ts`) — as a
+   * base64 PNG (no `data:` prefix). Callers should call {@link render}
+   * immediately before this to guarantee a fresh frame — the renderer has no
+   * persistent `preserveDrawingBuffer`, so `toDataURL` reads whatever was
+   * drawn most recently.
    */
   captureScreenshotBase64(): string {
-    const dataUrl = this.renderer.domElement.toDataURL("image/png");
+    const merged = compositeCanvas(this.renderer.domElement, this.markupCanvas);
+    const dataUrl = merged.toDataURL("image/png");
     return dataUrl.slice(dataUrl.indexOf(",") + 1);
   }
 
-  /** Same as {@link captureScreenshotBase64}, with `label` burned into the
-   * top-left corner (`labelOverlay.ts`'s `drawLabel`) — used by
-   * `renderViewRequest`'s handler for the headless `render_snapshot` MCP
-   * tool, which returns several same-shaped images and needs each one
-   * self-identifying. */
+  /** Same as {@link captureScreenshotBase64} (markup composited in too), with
+   * `label` burned into the top-left corner (`labelOverlay.ts`'s
+   * `drawLabel`) — used by `renderViewRequest`'s handler for the headless
+   * `render_snapshot` MCP tool, which returns several same-shaped images and
+   * needs each one self-identifying. */
   captureLabeledScreenshotBase64(label: string): string {
-    const labeled = drawLabel(this.renderer.domElement, label);
+    const merged = compositeCanvas(this.renderer.domElement, this.markupCanvas);
+    const labeled = drawLabel(merged, label);
     const dataUrl = labeled.toDataURL("image/png");
     return dataUrl.slice(dataUrl.indexOf(",") + 1);
   }
@@ -707,6 +753,132 @@ export class Viewer {
       const mat = mesh.material as (THREE.Material & { wireframe?: boolean }) | undefined;
       if (mat && "wireframe" in mat) mat.wireframe = this.wireframe;
     });
+  }
+
+  /** The Appearance panel's current display mode. */
+  getDisplayMode(): DisplayMode {
+    return this.displayMode;
+  }
+
+  /**
+   * Switches the whole-model display mode (Shaded/Wireframe/X-Ray/Hidden
+   * Lines/Flat) — session-only, like every other Appearance control. Colours
+   * and the current selection highlight are NOT reapplied here (Flat mode's
+   * material swap means the newly-active material starts at its default
+   * colour/no-emissive-highlight) — callers MUST follow this with
+   * `Viewer.setEntityColors()` + `Viewer.renderSelection()` (or `main.ts`'s
+   * `refreshColors()`, which already does both) to restore them, exactly the
+   * same "caller re-applies after a material-affecting change" contract
+   * `setModel()` already relies on for parts/selection.
+   */
+  setDisplayMode(mode: DisplayMode): void {
+    this.displayMode = mode;
+    this.applyDisplayMode();
+  }
+
+  /**
+   * Re-derives every face/edge material property from `displayMode`:
+   * - **Flat** swaps `mesh.material` to a lazily-built, cached unlit
+   *   `MeshBasicMaterial` (`userData.flatMaterial`); every other mode swaps
+   *   back to the original `userData.standardMaterial` (captured once, on
+   *   this method's first run for a given mesh, from whatever `mesh.material`
+   *   already is at that point — always the true original, since this runs
+   *   from `setModel()` before any mode switch could have swapped it).
+   * - **Wireframe** drives the existing `wireframe`/`applyWireframe()`
+   *   primitive (also used standalone by `render_snapshot`'s per-call
+   *   `wireframe` override — see `renderService.ts` — so it stays a public
+   *   method, not inlined here).
+   * - **X-Ray**'s extra translucency is folded into `highlightGroup()`'s
+   *   existing `baseOpacity` composition (see its doc comment) via
+   *   `displayOpacityFactor()`, rather than a separate opacity writer.
+   * - **Hidden Lines** builds/tears down `hiddenLineGhosts` (see
+   *   `buildHiddenLineGhosts()`'s doc comment for the layering trick).
+   */
+  private applyDisplayMode(): void {
+    const flat = this.displayMode === "flat";
+    this.model?.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh) || obj.userData.entityType !== "surface") return;
+      if (!obj.userData.standardMaterial) obj.userData.standardMaterial = obj.material;
+      const std = obj.userData.standardMaterial as THREE.MeshStandardMaterial;
+      if (!flat) {
+        obj.material = std;
+        return;
+      }
+      if (!obj.userData.flatMaterial) {
+        obj.userData.flatMaterial = new THREE.MeshBasicMaterial({ color: std.color.getHex(), side: THREE.DoubleSide });
+      }
+      obj.material = obj.userData.flatMaterial as THREE.MeshBasicMaterial;
+    });
+    this.wireframe = this.displayMode === "wireframe";
+    this.applyWireframe();
+    this.applyOpacityBaseline();
+    this.highlightGroup(this.highlightedGroupId);
+    this.applyClippingPlane();
+    if (this.displayMode === "hiddenLines") this.buildHiddenLineGhosts();
+    else this.clearHiddenLineGhosts();
+  }
+
+  /** X-Ray's extra opacity multiplier, composed into `highlightGroup()`'s
+   * `baseOpacity` formula — see `setDisplayMode()`'s doc comment. */
+  private displayOpacityFactor(): number {
+    return this.displayMode === "xray" ? 0.35 : 1;
+  }
+
+  /**
+   * Hidden-lines-visible: a dimmed, always-visible-through-solids copy of
+   * every edge line, layered so real geometry naturally produces the correct
+   * "crisp where visible, faint where hidden" look with NO per-pixel
+   * occlusion logic of our own:
+   * - Ghosts share their real counterpart's geometry (never their own —
+   *   nothing here disposes it) and use `transparent: true`, which three.js
+   *   always renders in a separate pass strictly AFTER every opaque object
+   *   (faces, and the real, depth-tested edges) — so a ghost is guaranteed to
+   *   paint (faintly) over an already-fully-rendered frame, everywhere its
+   *   line passes, regardless of true 3D depth.
+   * - The real edge (unchanged, depth-tested, drawn in the opaque pass) then
+   *   already correctly painted a full-strength line at every screen pixel
+   *   where it is genuinely unoccluded — since the ghost pass runs after,
+   *   the crisp real line was already down first there's nothing on top of
+   *   it, so it stays visually dominant even though the ghost technically
+   *   also draws a faint tint there.
+   * - `depthTest: false` is what lets the ghost paint through occluding
+   *   faces at all; `depthWrite: false` keeps it from perturbing the depth
+   *   buffer for anything rendered after it.
+   * A scene sibling of `model` (never a child, same pattern as
+   * `meshOverlay`/`measurementOverlay`) so it's excluded from picking
+   * (`collectTargets` only ever traverses `this.model`) with no extra
+   * `raycast` override needed.
+   */
+  private buildHiddenLineGhosts(): void {
+    this.clearHiddenLineGhosts();
+    if (!this.model) return;
+    const group = new THREE.Group();
+    this.model.traverse((obj) => {
+      if (obj instanceof THREE.Line && obj.userData.entityType === "line") {
+        const ghostMaterial = new THREE.LineBasicMaterial({
+          color: 0x8fa8c9,
+          transparent: true,
+          opacity: 0.35,
+          depthTest: false,
+          depthWrite: false,
+        });
+        group.add(new THREE.Line(obj.geometry, ghostMaterial));
+      }
+    });
+    this.hiddenLineGhosts = group;
+    this.scene.add(group);
+    this.applyClippingPlane(); // fresh ghost materials carry no clipping state yet
+  }
+
+  private clearHiddenLineGhosts(): void {
+    if (!this.hiddenLineGhosts) return;
+    this.scene.remove(this.hiddenLineGhosts);
+    this.hiddenLineGhosts.traverse((obj) => {
+      // Ghost geometry is SHARED with the real edge line — never dispose it here.
+      const mat = (obj as THREE.Line).material as THREE.Material | undefined;
+      mat?.dispose();
+    });
+    this.hiddenLineGhosts = null;
   }
 
   dispose(): void {

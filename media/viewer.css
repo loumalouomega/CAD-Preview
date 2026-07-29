@@ -29,6 +29,17 @@ body {
   height: 100% !important;
 }
 
+/* Markup annotation overlay — stacked above the WebGL canvas; transparent
+ * and click-through (pointer-events:none) except while markup mode is
+ * active, when main.ts's setupMarkupControls() flips it to "auto" so it can
+ * capture drawing input without OrbitControls also reacting underneath. */
+#markup-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
 /* ── Sidebar (stacks Components + Parts) ─────────────────────────────── */
 
 #side {
@@ -398,6 +409,7 @@ body {
 
 .seg-btn,
 .clip-axis,
+.display-mode-btn,
 .vc-arrow,
 #view-controls .vc-row button {
   font: inherit;
@@ -411,20 +423,32 @@ body {
 }
 
 .seg-btn,
-.clip-axis {
+.clip-axis,
+.display-mode-btn {
   padding: 3px 7px;
 }
 
 .seg-btn.active,
-.clip-axis.active {
+.clip-axis.active,
+.display-mode-btn.active {
   background: var(--vscode-button-background, #0e639c);
 }
 
 .seg-btn:hover,
 .clip-axis:hover,
+.display-mode-btn:hover,
 .vc-arrow:hover,
 #view-controls .vc-row button:hover {
   background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+#display-mode-group {
+  flex-wrap: wrap;
+}
+
+.display-mode-btn .toolbar-icon {
+  display: inline-flex;
+  vertical-align: middle;
 }
 
 #clip-toggle {
@@ -1541,4 +1565,51 @@ input[type="range"].meshing-slider:focus {
 }
 #measure-readout.measure-readout-error {
   color: var(--vscode-errorForeground, #f48771);
+}
+
+/* ── Markup toolbar group ────────────────────────────────────────────── */
+
+#markup-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding-left: 6px;
+  border-left: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+
+#toolbar #markup-toggle.active {
+  background: var(--vscode-inputValidation-infoBackground, #063b49);
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+}
+
+#markup-tool {
+  font: inherit;
+  font-size: 12px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #1e1e1e);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 3px 4px;
+}
+#markup-tool:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+#markup-color {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+}
+
+#toolbar #markup-undo,
+#toolbar #markup-redo,
+#toolbar #markup-clear {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  padding: 4px 8px;
 }

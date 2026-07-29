@@ -50,8 +50,8 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 1. Acquire VS Code API: `const vscode = acquireVsCodeApi()`.
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
 3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, and `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`.
-4. Call `setupViewControls(viewer)`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()`, `setupDragAndDrop()`, `setupAppearanceControls()`, `setupClippingControls()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
-5. Wire toolbar buttons (`#fit`, `#wireframe`, `#grid`, `#edges`, `#screenshot`, `#export`, `#tree-toggle`, `#meshing-toggle`, `#measure-group`). `#export` posts `{ type: "exportRequest" }`; `#screenshot` posts `{ type: "screenshotButtonClicked" }` — neither shows any UI itself, the host owns the quick-pick/save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. `#measure-group`'s toggle/tool-`<select>`/Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted at all. `#edges` toggles `viewer.setEdgesVisible()`, purely session-side like Wireframe/Grid.
+4. Call `setupViewControls(viewer)`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()`, `setupDragAndDrop()`, `setupAppearanceControls()`, `setupClippingControls()`, `setupMarkupControls()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
+5. Wire toolbar buttons (`#fit`, `#grid`, `#edges`, `#screenshot`, `#export`, `#tree-toggle`, `#meshing-toggle`, `#measure-group`). `#export` posts `{ type: "exportRequest" }`; `#screenshot` posts `{ type: "screenshotButtonClicked" }` — neither shows any UI itself, the host owns the quick-pick/save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. `#measure-group`'s toggle/tool-`<select>`/Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted at all. `#edges` toggles `viewer.setEdgesVisible()`, purely session-side like Grid. There is no standalone `#wireframe` toolbar button anymore — Wireframe is one of five mutually exclusive **Display mode** states (`#display-mode-group` in the view-controls Appearance area, `setupAppearanceControls()`) driving `viewer.setDisplayMode()`; see below.
 6. Register `window.addEventListener('message', ...)` for host messages.
 7. Post `{ type: 'ready' }` to the host.
 
@@ -176,7 +176,7 @@ estimate (`meshSizeHeuristics.ts`) — display-only, never mutates geometry.
 ```typescript
 setModel(object: THREE.Object3D): void
 ```
-Replaces the current model. Calls `clearModel()`, adds the new object to the scene, applies the current wireframe state to all meshes, calls `resetView()` to reframe.
+Replaces the current model. Calls `clearModel()`, adds the new object to the scene, applies the current display mode to all meshes (`applyDisplayMode()`, see below), calls `resetView()` to reframe.
 
 ```typescript
 clearModel(): void
@@ -322,12 +322,21 @@ same spotlight on top of a new baseline.
 ```typescript
 setWireframe(on: boolean): void
 ```
-Sets `material.wireframe` on every mesh in the scene. Memoizes the state so `setModel()` can re-apply it.
+Sets `material.wireframe` on every mesh in the scene. Memoizes the state so `setModel()` can re-apply it. Also the low-level primitive `setDisplayMode("wireframe")` drives internally, and that `render_snapshot`'s per-call `wireframe` override (`renderService.ts`) calls directly, bypassing display mode entirely — a disposable headless page has no interactive display-mode state to preserve.
 
 ```typescript
 toggleGrid(): void
 ```
 Toggles the visibility of the `GridHelper` and `AxesHelper`.
+
+```typescript
+getDisplayMode(): DisplayMode
+setDisplayMode(mode: DisplayMode): void
+```
+`DisplayMode = "shaded" | "wireframe" | "xray" | "hiddenLines" | "flat"` (`src/webview/displayMode.ts`, DOM/Three.js-free — shared by `viewer.ts` and the `#display-mode-group` button wiring so they can't drift). Session-only, re-applied to every fresh material on `setModel()`. Internally:
+- **shaded/wireframe/xray**: the mesh's original `MeshStandardMaterial` (`userData.standardMaterial`, captured once on this method's first run per mesh); wireframe drives `setWireframe(mode === "wireframe")`; xray folds an extra `0.35` multiplier into `highlightGroup()`'s existing `baseOpacity` composition (see `displayOpacityFactor()`) rather than being a separate opacity writer.
+- **flat**: swaps `mesh.material` to a lazily-built, cached unlit `MeshBasicMaterial` (`userData.flatMaterial`) — a genuine material-class swap, the one exception to this codebase's "materials built once, only properties mutated" convention. Since `MeshBasicMaterial` has no `.emissive`, `renderSelection()`'s face branch falls back to a direct `.color` swap (the same technique edges/points already use) when `"emissive" in mat` is false. **Callers MUST call `setEntityColors()` + `renderSelection()` (or `main.ts`'s `refreshColors()`, which does both) right after `setDisplayMode()`** — the newly-active material starts at its default colour/no highlight, since colours/selection aren't tracked per-material internally.
+- **hiddenLines**: builds/tears down `hiddenLineGhosts`, a `THREE.Group` of dimmed, `depthTest:false`/`depthWrite:false`, `transparent:true` copies of every edge line (sharing geometry with the real edge, never disposing it) — a scene sibling of `model` like `meshOverlay`, so `collectTargets` (which only ever traverses `model`) never picks them. The layering trick needs no per-pixel occlusion logic: `transparent:true` objects always render in a pass strictly after every opaque object (faces + the real, depth-tested edges), so a ghost paints faintly everywhere its line passes regardless of true depth, while the real edge — drawn first, depth-tested — already painted full-strength wherever it's genuinely visible, staying visually dominant there even though the ghost technically also draws a faint tint on top.
 
 **Appearance (session-only, never persisted — mirrors `toggleGrid`'s "always wins once set"):**
 
@@ -1406,3 +1415,89 @@ from the max-axis end.
 slider `input` event and calls `viewer.setClippingPlane()` — see
 [`Viewer.setClippingPlane`](#src-webview-viewer-ts) for the "uncapped in v1"
 scope note and the FE-mesh-overlay-needs-the-same-plane behavior.
+
+## `src/webview/displayMode.ts`
+
+Pure data: `DisplayMode = "shaded" | "wireframe" | "xray" | "hiddenLines" |
+"flat"`, `DISPLAY_MODES` (the array, in UI order), `DISPLAY_MODE_LABELS`
+(button label text), `isDisplayMode(value): value is DisplayMode` (a type
+guard used to validate `.dataset.mode` off `#display-mode-group`'s buttons).
+No DOM/Three.js — imported by both `viewer.ts` (behavior, see
+`Viewer.setDisplayMode`) and `main.ts` (the button-group wiring) so the two
+can't drift.
+
+## `src/webview/labelOverlay.ts`
+
+```typescript
+function drawLabel(source: HTMLCanvasElement, label: string): HTMLCanvasElement
+```
+Draws a small dark-background/white-text label box in the top-left corner of
+a **copy** of `source`, returning the new canvas (`source` itself is
+untouched). Plain Canvas2D, only ever called at runtime from
+`Viewer.captureLabeledScreenshotBase64()` — used by the headless
+`render_snapshot` MCP tool's `renderViewRequest` handler so each of the
+packet's same-shaped images is self-identifying ("TOP", "ISO-A", ...).
+
+## `src/webview/canvasComposite.ts`
+
+```typescript
+function compositeCanvas(base: HTMLCanvasElement, overlay: HTMLCanvasElement | null): HTMLCanvasElement
+```
+Draws `overlay` on top of a **copy** of `base` and returns the merged canvas
+(returns `base` itself, unmodified, if `overlay` is `null`). Used by
+`Viewer.captureScreenshotBase64()`/`captureLabeledScreenshotBase64()` to bake
+the Markup annotation layer into Screenshot exports. `overlay`'s backing
+resolution need not match `base`'s — `drawImage`'s destination-size form
+stretch-fits it, so no devicePixelRatio bookkeeping is needed.
+
+## `src/webview/markupModel.ts`, `src/webview/markupCanvas.ts`
+
+The Markup annotation overlay's data/rendering split (mirrors
+`partsSidecar.ts`/`partsStore.ts`'s pure-vs-DOM convention).
+
+```typescript
+type Point = { x: number; y: number }                       // CSS-pixel canvas coordinates
+type DrawTool = "freehand" | "line" | "arrow" | "rectangle" | "circle"
+type MarkupTool = DrawTool | "eraser"
+interface MarkupStroke { tool: DrawTool; color: string; points: Point[] }
+
+class MarkupModel {
+  push(stroke: MarkupStroke): void
+  undo(): void
+  redo(): void
+  clear(): void
+  list(): readonly MarkupStroke[]
+  canUndo(): boolean
+  canRedo(): boolean
+  eraseAt(pt: Point): boolean        // true if anything was removed
+}
+```
+`markupModel.ts` is pure/DOM-free (unit-tested in `markupModel.test.ts`).
+**The eraser is deliberately NOT part of the undo/redo history** — `eraseAt()`
+removes any stroke with a point within a fixed pixel radius of `pt`
+immediately and permanently for the session, rather than trying to make an
+arbitrary (not necessarily most-recent) removal compose with a linear
+undo/redo stack the way `EditsModel`'s op stack does.
+
+```typescript
+function drawStroke(ctx: CanvasRenderingContext2D, stroke: MarkupStroke): void
+function redrawAll(canvas: HTMLCanvasElement, strokes: readonly MarkupStroke[], preview?: MarkupStroke): void
+```
+`markupCanvas.ts` is the DOM-touching half — `redrawAll` clears then redraws
+every committed stroke plus an optional in-progress `preview` stroke on top
+(used for the live freehand/shape preview while the pointer is still down).
+Not realistically unit-testable under this repo's vitest setup (no jsdom/
+canvas polyfill) — verified only via manual F5, same caveat as
+`labelOverlay.ts`.
+
+`main.ts`'s `setupMarkupControls()` owns the `#markup-canvas` element
+(`viewerDom.ts`) and all pointer-event wiring: `pointerdown` starts a stroke
+(or, in eraser mode, calls `eraseAt` immediately); `pointermove` extends a
+freehand stroke or updates a shape stroke's second point, redrawing a live
+preview each time; `pointerup` commits the finished stroke via
+`model.push()`. The canvas is `pointer-events:none` by default (see
+`viewer.css`) so it never intercepts orbit/pick input — toggling **✎ Markup**
+flips it to `"auto"` for the duration markup mode is active. `viewer.
+setMarkupCanvas(canvas)` registers it once at setup so
+`captureScreenshotBase64()`/`captureLabeledScreenshotBase64()` can composite
+it into every future screenshot.

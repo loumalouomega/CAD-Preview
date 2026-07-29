@@ -201,15 +201,19 @@ async function loadGeometryAndApplyOptions(
   gmsh.option.setNumber("Mesh.MeshSizeMin", options.sizeMin);
   gmsh.option.setNumber("Mesh.MeshSizeMax", options.sizeMax);
   gmsh.option.setNumber("Mesh.Algorithm", options.algorithm2D);
-  gmsh.option.setNumber("Mesh.Algorithm3D", options.algorithm3D);
-  gmsh.option.setNumber("Mesh.ElementOrder", options.elementOrder);
-  // Element geometry (simplex vs. quad/hex subdivision). Both option values are
-  // set every time — the gmsh singleton persists options across `clear()`, so a
-  // prior run's shape must be overwritten, not left implicit. See
-  // `gmshShapeOptions` for the dimension-dependent, WASM-verified recipe.
+  // Element geometry (simplex vs. quad/hex subdivision vs. hex-dominant RTree).
+  // All option values are set every time — the gmsh singleton persists options
+  // across `clear()`, so a prior run's shape must be overwritten, not left
+  // implicit. See `gmshShapeOptions` for the dimension-dependent, WASM-verified
+  // recipe. `algorithm3DOverride` (hex-dominant's RTree, id 9) wins over the
+  // user's own `algorithm3D` selection when set — RTree is a requirement of
+  // that mode, not a suggestion.
   const shape = gmshShapeOptions(options.elementShape, options.dimension);
+  gmsh.option.setNumber("Mesh.Algorithm3D", shape.algorithm3DOverride ?? options.algorithm3D);
+  gmsh.option.setNumber("Mesh.ElementOrder", options.elementOrder);
   gmsh.option.setNumber("Mesh.RecombineAll", shape.recombineAll);
   gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", shape.subdivisionAlgorithm);
+  gmsh.option.setNumber("Mesh.Recombine3DAll", shape.recombine3DAll);
   gmsh.option.setNumber("Mesh.Optimize", options.optimize ? 1 : 0);
   // Gmsh's default (0) writes only elements belonging to a physical group once
   // ANY physical group exists in the model — i.e. the instant one part has a
@@ -503,6 +507,21 @@ function collectCells(gmsh: GmshApi, dim: 2 | 3, out: MdpaCell[], ownerTags: num
       const type = els.elementTypes[t];
       const info = GMSH_ELEMENT_TYPES.get(type);
       if (!info || info.dim !== dim) {
+        // Type 140 ("trihedron") is the tet/hex transition connector a
+        // hexDominant (RTree) mesh always contains alongside plain tets/hexes
+        // — its node geometry can't be verified against this WASM build
+        // (`getElementProperties(140)` throws), so it has no `MdpaCellKind`
+        // at all and can never be represented in Kratos MDPA output. Give
+        // this specific, expected case an actionable message instead of the
+        // generic "unsupported type" one below.
+        if (type === 140) {
+          throw new Error(
+            "Kratos MDPA export does not support hex-dominant meshes: gmsh element type 140 " +
+              "(the tet/hex transition connector RTree recombination always produces) has no " +
+              "Kratos geometry equivalent. Export a different format (e.g. .msh or .vtk), or " +
+              "regenerate with a non-hex-dominant element shape."
+          );
+        }
         throw new Error(
           `Kratos MDPA export: unsupported ${dim}D gmsh element type (${type}) in entity ${tag}. ` +
             "Adjust the mesh options and try again."

@@ -121,7 +121,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 18, `tools/list exposes 18 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 21, `tools/list exposes 21 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -216,6 +216,32 @@ try {
   const meshed = await call("generate_mesh", { path: model, options: { sizeMax: bbox.diagonal / 15 } });
   assert(meshed.nodeCount > 0 && meshed.elementCount > 0, `generate_mesh: ${meshed.nodeCount} nodes, ${meshed.elementCount} elements in ${meshed.elapsedMs} ms`);
 
+  // Hex-dominant (RTree, elementShape:"hexDominant") always mixes in an
+  // unmapped gmsh element type (140, "trihedron") alongside tets/hexes —
+  // confirms generation + the overlay/quality pipeline tolerate it (graceful
+  // skip, not a crash), that a real Gmsh-native format (.msh) still exports
+  // fine, and that Kratos MDPA export — which has no geometry for that
+  // connector type — rejects it with a specific, actionable message.
+  const hexDominantOptions = { dimension: 3, sizeMax: bbox.diagonal / 15, elementShape: "hexDominant" };
+  const hexMeshed = await call("generate_mesh", { path: model, options: hexDominantOptions });
+  assert(
+    hexMeshed.nodeCount > 0 && hexMeshed.elementCount > 0,
+    `generate_mesh (hexDominant): ${hexMeshed.nodeCount} nodes, ${hexMeshed.elementCount} elements`
+  );
+  const hexMshOut = path.join(dir, "hexdominant.msh");
+  await call("export_mesh", { path: model, format: "msh", outputPath: hexMshOut, options: hexDominantOptions });
+  assert(fs.statSync(hexMshOut).size > 0, "export_mesh msh succeeds for a hex-dominant mesh");
+  const hexMdpaOut = path.join(dir, "hexdominant.mdpa");
+  const hexMdpaResult = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: model, format: "mdpaElements", outputPath: hexMdpaOut, options: hexDominantOptions },
+  });
+  const hexMdpaText = hexMdpaResult.content?.[0]?.text ?? "";
+  assert(
+    hexMdpaResult.isError === true && /trihedron|hex-dominant/i.test(hexMdpaText),
+    `export_mesh mdpaElements rejects a hex-dominant mesh with a specific, actionable error (got: ${hexMdpaText.slice(0, 120)})`
+  );
+
   const mshOut = path.join(dir, "out.msh");
   await call("export_mesh", { path: model, format: "msh", outputPath: mshOut, options: { sizeMax: bbox.diagonal / 15 } });
   const msh = fs.readFileSync(mshOut, "utf8");
@@ -277,6 +303,78 @@ try {
     "export_mesh med on a model with a part (meshio bridge, groups preserved) writes a non-empty file"
   );
 
+  // step.parts: the extension's only external network dependency. Tolerates
+  // the API being unreachable in this environment (supported:false is a
+  // real, expected outcome here, not a bug) — but if it IS reachable, fully
+  // exercises search → pick a result → download → verify the file lands and
+  // (when the part has a recorded checksum) the sha256 actually matches.
+  const search = await call("search_standard_parts", { q: "hex head cap screw", pageSize: 3 });
+  if (search.supported) {
+    assert(Array.isArray(search.items) && search.items.length > 0, `search_standard_parts finds real results (got ${search.items?.length ?? 0})`);
+    const part = search.items[0];
+    assert(typeof part.stepUrl === "string" && typeof part.apiUrl === "string", "search_standard_parts results carry provenance URLs");
+
+    const partOut = path.join(dir, "standard-part.step");
+    const downloaded = await call("download_standard_part", { id: part.id, outputPath: partOut });
+    assert(downloaded.supported === true, `download_standard_part succeeds for ${part.id}`);
+    assert(fs.statSync(partOut).size > 0, "download_standard_part writes a non-empty STEP file");
+    if (downloaded.sha256) {
+      assert(downloaded.verifiedChecksum === true, "download_standard_part verifies the sha256 checksum when one is on record");
+    }
+  } else {
+    console.log(`  (step.parts API unreachable in this environment: ${search.warnings?.[0]} — search/download supported:true paths were not exercised)`);
+  }
+  assert(true, "search_standard_parts / download_standard_part degrade gracefully regardless of network availability");
+
+  // run_parametric_script: a real bolt-circle (4 cylinders around the
+  // origin, radius/count from script variables, position via trig exprs
+  // over the loop index) — exercises the whole compile → validate → bake →
+  // persist → post-replay-inventory path against real OCCT. Run late (after
+  // the hex-dominant/mesh-export sections above) so it doesn't change the
+  // geometry those sections' own assertions were verified against.
+  const scripted = await call("run_parametric_script", {
+    path: model,
+    script: {
+      variables: [
+        { name: "R", expr: String(s * 2) },
+        { name: "N", expr: "4" },
+      ],
+      steps: [
+        {
+          repeat: {
+            times: "N",
+            indexVar: "i",
+            body: [
+              {
+                op: "addCylinder",
+                center: [0, 0, 0],
+                axis: [0, 0, 1],
+                radius: s / 4,
+                height: s,
+                exprs: { "center[0]": "R*cos(i*360/N)", "center[1]": "R*sin(i*360/N)" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  });
+  assert(
+    scripted.applied === 4 && scripted.rejected === 0,
+    `run_parametric_script compiles a 4-cylinder bolt circle (applied=${scripted.applied}, rejected=${scripted.rejected})`
+  );
+  assert(scripted.model.solids.length === 6, "post-replay inventory shows 6 solids (bull + box + 4 cylinders)");
+  const scriptedSidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
+  const cylinderOps = scriptedSidecar.ops.filter((o) => o.op === "addCylinder");
+  assert(
+    cylinderOps.length === 4 && cylinderOps.every((o) => o.exprs === undefined),
+    "repeat-generated ops are persisted fully baked, no dangling exprs"
+  );
+  assert(
+    Math.abs(cylinderOps[0].center[0] - s * 2) < 1e-6 && Math.abs(cylinderOps[0].center[1]) < 1e-6,
+    "the first bolt-circle cylinder lands at angle 0 (R, 0) as expected"
+  );
+
   const zipOut = path.join(dir, "bull.preprocess.zip");
   const saved = await call("save_preprocess", { path: model, outputPath: zipOut });
   assert(
@@ -297,7 +395,10 @@ try {
     "load_preprocess restores a byte-identical CAD source copy"
   );
   const restoredEdits = JSON.parse(fs.readFileSync(`${restoredModel}.edits.json`, "utf8"));
-  assert(restoredEdits.ops.length === 1 && restoredEdits.ops[0].op === "addBox", "load_preprocess restores the edits sidecar");
+  assert(
+    restoredEdits.ops.length === 5 && restoredEdits.ops[0].op === "addBox",
+    "load_preprocess restores the edits sidecar (box + 4 bolt-circle cylinders)"
+  );
   const restoredParts = JSON.parse(fs.readFileSync(`${restoredModel}.parts.json`, "utf8"));
   assert(restoredParts.parts.length === 1 && restoredParts.parts[0].name === "Bull", "load_preprocess restores the parts sidecar");
   fs.rmSync(restoredDir, { recursive: true, force: true });

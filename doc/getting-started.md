@@ -130,12 +130,11 @@ last session.
 
 The toolbar appears at the top-right of the editor, just below the menu bar:
 
-![The viewer toolbar: Fit, Wireframe, Edges, Grid, Tree, FE Mesh, and the Select / Point·Vol·Surf·Line pick modes.](/screenshots/toolbar.png)
+![The viewer toolbar: Fit, Edges, Grid, Tree, FE Mesh, and the Select / Point·Vol·Surf·Line pick modes.](/screenshots/toolbar.png)
 
 | Button | Action |
 |--------|--------|
 | **Fit** | Reframe the model to fill the viewport (keeps current camera orientation) |
-| **Wireframe** | Toggle wireframe rendering on/off |
 | **Edges** | Show/hide edge lines independently of the shaded faces |
 | **Grid** | Show/hide the world-space grid and axis helpers |
 | **📷 Screenshot** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
@@ -143,13 +142,33 @@ The toolbar appears at the top-right of the editor, just below the menu bar:
 | **🔬 FE Mesh** | Toggle the generated finite-element mesh overlay on/off (see [Generating an FE Mesh](#generating-an-fe-mesh)). The **FE Mesh** panel itself is always visible in the sidebar; this button only shows/clears the overlay. |
 | **Select / Point·Vol·Surf·Line** | Toggle entity selection mode and choose what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). |
 | **📏 Measure / tool `<select>`** | Toggle measurement mode and choose what to measure — Distance, Edge Length, Angle, or Radius (see [Measuring](#measuring)) |
+| **✎ Markup / tool `<select>`** | Toggle markup mode and draw review annotations over the 3D view — Freehand, Line, Arrow, Rectangle, Circle, or Eraser (see [Markup Annotations](#markup-annotations)) |
 
 ### Taking a Screenshot
 
 Click **📷 Screenshot** in the toolbar (or run **CAD Preview: Screenshot to
 PNG…** from the Command Palette, `Ctrl+Alt+P`) to save the current 3D view —
-whatever orientation, wireframe state, and mesh overlay are currently
-shown — as a PNG. A native Save dialog defaults to the source file's folder.
+whatever orientation, display mode, mesh overlay, **and markup annotations**
+are currently shown — as a PNG. A native Save dialog defaults to the source
+file's folder.
+
+### Markup Annotations
+
+Click **✎ Markup** in the toolbar to start drawing review notes directly over
+the 3D view — "this boss", "gap here" — without leaving the viewer. Pick a
+tool from the `<select>` next to the toggle (**Freehand**, **Line**,
+**Arrow**, **Rectangle**, **Circle**, or **Eraser**) and a stroke colour from
+the swatch, then click-drag on the view to draw. **Undo**/**Redo** step
+through your strokes one at a time; **Clear** removes them all. Annotations
+are session-only — never saved to any sidecar or the CAD file — but they ARE
+baked into the next Screenshot you take (see above), so you can mark up a
+view and export the annotated image in one flow. Loading a different model
+clears any existing annotations; switching display mode, applying an edit,
+or rotating/panning the view does not. Erasing a stroke with the
+**Eraser** tool is immediate and does not go through Undo/Redo. Toggle
+**✎ Markup** off (or click elsewhere with it off) to resume orbiting/panning/
+picking normally — while markup mode is active, clicks draw instead of
+orbiting the camera.
 
 ### View-Controls Panel
 
@@ -174,8 +193,16 @@ The collapsible panel at the bottom-right provides discrete camera controls with
   orthographic projection (orbit/pan/zoom, picking, and the orientation cube
   all keep working under either projection), and a **Units** dropdown
   (mm/cm/m/in/ft, see [Units](#units) below).
+- **Display group** — Five mutually exclusive rendering modes, replacing the
+  old standalone Wireframe toolbar toggle: **Shaded** (the default, lit
+  faces), **Wire** (faces rendered as a mesh of lines), **X-Ray** (translucent
+  faces so edges show through), **Hidden** (edges of occluded geometry shown
+  faintly through solid faces, full-strength where actually visible), and
+  **Flat** (unlit, constant-colour faces — no lighting gradient, useful for
+  reading true part colours without shading artifacts). Session-only, like
+  every other Appearance control.
 
-![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, and Appearance.](/screenshots/view-controls.png)
+![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, Appearance, and Display.](/screenshots/view-controls.png)
 
 ### Units
 
@@ -459,7 +486,7 @@ To generate a mesh:
 | **Dimension** | 1D (edges only), 2D (surface triangulation), or 3D (volume tetrahedralization) |
 | **Size min / max** | Bounds on generated element size (`Mesh.MeshSizeMin`/`Mesh.MeshSizeMax`); **Size max** is the same value the slider drives, shown numerically (clearing it restores the bbox-derived default) |
 | **2D algorithm / 3D algorithm** | The Gmsh meshing algorithm to use for each dimension |
-| **Element shape** | **Triangles / Tetrahedra** (default) or **Quads / Hexahedra** (recombines the mesh into quadrilaterals in 2D / hexahedra in 3D) |
+| **Element shape** | **Triangles / Tetrahedra** (default), **Quads / Hexahedra** (recombines the mesh into quadrilaterals in 2D / hexahedra in 3D), or **Hex-Dominant (3D)** (a mixed tet/hex mesh via Gmsh's RTree recombiner — not exportable to Kratos MDPA, use a different export format) |
 | **Element order** | Linear (1) or quadratic (2) elements — quadratic adds mid-side nodes (the overlay still draws the corner geometry) |
 | **Optimize** | Run Gmsh's mesh optimizer after generation |
 | **STL angle (°)** | Surface-classification angle for mesh/STL sources (disabled for B-rep documents, which never reclassify) |

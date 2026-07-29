@@ -373,8 +373,9 @@ rather than throwing.
 - A strict CSP nonce.
 - The compiled `media/viewer.js` bundle (IIFE).
 - The `media/viewer.css` stylesheet.
-- Static toolbar HTML (`#fit`, `#wireframe`, `#grid`, `#screenshot`, `#export`, `#tree-toggle`, `#meshing-toggle`, the `#select-group` selection-mode controls, and the `#measure-group` measurement controls) — most of these buttons' icons come from `TOOLBAR_ICONS` (see below), via a local `icon(id)` helper that wraps the markup in `<span class="toolbar-icon">`.
-- Static view-controls panel HTML (`#view-controls`, `#vc-toggle`).
+- Static toolbar HTML (`#fit`, `#grid`, `#screenshot`, `#export`, `#tree-toggle`, `#meshing-toggle`, the `#select-group` selection-mode controls, the `#measure-group` measurement controls, and the `#markup-group` annotation controls) — most of these buttons' icons come from `TOOLBAR_ICONS` (see below), via a local `icon(id)` helper that wraps the markup in `<span class="toolbar-icon">`. No standalone `#wireframe` toolbar button — Wireframe is one of five Display mode states (`#display-mode-group`, in `#view-controls`'s Appearance area).
+- A `#markup-canvas` element inside `#app`, a scene sibling of the WebGL canvas (see `doc/webview-api.md`'s `markupModel.ts`/`markupCanvas.ts` section) — a transparent, click-through-by-default overlay for the Markup annotation feature.
+- Static view-controls panel HTML (`#view-controls`, `#vc-toggle`, including the `#display-mode-group` Display mode segmented buttons).
 - Sidebar (`#side`) containing the tree panel (`#tree-panel`), the Parts panel (`#parts-panel`), the Edits panel (`#edits-panel`), the FE Mesh panel (`#meshing-panel`), and the Mass Properties panel (`#mass-panel`).
 - Status/error overlay divs.
 

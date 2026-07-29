@@ -142,9 +142,12 @@ Two options control the generated cell geometry:
   on boundary"* — all-hex 3D instead needs the subdivision algorithm. `subdivided`
   works with both the Delaunay (`Algorithm3D=1`) and Frontal (`4`) 3D algorithms.
 
-  A **hex-*dominant* mixed mode** (tets+prisms+pyramids+hexes, via
-  `Mesh.Recombine3DAll`) is deliberately **not offered** — see
-  [Known limitations](#known-limitations).
+  A **hex-*dominant* mixed mode** (`elementShape: "hexDominant"`, 3D only —
+  `Mesh.Algorithm3D=9` RTree + `Mesh.Recombine3DAll=1`) is also offered,
+  producing tets + hexes stitched by an unmapped "trihedron" connector type
+  Gmsh's own writers handle natively but Kratos MDPA export cannot represent
+  — see [Known limitations](#known-limitations) for the full verification
+  trail and exactly what degrades where.
 
 The single generic per-element-type table `src/gmshElementTypes.ts`
 (`GMSH_ELEMENT_TYPES`) is the source of truth for every supported gmsh type's
@@ -459,8 +462,11 @@ are **truncated** to Kratos's `Prism3D15` / `Pyramid3D13` — verified against t
 live WASM that PRI18's first 15 / PYR14's first 13 reference-node coordinates
 coincide with the shorter element's, so dropping the extra face nodes is exact.
 The dropped nodes remain in `Begin Nodes` (possibly unreferenced). This only
-matters for a hex-dominant order-2 mesh, which this WASM build can't produce
-anyway (see Known limitations).
+matters for an order-2 mesh containing prism/pyramid elements — the RTree
+`elementShape: "hexDominant"` mode (see Known limitations) does NOT produce
+either kind (it produces tet + hex + an unmapped trihedron connector type
+only), so in practice this table row exists for future/manually-constructed
+prism/pyramid meshes, not anything the hex-dominant option itself generates.
 
 Both a kind's root block and its `SubModelPart*` sub-block are **omitted when
 empty** — never an empty `Begin`/`End` pair. A genuinely unmapped element type
@@ -790,20 +796,39 @@ it's simply an additional MIT dependency alongside `@modelcontextprotocol/sdk`/
   tetrahedra, 165 hexahedra, 366 type-140 "trihedron" connector elements
   stitching the tet/hex interface), completing in 482ms with no error. Gmsh's
   own upstream framing (relayed via GMSH-JS's README/docs) still calls the
-  RTree path "experimental" and recommends Delaunay/HXT for production meshes,
-  and CAD-Preview does **not** currently expose it (no UI, no `elementShape`
-  value) — but the underlying capability is confirmed present, changing this
-  from a hard WASM-build non-goal to an unimplemented feature candidate. One
-  concrete blocker for wiring it up cleanly: `gmsh.model.mesh.
-  getElementProperties(140)` **throws** (`"Size of basis incompatible with
-  element type"`) — the coordinate-matching method every other element kind's
-  Kratos node permutation in `gmshElementTypes.ts` was derived from doesn't
-  extend to the trihedron connector, so that element's geometry needs a
-  different verification source before it could be added to the shared table
-  with the same confidence every other row has. Also confirmed in this same
-  0.3.0 re-probe: HXT (`Algorithm3D=10`) on the same OCC-imported geometry
-  completed correctly (37ms, 1254 tets, no hang/empty-mesh) — see the 3D
-  Delaunay bug entry below, which covers HXT's identical root cause and fix.
+  RTree path "experimental" and recommends Delaunay/HXT for production meshes.
+  `gmsh.model.mesh.getElementProperties(140)` **throws** (`"Size of basis
+  incompatible with element type"`) — the coordinate-matching method every
+  other element kind's Kratos node permutation in `gmshElementTypes.ts` was
+  derived from doesn't extend to the trihedron connector, so **that element's
+  geometry remains unverifiable and deliberately has no table entry.**
+
+  **Update, shipped as `elementShape: "hexDominant"` (3D-only, `doc/
+  roadmap.md`'s "Hex-dominant FE meshing" item):** rather than block on
+  verifying type 140's geometry, every existing consumer of
+  `gmshElementTypes.ts`'s lookup already treats an unmapped type as a graceful
+  skip, not a throw (`surfaceTriangles`/`boundaryTriangles`/`surfaceEdges` all
+  `continue` past it) — so the overlay/wireframe/quality pipeline needed ZERO
+  changes and just silently omits type-140 elements' (non-existent, in
+  practice — they're interior tet/hex transition connectors) contribution to
+  the boundary surface. Re-verified end-to-end on `examples/STP/block.stp`
+  with the real shipped code: `generateMesh()` with `elementShape:
+  "hexDominant"` produced 446 nodes / 1289 elements with a POPULATED overlay
+  (6384 triangle indices, 3348 edge-buffer values — confirming the boundary
+  extraction produced real, non-empty output despite the unmapped type 140
+  mixed in) and a working quality summary (`computeMeshQuality` — min 0.163,
+  mean 0.865, no crash on the mixed tet/hex/trihedron element-tag set); VTK
+  export (Gmsh's own native writer, unaffected by our table at all) produced
+  a valid 47.7KB file. **Kratos MDPA export is the one path that genuinely
+  cannot represent this mesh** (no `MdpaCellKind` exists for a tet/hex
+  transition connector) — `gmshService.ts`'s `collectCells` gives type 140 a
+  specific, actionable rejection message distinct from the generic
+  "unsupported element type" one every other truly-unexpected type still
+  gets; re-verified live that `exportMdpa()` throws it correctly rather than
+  producing silently-wrong Kratos output. HXT (`Algorithm3D=10`) on the same
+  OCC-imported geometry completed correctly (37ms, 1254 tets, no hang/
+  empty-mesh) in the same 0.3.0 re-probe — see the 3D Delaunay bug entry
+  below, which covers HXT's identical root cause and fix.
 
 Per the original goal of this integration — flag anything GMSH-JS is missing so it
 can be reported upstream — five real gaps were found while building this feature

@@ -53,10 +53,11 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
     `Mesh.MeshSizeMin = ${options.sizeMin};`,
     `Mesh.MeshSizeMax = ${options.sizeMax};`,
     `Mesh.Algorithm = ${options.algorithm2D};`,
-    `Mesh.Algorithm3D = ${options.algorithm3D};`,
+    `Mesh.Algorithm3D = ${shape.algorithm3DOverride ?? options.algorithm3D};`,
     `Mesh.ElementOrder = ${options.elementOrder};`,
     `Mesh.RecombineAll = ${shape.recombineAll};`,
     `Mesh.SubdivisionAlgorithm = ${shape.subdivisionAlgorithm};`,
+    `Mesh.Recombine3DAll = ${shape.recombine3DAll};`,
     `Mesh.Optimize = ${options.optimize ? 1 : 0};`,
     `Mesh ${options.dimension};`,
   ];

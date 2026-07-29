@@ -29,6 +29,9 @@ import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import { convertLength, convertLengthBasedProperties, displayUnitFromStepName, type DisplayUnit, type LengthBasedProperties } from "./units";
+import { isDisplayMode } from "./displayMode";
+import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
+import { redrawAll } from "./markupCanvas";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -181,6 +184,16 @@ const selectedVolumes = (): string[] =>
  * Captured lazily on the first slider `input` event (see `onExplodePreview`
  * below) so a session always starts from a fresh, pristine base. */
 let explodePreviewBases: ExplodeBase[] | null = null;
+
+/** Set by `setupMarkupControls()` once the Markup overlay is wired up;
+ * called on every genuinely new model load (`case "geometry":`,
+ * `loadMeshObjectFromUrl()`) — unlike the mesh/measurement overlays, markup
+ * strokes aren't geometrically stale (they're plain screen-space pixels with
+ * no reference to the model at all), but leaving them plastered over a
+ * totally different part is confusing more often than useful, so a fresh
+ * model load clears them, same as opening a new document resets every other
+ * session-only display state. */
+let clearMarkupOverlay: (() => void) | null = null;
 
 /** Restores any in-progress Explode preview to its pristine positions and
  * clears the session — called both when the user leaves the Explode form
@@ -1035,12 +1048,6 @@ document.getElementById("tree-toggle")?.addEventListener("click", () => {
   window.dispatchEvent(new Event("resize"));
 });
 
-let wireframe = false;
-document.getElementById("wireframe")?.addEventListener("click", () => {
-  wireframe = !wireframe;
-  viewer.setWireframe(wireframe);
-});
-
 // ── View-manipulation control panel ──────────────────────────────────────
 // Wire the panel inside a guard so a failure here can never block the `ready`
 // handshake below, or the host never sends the model and the webview stays blank.
@@ -1178,6 +1185,22 @@ function setupAppearanceControls(): void {
   document.getElementById("vc-unit")?.addEventListener("change", (e) => {
     setDisplayUnit((e.target as HTMLSelectElement).value as DisplayUnit);
   });
+
+  // Display mode replaces the old standalone Wireframe toolbar toggle —
+  // Shaded/Wireframe are two of five mutually exclusive states now (see
+  // src/webview/displayMode.ts). A material-affecting switch (Flat swaps the
+  // active material instance) needs colours/selection re-applied afterward —
+  // refreshColors() already does both, the same contract setModel() relies on.
+  const modeBtns = [...document.querySelectorAll<HTMLButtonElement>(".display-mode-btn")];
+  for (const btn of modeBtns) {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode ?? "";
+      if (!isDisplayMode(mode)) return;
+      viewer.setDisplayMode(mode);
+      refreshColors();
+      for (const b of modeBtns) b.classList.toggle("active", b === btn);
+    });
+  }
 }
 
 /**
@@ -1222,6 +1245,100 @@ function setupClippingControls(): void {
   });
 }
 
+/**
+ * Markup annotation overlay: freehand/line/arrow/rectangle/circle strokes on
+ * a transparent `<canvas>` stacked over the 3D view (`#markup-canvas`, see
+ * `viewerDom.ts`), composited into Screenshot exports by `Viewer` (see
+ * `canvasComposite.ts`). Session-only, never persisted — same rule as every
+ * other display-only feature (explode preview, clip plane, measurement).
+ * The canvas is `pointer-events:none` until markup mode is toggled on, so it
+ * never interferes with orbiting/picking while inactive.
+ */
+function setupMarkupControls(): void {
+  const canvas = document.getElementById("markup-canvas") as HTMLCanvasElement | null;
+  const toggleBtn = document.getElementById("markup-toggle");
+  const toolSelect = document.getElementById("markup-tool") as HTMLSelectElement | null;
+  const colorInput = document.getElementById("markup-color") as HTMLInputElement | null;
+  if (!canvas || !toggleBtn || !toolSelect || !colorInput) return;
+
+  const model = new MarkupModel();
+  let active = false;
+  let drawing = false;
+  let current: Point[] = [];
+
+  function resizeCanvas(): void {
+    const rect = canvas!.getBoundingClientRect();
+    canvas!.width = Math.max(1, Math.round(rect.width));
+    canvas!.height = Math.max(1, Math.round(rect.height));
+    redraw();
+  }
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+
+  function redraw(preview?: MarkupStroke): void {
+    redrawAll(canvas!, model.list(), preview);
+  }
+
+  function currentTool(): MarkupTool {
+    return toolSelect!.value as MarkupTool;
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (!active) return;
+    const pt: Point = { x: e.offsetX, y: e.offsetY };
+    if (currentTool() === "eraser") {
+      if (model.eraseAt(pt)) redraw();
+      return;
+    }
+    drawing = true;
+    current = [pt];
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!active || !drawing) return;
+    const tool = currentTool();
+    if (tool === "eraser") return;
+    const pt: Point = { x: e.offsetX, y: e.offsetY };
+    if (tool === "freehand") current.push(pt);
+    else current[1] = pt; // line/arrow/rectangle/circle: live-preview the second point only
+    redraw({ tool, color: colorInput!.value, points: current });
+  });
+  canvas.addEventListener("pointerup", () => {
+    if (!active || !drawing) return;
+    drawing = false;
+    const tool = currentTool();
+    if (tool !== "eraser" && current.length >= 2) {
+      model.push({ tool, color: colorInput!.value, points: [...current] });
+    }
+    current = [];
+    redraw();
+  });
+
+  toggleBtn.addEventListener("click", () => {
+    active = !active;
+    canvas.style.pointerEvents = active ? "auto" : "none";
+    toggleBtn.classList.toggle("active", active);
+  });
+  document.getElementById("markup-undo")?.addEventListener("click", () => {
+    model.undo();
+    redraw();
+  });
+  document.getElementById("markup-redo")?.addEventListener("click", () => {
+    model.redo();
+    redraw();
+  });
+  document.getElementById("markup-clear")?.addEventListener("click", () => {
+    model.clear();
+    redraw();
+  });
+
+  clearMarkupOverlay = () => {
+    model.clear();
+    redraw();
+  };
+
+  viewer.setMarkupCanvas(canvas);
+}
+
 try {
   setupViewControls();
   setupSelectionControls();
@@ -1230,6 +1347,7 @@ try {
   setupDragAndDrop();
   setupAppearanceControls();
   setupClippingControls();
+  setupMarkupControls();
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
   console.error(message, err);
@@ -1278,6 +1396,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         viewer.setModel(group);
         explodePreviewBases = null; // stale references to the just-replaced model's objects
         lastRawMassProperties = null; // stale — refers to the just-replaced model
+        clearMarkupOverlay?.();
         refreshColors();
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
@@ -1466,6 +1585,7 @@ async function loadMeshObjectFromUrl(url: string, loaderFormat: CadFormat, treeL
     setStatus("Loading model…");
     setDisplayUnit("mm"); // mesh sources carry no unit metadata
     lastRawMassProperties = null; // stale — refers to the just-replaced model
+    clearMarkupOverlay?.();
     const object = await loadMeshFromUrl(url, loaderFormat);
     tagMeshEntities(object);
     // Build the Components tree from the original hierarchy (before the mesh

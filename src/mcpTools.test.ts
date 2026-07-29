@@ -11,6 +11,7 @@ import {
   compareModelsTool,
   getState,
   applyEditOps,
+  runParametricScriptTool,
   removeEditOp,
   setVariables,
   setPart,
@@ -18,6 +19,8 @@ import {
   inspectEntity,
   measureTool,
   renderSnapshotTool,
+  searchStandardPartsTool,
+  downloadStandardPartTool,
   generateMeshTool,
   exportMeshTool,
   exportBRepTool,
@@ -36,6 +39,7 @@ import type { MeshResult } from "./gmshService";
 import type { MassProperties } from "./massProperties";
 import type { EntityFacts, MeasureResult } from "./entityFacts";
 import type { RenderResult } from "./renderService";
+import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { ModelDiff } from "./modelDiff";
 
 let dir: string;
@@ -109,6 +113,43 @@ const FAKE_RENDER_RESULT: RenderResult = {
   ],
 };
 
+const FAKE_PART_SEARCH_RESULT: PartSearchResult = {
+  items: [
+    {
+      id: "iso4017_hex_head_cap_screw_m6x25",
+      name: "ISO 4017 hex head cap screw, M6 x 25",
+      description: "ISO 4017, hex head cap screw, M6 x 25.",
+      category: "fastener",
+      tags: ["screw", "bolt"],
+      aliases: [],
+      attributes: { thread: "M6" },
+      stepUrl: "https://media.githubusercontent.com/media/example/part.step",
+      glbUrl: "https://example.com/part.glb",
+      pngUrl: "https://example.com/part.png",
+      byteSize: 1234,
+      sha256: null,
+      pageUrl: "https://www.step.parts/parts/iso4017_hex_head_cap_screw_m6x25",
+      apiUrl: "https://api.step.parts/v1/parts/iso4017_hex_head_cap_screw_m6x25",
+    },
+  ],
+  page: 1,
+  pageSize: 100,
+  total: 1,
+  totalPages: 1,
+  hasNextPage: false,
+  hasPreviousPage: false,
+  facets: { tags: [], categories: [], families: [], standards: [] },
+};
+
+const FAKE_DOWNLOADED_PART: DownloadedPart = {
+  id: "iso4017_hex_head_cap_screw_m6x25",
+  bytes: new TextEncoder().encode("ISO-10303-21;"),
+  sha256: "abc123",
+  verifiedChecksum: true,
+  stepUrl: "https://media.githubusercontent.com/media/example/part.step",
+  pageUrl: "https://www.step.parts/parts/iso4017_hex_head_cap_screw_m6x25",
+};
+
 const FAKE_MODEL_DIFF: ModelDiff = {
   added: [],
   removed: [],
@@ -128,6 +169,8 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
     renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
     isRenderAvailable: vi.fn(async () => ({ available: true })),
+    searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
+    downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
@@ -359,6 +402,80 @@ describe("render_snapshot", () => {
   });
 });
 
+describe("search_standard_parts", () => {
+  it("returns the pipeline's search result when the API is reachable", async () => {
+    const c = ctx();
+    const result = await searchStandardPartsTool(c, { q: "bolt" });
+    expect(c.pipeline.searchStandardParts).toHaveBeenCalledWith({ q: "bolt" });
+    expect(result.supported).toBe(true);
+    expect(result.items).toHaveLength(1);
+    expect(result.total).toBe(1);
+  });
+
+  it("returns supported: false with a warning on a network/API failure, never throws", async () => {
+    const c = ctx(
+      fakePipeline({ searchStandardParts: vi.fn(async () => ({ available: false as const, reason: "step.parts API unreachable (timeout)." })) })
+    );
+    const result = await searchStandardPartsTool(c, { q: "bolt" });
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/unreachable/i);
+    expect(result.items).toBeUndefined();
+  });
+});
+
+describe("download_standard_part", () => {
+  it("writes the downloaded STEP bytes and reports provenance/checksum status", async () => {
+    const c = ctx();
+    const out = path.join(dir, "part.step");
+    const result = await downloadStandardPartTool(c, { id: "iso4017_hex_head_cap_screw_m6x25", outputPath: out });
+    expect(c.pipeline.downloadStandardPart).toHaveBeenCalledWith("iso4017_hex_head_cap_screw_m6x25");
+    expect(result.supported).toBe(true);
+    expect(result.written).toBe(out);
+    expect(result.verifiedChecksum).toBe(true);
+    expect(await fs.readFile(out, "utf8")).toBe("ISO-10303-21;");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("warns (but still succeeds) when the part has no recorded checksum", async () => {
+    const c = ctx(
+      fakePipeline({
+        downloadStandardPart: vi.fn(async () => ({
+          available: true as const,
+          value: { ...FAKE_DOWNLOADED_PART, sha256: null, verifiedChecksum: false },
+        })),
+      })
+    );
+    const result = await downloadStandardPartTool(c, { id: "x", outputPath: path.join(dir, "x.step") });
+    expect(result.supported).toBe(true);
+    expect(result.warnings[0]).toMatch(/no recorded sha256/i);
+  });
+
+  it("warns when the downloaded bytes fail checksum verification", async () => {
+    const c = ctx(
+      fakePipeline({
+        downloadStandardPart: vi.fn(async () => ({
+          available: true as const,
+          value: { ...FAKE_DOWNLOADED_PART, verifiedChecksum: false },
+        })),
+      })
+    );
+    const result = await downloadStandardPartTool(c, { id: "x", outputPath: path.join(dir, "x2.step") });
+    expect(result.supported).toBe(true);
+    expect(result.warnings[0]).toMatch(/do NOT match/);
+  });
+
+  it("returns supported: false without writing anything on a network/API failure", async () => {
+    const c = ctx(
+      fakePipeline({ downloadStandardPart: vi.fn(async () => ({ available: false as const, reason: "step.parts API unreachable." })) })
+    );
+    const out = path.join(dir, "unreached.step");
+    const result = await downloadStandardPartTool(c, { id: "x", outputPath: out });
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/unreachable/i);
+    await expect(fs.access(out)).rejects.toThrow();
+  });
+});
+
 describe("compare_models", () => {
   it("diffs two B-rep sources via the pipeline", async () => {
     const c = ctx();
@@ -438,6 +555,96 @@ describe("apply_edit_ops", () => {
     expect(result.applied).toBe(0);
     expect(result.report[0].accepted).toBe(true);
     await expect(fs.access(editsSidecarPath(stpModel))).rejects.toThrow();
+  });
+});
+
+describe("run_parametric_script", () => {
+  it("compiles a bolt-circle repeat and appends the baked ops", async () => {
+    const c = ctx();
+    const result = await runParametricScriptTool(c, {
+      path: stpModel,
+      script: {
+        variables: [
+          { name: "R", expr: "10" },
+          { name: "N", expr: "4" },
+        ],
+        steps: [
+          {
+            repeat: {
+              times: "N",
+              indexVar: "i",
+              body: [
+                {
+                  op: "addCylinder",
+                  center: [0, 0, 0],
+                  axis: [0, 0, 1],
+                  radius: 1,
+                  height: 5,
+                  exprs: { "center[0]": "R*cos(i*360/N)", "center[1]": "R*sin(i*360/N)" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(result.applied).toBe(4);
+    expect(result.rejected).toBe(0);
+    expect(result.stackLength).toBe(4);
+    expect(result.model).not.toBeNull();
+    const persisted = (await readEdits(stpModel)).ops;
+    expect(persisted).toHaveLength(4);
+    expect(persisted.every((op: any) => op.exprs === undefined)).toBe(true);
+  });
+
+  it("a plain op step's exprs stay live in the persisted sidecar", async () => {
+    const result = await runParametricScriptTool(ctx(), {
+      path: stpModel,
+      script: {
+        steps: [{ op: { op: "addBox", center: [0, 0, 0], size: [20, 10, 5], exprs: { "size[0]": "L" } } }],
+      },
+    });
+    expect(result.applied).toBe(1);
+    const persisted = (await readEdits(stpModel)).ops;
+    expect(persisted[0].exprs).toEqual({ "size[0]": "L" });
+  });
+
+  it("rejects BREP_ONLY_OPS compiled for a mesh-format source but persists mesh-legal ones", async () => {
+    const result = await runParametricScriptTool(ctx(), {
+      path: stlModel,
+      script: {
+        steps: [
+          { op: { op: "addWedge", center: [0, 0, 0], axis: [0, 0, 1], up: [1, 0, 0], dx: 1, dy: 1, dz: 1, ltx: 0 } },
+          { op: { op: "translate", targets: ["node-0"], vec: [1, 0, 0] } },
+        ],
+      },
+    });
+    expect(result.applied).toBe(1);
+    expect(result.rejected).toBe(1);
+    expect(result.warnings.some((w: string) => /B-rep only/.test(w))).toBe(true);
+    expect((await readEdits(stlModel)).ops).toHaveLength(1);
+  });
+
+  it("dryRun compiles and reports without persisting", async () => {
+    const result = await runParametricScriptTool(ctx(), {
+      path: stpModel,
+      script: { steps: [{ op: { op: "addSphere", center: [0, 0, 0], radius: 2 } }] },
+      dryRun: true,
+    });
+    expect(result.dryRun).toBe(true);
+    expect(result.applied).toBe(0);
+    expect(result.report[0]).toMatchObject({ kind: "op", applied: 1 });
+    await expect(fs.access(editsSidecarPath(stpModel))).rejects.toThrow();
+  });
+
+  it("surfaces per-step rejection reasons without throwing", async () => {
+    const result = await runParametricScriptTool(ctx(), {
+      path: stpModel,
+      script: { steps: [{ op: { op: "addBox" } }, { repeat: { times: 2, indexVar: "not valid!", body: [] } }] },
+    });
+    expect(result.applied).toBe(0);
+    expect(result.rejected).toBe(2);
+    expect(result.report).toHaveLength(2);
   });
 });
 

@@ -279,9 +279,11 @@ export class MeshingPanel {
     this.elementShapeSelect = this.select(form, "Element shape", [
       ["simplex", "Triangles / Tetrahedra"],
       ["subdivided", "Quads / Hexahedra"],
+      ["hexDominant", "Hex-Dominant (3D)"],
     ]);
     this.elementShapeSelect.title =
-      "Quads/Hexahedra recombines the mesh into quadrilaterals (2D) or hexahedra (3D).";
+      "Quads/Hexahedra recombines the mesh into quadrilaterals (2D) or hexahedra (3D). " +
+      "Hex-Dominant (3D only) is a mixed tet/hex mesh via GMSH's RTree recombiner — not exportable to Kratos MDPA.";
     this.elementShapeSelect.addEventListener("change", () => {
       cb.onOptionsChange({ elementShape: this.elementShapeSelect.value as MeshOptions["elementShape"] });
     });
@@ -343,6 +345,11 @@ export class MeshingPanel {
     this.setSelectValue(this.algorithm2DSelect, options.algorithm2D);
     this.setSelectValue(this.algorithm3DSelect, options.algorithm3D);
     this.elementOrderSelect.value = String(options.elementOrder);
+    // Hex-Dominant is 3D-only (gmshShapeOptions degrades it to plain simplex
+    // options outside 3D — never invalid, just meaningless — so disabling the
+    // option is a UX nicety, not a correctness requirement).
+    const hexDominantOpt = this.elementShapeSelect.querySelector<HTMLOptionElement>('option[value="hexDominant"]');
+    if (hexDominantOpt) hexDominantOpt.disabled = options.dimension !== 3;
     this.elementShapeSelect.value = options.elementShape;
     this.optimizeCheckbox.checked = options.optimize;
     this.stlAngleInput.value = String(options.stlAngle);

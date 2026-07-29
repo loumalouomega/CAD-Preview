@@ -28,6 +28,7 @@ import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from ".
 import { computeMassProperties } from "./massProperties";
 import { getEntityFacts, measureEntities } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
+import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
 import { convertToStlBoundary, exportViaMeshio } from "./meshioService";
 import {
@@ -37,9 +38,12 @@ import {
   inspectEntity,
   measureTool,
   renderSnapshotTool,
+  searchStandardPartsTool,
+  downloadStandardPartTool,
   compareModelsTool,
   getState,
   applyEditOps,
+  runParametricScriptTool,
   removeEditOp,
   setVariables,
   setPart,
@@ -74,6 +78,8 @@ const ctx: ToolContext = {
     measureEntities,
     renderSnapshot,
     isRenderAvailable,
+    searchStandardParts,
+    downloadStandardPart,
     compareModels,
     convertToStlBoundary,
     exportViaMeshio,
@@ -240,6 +246,47 @@ server.registerTool(
 );
 
 server.registerTool(
+  "search_standard_parts",
+  {
+    description:
+      "Facts only (see describe_capabilities' verdictConventions): faceted search over the hosted step.parts catalog (fasteners, bearings, connectors, extrusions, ...) — off-the-shelf STEP parts. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\" — don't report a part as unavailable unless the API was reachable and returned zero candidates. Each result carries pageUrl/apiUrl/stepUrl/sha256 for provenance.",
+    inputSchema: {
+      q: z.string().optional().describe("Fuzzy text search across name/description/tags/attributes"),
+      tag: z.array(z.string()).optional().describe("Repeatable tag filter (OR within, AND across filter types)"),
+      category: z.array(z.string()).optional().describe("Repeatable category filter"),
+      family: z.array(z.string()).optional().describe("Repeatable family filter"),
+      standard: z.array(z.string()).optional().describe("Repeatable standard-designation filter (e.g. ISO 4017)"),
+      page: z.number().int().min(1).optional().describe("1-based page number, default 1"),
+      pageSize: z.number().int().min(1).max(500).optional().describe("Results per page, default 100, max 500"),
+    },
+  },
+  wrap(
+    (args: {
+      q?: string;
+      tag?: string[];
+      category?: string[];
+      family?: string[];
+      standard?: string[];
+      page?: number;
+      pageSize?: number;
+    }) => searchStandardPartsTool(ctx, args)
+  )
+);
+
+server.registerTool(
+  "download_standard_part",
+  {
+    description:
+      "Downloads one step.parts part's STEP file to outputPath, verifying it against the part record's sha256 when one is on record (see the returned verifiedChecksum/sha256 fields). The result is an ordinary STEP file the existing pipeline opens normally — no new format support needed. supported:false on any network failure (inconclusive, not \"part unavailable\") — see describe_capabilities' verdictConventions.",
+    inputSchema: {
+      id: z.string().describe("Part id from search_standard_parts' results"),
+      outputPath: z.string().describe("Destination .step/.stp file path"),
+    },
+  },
+  wrap((args: { id: string; outputPath: string }) => downloadStandardPartTool(ctx, args))
+);
+
+server.registerTool(
   "compare_models",
   {
     description:
@@ -267,6 +314,20 @@ server.registerTool(
     inputSchema: { path: modelPath, ops: rawOps, dryRun: z.boolean().optional() },
   },
   wrap((args: { path: string; ops: Array<Record<string, unknown>>; dryRun?: boolean }) => applyEditOps(ctx, args))
+);
+
+server.registerTool(
+  "run_parametric_script",
+  {
+    description:
+      "Compiles a declarative parametric script into ops and appends them via the same path as apply_edit_ops — NOT a general scripting language (no code execution, no I/O). script = {variables?: [{name,expr}], steps: [...]}, each step exactly one of: {op: <EditOp>} (identical to one apply_edit_ops entry, exprs stay live) or {repeat: {times: number|expr, indexVar: string, body: [<EditOp>, ...]}} (expands body `times` times, indexVar bound to the 0-based iteration; body ops' exprs may reference indexVar/document variables/script variables via the same expression syntax set_variables uses, e.g. a bolt circle: exprs:{\"center[0]\":\"R*cos(i*360/N)\",\"center[1]\":\"R*sin(i*360/N)\"} — repeat-generated ops are fully baked to concrete numbers on output, exprs stripped). Returns a per-step accept/reject report and, for B-rep sources, the post-replay entity inventory. Use dryRun to compile/validate without persisting. See describe_capabilities.",
+    inputSchema: {
+      path: modelPath,
+      script: z.looseObject({}).describe("{variables?: [{name,expr}], steps: [{op:...} | {repeat:{times,indexVar,body}}]}"),
+      dryRun: z.boolean().optional(),
+    },
+  },
+  wrap((args: { path: string; script: Record<string, unknown>; dryRun?: boolean }) => runParametricScriptTool(ctx, args))
 );
 
 server.registerTool(

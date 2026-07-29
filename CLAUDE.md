@@ -768,17 +768,41 @@ Non-negotiable invariants:
   via `setSourceKind` — into a collapsed-by-default "Advanced settings" section.
 - **Element shape & order.** `MeshOptions.elementOrder: 1|2` → `Mesh.ElementOrder`
   (quadratic adds mid-side nodes; the overlay draws corner geometry only).
-  `MeshOptions.elementShape: "simplex"|"subdivided"` → `Mesh.RecombineAll` +
-  `Mesh.SubdivisionAlgorithm` via the shared `gmshShapeOptions(shape, dimension)`
-  helper (`src/meshOptions.ts`), reused by both `loadGeometryAndApplyOptions` and
-  `generateGeoScript` so they can't drift. Recipe is **dimension-dependent and
-  WASM-verified**: 2D quads via Blossom `RecombineAll=1`; 3D hexes via
-  `SubdivisionAlgorithm=2` (3D `RecombineAll` throws). Both option values are set
-  every generate (the singleton persists options across `clear()`). **A
-  hex-*dominant* mixed mode is deliberately NOT offered** — `Mesh.Recombine3DAll`
-  is completely non-functional in the bundled gmsh-wasm build (every variant
-  probed produced pure tets or threw); `validateMeshOptions` rejects
-  `"hexDominant"`. See `doc/gmsh-integration.md`'s "Known limitations".
+  `MeshOptions.elementShape: "simplex"|"subdivided"|"hexDominant"` →
+  `Mesh.RecombineAll`/`Mesh.SubdivisionAlgorithm`/`Mesh.Recombine3DAll`/an
+  `Mesh.Algorithm3D` override via the shared `gmshShapeOptions(shape,
+  dimension)` helper (`src/meshOptions.ts`), reused by both
+  `loadGeometryAndApplyOptions` and `generateGeoScript` so they can't drift.
+  Recipe is **dimension-dependent and WASM-verified**: 2D quads via Blossom
+  `RecombineAll=1`; 3D hexes via `SubdivisionAlgorithm=2` (3D `RecombineAll`
+  throws); 3D hex-*dominant* (mixed tet/hex) via `Algorithm3D=9` (RTree) +
+  `Recombine3DAll=1` — `algorithm3DOverride` wins over the user's own
+  `algorithm3D` selection when set, since RTree is a requirement of the mode,
+  not a suggestion. All option values are set every generate (the singleton
+  persists options across `clear()`); `"hexDominant"` outside 3D degrades to
+  plain simplex options (harmless, not rejected — the panel additionally
+  disables the `<option>` for non-3D dimensions as a UX nicety).
+  `"hexDominant"` always produces a THIRD element type alongside tet(4)/
+  hex(5): gmsh type 140 ("trihedron", a tet/hex transition connector) with NO
+  `gmshElementTypes.ts` table entry — `gmsh.model.mesh.getElementProperties
+  (140)` throws (`"Size of basis incompatible with element type"`), so its
+  node geometry is unverifiable and deliberately never added. This is safe
+  because every existing consumer of the table (`surfaceTriangles`/
+  `boundaryTriangles`/`surfaceEdges`) already treats an unmapped type as a
+  graceful skip, not a throw — **re-verified live**: `generateMesh()` with
+  `elementShape:"hexDominant"` on `examples/STP/block.stp` produced a
+  populated overlay (446 nodes, 1289 elements, 6384 triangle indices, 3348
+  edge values — non-empty despite the unmapped type mixed in) and a working
+  quality summary (no crash on the mixed tag set); VTK export (Gmsh's own
+  native writer) produced a valid file untouched by our table at all.
+  **Kratos MDPA export is the one path that genuinely cannot represent this
+  mesh** (no `MdpaCellKind` for a tet/hex connector) — `collectCells`
+  (`gmshService.ts`) gives gmsh type 140 specifically a distinct, actionable
+  rejection message ("...has no Kratos geometry equivalent... export a
+  different format...") rather than the generic "unsupported element type"
+  one every other truly-unexpected type still gets; re-verified live that
+  `exportMdpa()` throws it correctly. See `doc/gmsh-integration.md`'s "Known
+  limitations" for the full probing/verification trail.
 - **Sidecar pair `<model>.mesh.json` + `<model>.geo`, beside parts/edits.** The
   FE-mesh options (`MeshOptions` — a flat bag, not an op-list) autosave (~500 ms,
   its own debounce timer, separate from parts/edits) to `<model>.mesh.json` via
@@ -1339,6 +1363,134 @@ not authoritative"). Non-negotiable invariants:
   from `inspect`/`measure`/`render_snapshot`'s tool descriptions rather than
   repeating the policy prose in each one.
 
+## Standard-parts sourcing: step.parts integration (roadmap feature)
+
+Two MCP tools, `search_standard_parts` and `download_standard_part`
+(`src/stepPartsService.ts`), over the hosted
+[step.parts](https://www.step.parts) REST API (`api.step.parts`) — this
+extension's **first and only external network dependency**. Fasteners,
+bearings, connectors, extrusions, etc. as ordinary STEP files the existing
+pipeline already opens — no new format support needed.
+
+- **API shape verified directly against the live service, not assumed from
+  documentation** (same "verify against the real thing" convention this
+  codebase applies to OCCT/Gmsh/meshio++ WASM calls, here applied to an HTTP
+  API instead): fetched the real `GET https://api.step.parts/v1/openapi.json`
+  spec AND ran a real `GET .../v1/parts?q=bolt&pageSize=3` search to confirm
+  field names against an actual response, not just the schema. No
+  authentication required. `/v1/parts` (search: `q` fuzzy text +
+  `tag`/`category`/`family`/`standard` repeatable filters +
+  `page`/`pageSize` pagination) and `/v1/parts/{id}` (single-part detail) are
+  the two endpoints used. `stepUrl` (the STEP file's own download URL,
+  confirmed to live on a **different host**,
+  `media.githubusercontent.com`, than the API itself — `download_standard_part`
+  makes two separate network round trips, detail then file) and `sha256`
+  (confirmed **nullable** — not every part has a recorded checksum) are the
+  fields that matter for downloading.
+- **Every function is opt-in by construction — nothing calls this API except
+  the two tools an agent explicitly invokes; there is no automatic/background
+  network activity anywhere in the extension.** This is why no separate
+  settings toggle or enable/disable switch was added: the tool boundary
+  itself already is the opt-in gate the roadmap asked for.
+- **Network/API failure is `{available: false, reason}`, never a thrown
+  error** — `stepPartsService.ts`'s `fetchJson()` catches both HTTP non-2xx
+  responses and network/DNS/timeout errors into the same shape (a 10s search
+  timeout, 30s download timeout, via a hand-rolled `AbortController` timeout
+  rather than `AbortSignal.timeout()` for wider Node-version compatibility).
+  `search_standard_parts`/`download_standard_part` (`mcpTools.ts`) surface
+  this as `supported: false` with the reason in `warnings` — **adopted
+  verbatim from step.parts' own error semantics per the roadmap**: this is
+  need-more-info/inconclusive, explicitly NOT "no matching parts" or "part
+  unavailable" (see `describeCapabilities()`'s `verdictConventions` /
+  `headlessLimitations` entries, which call this out by name).
+- **Checksum verification is real, not cosmetic** — `downloadStandardPart()`
+  hashes the downloaded bytes with Node's built-in `crypto.createHash
+  ("sha256")` (no new dependency) and compares against the part record's
+  `sha256` (lowercased, matching the API's lowercase hex convention).
+  `verifiedChecksum` is `true` **only** when a `sha256` was present AND
+  matched — never true for a part with no recorded checksum (nothing to
+  verify against is a different state than "verified and passed", and
+  `downloadStandardPartTool` warns distinctly for each: "no recorded sha256"
+  vs. "downloaded bytes do NOT match"). **Re-verified end-to-end against the
+  live API** (`npm run mcp:smoke`): searched real results, downloaded a real
+  part, confirmed a genuine sha256 match — not mocked.
+- **No new webview/protocol/rendering work at all** — a downloaded part is
+  an ordinary `.step` file on disk; opening it goes through the exact same
+  `routeFile`/OCCT pipeline as any other STEP file. This tool only ever
+  writes a fresh file at the caller-chosen `outputPath`; it never touches
+  any currently-open document's sidecars, so no `assertNotSourcePath`-style
+  guard applies here (there is no "source" being protected against).
+
+## Parametric script-as-source: run_parametric_script (roadmap feature)
+
+`run_parametric_script` (`src/parametricScript.ts`'s `compileParametricScript`)
+closes the roadmap's last exploratory item — a durable, diffable,
+re-runnable source artifact for from-scratch parts (a bolt circle of N
+holes costs one script, not N tool calls) — by compiling a small declarative
+document into ops appended via the **exact same path** `apply_edit_ops`
+already uses.
+
+- **Deliberately NOT a general-purpose scripting language — this is the
+  answer to all three of the roadmap's open questions at once.** A script is
+  `{variables?, steps}`, where each step is either one `EditOp` (identical
+  to an `apply_edit_ops` entry) or ONE flat `repeat: {times, indexVar,
+  body}` loop (no nesting, no other control flow) whose body ops reference
+  the loop index — and any document/script variable — through the SAME
+  `exprs`/`paramExpr.ts` expression evaluator op fields already use
+  (`sin`/`cos`/`tan` in degrees, `sqrt`, arithmetic — no `eval`, per
+  `paramExpr.ts`'s existing CSP-driven "never reintroduce eval" rule).
+  *Language/engine*: none embedded — no build123d/Python runtime, just this
+  hand-written compiler reusing the existing expression evaluator.
+  *Sandboxing agent-authored code*: moot by construction — there is no
+  general-purpose interpreter, no I/O, no code execution to sandbox; the
+  compiler only ever calls `validateEditOp`/`evalExpr` on data. *Composition
+  with interactive edit-ops*: automatic — a compiled script's output IS an
+  `EditOp[]`, appended to the SAME `<model>.edits.json` op stack manual/
+  agent `apply_edit_ops` calls already write to, so there is no separate
+  "script mode" the sidecar replay model needs to know about at all.
+- **Repeat-generated ops are fully baked, not left parametrically live — a
+  stated v1 scope choice.** Each iteration's body op is resolved against
+  `{...documentVariables, ...scriptVariables, [indexVar]: n}` via the same
+  clone-eval-`setNumericField`-revalidate sequence `editVariables.ts`'s
+  `resolveEditOps` already uses (duplicated here, not called directly,
+  since it also needs to strip `exprs` afterward — `resolveEditOps` keeps
+  it) — then the compiled op's `exprs` annotation is DROPPED entirely.
+  Keeping a loop-index expression alive would be actively wrong on a future
+  replay (no document variable named e.g. `"i"` exists to resolve it
+  against — unlike a real persisted variable, this isn't "stale", it's
+  unresolvable forever). A **plain** (non-repeated) `op` step is untouched
+  by this: it passes straight through `validateEditOp` with `exprs` intact,
+  identical to `apply_edit_ops`'s own behavior — so a value that SHOULD stay
+  live/editable later needs a real document variable (`set_variables`) and a
+  plain op step, not the repeat construct. Script-local `variables` are
+  themselves NEVER persisted — they're compile-time-only convenience,
+  entirely separate from the document's own persisted variable table (a
+  script variable shadows a same-named document variable for that one
+  compile, nothing more).
+- **Safety caps, not sandboxing, bound resource use**: `MAX_STEPS=200`,
+  `MAX_REPEAT_TIMES=1000` (per repeat block, clamped, never negative),
+  `MAX_TOTAL_OPS=5000` (across the whole compiled script) — hit any of these
+  and `truncated: true` is returned with the dropped-scope stated in
+  `issues`, never a silent truncation (same "no silent caps" convention as
+  every workflow/agent-facing tool in this codebase).
+- **Every malformed step degrades gracefully, per-step, never crashes the
+  whole compile** — same philosophy as `apply_edit_ops`'s per-op
+  accept/reject report: an invalid op, an invalid `repeat.indexVar`, a
+  `repeat.times` expression that fails to evaluate, or a body op whose
+  `exprs` fails against that iteration's values all just get skipped with a
+  reason in `report`/`issues` — the rest of the script still compiles.
+- **`run_parametric_script`'s own tool-level behavior mirrors
+  `apply_edit_ops` exactly**: same B-rep-only-op gate for mesh-format
+  sources (`BREP_ONLY_OPS`, same warning phrasing), same `dryRun` (compile +
+  report, no persist), same post-replay entity-inventory response for B-rep
+  sources (topology-changing compiled ops renumber `face-N`/`edge-N` ids,
+  same as any other op). **Re-verified end-to-end against real OCCT**
+  (`npm run mcp:smoke`): a real bolt-circle script (`R*cos(i*360/N)`/
+  `R*sin(i*360/N)` over 4 iterations) compiled, baked, persisted, and
+  re-tessellated correctly — the first cylinder landed at the expected
+  `(R, 0)` position (angle 0), confirming the trig/loop-index math is
+  correct against live geometry, not just the pure-function unit tests.
+
 ## Settings, screenshot, mass properties, and measurement (P1 roadmap features)
 
 Four independent, additive features (`doc/roadmap.md`'s P1 tier): the first
@@ -1592,6 +1744,151 @@ session-only — never written to a sidecar.
   orthographic scales `camera.zoom` (+ `updateProjectionMatrix()`) instead of
   moving `camera.position`, since moving the camera is a visual no-op under
   parallel projection.
+
+## Display modes (P1 roadmap feature)
+
+Five mutually exclusive whole-model rendering modes (`src/webview/
+displayMode.ts`'s `DisplayMode`: `shaded`/`wireframe`/`xray`/`hiddenLines`/
+`flat`) replacing the old standalone Wireframe toolbar toggle, driven by a
+new `#display-mode-group` segmented button group in the view-controls
+Appearance area. `Viewer.setDisplayMode()`/`applyDisplayMode()` in
+`src/webview/viewer.ts` is the single entry point; `main.ts`'s wiring is the
+only caller and always follows it with `refreshColors()` (see below for why).
+
+- **Materials are still built once at load time and only ever have
+  properties mutated — except Flat mode, the one deliberate exception.**
+  Every other mode (shaded/wireframe/xray/hiddenLines) reuses the mesh's
+  original `MeshStandardMaterial`, stashed once as `userData.standardMaterial`
+  at construction time (`geometryBuilder.ts`'s `buildFaceMesh()` and
+  `meshFacets.ts`'s per-facet mesh builder both set it explicitly;
+  `applyDisplayMode()` also lazily captures it from `mesh.material` on its own
+  first run per mesh, as a safety net for the "kept whole" mesh-facet path
+  that doesn't explicitly stash it). Flat needs a genuinely unlit look
+  (`MeshStandardMaterial` always samples scene lights — there is no property
+  to disable that while keeping the class), so it swaps `mesh.material` to a
+  lazily-built, cached `MeshBasicMaterial` (`userData.flatMaterial`) instead.
+  `clearModel()` disposes BOTH cached materials (whichever isn't the
+  currently-active `mesh.material`, already disposed via the normal path) so
+  a mode never used, or used and left behind, doesn't leak.
+- **Colours/selection are NOT tracked per-material, so `setDisplayMode()`
+  callers MUST re-apply them afterward.** Because Flat's material is a
+  different instance than the standard one, switching modes can leave the
+  newly-active material at its default colour with no selection highlight.
+  Rather than have `Viewer` maintain two parallel colour/highlight caches,
+  the contract is the same one `setModel()` already relies on for parts/
+  selection: the caller re-applies. `main.ts`'s `refreshColors()` (already
+  called after every model rebuild/parts change) does exactly this —
+  `setEntityColors()` + `renderHighlight()`/`renderSelection()` — so the
+  Display group's click handler just calls it right after
+  `viewer.setDisplayMode()`. Since `MeshBasicMaterial` has no `.emissive`
+  (unlike `MeshStandardMaterial`, which `renderSelection()`'s face branch
+  used exclusively before this feature), that branch now checks
+  `"emissive" in mat` and falls back to a direct `.color` swap (the same
+  technique edges/points already used for selection) when it's absent.
+- **X-Ray's extra translucency is folded into the EXISTING `baseOpacity`
+  composition, not a new opacity writer.** `highlightGroup()`'s formula
+  (already documented above as the one-and-only place `material.opacity`
+  gets written, to avoid the exact "two writers fight over opacity" bug a
+  P2-stage feature already fixed once) gained one more multiplicand:
+  `mat.opacity = base * displayOpacityFactor() * (selected ? 1 : 0.08)`,
+  where `displayOpacityFactor()` returns `0.35` for `"xray"` mode and `1`
+  otherwise. Any future feature that dims/fades face materials must extend
+  this same formula, never write `.opacity` directly.
+- **Hidden Lines needs no per-pixel occlusion logic** — it exploits three.js's
+  own opaque-then-transparent render ordering. `buildHiddenLineGhosts()`
+  builds one dimmed `LineBasicMaterial({transparent:true, opacity:0.35,
+  depthTest:false, depthWrite:false})` copy of every edge line, SHARING
+  geometry with the real edge (never disposing it — `clearHiddenLineGhosts()`
+  only disposes materials), grouped into `hiddenLineGhosts: THREE.Group`, a
+  scene sibling of `model` (never a child — same pattern as `meshOverlay`/
+  `measurementOverlay`), which is why `collectTargets` (`picking.ts`, only
+  ever traverses `this.model`) naturally excludes ghosts from picking with no
+  `raycast` override needed. Because `transparent:true` objects always render
+  in a pass strictly after every opaque object in three.js (faces AND the
+  real, depth-tested edges — bucket membership is decided by
+  `material.transparent`, independent of `renderOrder`), a ghost is
+  guaranteed to paint faintly over the already-fully-rendered frame
+  everywhere its line passes, regardless of true 3D depth — while the real
+  edge, drawn earlier in the opaque pass with normal depth testing, already
+  painted full-strength at every pixel where it's genuinely unoccluded, so it
+  stays visually dominant there (the ghost technically also draws a faint
+  tint on top at those pixels too, a minor accepted cosmetic artifact, not a
+  correctness bug). `applyClippingPlane()` was extended to also traverse
+  `hiddenLineGhosts` so the two features compose correctly together.
+- **`setWireframe()`/`this.wireframe` remain a standalone public
+  primitive**, not folded away into `setDisplayMode()`-only internals —
+  `applyDisplayMode()` drives it (`this.wireframe = displayMode ===
+  "wireframe"`) for the interactive Display group, but `render_snapshot`'s
+  per-call `wireframe` override (`src/renderService.ts`, `renderViewRequest`'s
+  `wireframe` field) calls `viewer.setWireframe()` directly, bypassing
+  display-mode state entirely — safe because every `renderViewRequest` this
+  feature ever sends targets a disposable, harness-only headless page with no
+  interactive display-mode session to preserve (same invariant the
+  `render_snapshot` section above documents).
+
+## Markup annotation overlay (P1 roadmap feature)
+
+A 2D drawing overlay (freehand/line/arrow/rectangle/circle/eraser, undo/
+redo) over the 3D view for review notes, composited into Screenshot exports.
+Session-only, never persisted — same rule as every other display-only
+feature (explode preview, clip plane, measurement).
+
+- **Pure-model/DOM split, mirroring `partsSidecar.ts`/`partsStore.ts`**:
+  `src/webview/markupModel.ts` (`MarkupStroke`, `MarkupModel` — push/undo/
+  redo/clear/list/eraseAt, DOM-free, unit-tested) vs. `src/webview/
+  markupCanvas.ts` (`drawStroke`/`redrawAll`, DOM-touching, only ever called
+  at runtime, same discipline `geometryBuilder.ts`'s lazily-built
+  `dotTexture()` established — **the actual `<canvas id="markup-canvas">`
+  element itself lives in static `viewerDom.ts` markup, which is fine: a
+  `<canvas>` tag in an HTML template string executes no JS at module load,
+  it's only `document.createElement("canvas")`/`.getContext()` calls at
+  module scope that break headless vitest imports**).
+- **The eraser is deliberately NOT part of undo/redo** — `MarkupModel.
+  eraseAt()` removes any stroke with a point within a fixed pixel radius of
+  the cursor immediately and permanently for the session, rather than trying
+  to make an arbitrary (not necessarily most-recent) removal compose with a
+  linear undo/redo stack. `undo()`/`redo()` only ever add/remove the single
+  most-recently-pushed stroke, exactly like `EditsModel`'s op stack.
+- **`#markup-canvas` is a scene sibling of the WebGL canvas inside `#app`**
+  (`position:absolute; inset:0`, `z-index` above it), `pointer-events:none`
+  by default so it never intercepts orbit/pick input while markup mode is
+  off — `main.ts`'s `setupMarkupControls()` flips it to `"auto"` for exactly
+  as long as **✎ Markup** is toggled on. Its backing-store resolution is
+  sized in plain CSS pixels (`canvas.width = rect.width`, no
+  devicePixelRatio scaling) — deliberately simpler than matching the WebGL
+  renderer canvas's device-pixel resolution, since `compositeCanvas()`'s
+  `drawImage(overlay, 0, 0, base.width, base.height)` stretch-fits it to the
+  base canvas's size at composite time regardless of any resolution
+  mismatch, at the cost of the interactive on-screen strokes possibly
+  looking very slightly softer on a high-DPI display — an accepted
+  simplicity/quality tradeoff for a review-annotation feature.
+- **Composited into Screenshot exports via `Viewer.setMarkupCanvas()` +
+  `src/webview/canvasComposite.ts`'s `compositeCanvas()`** — registered once
+  at webview setup (`main.ts` calls it unconditionally, not just when markup
+  mode is active; an empty/untouched markup canvas composites as a no-op
+  transparent layer, so there's nothing to gate). Both
+  `captureScreenshotBase64()` (the interactive Screenshot feature) and
+  `captureLabeledScreenshotBase64()` (the headless `render_snapshot` MCP
+  tool's per-view capture) composite it in — so an agent calling
+  `render_snapshot` on a document where a human had left markup strokes in
+  an interactive session would see them too, which is correct/expected
+  (`Viewer` has exactly one markup canvas, not a per-caller one).
+- **Cleared on every genuinely new model load** (`case "geometry":` for
+  B-rep, `loadMeshObjectFromUrl()` for mesh formats), via a module-level
+  `clearMarkupOverlay` callback `setupMarkupControls()` assigns — strokes
+  aren't geometrically stale (pure screen-space pixels, no model reference
+  at all), but leaving them plastered over a totally different part reads as
+  wrong far more often than useful, so a fresh load resets them like every
+  other session-only display state (explode preview, cached mass
+  properties). Switching *display mode* or applying an *edit* to the SAME
+  document does not clear them — only a genuinely different model does.
+- **Live preview while drawing**: `pointermove` calls `redrawAll(canvas,
+  model.list(), previewStroke)` on every event — clears and redraws every
+  committed stroke, then the in-progress stroke on top, so the shape
+  tracks the cursor with no artifacts left behind from the previous frame's
+  preview. Freehand accumulates every sampled point into the live stroke;
+  line/arrow/rectangle/circle keep exactly two points (`[start, current]`)
+  and just overwrite the second one each move.
 
 ## Units handling (P3 roadmap feature)
 
@@ -1907,7 +2204,7 @@ newer value (e.g. `"9.9.9"`), reload the Extension Development Host window
 panel now appears **automatically** (the upgrade path); reload again unchanged →
 confirm it does **not** reappear. Revert the temporary version edit afterward.
 
-Confirm the toolbar/panel icons (Fit, Wireframe, Tree, FE Mesh, Select,
+Confirm the toolbar/panel icons (Fit, the Display group's Wire icon, Tree, FE Mesh, Select,
 Point/Vol/Surf/Line, the File menu's Open/Save/Save As/Export, the FE Mesh panel's
 Generate/Export, tree-close, Parts delete/remove, and the large-mesh warning) render
 crisply and legibly at their
@@ -2071,10 +2368,23 @@ names, that geometries-mode ids form one continuous space across kinds, and (wit
 parts assigned) per-part `SubModelPart` blocks still appear with non-empty membership.
 Set **Dimension** to 2D with shape "Quads / Hexahedra" → confirm an all-quad 2D overlay
 and a `Quadrilateral3D4`/`SurfaceCondition3D4N` MDPA. Repeat one subdivided generate on
-`cube.stl` (reclassified STL path — hexes still generate). Note: only "Triangles /
-Tetrahedra" and "Quads / Hexahedra" are offered — hex-dominant mixed meshing is
-unavailable in this WASM build (see `doc/gmsh-integration.md`'s Known limitations).
-Regenerate across shapes/orders repeatedly → host memory stays flat (same leak check).
+`cube.stl` (reclassified STL path — hexes still generate). Regenerate across shapes/
+orders repeatedly → host memory stays flat (same leak check).
+
+Then exercise **Hex-Dominant meshing**: on `bull.stp` with Dimension set to 3D,
+set **Element shape** to "Hex-Dominant (3D)" and **▶ Generate** → confirm a mixed
+tet/hex overlay renders (a visibly different mix from pure "Triangles /
+Tetrahedra") with no crash and a populated quality summary. Switch **Dimension**
+to 2D → confirm the "Hex-Dominant (3D)" option becomes disabled/unselectable in
+the `<select>` (it silently degrades to plain simplex behavior if somehow still
+selected — never invalid, just meaningless outside 3D). Back on 3D Hex-Dominant,
+try exporting to **Kratos MDPA** (either mode) → confirm a clear, specific error
+naming the unsupported tet/hex transition connector (not a generic "unsupported
+type" message, and not a crash or silently-wrong file) — then export to **Gmsh
+Mesh (.msh)** or **VTK** instead → confirm those succeed normally (Gmsh's own
+writers handle the mesh natively; only our hand-written MDPA path is affected).
+Regenerate/export-fail repeatedly + open/close the tab → host memory stays flat
+(same leak check as above).
 
 Then exercise **parts-preserving meshing**: on `angle1.stp` (or another multi-face
 STEP), create 2+ parts covering different faces/solids and set one part's **mesh
@@ -2165,6 +2475,56 @@ underlying WASM call ever returns an empty/mismatched result. Repeat
 open/close and toggle-heavy interaction a few times across all of the above →
 watch extension-host memory stay flat (same leak check as above).
 
+Then exercise **Display modes**: on `bull.stp`, click through each button in
+the view-controls **Display** group. **Shaded** → normal lit faces (the
+default). **Wire** → faces render as a line mesh, same as the old Wireframe
+toolbar toggle used to. **X-Ray** → faces turn translucent and edges remain
+visible through them; select/isolate a part while in X-Ray → confirm dimming
+and the X-Ray translucency compose (neither overrides the other). **Hidden**
+→ confirm edges normally hidden behind solid faces now show faintly through
+them, while genuinely visible edges stay full-strength/crisp; enable a Clip
+plane at the same time → confirm the ghost lines are clipped away past the
+plane too, not left floating beyond it. **Flat** → faces go unlit/flat-shaded
+with no lighting gradient; recolour a part (Parts panel) and select an
+entity (Edits/Parts) while in Flat → confirm both the colour change and the
+selection highlight still show correctly (a direct colour swap, since Flat's
+material has no emissive channel to use); switch back to **Shaded** →
+confirm the recolour/selection are still correct on the original material
+too (nothing was lost across the mode switch). Apply an edit that rebuilds
+the model (e.g. any primitive) while in a non-Shaded mode → confirm the
+rebuilt model keeps the same display mode. Switch modes repeatedly + open/
+close the tab a few times → watch extension-host/webview memory stay flat
+(same leak-check discipline as every other feature above — this is JS/WebGL
+material disposal, not an OCCT WASM handle, but the same "no leftover
+objects from a discarded mode" principle applies).
+
+Then exercise the **Markup annotation overlay**: click **✎ Markup** →
+confirm orbiting/panning/picking stop working on the view (the overlay now
+captures pointer input) while the toolbar's other buttons/panels remain
+usable. Try each tool — **Freehand** (draw a squiggle), **Line**, **Arrow**
+(confirm an arrowhead renders at the end point, not the start), **Rectangle**,
+**Circle** — confirm each previews live while dragging and commits on
+release. **Undo** repeatedly → strokes disappear most-recent-first; **Redo**
+→ they come back in the same order; drawing a new stroke after an Undo →
+confirm Redo is no longer available (the redo stack was cleared). Switch the
+colour swatch mid-session → confirm only NEW strokes use the new colour,
+already-drawn ones keep their original colour. Select **Eraser** and click
+on an existing stroke → confirm it's removed immediately, and that **Undo**
+does NOT bring it back (erasing is intentionally outside the undo/redo
+history). **Clear** → confirm every stroke is gone. Toggle **✎ Markup** off
+→ confirm orbiting/panning/picking work normally again and the drawn
+annotations remain visible on screen (toggling off only releases pointer
+capture, it doesn't hide anything). Draw a few strokes, then click
+**📷 Screenshot** → confirm the saved PNG includes the annotations baked in,
+matching what's on screen. Resize the editor pane while markup mode is
+active/inactive → confirm the overlay canvas resizes to match and existing
+strokes remain in the correct screen position (not stretched/misaligned).
+Load a different model (or reload the tab) → confirm annotations are
+cleared (session-only, never persisted — nothing is written to any
+sidecar). Repeat draw/undo/redo/erase/screenshot a few times + open/close
+the tab → watch webview memory stay flat (same leak-check discipline as
+above).
+
 Then exercise **Units handling**: open `examples/STP/bull.stp` (declares
 `INCH`) → confirm the view-controls **Units** dropdown auto-selects **in**;
 open `examples/STP/angle1.stp` (declares `MILLIMETRE`) → confirm it
@@ -2222,9 +2582,19 @@ matched + 1 removed, not swapped) → Gmsh generate → export `.msh` +
 `.geo_unrolled`/`.xao` + `.brep` → a hand-built `.vtk` tetrahedron loaded
 through the meshio++ bridge (confirming `load_model` reports it as headlessly
 meshable, unlike `.obj`/`.ply`/`.gltf`), meshed, and exported to MED, CGNS
-(3D), and XDMF (confirming the `.h5` companion + rewritten reference) —
-asserting the CAD source stays byte-identical and stdout stays pure
-JSON-RPC throughout (now across all three bundled WASM modules).
+(3D), and XDMF (confirming the `.h5` companion + rewritten reference) →
+a hex-dominant generate (msh export succeeds, Kratos MDPA export rejects
+with a specific error naming the unmapped tet/hex connector type) →
+`search_standard_parts`/`download_standard_part` against the real
+step.parts API (tolerates the API being unreachable in this environment —
+that's a real, expected `supported:false` outcome, not a bug — but when
+reachable, verifies a genuine sha256 checksum match) → `run_parametric_script`
+compiling a real bolt-circle (4 cylinders via a `repeat` loop + trig `exprs`
+over the loop index, confirming the first lands at the expected `(R, 0)`
+position and that every compiled op's `exprs` annotation was stripped) →
+`save_preprocess` → `load_preprocess` — asserting the CAD source stays
+byte-identical and stdout stays pure JSON-RPC throughout (now across all
+three bundled WASM modules, plus one external network call).
 For the sidecar round-trip through the real extension: register the server with an
 MCP client (`claude mcp add cad-preview -- node $PWD/dist/mcp-server.js`), have the
 agent `apply_edit_ops` on a copy of `bull.stp`, then open that file in the F5

@@ -95,11 +95,12 @@ export function viewerBodyHtml(): string {
         <div id="mass-body"></div>
       </div>
     </div>
-    <div id="app"></div>
+    <div id="app">
+      <canvas id="markup-canvas"></canvas>
+    </div>
   </div>
   <div id="toolbar">
     <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
-    <button id="wireframe" title="Toggle wireframe">${icon("wireframe")} Wireframe</button>
     <button id="grid" title="Toggle grid">▦ Grid</button>
     <button id="edges" title="Toggle edge visibility">📐 Edges</button>
     <button id="screenshot" title="Save the current view as a PNG">📷 Screenshot</button>
@@ -122,6 +123,21 @@ export function viewerBodyHtml(): string {
       </select>
       <button id="measure-clear" title="Clear current measurement">Clear</button>
       <span id="measure-readout"></span>
+    </div>
+    <div id="markup-group" title="Draw review annotations over the 3D view">
+      <button id="markup-toggle" title="Toggle markup mode">✎ Markup</button>
+      <select id="markup-tool" title="Markup tool">
+        <option value="freehand">Freehand</option>
+        <option value="line">Line</option>
+        <option value="arrow">Arrow</option>
+        <option value="rectangle">Rectangle</option>
+        <option value="circle">Circle</option>
+        <option value="eraser">Eraser</option>
+      </select>
+      <input type="color" id="markup-color" title="Stroke colour" value="#ff3b30">
+      <button id="markup-undo" title="Undo last stroke">Undo</button>
+      <button id="markup-redo" title="Redo">Redo</button>
+      <button id="markup-clear" title="Clear all annotations">Clear</button>
     </div>
   </div>
   <div id="view-controls">
@@ -190,6 +206,16 @@ export function viewerBodyHtml(): string {
           <option value="in">in</option>
           <option value="ft">ft</option>
         </select>
+      </div>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">Display</span>
+      <div class="vc-segments" id="display-mode-group">
+        <button class="display-mode-btn active" data-mode="shaded" title="Shaded — normal lit faces">Shaded</button>
+        <button class="display-mode-btn" data-mode="wireframe" title="Wireframe — faces rendered as a mesh of lines">${icon("wireframe")} Wire</button>
+        <button class="display-mode-btn" data-mode="xray" title="X-Ray — translucent faces, edges visible through them">X-Ray</button>
+        <button class="display-mode-btn" data-mode="hiddenLines" title="Hidden Lines — occluded edges shown faintly through solids">Hidden</button>
+        <button class="display-mode-btn" data-mode="flat" title="Flat — unlit constant-colour faces, no shading gradient">Flat</button>
       </div>
     </div>
     </div>

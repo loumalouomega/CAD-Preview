@@ -35,6 +35,19 @@ detects Playwright/Chromium's absence itself and returns
 `{supported: false, warnings: [...]}` rather than crashing — call the tool
 and check `supported`, don't assume availability.
 
+## Network dependency: search_standard_parts / download_standard_part
+
+These two tools call the hosted [step.parts](https://www.step.parts) REST
+API (`api.step.parts`) — the **only** external network dependency anywhere
+in this extension/server; every other tool is fully offline. No API key is
+required. Both tools are opt-in by construction (nothing calls this API
+except an agent explicitly invoking one of these two tools) and degrade
+gracefully: a network/DNS failure or non-2xx response returns `{supported:
+false, warnings: [...]}` rather than throwing, and per step.parts' own
+error semantics, that failure is **inconclusive** — never report a part as
+"unavailable" unless the API was reachable and genuinely returned no
+candidates.
+
 ## Registering with an MCP client
 
 With Claude Code:
@@ -81,9 +94,12 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | `inspect` | Per-entity facts for one `solid-N`/`face-N`/`edge-N`/`point-N` id: bounding box, bbox-center (**not** `get_mass_properties`' mass-weighted centroid — they differ for an asymmetric shape), area/length, and — for a planar face — its normal and surface type (`plane`/`cylinder`/`cone`/`sphere`/`torus`/`other`). B-rep sources only headless. |
 | `measure` | Straight-line distance between two entities' bbox centers, plus (with an optional `axis` vector) the signed component of that displacement along it. B-rep sources only headless. |
 | `render_snapshot` | 4 labelled PNGs of the current model (sidecar edits replayed) — two opposed isometrics + top + front, optional `focus`/`hide` by entity id, optional `displayMode` (shaded/wireframe) for the whole packet. B-rep sources only, and **requires Playwright + a Chromium binary in this environment** — see "Prerequisites for render_snapshot" below; check the response's `supported` field rather than assuming availability. |
+| `search_standard_parts` | Faceted search over the hosted [step.parts](https://www.step.parts) catalog (fasteners, bearings, connectors, extrusions, ...) — `q` fuzzy text + `tag`/`category`/`family`/`standard` filters + pagination. **Network call** — `supported: false` on any API/network failure (inconclusive, never "no matching parts"). |
+| `download_standard_part` | Downloads one step.parts part's STEP file to `outputPath`, verifying it against the part's recorded `sha256` if present (`verifiedChecksum` in the result). The file is an ordinary STEP file — opens through the normal pipeline. **Network call**, same graceful-failure convention as `search_standard_parts`. |
 | `compare_models` | Diff two B-rep models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict). B-rep sources only headless; mesh formats return `supported: false`. |
 | `get_state` | The sidecar state without loading geometry: edit-op stack (indexed, described), variables (evaluated), parts, mesh options. |
 | `apply_edit_ops` | Validate and append raw `EditOp` JSON objects to the op stack; per-op accept/reject report; for B-rep sources returns the post-replay entity inventory. `dryRun` validates without persisting. |
+| `run_parametric_script` | Compiles a declarative `{variables?, steps}` script (each step is one op, or one flat `repeat` loop expanding a template op-list with the loop index available to `exprs`) into ops and appends them via the same path as `apply_edit_ops` — NOT a general scripting language, no code execution. See "Parametric scripts" below. |
 | `remove_edit_op` | Remove one op by 0-based index (the panel's per-row ✕ equivalent). |
 | `set_variables` | Replace the named parametric variables (`L = 20`) and re-resolve every op expression — geometry rebuilds from the new values on next load/mesh. |
 | `set_part` | Create/update/remove a named part grouping entity ids; optional per-part `meshSize` for local refinement. |
@@ -100,6 +116,69 @@ same tolerant gate the extension uses (`validateEditOp`) — so every op kind th
 extension gains is automatically available to agents, and a malformed op is
 rejected with a reason rather than crashing anything. Numeric fields may bind to
 variables via the op's `exprs` map (`{"exprs": {"size[0]": "L"}}`).
+
+## Parametric scripts
+
+`run_parametric_script` is NOT a general-purpose scripting language — no code
+execution, no I/O — just a compiler from a small declarative document into the
+same `EditOp[]` shape `apply_edit_ops` accepts. A script is:
+
+```json
+{
+  "variables": [{ "name": "R", "expr": "10" }, { "name": "N", "expr": "6" }],
+  "steps": [
+    {
+      "repeat": {
+        "times": "N",
+        "indexVar": "i",
+        "body": [
+          {
+            "op": "addCylinder",
+            "center": [0, 0, 0],
+            "axis": [0, 0, 1],
+            "radius": 2,
+            "height": 5,
+            "exprs": { "center[0]": "R*cos(i*360/N)", "center[1]": "R*sin(i*360/N)" }
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+This compiles to `N` (here 6) `addCylinder` ops arranged in a bolt circle of
+radius `R` — a classic "loops/patterns cost one script instead of N tool
+calls" case. Every step is exactly one of:
+
+- `{"op": <EditOp>}` — a single op, identical to one `apply_edit_ops` entry
+  (`exprs` stays live for future parametric edits, exactly as usual).
+- `{"repeat": {"times", "indexVar", "body"}}` — expands `body` (an array of
+  raw ops) `times` times (a number, or an expression string evaluated once
+  against document + script variables); `indexVar` names the 0-based loop
+  index for that expansion. Body ops may reference the loop index, script
+  variables, and the document's own persisted variables (`set_variables`)
+  in their `exprs`, using the exact same expression syntax (`sin`/`cos`/
+  `tan` in degrees, `sqrt`, arithmetic) op fields already use elsewhere.
+
+**Repeat-generated ops are fully baked** — every `exprs`-bound field is
+resolved to a concrete number and `exprs` is then stripped from the compiled
+op (a loop-index expression would be meaningless on a future replay, since
+no document variable named `"i"` exists to resolve it against). If a value
+should stay live/editable later, give it a real document variable via
+`set_variables` and reference it from a plain (non-repeated) `op` step
+instead — that DOES stay live, same as any `apply_edit_ops` call.
+
+Script variables (the top-level `variables` array) are compile-time-only —
+never persisted, and separate from the document's own variable table; a
+script variable shadows a same-named document variable for that one compile
+only. Safety caps (200 steps, 1000 iterations per repeat, 5000 total
+compiled ops) return `truncated: true` rather than silently dropping
+anything — check `issues` for what was cut. Every malformed step (an
+invalid op, a bad `indexVar`, a `times` expression that fails to evaluate) is
+skipped with a reason in the per-step `report`, never crashes the whole
+compile — same graceful-degradation convention as `apply_edit_ops`. `dryRun`
+compiles and reports without persisting.
 
 ## The sidecar contract
 
@@ -164,7 +243,11 @@ from for a mesh source at all (nothing parses `.stl`/`.obj`/`.ply`/`.gltf`
 outside the webview's Three.js loaders). `render_snapshot` additionally
 returns `{supported: false}` when Playwright/Chromium aren't available in
 this environment, independent of source format — see "Prerequisites for
-render_snapshot" above.
+render_snapshot" above. `search_standard_parts`/`download_standard_part`
+aren't in the matrix at all for a different reason — they don't operate on
+any open document/source format; they're a standalone catalog lookup that
+happens to produce an ordinary STEP file the existing pipeline can then
+open like any other.
 
 ## Verdict conventions
 
@@ -194,11 +277,19 @@ before treating anything as validated, and don't loop on repeated snapshots.
   pipeline (no WASM).
 - `npm run mcp:smoke` runs the real end-to-end scenario over actual stdio
   JSON-RPC against `examples/STP/bull.stp` (build → load → edit → inspect/
-  measure → compare_models → mesh → export `.msh` + `.geo_unrolled`/`.xao` +
-  `.brep` → render_snapshot → `save_preprocess` → `load_preprocess`),
-  asserting the source file stays byte-identical and that the preprocess
-  archive round-trips the source + edits sidecar into a fresh copy.
-  `render_snapshot`'s assertions tolerate Chromium being absent in the smoke
-  environment (see "Prerequisites for render_snapshot" above) — when it's
-  installed, the test also checks the 4 returned images are real PNGs and
-  that the raw JSON-RPC response carries 4 image content blocks.
+  measure → compare_models → mesh → a hex-dominant generate/export (msh
+  succeeds, Kratos MDPA rejects with a specific error) → export `.msh` +
+  `.geo_unrolled`/`.xao` + `.brep` → render_snapshot →
+  search_standard_parts/download_standard_part against the real step.parts
+  API → `run_parametric_script` (a real bolt-circle, trig exprs over the
+  loop index, verified against live OCCT geometry) → `save_preprocess` →
+  `load_preprocess`), asserting the source file
+  stays byte-identical and that the preprocess archive round-trips the
+  source + edits sidecar into a fresh copy. `render_snapshot`'s assertions
+  tolerate Chromium being absent in the smoke environment (see
+  "Prerequisites for render_snapshot" above) — when it's installed, the
+  test also checks the 4 returned images are real PNGs and that the raw
+  JSON-RPC response carries 4 image content blocks. Similarly,
+  search_standard_parts/download_standard_part tolerate the step.parts API
+  being unreachable — when it is reachable, the test verifies a real
+  sha256 checksum match on the downloaded file.
