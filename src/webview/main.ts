@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
+import type { CadFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh } from "./geometryBuilder";
 import { splitMeshesIntoFacets } from "./meshFacets";
@@ -15,7 +16,7 @@ import { evaluateVariables, resolveEditOps } from "../editVariables";
 import { extractIdentifiers } from "../paramExpr";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
-import { MassPropertiesPanel } from "./massPropertiesPanel";
+import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
 import { computeMeshMassProperties } from "./meshMassProperties";
 import { targetSizeForPreset } from "./meshSizeHeuristics";
 import { SIZE_MAX_SENTINEL } from "../meshOptions";
@@ -27,6 +28,7 @@ import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type Expl
 import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
+import { convertLength, convertLengthBasedProperties, displayUnitFromStepName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -646,6 +648,32 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
 let sourceKind: "brep" | "mesh" | null = null;
 let massPropertiesRequestId: string | null = null;
 
+// ── Display unit (session-only presentation layer, never persisted) ────────
+// Everything computed host/client-side is already in one internal unit
+// (millimetres — OCCT's STEP reader auto-converts every shape to its cascade
+// unit at read time, verified against the live WASM; see
+// `src/stepUnits.ts`'s doc comment). This only rescales what Mass Properties/
+// Measurement *display*; nothing stored is ever rescaled.
+let currentDisplayUnit: DisplayUnit = "mm";
+let lastRawMassProperties: (LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"] }) | null = null;
+
+/** Sets the display unit, syncs the `<select>`, and live-rescales the
+ * currently-shown Mass Properties result (if any) — measurements already on
+ * screen are not retroactively rescaled, matching every other Stage-2
+ * appearance control's "affects what's rendered from now on" precedent. */
+function setDisplayUnit(unit: DisplayUnit): void {
+  currentDisplayUnit = unit;
+  const sel = document.getElementById("vc-unit") as HTMLSelectElement | null;
+  if (sel) sel.value = unit;
+  if (lastRawMassProperties) massPropertiesPanel.render(convertLengthBasedProperties(lastRawMassProperties, unit), unit);
+}
+
+/** Caches the raw (mm) result and renders it converted to `currentDisplayUnit`. */
+function renderMassProperties(raw: LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"] }): void {
+  lastRawMassProperties = raw;
+  massPropertiesPanel.render(convertLengthBasedProperties(raw, currentDisplayUnit), currentDisplayUnit);
+}
+
 const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mass-panel")!, {
   onRefresh: () => {
     const list = selection.list();
@@ -698,7 +726,7 @@ function computeAndRenderMeshMassProperties(target: SelectedEntity | null): void
 
   const isClosedTarget = target === null || target.entityType === "volume";
   const { volume, area, volumeCentroid, areaCentroid } = computeMeshMassProperties(meshes);
-  massPropertiesPanel.render({
+  renderMassProperties({
     volume: isClosedTarget ? volume : null,
     area,
     length: null,
@@ -897,17 +925,24 @@ function formatMeasure(n: number): string {
   return Number.isFinite(n) ? String(Number(n.toPrecision(5))) : "—";
 }
 
-/** Dispatches the completed pick set to the matching pure math in `measurement.ts`. */
+/** Formats a raw millimetre length, converted to `currentDisplayUnit` with its suffix. */
+function formatMeasureLength(mmValue: number): string {
+  return `${formatMeasure(convertLength(mmValue, currentDisplayUnit))} ${currentDisplayUnit}`;
+}
+
+/** Dispatches the completed pick set to the matching pure math in `measurement.ts`.
+ * Distance/edgeLength/radius are length-dimensioned and rescale with the
+ * current display unit; angle (in degrees) never does. */
 function computeMeasurementResult(tool: MeasureTool, picks: MeasurementPick[]): MeasurementResult | null {
   if (tool === "distance") {
     const [a, b] = picks;
     if (!a || !b) return null;
-    return { text: formatMeasure(pointDistance(a.point, b.point)), anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+    return { text: formatMeasureLength(pointDistance(a.point, b.point)), anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
   }
   if (tool === "edgeLength") {
     const [a] = picks;
     if (!a?.polyline) return null;
-    return { text: `L = ${formatMeasure(polylineLength(a.polyline))}`, anchor: a.point, linePoints: [] };
+    return { text: `L = ${formatMeasureLength(polylineLength(a.polyline))}`, anchor: a.point, linePoints: [] };
   }
   if (tool === "angle") {
     const [a, b] = picks;
@@ -925,7 +960,7 @@ function computeMeasurementResult(tool: MeasureTool, picks: MeasurementPick[]): 
       polylinePointAt(a.polyline, Math.floor(n / 2)),
       polylinePointAt(a.polyline, n - 1)
     );
-    return r === null ? null : { text: `R = ${formatMeasure(r)}`, anchor: a.point, linePoints: [] };
+    return r === null ? null : { text: `R = ${formatMeasureLength(r)}`, anchor: a.point, linePoints: [] };
   }
   return null;
 }
@@ -1139,6 +1174,10 @@ function setupAppearanceControls(): void {
     orthoBtn.textContent = ortho ? "Ortho" : "Persp";
     orthoBtn.classList.toggle("active", ortho);
   });
+
+  document.getElementById("vc-unit")?.addEventListener("change", (e) => {
+    setDisplayUnit((e.target as HTMLSelectElement).value as DisplayUnit);
+  });
 }
 
 /**
@@ -1238,6 +1277,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group);
         explodePreviewBases = null; // stale references to the just-replaced model's objects
+        lastRawMassProperties = null; // stale — refers to the just-replaced model
         refreshColors();
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
@@ -1253,6 +1293,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "tree":
+      setDisplayUnit(displayUnitFromStepName(msg.sourceUnit) ?? "mm");
       showTree(msg.root);
       break;
 
@@ -1277,27 +1318,26 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadUrl":
+      await loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase());
+      break;
+
+    case "loadMeshBytes":
+      // Host-converted bytes (meshio++-imported document — VTK/MED/CGNS/
+      // Exodus/XDMF/MDPA — funneled through `convertToStlBoundary()` into an
+      // STL boundary surface; see `src/meshioService.ts`). Fed through the
+      // exact same STL-loading path a native `.stl` open uses, via a `blob:`
+      // object URL instead of a `vscode-webview://` fetch — base64-over-
+      // postMessage rather than a `data:` URL, the same proven pattern
+      // `geometry` already uses for large buffers, sidestepping any webview
+      // CSP/size-limit uncertainty around `data:` URLs.
       try {
-        setStatus("Loading model…");
-        const object = await loadMeshFromUrl(msg.url, msg.format);
-        tagMeshEntities(object);
-        // Build the Components tree from the original hierarchy (before the mesh
-        // is split into facets, so the tree lists whole objects, not facets).
-        const root = extractObjectTree(object, msg.format.toUpperCase());
-        // Cache the pristine object; the displayed model is rebuilt from it with
-        // the current edits applied (no-op when there are none).
-        pristineMesh = object;
-        rebuildMeshModel();
-        // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
-        setSelectableModes(["volume", "surface"]);
-        editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
-        sourceKind = "mesh";
-        meshingPanel.setSourceKind("mesh");
-        meshingPanel.setModelExtents(viewer.getModelExtents());
-        syncMeshSizeSeed();
-        showSidebar();
-        setStatus("");
-        if (hasMultipleNodes(root)) showTree(root);
+        const bytes = Uint8Array.from(atob(msg.dataBase64), (c) => c.charCodeAt(0));
+        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "model/stl" }));
+        try {
+          await loadMeshObjectFromUrl(blobUrl, "stl", msg.sourceFormat.toUpperCase());
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
       } catch (err) {
         setStatus(`Failed to load model: ${(err as Error).message}`, true);
       }
@@ -1357,7 +1397,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "massPropertiesResult":
       if (msg.requestId !== massPropertiesRequestId) break; // stale — a newer refresh superseded it
-      massPropertiesPanel.render(msg.properties);
+      renderMassProperties(msg.properties);
       break;
 
     case "massPropertiesError":
@@ -1391,6 +1431,44 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
   }
 });
+
+/**
+ * Shared load path for both `"loadUrl"` (a `vscode-webview://` fetch of a
+ * native STL/OBJ/PLY/glTF file) and `"loadMeshBytes"` (a `blob:` URL wrapping
+ * host-converted bytes for a meshio++-imported document, always `"stl"`
+ * format regardless of the original file's format — see the `case
+ * "loadMeshBytes"` handler). `loaderFormat` picks the Three.js loader;
+ * `treeLabel` is what the Components tree root shows (the *original* source
+ * format for a meshio-imported document, not always `"STL"`).
+ */
+async function loadMeshObjectFromUrl(url: string, loaderFormat: CadFormat, treeLabel: string): Promise<void> {
+  try {
+    setStatus("Loading model…");
+    setDisplayUnit("mm"); // mesh sources carry no unit metadata
+    lastRawMassProperties = null; // stale — refers to the just-replaced model
+    const object = await loadMeshFromUrl(url, loaderFormat);
+    tagMeshEntities(object);
+    // Build the Components tree from the original hierarchy (before the mesh
+    // is split into facets, so the tree lists whole objects, not facets).
+    const root = extractObjectTree(object, treeLabel);
+    // Cache the pristine object; the displayed model is rebuilt from it with
+    // the current edits applied (no-op when there are none).
+    pristineMesh = object;
+    rebuildMeshModel();
+    // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
+    setSelectableModes(["volume", "surface"]);
+    editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
+    sourceKind = "mesh";
+    meshingPanel.setSourceKind("mesh");
+    meshingPanel.setModelExtents(viewer.getModelExtents());
+    syncMeshSizeSeed();
+    showSidebar();
+    setStatus("");
+    if (hasMultipleNodes(root)) showTree(root);
+  } catch (err) {
+    setStatus(`Failed to load model: ${(err as Error).message}`, true);
+  }
+}
 
 /**
  * Tags a Three.js-loaded model with STABLE ids (traversal order, not uuid) so

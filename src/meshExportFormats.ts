@@ -21,6 +21,22 @@
  * instead of the generic `gmsh.write()`-based `exportMeshFormat()` every
  * other id here goes through. They're listed first so `mdpaElements` is the
  * default-selected `<select>` option (array order = option order).
+ *
+ * `med`/`cgns`/`xdmf` are a THIRD dispatch path, added for meshio++
+ * integration: this bundled gmsh-wasm build has no MED/CGNS writer at all
+ * (see the comment above), so these three route through
+ * `meshioService.ts`'s `exportViaMeshio()` instead — Gmsh generates the mesh
+ * as `.msh` text exactly like every other format, then meshio++ re-encodes
+ * those bytes into the target format entirely host-side (no browser, no
+ * shared memory — a plain buffer round trip between the two independent WASM
+ * modules' virtual filesystems). `MESHIO_BRIDGE_FORMAT_IDS` below is what
+ * `provider.ts`'s export dispatch checks to route to that path instead of
+ * `exportMeshFormat()`. **Known limitation, verified against the live
+ * WASM**: CGNS export of a pure-2D/surface mesh (triangles/quads only, no
+ * volume elements) produces a file this same WASM build's own reader can't
+ * read back (`"HDF5: missing dataset ' data'"`) — volume (3D tet/hex)
+ * meshes are unaffected, and MED/XDMF have no such gap at all. See
+ * `doc/gmsh-integration.md`'s "Export formats" section.
  */
 
 export interface MeshExportFormat {
@@ -56,6 +72,9 @@ export const MESH_EXPORT_FORMATS = [
     filterLabel: "GMSH Unrolled Geometry",
   },
   { id: "vtk", label: "VTK (.vtk)", extension: "vtk", filterLabel: "VTK Mesh" },
+  { id: "med", label: "MED (.med)", extension: "med", filterLabel: "MED Mesh" },
+  { id: "cgns", label: "CGNS (.cgns)", extension: "cgns", filterLabel: "CGNS Mesh" },
+  { id: "xdmf", label: "XDMF (.xdmf)", extension: "xdmf", filterLabel: "XDMF Mesh" },
   { id: "unv", label: "I-DEAS Universal (.unv)", extension: "unv", filterLabel: "I-DEAS Universal Mesh" },
   { id: "inp", label: "Abaqus (.inp)", extension: "inp", filterLabel: "Abaqus Input" },
   { id: "bdf", label: "Nastran Bulk Data (.bdf)", extension: "bdf", filterLabel: "Nastran Bulk Data" },

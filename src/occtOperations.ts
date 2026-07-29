@@ -1476,7 +1476,7 @@ function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" 
 
 /** The bounding-box diagonal length of a shape (via `Bnd_Box` corners). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function bboxDiagonal(oc: any, s: any, cleanup: Array<{ delete(): void }>): number {
+export function bboxDiagonal(oc: any, s: any, cleanup: Array<{ delete(): void }>): number {
   const box = new oc.Bnd_Box_1();
   cleanup.push(box);
   oc.BRepBndLib.Add(s, box, false);

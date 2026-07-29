@@ -48,7 +48,16 @@ const extensionConfig = {
   // forever. Left external + shipped as real node_modules files (see the
   // `!node_modules/...` carve-out in .vscodeignore), its workers correctly
   // re-execute the real, standalone, vscode-free gmsh-core.cjs instead.
-  external: ["vscode", "@loumalouomega/gmsh-wasm"],
+  // @meshioplusplus/wasm must ALSO stay external, for two reasons verified
+  // against the live package (see meshioService.ts's long comment): it's
+  // ESM-only with no `require` condition at all (unlike gmsh-wasm, which is
+  // dual CJS/ESM — meshioService.ts loads it via a dynamic `await import()`,
+  // not a static import, specifically because of this), and its threaded
+  // build variant has the identical eager-worker-spawn risk gmsh-wasm's does
+  // if ever bundled. `meshioService.ts` forces the sequential variant, so
+  // that risk is avoided regardless, but staying external is still required
+  // for the ESM/CJS reason alone.
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
@@ -72,8 +81,9 @@ const mcpConfig = {
   format: "cjs",
   target: "node18",
   outfile: "dist/mcp-server.js",
-  // See the matching comment in extensionConfig above.
-  external: ["vscode", "@loumalouomega/gmsh-wasm"],
+  // See the matching comment in extensionConfig above (both gmsh-wasm and
+  // @meshioplusplus/wasm).
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,

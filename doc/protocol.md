@@ -233,8 +233,9 @@ and [Webview API](./webview-api.md).
 ```typescript
 type HostToWebview =
   | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
-  | { type: 'tree';     root: TreeNode }
+  | { type: 'tree';     root: TreeNode; sourceUnit?: string }
   | { type: 'loadUrl';  url: string; format: CadFormat }
+  | { type: 'loadMeshBytes'; sourceFormat: CadFormat; dataBase64: string }
   | { type: 'parts';    parts: Part[] }
   | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'status';   text: string }
@@ -279,9 +280,21 @@ per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group
 
 Sent alongside (or shortly after) `geometry` for B-rep files. Also sent for Three.js mesh files after the model is loaded and the Object3D hierarchy is walked.
 
+`sourceUnit` is the STEP file's declared length unit (e.g. `"INCH"`,
+`"MILLIMETRE"`), detected by a plain-text scan of the `DATA` section
+(`src/stepUnits.ts`'s `detectStepLengthUnit`) — `undefined` for IGES/BREP (no
+unit metadata) or a STEP file with no unit declaration. It is purely
+informational: OCCT's STEP reader already auto-converts every shape to one
+internal cascade unit (millimetres) regardless of this value, so geometry
+numbers are always already consistent. The webview uses it only to seed the
+view-controls "Units" display-unit selector (`src/webview/units.ts`) —
+switching that selector never changes any stored value, only how Mass
+Properties/Measurement numbers are formatted.
+
 ```json
 {
   "type": "tree",
+  "sourceUnit": "INCH",
   "root": {
     "id": "root",
     "label": "STEP Assembly",
@@ -302,6 +315,32 @@ Sent for mesh-format files (STL/OBJ/PLY/glTF). The `url` is a `vscode-webview://
   "type": "loadUrl",
   "url": "vscode-webview://.../.../examples/STL/cube.stl",
   "format": "stl"
+}
+```
+
+### `loadMeshBytes`
+
+Sent for meshio++-only source files (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA — see
+[File Formats](./file-formats.md#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa)).
+Unlike `loadUrl`, the webview has no native loader for these formats at all,
+so the host converts the file host-side first
+(`src/meshioService.ts`'s `convertToStlBoundary()`, via meshio++'s
+`convertSurface`) and sends the resulting **STL bytes** directly over
+postMessage as base64 — the same transport pattern `geometry` already uses
+for large buffers, deliberately not a `data:` URL (sidesteps any webview
+CSP/size-limit uncertainty around those). `sourceFormat` is the document's
+*actual* source format (e.g. `"vtk"`), used only for the Components tree
+root's label — the bytes themselves are always `"stl"` and are fed through
+the exact same `loadMeshFromUrl(url, "stl")` call `loadUrl` uses, via a
+`blob:` object URL (`URL.createObjectURL`) instead of a `vscode-webview://`
+fetch. From this point on, a meshio-imported document is indistinguishable
+from a native `.stl` open to every other feature.
+
+```json
+{
+  "type": "loadMeshBytes",
+  "sourceFormat": "vtk",
+  "dataBase64": "c29saWQgeA0K..."
 }
 ```
 

@@ -21,6 +21,18 @@ node_modules/**
 !node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-core.cjs
 !node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-descriptor.cjs
 !node_modules/@loumalouomega/gmsh-wasm/dist/runtime.cjs
+# @meshioplusplus/wasm needs the SAME real-files treatment, for a different
+# reason (see meshioService.ts/esbuild.mjs): it's ESM-only with no `require`
+# condition at all, so it's loaded via a dynamic `import()`, not `require()` —
+# but that still means Node needs the real files on disk at runtime, not a
+# bundled copy. Only the SEQUENTIAL variant's files are listed — this package
+# always loads with `{variant: "seq"}` explicitly (never "auto"/"mt" — see
+# meshioService.ts for why), so the threaded variant's .mjs/.wasm (which
+# would double this package's ~1.8MB gzipped footprint) are dead weight.
+!node_modules/@meshioplusplus/wasm/package.json
+!node_modules/@meshioplusplus/wasm/src/index.mjs
+!node_modules/@meshioplusplus/wasm/dist/meshioplusplus_wasm.mjs
+!node_modules/@meshioplusplus/wasm/dist/meshioplusplus_wasm.wasm
 examples/**
 doc/**
 icons/**

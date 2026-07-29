@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
 import { loadBRep, exportBRep } from "./occtService";
+import { detectStepLengthUnit } from "./stepUnits";
+import { convertToStlBoundary, exportViaMeshio } from "./meshioService";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL } from "./exportTargets";
@@ -22,6 +24,7 @@ import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
+import { runCompareModelsCommand } from "./modelComparePanel";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -105,6 +108,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.loadPreprocess", () => void this.loadPreprocessDialog()),
       vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
+      vscode.commands.registerCommand("cad-preview.compareModels", () =>
+        void runCompareModelsCommand(this.context, this.activeSession?.uri)
+      ),
     ];
   }
 
@@ -113,7 +119,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const uris = await vscode.window.showOpenDialog({
       canSelectMany: false,
       openLabel: "Open in CAD Preview",
-      filters: { "CAD / Mesh": ["stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep"] },
+      filters: {
+        "CAD / Mesh": [
+          "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep",
+          "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa",
+        ],
+      },
     });
     if (uris?.[0]) {
       await vscode.commands.executeCommand("vscode.openWith", uris[0], CadPreviewProvider.viewType);
@@ -179,12 +190,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
     };
 
-    /** (Re)tessellates a B-rep source with the current edits, or (re)loads a mesh. */
+    /** (Re)tessellates a B-rep source with the current edits, (re)loads a mesh, or (re)converts a meshio-only source. */
     const loadModel = () => {
       if (!route) return;
       if (route.strategy === "three") {
         const url = webviewPanel.webview.asWebviewUri(document.uri).toString();
         post({ type: "loadUrl", url, format: route.format });
+      } else if (route.strategy === "meshio") {
+        void this.handleMeshio(document.uri, route.format, post);
       } else {
         void this.handleBRep(
           document.uri,
@@ -365,6 +378,34 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
               async () => Buffer.from(text, "utf8"),
               post
             );
+          } else if (msg.target === "med" || msg.target === "cgns" || msg.target === "xdmf") {
+            // meshio++ bridge — Gmsh's own writers can't produce these (no
+            // CGNS/MED support in this build); re-encode via
+            // `meshioService.ts`'s exportViaMeshio(), which requires legacy
+            // MSH 2.2 text (NOT generateMesh()'s modern-MSH-4.1 mshText — see
+            // exportViaMeshio's doc comment) as its bridge input. See
+            // `meshExportFormats.ts`'s doc comment for the MED/CGNS caveats.
+            const format = meshExportFormat(msg.target)!;
+            const msh2Text = await exportMeshFormat(this.context.extensionPath, input, options, parts, "msh2");
+            const { bytes, companion } = await exportViaMeshio(msh2Text, msg.target);
+            await this.promptSaveAndWrite(
+              document.uri,
+              format.extension,
+              format.filterLabel,
+              async (saveUri) => {
+                if (!companion) return Buffer.from(bytes);
+                // xdmf's HDF5 companion — same "write beside the chosen save
+                // path + rewrite the embedded reference" pattern geoUnrolled's
+                // .xao companion uses just below.
+                const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
+                const h5Name = saveName.replace(/\.[^.]+$/, ".h5");
+                const h5Uri = vscode.Uri.joinPath(saveUri, "..", h5Name);
+                await vscode.workspace.fs.writeFile(h5Uri, companion.bytes);
+                const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(h5Name);
+                return Buffer.from(fixedText, "utf8");
+              },
+              post
+            );
           } else {
             // Every other registered format (VTK/UNV/Abaqus/Nastran/SU2/etc.) — a
             // plain generate-then-write with no companion file, see `exportMeshFormat`.
@@ -492,7 +533,26 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           pointId: p.pointId,
         })),
       });
-      post({ type: "tree", root: tree });
+      const sourceUnit = format === "step" ? detectStepLengthUnit(Buffer.from(bytes).toString("latin1")) : undefined;
+      post({ type: "tree", root: tree, sourceUnit });
+    } catch (err) {
+      post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
+    }
+  }
+
+  /**
+   * meshio++-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA) — converts the raw
+   * file to an STL boundary surface (`convertToStlBoundary`) and posts it as
+   * `loadMeshBytes`, letting the webview treat it exactly like a native
+   * `.stl` open. See `src/meshioService.ts` for why this funnel-through-STL
+   * design was chosen over host-side tessellation into `EncodedMesh` groups.
+   */
+  private async handleMeshio(uri: vscode.Uri, format: CadFormat, post: (msg: HostToWebview) => void): Promise<void> {
+    try {
+      post({ type: "status", text: `Loading ${format.toUpperCase()}…` });
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const stlBytes = await convertToStlBoundary(bytes, format);
+      post({ type: "loadMeshBytes", sourceFormat: format, dataBase64: Buffer.from(stlBytes).toString("base64") });
     } catch (err) {
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
     }

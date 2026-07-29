@@ -8,6 +8,7 @@ import {
   OP_PARAM_DOCS,
   loadModel,
   getMassProperties,
+  compareModelsTool,
   getState,
   applyEditOps,
   removeEditOp,
@@ -30,9 +31,11 @@ import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
 import type { MassProperties } from "./massProperties";
+import type { ModelDiff } from "./modelDiff";
 
 let dir: string;
 let stpModel: string;
+let stpModel2: string;
 let stlModel: string;
 let objModel: string;
 
@@ -71,6 +74,12 @@ const FAKE_MASS_PROPERTIES: MassProperties = {
   momentsOfInertia: { ixx: 50, iyy: 40, izz: 26, ixy: 0, ixz: 0, iyz: 0 },
 };
 
+const FAKE_MODEL_DIFF: ModelDiff = {
+  added: [],
+  removed: [],
+  matched: [{ a: { id: "solid-0", centre: [0, 0, 0], diagonal: 10, volume: 24 }, b: { id: "solid-0", centre: [0, 0, 0], diagonal: 10, volume: 24 }, centreDistance: 0, volumeDeltaPct: 0 }],
+};
+
 function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   return {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
@@ -80,6 +89,9 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
     exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "/out.geo_unrolled.xao";\n', xao: new Uint8Array([9]) })),
     computeMassProperties: vi.fn(async () => FAKE_MASS_PROPERTIES),
+    compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
+    convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
+    exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     ...overrides,
   } as Pipeline;
 }
@@ -91,9 +103,11 @@ function ctx(pipeline: Pipeline = fakePipeline()): ToolContext {
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-tools-"));
   stpModel = path.join(dir, "model.stp");
+  stpModel2 = path.join(dir, "model2.stp");
   stlModel = path.join(dir, "model.stl");
   objModel = path.join(dir, "model.obj");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
+  await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
   await fs.writeFile(objModel, "v 0 0 0\n", "utf8");
 });
@@ -162,6 +176,17 @@ describe("load_model", () => {
   it("rejects unsupported extensions", async () => {
     await expect(loadModel(ctx(), { path: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
   });
+
+  it("notes meshio++ sources ARE meshable headless, unlike obj/ply/gltf", async () => {
+    const c = ctx();
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const vtkResult = await loadModel(c, { path: vtkModel });
+    expect(vtkResult.warnings[0]).toMatch(/meshable via generate_mesh/i);
+
+    const objResult = await loadModel(c, { path: objModel });
+    expect(objResult.warnings[0]).not.toMatch(/meshable via generate_mesh/i);
+  });
 });
 
 describe("get_mass_properties", () => {
@@ -197,6 +222,38 @@ describe("get_mass_properties", () => {
 
   it("rejects unsupported extensions", async () => {
     await expect(getMassProperties(ctx(), { path: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
+  });
+});
+
+describe("compare_models", () => {
+  it("diffs two B-rep sources via the pipeline", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2 });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], expect.any(Uint8Array), "step", []);
+    expect(result).toEqual({ formatA: "step", formatB: "step", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+  });
+
+  it("replays each side's sidecar ops before comparing", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel2, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2 });
+    const lastCall = vi.mocked(c.pipeline.compareModels).mock.lastCall!;
+    expect(lastCall[3]).toEqual([]); // A has no ops
+    expect(lastCall[6]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]); // B does
+  });
+
+  it("returns supported: false with a warning when either side is a mesh source, without touching WASM", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel });
+    expect(c.pipeline.compareModels).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.diff).toBeUndefined();
+    expect(result.warnings[0]).toMatch(/mesh format/i);
+  });
+
+  it("rejects unsupported extensions on either path", async () => {
+    await expect(compareModelsTool(ctx(), { pathA: path.join(dir, "x.txt"), pathB: stpModel2 })).rejects.toThrow(/unsupported/i);
+    await expect(compareModelsTool(ctx(), { pathA: stpModel, pathB: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
   });
 });
 
@@ -391,6 +448,19 @@ describe("generate_mesh", () => {
   it("rejects obj/ply/gltf sources with a clear message", async () => {
     await expect(generateMeshTool(ctx(), { path: objModel })).rejects.toThrow(/webview/i);
   });
+
+  it("meshes meshio++-only sources via a host-side STL boundary conversion, with no webview involved", async () => {
+    const c = ctx();
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content, mocked pipeline doesn't parse it", "utf8");
+    await applyEditOps(c, { path: vtkModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await generateMeshTool(c, { path: vtkModel });
+    expect(c.pipeline.convertToStlBoundary).toHaveBeenCalledWith(expect.any(Uint8Array), "vtk");
+    const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
+    expect(genCall[1].kind).toBe("stl");
+    expect(result.warnings.some((w) => w.includes("NOT baked"))).toBe(true);
+    expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
+  });
 });
 
 describe("export_mesh", () => {
@@ -436,6 +506,32 @@ describe("export_mesh", () => {
     await expect(
       exportMeshTool(ctx(), { path: stpModel, format: "msh", outputPath: stpModel })
     ).rejects.toThrow(/source/i);
+  });
+
+  it("bridges med/cgns through meshio with no companion file", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out.med");
+    const result = await exportMeshTool(c, { path: stpModel, format: "med", outputPath: out });
+    expect(vi.mocked(c.pipeline.exportViaMeshio).mock.lastCall![1]).toBe("med");
+    expect(await fs.readFile(out, "utf8")).toBe("fake-meshio-bytes");
+    expect(result.written.map((w) => w.path)).toEqual([out]);
+  });
+
+  it("writes the HDF5 companion and rewrites embedded references for xdmf", async () => {
+    const pipeline = fakePipeline({
+      exportViaMeshio: vi.fn(async () => ({
+        bytes: new TextEncoder().encode('<DataItem Format="HDF">out.h5:/data0</DataItem>'),
+        companion: { name: "out.h5", bytes: new Uint8Array([1, 2, 3]) },
+      })),
+    });
+    const out = path.join(dir, "result.xdmf");
+    const result = await exportMeshTool(ctx(pipeline), { path: stpModel, format: "xdmf", outputPath: out });
+    const text = await fs.readFile(out, "utf8");
+    expect(text).toBe('<DataItem Format="HDF">result.h5:/data0</DataItem>');
+    const h5Path = path.join(dir, "result.h5");
+    expect(new Uint8Array(await fs.readFile(h5Path))).toEqual(new Uint8Array([1, 2, 3]));
+    expect(result.written.map((w) => w.path)).toEqual([out, h5Path]);
+    expect(result.warnings.some((w) => w.includes("companion"))).toBe(true);
   });
 });
 

@@ -101,6 +101,22 @@ Both paths converge on the shared options application in
 then `generateMesh` calls `gmsh.model.mesh.generate(options.dimension)` and reads
 the result back with `gmsh.model.mesh.getNodes()` / `gmsh.model.mesh.getElements()`.
 
+**meshio++-imported documents (VTK/MED/CGNS/Exodus/XDMF/MDPA) still take the
+"Mesh source" `{kind: "stl"}` branch above, in the interactive extension —
+no third `MeshGenerationInput` kind was added.** They're converted to an STL
+boundary surface once at import time (`convertToStlBoundary`, host-side —
+see "The meshio++ bridge" below) and displayed in the webview as an ordinary
+`THREE.Object3D`, indistinguishable from a native `.stl` open from that point
+on; when meshing runs, the *webview* re-serializes that already-displayed
+object to STL exactly like any other mesh source, following the same code
+path described above. The **headless MCP server** is the one place a genuinely
+new STL-sourcing mechanism exists: `mcpTools.ts`'s `resolveMeshInputHeadless`
+calls `convertToStlBoundary` directly (no webview involved at all, since the
+MCP server has none) to turn the raw file bytes into `{kind: "stl", stlBytes}`
+— which is *more* capable than `.obj`/`.ply`/`.gltf` get headless, since
+meshio++ runs entirely host-side and those three genuinely have no headless
+equivalent (only the webview's Three.js loaders can parse them).
+
 ## Element shapes & order
 
 Two options control the generated cell geometry:
@@ -369,7 +385,7 @@ option-string enumeration, found via a `strings` scan of the `.wasm` binary):
 | Result | Formats |
 |---|---|
 | Works | `msh` (v4.1, default), `msh2` (legacy v2.2 — selected purely by writing to a `.msh2` path, no `Mesh.MshFileVersion` option needed), `geo_unrolled` (existing, XAO-companion caveat below), `vtk`, `unv` (I-DEAS Universal), `inp` (Abaqus), `bdf`/`nas` (Nastran Bulk Data — same writer, only `bdf` is registered), `su2`, `mesh` (INRIA Medit), `stl`, `diff` (Diffpack), `off`, plus a few registered but not offered in the UI as redundant/niche for FE/CFD interchange: `ply2`, `wrl`, `x3d`, `dat`, `m`/`matlab`, `ir3`, `celum` |
-| Compiled out | `cgns`, `med` — both extension-recognized (Gmsh's dispatch code path exists) but throw `"This version of Gmsh was compiled without CGNS support"` / `"Gmsh must be compiled with MED support to write '...'"`; both formats need HDF5-backed libraries (`libCGNS`, `libMED`) this WASM build doesn't statically link. Not a CAD-Preview limitation — would need `@loumalouomega/gmsh-wasm` rebuilt with those libs linked in. |
+| Compiled out | `cgns`, `med` — both extension-recognized (Gmsh's dispatch code path exists) but throw `"This version of Gmsh was compiled without CGNS support"` / `"Gmsh must be compiled with MED support to write '...'"`; both formats need HDF5-backed libraries (`libCGNS`, `libMED`) this WASM build doesn't statically link. Rebuilding `@loumalouomega/gmsh-wasm` with those libs linked in is the "fix Gmsh itself" path — not attempted; instead CAD-Preview bridges through a **second, independent** WASM module for these (and adds `xdmf`, which Gmsh's own writer table doesn't even recognize as an extension) — see "The meshio++ bridge" below. |
 | Unusable for this pipeline | `p3d`, `neu` — wrote 0 bytes for a tri/tet mesh (structured-grid/quad-oriented formats); `vtk_bin`, `tochnog`, `matlab` (as a bare unrecognized extension distinct from `.m`) — not recognized as output extensions at all in this build. |
 
 All working text formats are read back via `gmsh.FS.readFile(path, {
@@ -508,6 +524,109 @@ both MDPA modes emitted every expected block name with all connectivity ids in
 range. Corner-only overlay display makes the boundary-triangle count identical
 between order 1 and order 2 of the same shape.
 
+### The meshio++ bridge (MED, CGNS, XDMF — not `gmsh.write()` formats either)
+
+Like MDPA above, MED/CGNS/XDMF export never calls `gmsh.write()` — but unlike
+MDPA, they're not hand-serialized either. `src/meshioService.ts`'s
+`exportViaMeshio()` re-encodes an already-generated mesh through a **second,
+independent** WASM module, [`@meshioplusplus/wasm`](https://github.com/loumalouomega/meshioplusplus)
+(MIT-licensed; see the README's Licensing section), which this gmsh-wasm build
+simply doesn't have writers for at all.
+
+**Bridge mechanics.** `gmshService.ts`'s existing generic `exportMeshFormat()`
+writes the mesh as **legacy MSH 2.2** text (`exportMeshFormat(..., "msh2")` —
+the same code path the `msh2` export option already uses, just invoked
+internally rather than by the user); `exportViaMeshio()` then writes those
+bytes into meshio++'s own MEMFS and calls its `convert()`/`readMesh()`+
+`writeMesh()` (see below), bridging the two modules' independent virtual
+filesystems via a plain buffer round trip — no browser, no shared memory.
+
+**Why legacy MSH 2.2 specifically, verified against the live WASM (a genuine,
+non-obvious discovery):** the first attempt fed `generateMesh()`'s own
+`mshText` (modern MSH 4.1, Gmsh's default output version) directly into
+meshio++'s `convert(..., {inFormat: "gmsh"})` and hit
+`"Gmsh $Entities not supported by the C++ reader"` immediately — this
+meshio++ build's Gmsh reader only understands the older MSH 2.2 schema, not
+MSH 4.1's `$Entities` section (which appears once any mesh-size option is
+set). Switching the bridge's input to MSH 2.2 text (already a registered,
+already-verified-working export option in this codebase, see the probe table
+above) fixed CGNS/XDMF/VTK immediately.
+
+**MED needs a second, MED-specific workaround, also verified against the
+live WASM.** Even from valid MSH 2.2 text, `convert(..., {outFormat: "med"})`
+still throws `"MED: gmsh physical groups handled by Python fallback"` — this
+meshio++ build's MED writer defers to Python (unavailable in WASM) for *any*
+mesh whose `cell_data` carries gmsh's own `"gmsh:physical"`/
+`"gmsh:geometrical"` tags, which `readMesh(..., "gmsh")` **always** attaches
+to a gmsh-sourced mesh — confirmed the error persists even after
+`dataDrop()`-ing every `cell_data` array from the parsed `Mesh` object
+first, so the check isn't really keyed on data *content*. The actual fix:
+`readMesh()` the MSH 2.2 text, then hand-build a **brand-new plain JS object
+literal** containing only `{points, dim, cells}` — no `cell_data`,
+`point_data`, or `field_data` key at all, not even an empty one — and
+`writeMesh()` **that** object to MED. This drops any point/cell scalar field
+data (this pipeline's generated FE meshes never carry any today — no
+simulation results, just geometry/topology — so this is a theoretical loss,
+not an observed regression) but writes cleanly. CGNS/XDMF/VTK do **not** need
+this extra step; plain `convert()` already works for them once the MSH 2.2
+fix above is applied.
+
+**CGNS has one more, narrower, verified limitation**: exporting a
+**pure-surface** mesh (triangle/quad only, no volume cells — i.e. every
+2D-dimension FE-mesh generate) produces a CGNS file this same WASM build's
+own reader can't read back (`"HDF5: missing dataset ' data'"`). Confirmed via
+a controlled pair of probes: a hand-built tetrahedron (volume) round-trips
+through `convert()`+`readMesh()` correctly; the boundary-surface triangulation
+of a box (same box, but surface-only) fails on read-back with that exact
+error. MED and XDMF have **no** such gap (verified: both round-trip a
+pure-surface mesh correctly). CAD-Preview still writes the CGNS file in this
+case (the failure is on *read*, not *write*, and `exportViaMeshio()` never
+reads its own output back) — a 2D-dimension CGNS export may therefore produce
+a file some *other* downstream CGNS reader also rejects; there is no
+CAD-Preview-side workaround for this one.
+
+**XDMF writes an HDF5 companion file**, confirmed against the live WASM:
+`convert(..., "/out.xdmf", ...)` also writes `/out.h5` (same MEMFS basename,
+swapped extension) and the `.xdmf` XML's `<DataItem Format="HDF">` elements
+reference it by that bare filename (e.g. `out.h5:/data0`). `exportViaMeshio()`
+returns `bytes`/`companion` separately so the caller can write both under the
+*user-chosen save filename's* basename and rewrite the embedded reference to
+match — `provider.ts`'s `meshingExport` handler (and `mcpTools.ts`'s
+`exportMeshTool`) do this the same way they already rewrite `.geo_unrolled`'s
+`Merge "...xao"` stub for B-rep sources.
+
+**Loading order / packaging.** `@meshioplusplus/wasm` is ESM-only with no
+`require` condition at all (unlike gmsh-wasm, which is dual CJS/ESM) —
+`meshioService.ts` loads it via a dynamic `await import(...)`, not a static
+top-of-file import, and it must stay `external` in `esbuild.mjs` for that
+reason (plus the same eager-pthread-worker-spawn risk gmsh-wasm's own comment
+documents, if it were ever bundled). It's always loaded with
+`{ variant: "seq" }` explicitly — **never** `"auto"`, since the package's own
+`resolveVariant()` picks the threaded build whenever
+`typeof crossOriginIsolated === "undefined"`, which is unconditionally true
+under Node, so `"auto"` would always pick the eager-worker-spawning threaded
+build here. `.vscodeignore` carves out only the sequential variant's four
+files (`package.json`, `src/index.mjs`, `dist/meshioplusplus_wasm.mjs`,
+`dist/meshioplusplus_wasm.wasm`) — the threaded variant's files are dead
+weight given `"seq"` is always forced.
+
+**Same module also powers document import** for VTK/VTU/MED/CGNS/Exodus/
+XDMF/MDPA — see `doc/getting-started.md`'s Supported Formats note and
+`meshioService.ts`'s `convertToStlBoundary()` (the reverse direction:
+source file → STL boundary surface, via `convertSurface` rather than
+`convert`, so multi-component data survives inside meshio++'s C++ core for
+as long as it's there — though the STL output format itself still can't
+carry it out).
+
+**Verified end-to-end against the live WASM build** via `npm run mcp:smoke`:
+a hand-built tetrahedron `.vtk` file is loaded (`load_model` routes it
+through meshio, reports it as headlessly meshable — unlike `.obj`/`.ply`/
+`.gltf`, which aren't), meshed (`generate_mesh`, real node/element counts),
+and exported to MED, CGNS (3D, since the 2D limitation above doesn't apply),
+and XDMF (confirming the `.h5` companion is written and its embedded
+reference correctly rewritten to the chosen output filename) — all through
+the real `dist/mcp-server.js` process, not a mocked pipeline.
+
 ## Webview: panel, model, and overlay display
 
 - **`src/webview/meshingModel.ts`** (`MeshingModel`) — a DOM-free store for the
@@ -606,7 +725,22 @@ second time inside gmsh-wasm's bundled OCCT). The GPL obligation is triggered by
 gmsh-wasm's presence in the extension bundle, not by whether a given user ever
 opens the FE Mesh panel.
 
+`@meshioplusplus/wasm` (the meshio++ bridge, see above) is **MIT**-licensed,
+including its compiled `.wasm` binary — bundling it doesn't change
+CAD-Preview's overall license (already GPL-2.0-or-later because of gmsh-wasm),
+it's simply an additional MIT dependency alongside `@modelcontextprotocol/sdk`/
+`zod`/`fflate`. See the README's Licensing section for the full attribution list.
+
 ## Known limitations
+
+- **The meshio++ MED/CGNS export bridge has two narrow, verified gaps** — see
+  "The meshio++ bridge" above for the full write-up: MED needs a
+  strip-to-`{points,dim,cells}`-before-writing workaround (drops any point/
+  cell scalar field data, which this pipeline's generated meshes never carry
+  anyway); CGNS export of a pure-2D (surface-only) mesh produces a file this
+  same WASM build's own reader can't read back (3D volume meshes are
+  unaffected). Neither is a CAD-Preview bug to fix — both are confirmed
+  limitations of the bundled `@meshioplusplus/wasm` build itself.
 
 - **No working 3D recombination (hex-dominant meshing) in the bundled WASM build.**
   The all-hex `subdivided` shape works (via `Mesh.SubdivisionAlgorithm=2`), but a

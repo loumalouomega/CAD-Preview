@@ -13,6 +13,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export (op-list aware) |
 | `src/occtOperations.ts` | Host-side OCCT edit engine — folds the op-list over a `TopoDS_Shape` |
 | `src/massProperties.ts` | Volume/area/length/CoG/inertia for a B-rep shape via OCCT `BRepGProp` (vscode-free) |
+| `src/stepUnits.ts` | Pure text scan of a STEP file's `DATA` section for its declared length unit (vscode/OCCT-free, unit-tested) |
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
 | `src/viewerDefaults.ts` | The `cadPreview.*` settings bag + `normalizeViewerDefaults` tolerance gate (vscode-free) |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
@@ -34,6 +35,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/nonce.ts` | Shared CSP script-nonce generator, used by every webview HTML builder |
 | `src/changelogParser.ts` | Pure `CHANGELOG.md` parser + markdown→HTML renderer for the What's New panel (vscode-free, unit-tested) |
 | `src/whatsNew.ts` | Version-upgrade check (`context.globalState`) + the standalone "What's New" webview panel |
+| `src/modelDiff.ts` | Pure bounding-box-centroid + volume solid-matching heuristic for Compare Models (vscode/OCCT-free, unit-tested) |
+| `src/modelDiffHost.ts` | OCCT-side signature extraction (per-solid centre/diagonal/volume) + `compareModels()`, feeding `modelDiff.ts`'s matcher |
+| `src/modelComparePanel.ts` | Standalone "Compare Models" webview panel + the `cad-preview.compareModels` command flow |
 | `src/mcpServer.ts` | Standalone stdio MCP server entry (own `dist/mcp-server.js` bundle, not part of the extension) |
 | `src/mcpTools.ts` | MCP tool handlers over the headless pipeline (MCP-SDK/WASM-free, unit-tested) |
 | `src/mcpSidecars.ts` | Node-fs sidecar store for the MCP server — mirrors the three `*Store.ts` wrappers (vscode-free, unit-tested) |
@@ -93,15 +97,89 @@ export function showWhatsNewPanel(context, version, entries: readonly ChangelogE
 - `showLatestWhatsNew` backs the manual `cad-preview.whatsNew` command
   (registered in `provider.ts`, standalone like `cad-preview.open`) — it
   always shows the **full** changelog, not just what's new since last seen.
-- `showWhatsNewPanel` is the first (and only) standalone
-  `vscode.window.createWebviewPanel` in this extension — every other webview
-  goes through `CustomReadonlyEditorProvider`. It opens in
+- `showWhatsNewPanel` was the first standalone `vscode.window.createWebviewPanel`
+  in this extension (`src/modelComparePanel.ts`, below, is the second) — every
+  other webview goes through `CustomReadonlyEditorProvider`. It opens in
   `vscode.ViewColumn.Beside` (never `Active`), so it can never contend with a
   CAD file's own custom-editor tab for the same slot when both open around
   the same time. It builds its own small nonce-gated CSP HTML string (shares
   `getNonce()` from `src/nonce.ts` with `provider.ts`'s `getHtml`, styled
   entirely with `var(--vscode-*)` theme variables, no external stylesheet
   needed) and never touches `CHANGELOG.md` — this feature only ever reads it.
+
+---
+
+## `src/modelDiff.ts`, `src/modelDiffHost.ts`, and `src/modelComparePanel.ts`
+
+"Compare Models" (`doc/roadmap.md`'s P3 #13) resolves the roadmap's own open
+design question — "how do two documents share one custom-editor architecture"
+— by not needing a new architecture at all: `provider.ts` already supports N
+independently-open documents (confirmed: `resolveCustomEditor` has no
+Map-keyed singleton, just N independent per-call closures), and VS Code's
+Custom Editor API already lets a user place two `cad-preview.mesh` tabs side
+by side. What was actually missing was the *diff computation*, which this
+trio adds as a B-rep-only, host-only feature with no new `Viewer` work.
+
+```typescript
+// modelDiff.ts (pure)
+interface SolidSignature { id: string; centre: Vec3; diagonal: number; volume: number }
+interface SolidMatch { a: SolidSignature; b: SolidSignature; centreDistance: number; volumeDeltaPct: number }
+interface ModelDiff { added: SolidSignature[]; removed: SolidSignature[]; matched: SolidMatch[] }
+function diffSolids(a: SolidSignature[], b: SolidSignature[], toleranceAbs: number): ModelDiff
+
+// modelDiffHost.ts
+async function compareModels(extensionPath, bytesA, formatA, opsA, bytesB, formatB, opsB, toleranceFrac = 1e-3): Promise<ModelDiff>
+
+// modelComparePanel.ts
+async function runCompareModelsCommand(context: vscode.ExtensionContext, defaultUri?: vscode.Uri): Promise<void>
+```
+
+- `diffSolids` is a greedy nearest-neighbor bipartite match by centroid
+  distance (primary) with volume as a tie-breaker, capped by `toleranceAbs`.
+  **It never collapses a match into a binary moved/unchanged verdict** — every
+  `SolidMatch` carries its raw `centreDistance`/`volumeDeltaPct`, so the panel
+  and the MCP tool can show the heuristic's actual confidence instead of
+  hiding it behind a guess. This is the concrete answer to the roadmap's other
+  open question ("how to present the diff without misleading false matches").
+- `compareModels` reads both files independently via the existing
+  `readShape()` (no shared state, no webview) and resolves each solid's
+  signature via the already-shared `collectSolids`/`bboxCenter`/(the newly
+  **exported**) `bboxDiagonal` (`occtOperations.ts` — previously module-private,
+  since nothing outside that file needed it before this feature) plus a
+  volume via the exact `BRepGProp.VolumeProperties_1` call shape
+  `massProperties.ts`'s `solidProperties` uses. `toleranceFrac` (default
+  `1e-3`) is multiplied by the **larger** of the two models' whole-shape
+  `bboxDiagonal`s to get the absolute centroid-distance tolerance —
+  mirroring `gmshPartsMap.ts`'s existing tolerance-fraction convention.
+- `runCompareModelsCommand` backs the standalone `cad-preview.compareModels`
+  command (registered in `provider.ts` like `cad-preview.open`/`whatsNew`,
+  passing `this.activeSession?.uri` as `defaultUri` so a focused tab's file
+  is offered as "A" automatically). It picks two files via `showOpenDialog`
+  (STEP/IGES/BREP filter only), rejects up front with a clear
+  `showErrorMessage` if either resolved `FileRoute.strategy !== "occt"`
+  (never attempts a webview-less mesh-format diff — there's no host-side
+  Three.js to independently re-derive centroids/volumes from), reads each
+  file's `.edits.json` sidecar via the existing `readEdits()` so the
+  comparison reflects currently-applied edits (consistent with how
+  everything else in this codebase treats "the model" as base+edits, not
+  just the raw CAD file), and renders the result via `showModelDiffPanel` —
+  a second standalone `vscode.window.createWebviewPanel` (`enableScripts:
+  false`, static HTML tables, no script/nonce needed since there's no
+  interactivity beyond closing the tab).
+- **B-rep only, by design, not by oversight**: mesh formats (STL/OBJ/PLY/
+  glTF) have no OCCT shape for the host to independently query — their
+  geometry only exists once parsed by the webview's Three.js loaders, and
+  there is deliberately no host-side mesh parser in this codebase. A
+  mesh-format compare therefore isn't attempted at all (a clear rejection
+  message, not a crash) — see `mcpTools.ts`'s `compareModelsTool` for the
+  identical B-rep-only gate on the MCP side.
+- **No merged 3D scene in v1** — `Viewer` is hard-wired to one `model:
+  THREE.Object3D | null` (`setModel()` replaces, never adds); hosting two
+  models simultaneously in one view would need real new `Viewer`/protocol
+  work for comparatively little payoff over a text report, so this stage
+  ships the report only. Side-by-side *visual* comparison already works
+  today by opening both files in separate tabs and using VS Code's native
+  split-editor UI — no code change needed for that.
 
 ---
 
@@ -264,7 +342,9 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
     `openFileDialog()` makes, just from an already-known `Uri.file(path)`
     rather than a fresh `showOpenDialog()` result.
 
-**`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. Posts `"error"` on failure.
+**`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. For a `"step"` source, also calls `detectStepLengthUnit()` (`src/stepUnits.ts`) over the raw bytes and includes the result as `"tree"`'s optional `sourceUnit` field (`undefined` for IGES/BREP or an undeclared-unit STEP file). Posts `"error"` on failure.
+
+**`handleMeshio(uri, format, post)`** — Private method, `loadModel()`'s sibling branch for `route.strategy === "meshio"` (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA). Reads the raw file bytes, calls `convertToStlBoundary()` (`src/meshioService.ts`), and posts the result as `"loadMeshBytes"` (`sourceFormat` + base64 STL bytes) — no `"geometry"`/`"tree"` messages, since the webview builds its own component tree from the loaded `THREE.Object3D` hierarchy exactly like a native `.stl` open. Posts `"error"` on failure (a malformed source file, an unsupported meshio conversion, etc.).
 
 **`sendParts(uri, post)`** — Private method. Reads the parts sidecar via `readParts()` and posts a `"parts"` message (empty array when no sidecar exists).
 
@@ -340,10 +420,19 @@ Maps file extensions to a render strategy and canonical format identifier.
 ### Types
 
 ```typescript
-type RenderStrategy = 'occt' | 'three'
-type CadFormat = 'step' | 'iges' | 'brep' | 'stl' | 'obj' | 'ply' | 'gltf'
+type RenderStrategy = 'occt' | 'three' | 'meshio'
+type CadFormat =
+  | 'step' | 'iges' | 'brep' | 'stl' | 'obj' | 'ply' | 'gltf'
+  | 'vtk' | 'vtu' | 'med' | 'cgns' | 'exodus' | 'xdmf' | 'mdpa'
 interface FileRoute { strategy: RenderStrategy; format: CadFormat }
+const MESHIO_FORMATS: readonly CadFormat[]  // the 7 meshio-routed CadFormat members, one source of truth
 ```
+
+`"meshio"` formats have no Three.js loader and aren't B-rep — the host
+converts them to an STL boundary surface via `src/meshioService.ts`'s
+`convertToStlBoundary()` and the webview loads that through the same STL
+loader a native `.stl` open uses (see `protocol.ts`'s `loadMeshBytes` and
+`doc/file-formats.md`'s "meshio++ Bridge Formats" section).
 
 ### Function
 
@@ -364,8 +453,52 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.obj` | `three` | `obj` |
 | `.ply` | `three` | `ply` |
 | `.gltf`, `.glb` | `three` | `gltf` |
+| `.vtk` | `meshio` | `vtk` |
+| `.vtu` | `meshio` | `vtu` |
+| `.med` | `meshio` | `med` |
+| `.cgns` | `meshio` | `cgns` |
+| `.exo`, `.e` | `meshio` | `exodus` |
+| `.xdmf` | `meshio` | `xdmf` |
+| `.mdpa` | `meshio` | `mdpa` |
 
 ---
+
+## `src/meshioService.ts`
+
+The meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM
+singleton alongside OCCT (`occtService.ts`) and Gmsh (`gmshService.ts`), used
+to import mesh-only formats (see the table above) as viewable documents and
+to export generated FE meshes to formats Gmsh's own writers can't produce
+(MED, CGNS, and — a format Gmsh doesn't even recognize as an extension —
+XDMF). Full write-up, including two non-obvious verified-against-the-live-WASM
+gotchas (why it must load via a *dynamic* `import()` unlike gmsh-wasm's
+static one, and why the export bridge needs legacy MSH 2.2 text plus a
+MED-specific workaround), lives in `doc/gmsh-integration.md`'s
+"The meshio++ bridge" section — this entry is deliberately brief to avoid
+the two docs drifting out of sync.
+
+```typescript
+function getMeshio(): Promise<MeshioApi>
+function resetMeshio(): void
+async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat: string): Promise<Uint8Array>
+async function exportViaMeshio(
+  gmshMsh2Text: string,
+  outMeshioFormat: string
+): Promise<{ bytes: Uint8Array; companion?: { name: string; bytes: Uint8Array } }>
+```
+
+`getMeshio()` always loads with `{ variant: "seq" }` — never `"auto"`, which
+would pick the threaded (pthread) build under Node every time (verified: the
+package's own `resolveVariant()` treats `crossOriginIsolated === undefined`,
+always true under Node, as "pick threaded"), eagerly spawning worker threads
+with the same hang/crash risk gmsh-wasm's own worker pool already taught this
+codebase to avoid. `convertToStlBoundary()` powers document import
+(`provider.ts`'s `handleMeshio`); `exportViaMeshio()` powers the FE Mesh
+panel's MED/CGNS/XDMF export options (`provider.ts`'s `meshingExport`
+handler and `mcpTools.ts`'s `exportMeshTool`) — **its input must be Gmsh's
+legacy MSH 2.2 text** (`exportMeshFormat(..., "msh2")`), not
+`generateMesh()`'s modern MSH 4.1 `mshText`; see `doc/gmsh-integration.md`
+for why.
 
 ## `src/exportTargets.ts`
 

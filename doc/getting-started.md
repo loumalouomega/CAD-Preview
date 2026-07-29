@@ -58,8 +58,27 @@ back to showing the normal **Open…** dialog instead of silently failing.
 | OBJ | `.obj` | Three.js `OBJLoader` |
 | PLY | `.ply` | Three.js `PLYLoader` |
 | glTF / GLB | `.gltf`, `.glb` | Three.js `GLTFLoader` |
+| VTK / VTU | `.vtk`, `.vtu` | meshio++ → STL boundary surface → Three.js |
+| MED | `.med` | meshio++ → STL boundary surface → Three.js |
+| CGNS | `.cgns` | meshio++ → STL boundary surface → Three.js |
+| Exodus | `.exo`, `.e` | meshio++ → STL boundary surface → Three.js |
+| XDMF | `.xdmf` | meshio++ → STL boundary surface → Three.js |
+| Kratos MDPA | `.mdpa` | meshio++ → STL boundary surface → Three.js |
 
 > **B-rep vs mesh:** STEP, IGES, and BREP are boundary-representation formats that are tessellated on-the-fly in the extension host. STL, OBJ, PLY, and glTF are already triangulated and are loaded directly into the webview by Three.js.
+>
+> **VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA** have no native Three.js loader, so the
+> extension host converts them to a triangulated **boundary surface** in STL
+> form first ([meshio++](https://github.com/loumalouomega/meshioplusplus)'s
+> `convertSurface`, entirely host-side — no browser involved) and hands that
+> to the webview exactly like a native `.stl` open. This means Parts, Edits,
+> Export, Mass Properties, and Measurement all work identically to STL — but
+> region names, scalar field data (temperatures, stresses, …), and
+> multi-material grouping in the source file are **not** preserved; only the
+> geometry survives. If you need that richer data, keep using a dedicated
+> viewer (e.g. ParaView) for those formats — CAD-Preview's support here is
+> for quick geometry previews alongside your CAD files, not full FE
+> post-processing.
 
 ## User Interface
 
@@ -151,11 +170,31 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Appearance group** — A background-colour swatch (live preview only — the
   session-only override always wins over the [`cadPreview.background`
   setting](#settings) until you reload), an opacity slider for the whole
-  model, and a **Persp / Ortho** button toggling between perspective and
+  model, a **Persp / Ortho** button toggling between perspective and
   orthographic projection (orbit/pan/zoom, picking, and the orientation cube
-  all keep working under either projection).
+  all keep working under either projection), and a **Units** dropdown
+  (mm/cm/m/in/ft, see [Units](#units) below).
 
 ![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, and Appearance.](/screenshots/view-controls.png)
+
+### Units
+
+CAD Preview always keeps geometry internally in one consistent unit
+(millimetres) — for STEP files this is automatic: the OCCT reader converts
+every shape to millimetres at load time regardless of what unit the file was
+authored in (inches, centimetres, …), so numbers are always consistent no
+matter the source. The **Units** dropdown in the view-controls Appearance
+group is purely a *display* preference on top of that: it rescales how Mass
+Properties and Measurement results are shown (with a unit suffix, e.g.
+`12.700 mm` or `0.500 in`) — nothing stored (edit-op parameters, sidecars,
+mesh-size options) is ever rescaled, and FE Mesh panel size fields always show
+plain millimetres regardless of this setting, since that's Gmsh's own working
+unit. Opening a STEP file whose `DATA` section declares a length unit (e.g.
+`INCH`) seeds the dropdown to that unit automatically; opening a file with no
+declared unit, or a mesh format (which has no unit metadata at all), always
+starts from `mm`. Moments of inertia in the Mass Properties panel are
+intentionally never rescaled by this setting. The selection is session-only —
+it resets on every new file open and is never written to a sidecar.
 
 ### Orientation Cube
 
@@ -202,7 +241,9 @@ edit operation, never saved anywhere.
 
 Measurement precision follows the model's tessellation (the same 0.1 deflection
 tolerance used for display), not exact CAD geometry — fine for visual estimates,
-not for metrology-grade output.
+not for metrology-grade output. Distance, Edge Length, and Radius results are
+shown in whatever unit the view-controls **Units** dropdown is set to (see
+[Units](#units) above); Angle is always degrees.
 
 ### Defining Parts
 
@@ -423,7 +464,7 @@ To generate a mesh:
 | **Optimize** | Run Gmsh's mesh optimizer after generation |
 | **STL angle (°)** | Surface-classification angle for mesh/STL sources (disabled for B-rep documents, which never reclassify) |
 | **▶ Generate** | Run Gmsh now with the current options and show the result as an overlay |
-| **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), or OFF. Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and support linear or quadratic tetrahedra/hexahedra/triangles/quadrilaterals. |
+| **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, MED, CGNS, XDMF, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), or OFF. Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and support linear or quadratic tetrahedra/hexahedra/triangles/quadrilaterals. MED/CGNS/XDMF are bridged through meshio++ (this Gmsh build can't write them itself) — XDMF also writes a companion `.h5` file alongside the `.xdmf`, and CGNS export of a pure-2D mesh may produce a file this same pipeline can't read back (a narrow, documented WASM-build limitation; 3D volume meshes are unaffected). |
 | **📤 Export** | Mesh with the current options and save the result in the format picked above, via a Save dialog (independent of whether **▶ Generate** was already clicked — it always (re)generates fresh) |
 | **Clear** | Remove the mesh overlay (the original model is unaffected either way) |
 
@@ -465,7 +506,11 @@ model or a single selected entity.
 For STEP/IGES/BREP files this runs in the extension host via OpenCascade.js's
 `BRepGProp`; for STL/OBJ/PLY/glTF files it's computed entirely in the webview
 from the displayed triangle mesh (no moments of inertia for mesh sources in
-this first cut).
+this first cut). Volume/Area/Length/Center of mass are labeled and shown in
+whatever unit the view-controls **Units** dropdown is set to (see
+[Units](#units) above) — switching it live-rescales an already-computed
+result with no need to click **Compute** again; **Ixx/Iyy/Izz** are always
+shown raw, unaffected by that setting.
 
 ### Exporting a Model
 
@@ -488,6 +533,32 @@ round-trips preserve true CAD geometry, not just a tessellated approximation. Me
 targets are generated from the triangulated geometry already shown in the viewer —
 there is no way to turn a mesh file (or a tessellated B-rep) back into precise CAD
 surfaces, which is why mesh sources can't export to STEP/IGES/BREP.
+
+### Comparing Models
+
+Run **CAD Preview: Compare Models…** from the Command Palette to diff two
+STEP/IGES/BREP files solid-by-solid — useful for checking what actually
+changed between two versions of a model. If a CAD Preview tab is focused when
+you run the command, its file is used as model **A** automatically and you're
+only prompted for **B**; otherwise you're prompted for both.
+
+A results tab opens beside the editor showing:
+
+- **Matched** solids (present in both, paired up by bounding-box-centroid
+  proximity and volume similarity) — each row shows its **centre
+  displacement** and **volume delta**, so you can tell a solid that just
+  moved slightly from one that was heavily reshaped, rather than trusting a
+  single "changed" verdict.
+- **Removed** solids — present only in A.
+- **Added** solids — present only in B.
+
+This is a display-only report (no 3D view, no merge) — to actually look at
+both models side by side, open each in its own tab and use VS Code's split
+editor layout. Comparison is B-rep only: mesh formats (STL/OBJ/PLY/glTF) have
+no host-side geometry to match without opening them in the viewer first, so
+they aren't supported by this command. The comparison reflects each file's
+currently-applied edits (its `.edits.json` sidecar, if any), not just the raw
+CAD file.
 
 ## Known Limitations
 

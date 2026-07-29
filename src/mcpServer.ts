@@ -24,10 +24,13 @@ import { z } from "zod";
 import { loadBRep, exportBRep } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
 import { computeMassProperties } from "./massProperties";
+import { compareModels } from "./modelDiffHost";
+import { convertToStlBoundary, exportViaMeshio } from "./meshioService";
 import {
   describeCapabilities,
   loadModel,
   getMassProperties,
+  compareModelsTool,
   getState,
   applyEditOps,
   removeEditOp,
@@ -51,7 +54,18 @@ const extensionPath = process.env.CAD_PREVIEW_ROOT ?? path.join(__dirname, "..")
 
 const ctx: ToolContext = {
   extensionPath,
-  pipeline: { loadBRep, exportBRep, generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled, computeMassProperties },
+  pipeline: {
+    loadBRep,
+    exportBRep,
+    generateMesh,
+    exportMeshFormat,
+    exportMdpa,
+    exportGeoUnrolled,
+    computeMassProperties,
+    compareModels,
+    convertToStlBoundary,
+    exportViaMeshio,
+  },
 };
 
 const server = new McpServer({ name: "cad-preview", version: "1.0.0" });
@@ -116,6 +130,16 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; entityId?: string }) => getMassProperties(ctx, args))
+);
+
+server.registerTool(
+  "compare_models",
+  {
+    description:
+      "Diff two B-rep models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. B-rep sources only headless (mesh formats return supported: false).",
+    inputSchema: { pathA: modelPath, pathB: modelPath },
+  },
+  wrap((args: { pathA: string; pathB: string }) => compareModelsTool(ctx, args))
 );
 
 server.registerTool(

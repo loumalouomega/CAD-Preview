@@ -53,6 +53,30 @@
           },
           {
             "filenamePattern": "*.brep"
+          },
+          {
+            "filenamePattern": "*.vtk"
+          },
+          {
+            "filenamePattern": "*.vtu"
+          },
+          {
+            "filenamePattern": "*.med"
+          },
+          {
+            "filenamePattern": "*.cgns"
+          },
+          {
+            "filenamePattern": "*.exo"
+          },
+          {
+            "filenamePattern": "*.e"
+          },
+          {
+            "filenamePattern": "*.xdmf"
+          },
+          {
+            "filenamePattern": "*.mdpa"
           }
         ],
         "priority": "default"
@@ -90,6 +114,10 @@
       {
         "command": "cad-preview.screenshot",
         "title": "CAD Preview: Screenshot to PNG…"
+      },
+      {
+        "command": "cad-preview.compareModels",
+        "title": "CAD Preview: Compare Models…"
       }
     ],
     "keybindings": [
@@ -212,6 +240,7 @@
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.2.0",
+    "@meshioplusplus/wasm": "^9.4.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fflate": "^0.8.3",
     "opencascade.js": "^1.1.1",

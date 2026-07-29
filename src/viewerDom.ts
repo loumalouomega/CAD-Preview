@@ -181,6 +181,16 @@ export function viewerBodyHtml(): string {
         <input type="range" id="vc-opacity" class="meshing-slider" min="0" max="100" value="100" title="Model opacity">
         <button id="vc-ortho" title="Toggle orthographic/perspective projection">Persp</button>
       </div>
+      <div class="vc-row">
+        <label for="vc-unit" class="vc-label">Units</label>
+        <select id="vc-unit" title="Display unit for measurements and mass properties">
+          <option value="mm">mm</option>
+          <option value="cm">cm</option>
+          <option value="m">m</option>
+          <option value="in">in</option>
+          <option value="ft">ft</option>
+        </select>
+      </div>
     </div>
     </div>
   </div>

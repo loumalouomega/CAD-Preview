@@ -42,7 +42,12 @@ The server locates the WASM binaries relative to its own bundle
 (`<bundle dir>/../dist/*.wasm`, i.e. the repo root or an installed extension
 directory works as-is); set the `CAD_PREVIEW_ROOT` environment variable to point
 at a directory containing `dist/opencascade.wasm.wasm` + `dist/gmsh-core.wasm`
-for unusual layouts.
+for unusual layouts. The third WASM module, `@meshioplusplus/wasm`, is **not**
+copied into `dist/` (unlike the other two) — it's loaded straight from
+`node_modules/@meshioplusplus/wasm/` at runtime (a dynamic `import()`, since
+it's ESM-only — see `meshioService.ts`), so `node_modules` must be present
+alongside `dist/mcp-server.js` for meshio-only formats (VTK/MED/CGNS/Exodus/
+XDMF/MDPA) to work; everything else in this server works without it.
 
 ## Tools
 
@@ -54,7 +59,8 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | ---- | ------------ |
 | `describe_capabilities` | Op catalog (all edit-op kinds + parameter docs + B-rep-only/topology-changing flags), entity-id scheme, export target matrix, mesh export formats, mesh option defaults, headless limitations. |
 | `load_model` | Load the model (sidecar edits replayed) and return the component tree, entity-id inventory (`solid-N`/`face-N`/`edge-N`/`point-N` — the ids used as op operands and part members), bounding box, and sidecar summary. |
-| `get_mass_properties` | Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources only headless (OCCT `BRepGProp`); mesh formats return `supported: false`. |
+| `get_mass_properties` | Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources only headless (OCCT `BRepGProp`); mesh formats return `supported: false`. All lengths/areas/volumes are in the model's internal cascade unit (millimetres — OCCT's STEP reader auto-converts every shape to it regardless of the source file's declared unit, e.g. inches); this tool never applies the extension's webview-only display-unit selector, so a caller wanting a different unit converts the raw mm-based numbers itself. |
+| `compare_models` | Diff two B-rep models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict). B-rep sources only headless; mesh formats return `supported: false`. |
 | `get_state` | The sidecar state without loading geometry: edit-op stack (indexed, described), variables (evaluated), parts, mesh options. |
 | `apply_edit_ops` | Validate and append raw `EditOp` JSON objects to the op stack; per-op accept/reject report; for B-rep sources returns the post-replay entity inventory. `dryRun` validates without persisting. |
 | `remove_edit_op` | Remove one op by 0-based index (the panel's per-row ✕ equivalent). |
@@ -62,7 +68,7 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | `set_part` | Create/update/remove a named part grouping entity ids; optional per-part `meshSize` for local refinement. |
 | `set_mesh_options` | Merge fields into the persisted mesh options (also regenerates the one-way `<model>.geo` script). |
 | `generate_mesh` | Run Gmsh and return statistics only (node/element counts, element groups, timing, an optional element-quality summary) — nothing written. |
-| `export_mesh` | Generate and write the mesh in any registered format (`mdpaElements`, `mdpaGeometries`, `msh`, `msh2`, `geoUnrolled`, `vtk`, `unv`, `inp`, `bdf`, `su2`, `mesh`, `stl`, `diff`, `off`). `geoUnrolled` also writes the required `.xao` companion beside the output for B-rep sources. |
+| `export_mesh` | Generate and write the mesh in any registered format (`mdpaElements`, `mdpaGeometries`, `msh`, `msh2`, `geoUnrolled`, `vtk`, `med`, `cgns`, `xdmf`, `unv`, `inp`, `bdf`, `su2`, `mesh`, `stl`, `diff`, `off`). `geoUnrolled` also writes the required `.xao` companion beside the output for B-rep sources; `xdmf` similarly writes a required `.h5` companion (both bridged through meshio++, since this Gmsh build can't write MED/CGNS/XDMF itself — see `doc/gmsh-integration.md`'s "The meshio++ bridge"). |
 | `export_brep` | Export a B-rep source to another B-rep format (STEP/IGES/BREP) with all edits baked in. |
 | `save_preprocess` | Bundle the CAD source plus whichever of its `.parts.json`/`.edits.json`/`.mesh.json`/`.geo` sidecars currently exist into a single `.zip` archive. Mirrors the extension's File ▸ Save Preprocess…. |
 | `load_preprocess` | Restore a `.zip` from `save_preprocess` (or the extension's File ▸ Save Preprocess…) to a new CAD file path plus its matching sidecar filenames. Mirrors the extension's File ▸ Load Preprocess…. |
@@ -104,23 +110,34 @@ fresh — same one-way-generation rule as every other write path.
 | ------------- | -------------- | -------- | ---- | ------ |
 | `.step`/`.stp`, `.iges`/`.igs`, `.brep` | ✅ full | ✅ full (baked into mesh/export) | ✅ | ✅ B-rep targets |
 | `.stl` | route info only | sidecar-only¹ | ✅ raw file bytes² | ❌ webview-only |
+| `.vtk`/`.vtu`/`.med`/`.cgns`/`.exo`(`.e`)/`.xdmf`/`.mdpa` (meshio++) | route info only | sidecar-only¹ | ✅ host-side STL-boundary conversion² ³ | ❌ webview-only |
 | `.obj`, `.ply`, `.gltf`/`.glb` | route info only | sidecar-only¹ | ❌ webview-only | ❌ webview-only |
 
 ¹ Mesh-legal ops (transforms, booleans, holes, primitives, explode) are validated
 and persisted, but the mesh edit engine is Three.js in the webview — they replay
 when the file is opened in VS Code, not headless. B-rep-only ops are rejected.
 
-² Edits are **not** baked into the meshed geometry for `.stl` (the extension bakes
-them by serializing the webview's displayed scene); the raw file is meshed and a
-warning is reported. Parts can't become physical groups for mesh sources; a single
-part's `meshSize` acts as a one-off global size override.
+² Edits are **not** baked into the meshed geometry for `.stl` or a meshio++-only
+source (the extension bakes them by serializing the webview's displayed scene);
+the raw file (its boundary surface, for meshio++) is meshed and a warning is
+reported. Parts can't become physical groups for either; a single part's
+`meshSize` acts as a one-off global size override.
 
-`get_mass_properties` isn't a column above since it's read-only and orthogonal to
-the edit/mesh/export pipeline: B-rep sources get the full OCCT `BRepGProp`
-computation for any of the three format families; every mesh format (`.stl`
-included) returns `{supported: false}` with a warning — mass properties for mesh
-sources are computed client-side in the webview's Three.js scene, which has no
-headless equivalent.
+³ Unlike `.obj`/`.ply`/`.gltf`, meshio++-only formats run entirely host-side
+(`src/meshioService.ts`, no browser/webview needed) — genuinely *more*
+headlessly capable than those three, since `convertToStlBoundary()` produces
+the same STL bytes the extension itself would show, with zero webview
+involvement.
+
+`get_mass_properties` and `compare_models` aren't columns above since both are
+read-only and orthogonal to the edit/mesh/export pipeline: B-rep sources get
+the full OCCT `BRepGProp`/`bboxCenter`+`bboxDiagonal` computation for any of
+the three format families; every mesh format (`.stl` included) returns
+`{supported: false}` with a warning — mass properties are computed client-side
+in the webview's Three.js scene (no headless equivalent), and `compare_models`
+has no host-side geometry to derive solid centroids/volumes from for a mesh
+source at all (nothing parses `.stl`/`.obj`/`.ply`/`.gltf` outside the
+webview's Three.js loaders).
 
 ## Troubleshooting
 

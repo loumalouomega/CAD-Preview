@@ -1442,6 +1442,276 @@ session-only — never written to a sidecar.
   moving `camera.position`, since moving the camera is a visual no-op under
   parallel projection.
 
+## Units handling (P3 roadmap feature)
+
+`doc/roadmap.md`'s "Units handling" item (P3 #12) is a **presentation-layer-
+only** feature — display formatting on top of numbers that are already
+internally consistent, not a unit-conversion engine.
+
+- **OCCT's STEP reader already auto-converts every shape to one internal
+  cascade unit (millimetres) at read time, regardless of the source file's
+  declared unit — confirmed against the live WASM, not assumed.** Loaded
+  `bull.stp` (declares `INCH` per its `GLOBAL_UNIT_ASSIGNED_CONTEXT`) and
+  `angle1.stp` (declares `MILLIMETRE`) through the exact `STEPControl_Reader_1`
+  → `TransferRoots()` → `OneShape()` path `occtService.ts`'s `readShape()`
+  already uses, then read each result's `Bnd_Box`: `bull.stp`'s bounding box
+  came out `161.29 × 35.04 × 84.04` (mm) — `161.29 / 25.4 ≈ 6.35 in`, a
+  plausible size for the toy-bull model it renders as, confirming OCCT applied
+  the inch→mm conversion during `TransferRoots()` rather than leaving raw
+  inch-scale numbers. **This means there is nothing to convert** — every
+  number this codebase already computes (mass properties, measurement,
+  mesh-size options, edit-op params) is already in one consistent unit. The
+  feature is therefore scoped to (a) surfacing what unit the file was
+  *authored* in, informationally, and (b) a display-unit selector that
+  rescales what a number *looks like* — never what's stored.
+- **Detecting a STEP file's declared unit is a plain-text scan, not an OCCT
+  call — this was a deliberate pivot after hitting the usual embind gap.**
+  `UnitsMethods.GetCasCadeLengthUnit()` is bound and callable, but returns the
+  cascade *target* unit (a constant, same for every file) — not what was
+  asked. The natural next step, downcasting `reader.WS().get().Model()` to
+  `StepData_StepModel` and reading its `DynamicType().get().Name()`, hits this
+  build's recurring `"Cannot call ... due to unbound types: PKc"` gap (the
+  same class of binding hole as `Bnd_Box.Get()` and
+  `TopTools_IndexedMapOfShape`, documented above). STEP (ISO-10303-21) is
+  ASCII text, so `src/stepUnits.ts`'s `detectStepLengthUnit()` scans the raw
+  file bytes directly instead: it finds `GLOBAL_UNIT_ASSIGNED_CONTEXT`'s
+  referenced entity ids (the ids that actually govern the shape's coordinate
+  values) and resolves whichever of them is a `LENGTH_UNIT()` complex entity,
+  parsing either its `CONVERSION_BASED_UNIT('INCH', ...)` name or its bare
+  `SI_UNIT(.MILLI., .METRE.)` prefix+base. **Deliberately does NOT just take
+  the first `LENGTH_UNIT()` entity in the file** — verified wrong on
+  `bull.stp`: its first such entity (`#115`) is `SI_UNIT(.CENTI.,.METRE.)`,
+  the *intermediate conversion basis* the file's `INCH` unit (`#121`) is
+  defined against, not the unit actually assigned to the model. Falls back to
+  scanning every `LENGTH_UNIT()` entity (preferring a `CONVERSION_BASED_UNIT`
+  over a bare `SI_UNIT`) when there's no `GLOBAL_UNIT_ASSIGNED_CONTEXT` at
+  all, and returns `undefined` (never throws) for files with no unit
+  declaration whatsoever — confirmed genuinely absent, not a parser miss, in
+  3 of the ~53 fixtures under `examples/STP/`. IGES/BREP get no detection at
+  all in this stage (IGES's unit flag lives in a positional Global-section
+  field, a different-enough format to not be worth the same treatment for a
+  presentation-only feature; BREP has no unit metadata whatsoever).
+- **The display-unit selector (`#vc-unit`, view-controls' Appearance group)
+  is session-only state in `main.ts`, exactly like every other Stage-2
+  Appearance control** — never written to a sidecar, reset to the detected
+  unit (or `"mm"`) on every new model load. `src/webview/units.ts`'s
+  `convertLength`/`convertArea`/`convertVolume` scale by the unit's mm factor
+  raised to the 1st/2nd/3rd power respectively; `main.ts` caches the *raw*
+  (mm) Mass Properties result (`lastRawMassProperties`) rather than the
+  already-converted one specifically so that changing the selector can
+  live-rescale an already-displayed result without a new host round trip or
+  mesh recomputation.
+- **Moments of inertia are explicitly left unconverted, in both the panel and
+  `units.ts`'s `convertLengthBasedProperties()` — a scope decision, not an
+  oversight.** They're a geometric (not mass-weighted — this codebase has no
+  density concept) moment about the centroid, dimensionally length^5-ish;
+  building a clean unit-suffix story for that on top of the existing
+  ixx/iyy/izz display was judged disproportionate complexity for this stage.
+- **The FE Mesh panel's size readout always shows a literal `"mm"` suffix,
+  never `currentDisplayUnit`** (`meshingPanel.ts`'s `refreshSizeReadout()`) —
+  Gmsh's `Mesh.MeshSizeMin`/`MeshSizeMax` options are set and stored in the
+  cascade unit regardless of what the display-unit selector shows elsewhere,
+  so labeling them with anything but `"mm"` would be actively misleading.
+- **"Optionally convert units on export" (mentioned in the roadmap) is
+  explicitly out of scope for this stage** — it would require a real
+  geometric scale transform applied before every OCCT/mesh writer (STEP/IGES/
+  BREP export, STL/OBJ/PLY/glTF export, Gmsh mesh export), not a display
+  change, and is a natural, separately-scoped v2 follow-up.
+- **MCP**: `get_mass_properties` (and every other MCP tool) always returns raw
+  cascade-unit (mm) numbers — the display-unit selector is webview-only state
+  with no host or MCP-server counterpart; `doc/mcp-server.md` documents this
+  explicitly so an agent consuming the tool knows what unit it's getting.
+
+## Model comparison (P3 roadmap feature)
+
+`doc/roadmap.md`'s "Model comparison" item (P3 #13) shipped as a B-rep-only,
+host-only diff **report** — deliberately not a merged 3D scene — which
+resolves both open design questions the roadmap itself left unanswered.
+
+- **"How do two documents share one custom-editor architecture" — they
+  already do, today, for free.** Investigated before writing any code:
+  `provider.ts`'s `resolveCustomEditor` has no `Map<uri, State>` singleton;
+  every open document gets its own fully-independent closure (`pending` map,
+  debounce timers, `currentEdits`/`currentParts`/`currentMeshOptions`,
+  `session`). `activeSession` is a single provider-instance field, but it's
+  purely a "which tab is currently focused" router for keybindings/Command
+  Palette (set on `onDidChangeViewState`, cleared on `onDidDispose`) — it has
+  no bearing on how many documents can be open. VS Code's Custom Editor API
+  already supports opening the same `viewType` against N different URIs
+  concurrently. **So "view two models side by side" needed zero new code** —
+  open both files in separate tabs and use VS Code's native split-editor UI.
+  What was actually missing was the *diff computation*, which is all this
+  feature adds.
+- **"How to avoid misleading false matches" — never collapse a match into a
+  binary verdict; always show the raw numbers behind it.** `src/modelDiff.ts`'s
+  `diffSolids()` (greedy nearest-neighbor bipartite matching by centroid
+  distance, volume as a tie-breaker) attaches `centreDistance`/
+  `volumeDeltaPct` to every `SolidMatch`, and both `modelComparePanel.ts`'s
+  table and `compare_models`'s JSON surface them directly — a "matched" row
+  with a large displacement or volume delta reads as "heavily edited," not as
+  a false "unchanged," because the confidence numbers are right there instead
+  of hidden behind a computed label.
+- **Scoped to B-rep only, and to a report rather than a merged scene — both
+  deliberate, not oversights.** Mesh formats (STL/OBJ/PLY/glTF) have no
+  OCCT shape for the host to independently query; their geometry only exists
+  once parsed by the webview's Three.js loaders, and there's no host-side
+  mesh parser anywhere in this codebase — a mesh compare would need an
+  entirely different (webview-round-trip) architecture for comparatively
+  little payoff, so it's rejected up front with a clear message instead.
+  `Viewer` is hard-wired to one `model: THREE.Object3D | null`
+  (`setModel()` replaces, never adds) — hosting two models in one 3D view
+  with independent visibility/color would be real new `Viewer`/protocol
+  work; a text report was judged sufficient for this stage, given
+  side-by-side *visual* comparison already works today via split tabs.
+- **Reuses existing OCCT helpers with zero new geometry code**:
+  `occtOperations.ts`'s `bboxCenter` (already exported) and `bboxDiagonal`
+  (module-private until this feature — now exported, since
+  `modelDiffHost.ts` needed it and duplicating the identical `Bnd_Box`/
+  `CornerMin`/`CornerMax` logic would have been the actual oversight) are the
+  same centroid/diagonal math `explodeSolids` already uses; volume comes from
+  the exact `BRepGProp.VolumeProperties_1(solid, props, false, false, false)`
+  call shape `massProperties.ts`'s `solidProperties` uses. The absolute
+  centroid-distance tolerance is `1e-3 × the larger model's whole-shape
+  bboxDiagonal` — the same tolerance-fraction convention `gmshPartsMap.ts`
+  already established for geometric bbox-center matching.
+- **`modelComparePanel.ts` is the second standalone
+  `vscode.window.createWebviewPanel` in this extension** (`whatsNew.ts` was
+  the first) — `enableScripts: false`, plain HTML tables, no nonce/script
+  needed since there's no interactivity beyond closing the tab. The
+  `cad-preview.compareModels` command is registered standalone (like
+  `cad-preview.open`/`whatsNew`, not gated behind `activeSession`, since it
+  should work with no CAD Preview tab focused) but still reads
+  `this.activeSession?.uri` as the default for model A, so comparing against
+  "whatever I currently have open" needs only one file picker, not two.
+- **Verified end-to-end against the real WASM via `npm run mcp:smoke`**, not
+  just unit-tested: the smoke script diffs the edited fixture (`bull.stp` +
+  an `addBox` op, 2 solids) against a fresh unedited copy of the same fixture
+  (1 solid) and asserts exactly 1 matched (the bull, `centreDistance`/
+  `volumeDeltaPct` both ~0 — an exact self-match), 0 added, 1 removed (the
+  box) — confirming the matching direction (`removed` = "only in A", the
+  edited/first argument) is exactly as documented, not backwards.
+
+## meshio++ integration (P3 roadmap feature)
+
+`doc/roadmap.md`'s "meshio++ WASM integration" item (P3 #11) bundles a
+**third** host-side WASM module, [`@meshioplusplus/wasm`](https://github.com/loumalouomega/meshioplusplus)
+(MIT-licensed, maintained by this repo's own maintainer), alongside OCCT and
+Gmsh — to import mesh-only formats (VTK/VTU/MED/CGNS/Exodus/XDMF/Kratos MDPA)
+as viewable documents, and to export generated FE meshes to formats Gmsh's
+own writers can't produce (MED, CGNS, and XDMF, which Gmsh doesn't even
+recognize as an output extension).
+
+- **Import funnels every meshio-only format through meshio++'s own STL
+  writer — a deliberate scope decision, not a shortcut.** Rather than
+  building a new tessellation/rendering path for ~40 formats, `src/
+  meshioService.ts`'s `convertToStlBoundary()` calls `convertSurface()`
+  (stays inside meshio++'s C++ core — a volume mesh becomes its boundary,
+  confirmed correct via a hand-built tetrahedron: converting to MED/CGNS/
+  Exodus/XDMF and then `convertSurface`-ing each back to STL all produced the
+  same correct 4-facet boundary), producing plain ASCII STL bytes the webview
+  loads through the **exact same STL loader** a native `.stl` open uses (a
+  new `loadMeshBytes` protocol message, base64-over-postMessage — not a
+  `data:` URL, sidestepping CSP/size-limit uncertainty). This means a
+  meshio-imported document inherits the **entire existing mesh (Three.js)
+  pipeline for free** — facet splitting, Parts, every mesh-legal edit op,
+  Export, Mass Properties, Measurement — with **zero new `Viewer`/webview
+  geometry code**. The trade-off: region names, scalar point/cell data, and
+  multi-material grouping in the source file are **not** preserved, only
+  geometry. Import format list is curated to the roadmap's explicitly-named
+  formats (`src/fileRouter.ts`'s `MESHIO_FORMATS`) rather than all ~40
+  meshio++ supports — the extension-map table is cheap to extend later.
+- **Must load via a DYNAMIC `import()`, not gmsh-wasm's static-import
+  pattern — verified against the live package, a genuine gotcha.**
+  `@meshioplusplus/wasm`'s `package.json` is `"type": "module"`,
+  `"main": "./src/index.mjs"`, with **no `"exports"` map and no `require`
+  condition at all** — unlike `@loumalouomega/gmsh-wasm`, which is dual
+  CJS/ESM (a real `dist/gmsh-core.cjs` Node's "require" condition resolves
+  to, letting a static `import` compile to a working `require()` in this
+  CJS-bundled extension host). `require("@meshioplusplus/wasm")` here throws
+  `ERR_REQUIRE_ESM`. `meshioService.ts`'s `getMeshio()` instead does
+  `const { loadMeshioPlusPlus } = await import("@meshioplusplus/wasm")`
+  inside its lazy-init function — esbuild's `"cjs"` output format leaves a
+  dynamic `import()` of an **external** module as a literal runtime
+  `import()` call (not converted to `require()`), and Node's CJS modules are
+  permitted to `await import(...)` an ESM package at runtime. Must stay
+  `external` in `esbuild.mjs` for this reason (nothing statically imports
+  its `.wasm`, so no `wasmPathPlugin` change was needed either).
+- **Always loads with `{ variant: "seq" }` — never `"auto"`, the package's
+  own default — for the same class of risk this repo already hit once with
+  gmsh's worker pool.** The package's `resolveVariant()` picks the threaded
+  (pthread) build whenever `typeof crossOriginIsolated === "undefined"`,
+  which is **unconditionally true under Node** — so `"auto"` would always
+  pick the threaded build here, eagerly spawning ~8 `worker_threads.Worker`s
+  at load. Forcing `"seq"` avoids that risk entirely; the sequential build is
+  plenty fast for this pipeline's file sizes. `.vscodeignore` accordingly
+  carves out only the sequential variant's four files (`package.json`,
+  `src/index.mjs`, `dist/meshioplusplus_wasm.mjs`,
+  `dist/meshioplusplus_wasm.wasm`) — the threaded variant's files would be
+  dead weight given `"seq"` is always forced, and skipping them roughly
+  halves this package's footprint in the packaged `.vsix`.
+- **Console output already goes through `console.log`/`console.error` by
+  default (confirmed against the live package's built glue) — like OCCT,
+  unlike gmsh 0.2.0's raw-fd writes — so `mcpServer.ts`'s existing
+  top-of-file stdout rebinding already covers it.** No new suppression code
+  was needed, unlike gmsh's `print`/`printErr` override.
+- **Not copied to `dist/` via `copyWasm()`, unlike OCCT/gmsh — a real,
+  verified deviation from the established WASM-packaging convention.**
+  OCCT/gmsh pass `wasmBinary` explicitly to bypass the module's own file
+  lookup, so their `.wasm` files can live anywhere and get copied to `dist/`
+  for a predictable path. `@meshioplusplus/wasm`'s loader instead
+  auto-locates its own `.wasm` sibling via `import.meta.url` — confirmed:
+  its raw glue derives `scriptDirectory` from `import.meta.url` under Node
+  and reads its own `.wasm` relative to that — which only resolves correctly
+  if the package's files stay in place under `node_modules/`, never copied
+  elsewhere. So this package is handled entirely by the `.vscodeignore`
+  carve-out above; `esbuild.mjs`'s `copyWasm()` needed no new entry.
+- **The export bridge (`exportViaMeshio()`) needed TWO non-obvious fixes,
+  both discovered by direct live-WASM probing after the first end-to-end
+  attempt failed — not assumed from any documentation.**
+  1. Feeding `generateMesh()`'s own `mshText` (Gmsh's **modern MSH 4.1**
+     default output) into meshio++'s `convert(..., {inFormat: "gmsh"})`
+     throws `"Gmsh $Entities not supported by the C++ reader"` — this
+     meshio++ build's Gmsh reader only understands **legacy MSH 2.2**.
+     Fixed by sourcing the bridge input from `exportMeshFormat(...,
+     "msh2")` (an export format this codebase already writes and had
+     already verified working) instead of `generateMesh()`'s default text.
+  2. Even from valid MSH 2.2 text, writing **MED** specifically still
+     throws `"MED: gmsh physical groups handled by Python fallback"` —
+     this build's MED writer defers to Python (unavailable in WASM) for
+     *any* mesh whose `cell_data` carries gmsh's own
+     `"gmsh:physical"`/`"gmsh:geometrical"` tags, which `readMesh(...,
+     "gmsh")` **always** attaches to a gmsh-sourced mesh. Confirmed the
+     error persists even after `dataDrop()`-ing every `cell_data` array
+     from the parsed `Mesh` object first — the check isn't really about
+     data *content*. The actual fix: `readMesh()` the MSH 2.2 text, then
+     hand-build a **brand-new plain object literal** with only
+     `{points, dim, cells}` (no `cell_data`/`point_data`/`field_data` key
+     at all, not even empty ones) and `writeMesh()` **that** to MED — this
+     drops scalar field data (this pipeline's generated meshes never carry
+     any today, so no observed regression) but writes cleanly. CGNS/XDMF/
+     VTK do **not** need this extra step.
+  Full write-up (including the separate, narrower CGNS pure-2D-mesh
+  read-back limitation and the XDMF `.h5`-companion handling) lives in
+  `doc/gmsh-integration.md`'s "The meshio++ bridge" section.
+- **`resolveMeshInputHeadless` in `mcpTools.ts` gives meshio-only formats a
+  genuinely NEW headless capability, beyond what `.obj`/`.ply`/`.gltf`
+  get** — since `convertToStlBoundary()` runs entirely host-side (no
+  webview needed, unlike those three, which only the webview's Three.js
+  loaders can parse), `load_model`/`generate_mesh`/`export_mesh` all work
+  headlessly for VTK/MED/CGNS/Exodus/XDMF/MDPA sources, verified end-to-end
+  via `npm run mcp:smoke` against the real WASM (not mocked): a hand-built
+  tetrahedron `.vtk` file is loaded, meshed, and exported to MED, CGNS
+  (3D — the pure-2D CGNS gap doesn't apply), and XDMF (confirming the `.h5`
+  companion is written and its embedded reference correctly rewritten).
+- **MDPA import (via meshio++'s native reader) and MDPA export (the
+  hand-written `mdpaWriter.ts`, unchanged by this feature) are two entirely
+  independent code paths that happen to share a file extension** — a
+  considered-and-rejected idea, not a gap: meshio++'s WASM MDPA
+  reader/writer can't represent Kratos `Properties`/`Table`/`Geometries`/
+  `Constraints` blocks (the `MdpaInfo` side-channel isn't forwarded through
+  the WASM binding), so it could never replace the hand-written exporter's
+  richer SubModelPart/property support without regressing it.
+
 ## Build & test
 
 ```bash
@@ -1740,10 +2010,66 @@ underlying WASM call ever returns an empty/mismatched result. Repeat
 open/close and toggle-heavy interaction a few times across all of the above →
 watch extension-host memory stay flat (same leak check as above).
 
+Then exercise **Units handling**: open `examples/STP/bull.stp` (declares
+`INCH`) → confirm the view-controls **Units** dropdown auto-selects **in**;
+open `examples/STP/angle1.stp` (declares `MILLIMETRE`) → confirm it
+auto-selects **mm**; open `examples/STL/cube.stl` → confirm it resets to
+**mm** (mesh sources have no unit metadata). On `bull.stp`, **Compute** Mass
+Properties, then switch the Units dropdown through mm/cm/m/in/ft → confirm
+Volume/Area/Length/Center of mass rescale correctly and their labels show the
+right unit + exponent (e.g. `Volume (in³)`), **Ixx/Iyy/Izz stay raw and
+unlabeled** throughout. Take a **Distance**/**Edge Length**/**Radius**
+measurement, switch units → confirm the *next* measurement reflects the new
+unit (already-shown results are not retroactively rescaled); confirm
+**Angle** always reads in degrees regardless of the unit setting. Expand the
+FE Mesh panel's size slider readout → confirm it always shows **mm**, never
+following the Units dropdown. Confirm the selector resets to the
+freshly-detected/default unit on every new file open and that nothing is
+written to any sidecar throughout.
+
+Then exercise **Compare Models**: with `bull.stp` open and focused, run **CAD
+Preview: Compare Models…** → confirm it skips straight to prompting only for
+model B (A defaults to the focused tab); pick `bull.stp` itself again as B →
+confirm the results tab reports every solid **Matched** with ~0 centre
+displacement and ~0 volume delta, 0 Added, 0 Removed. Apply an edit (e.g.
+**Box** primitive) to a copy of `bull.stp`, export it, then compare the
+original against the export → confirm the added box shows up under **Added**
+(or **Removed**, depending on which side you pick as A) and the untouched
+bull solid still shows as an exact match. Try comparing `bull.stp` against
+`cube.stl` → confirm a clear rejection message, not a crash. Run with no
+CAD Preview tab focused → confirm it prompts for both A and B.
+
+Then exercise **meshio++ import/export**: open a VTK, MED, CGNS, Exodus (`.exo`
+or `.e`), XDMF, and Kratos MDPA file (generate small fixtures if none exist
+under `examples/` — e.g. export `bull.stp`'s FE mesh to each format first,
+per the FE Meshing steps above, then reopen the result) → confirm each opens
+as a triangulated boundary surface, behaves exactly like an STL open (facet
+splitting, **Select** in Vol/Surf mode, assign a **Part**, apply a mesh-legal
+**Edit** op, **Export** to STL/OBJ/PLY/glTF, compute **Mass Properties**,
+take a **Measurement**) — and that Line/Point pick modes and B-rep-only
+Edit ops stay disabled, same as any other mesh source. Confirm the
+Components tree root shows the true source format (e.g. "VTK", not "STL").
+Try opening a deliberately malformed file with one of these extensions →
+confirm a clear load error, not a crash. On the FE Mesh panel (any source),
+pick **MED**, **CGNS**, and **XDMF** in the export format dropdown and
+**📤 Export** each → confirm they save and are non-empty; for XDMF, confirm
+a companion `.h5` file is written beside it and the `.xdmf` text references
+the companion by its actual saved name (not a stale internal name). Repeat
+open/close and generate/export a few times → watch extension-host memory
+stay flat (same leak check as above — the meshio WASM singleton is reused
+across calls, same discipline as OCCT/Gmsh).
+
 Then exercise the **MCP server**: `npm run mcp:smoke` must pass (it drives the real
 `dist/mcp-server.js` over stdio against a temp copy of `bull.stp`: load → an
-`addBox` edit → Gmsh generate → export `.msh` + `.geo_unrolled`/`.xao` + `.brep`,
-asserting the CAD source stays byte-identical and stdout stays pure JSON-RPC).
+`addBox` edit → a `compare_models` diff against a fresh unedited copy of the
+same fixture (asserting the edited/original direction resolves to exactly 1
+matched + 1 removed, not swapped) → Gmsh generate → export `.msh` +
+`.geo_unrolled`/`.xao` + `.brep` → a hand-built `.vtk` tetrahedron loaded
+through the meshio++ bridge (confirming `load_model` reports it as headlessly
+meshable, unlike `.obj`/`.ply`/`.gltf`), meshed, and exported to MED, CGNS
+(3D), and XDMF (confirming the `.h5` companion + rewritten reference) —
+asserting the CAD source stays byte-identical and stdout stays pure
+JSON-RPC throughout (now across all three bundled WASM modules).
 For the sidecar round-trip through the real extension: register the server with an
 MCP client (`claude mcp add cad-preview -- node $PWD/dist/mcp-server.js`), have the
 agent `apply_edit_ops` on a copy of `bull.stp`, then open that file in the F5

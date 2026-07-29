@@ -44,15 +44,21 @@ export class MassPropertiesPanel {
     this.body.appendChild(p);
   }
 
-  /** Renders a computed result. Each field is independently optional/null. */
-  render(props: MassPropertiesDisplay): void {
+  /**
+   * Renders a computed result. Each field is independently optional/null.
+   * `unitLabel` (e.g. `"mm"`, `"in"`) is purely a label suffix — the caller
+   * (`main.ts`) is responsible for actually rescaling `props` to that unit
+   * via `src/webview/units.ts` before calling this; moments of inertia never
+   * get a unit suffix (left unconverted — see `units.ts`'s doc comment).
+   */
+  render(props: MassPropertiesDisplay, unitLabel?: string): void {
     this.body.innerHTML = "";
     const rows: Array<[string, string]> = [];
-    if (props.volume != null) rows.push(["Volume", formatNum(props.volume)]);
-    if (props.area != null) rows.push(["Area", formatNum(props.area)]);
-    if (props.length != null) rows.push(["Length", formatNum(props.length)]);
+    if (props.volume != null) rows.push([`Volume${unitLabel ? ` (${unitLabel}³)` : ""}`, formatNum(props.volume)]);
+    if (props.area != null) rows.push([`Area${unitLabel ? ` (${unitLabel}²)` : ""}`, formatNum(props.area)]);
+    if (props.length != null) rows.push([`Length${unitLabel ? ` (${unitLabel})` : ""}`, formatNum(props.length)]);
     if (props.centerOfMass) {
-      rows.push(["Center of mass", `(${props.centerOfMass.map(formatNum).join(", ")})`]);
+      rows.push([`Center of mass${unitLabel ? ` (${unitLabel})` : ""}`, `(${props.centerOfMass.map(formatNum).join(", ")})`]);
     }
     if (props.momentsOfInertia) {
       const m = props.momentsOfInertia;

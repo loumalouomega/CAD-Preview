@@ -58,8 +58,29 @@ export interface Part {
 /** Messages sent from the extension host to the webview. */
 export type HostToWebview =
   | { type: "geometry"; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
-  | { type: "tree"; root: TreeNode }
+  | {
+      type: "tree";
+      root: TreeNode;
+      /** The STEP file's declared length unit (e.g. `"INCH"`, `"MILLIMETRE"`),
+       * detected by `src/stepUnits.ts`'s text scan of the DATA section —
+       * `undefined` for IGES/BREP (no unit metadata) or a STEP file with no
+       * unit declaration. Informational only: OCCT's STEP reader already
+       * auto-converts every shape to one internal cascade unit (millimetres)
+       * regardless of this value, so geometry is always already consistent —
+       * this only tells the webview what to default its display-unit
+       * selector to. See `src/webview/units.ts`. */
+      sourceUnit?: string;
+    }
   | { type: "loadUrl"; url: string; format: CadFormat }
+  | {
+      type: "loadMeshBytes";
+      /** The document's actual source format (e.g. `"vtk"`, `"med"`) — for the
+       * Components tree root label only. The bytes themselves are always an
+       * STL boundary surface (`src/meshioService.ts`'s `convertToStlBoundary`)
+       * fed through the same STL loader a native `.stl` open uses. */
+      sourceFormat: CadFormat;
+      dataBase64: string; // base64 STL bytes
+    }
   | { type: "parts"; parts: Part[] }
   | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "status"; text: string }

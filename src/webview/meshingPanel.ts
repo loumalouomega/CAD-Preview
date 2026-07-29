@@ -500,14 +500,18 @@ export class MeshingPanel {
       return;
     }
     if (!this.extents) {
-      this.sliderReadout.textContent = `Size: ${formatSize(size)}`;
+      // Always millimetres — Gmsh's internal cascade unit, regardless of the
+      // view-controls Appearance group's display-unit selector (a display-only
+      // rescale of Mass Properties/Measurement; mesh-size options are never
+      // rescaled, see `src/webview/units.ts`'s doc comment).
+      this.sliderReadout.textContent = `Size: ${formatSize(size)} mm`;
       this.warningEl.hidden = true;
       return;
     }
     const dimension = this.lastOptions?.dimension ?? 3;
     const shape = this.lastOptions?.elementShape ?? "simplex";
     const estimate = estimateElementCount(this.extents.size, size, dimension, shape);
-    this.sliderReadout.textContent = `Size: ${formatSize(size)} · ${formatCount(estimate)} elements`;
+    this.sliderReadout.textContent = `Size: ${formatSize(size)} mm · ${formatCount(estimate)} elements`;
     if (estimate > LARGE_ELEMENT_COUNT) {
       this.warningEl.innerHTML = `<span class="toolbar-icon">${TOOLBAR_ICONS.warning}</span> Estimated ${formatCount(estimate)} elements — generation may be slow or run out of memory.`;
       this.warningEl.hidden = false;

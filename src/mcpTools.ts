@@ -37,6 +37,9 @@ import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, MassProperties } from "./massProperties";
+import type { compareModels } from "./modelDiffHost";
+import type { ModelDiff } from "./modelDiff";
+import type { convertToStlBoundary, exportViaMeshio } from "./meshioService";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -73,6 +76,9 @@ export interface Pipeline {
   exportMdpa: typeof exportMdpa;
   exportGeoUnrolled: typeof exportGeoUnrolled;
   computeMassProperties: typeof computeMassProperties;
+  compareModels: typeof compareModels;
+  convertToStlBoundary: typeof convertToStlBoundary;
+  exportViaMeshio: typeof exportViaMeshio;
 }
 
 export interface ToolContext {
@@ -185,9 +191,11 @@ export function describeCapabilities() {
     },
     headlessLimitations: [
       "get_mass_properties (volume/area/length, center of mass, moments of inertia via OCCT BRepGProp) is B-rep sources only headless; mesh formats compute the equivalent client-side in the webview.",
+      "compare_models (bounding-box-centroid + volume solid matching between two files) is B-rep sources only headless for the same reason — mesh formats have no host-side geometry to derive centroids/volumes from without a webview.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
+      ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written; edits/parts/mesh options persist to <model>.edits.json / .parts.json / .mesh.json sidecars the extension reads on open.",
     ],
   };
@@ -204,7 +212,7 @@ function requireRoute(modelPath: string): FileRoute {
   const route = routeFile(modelPath);
   if (!route) {
     throw new Error(
-      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, stl, obj, ply, gltf, glb)`
+      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa)`
     );
   }
   return route;
@@ -289,7 +297,9 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
       warnings: [
         `${route.format} is a mesh-format source: headless tessellation/entity inventory is B-rep-only. ` +
           "Mesh-legal edit ops can still be applied (they replay when the file is opened in VS Code)" +
-          (route.format === "stl" ? ", and the raw STL is meshable via generate_mesh." : "."),
+          (route.format === "stl" || route.strategy === "meshio"
+            ? `, and the ${route.format === "stl" ? "raw STL" : "file's boundary surface (via meshio++)"} is meshable via generate_mesh.`
+            : "."),
       ],
     };
   }
@@ -344,6 +354,57 @@ export async function getMassProperties(
     ...properties,
     warnings: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// compare_models
+
+/**
+ * Diffs two B-rep models solid-by-solid via `modelDiffHost.ts`'s
+ * `compareModels()` — bounding-box-centroid + volume matching, the same
+ * heuristic `explodeSolids`/`gmshPartsMap.ts` already use elsewhere. Mirrors
+ * `get_mass_properties`'s B-rep-only gate: mesh-format sources return
+ * `supported: false` with a warning rather than throwing, since neither file
+ * has an OCCT shape to independently re-derive centroids/volumes from
+ * headlessly (STL/OBJ/PLY/glTF geometry only exists once parsed by the
+ * webview's Three.js loaders — no host-side equivalent here).
+ */
+export async function compareModelsTool(
+  ctx: ToolContext,
+  params: { pathA: string; pathB: string }
+): Promise<{ formatA: CadFormat; formatB: CadFormat; supported: boolean; warnings: string[]; diff?: ModelDiff }> {
+  const routeA = requireRoute(params.pathA);
+  const routeB = requireRoute(params.pathB);
+
+  if (routeA.strategy !== "occt" || routeB.strategy !== "occt") {
+    return {
+      formatA: routeA.format,
+      formatB: routeB.format,
+      supported: false,
+      warnings: [
+        "compare_models only supports STEP/IGES/BREP sources headlessly — mesh formats have no host-side geometry to independently derive solid centroids/volumes from without a webview.",
+      ],
+    };
+  }
+
+  const [{ ops: opsA }, { ops: opsB }, bytesA, bytesB] = await Promise.all([
+    readEdits(params.pathA),
+    readEdits(params.pathB),
+    readModelBytes(params.pathA),
+    readModelBytes(params.pathB),
+  ]);
+
+  const diff = await ctx.pipeline.compareModels(
+    ctx.extensionPath,
+    bytesA,
+    routeA.format as BRepFormat,
+    opsA,
+    bytesB,
+    routeB.format as BRepFormat,
+    opsB
+  );
+
+  return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings: [], diff };
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +677,22 @@ async function resolveMeshInputHeadless(
     }
     return { kind: "stl", stlBytes: await readModelBytes(modelPath) };
   }
+  if (route.strategy === "meshio") {
+    // Unlike STL/OBJ/PLY/glTF, meshio++ (`src/meshioService.ts`) runs entirely
+    // host-side — no webview needed — so these formats are MORE headlessly
+    // capable than the other mesh formats: converted to an STL boundary
+    // surface (the same funnel-through-STL design the extension itself uses)
+    // and meshed exactly like a native `.stl`.
+    const { ops } = await readEdits(modelPath);
+    if (ops.length > 0) {
+      warnings.push(
+        `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file's boundary surface is meshed.`
+      );
+    }
+    const bytes = await readModelBytes(modelPath);
+    const stlBytes = await ctx.pipeline.convertToStlBoundary(bytes, route.format);
+    return { kind: "stl", stlBytes };
+  }
   throw new Error(
     `${route.format} sources cannot be meshed headless — the extension serializes them to STL via the webview's Three.js scene. Convert to STL first (e.g. via the extension's Export).`
   );
@@ -743,6 +820,35 @@ export async function exportMeshTool(
     );
     await fs.writeFile(outputPath, text, "utf8");
     written.push(outputPath);
+  } else if (format.id === "med" || format.id === "cgns" || format.id === "xdmf") {
+    // meshio++ bridge — see meshExportFormats.ts's doc comment (no CGNS/MED
+    // writer in this gmsh-wasm build) and provider.ts's mirrored branch.
+    // exportViaMeshio needs legacy MSH 2.2 text, not generateMesh()'s modern
+    // MSH 4.1 mshText — see its doc comment.
+    const msh2Text = await ctx.pipeline.exportMeshFormat(
+      ctx.extensionPath,
+      input,
+      options,
+      parts,
+      "msh2" as Parameters<typeof exportMeshFormat>[4]
+    );
+    const { bytes, companion } = await ctx.pipeline.exportViaMeshio(msh2Text, format.id);
+    if (!companion) {
+      await fs.writeFile(outputPath, bytes);
+      written.push(outputPath);
+    } else {
+      // xdmf's embedded <DataItem> references are rewritten to match the
+      // companion's real filename — same "write beside + fix the reference"
+      // pattern as .geo_unrolled's .xao companion.
+      const h5Name = `${path.basename(outputPath).replace(/\.[^.]+$/, "")}.h5`;
+      const h5Path = path.join(path.dirname(outputPath), h5Name);
+      assertNotSourcePath(modelPath, h5Path);
+      const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(h5Name);
+      await fs.writeFile(outputPath, fixedText, "utf8");
+      await fs.writeFile(h5Path, companion.bytes);
+      written.push(outputPath, h5Path);
+      warnings.push("The .xdmf references its .h5 companion (HDF5 data) — keep the two files together.");
+    }
   } else {
     const text = await ctx.pipeline.exportMeshFormat(
       ctx.extensionPath,

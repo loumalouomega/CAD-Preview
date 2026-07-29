@@ -20,6 +20,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/measurementState.ts` | 0–2-pick buffer for the in-progress measurement, DOM-free (unit-tested) |
 | `src/webview/measurementOverlay.ts` | Lazily-built marker/line/label Three.js objects for the measurement overlay |
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
+| `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
@@ -56,7 +57,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 
 **Additional setup functions** (same guarded-`try` bank as step 4 above):
 - `setupDragAndDrop()` — `dragover`/`drop` on `#app`; posts `{type:"openPath", path}` when the dropped `File` exposes a real fs path, else falls back to `{type:"openFile"}`.
-- `setupAppearanceControls()` — wires `#edges` (toolbar), `#vc-background`/`#vc-opacity`/`#vc-ortho` (`#view-controls`' "Appearance" group) to `viewer.setEdgesVisible`/`setBackground`/`setOpacity`/`setOrthographic`.
+- `setupAppearanceControls()` — wires `#edges` (toolbar), `#vc-background`/`#vc-opacity`/`#vc-ortho` (`#view-controls`' "Appearance" group) to `viewer.setEdgesVisible`/`setBackground`/`setOpacity`/`setOrthographic`, and `#vc-unit` to `setDisplayUnit()` (`src/webview/units.ts` — see below).
 - `setupClippingControls()` — wires `#view-controls`' "Clip" group (`.clip-axis` buttons, `#clip-offset` slider, `#clip-toggle`) to `viewer.setClippingPlane()`, computing a `THREE.Plane` via `clipping.ts`'s `planeForAxis()` from `viewer.getModel()`'s current bounding box on every change.
 
 **Message handler (host → webview):**
@@ -65,7 +66,8 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 |--------|--------|
 | `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` → `viewer.setModel(group)`, recolour, enable all pick modes (`volume`/`surface`/`line`/`point`), `MeshingPanel.setSourceKind("brep")`/`setModelExtents(...)` + `syncMeshSizeSeed()` |
 | `"tree"` | `TreePanel.render(msg.root)` |
-| `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `splitMeshesIntoFacets(obj)` → `viewer.setModel(model)`, pick modes `volume` + `surface`, `MeshingPanel.setSourceKind("mesh")`/`setModelExtents(...)` + `syncMeshSizeSeed()` |
+| `"loadUrl"` | `loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase())` — see below |
+| `"loadMeshBytes"` | base64-decode → `Blob` → `blob:` object URL (`URL.createObjectURL`) → `loadMeshObjectFromUrl(blobUrl, "stl", msg.sourceFormat.toUpperCase())`, then `URL.revokeObjectURL(blobUrl)`. A meshio++-imported document (`doc/file-formats.md`'s "meshio++ Bridge Formats") — always loaded via the STL loader regardless of the true source format, which only picks the Components tree root's label. |
 | `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` + `MeshingPanel.renderParts()` |
 | `"edits"` | `EditsModel.load(msg.ops)` → (mesh sources) `rebuildMeshModel()` → `EditsPanel.render()` |
 | `"status"` | Set `#status-text` content |
@@ -77,7 +79,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
 | `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`. Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
 | `"screenshotRequest"` | `viewer.render()` (force a fresh frame) → `viewer.captureScreenshotBase64()` → posts back `"screenshotResult"`/`"screenshotError"`, correlated by `msg.requestId` |
-| `"massPropertiesResult"` | `MassPropertiesPanel.render(msg.properties)` (ignored if `msg.requestId` doesn't match the latest request) |
+| `"massPropertiesResult"` | `renderMassProperties(msg.properties)` — caches the raw (mm) result and renders it converted to `currentDisplayUnit` (see `src/webview/units.ts` below); ignored if `msg.requestId` doesn't match the latest request |
 | `"massPropertiesError"` | `MassPropertiesPanel.renderMessage(msg.message, true)` (same stale-request guard) |
 
 The webview also posts `{ type: "partsChanged", parts }` whenever the user edits
@@ -89,6 +91,24 @@ the host debounces each independently and writes the matching sidecar(s). See
 base64 STL (via `meshExporters.ts`'s `exportModel`) for `meshingGenerate`/
 `meshingExport` on mesh-format documents, since the host has no B-rep to
 re-export for those.
+
+**`loadMeshObjectFromUrl(url, loaderFormat, treeLabel)`** — the shared load
+path both `"loadUrl"` and `"loadMeshBytes"` funnel through (extracted once
+`"loadMeshBytes"` needed the exact same post-load sequence from a different
+URL source): `loadMeshFromUrl(url, loaderFormat)` → `tagMeshEntities(obj)` →
+`extractObjectTree(obj, treeLabel)` (builds the Components tree from the
+pristine hierarchy, before facet-splitting) → caches `obj` as `pristineMesh`
+→ `rebuildMeshModel()` (applies current edits, facet-splits, `viewer.setModel`)
+→ pick modes `volume`+`surface` → `sourceKind = "mesh"` →
+`MeshingPanel.setSourceKind("mesh")`/`setModelExtents(...)` +
+`syncMeshSizeSeed()` → `showTree(root)` if there's more than one node. Also
+resets the display-unit selector to `"mm"` (`setDisplayUnit("mm")`) and
+clears any cached raw Mass Properties result, since mesh sources (native or
+meshio-imported) carry no unit metadata and a stale result would refer to the
+just-replaced model. `loaderFormat` is always `"stl"` for a `"loadMeshBytes"`
+call regardless of the document's true source format — only `treeLabel`
+reflects that (e.g. `"VTK"` for a `.vtk` import, shown as the tree root's
+label, exactly as `"STL"`/`"OBJ"`/etc. already are for native mesh opens).
 
 **Helper functions:**
 
@@ -615,6 +635,12 @@ async function loadMeshFromUrl(
 | `"ply"` | `PLYLoader` | Calls `geometry.computeVertexNormals()` |
 | `"gltf"` | `GLTFLoader` | Returns `gltf.scene` |
 
+Every other `CadFormat` member (the meshio++-only formats — VTK/VTU/MED/CGNS/
+Exodus/XDMF/MDPA) throws via the `default` case — this function is never
+called with one of those. A meshio-imported document is converted to STL
+**host-side** first (`src/meshioService.ts`), so `loadMeshFromUrl` only ever
+sees `"stl"` for it (see `main.ts`'s `loadMeshObjectFromUrl` below).
+
 ```typescript
 function applyDefaultMaterial(group: THREE.Group): void
 ```
@@ -1069,7 +1095,7 @@ interface MassPropertiesDisplay {
 class MassPropertiesPanel {
   constructor(panel: HTMLElement, cb: { onRefresh: () => void })
   renderMessage(text: string, isError?: boolean): void
-  render(props: MassPropertiesDisplay): void
+  render(props: MassPropertiesDisplay, unitLabel?: string): void
 }
 ```
 
@@ -1083,7 +1109,66 @@ from a superseded refresh is ignored); for a mesh source it calls
 all**. `momentsOfInertia` only shows its diagonal terms (`ixx`/`iyy`/`izz`) —
 the off-diagonal products of inertia are near-zero for most axis-aligned
 bodies and not worth the panel's space; mesh sources never populate this field
-(client-side inertia isn't computed, out of scope for the first cut).
+(client-side inertia isn't computed, out of scope for the first cut) — and,
+per `units.ts` below, moments of inertia are also the one field `render()`
+never rescales regardless of `unitLabel`.
+
+Both call sites go through `main.ts`'s `renderMassProperties(raw)` wrapper,
+never `massPropertiesPanel.render()` directly: it caches `raw` (always
+millimetres) in a module-level `lastRawMassProperties`, then calls
+`massPropertiesPanel.render(convertLengthBasedProperties(raw,
+currentDisplayUnit), currentDisplayUnit)`. Caching the *raw* value (not the
+already-converted one) is what lets `setDisplayUnit()` (below) live-rescale an
+already-displayed result when the user changes the unit selector, without
+re-requesting anything from the host or recomputing the mesh-source case.
+
+---
+
+## `src/webview/units.ts`
+
+Display-unit conversion for Mass Properties and Measurement — pure, DOM-free
+(mirrors `measurement.ts`'s convention). Presentation-layer only: every number
+this module touches is already in the model's one internal length unit
+(millimetres — OCCT's STEP reader auto-converts every shape to its cascade
+unit at read time; see `src/stepUnits.ts`'s doc comment for the live-WASM
+verification). Nothing stored — edit-op params, sidecars, mesh-size options —
+is ever rescaled; this only changes what a number *looks like*.
+
+```typescript
+type DisplayUnit = 'mm' | 'cm' | 'm' | 'in' | 'ft'
+const DISPLAY_UNITS: readonly DisplayUnit[]
+
+function convertLength(mmValue: number, unit: DisplayUnit): number
+function convertArea(mm2Value: number, unit: DisplayUnit): number
+function convertVolume(mm3Value: number, unit: DisplayUnit): number
+function displayUnitFromStepName(name: string | undefined): DisplayUnit | undefined
+
+interface LengthBasedProperties {
+  volume: number | null
+  area: number | null
+  length: number | null
+  centerOfMass: [number, number, number] | null
+}
+function convertLengthBasedProperties<T extends LengthBasedProperties>(props: T, unit: DisplayUnit): T
+```
+
+`main.ts` holds the session-only `currentDisplayUnit` state (module-level,
+default `"mm"`, never persisted — same tier as every other Stage-2 Appearance
+control) and a `setDisplayUnit(unit)` helper that updates it, syncs the
+`#vc-unit` `<select>`'s value, and — if a Mass Properties result is currently
+shown — re-renders it converted to the new unit via the cached raw value (see
+`massPropertiesPanel.ts` above). `displayUnitFromStepName(msg.sourceUnit)` (or
+`"mm"` if `undefined`) seeds the initial selection on every `"tree"` message
+(B-rep) and resets to `"mm"` unconditionally on every `"loadUrl"` message
+(mesh sources carry no unit metadata) — both are per-model-load resets, same
+spirit as `explodePreviewBases = null` on a new model. Measurement results
+(`computeMeasurementResult`'s `formatMeasureLength()` helper) rescale
+distance/edge-length/radius the same way, appending the unit as a suffix
+(`"12.700 mm"`); angle is degrees and is never touched by this module. The FE
+Mesh panel's size readout is a deliberate exception — it always shows a literal
+`"mm"` suffix, never `currentDisplayUnit`, since Gmsh's mesh-size options stay
+in the cascade unit regardless of the display-unit selector (see
+`meshingPanel.ts`'s `refreshSizeReadout()` comment).
 
 ---
 
