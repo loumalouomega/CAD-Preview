@@ -314,7 +314,7 @@ the vscode-free `src/meshOptionsSidecar.ts` so they are unit-tested.
     "sizeMin": 0,
     "sizeMax": 1e22,
     "algorithm2D": 6,
-    "algorithm3D": 4,
+    "algorithm3D": 1,
     "elementOrder": 1,
     "optimize": true,
     "stlAngle": 40
@@ -331,7 +331,7 @@ Merge "bull.stp";
 Mesh.MeshSizeMin = 0;
 Mesh.MeshSizeMax = 1e22;
 Mesh.Algorithm = 6;
-Mesh.Algorithm3D = 4;
+Mesh.Algorithm3D = 1;
 Mesh.ElementOrder = 1;
 Mesh.RecombineAll = 0;
 Mesh.SubdivisionAlgorithm = 0;

@@ -722,14 +722,27 @@ Non-negotiable invariants:
   printErr })`, so gmsh's log output goes through `console.error` (and, in the
   MCP server, is still safely on stderr) regardless of which stream this
   package's own default would pick in a future version.
-- **Default 3D algorithm is Frontal (`Mesh.Algorithm3D = 4`), not GMSH's own
-  default.** The WASM build has a documented 3D Delaunay boundary-recovery bug on
-  geometry re-imported via `gmsh.model.occ.importShapes` — i.e. every B-rep source
-  this feature meshes, by definition, since it's always imported that way. Frontal
-  avoids the failure mode for the common case (opening a STEP/IGES/BREP file) out
-  of the box; users can still pick Delaunay (`1`) from the 3D algorithm dropdown
-  for cases it doesn't affect. See `doc/gmsh-integration.md`'s "Known limitations"
-  for the full verification trail (GMSH-JS's own README documents this upstream).
+- **Default 3D algorithm is Gmsh's own default, Delaunay (`Mesh.Algorithm3D =
+  1`) — this used to be Frontal (`4`) as a workaround, fixed upstream in
+  `@loumalouomega/gmsh-wasm` 0.3.0.** The 0.2.x WASM build had a real
+  wasm32-stack-overflow bug in Gmsh's tetgen-derived 3D boundary recovery
+  (shared by Delaunay and HXT): Emscripten's 64 KiB default stack overflowed
+  silently (no trap, no error) instead of trapping, corrupting adjacent linear
+  memory — surfacing as a hang or an empty mesh specifically on geometry
+  re-imported via `gmsh.model.occ.importShapes` (i.e. every B-rep source this
+  feature meshes, by definition). 0.3.0 fixed the root cause upstream
+  (`-sSTACK_SIZE=4MB`/`-sDEFAULT_PTHREAD_STACK_SIZE=2MB` in GMSH-JS's own
+  build), not just for CAD-Preview's specific symptom. **Re-verified against
+  the live 0.3.0 WASM on `examples/STP/block.stp`**: Delaunay completed in
+  88ms (1282 tets, no hang), and HXT (`Algorithm3D=10`, previously also
+  broken by the same bug) completed in 37ms (1254 tets) — both fully fixed,
+  not just "improved." `DEFAULT_MESH_OPTIONS.algorithm3D` was updated from
+  `4` to `1` accordingly; **existing documents keep whatever value is already
+  in their `<model>.mesh.json` sidecar** (this only changes the seed for
+  *new* documents that have never saved mesh options). Frontal (`4`) and HXT
+  (`10`) both remain fully selectable from the 3D algorithm dropdown. See
+  `doc/gmsh-integration.md`'s "Known limitations" for the full verification
+  trail (both the original bug and the 0.3.0 fix).
 - **The panel's primary size control is a coarser→finer slider with a
   bbox-derived default — and seeding it must never create sidecars.**
   `DEFAULT_MESH_OPTIONS.sizeMax` is the Gmsh "unbounded" `SIZE_MAX_SENTINEL`

@@ -972,13 +972,18 @@ defensively checks the returned array's length matches the input and returns
 matching this codebase's graceful-skip convention for every other WASM edge
 case. **A trivial box mesh with GMSH's own default 3D algorithm hung
 indefinitely during verification** (confirmed: 27+ minutes of pure CPU with
-no progress, on geometry simple enough to mesh in milliseconds) — this
-codebase's existing `Mesh.Algorithm3D = 4` (Frontal) default (see the Meshing
-section of `CLAUDE.md`) avoided it entirely, extending that documented
-limitation from "OCC-imported geometry" to, apparently, this WASM build's
-default 3D algorithm more broadly; `generateMesh()` already always sets it,
-so this is not a new invariant, just a confirmation of why the existing one
-matters.
+no progress, on geometry simple enough to mesh in milliseconds), against
+`@loumalouomega/gmsh-wasm` 0.2.x — this codebase's then-forced
+`Mesh.Algorithm3D = 4` (Frontal) default avoided it entirely, extending that
+documented limitation from "OCC-imported geometry" to, apparently, this WASM
+build's default 3D algorithm more broadly. **Fixed upstream in 0.3.0**
+(root cause: a wasm32 stack-overflow in Gmsh's tetgen-derived 3D boundary
+recovery, not an algorithm-correctness bug — see the "Meshing (GMSH-JS)"
+section of `CLAUDE.md`) — re-verified against the live 0.3.0 WASM, Delaunay
+now completes in well under a second on comparably simple geometry, no hang.
+The default mesh options now set `Mesh.Algorithm3D = 1` (Delaunay, Gmsh's
+own default) again; Frontal remains fully selectable and correct, it's just
+no longer forced.
 
 ```typescript
 async function exportGeoUnrolled(

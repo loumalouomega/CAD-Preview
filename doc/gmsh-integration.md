@@ -336,7 +336,7 @@ parse/serialize functions):
   Mesh.MeshSizeMin = 0;
   Mesh.MeshSizeMax = 1e22;
   Mesh.Algorithm = 6;
-  Mesh.Algorithm3D = 4;
+  Mesh.Algorithm3D = 1;
   Mesh.ElementOrder = 1;
   Mesh.RecombineAll = 0;
   Mesh.SubdivisionAlgorithm = 0;
@@ -742,21 +742,51 @@ it's simply an additional MIT dependency alongside `@modelcontextprotocol/sdk`/
   unaffected). Neither is a CAD-Preview bug to fix — both are confirmed
   limitations of the bundled `@meshioplusplus/wasm` build itself.
 
-- **No working 3D recombination (hex-dominant meshing) in the bundled WASM build.**
-  The all-hex `subdivided` shape works (via `Mesh.SubdivisionAlgorithm=2`), but a
-  hex-*dominant* mixed mesh (tets+prisms+pyramids+hexes via
-  `Mesh.Recombine3DAll`) is completely non-functional here: every variant probed —
+- **No working 3D recombination (hex-dominant meshing) in the bundled WASM build
+  — TRUE for `@loumalouomega/gmsh-wasm` 0.2.x, SUPERSEDED in 0.3.0 (see the
+  update below).** The all-hex `subdivided` shape works (via
+  `Mesh.SubdivisionAlgorithm=2`), but a hex-*dominant* mixed mesh
+  (tets+prisms+pyramids+hexes via `Mesh.Recombine3DAll`) was completely
+  non-functional in 0.2.x: every variant probed at the time —
   `Recombine3DAll=1` alone, combined with `RecombineAll`, with
   `Recombine3DConformity`/`Recombine3DLevel`, under Delaunay or Frontal —
   produced **pure tetrahedra** (no recombination at all) or threw *"Cannot use
-  frontal 3D algorithm with quadrangles on boundary"*. This build was evidently
-  compiled without the experimental 3D recombination support. So `elementShape` is
-  restricted to `simplex`/`subdivided` and no hex-dominant option is offered
-  (`validateMeshOptions` rejects `"hexDominant"` to a default). The
-  `gmshElementTypes.ts` table still carries prism/pyramid rows (their permutations
-  are verified) so the pipeline is ready if a rebuilt WASM ever enables it — they
-  are simply unreachable today. `Mesh.Algorithm3D=10` (HXT) is separately broken in
-  this build too (empty mesh), unrelated to this feature.
+  frontal 3D algorithm with quadrangles on boundary"*. **That probing pass never
+  tried `Mesh.Algorithm3D=9` (RTree)** — the specific algorithm Gmsh's hex-tet
+  hybrid recombiner is gated behind (confirmed by re-probing, see below) — so the
+  0.2.x "compiled without 3D recombination support" conclusion was itself
+  incomplete, not just a since-fixed build limitation. So `elementShape` was
+  restricted to `simplex`/`subdivided` and no hex-dominant option was offered
+  (`validateMeshOptions` still rejects `"hexDominant"`, unchanged as of this
+  writing — see `doc/roadmap.md`'s "Hex-dominant FE meshing" candidate for what
+  adding it properly would need). The `gmshElementTypes.ts` table still carries
+  prism/pyramid rows (their permutations are verified) so the pipeline is ready
+  if this is ever implemented — they remain unreachable today, by choice, not by
+  WASM limitation. `Mesh.Algorithm3D=10` (HXT) was also broken in 0.2.x (empty
+  mesh) — see the update below, same root cause as the 3D Delaunay bug two
+  bullets down.
+
+  **Update, `@loumalouomega/gmsh-wasm` 0.3.0, verified against the live WASM on
+  `examples/STP/block.stp`:** re-probing with `Mesh.Algorithm3D=9` (RTree) +
+  `Mesh.Recombine3DAll=1` — the exact combination the 0.2.x pass never tried —
+  now produces a genuine hex-dominant mesh: element types `[4, 5, 140]` (702
+  tetrahedra, 165 hexahedra, 366 type-140 "trihedron" connector elements
+  stitching the tet/hex interface), completing in 482ms with no error. Gmsh's
+  own upstream framing (relayed via GMSH-JS's README/docs) still calls the
+  RTree path "experimental" and recommends Delaunay/HXT for production meshes,
+  and CAD-Preview does **not** currently expose it (no UI, no `elementShape`
+  value) — but the underlying capability is confirmed present, changing this
+  from a hard WASM-build non-goal to an unimplemented feature candidate. One
+  concrete blocker for wiring it up cleanly: `gmsh.model.mesh.
+  getElementProperties(140)` **throws** (`"Size of basis incompatible with
+  element type"`) — the coordinate-matching method every other element kind's
+  Kratos node permutation in `gmshElementTypes.ts` was derived from doesn't
+  extend to the trihedron connector, so that element's geometry needs a
+  different verification source before it could be added to the shared table
+  with the same confidence every other row has. Also confirmed in this same
+  0.3.0 re-probe: HXT (`Algorithm3D=10`) on the same OCC-imported geometry
+  completed correctly (37ms, 1254 tets, no hang/empty-mesh) — see the 3D
+  Delaunay bug entry below, which covers HXT's identical root cause and fix.
 
 Per the original goal of this integration — flag anything GMSH-JS is missing so it
 can be reported upstream — five real gaps were found while building this feature
@@ -857,21 +887,49 @@ confirmation:
   block any future adaptive or local (per-region, per-curvature) mesh sizing UI
   that wanted to compute sizes in JS on the fly.
 
-- **The WASM build has a known 3D Delaunay boundary-recovery failure on
-  re-imported CAD geometry**, documented in GMSH-JS's own README under "Known
-  issues": the default 3D algorithm (Delaunay) can fail boundary recovery —
-  producing zero tetrahedra — specifically for geometry that has round-tripped
-  through STEP/IGES import in this Emscripten target (native Gmsh builds recover
-  reliably; the issue is tracked upstream for a future fix). Since every B-rep
+- **The WASM build had a known 3D Delaunay boundary-recovery failure on
+  re-imported CAD geometry — FIXED upstream in `@loumalouomega/gmsh-wasm`
+  0.3.0; kept here as the historical record + verification trail, per this
+  doc's convention of not deleting superseded findings.** Documented in
+  GMSH-JS's own README under "Known issues" at the time: the default 3D
+  algorithm (Delaunay) could fail boundary recovery — producing zero
+  tetrahedra, or hanging — specifically for geometry that had round-tripped
+  through STEP/IGES import in this Emscripten target. Since every B-rep
   source CAD-Preview meshes has, by definition, just been imported via
-  `gmsh.model.occ.importShapes`, this failure mode is directly in the feature's
-  hot path — not a corner case. That is why `DEFAULT_MESH_OPTIONS.algorithm3D` in
-  `src/meshOptions.ts` is set to **`4` (Frontal)** instead of Gmsh's own default,
-  matching the workaround GMSH-JS's README recommends verbatim
-  (`gmsh.option.setNumber('Mesh.Algorithm3D', 4)`). Users can still pick Delaunay
-  (`1`) from the 3D algorithm dropdown for native `geo`/`occ` solids or STL
-  remeshes where it isn't affected — the default just avoids the failure mode for
-  the common case (opening a STEP/IGES/BREP file) out of the box.
+  `gmsh.model.occ.importShapes`, this failure mode was directly in the
+  feature's hot path — not a corner case. That is why
+  `DEFAULT_MESH_OPTIONS.algorithm3D` in `src/meshOptions.ts` was set to **`4`
+  (Frontal)** instead of Gmsh's own default, matching the workaround
+  GMSH-JS's README recommended at the time
+  (`gmsh.option.setNumber('Mesh.Algorithm3D', 4)`).
+
+  **Root cause and fix, per GMSH-JS's own 0.3.0 changelog/CLAUDE.md
+  (`loumalouomega/GMSH-JS` commit `0cd8b24`):** not an algorithm-correctness
+  bug at all — a wasm32 stack-overflow. Gmsh's tetgen-derived 3D boundary
+  recovery (used by both the default Delaunay algorithm and HXT) recurses
+  deeply; at `-O3` with no stack checks, overflowing Emscripten's 64 KiB
+  default stack (shared by the main thread and every pthread) silently
+  corrupted adjacent linear memory instead of trapping — surfacing as a hang
+  or an empty mesh, reproducible even on small, non-degenerate geometry, not
+  just pathological inputs. Fixed by raising
+  `-sSTACK_SIZE=4MB`/`-sDEFAULT_PTHREAD_STACK_SIZE=2MB` in GMSH-JS's own
+  `scripts/build-wasm.sh` — a real fix to the actual defect, not a
+  CAD-Preview-side workaround.
+
+  **Re-verified against the live 0.3.0 WASM** (`examples/STP/block.stp`, the
+  exact `gmsh.model.occ.importShapes` re-import path CAD-Preview always
+  uses): `Algorithm3D=1` (Delaunay) completed in 88ms producing 1282
+  tetrahedra — no hang, no empty mesh; `Algorithm3D=10` (HXT, sharing the
+  same tetgen-derived recursion and therefore the same bug/fix) completed in
+  37ms producing 1254 tetrahedra. Both fully fixed, not merely improved.
+  **`DEFAULT_MESH_OPTIONS.algorithm3D` was updated from `4` back to `1`**
+  (Gmsh's own default) accordingly — existing documents are unaffected
+  (they already have their own explicit value persisted in
+  `<model>.mesh.json`; this only changes the seed for new documents that
+  have never saved mesh options). Frontal (`4`) and HXT (`10`) both remain
+  fully selectable from the 3D algorithm dropdown, and both still work
+  correctly — there was never a reason to remove them, only to stop forcing
+  one of them as the default.
 
 - **Parts → physical groups + per-part sizing fields: verified working against
   the live WASM** (`examples/STP/angle1.stp`, one volume-scoped part with

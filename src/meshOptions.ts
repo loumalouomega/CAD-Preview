@@ -47,7 +47,7 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   sizeMin: 0,
   sizeMax: SIZE_MAX_SENTINEL,
   algorithm2D: 6 /* Frontal-Delaunay */,
-  algorithm3D: 4 /* Frontal */,
+  algorithm3D: 1 /* Delaunay — Gmsh's own default; see the "Meshing (GMSH-JS)" section of CLAUDE.md for why this was Frontal (4) before gmsh-wasm 0.3.0 */,
   elementOrder: 1,
   elementShape: "simplex",
   optimize: true,

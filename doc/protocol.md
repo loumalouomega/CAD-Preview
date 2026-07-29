@@ -436,7 +436,7 @@ echo back as a `meshingChanged` write) and renders the FE Mesh panel form.
 ```json
 {
   "type": "meshingOptions",
-  "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "elementShape": "simplex", "optimize": true, "stlAngle": 40 }
+  "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "elementShape": "simplex", "optimize": true, "stlAngle": 40 }
 }
 ```
 
@@ -606,7 +606,7 @@ GMSH by itself — that only happens on `meshingGenerate`/`meshingExport`. See
 [GMSH Integration](./gmsh-integration.md).
 
 ```json
-{ "type": "meshingChanged", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+{ "type": "meshingChanged", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
 ```
 
 ### `meshingGenerate`
@@ -621,7 +621,7 @@ re-exports the live OCCT shape to STEP itself. The host replies with
 `meshingResult` or `meshingError`.
 
 ```json
-{ "type": "meshingGenerate", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+{ "type": "meshingGenerate", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
 ```
 
 ### `meshingExport`
@@ -647,7 +647,7 @@ there is no `meshingResult` reply for this message; failures post the general
 `error` message instead of `meshingError`.
 
 ```json
-{ "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+{ "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
 ```
 
 ### `ready`

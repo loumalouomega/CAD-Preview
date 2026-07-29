@@ -185,7 +185,7 @@ export function describeCapabilities() {
       notes: [
         `sizeMax = ${SIZE_MAX_SENTINEL} is the "unbounded" sentinel (no explicit target size); set a real value for predictable element counts.`,
         'elementShape "simplex" = triangles/tetrahedra, "subdivided" = all-quad/all-hex. elementOrder 2 adds mid-side nodes (quadratic).',
-        "algorithm3D 4 (Frontal) is the safe default for imported CAD in this WASM build; 3D Delaunay (1) has a known boundary-recovery crash.",
+        "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
         "A part's meshSize gives local refinement (B-rep sources only).",
       ],
     },

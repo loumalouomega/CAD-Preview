@@ -162,7 +162,7 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       sizeMin: 0,
       sizeMax: 1e22,
       algorithm2D: 6,
-      algorithm3D: 4,
+      algorithm3D: 1,
       elementOrder: 1,
       elementShape: "simplex",
       optimize: true,
