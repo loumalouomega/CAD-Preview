@@ -26,16 +26,19 @@
  * integration: this bundled gmsh-wasm build has no MED/CGNS writer at all
  * (see the comment above), so these three route through
  * `meshioService.ts`'s `exportViaMeshio()` instead — Gmsh generates the mesh
- * as `.msh` text exactly like every other format, then meshio++ re-encodes
+ * as MSH 4.1 text exactly like every other format (`generateMesh()`'s own
+ * `mshText`), then meshio++ (9.7.0+, which reads MSH 4.1 natively) re-encodes
  * those bytes into the target format entirely host-side (no browser, no
  * shared memory — a plain buffer round trip between the two independent WASM
- * modules' virtual filesystems). `MESHIO_BRIDGE_FORMAT_IDS` below is what
- * `provider.ts`'s export dispatch checks to route to that path instead of
- * `exportMeshFormat()`. **Known limitation, verified against the live
- * WASM**: CGNS export of a pure-2D/surface mesh (triangles/quads only, no
- * volume elements) produces a file this same WASM build's own reader can't
- * read back (`"HDF5: missing dataset ' data'"`) — volume (3D tet/hex)
- * meshes are unaffected, and MED/XDMF have no such gap at all. See
+ * modules' virtual filesystems). `provider.ts`'s export dispatch checks these
+ * three ids inline to route to that path instead of `exportMeshFormat()`.
+ * MED additionally preserves parts/physical groups as **named MED groups**
+ * (via meshio++'s region→family synthesis — see `exportViaMeshio`'s doc
+ * comment). **Known limitation, re-verified against the live 9.7.0 WASM**:
+ * CGNS export of a pure-2D/surface mesh (triangles/quads only, no volume
+ * elements) produces a file this same WASM build's own reader can't read
+ * back (`"HDF5: missing dataset ' data'"`) — volume (3D tet/hex) meshes are
+ * unaffected, and MED/XDMF have no such gap at all. See
  * `doc/gmsh-integration.md`'s "Export formats" section.
  */
 

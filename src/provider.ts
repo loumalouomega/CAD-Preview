@@ -381,13 +381,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           } else if (msg.target === "med" || msg.target === "cgns" || msg.target === "xdmf") {
             // meshio++ bridge — Gmsh's own writers can't produce these (no
             // CGNS/MED support in this build); re-encode via
-            // `meshioService.ts`'s exportViaMeshio(), which requires legacy
-            // MSH 2.2 text (NOT generateMesh()'s modern-MSH-4.1 mshText — see
-            // exportViaMeshio's doc comment) as its bridge input. See
-            // `meshExportFormats.ts`'s doc comment for the MED/CGNS caveats.
+            // `meshioService.ts`'s exportViaMeshio(), fed generateMesh()'s
+            // own MSH 4.1 mshText directly (meshio++ 9.7.0 reads 4.1
+            // natively, physical groups included — see exportViaMeshio's doc
+            // comment; before 9.7.0 this needed a legacy MSH 2.2 detour).
+            // See `meshExportFormats.ts`'s doc comment for the MED/CGNS caveats.
             const format = meshExportFormat(msg.target)!;
-            const msh2Text = await exportMeshFormat(this.context.extensionPath, input, options, parts, "msh2");
-            const { bytes, companion } = await exportViaMeshio(msh2Text, msg.target);
+            const meshed = await generateMesh(this.context.extensionPath, input, options, parts);
+            const { bytes, companion } = await exportViaMeshio(meshed.mshText, msg.target);
             await this.promptSaveAndWrite(
               document.uri,
               format.extension,

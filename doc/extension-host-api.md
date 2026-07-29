@@ -470,19 +470,18 @@ singleton alongside OCCT (`occtService.ts`) and Gmsh (`gmshService.ts`), used
 to import mesh-only formats (see the table above) as viewable documents and
 to export generated FE meshes to formats Gmsh's own writers can't produce
 (MED, CGNS, and — a format Gmsh doesn't even recognize as an extension —
-XDMF). Full write-up, including two non-obvious verified-against-the-live-WASM
+XDMF). Full write-up, including the non-obvious verified-against-the-live-WASM
 gotchas (why it must load via a *dynamic* `import()` unlike gmsh-wasm's
-static one, and why the export bridge needs legacy MSH 2.2 text plus a
-MED-specific workaround), lives in `doc/gmsh-integration.md`'s
-"The meshio++ bridge" section — this entry is deliberately brief to avoid
-the two docs drifting out of sync.
+static one, and the MED-specific merge+strip step that preserves named
+groups), lives in `doc/gmsh-integration.md`'s "The meshio++ bridge" section —
+this entry is deliberately brief to avoid the two docs drifting out of sync.
 
 ```typescript
 function getMeshio(): Promise<MeshioApi>
 function resetMeshio(): void
 async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat: string): Promise<Uint8Array>
 async function exportViaMeshio(
-  gmshMsh2Text: string,
+  gmshMshText: string,
   outMeshioFormat: string
 ): Promise<{ bytes: Uint8Array; companion?: { name: string; bytes: Uint8Array } }>
 ```
@@ -495,10 +494,12 @@ with the same hang/crash risk gmsh-wasm's own worker pool already taught this
 codebase to avoid. `convertToStlBoundary()` powers document import
 (`provider.ts`'s `handleMeshio`); `exportViaMeshio()` powers the FE Mesh
 panel's MED/CGNS/XDMF export options (`provider.ts`'s `meshingExport`
-handler and `mcpTools.ts`'s `exportMeshTool`) — **its input must be Gmsh's
-legacy MSH 2.2 text** (`exportMeshFormat(..., "msh2")`), not
-`generateMesh()`'s modern MSH 4.1 `mshText`; see `doc/gmsh-integration.md`
-for why.
+handler and `mcpTools.ts`'s `exportMeshTool`) — its input is
+`generateMesh()`'s own modern MSH 4.1 `mshText` (readable by meshio++ since
+9.7.0, physical groups included; before that a legacy MSH 2.2 detour was
+required — see `doc/gmsh-integration.md` for the history). MED exports
+preserve parts/physical groups as **named MED groups** via the
+merge+regions path documented there.
 
 ## `src/exportTargets.ts`
 

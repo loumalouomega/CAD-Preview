@@ -508,11 +508,14 @@ describe("export_mesh", () => {
     ).rejects.toThrow(/source/i);
   });
 
-  it("bridges med/cgns through meshio with no companion file", async () => {
+  it("bridges med/cgns through meshio with no companion file, fed generateMesh's MSH 4.1 text", async () => {
     const c = ctx();
     const out = path.join(dir, "out.med");
     const result = await exportMeshTool(c, { path: stpModel, format: "med", outputPath: out });
-    expect(vi.mocked(c.pipeline.exportViaMeshio).mock.lastCall![1]).toBe("med");
+    // meshio++ 9.7.0 reads MSH 4.1 natively — the bridge takes generateMesh's
+    // own mshText directly, no legacy msh2 re-export detour.
+    expect(vi.mocked(c.pipeline.exportViaMeshio).mock.lastCall).toEqual([FAKE_MESH_RESULT.mshText, "med"]);
+    expect(c.pipeline.exportMeshFormat).not.toHaveBeenCalled();
     expect(await fs.readFile(out, "utf8")).toBe("fake-meshio-bytes");
     expect(result.written.map((w) => w.path)).toEqual([out]);
   });

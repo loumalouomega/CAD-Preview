@@ -240,7 +240,7 @@
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.3.0",
-    "@meshioplusplus/wasm": "^9.4.1",
+    "@meshioplusplus/wasm": "^9.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fflate": "^0.8.3",
     "opencascade.js": "^1.1.1",

@@ -209,6 +209,18 @@ try {
 
   await call("set_part", { path: model, name: "Bull", volumes: ["solid-0"] });
 
+  // MED export on a model WITH a part — exercises the group-preserving bridge
+  // path end-to-end (gmsh physical group → MSH 4.1 $Entities → meshio++ 9.7.0
+  // regions → merge([mesh]) block consolidation → MED families). If any step
+  // of that chain throws (the pre-9.7.0 $Entities error, MED's Python-fallback
+  // trip, or the same-cell-type-sections rejection), this call fails.
+  const bullMedOut = path.join(dir, "bull.med");
+  const bullMed = await call("export_mesh", { path: model, format: "med", outputPath: bullMedOut, options: { sizeMax: bbox.diagonal / 15 } });
+  assert(
+    bullMed.written.length === 1 && fs.statSync(bullMedOut).size > 0,
+    "export_mesh med on a model with a part (meshio bridge, groups preserved) writes a non-empty file"
+  );
+
   const zipOut = path.join(dir, "bull.preprocess.zip");
   const saved = await call("save_preprocess", { path: model, outputPath: zipOut });
   assert(

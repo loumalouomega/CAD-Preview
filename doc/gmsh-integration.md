@@ -533,57 +533,74 @@ independent** WASM module, [`@meshioplusplus/wasm`](https://github.com/loumalouo
 (MIT-licensed; see the README's Licensing section), which this gmsh-wasm build
 simply doesn't have writers for at all.
 
-**Bridge mechanics.** `gmshService.ts`'s existing generic `exportMeshFormat()`
-writes the mesh as **legacy MSH 2.2** text (`exportMeshFormat(..., "msh2")` —
-the same code path the `msh2` export option already uses, just invoked
-internally rather than by the user); `exportViaMeshio()` then writes those
-bytes into meshio++'s own MEMFS and calls its `convert()`/`readMesh()`+
-`writeMesh()` (see below), bridging the two modules' independent virtual
-filesystems via a plain buffer round trip — no browser, no shared memory.
+**Bridge mechanics.** `generateMesh()`'s own `mshText` (modern MSH 4.1,
+Gmsh's default output version) is handed straight to `exportViaMeshio()`,
+which writes those bytes into meshio++'s own MEMFS and calls its
+`convert()`/`readMesh()`+`writeMesh()` (see below), bridging the two
+modules' independent virtual filesystems via a plain buffer round trip — no
+browser, no shared memory.
 
-**Why legacy MSH 2.2 specifically, verified against the live WASM (a genuine,
-non-obvious discovery):** the first attempt fed `generateMesh()`'s own
-`mshText` (modern MSH 4.1, Gmsh's default output version) directly into
-meshio++'s `convert(..., {inFormat: "gmsh"})` and hit
-`"Gmsh $Entities not supported by the C++ reader"` immediately — this
-meshio++ build's Gmsh reader only understands the older MSH 2.2 schema, not
-MSH 4.1's `$Entities` section (which appears once any mesh-size option is
-set). Switching the bridge's input to MSH 2.2 text (already a registered,
-already-verified-working export option in this codebase, see the probe table
-above) fixed CGNS/XDMF/VTK immediately.
+**MSH 4.1 input requires `@meshioplusplus/wasm` ≥ 9.7.0 — before that, the
+bridge needed a legacy MSH 2.2 detour (kept here as the historical record,
+per this doc's convention).** Against 9.4.1, feeding MSH 4.1 text into
+meshio++'s `convert(..., {inFormat: "gmsh"})` threw
+`"Gmsh $Entities not supported by the C++ reader"` immediately — that
+build's C++ Gmsh reader only understood the older MSH 2.2 schema, so the
+bridge routed through `exportMeshFormat(..., "msh2")` first. 9.7.0 parses
+`$Entities` natively (ascii and binary), and — the genuinely valuable part —
+resolves **physical-group membership** from it: a 4.1 read now yields named
+`regions` (one per physical group, i.e. one per CAD-Preview part), which the
+2.2 path never produced (re-verified: a 2.2 read of the same mesh yields no
+regions — `$PhysicalNames` alone isn't enough; 4.1's `$Entities` is where
+membership lives). The bridge input was switched back to `generateMesh()`'s
+own 4.1 `mshText` accordingly, dropping the extra `gmsh.write()` round trip.
 
-**MED needs a second, MED-specific workaround, also verified against the
-live WASM.** Even from valid MSH 2.2 text, `convert(..., {outFormat: "med"})`
-still throws `"MED: gmsh physical groups handled by Python fallback"` — this
-meshio++ build's MED writer defers to Python (unavailable in WASM) for *any*
-mesh whose `cell_data` carries gmsh's own `"gmsh:physical"`/
-`"gmsh:geometrical"` tags, which `readMesh(..., "gmsh")` **always** attaches
-to a gmsh-sourced mesh — confirmed the error persists even after
-`dataDrop()`-ing every `cell_data` array from the parsed `Mesh` object
-first, so the check isn't really keyed on data *content*. The actual fix:
-`readMesh()` the MSH 2.2 text, then hand-build a **brand-new plain JS object
-literal** containing only `{points, dim, cells}` — no `cell_data`,
-`point_data`, or `field_data` key at all, not even an empty one — and
-`writeMesh()` **that** object to MED. This drops any point/cell scalar field
-data (this pipeline's generated FE meshes never carry any today — no
-simulation results, just geometry/topology — so this is a theoretical loss,
-not an observed regression) but writes cleanly. CGNS/XDMF/VTK do **not** need
-this extra step; plain `convert()` already works for them once the MSH 2.2
-fix above is applied.
+**MED still needs a MED-specific two-step, re-verified against the live
+9.7.0 WASM — but it's now group-PRESERVING, where the 9.4.1-era workaround
+was group-dropping.** Two independent obstacles remain on the direct
+`convert(..., {outFormat: "med"})` path:
+1. It still throws `"MED: gmsh physical groups handled by Python fallback"`
+   whenever `cell_data` carries gmsh's own `"gmsh:physical"`/
+   `"gmsh:geometrical"` tags, which `readMesh(..., "gmsh")` **always**
+   attaches to a gmsh-sourced mesh (this meshio++ build's MED writer defers
+   that case to Python, unavailable in WASM).
+2. MED separately rejects MSH 4.1's natural one-block-per-*entity* cell
+   layout with `"MED files cannot have two sections of the same cell type"`
+   (a meshed unit box arrives as 27 blocks: 8 vertex + 12 line + 6 triangle
+   + 1 tetra).
+The fix for both at once: `readMesh()` the 4.1 text, run the result through
+**`merge([mesh])`** — meshio++'s own merge consolidates same-type cell
+blocks into one (MED's requirement) *and* remaps every named region's
+block-major cell indices onto the merged layout (verified: region entry
+counts survive exactly) — then hand-build a **brand-new plain JS object**
+containing only `{points, dim, cells, regions}` (no `cell_data`/
+`point_data`/`field_data` key at all — dropping them is what dodges obstacle
+1; scalar field data is a theoretical loss only, this pipeline's generated
+meshes never carry any) and `writeMesh()` **that** to MED. meshio++ 9.6.0's
+MED writer synthesizes MED families from the regions, so **parts/physical
+groups now round-trip into MED as named groups** — verified end-to-end: a
+box with `MyVolume`/`MySurface` physical groups wrote a MED whose read-back
+listed both regions with identical entry counts (90 surface triangles, 1101
+tets). Under 9.4.1 this path silently dropped all groups. CGNS/XDMF/VTK need
+none of this; plain `convert()` works directly on the 4.1 text.
 
-**CGNS has one more, narrower, verified limitation**: exporting a
-**pure-surface** mesh (triangle/quad only, no volume cells — i.e. every
-2D-dimension FE-mesh generate) produces a CGNS file this same WASM build's
-own reader can't read back (`"HDF5: missing dataset ' data'"`). Confirmed via
-a controlled pair of probes: a hand-built tetrahedron (volume) round-trips
-through `convert()`+`readMesh()` correctly; the boundary-surface triangulation
-of a box (same box, but surface-only) fails on read-back with that exact
-error. MED and XDMF have **no** such gap (verified: both round-trip a
-pure-surface mesh correctly). CAD-Preview still writes the CGNS file in this
-case (the failure is on *read*, not *write*, and `exportViaMeshio()` never
-reads its own output back) — a 2D-dimension CGNS export may therefore produce
-a file some *other* downstream CGNS reader also rejects; there is no
-CAD-Preview-side workaround for this one.
+**CGNS has one more, narrower limitation — verified on 9.4.1 and
+RE-verified unchanged on 9.7.0**: exporting a **pure-surface** mesh
+(triangle/quad only, no volume cells — i.e. every 2D-dimension FE-mesh
+generate) produces a CGNS file this same WASM build's own reader can't read
+back (`"HDF5: missing dataset ' data'"`). Confirmed via a controlled pair of
+probes: a volume (tet) mesh round-trips through `convert()`+`readMesh()`
+correctly; a triangle-only mesh fails on read-back with that exact error.
+MED and XDMF have **no** such gap (verified: both round-trip a pure-surface
+mesh correctly). CAD-Preview still writes the CGNS file in this case (the
+failure is on *read*, not *write*, and `exportViaMeshio()` never reads its
+own output back) — a 2D-dimension CGNS export may therefore produce a file
+some *other* downstream CGNS reader also rejects; there is no
+CAD-Preview-side workaround for this one. (All three remaining upstream
+gaps — the MED Python-fallback trip, the MED same-type-blocks rejection,
+and this CGNS read-back failure — are written up with exact reproductions
+in a ready-to-run prompt at the meshio++ repo:
+`PROMPT_close_wasm_gmsh_bridge_gaps.md`.)
 
 **XDMF writes an HDF5 companion file**, confirmed against the live WASM:
 `convert(..., "/out.xdmf", ...)` also writes `/out.h5` (same MEMFS basename,

@@ -97,37 +97,45 @@ export async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat
  * `Buffer`/`Uint8Array` round trip — no browser, no shared memory, just
  * read-bytes-from-one/write-bytes-to-other.
  *
- * **`gmshMshText` MUST be Gmsh's LEGACY MSH 2.2 output (`gmsh.write()` to a
- * `.msh2`-extensioned path — `exportMeshFormat(..., "msh2")`), NOT the
- * modern MSH 4.1 default (`generateMesh()`'s own `.mshText`) — verified
- * against the live WASM.** Feeding MSH 4.1 text (which always includes a
- * `$Entities` section once any `Mesh.MeshSizeMax` option or comparable
- * setting is applied) into meshio++'s `convert(..., {inFormat: "gmsh"})`
- * throws `"Gmsh $Entities not supported by the C++ reader"` — this reader
- * only understands the older MSH 2.2 schema. Switching the bridge input to
- * MSH 2.2 text fixes CGNS/XDMF/VTK immediately.
+ * **`gmshMshText` is Gmsh's modern MSH 4.1 output — `generateMesh()`'s own
+ * `mshText` — since `@meshioplusplus/wasm` 9.7.0.** Before 9.7.0 the C++
+ * reader threw `"Gmsh $Entities not supported by the C++ reader"` on every
+ * real 4.1 file, so this bridge had to route through a legacy MSH 2.2
+ * re-export (`exportMeshFormat(..., "msh2")`). 9.7.0 parses `$Entities`
+ * natively and — the load-bearing part — resolves physical-group membership
+ * from it, so a 4.1 read now yields **named `regions`** (one per physical
+ * group, i.e. per CAD-Preview part) that 2.2 never carried. The 2.2 detour
+ * is gone.
  *
- * **MED needs a second, MED-specific workaround, verified against the live
- * WASM**: even from valid MSH 2.2 text, `convert(..., {outFormat: "med"})`
- * throws `"MED: gmsh physical groups handled by Python fallback"` — this
- * build's MED writer defers to Python (unavailable in WASM) for ANY mesh
- * whose `cell_data` carries gmsh's own `"gmsh:physical"`/`"gmsh:geometrical"`
- * tags, which `readMesh(..., "gmsh")` ALWAYS attaches (confirmed: the error
- * persists even after `dataDrop`-ing every cell_data array from the parsed
- * `Mesh` object — the check isn't really about the *content*, since a
- * dropped-but-still-referenced data array still trips it). The fix:
- * `readMesh()` the MSH 2.2 text, then hand-build a **brand-new plain object
- * literal** containing only `{points, dim, cells}` — no `cell_data`,
- * `point_data`, or `field_data` keys at all, not even empty ones — and
- * `writeMesh()` THAT to MED. This drops any point/cell scalar field data
- * (CAD-Preview's generated FE meshes never carry any today, so this is a
- * theoretical loss, not an observed regression) but writes cleanly. CGNS/
- * XDMF/VTK do **not** need this workaround — plain `convert()` already works
- * for them once the MSH 2.2 fix above is applied.
+ * **MED still needs a MED-specific two-step, re-verified against the live
+ * 9.7.0 WASM** — but it's now a group-PRESERVING one, not group-dropping:
+ * 1. Direct `convert(..., {outFormat: "med"})` still throws
+ *    `"MED: gmsh physical groups handled by Python fallback"` whenever
+ *    `cell_data` carries gmsh's `"gmsh:physical"` tags (which
+ *    `readMesh(..., "gmsh")` always attaches), and additionally MED rejects
+ *    MSH 4.1's per-*entity* cell blocks outright
+ *    (`"MED files cannot have two sections of the same cell type"` — a unit
+ *    box meshes into 27 blocks: 8 vertex + 12 line + 6 triangle + 1 tetra).
+ * 2. The fix: `readMesh()` the 4.1 text, run it through **`merge([mesh])`**
+ *    (meshio++'s own merge consolidates same-type blocks into one — MED's
+ *    requirement — and remaps every region's block-major cell indices to
+ *    the merged layout, verified: region entry counts survive exactly),
+ *    then hand-build a **brand-new plain object** of only
+ *    `{points, dim, cells, regions}` — no `cell_data`/`point_data`/
+ *    `field_data` keys at all (dropping them is what dodges the
+ *    Python-fallback throw; scalar field data is a theoretical loss only,
+ *    CAD-Preview's generated meshes never carry any) — and `writeMesh()`
+ *    THAT to MED. 9.6.0's MED writer synthesizes MED families from the
+ *    regions, so **physical groups (CAD-Preview parts) now round-trip into
+ *    MED as named groups** — verified: a box with `MyVolume`/`MySurface`
+ *    physical groups wrote a MED whose read-back listed both regions with
+ *    identical entry counts. Under 9.4.1 this path dropped all groups.
+ * CGNS/XDMF/VTK need none of this — plain `convert()` works directly on
+ * the 4.1 text.
  *
- * **Known separate limitation, verified against the live WASM, not silently
- * ignored**: CGNS export of a PURE-SURFACE mesh (triangle/quad only, no
- * volume elements — i.e. every 2D-dimension FE-mesh generate) produces a
+ * **Known separate limitation, RE-verified against the live 9.7.0 WASM,
+ * still present**: CGNS export of a PURE-SURFACE mesh (triangle/quad only,
+ * no volume elements — i.e. every 2D-dimension FE-mesh generate) produces a
  * file this same WASM build's own reader can't read back
  * (`"HDF5: missing dataset ' data'"`); volume (3D tet/hex) meshes are
  * unaffected, and MED/XDMF have no such gap at all. CAD-Preview still writes
@@ -145,20 +153,31 @@ export async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat
  * rewrites `.geo_unrolled`'s `Merge "...xao"` stub.
  */
 export async function exportViaMeshio(
-  gmshMsh2Text: string,
+  gmshMshText: string,
   outMeshioFormat: string
 ): Promise<{ bytes: Uint8Array; companion?: { name: string; bytes: Uint8Array } }> {
   const m = await getMeshio();
   const inPath = "/in.msh";
   const outPath = `/out.${outMeshioFormat}`;
   const companionPath = "/out.h5";
-  m.FS.writeFile(inPath, Buffer.from(gmshMsh2Text, "utf8"));
+  m.FS.writeFile(inPath, Buffer.from(gmshMshText, "utf8"));
   try {
     if (outMeshioFormat === "med") {
-      const mesh = m.readMesh(inPath, "gmsh");
+      const parsed = m.readMesh(inPath, "gmsh");
+      // merge([single mesh]) consolidates MSH 4.1's per-entity cell blocks
+      // into one block per type (MED's hard requirement) and remaps the
+      // named regions' cell indices onto the merged layout.
+      const merged = m.merge([parsed]);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cells = (mesh.cells as any[]).map((c) => ({ type: c.type, data: c.data, nodesPerCell: c.nodesPerCell }));
-      const freshMesh = { points: mesh.points, dim: mesh.dim, cells };
+      const cells = (merged.cells as any[]).map((c) => ({ type: c.type, data: c.data, nodesPerCell: c.nodesPerCell }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const regions = (merged.regions as any[]) ?? [];
+      const freshMesh = {
+        points: merged.points,
+        dim: merged.dim,
+        cells,
+        ...(regions.length > 0 ? { regions } : {}),
+      };
       m.writeMesh(outPath, freshMesh, "med");
       return { bytes: m.FS.readFile(outPath) };
     }

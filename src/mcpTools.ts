@@ -823,16 +823,10 @@ export async function exportMeshTool(
   } else if (format.id === "med" || format.id === "cgns" || format.id === "xdmf") {
     // meshio++ bridge — see meshExportFormats.ts's doc comment (no CGNS/MED
     // writer in this gmsh-wasm build) and provider.ts's mirrored branch.
-    // exportViaMeshio needs legacy MSH 2.2 text, not generateMesh()'s modern
-    // MSH 4.1 mshText — see its doc comment.
-    const msh2Text = await ctx.pipeline.exportMeshFormat(
-      ctx.extensionPath,
-      input,
-      options,
-      parts,
-      "msh2" as Parameters<typeof exportMeshFormat>[4]
-    );
-    const { bytes, companion } = await ctx.pipeline.exportViaMeshio(msh2Text, format.id);
+    // exportViaMeshio takes generateMesh()'s own MSH 4.1 mshText directly
+    // (meshio++ 9.7.0 reads 4.1 natively — see its doc comment).
+    const meshed = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
+    const { bytes, companion } = await ctx.pipeline.exportViaMeshio(meshed.mshText, format.id);
     if (!companion) {
       await fs.writeFile(outputPath, bytes);
       written.push(outputPath);
