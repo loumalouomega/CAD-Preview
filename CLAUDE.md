@@ -939,7 +939,11 @@ Non-negotiable invariants:
   `#meshing-generate` and shows a CSS keyframe-sweep progress bar
   (`#meshing-progress`) plus a `"Generating…"` status line. **📤 Export** (any
   format) isn't wired to it — its save-dialog completion already surfaces
-  through the generic toolbar status bar.
+  through the generic toolbar status bar. **The MCP server's `generate_mesh`/
+  `export_mesh` tools have the identical limitation** — they emit
+  `notifications/progress` at start(0) and done(1) only (see the "Agent
+  feedback tools" section above for the mechanism), never a genuine
+  percentage, for exactly this reason.
 - **Parts are preserved in generated meshes as Gmsh physical groups —
   B-rep sources only**, matching the existing `BREP_ONLY_OPS` scope (Gmsh's STL
   reclassification pipeline produces brand-new surface/volume tags with zero
@@ -1171,12 +1175,37 @@ invariants:
   bundle can reach; `npm run mcp:smoke` fails on any stdout pollution (it breaks
   the JSON-RPC framing immediately).
 - **Module split for testability:** `mcpServer.ts` (SDK wiring + zod schemas, the
-  only file that imports the real `occtService`/`gmshService` functions) →
-  `mcpTools.ts` (the 11 tool handlers over an injected `Pipeline` object;
-  imports **only `import type`** from `occtService`/`gmshService` — their `.wasm`
-  imports resolve under esbuild's wasm-path plugin, never under vitest) →
+  only file that imports the real `occtService`/`gmshService`/`entityFacts`/
+  `renderService` functions) → `mcpTools.ts` (18 tool handlers over an injected
+  `Pipeline` object; imports **only `import type`** from `occtService`/
+  `gmshService`/`entityFacts`/`renderService` — their `.wasm` imports (or, for
+  `renderService.ts`, its dynamic `import("playwright")`) resolve under
+  esbuild's wasm-path plugin/external list, never under vitest) →
   `mcpSidecars.ts` (node-fs sidecar store over the same pure `*Sidecar.ts`
   parsers the extension uses; must stay byte-compatible with `provider.ts`).
+- **`wrap()` (`mcpServer.ts`) does two things beyond the original JSON-result
+  round trip, both additive — every pre-existing `wrap((args) => tool(ctx,
+  args))` call site is untouched.** (1) Its handler now takes a second
+  `onProgress: ProgressCallback` parameter (the type is defined in
+  `mcpTools.ts`, not `mcpServer.ts`, so `mcpTools.ts` stays MCP-SDK-free —
+  `wrap()` builds it from the SDK's real `extra: RequestHandlerExtra`
+  argument, calling `extra.sendNotification({method:"notifications/progress",
+  params:{progressToken,...}})` only when the caller opted in via
+  `_meta.progressToken`; a no-op otherwise). Only `generate_mesh`/
+  `export_mesh` use it, and only for start(0)/done(1) signaling — Gmsh's
+  `generate()` has no mid-call progress hook (see "Meshing (GMSH-JS)" below),
+  so this is never a genuine percentage. **`describe_capabilities` is the one
+  tool NOT registered through `wrap()`** — it has no `inputSchema`, so the
+  SDK calls its callback with a single `extra` argument (no `args`), an arity
+  `wrap()` doesn't model; it's inlined directly instead (harmless, since it's
+  instant/pure and progress reporting would be meaningless for it). (2) A
+  handler result carrying an `images: RenderImage[]` field (currently only
+  `render_snapshot`'s) gets one text block (JSON, with `images` summarized as
+  `[{label, mimeType}]` — base64 omitted so the JSON payload doesn't double
+  the response size) followed by one `{type:"image", data, mimeType}` content
+  block per image — the SDK's `CallToolResultSchema` already supports an
+  image content type (`@modelcontextprotocol/sdk` 1.29.0's
+  `ImageContentSchema`, confirmed present in the installed version).
 - **Stateless per call, sidecars are the state.** Every tool re-reads the model +
   sidecars fresh and writes sidecars back — the same `<model>.edits.json` /
   `.parts.json` / `.mesh.json` / `.geo` files the extension reads on reopen, so
@@ -1200,6 +1229,115 @@ invariants:
 - `@modelcontextprotocol/sdk` + `zod` are MIT (GPL-compatible, per the License
   section's bundled-dependency rule) and are bundled only into
   `dist/mcp-server.js`, never `dist/extension.js`.
+
+## Agent feedback tools: inspect, measure, render_snapshot (P1 roadmap features)
+
+Three tools closing the "agent edits headlessly, then can't verify or see the
+result" gap `doc/roadmap.md`'s P1 tier identified, mined from
+`earthtojake/text-to-cad`'s agent-feedback conventions (fact-only tools,
+three-valued pass/fail/need-more-info verdicts, "visual review is diagnostic
+not authoritative"). Non-negotiable invariants:
+
+- **`inspect`/`measure` (`src/entityFacts.ts`) are B-rep-only, same gate as
+  `get_mass_properties`/`compare_models`**, and follow the identical
+  dispatch convention: `mcpTools.ts` never parses `solid-N`/`face-N`/
+  `edge-N`/`point-N` ids itself, it forwards raw strings into the pipeline
+  function, which regex-dispatches (mirroring `massProperties.ts`'s
+  `computeMassProperties` exactly) to `collectSolids`/`collectFaces`/
+  `collectEdges`/`collectVertices` (all four already exported from
+  `occtOperations.ts`). One parse/replay per call (`readShape` +
+  `applyEditsBRep`, no shape cache), same as every other B-rep read path.
+- **`inspect`'s `center` is deliberately the bounding-box centre
+  (`bboxCenter`), NOT `get_mass_properties`' area/volume-weighted
+  `centerOfMass`** — for an asymmetric shape these are different points.
+  Stated in both the code doc comment and the tool description so an agent
+  doesn't conflate the two. `measure`'s distance/axis-component math is
+  built on the same bbox-centre convention.
+- **`facePlane` (`occtOperations.ts`) was promoted from module-private to
+  exported** for `entityFacts.ts`'s `normal` field — its only other caller
+  is `mateShape`, unchanged.
+- **`SurfaceType` mapping, verified against the live WASM** (brute-force
+  probing, same convention as every other OCCT call in this codebase):
+  `GeomAbs_SurfaceType.GeomAbs_Plane.value = 0`, `GeomAbs_Cylinder = 1`,
+  `GeomAbs_Cone = 2`, `GeomAbs_Sphere = 3`, `GeomAbs_Torus = 4` — confirmed
+  by building a box/cylinder/cone/sphere/torus via `BRepPrimAPI_Make*` (the
+  already-verified primitive ctors from the "Geometry editing" section
+  above) and reading `BRepAdaptor_Surface_2(face,true).GetType().value` off
+  each. The remaining members (`BezierSurface=5`, `BSplineSurface=6`,
+  `SurfaceOfRevolution=7`, `SurfaceOfExtrusion=8`, `OffsetSurface=9`,
+  `OtherSurface=10`) were read off the enum directly, not individually
+  probed — `entityFacts.ts` collapses all of them to `"other"`.
+- **`render_snapshot` (`src/renderService.ts`) is the runtime sibling of
+  `scripts/screenshots/`'s Playwright docs-build harness** — same real
+  `media/viewer.js` bundle + `viewerDom.ts`'s `viewerBodyHtml()` DOM, same
+  tiny static-file server + `/__harness` route + SwiftShader launch flags,
+  but driven programmatically (one `renderViewRequest`/result round trip per
+  view) instead of a fixed shot list, and fed geometry directly from an
+  in-process `loadBRep()` result via `encodeBuffer()` (the exact transform
+  `scripts/screenshots/fixtures-entry.ts` already uses) — **no temp file
+  write or re-parse**. `scripts/screenshots/capture.mjs` itself is untouched;
+  this is a deliberate sibling implementation for a different consumer
+  (`dist/mcp-server.js` at agent-call time vs. `npm run docs:screenshots` at
+  build time).
+- **Playwright stays a devDependency — `render_snapshot` degrades
+  gracefully, it never crashes the MCP server.** `.vscodeignore` excludes
+  `node_modules/**` wholesale with no carve-out for `playwright`, and its
+  Chromium binary is a separate ~150–300MB download
+  (`npx playwright install chromium`) that never runs for an installed
+  `.vsix`. `renderService.ts` does a dynamic `await import("playwright")` in
+  a try/catch (and a separate `isRenderAvailable()` launch-then-close probe
+  `render_snapshot` calls before doing any real work) — either path returns
+  `{supported: false, reason}` instead of throwing when Playwright/Chromium
+  aren't present, the same shape `get_mass_properties`/`compare_models`
+  already use for mesh-format sources. `esbuild.mjs`'s `mcpConfig.external`
+  lists `"playwright"` (alongside `gmsh-wasm`/`meshioplusplus`) so the
+  dynamic import resolves via real `node_modules` at runtime rather than
+  getting inlined into the bundle.
+- **New protocol messages, deliberately separate from `screenshotRequest`/
+  `screenshotResult`/`screenshotError`** (the interactive single-view
+  Screenshot feature): `renderViewRequest` (host→webview: `direction`, `up?`,
+  `label`, `focus?`/`hide?` as `{entityType,entityId}[]`, `wireframe?`) →
+  `renderViewResult`/`renderViewError` (webview→host). A separate pair avoids
+  `requestId` namespace confusion and carries fields the interactive feature
+  has no reason to. `focus`/`hide` are typed `{entityType,entityId}[]`
+  (matching `SelectedEntity`) rather than bare id strings because **no
+  id-prefix-to-`EntityType` parser exists anywhere in the webview** (every
+  existing caller already carries `entityType` alongside `entityId`) —
+  `renderService.ts`'s `toSelectedEntity()` (host-side, already B-rep-aware
+  from its own `solid-N`/`face-N`/`edge-N`/`point-N` regex dispatch) is the
+  natural place to attach it.
+- **`main.ts`'s `renderViewRequest` handler needs no state restoration**
+  after mutating camera-up/view-direction/visibility/wireframe — every
+  request this feature ever sends targets a disposable, harness-only
+  headless page (`renderService.ts` creates and closes one Chromium page per
+  `render_snapshot` call), never a live interactive session.
+- **`Viewer.setCameraUp()`** (new, one-liner beside the existing
+  `getCameraUp()`) is required for a near-vertical `direction` (the TOP view,
+  `up:[0,0,-1]`) to avoid a gimbal-lock-like flip — the default `[0,1,0]` up
+  is parallel to a straight-down/up view direction. **The default 4-view
+  packet** (`renderService.ts`'s `DEFAULT_VIEWS`): two opposed isometrics
+  (`[1,0.8,1]`/`[-1,-0.8,-1]` — negating all 3 components guarantees every
+  outward face normal has a positive dot product with at least one of the
+  two, by construction) + TOP + FRONT.
+- **`src/webview/labelOverlay.ts`'s `drawLabel()` must never run at module
+  load / import time** (no jsdom/canvas polyfill in this repo's vitest
+  config — the exact trap `geometryBuilder.ts`'s `dotTexture()` hit once
+  already, see the Points section above) — it's plain Canvas2D, only ever
+  invoked from inside `Viewer.captureLabeledScreenshotBase64`, itself only
+  reachable via a real `renderViewRequest` message. Not realistically
+  unit-testable under this repo's setup; verified via manual F5 + `mcp:smoke`
+  only.
+- **`describe_capabilities` does NOT call `isRenderAvailable()`** — that
+  would add a full browser launch/close to a tool meant to be instant and
+  side-effect-free. Availability is self-discovered by calling
+  `render_snapshot` and checking `supported`.
+- **`describeCapabilities()`'s new `verdictConventions` field** states the
+  fact-only/three-valued-verdict framing (tools report facts; agents render
+  pass/fail/need-more-info; a `supported:false`/tool-or-network failure is
+  need-more-info, never a silent pass or fail; `render_snapshot`'s images are
+  diagnostic, convert concerns into `inspect`/`measure` checks) — referenced
+  from `inspect`/`measure`/`render_snapshot`'s tool descriptions rather than
+  repeating the policy prose in each one.
 
 ## Settings, screenshot, mass properties, and measurement (P1 roadmap features)
 

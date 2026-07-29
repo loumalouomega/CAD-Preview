@@ -12,6 +12,7 @@ import {
   disposeMeasureObject,
 } from "./measurementOverlay";
 import type { MeasurementPick } from "./measurementState";
+import { drawLabel } from "./labelOverlay";
 import type { EntityType } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
@@ -372,6 +373,16 @@ export class Viewer {
     return this.activeCamera.up.clone();
   }
 
+  /** Sets the camera's up vector directly — needed by the headless
+   * multi-view render service (`src/renderService.ts`) so a near-vertical
+   * `setViewDirection` (e.g. a top view) doesn't produce a gimbal-lock-like
+   * flip; interactive orbiting never needs this (three.js/OrbitControls
+   * derive orientation from the existing up vector on their own). */
+  setCameraUp(up: THREE.Vector3): void {
+    this.activeCamera.up.copy(up);
+    this.controls.update();
+  }
+
   /**
    * Toggles between perspective and orthographic projection. NOT a
    * reconstruction — `orthoCamera` is a second camera object kept alive the
@@ -666,6 +677,17 @@ export class Viewer {
    */
   captureScreenshotBase64(): string {
     const dataUrl = this.renderer.domElement.toDataURL("image/png");
+    return dataUrl.slice(dataUrl.indexOf(",") + 1);
+  }
+
+  /** Same as {@link captureScreenshotBase64}, with `label` burned into the
+   * top-left corner (`labelOverlay.ts`'s `drawLabel`) — used by
+   * `renderViewRequest`'s handler for the headless `render_snapshot` MCP
+   * tool, which returns several same-shaped images and needs each one
+   * self-identifying. */
+  captureLabeledScreenshotBase64(label: string): string {
+    const labeled = drawLabel(this.renderer.domElement, label);
+    const dataUrl = labeled.toDataURL("image/png");
     return dataUrl.slice(dataUrl.indexOf(",") + 1);
   }
 

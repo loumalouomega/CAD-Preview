@@ -1395,6 +1395,26 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       }
       break;
 
+    case "renderViewRequest":
+      // Every renderViewRequest this feature ever sends targets a
+      // disposable, harness-only headless page (src/renderService.ts) —
+      // never a live interactive session — so mutating camera-up/wireframe/
+      // visibility here needs no state restoration afterward.
+      try {
+        viewer.setCameraUp(new THREE.Vector3(...(msg.up ?? [0, 1, 0])));
+        viewer.setViewDirection(new THREE.Vector3(...msg.direction));
+        if (msg.focus || msg.hide) {
+          viewer.applyPartVisibility(msg.hide ?? [], msg.focus?.length ? msg.focus : null);
+        }
+        if (msg.wireframe !== undefined) viewer.setWireframe(msg.wireframe);
+        viewer.render();
+        const data = viewer.captureLabeledScreenshotBase64(msg.label);
+        post({ type: "renderViewResult", requestId: msg.requestId, data });
+      } catch (err) {
+        post({ type: "renderViewError", requestId: msg.requestId, message: (err as Error).message });
+      }
+      break;
+
     case "massPropertiesResult":
       if (msg.requestId !== massPropertiesRequestId) break; // stale — a newer refresh superseded it
       renderMassProperties(msg.properties);

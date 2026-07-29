@@ -37,6 +37,8 @@ import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, MassProperties } from "./massProperties";
+import type { getEntityFacts, measureEntities, EntityFacts, MeasureResult } from "./entityFacts";
+import type { renderSnapshot, isRenderAvailable, RenderImage } from "./renderService";
 import type { compareModels } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, exportViaMeshio } from "./meshioService";
@@ -76,6 +78,10 @@ export interface Pipeline {
   exportMdpa: typeof exportMdpa;
   exportGeoUnrolled: typeof exportGeoUnrolled;
   computeMassProperties: typeof computeMassProperties;
+  getEntityFacts: typeof getEntityFacts;
+  measureEntities: typeof measureEntities;
+  renderSnapshot: typeof renderSnapshot;
+  isRenderAvailable: typeof isRenderAvailable;
   compareModels: typeof compareModels;
   convertToStlBoundary: typeof convertToStlBoundary;
   exportViaMeshio: typeof exportViaMeshio;
@@ -172,7 +178,12 @@ export function describeCapabilities() {
       "Angles are degrees. Vec3s are [x,y,z] arrays.",
     ],
     entityIdScheme:
-      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them.",
+      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids.",
+    verdictConventions: [
+      "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
+      "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
+      "render_snapshot's images are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
+    ],
     brepExportTargets: {
       description: "export_brep targets per source format (the source's own format is excluded, matching the extension's Export menu). Mesh targets (stl/obj/ply/gltf) are webview-only and not available headless.",
       step: exportTargetsFor({ strategy: "occt", format: "step" }).filter(isBRepFormat),
@@ -191,6 +202,8 @@ export function describeCapabilities() {
     },
     headlessLimitations: [
       "get_mass_properties (volume/area/length, center of mass, moments of inertia via OCCT BRepGProp) is B-rep sources only headless; mesh formats compute the equivalent client-side in the webview.",
+      "inspect (per-entity bbox/bbox-center/area/length/normal/surfaceType) and measure (distance between two entities' bbox centers) are B-rep sources only headless, same reason. Note inspect's `center` is the bbox center, NOT get_mass_properties' mass-weighted centroid — they can differ for an asymmetric shape.",
+      "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
       "compare_models (bounding-box-centroid + volume solid matching between two files) is B-rep sources only headless for the same reason — mesh formats have no host-side geometry to derive centroids/volumes from without a webview.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
@@ -353,6 +366,120 @@ export async function getMassProperties(
     supported: true,
     ...properties,
     warnings: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// inspect / measure
+
+/**
+ * Per-entity geometric facts for `solid-N`/`face-N`/`edge-N`/`point-N` —
+ * bbox, bbox-centre, area/length, and (for a planar face) normal + surface
+ * type — via `entityFacts.ts`'s `getEntityFacts`. Mirrors
+ * `getMassProperties`'s B-rep-only gate exactly; deliberately does not
+ * duplicate `get_mass_properties`' volume/centroid/inertia numbers — call
+ * that tool when the mass-weighted centroid or inertia is the actual thing
+ * being asked about (see `EntityFacts.center`'s doc comment).
+ */
+export async function inspectEntity(
+  ctx: ToolContext,
+  params: { path: string; entityId: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<EntityFacts>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: entity facts require host-side B-rep topology, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const facts = await ctx.pipeline.getEntityFacts(ctx.extensionPath, bytes, route.format as BRepFormat, ops, params.entityId);
+  return { format: route.format, supported: true, ...facts, warnings: [] };
+}
+
+/**
+ * Straight-line distance between two entities' bbox centres (+ an optional
+ * signed axis component) via `entityFacts.ts`'s `measureEntities`. Same
+ * B-rep-only gate as `inspect`/`get_mass_properties`.
+ */
+export async function measureTool(
+  ctx: ToolContext,
+  params: { path: string; from: string; to: string; axis?: [number, number, number] }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeasureResult>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: measurement requires host-side B-rep topology, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.measureEntities(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    ops,
+    params.from,
+    params.to,
+    params.axis
+  );
+  return { format: route.format, supported: true, ...result, warnings: [] };
+}
+
+// ---------------------------------------------------------------------------
+// render_snapshot
+
+/**
+ * Headless multi-view PNG packet via `renderService.ts` (Playwright driving
+ * the real `media/viewer.js` bundle) — B-rep sources only in this version
+ * (a mesh-format source would need a `loadMeshBytes`-style harness path,
+ * not yet built; see `renderService.ts`'s doc comment). Checks availability
+ * itself and reports `supported: false` rather than throwing when
+ * Playwright/Chromium aren't present in this environment — see
+ * `renderService.ts`'s doc comment for why that's expected in some
+ * environments and not others.
+ */
+export async function renderSnapshotTool(
+  ctx: ToolContext,
+  params: { path: string; focus?: string[]; hide?: string[]; displayMode?: "shaded" | "wireframe" }
+): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[] }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      supported: false,
+      images: [],
+      warnings: [`${route.format} is a mesh-format source: render_snapshot is B-rep sources only in this version.`],
+    };
+  }
+
+  const avail = await ctx.pipeline.isRenderAvailable();
+  if (!avail.available) {
+    return { supported: false, images: [], warnings: [avail.reason ?? "Renderer unavailable."] };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, route.format as BRepFormat, ops, {
+    focus: params.focus,
+    hide: params.hide,
+    wireframe: params.displayMode === "wireframe" ? true : undefined,
+  });
+  return {
+    supported: result.supported,
+    images: result.images ?? [],
+    warnings: result.reason ? [result.reason] : [],
   };
 }
 
@@ -728,9 +855,17 @@ async function effectiveMeshOptions(modelPath: string, override: Partial<MeshOpt
 // ---------------------------------------------------------------------------
 // generate_mesh
 
+/** Emits `{progress, total?, message?}` for a long-running MCP tool call —
+ * threaded down from `mcpServer.ts`'s `wrap()`, which turns it into a real
+ * `notifications/progress` SDK message when the caller opted in via
+ * `_meta.progressToken` (a no-op callback otherwise). Kept as a plain
+ * function type (not an SDK type) so this file stays MCP-SDK-free. */
+export type ProgressCallback = (p: { progress: number; total?: number; message?: string }) => void;
+
 export async function generateMeshTool(
   ctx: ToolContext,
-  params: { path: string; options?: Partial<MeshOptions> }
+  params: { path: string; options?: Partial<MeshOptions> },
+  onProgress?: ProgressCallback
 ) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -745,8 +880,13 @@ export async function generateMeshTool(
     );
   }
 
+  // Gmsh's generate() has no mid-call progress hook (one opaque blocking WASM
+  // call — see CLAUDE.md's Meshing section) — this is start/done signaling
+  // only, never a genuine percentage.
+  onProgress?.({ progress: 0, total: 1, message: "Generating mesh..." });
   const started = Date.now();
   const result = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
+  onProgress?.({ progress: 1, total: 1, message: "Done" });
   return {
     nodeCount: result.nodeCount,
     elementCount: result.elementCount,
@@ -769,7 +909,8 @@ export function rewriteGeoMerge(text: string, xaoName: string): string {
 
 export async function exportMeshTool(
   ctx: ToolContext,
-  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions> }
+  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions> },
+  onProgress?: ProgressCallback
 ) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -787,6 +928,8 @@ export async function exportMeshTool(
   const base = await effectiveMeshOptions(modelPath, params.options);
   const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
 
+  // Same start/done-only scoping as generate_mesh — no mid-call hook exists.
+  onProgress?.({ progress: 0, total: 1, message: `Generating + exporting to ${format.id}...` });
   const written: string[] = [];
   if (format.id === "msh") {
     const result = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
@@ -856,6 +999,7 @@ export async function exportMeshTool(
   }
 
   const sizes = await Promise.all(written.map(async (p) => ({ path: p, bytes: (await fs.stat(p)).size })));
+  onProgress?.({ progress: 1, total: 1, message: "Done" });
   return { format: format.id, written: sizes, warnings };
 }
 

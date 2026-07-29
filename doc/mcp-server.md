@@ -17,6 +17,24 @@ npm install
 npm run build   # produces dist/mcp-server.js + the two WASM binaries beside it
 ```
 
+## Prerequisites for render_snapshot
+
+`render_snapshot` needs Playwright's Chromium binary, which is **not** part
+of `npm install`/`npm run build` above — it's a separate, optional download:
+
+```bash
+npx playwright install chromium
+```
+
+This works in a repo checkout, CI, or an agent sandbox that can run the
+command once, but it is **not guaranteed present for a `.vsix`-installed end
+user** — Playwright is a devDependency and `.vscodeignore` excludes
+`node_modules/**` from the packaged extension with no carve-out for it. Every
+other tool in this server works with no such requirement. `render_snapshot`
+detects Playwright/Chromium's absence itself and returns
+`{supported: false, warnings: [...]}` rather than crashing — call the tool
+and check `supported`, don't assume availability.
+
 ## Registering with an MCP client
 
 With Claude Code:
@@ -60,6 +78,9 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | `describe_capabilities` | Op catalog (all edit-op kinds + parameter docs + B-rep-only/topology-changing flags), entity-id scheme, export target matrix, mesh export formats, mesh option defaults, headless limitations. |
 | `load_model` | Load the model (sidecar edits replayed) and return the component tree, entity-id inventory (`solid-N`/`face-N`/`edge-N`/`point-N` — the ids used as op operands and part members), bounding box, and sidecar summary. |
 | `get_mass_properties` | Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources only headless (OCCT `BRepGProp`); mesh formats return `supported: false`. All lengths/areas/volumes are in the model's internal cascade unit (millimetres — OCCT's STEP reader auto-converts every shape to it regardless of the source file's declared unit, e.g. inches); this tool never applies the extension's webview-only display-unit selector, so a caller wanting a different unit converts the raw mm-based numbers itself. |
+| `inspect` | Per-entity facts for one `solid-N`/`face-N`/`edge-N`/`point-N` id: bounding box, bbox-center (**not** `get_mass_properties`' mass-weighted centroid — they differ for an asymmetric shape), area/length, and — for a planar face — its normal and surface type (`plane`/`cylinder`/`cone`/`sphere`/`torus`/`other`). B-rep sources only headless. |
+| `measure` | Straight-line distance between two entities' bbox centers, plus (with an optional `axis` vector) the signed component of that displacement along it. B-rep sources only headless. |
+| `render_snapshot` | 4 labelled PNGs of the current model (sidecar edits replayed) — two opposed isometrics + top + front, optional `focus`/`hide` by entity id, optional `displayMode` (shaded/wireframe) for the whole packet. B-rep sources only, and **requires Playwright + a Chromium binary in this environment** — see "Prerequisites for render_snapshot" below; check the response's `supported` field rather than assuming availability. |
 | `compare_models` | Diff two B-rep models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict). B-rep sources only headless; mesh formats return `supported: false`. |
 | `get_state` | The sidecar state without loading geometry: edit-op stack (indexed, described), variables (evaluated), parts, mesh options. |
 | `apply_edit_ops` | Validate and append raw `EditOp` JSON objects to the op stack; per-op accept/reject report; for B-rep sources returns the post-replay entity inventory. `dryRun` validates without persisting. |
@@ -129,15 +150,31 @@ headlessly capable than those three, since `convertToStlBoundary()` produces
 the same STL bytes the extension itself would show, with zero webview
 involvement.
 
-`get_mass_properties` and `compare_models` aren't columns above since both are
-read-only and orthogonal to the edit/mesh/export pipeline: B-rep sources get
-the full OCCT `BRepGProp`/`bboxCenter`+`bboxDiagonal` computation for any of
-the three format families; every mesh format (`.stl` included) returns
-`{supported: false}` with a warning — mass properties are computed client-side
-in the webview's Three.js scene (no headless equivalent), and `compare_models`
-has no host-side geometry to derive solid centroids/volumes from for a mesh
-source at all (nothing parses `.stl`/`.obj`/`.ply`/`.gltf` outside the
-webview's Three.js loaders).
+`get_mass_properties`, `inspect`, `measure`, `render_snapshot`, and
+`compare_models` aren't columns above since all are read-only and orthogonal
+to the edit/mesh/export pipeline: B-rep sources get the full OCCT
+`BRepGProp`/`bboxCenter`+`bboxDiagonal` computation (or, for
+`render_snapshot`, a real headless render) for any of the three format
+families; every mesh format (`.stl` included) returns `{supported: false}`
+with a warning — mass properties are computed client-side in the webview's
+Three.js scene (no headless equivalent), `inspect`/`measure` need host-side
+B-rep topology that doesn't exist for a mesh source outside the webview, and
+`compare_models` has no host-side geometry to derive solid centroids/volumes
+from for a mesh source at all (nothing parses `.stl`/`.obj`/`.ply`/`.gltf`
+outside the webview's Three.js loaders). `render_snapshot` additionally
+returns `{supported: false}` when Playwright/Chromium aren't available in
+this environment, independent of source format — see "Prerequisites for
+render_snapshot" above.
+
+## Verdict conventions
+
+Every tool reports facts, not verdicts — rendering pass/fail/need-more-info
+is the calling agent's job, not this server's. `describe_capabilities`'
+`verdictConventions` field states this explicitly: a `supported: false`
+response or a tool/network failure is **need-more-info**, never a silent
+pass or fail; `render_snapshot`'s images are **diagnostic, not
+authoritative** — convert a visual concern into an `inspect`/`measure` check
+before treating anything as validated, and don't loop on repeated snapshots.
 
 ## Troubleshooting
 
@@ -156,7 +193,12 @@ webview's Three.js loaders).
 - `npm test` covers the tool handlers and sidecar store with an injected fake
   pipeline (no WASM).
 - `npm run mcp:smoke` runs the real end-to-end scenario over actual stdio
-  JSON-RPC against `examples/STP/bull.stp` (build → load → edit → mesh →
-  export `.msh` + `.geo_unrolled`/`.xao` + `.brep` → `save_preprocess` →
-  `load_preprocess`), asserting the source file stays byte-identical and that
-  the preprocess archive round-trips the source + edits sidecar into a fresh copy.
+  JSON-RPC against `examples/STP/bull.stp` (build → load → edit → inspect/
+  measure → compare_models → mesh → export `.msh` + `.geo_unrolled`/`.xao` +
+  `.brep` → render_snapshot → `save_preprocess` → `load_preprocess`),
+  asserting the source file stays byte-identical and that the preprocess
+  archive round-trips the source + edits sidecar into a fresh copy.
+  `render_snapshot`'s assertions tolerate Chromium being absent in the smoke
+  environment (see "Prerequisites for render_snapshot" above) — when it's
+  installed, the test also checks the 4 returned images are real PNGs and
+  that the raw JSON-RPC response carries 4 image content blocks.

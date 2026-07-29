@@ -2,9 +2,10 @@
  * Opt-in end-to-end smoke test for the MCP server (`npm run mcp:smoke`):
  * spawns the real `dist/mcp-server.js` (real OCCT + Gmsh + meshio++ WASM) and
  * drives it over actual stdio JSON-RPC — initialize → tools/list → load_model →
- * apply_edit_ops → compare_models → generate_mesh → export_mesh (msh +
- * geoUnrolled) → export_brep → a meshio++-only VTK source meshed and exported
- * to MED/XDMF (the meshio bridge) → save_preprocess → load_preprocess —
+ * apply_edit_ops → inspect/measure → compare_models → generate_mesh →
+ * export_mesh (msh + geoUnrolled) → export_brep → a meshio++-only VTK source
+ * meshed and exported to MED/XDMF (the meshio bridge) → render_snapshot
+ * (tolerating a missing Chromium) → save_preprocess → load_preprocess —
  * against a temp copy of `examples/STP/bull.stp`, asserting real geometry/mesh
  * output, sidecar validity, that the CAD source is byte-identical afterward,
  * and that a preprocess archive round-trips the source + edits sidecar into a
@@ -90,12 +91,17 @@ function notify(method, params) {
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
 }
 
-/** tools/call wrapper: unwraps the JSON text content block, fails on isError. */
-async function call(name, args) {
+/** tools/call wrapper: raw result (full content array), fails on isError. */
+async function callRaw(name, args) {
   const result = await request("tools/call", { name, arguments: args });
-  const text = result.content?.[0]?.text ?? "";
-  if (result.isError) fail(`${name} returned an error: ${text}`);
-  return JSON.parse(text);
+  if (result.isError) fail(`${name} returned an error: ${result.content?.[0]?.text ?? ""}`);
+  return result;
+}
+
+/** tools/call wrapper: unwraps + JSON-parses the first (text) content block. */
+async function call(name, args) {
+  const result = await callRaw(name, args);
+  return JSON.parse(result.content?.[0]?.text ?? "");
 }
 
 // --- the scenario ------------------------------------------------------------
@@ -115,7 +121,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 15, `tools/list exposes 15 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 18, `tools/list exposes 18 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -140,6 +146,22 @@ try {
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
 
+  // inspect/measure: real OCCT entity facts + distance for the bull solid
+  // (solid-0) and the just-added box (solid-1).
+  const bullFacts = await call("inspect", { path: model, entityId: "solid-0" });
+  assert(
+    bullFacts.supported === true && bullFacts.bbox && bullFacts.center && bullFacts.area > 0,
+    "inspect resolves solid-0's bbox/center/area"
+  );
+  const boxFacts = await call("inspect", { path: model, entityId: "solid-1" });
+  assert(boxFacts.supported === true && boxFacts.kind === "solid", "inspect resolves the added box (solid-1)");
+
+  const measured = await call("measure", { path: model, from: "solid-0", to: "solid-1" });
+  assert(
+    measured.supported === true && measured.distance > 0,
+    `measure reports a positive distance between solid-0 and solid-1 (got ${measured.distance})`
+  );
+
   // compare_models: the edited model (bull + added box) against a fresh,
   // unedited copy of the same fixture (just the bull) — the bull solid
   // should match itself exactly (centreDistance/volumeDeltaPct ~ 0) and the
@@ -156,6 +178,40 @@ try {
     diff.diff.matched[0].centreDistance < 1e-6 && diff.diff.matched[0].volumeDeltaPct < 1e-6,
     "compare_models reports the matched bull solid as an exact match (0 displacement, 0 volume delta)"
   );
+
+  // render_snapshot: Playwright/Chromium is a devDependency this environment
+  // may or may not have installed (`npx playwright install chromium`) — this
+  // MUST tolerate both outcomes, never hard-require Chromium in CI/smoke.
+  const rawRender = await callRaw("render_snapshot", { path: model });
+  const render = JSON.parse(rawRender.content[0].text);
+  if (render.supported) {
+    // The JSON text block deliberately summarizes images as {label,mimeType}
+    // (base64 omitted so the text payload doesn't double in size) — the
+    // actual base64 pixel data only lives in the raw tool result's separate
+    // `image` content blocks.
+    assert(render.images.length === 4, `render_snapshot returns 4 images (got ${render.images.length})`);
+    assert(
+      render.images.every((img) => img.mimeType === "image/png" && !("dataBase64" in img)),
+      "render_snapshot's JSON text summary omits base64 (label/mimeType only)"
+    );
+    const imageBlocks = rawRender.content.filter((c) => c.type === "image");
+    assert(imageBlocks.length === 4, "render_snapshot's raw tool result carries 4 image content blocks");
+    assert(
+      imageBlocks.every((b) => b.mimeType === "image/png" && b.data.length > 1000),
+      "render_snapshot's image content blocks carry non-trivial base64 PNG data"
+    );
+    const firstBytes = Buffer.from(imageBlocks[0].data, "base64");
+    assert(
+      firstBytes[0] === 0x89 && firstBytes[1] === 0x50 && firstBytes[2] === 0x4e && firstBytes[3] === 0x47,
+      "render_snapshot's first image has a real PNG signature"
+    );
+  } else {
+    assert(
+      /playwright|chromium/i.test(render.warnings?.[0] ?? ""),
+      `render_snapshot gracefully reports unavailable renderer (got: ${render.warnings?.[0]})`
+    );
+    console.log("  (Playwright/Chromium not installed in this environment — render_snapshot's supported:true path was not exercised)");
+  }
 
   const meshed = await call("generate_mesh", { path: model, options: { sizeMax: bbox.diagonal / 15 } });
   assert(meshed.nodeCount > 0 && meshed.elementCount > 0, `generate_mesh: ${meshed.nodeCount} nodes, ${meshed.elementCount} elements in ${meshed.elapsedMs} ms`);

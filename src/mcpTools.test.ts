@@ -15,6 +15,9 @@ import {
   setVariables,
   setPart,
   setMeshOptions,
+  inspectEntity,
+  measureTool,
+  renderSnapshotTool,
   generateMeshTool,
   exportMeshTool,
   exportBRepTool,
@@ -31,6 +34,8 @@ import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
 import type { MassProperties } from "./massProperties";
+import type { EntityFacts, MeasureResult } from "./entityFacts";
+import type { RenderResult } from "./renderService";
 import type { ModelDiff } from "./modelDiff";
 
 let dir: string;
@@ -74,6 +79,36 @@ const FAKE_MASS_PROPERTIES: MassProperties = {
   momentsOfInertia: { ixx: 50, iyy: 40, izz: 26, ixy: 0, ixz: 0, iyz: 0 },
 };
 
+const FAKE_ENTITY_FACTS: EntityFacts = {
+  entityId: "solid-0",
+  kind: "solid",
+  bbox: { min: [0, 0, 0], max: [1, 1, 5], diagonal: Math.hypot(1, 1, 5) },
+  center: [0.5, 0.5, 2.5],
+  area: 52,
+  length: null,
+  normal: null,
+  surfaceType: null,
+};
+
+const FAKE_MEASURE_RESULT: MeasureResult = {
+  from: "solid-0",
+  to: "solid-1",
+  fromPoint: [0, 0, 0],
+  toPoint: [3, 4, 0],
+  distance: 5,
+  delta: [3, 4, 0],
+};
+
+const FAKE_RENDER_RESULT: RenderResult = {
+  supported: true,
+  images: [
+    { label: "ISO-A", mimeType: "image/png", dataBase64: "aXNvLWE=" },
+    { label: "ISO-B", mimeType: "image/png", dataBase64: "aXNvLWI=" },
+    { label: "TOP", mimeType: "image/png", dataBase64: "dG9w" },
+    { label: "FRONT", mimeType: "image/png", dataBase64: "ZnJvbnQ=" },
+  ],
+};
+
 const FAKE_MODEL_DIFF: ModelDiff = {
   added: [],
   removed: [],
@@ -89,6 +124,10 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
     exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "/out.geo_unrolled.xao";\n', xao: new Uint8Array([9]) })),
     computeMassProperties: vi.fn(async () => FAKE_MASS_PROPERTIES),
+    getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
+    measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
+    renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
+    isRenderAvailable: vi.fn(async () => ({ available: true })),
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
@@ -222,6 +261,101 @@ describe("get_mass_properties", () => {
 
   it("rejects unsupported extensions", async () => {
     await expect(getMassProperties(ctx(), { path: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
+  });
+});
+
+describe("inspect", () => {
+  it("resolves entity facts for a B-rep source", async () => {
+    const c = ctx();
+    const result = await inspectEntity(c, { path: stpModel, entityId: "solid-0" });
+    expect(c.pipeline.getEntityFacts).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], "solid-0");
+    expect(result).toMatchObject({ supported: true, entityId: "solid-0", kind: "solid", area: 52 });
+  });
+
+  it("replays sidecar ops before resolving", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    await inspectEntity(c, { path: stpModel, entityId: "solid-0" });
+    const lastCall = vi.mocked(c.pipeline.getEntityFacts).mock.lastCall!;
+    expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await inspectEntity(c, { path: stlModel, entityId: "node-0" });
+    expect(c.pipeline.getEntityFacts).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/headless/i);
+  });
+});
+
+describe("measure", () => {
+  it("measures the distance between two entities for a B-rep source", async () => {
+    const c = ctx();
+    const result = await measureTool(c, { path: stpModel, from: "solid-0", to: "solid-1" });
+    expect(c.pipeline.measureEntities).toHaveBeenCalledWith(
+      dir,
+      expect.any(Uint8Array),
+      "step",
+      [],
+      "solid-0",
+      "solid-1",
+      undefined
+    );
+    expect(result).toMatchObject({ supported: true, distance: 5 });
+  });
+
+  it("passes an optional axis through to the pipeline", async () => {
+    const c = ctx();
+    await measureTool(c, { path: stpModel, from: "solid-0", to: "solid-1", axis: [1, 0, 0] });
+    const lastCall = vi.mocked(c.pipeline.measureEntities).mock.lastCall!;
+    expect(lastCall[6]).toEqual([1, 0, 0]);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await measureTool(c, { path: stlModel, from: "node-0", to: "node-1" });
+    expect(c.pipeline.measureEntities).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/headless/i);
+  });
+});
+
+describe("render_snapshot", () => {
+  it("returns the pipeline's images for a B-rep source when the renderer is available", async () => {
+    const c = ctx();
+    const result = await renderSnapshotTool(c, { path: stpModel });
+    expect(c.pipeline.isRenderAvailable).toHaveBeenCalled();
+    expect(c.pipeline.renderSnapshot).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], {
+      focus: undefined,
+      hide: undefined,
+      wireframe: undefined,
+    });
+    expect(result.supported).toBe(true);
+    expect(result.images).toHaveLength(4);
+  });
+
+  it("maps displayMode: wireframe to the pipeline's wireframe flag", async () => {
+    const c = ctx();
+    await renderSnapshotTool(c, { path: stpModel, displayMode: "wireframe" });
+    const lastCall = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall!;
+    expect(lastCall[4].wireframe).toBe(true);
+  });
+
+  it("returns supported: false without calling the pipeline when the renderer is unavailable", async () => {
+    const c = ctx(fakePipeline({ isRenderAvailable: vi.fn(async () => ({ available: false, reason: "no chromium" })) }));
+    const result = await renderSnapshotTool(c, { path: stpModel });
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result).toEqual({ supported: false, images: [], warnings: ["no chromium"] });
+  });
+
+  it("returns supported: false with a warning for mesh sources, without checking availability", async () => {
+    const c = ctx();
+    const result = await renderSnapshotTool(c, { path: stlModel });
+    expect(c.pipeline.isRenderAvailable).not.toHaveBeenCalled();
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/mesh-format/i);
   });
 });
 
@@ -461,6 +595,15 @@ describe("generate_mesh", () => {
     expect(result.warnings.some((w) => w.includes("NOT baked"))).toBe(true);
     expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
   });
+
+  it("reports start (0) then done (1) progress when a callback is given", async () => {
+    const c = ctx();
+    const onProgress = vi.fn();
+    await generateMeshTool(c, { path: stpModel }, onProgress);
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress.mock.calls[0][0]).toMatchObject({ progress: 0, total: 1 });
+    expect(onProgress.mock.calls[1][0]).toMatchObject({ progress: 1, total: 1 });
+  });
 });
 
 describe("export_mesh", () => {
@@ -535,6 +678,16 @@ describe("export_mesh", () => {
     expect(new Uint8Array(await fs.readFile(h5Path))).toEqual(new Uint8Array([1, 2, 3]));
     expect(result.written.map((w) => w.path)).toEqual([out, h5Path]);
     expect(result.warnings.some((w) => w.includes("companion"))).toBe(true);
+  });
+
+  it("reports start (0) then done (1) progress when a callback is given", async () => {
+    const c = ctx();
+    const onProgress = vi.fn();
+    const out = path.join(dir, "progress.msh");
+    await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out }, onProgress);
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress.mock.calls[0][0]).toMatchObject({ progress: 0, total: 1 });
+    expect(onProgress.mock.calls[1][0]).toMatchObject({ progress: 1, total: 1 });
   });
 });
 

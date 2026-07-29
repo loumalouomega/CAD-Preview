@@ -82,8 +82,11 @@ const mcpConfig = {
   target: "node18",
   outfile: "dist/mcp-server.js",
   // See the matching comment in extensionConfig above (both gmsh-wasm and
-  // @meshioplusplus/wasm).
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm"],
+  // @meshioplusplus/wasm). "playwright" is a devDependency, dynamically
+  // `import()`ed by src/renderService.ts for the render_snapshot MCP tool —
+  // it must resolve via real node_modules at runtime (or fail gracefully,
+  // caught there), never get inlined into the bundle.
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "playwright"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,

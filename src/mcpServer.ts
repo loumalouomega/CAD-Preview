@@ -20,16 +20,23 @@ console.debug = console.error.bind(console);
 import * as path from "path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { loadBRep, exportBRep } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
 import { computeMassProperties } from "./massProperties";
+import { getEntityFacts, measureEntities } from "./entityFacts";
+import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { compareModels } from "./modelDiffHost";
 import { convertToStlBoundary, exportViaMeshio } from "./meshioService";
 import {
   describeCapabilities,
   loadModel,
   getMassProperties,
+  inspectEntity,
+  measureTool,
+  renderSnapshotTool,
   compareModelsTool,
   getState,
   applyEditOps,
@@ -43,6 +50,7 @@ import {
   savePreprocessTool,
   loadPreprocessTool,
   type ToolContext,
+  type ProgressCallback,
 } from "./mcpTools";
 import type { MeshOptions } from "./meshOptions";
 
@@ -62,6 +70,10 @@ const ctx: ToolContext = {
     exportMdpa,
     exportGeoUnrolled,
     computeMassProperties,
+    getEntityFacts,
+    measureEntities,
+    renderSnapshot,
+    isRenderAvailable,
     compareModels,
     convertToStlBoundary,
     exportViaMeshio,
@@ -70,14 +82,56 @@ const ctx: ToolContext = {
 
 const server = new McpServer({ name: "cad-preview", version: "1.0.0" });
 
-type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+type ToolResult = { content: ToolContent[]; isError?: boolean };
 
-/** Wraps a handler: JSON result → text content block, thrown Error → isError. */
-function wrap<A>(handler: (args: A) => Promise<unknown> | unknown): (args: A) => Promise<ToolResult> {
-  return async (args: A) => {
+/** A tool result may carry `images` (base64 PNGs) alongside its JSON facts —
+ * `render_snapshot` is the only producer today, but this is general-purpose:
+ * any future image-returning tool follows the same shape. `wrap()` emits one
+ * text block (images summarized as `[{label, mimeType}]`, base64 omitted so
+ * the JSON payload doesn't double the response size) plus one `{type:
+ * "image"}` content block per image — the SDK's `CallToolResultSchema`
+ * already supports an image content type (`@modelcontextprotocol/sdk`
+ * 1.29.0's `ImageContentSchema`). */
+interface WithImages {
+  images?: Array<{ label: string; mimeType: string; dataBase64: string }>;
+}
+
+function hasImages(result: unknown): result is WithImages {
+  return typeof result === "object" && result !== null && Array.isArray((result as WithImages).images);
+}
+
+type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+/** Wraps a handler: JSON result → text content block (+ image blocks for a
+ * result carrying `images`), thrown Error → isError. The handler's second
+ * parameter is a progress-report callback — a no-op unless the calling MCP
+ * client opted in via `_meta.progressToken` on its `tools/call` request
+ * (`extra.sendNotification`/`extra._meta.progressToken`, the exact pattern
+ * the SDK's own `examples/server/progressExample.js` demonstrates). */
+function wrap<A>(
+  handler: (args: A, onProgress: ProgressCallback) => Promise<unknown> | unknown
+): (args: A, extra: ToolExtra) => Promise<ToolResult> {
+  return async (args: A, extra: ToolExtra) => {
+    const onProgress: ProgressCallback = (p) => {
+      const token = extra?._meta?.progressToken;
+      if (token === undefined) return;
+      void extra.sendNotification({
+        method: "notifications/progress",
+        params: { progressToken: token, progress: p.progress, total: p.total, message: p.message },
+      });
+    };
     try {
-      const result = await handler(args);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const result = await handler(args, onProgress);
+      const content: ToolContent[] = [];
+      if (hasImages(result)) {
+        const { images, ...rest } = result;
+        content.push({ type: "text", text: JSON.stringify({ ...rest, images: images?.map((i) => ({ label: i.label, mimeType: i.mimeType })) }, null, 2) });
+        for (const img of images ?? []) content.push({ type: "image", data: img.dataBase64, mimeType: img.mimeType });
+      } else {
+        content.push({ type: "text", text: JSON.stringify(result, null, 2) });
+      }
+      return { content };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { isError: true, content: [{ type: "text", text: message }] };
@@ -103,7 +157,11 @@ server.registerTool(
     description:
       "The op catalog (all edit-op kinds with parameter docs and B-rep-only/topology-changing flags), entity-id scheme, export target matrix, mesh export formats, mesh option defaults, and headless limitations. Call this first.",
   },
-  wrap(() => describeCapabilities())
+  // No inputSchema means the SDK calls this with a single `extra` arg (no
+  // `args`), an arity `wrap()` doesn't model (it always expects `(args,
+  // onProgress)`) — and describe_capabilities is instant/pure, so a
+  // progress callback would be meaningless here anyway. Inline instead.
+  async () => ({ content: [{ type: "text" as const, text: JSON.stringify(describeCapabilities(), null, 2) }] })
 );
 
 server.registerTool(
@@ -130,6 +188,55 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; entityId?: string }) => getMassProperties(ctx, args))
+);
+
+server.registerTool(
+  "inspect",
+  {
+    description:
+      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, and — for a planar face — its normal and surface type, for one entity id. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      entityId: z.string().describe("solid-N / face-N / edge-N / point-N id from load_model's inventory"),
+    },
+  },
+  wrap((args: { path: string; entityId: string }) => inspectEntity(ctx, args))
+);
+
+server.registerTool(
+  "measure",
+  {
+    description:
+      "Facts only: straight-line distance between two entities' bbox centers, plus (if `axis` is given) the signed component of that displacement along it — 'is this hole 25mm from that edge' class questions. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      from: z.string().describe("solid-N / face-N / edge-N / point-N id"),
+      to: z.string().describe("solid-N / face-N / edge-N / point-N id"),
+      axis: z
+        .tuple([z.number(), z.number(), z.number()])
+        .optional()
+        .describe("Direction vector for the signed axis component; need not be unit length"),
+    },
+  },
+  wrap((args: { path: string; from: string; to: string; axis?: [number, number, number] }) => measureTool(ctx, args))
+);
+
+server.registerTool(
+  "render_snapshot",
+  {
+    description:
+      "Facts only, via images (see describe_capabilities' verdictConventions): 4 labelled PNGs (two opposed isometrics + top + front) of the current model with sidecar edits replayed, exactly as load_model sees it. Visual review is diagnostic, not authoritative — convert any concern into an inspect/measure check before treating it as validated; don't loop on repeated snapshots, only re-render after a change to visible geometry. REQUIRES Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported`; not guaranteed available everywhere (see doc/mcp-server.md). B-rep sources only.",
+    inputSchema: {
+      path: modelPath,
+      focus: z.array(z.string()).optional().describe("Entity ids — isolate the view to only these"),
+      hide: z.array(z.string()).optional().describe("Entity ids — force-hide these"),
+      displayMode: z.enum(["shaded", "wireframe"]).optional().describe("Applies to the whole 4-image packet"),
+    },
+  },
+  wrap(
+    (args: { path: string; focus?: string[]; hide?: string[]; displayMode?: "shaded" | "wireframe" }) =>
+      renderSnapshotTool(ctx, args)
+  )
 );
 
 server.registerTool(
@@ -232,11 +339,11 @@ server.registerTool(
   "generate_mesh",
   {
     description:
-      "Generate a finite-element mesh of the model with Gmsh (edits baked in for B-rep sources; raw file bytes for .stl) and return statistics only (node/element counts, per-part element groups, timing). Nothing is written to disk — use export_mesh for that.",
+      "Generate a finite-element mesh of the model with Gmsh (edits baked in for B-rep sources; raw file bytes for .stl) and return statistics only (node/element counts, per-part element groups, timing). Nothing is written to disk — use export_mesh for that. Emits notifications/progress at start and completion if you set _meta.progressToken — Gmsh itself has no mid-call progress hook, so this is start/done signaling only, not a genuine percentage.",
     inputSchema: { path: modelPath, options: meshOptionsOverride },
   },
-  wrap((args: { path: string; options?: Record<string, unknown> }) =>
-    generateMeshTool(ctx, { path: args.path, options: args.options as Partial<MeshOptions> | undefined })
+  wrap((args: { path: string; options?: Record<string, unknown> }, onProgress) =>
+    generateMeshTool(ctx, { path: args.path, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )
 );
 
@@ -244,7 +351,7 @@ server.registerTool(
   "export_mesh",
   {
     description:
-      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources.",
+      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
     inputSchema: {
       path: modelPath,
       format: z.string().describe("Mesh export format id"),
@@ -252,8 +359,8 @@ server.registerTool(
       options: meshOptionsOverride,
     },
   },
-  wrap((args: { path: string; format: string; outputPath: string; options?: Record<string, unknown> }) =>
-    exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined })
+  wrap((args: { path: string; format: string; outputPath: string; options?: Record<string, unknown> }, onProgress) =>
+    exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )
 );
 
