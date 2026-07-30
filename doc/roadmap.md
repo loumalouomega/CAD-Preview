@@ -52,7 +52,7 @@ recorded in `CLAUDE.md`. None is a bug.
    Exodus/XDMF/MDPA files funnel through meshio++'s STL-boundary writer, so
    region names, scalar point/cell data, and multi-material grouping are lost —
    only geometry survives. Preserving them needs a genuinely different import
-   path, not just a flag.
+   path, not just a flag. There is  anew version 9.9.0 with newer features particularly with HDF5 formats (MED, CGNS, exodus, etc...)
 4. **Confirm Kratos MDPA block names** (**S**, needs Kratos-dev input). The
    geometry block names are certain; the newer kinds' `Element*`/`Condition*`
    names are best-guess transcriptions. `"elements"` mode already pre-flights
