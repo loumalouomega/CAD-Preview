@@ -28,6 +28,17 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   // Export always produces a single-file binary glTF (.glb), not a text .gltf with
   // embedded base64 buffers — simpler and more portable for a one-shot Save As.
   gltf: "glb",
+  // meshio++-only formats (below) are never reachable via `exportTargetsFor` —
+  // they're import-only document formats, not export targets — but every
+  // `CadFormat` member needs an entry here for `Record<CadFormat, string>` to
+  // stay exhaustive.
+  vtk: "vtk",
+  vtu: "vtu",
+  med: "med",
+  cgns: "cgns",
+  exodus: "exo",
+  xdmf: "xdmf",
+  mdpa: "mdpa",
 };
 
 /** Human-readable label for a format, used in the export quick-pick. */
@@ -39,4 +50,12 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   obj: "OBJ",
   ply: "PLY",
   gltf: "glTF Binary",
+  // Never offered by exportTargetsFor (see EXPORT_EXTENSION's comment) — present only for Record exhaustiveness.
+  vtk: "VTK",
+  vtu: "VTU",
+  med: "MED",
+  cgns: "CGNS",
+  exodus: "Exodus",
+  xdmf: "XDMF",
+  mdpa: "MDPA",
 };

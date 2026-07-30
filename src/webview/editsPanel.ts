@@ -109,6 +109,12 @@ export interface EditsPanelCallbacks {
   onApplyFeature: (draft: FeatureDraft) => void;
   /** Explode the assembly: spread bodies radially by `factor` (all formats). */
   onApplyExplode: (factor: number, exprs?: ExprMap) => void;
+  /** Live-preview drag of the Explode slider — moves the already-displayed
+   * model directly, no host round-trip, no edit op. */
+  onExplodePreview: (factor: number) => void;
+  /** Discards any in-progress Explode preview (leaving the form / switching
+   * ops) without committing it as an edit op. */
+  onExplodePreviewCancel: () => void;
   /** Mate: align the first selected face onto the second (B-rep only). */
   onApplyMate: () => void;
   /** Apply a modify op (shell/split/section); operands come from the selection (B-rep only). */
@@ -442,6 +448,10 @@ export class EditsPanel {
   }
 
   private selectOp(id: PanelOpId | null): void {
+    // Leaving a form (switching ops, or collapsing) discards any in-progress
+    // live preview rather than leaving it stacked/orphaned — a no-op if
+    // nothing was previewing.
+    this.cb.onExplodePreviewCancel();
     this.activeOp = id;
     for (const [opId, btn] of this.opButtons) btn.classList.toggle("active", opId === id);
     this.renderParams();
@@ -576,6 +586,7 @@ export class EditsPanel {
       // ── EDIT · assembly ──
       case "explode":
         f.appendChild(this.numField("factor", "Factor", 1));
+        f.appendChild(this.explodeSliderField());
         f.appendChild(this.applyButton("Apply", "Spread the bodies radially from the model centre", () =>
           this.cb.onApplyExplode(this.readNum("factor"))));
         break;
@@ -989,6 +1000,34 @@ export class EditsPanel {
     input.dataset.name = name;
     input.value = String(def);
     row.appendChild(input);
+    return row;
+  }
+
+  /**
+   * Explode's live-preview slider — unlike every other op's plain numeric
+   * field, dragging this moves the ALREADY-DISPLAYED model directly (via
+   * `onExplodePreview`, no host round-trip, no edit op) while keeping the
+   * `factor` number field in sync so Apply commits whatever was last
+   * previewed. Range is 0–300 mapped to a factor of 0–3.0 (a step of 0.01).
+   */
+  private explodeSliderField(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row explode-slider-row";
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.className = "meshing-slider";
+    slider.min = "0";
+    slider.max = "300";
+    slider.step = "1";
+    slider.value = "100";
+    slider.title = "Drag to preview the explode factor live";
+    slider.addEventListener("input", () => {
+      const factor = Number(slider.value) / 100;
+      const numInput = this.paramsEl.querySelector<HTMLInputElement>('input[data-name="factor"]');
+      if (numInput) numInput.value = String(factor);
+      this.cb.onExplodePreview(factor);
+    });
+    row.appendChild(slider);
     return row;
   }
 

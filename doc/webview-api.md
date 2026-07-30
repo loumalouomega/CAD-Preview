@@ -14,8 +14,14 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
-| `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity (unit-testable) |
+| `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity, plus mode-unfiltered measurement picking (unit-testable) |
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
+| `src/webview/measurement.ts` | Pure distance/length/angle/radius math over plain tuples (unit-tested) |
+| `src/webview/measurementState.ts` | 0–2-pick buffer for the in-progress measurement, DOM-free (unit-tested) |
+| `src/webview/measurementOverlay.ts` | Lazily-built marker/line/label Three.js objects for the measurement overlay |
+| `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
+| `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
+| `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
 | `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
@@ -27,8 +33,12 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 | `src/webview/meshingModel.ts` | Current FE-mesh `MeshOptions` store, DOM-free (unit-tested) |
-| `src/webview/meshingPanel.ts` | FE Mesh panel DOM — size slider/presets, part sizes, Advanced settings, Generate/Export/Clear |
+| `src/webview/meshingPanel.ts` | FE Mesh panel DOM — size slider/presets, part sizes, Advanced settings, Generate/Export/Clear, quality histogram |
 | `src/webview/meshSizeHeuristics.ts` | Pure size-slider math: bbox default, log mapping, element-count estimate (unit-tested) |
+| `src/webview/visibilityState.ts` | Transient Parts hide/isolate + Tree per-node hide state, DOM-free (unit-tested) |
+| `src/webview/treeFilter.ts` | Pure Components-tree label-substring filter + ancestor inclusion (unit-tested) |
+| `src/webview/explodePreview.ts` | Live exploded-view preview math (capture/apply/reset base positions), DOM-free but THREE-typed (unit-tested) |
+| `src/webview/clipping.ts` | Pure clip-plane-from-bounding-box math (unit-tested) |
 
 ---
 
@@ -39,11 +49,16 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 **Startup sequence:**
 1. Acquire VS Code API: `const vscode = acquireVsCodeApi()`.
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
-3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, and `MeshingPanel(document.getElementById('meshing-panel'), ...)`.
-4. Call `setupViewControls(viewer)` (in a `try/catch` — a UI wiring failure must not block the ready handshake).
-5. Wire toolbar buttons (`#fit`, `#wireframe`, `#grid`, `#export`, `#tree-toggle`, `#meshing-toggle`). The `#export` button posts `{ type: "exportRequest" }` — it doesn't show any UI itself; the host owns the quick-pick and save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible.
+3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, and `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`.
+4. Call `setupViewControls(viewer)`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()`, `setupDragAndDrop()`, `setupAppearanceControls()`, `setupClippingControls()`, `setupMarkupControls()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
+5. Wire toolbar buttons (`#fit`, `#grid`, `#edges`, `#screenshot`, `#export`, `#tree-toggle`, `#meshing-toggle`, `#measure-group`). `#export` posts `{ type: "exportRequest" }`; `#screenshot` posts `{ type: "screenshotButtonClicked" }` — neither shows any UI itself, the host owns the quick-pick/save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. `#measure-group`'s toggle/tool-`<select>`/Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted at all. `#edges` toggles `viewer.setEdgesVisible()`, purely session-side like Grid. There is no standalone `#wireframe` toolbar button anymore — Wireframe is one of five mutually exclusive **Display mode** states (`#display-mode-group` in the view-controls Appearance area, `setupAppearanceControls()`) driving `viewer.setDisplayMode()`; see below.
 6. Register `window.addEventListener('message', ...)` for host messages.
 7. Post `{ type: 'ready' }` to the host.
+
+**Additional setup functions** (same guarded-`try` bank as step 4 above):
+- `setupDragAndDrop()` — `dragover`/`drop` on `#app`; posts `{type:"openPath", path}` when the dropped `File` exposes a real fs path, else falls back to `{type:"openFile"}`.
+- `setupAppearanceControls()` — wires `#edges` (toolbar), `#vc-background`/`#vc-opacity`/`#vc-ortho` (`#view-controls`' "Appearance" group) to `viewer.setEdgesVisible`/`setBackground`/`setOpacity`/`setOrthographic`, and `#vc-unit` to `setDisplayUnit()` (`src/webview/units.ts` — see below).
+- `setupClippingControls()` — wires `#view-controls`' "Clip" group (`.clip-axis` buttons, `#clip-offset` slider, `#clip-toggle`) to `viewer.setClippingPlane()`, computing a `THREE.Plane` via `clipping.ts`'s `planeForAxis()` from `viewer.getModel()`'s current bounding box on every change.
 
 **Message handler (host → webview):**
 
@@ -51,7 +66,8 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 |--------|--------|
 | `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` → `viewer.setModel(group)`, recolour, enable all pick modes (`volume`/`surface`/`line`/`point`), `MeshingPanel.setSourceKind("brep")`/`setModelExtents(...)` + `syncMeshSizeSeed()` |
 | `"tree"` | `TreePanel.render(msg.root)` |
-| `"loadUrl"` | `loadMeshFromUrl(msg.url, msg.format)` → `tagMeshEntities(obj)` → `splitMeshesIntoFacets(obj)` → `viewer.setModel(model)`, pick modes `volume` + `surface`, `MeshingPanel.setSourceKind("mesh")`/`setModelExtents(...)` + `syncMeshSizeSeed()` |
+| `"loadUrl"` | `loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase())` — see below |
+| `"loadMeshBytes"` | base64-decode → `Blob` → `blob:` object URL (`URL.createObjectURL`) → `loadMeshObjectFromUrl(blobUrl, "stl", msg.sourceFormat.toUpperCase())`, then `URL.revokeObjectURL(blobUrl)`. A meshio++-imported document (`doc/file-formats.md`'s "meshio++ Bridge Formats") — always loaded via the STL loader regardless of the true source format, which only picks the Components tree root's label. |
 | `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` + `MeshingPanel.renderParts()` |
 | `"edits"` | `EditsModel.load(msg.ops)` → (mesh sources) `rebuildMeshModel()` → `EditsPanel.render()` |
 | `"status"` | Set `#status-text` content |
@@ -59,8 +75,12 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"editError"` | Show `#error-overlay` with message (same rendering as `"error"`, distinct only by intent) |
 | `"exportMesh"` | `exportModel(viewer.getModel(), msg.format)` → posts back `"exportResult"` (with `data`/`binary`) or `"exportError"` on failure, correlated by `msg.requestId` |
 | `"meshingOptions"` | `MeshingModel.load(msg.options)` (hydration only) → `syncMeshSizeSeed()` → `MeshingPanel.render()` |
-| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.elementGroups))` → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs })` |
+| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.elementGroups))` → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs, quality: msg.quality })` |
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
+| `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`. Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
+| `"screenshotRequest"` | `viewer.render()` (force a fresh frame) → `viewer.captureScreenshotBase64()` → posts back `"screenshotResult"`/`"screenshotError"`, correlated by `msg.requestId` |
+| `"massPropertiesResult"` | `renderMassProperties(msg.properties)` — caches the raw (mm) result and renders it converted to `currentDisplayUnit` (see `src/webview/units.ts` below); ignored if `msg.requestId` doesn't match the latest request |
+| `"massPropertiesError"` | `MassPropertiesPanel.renderMessage(msg.message, true)` (same stale-request guard) |
 
 The webview also posts `{ type: "partsChanged", parts }` whenever the user edits
 parts, `{ type: "editsChanged", ops }` whenever the op-stack mutates, and
@@ -71,6 +91,24 @@ the host debounces each independently and writes the matching sidecar(s). See
 base64 STL (via `meshExporters.ts`'s `exportModel`) for `meshingGenerate`/
 `meshingExport` on mesh-format documents, since the host has no B-rep to
 re-export for those.
+
+**`loadMeshObjectFromUrl(url, loaderFormat, treeLabel)`** — the shared load
+path both `"loadUrl"` and `"loadMeshBytes"` funnel through (extracted once
+`"loadMeshBytes"` needed the exact same post-load sequence from a different
+URL source): `loadMeshFromUrl(url, loaderFormat)` → `tagMeshEntities(obj)` →
+`extractObjectTree(obj, treeLabel)` (builds the Components tree from the
+pristine hierarchy, before facet-splitting) → caches `obj` as `pristineMesh`
+→ `rebuildMeshModel()` (applies current edits, facet-splits, `viewer.setModel`)
+→ pick modes `volume`+`surface` → `sourceKind = "mesh"` →
+`MeshingPanel.setSourceKind("mesh")`/`setModelExtents(...)` +
+`syncMeshSizeSeed()` → `showTree(root)` if there's more than one node. Also
+resets the display-unit selector to `"mm"` (`setDisplayUnit("mm")`) and
+clears any cached raw Mass Properties result, since mesh sources (native or
+meshio-imported) carry no unit metadata and a stale result would refer to the
+just-replaced model. `loaderFormat` is always `"stl"` for a `"loadMeshBytes"`
+call regardless of the document's true source format — only `treeLabel`
+reflects that (e.g. `"VTK"` for a `.vtk` import, shown as the tree root's
+label, exactly as `"STL"`/`"OBJ"`/etc. already are for native mesh opens).
 
 **Helper functions:**
 
@@ -108,9 +146,12 @@ class Viewer {
 ```
 
 The constructor creates:
-- `PerspectiveCamera` (FOV 45, near 0.001, far 10000)
+- `PerspectiveCamera` (FOV 45, near 0.001, far 10000) **and** a second
+  `OrthographicCamera`, both kept alive the whole session — see
+  `setOrthographic()` below for why there are two.
 - `WebGLRenderer` with antialiasing and device pixel ratio
-- `OrbitControls` with damping (factor 0.1)
+- `OrbitControls` with damping (factor 0.1), initially targeting the
+  perspective camera
 - Two lights: `AmbientLight(0xffffff, 0.6)` + `DirectionalLight(0xffffff, 0.8)`
 - `GridHelper` and `AxesHelper` (hidden by default)
 - `OrientationCube` instance
@@ -135,12 +176,29 @@ estimate (`meshSizeHeuristics.ts`) — display-only, never mutates geometry.
 ```typescript
 setModel(object: THREE.Object3D): void
 ```
-Replaces the current model. Calls `clearModel()`, adds the new object to the scene, applies the current wireframe state to all meshes, calls `resetView()` to reframe.
+Replaces the current model. Calls `clearModel()`, adds the new object to the scene, applies the current display mode to all meshes (`applyDisplayMode()`, see below), calls `resetView()` to reframe.
 
 ```typescript
 clearModel(): void
 ```
 Removes the current model from the scene, disposes all geometries and materials (recursive), and resets the root reference.
+
+```typescript
+applyDefaults(d: { background: string; showGridAndAxes: boolean; upAxis: 'y' | 'z' }): void
+render(): void
+captureScreenshotBase64(): string
+```
+`applyDefaults` handles the `"viewerDefaults"` message: sets `scene.background`
+and `grid`/`axes.visible` immediately (scene-level, independent of whether a
+model is loaded), and stores `upAxis` to apply at the *next* `setModel()` call
+— `setModel()` rotates the loaded model **root** (`object.rotation.x = -π/2`
+for `upAxis === "z"`), never `THREE.Object3D.DEFAULT_UP` (a static shared by
+every `Object3D` including the gizmo/helpers). `resetView()`'s isometric
+direction is defined in the camera's fixed Y-up world frame and is unaffected
+either way. `render()` forces an immediate `renderer.render()` call and
+`captureScreenshotBase64()` reads `renderer.domElement.toDataURL("image/png")`
+(minus the `data:` prefix) — together they back the `"screenshotRequest"`
+handler, avoiding a persistent `preserveDrawingBuffer: true` renderer flag.
 
 ```typescript
 setMeshOverlay(obj: THREE.Object3D | null): void
@@ -214,6 +272,27 @@ getCameraUp(): THREE.Vector3
 ```
 Returns `camera.up` (the "up" vector used by OrbitControls).
 
+```typescript
+setOrthographic(enabled: boolean): void
+```
+Toggles between perspective and orthographic projection. **Not a
+reconstruction** — swaps which of the two camera objects created in the
+constructor is `activeCamera` (and `controls.object`; three.js's
+`OrbitControls` supports retargeting at runtime, and its own dolly/zoom logic
+already branches on `camera.isPerspectiveCamera`/`isOrthographicCamera`, so
+mouse-wheel zoom keeps working correctly across the swap with no extra code).
+Copies position/near/far from the outgoing camera so the view doesn't jump,
+then calls the private `frame()` along the same view direction to size the
+newly-active camera correctly — `frame()` already branches per camera type
+(fov-based distance for perspective; frustum `left/right/top/bottom`/`zoom`
+for orthographic, `this.orthoHalfHeight` tracking the last-framed half-height
+so `onResize` can recompute the frustum for a new aspect ratio without a full
+reframe). `cameraControls.ts`'s `pan`/`dolly` (the two FOV/zoom-dependent
+functions) also branch per camera type — see that module's section below.
+`rotateView`/`panView`/`zoomView`/`setViewDirection`/`getViewDirection`/
+`getCameraUp` above all operate on `this.activeCamera`, not a hardcoded field,
+so they work unchanged after a toggle.
+
 **Scene state:**
 
 **Point rendering:** each `frame()` call (on `setModel`/`fitView`/`resetView`)
@@ -227,12 +306,23 @@ via `THREE.Sprite`'s native raycasting.
 ```typescript
 highlightGroup(groupId: string | null): void
 ```
-If `groupId` is non-null, dims all meshes in the model except the one whose `userData.groupId` matches — opacity set to `0.08` for dimmed meshes, `1.0` for the selected one, `transparent: true` on dimmed materials. If `groupId` is null, restores all meshes to full opacity.
+If `groupId` is non-null, dims all meshes in the model except the one whose
+`userData.groupId` matches — opacity set to `baseOpacity * 0.08` for dimmed
+meshes, `baseOpacity` for the selected one (`transparent` follows whether the
+result is `< 1`). If `groupId` is null, restores all meshes to `baseOpacity`.
+**Composes with `setOpacity()` below rather than clobbering it**: `baseOpacity`
+is read from each material's `userData.baseOpacity` (defaulting to 1) — the
+same slot `setOpacity` writes — so dragging the Appearance panel's opacity
+slider to 0.5 and then spotlighting a tree node keeps the rest of the model at
+0.5×0.08, not a hardcoded 0.08 that would silently ignore the slider, and the
+spotlighted group stays at 0.5, not a hardcoded 1.0 that would override it.
+`highlightedGroupId` remembers the last call so `setOpacity` can re-apply the
+same spotlight on top of a new baseline.
 
 ```typescript
 setWireframe(on: boolean): void
 ```
-Sets `material.wireframe` on every mesh in the scene. Memoizes the state so `setModel()` can re-apply it.
+Sets `material.wireframe` on every mesh in the scene. Memoizes the state so `setModel()` can re-apply it. Also the low-level primitive `setDisplayMode("wireframe")` drives internally, and that `render_snapshot`'s per-call `wireframe` override (`renderService.ts`) calls directly, bypassing display mode entirely — a disposable headless page has no interactive display-mode state to preserve.
 
 ```typescript
 toggleGrid(): void
@@ -240,9 +330,104 @@ toggleGrid(): void
 Toggles the visibility of the `GridHelper` and `AxesHelper`.
 
 ```typescript
+getDisplayMode(): DisplayMode
+setDisplayMode(mode: DisplayMode): void
+```
+`DisplayMode = "shaded" | "wireframe" | "xray" | "hiddenLines" | "flat"` (`src/webview/displayMode.ts`, DOM/Three.js-free — shared by `viewer.ts` and the `#display-mode-group` button wiring so they can't drift). Session-only, re-applied to every fresh material on `setModel()`. Internally:
+- **shaded/wireframe/xray**: the mesh's original `MeshStandardMaterial` (`userData.standardMaterial`, captured once on this method's first run per mesh); wireframe drives `setWireframe(mode === "wireframe")`; xray folds an extra `0.35` multiplier into `highlightGroup()`'s existing `baseOpacity` composition (see `displayOpacityFactor()`) rather than being a separate opacity writer.
+- **flat**: swaps `mesh.material` to a lazily-built, cached unlit `MeshBasicMaterial` (`userData.flatMaterial`) — a genuine material-class swap, the one exception to this codebase's "materials built once, only properties mutated" convention. Since `MeshBasicMaterial` has no `.emissive`, `renderSelection()`'s face branch falls back to a direct `.color` swap (the same technique edges/points already use) when `"emissive" in mat` is false. **Callers MUST call `setEntityColors()` + `renderSelection()` (or `main.ts`'s `refreshColors()`, which does both) right after `setDisplayMode()`** — the newly-active material starts at its default colour/no highlight, since colours/selection aren't tracked per-material internally.
+- **hiddenLines**: builds/tears down `hiddenLineGhosts`, a `THREE.Group` of dimmed, `depthTest:false`/`depthWrite:false`, `transparent:true` copies of every edge line (sharing geometry with the real edge, never disposing it) — a scene sibling of `model` like `meshOverlay`, so `collectTargets` (which only ever traverses `model`) never picks them. The layering trick needs no per-pixel occlusion logic: `transparent:true` objects always render in a pass strictly after every opaque object (faces + the real, depth-tested edges), so a ghost paints faintly everywhere its line passes regardless of true depth, while the real edge — drawn first, depth-tested — already painted full-strength wherever it's genuinely visible, staying visually dominant there even though the ghost technically also draws a faint tint on top.
+
+**Appearance (session-only, never persisted — mirrors `toggleGrid`'s "always wins once set"):**
+
+```typescript
+setBackground(hex: string): void
+setEdgesVisible(visible: boolean): void
+setOpacity(value: number): void
+```
+`setBackground` is a live override on top of `applyDefaults`' initial
+`cadPreview.background` value — same split as `showGridAndAxes` (default) vs.
+`toggleGrid()` (session toggle). `setEdgesVisible` shows/hides every
+`entityType === "line"` object, leaving faces/points untouched. `setOpacity`
+writes `value` to every current face material's `userData.baseOpacity` (and
+to a `modelOpacity` field re-applied to fresh materials on the next
+`setModel()`, since a model rebuild after an edit creates brand-new materials
+with no baseline), then re-invokes `highlightGroup()` with whatever spotlight
+was last active so the two compose correctly (see `highlightGroup` above).
+
+**Clipping (display-only, distinct from the `section` edit op — never touches the model):**
+
+```typescript
+setClippingPlane(plane: THREE.Plane | null): void
+```
+Sets/clears the live clipping plane, toggling `renderer.localClippingEnabled`
+and assigning `material.clippingPlanes = plane ? [plane] : []` across every
+material on **both** `model` and `meshOverlay` (the FE-mesh overlay needs the
+same plane — re-applied automatically from `setModel()`/`setMeshOverlay()`
+too, since fresh materials from either rebuild start with no clipping state).
+Callers compute `plane` via `clipping.ts`'s `planeForAxis()` from the model's
+current bounding box. **v1 is deliberately uncapped**: `MeshStandardMaterial`
++ `clippingPlanes` does not auto-cap the cut cross-section (three.js needs a
+separate stencil-buffer technique for a solid-looking cut) — a clipped solid
+is see-through/hollow at the cut face, not filled; capping is a documented
+follow-up, not attempted here.
+
+**Visibility (Parts hide/isolate, Tree per-node hide — display-only, transient, never persisted):**
+
+```typescript
+setGroupVisible(groupId: string, visible: boolean): void
+applyPartVisibility(hiddenEntities: SelectedEntity[], isolatedEntities: SelectedEntity[] | null): void
+```
+`setGroupVisible` fully hides/shows every object tagged with `groupId` (a
+solid — the Components tree's per-node eye-toggle operates at this
+whole-solid granularity, the only depth the tree currently has). Distinct
+from `highlightGroup`'s opacity-dimming: `Object3D.visible = false`, gone
+entirely, not translucent. `applyPartVisibility` applies the Parts panel's
+hide/isolate state in one pass: `hiddenEntities` are forced invisible; if
+`isolatedEntities` is non-null, ONLY those entities are visible, overriding
+`hiddenEntities` for this call. Handles surfaces (matching either the face's
+own id or its owning solid's `groupId`, same membership check
+`renderSelection` uses), lines, and points — unlike `highlightGroup`, which
+only ever touches `THREE.Mesh`. Composition across repeated calls (e.g. "hide
+part A, then isolate part B, then clear isolate — A is still hidden") is the
+**caller's** job: `main.ts` recomputes both sets fresh from
+`VisibilityState` + `PartsModel.entitiesOf()` on every hide/isolate change,
+so this method itself needs no memory of prior calls.
+
+```typescript
 dispose(): void
 ```
 Full cleanup: disposes model, renderer, and removes the resize observer.
+
+**Measurement (display-only, never an edit op, never persisted):**
+
+```typescript
+setMeasureMode(on: boolean): void
+setOnMeasurePick(onPick: ((pick: MeasurementPick) => void) | null): void
+showMeasurementMarker(point: THREE.Vector3): void
+showMeasurementOverlay(linePoints: THREE.Vector3[], anchor: THREE.Vector3, text: string): void
+clearMeasurementOverlay(): void
+```
+`measureMode` is a **parallel interaction mode**, deliberately independent of
+`selectionMode`/`SelectionSet` — a click takes measurement priority over the
+normal Parts/Edits pick when both happen to be active (`onSelectPointerUp`).
+On a measure-mode hit, `buildMeasurementPick()` (private) assembles a
+`MeasurementPick` (`src/webview/measurementState.ts`) from the raycast
+intersection: the world-space hit point (available in the hit loop but
+normally discarded — the ordinary `onEntityPick` path only forwards the
+resolved `{entityType, entityId}`), a world-space direction for a
+`surface`/`line` hit (face normal via the intersection's local `face.normal` +
+normal matrix, or edge tangent from the two polyline points straddling the
+hit — used by the "angle" tool), and the picked edge's full world-space
+polyline (used by "edgeLength"/"radius"). `showMeasurementMarker`/
+`showMeasurementOverlay`/`clearMeasurementOverlay` manage a `measurementOverlay`
+scene-sibling `THREE.Object3D` (same pattern as `meshOverlay`), built via
+`measurementOverlay.ts`'s `makeMeasureMarkerSprite`/`buildMeasureLine`/
+`makeMeasureLabelSprite`. The overlay's label sprite is rescaled every
+`animate()` frame (`distance-to-camera × 0.06`) to stay a constant on-screen
+size while zooming — unlike the point-sprite scale in `frame()`, which only
+updates on fit/reset. `setModel()` clears any measurement overlay, same as it
+clears the FE-mesh overlay — both refer to geometry that's about to be replaced.
 
 **Internal:**
 
@@ -269,11 +454,11 @@ Creates a `THREE.Mesh` with a standard grey `MeshStandardMaterial` (color `0xc0c
 
 Pure math functions — no DOM, no renderer, no OrbitControls dependency. Unit-tested headlessly via Vitest.
 
-All functions operate on a `THREE.PerspectiveCamera` and a `THREE.Vector3` target. They mutate `camera.position` and/or `target` in place.
+All functions operate on a `ViewerCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera` union and a `THREE.Vector3` target, mutating `camera.position` and/or `target` in place — `Viewer` keeps both camera types alive and swaps which is active for the ortho/perspective toggle (`Viewer.setOrthographic`). `orbit`/`setDirection`/`viewDirection` are pure position math and work identically on either camera type; `pan`/`dolly` are NOT — perspective's "how far is one pan/dolly unit" derives from FOV (meaningless for an orthographic projection, which has no FOV), so both branch on `camera instanceof THREE.OrthographicCamera`.
 
 ```typescript
 function orbit(
-  camera: THREE.PerspectiveCamera,
+  camera: ViewerCamera,
   target: THREE.Vector3,
   azimuthDeg: number,
   polarDeg: number
@@ -283,26 +468,26 @@ Rotates the camera around the target using spherical coordinates. `azimuthDeg` r
 
 ```typescript
 function pan(
-  camera: THREE.PerspectiveCamera,
+  camera: ViewerCamera,
   target: THREE.Vector3,
   dxFrac: number,
   dyFrac: number
 ): void
 ```
-Translates both camera and target by `dxFrac` × viewport-width in the camera's right direction and `dyFrac` × viewport-height in the camera's up direction. Maintains the camera-to-target distance.
+Translates both camera and target by `dxFrac`/`dyFrac` fractions of the framed extent, in the camera's right/up directions. The "pan unit" (how much world space one fractional unit covers) is `distance-to-target × tan(fov/2)` for a perspective camera; for orthographic, FOV doesn't exist, so it's `(camera.top - camera.bottom) / camera.zoom / 2` instead (the frustum half-height divided by the current zoom). Maintains the camera-to-target distance either way.
 
 ```typescript
 function dolly(
-  camera: THREE.PerspectiveCamera,
+  camera: ViewerCamera,
   target: THREE.Vector3,
   factor: number
 ): void
 ```
-Moves the camera toward (`factor > 1`) or away from (`factor < 1`) the target, scaling the distance by `factor`. Does not move the target.
+Perspective: moves the camera toward (`factor < 1`) or away from (`factor > 1`) the target, scaling the distance by `factor`; does not move the target. Orthographic: moving position has **no** visual zoom effect under a parallel projection, so the equivalent is scaling `camera.zoom` by `1/factor` instead (position untouched) — matches how three.js's own `OrbitControls` dollies an orthographic camera on mouse-wheel.
 
 ```typescript
 function setDirection(
-  camera: THREE.PerspectiveCamera,
+  camera: ViewerCamera,
   target: THREE.Vector3,
   dir: THREE.Vector3
 ): void
@@ -311,7 +496,7 @@ Repositions the camera along the direction `dir` (normalized) from the target, m
 
 ```typescript
 function viewDirection(
-  camera: THREE.PerspectiveCamera,
+  camera: ViewerCamera,
   target: THREE.Vector3
 ): THREE.Vector3
 ```
@@ -458,6 +643,12 @@ async function loadMeshFromUrl(
 | `"obj"` | `OBJLoader` | Calls `applyDefaultMaterial(group)` |
 | `"ply"` | `PLYLoader` | Calls `geometry.computeVertexNormals()` |
 | `"gltf"` | `GLTFLoader` | Returns `gltf.scene` |
+
+Every other `CadFormat` member (the meshio++-only formats — VTK/VTU/MED/CGNS/
+Exodus/XDMF/MDPA) throws via the `default` case — this function is never
+called with one of those. A meshio-imported document is converted to STL
+**host-side** first (`src/meshioService.ts`), so `loadMeshFromUrl` only ever
+sees `"stl"` for it (see `main.ts`'s `loadMeshObjectFromUrl` below).
 
 ```typescript
 function applyDefaultMaterial(group: THREE.Group): void
@@ -886,3 +1077,427 @@ h-square of bbox surface area; 1D ≈ segments along the diagonal) — it knowin
 overestimates non-boxy models and exists to power the readout and the large-mesh
 warning, not to predict Gmsh's real output. The bbox comes from
 `Viewer.getModelExtents()`, pushed into the panel by `main.ts` on each model load.
+
+Also exports `targetSizeForPreset(diagonal, preset: keyof typeof PRESET_DIVISORS): number`
+— like `defaultTargetSize` but scaled by the `cadPreview.defaultMeshSizePreset`
+setting's divisor instead of the fixed `DEFAULT_SIZE_DIVISOR`; `"medium"`
+reproduces `defaultTargetSize` exactly since `PRESET_DIVISORS.medium ===
+DEFAULT_SIZE_DIVISOR`. Used by `main.ts`'s `syncMeshSizeSeed()` to seed a
+model with no saved `.mesh.json` sidecar.
+
+---
+
+## `src/webview/massPropertiesPanel.ts`
+
+The Mass Properties panel — a small bespoke DOM class following
+`MeshingPanel`'s status-line-readout convention, just with more than one line.
+
+```typescript
+interface MassPropertiesDisplay {
+  volume: number | null
+  area: number | null
+  length: number | null
+  centerOfMass: [number, number, number] | null
+  momentsOfInertia: { ixx: number; iyy: number; izz: number } | null  // diagonal only; null for mesh sources
+}
+
+class MassPropertiesPanel {
+  constructor(panel: HTMLElement, cb: { onRefresh: () => void })
+  renderMessage(text: string, isError?: boolean): void
+  render(props: MassPropertiesDisplay, unitLabel?: string): void
+}
+```
+
+`main.ts`'s `onRefresh` reads the current `SelectionSet`: 0 entries → whole
+model (`entityId: null`), exactly 1 → that entity, 2+ → `renderMessage`s a
+"select exactly one, or none" guidance line without sending any request. For a
+B-rep source it posts `massPropertiesRequest` and awaits `massPropertiesResult`/
+`massPropertiesError` (guarded by a `massPropertiesRequestId` so a stale reply
+from a superseded refresh is ignored); for a mesh source it calls
+`computeAndRenderMeshMassProperties()` (below) with **no host round trip at
+all**. `momentsOfInertia` only shows its diagonal terms (`ixx`/`iyy`/`izz`) —
+the off-diagonal products of inertia are near-zero for most axis-aligned
+bodies and not worth the panel's space; mesh sources never populate this field
+(client-side inertia isn't computed, out of scope for the first cut) — and,
+per `units.ts` below, moments of inertia are also the one field `render()`
+never rescales regardless of `unitLabel`.
+
+Both call sites go through `main.ts`'s `renderMassProperties(raw)` wrapper,
+never `massPropertiesPanel.render()` directly: it caches `raw` (always
+millimetres) in a module-level `lastRawMassProperties`, then calls
+`massPropertiesPanel.render(convertLengthBasedProperties(raw,
+currentDisplayUnit), currentDisplayUnit)`. Caching the *raw* value (not the
+already-converted one) is what lets `setDisplayUnit()` (below) live-rescale an
+already-displayed result when the user changes the unit selector, without
+re-requesting anything from the host or recomputing the mesh-source case.
+
+---
+
+## `src/webview/units.ts`
+
+Display-unit conversion for Mass Properties and Measurement — pure, DOM-free
+(mirrors `measurement.ts`'s convention). Presentation-layer only: every number
+this module touches is already in the model's one internal length unit
+(millimetres — OCCT's STEP reader auto-converts every shape to its cascade
+unit at read time; see `src/stepUnits.ts`'s doc comment for the live-WASM
+verification). Nothing stored — edit-op params, sidecars, mesh-size options —
+is ever rescaled; this only changes what a number *looks like*.
+
+```typescript
+type DisplayUnit = 'mm' | 'cm' | 'm' | 'in' | 'ft'
+const DISPLAY_UNITS: readonly DisplayUnit[]
+
+function convertLength(mmValue: number, unit: DisplayUnit): number
+function convertArea(mm2Value: number, unit: DisplayUnit): number
+function convertVolume(mm3Value: number, unit: DisplayUnit): number
+function displayUnitFromStepName(name: string | undefined): DisplayUnit | undefined
+
+interface LengthBasedProperties {
+  volume: number | null
+  area: number | null
+  length: number | null
+  centerOfMass: [number, number, number] | null
+}
+function convertLengthBasedProperties<T extends LengthBasedProperties>(props: T, unit: DisplayUnit): T
+```
+
+`main.ts` holds the session-only `currentDisplayUnit` state (module-level,
+default `"mm"`, never persisted — same tier as every other Stage-2 Appearance
+control) and a `setDisplayUnit(unit)` helper that updates it, syncs the
+`#vc-unit` `<select>`'s value, and — if a Mass Properties result is currently
+shown — re-renders it converted to the new unit via the cached raw value (see
+`massPropertiesPanel.ts` above). `displayUnitFromStepName(msg.sourceUnit)` (or
+`"mm"` if `undefined`) seeds the initial selection on every `"tree"` message
+(B-rep) and resets to `"mm"` unconditionally on every `"loadUrl"` message
+(mesh sources carry no unit metadata) — both are per-model-load resets, same
+spirit as `explodePreviewBases = null` on a new model. Measurement results
+(`computeMeasurementResult`'s `formatMeasureLength()` helper) rescale
+distance/edge-length/radius the same way, appending the unit as a suffix
+(`"12.700 mm"`); angle is degrees and is never touched by this module. The FE
+Mesh panel's size readout is a deliberate exception — it always shows a literal
+`"mm"` suffix, never `currentDisplayUnit`, since Gmsh's mesh-size options stay
+in the cascade unit regardless of the display-unit selector (see
+`meshingPanel.ts`'s `refreshSizeReadout()` comment).
+
+---
+
+## `src/webview/meshMassProperties.ts`
+
+Client-side volume/area/centroid for mesh-format sources (STL/OBJ/PLY/glTF) —
+pure Three.js triangle math, no host round trip (no OCCT shape to query).
+Promotes the signed-tetrahedra volume algorithm already proven in
+`meshEdits.test.ts`'s test-only `volumeOf()` helper to production code.
+
+```typescript
+interface MeshMassProperties {
+  volume: number                              // meaningful only if `meshes` is closed/watertight
+  area: number
+  volumeCentroid: [number, number, number]    // volume-weighted — the physically correct centroid for a closed body
+  areaCentroid: [number, number, number]      // area-weighted — correct for a single open facet ("surface" pick)
+}
+
+function computeMeshMassProperties(meshes: THREE.Mesh[]): MeshMassProperties
+```
+
+Decomposes each triangle into a tetrahedron with an apex at the origin: signed
+volume `a·(b×c)/6`, tetra centroid `(a+b+c)/4` (apex contributes 0); summing
+`Σ(vᵢ·cᵢ)/Σvᵢ` across every mesh's every triangle gives the volume-weighted
+center of mass, independent of coordinate origin — the same standard result
+`BRepGProp.VolumeProperties` computes for a B-rep solid. Passing multiple
+meshes (e.g. every facet of one "volume" pick, via `buildMeshFacetGroup`'s
+`userData.groupId`) sums their triangles together, so per-entity results fall
+out of the same function with no special-casing — `main.ts`'s
+`computeAndRenderMeshMassProperties()` resolves the target `THREE.Mesh[]` by
+traversing `viewer.getModel()` for `entityType === "surface"` objects matching
+the selection's `groupId` (a "volume" pick) or `entityId` (a "surface" pick),
+or every such object for the whole-model case, then picks `volumeCentroid`
+(closed target: whole model or a "volume" pick) vs. `areaCentroid` (an open
+single-facet "surface" pick, where a signed volume has no physical meaning).
+
+---
+
+## `src/webview/measurement.ts`, `src/webview/measurementState.ts`, `src/webview/measurementOverlay.ts`
+
+Measurement tools (distance, edge length, angle, circle/arc radius) — entirely
+webview-side, display-only overlay, never an edit op, never persisted, no
+protocol messages at all. Client-side triangulated-approximation precision is
+a deliberate scope boundary (tied to the existing 0.1 tessellation deflection
+tolerance, `meshExtract.ts`) — exact BRep `BRepExtrema_DistShapeShape`
+entity-to-entity distance is out of scope for this cut.
+
+**`measurement.ts`** — pure math over plain `[x,y,z]` tuples, no DOM/THREE
+(unit-tested headless, same convention as `picking.ts`/`selection.ts`):
+
+```typescript
+type Vec3 = [number, number, number]
+function pointDistance(a: Vec3, b: Vec3): number
+function polylineLength(points: ArrayLike<number>): number       // flat [x0,y0,z0, x1,y1,z1, …]
+function angleBetweenVectors(a: Vec3, b: Vec3): number            // degrees
+function circleRadiusFromArcPoints(p0: Vec3, p1: Vec3, p2: Vec3): number | null  // 3-point circumradius
+```
+
+`polylineLength` operates directly on an edge's already-transmitted polyline
+(`EncodedEdge.positions`, world-transformed by `Viewer`) — no new host work
+for edge length. `circleRadiusFromArcPoints` samples the first/middle/last
+points of a picked edge's polyline for the "radius" tool.
+
+**`measurementState.ts`** — a dedicated 0–2-pick buffer, deliberately **not**
+`SelectionSet` (measurement clicks must never pollute the Parts/Edits working
+selection):
+
+```typescript
+type MeasureTool = 'distance' | 'edgeLength' | 'angle' | 'radius'
+
+interface MeasurementPick {
+  point: [number, number, number]
+  entityType: EntityType | null
+  entityId: string | null
+  direction: [number, number, number] | null   // face normal / edge tangent — "angle" tool only
+  polyline: Float32Array | null                // full world-space edge polyline — "edgeLength"/"radius" only
+}
+
+class MeasurementState {
+  getTool(): MeasureTool
+  setTool(tool: MeasureTool): void       // discards any in-progress pick
+  getPicks(): MeasurementPick[]
+  addPick(pick: MeasurementPick): { done: boolean; picks: MeasurementPick[] }  // done → picks reset for the next measurement
+  clear(): void
+}
+```
+
+Required pick counts: `distance`/`angle` need 2, `edgeLength`/`radius` need 1
+(single-click tools resolve immediately).
+
+**`measurementOverlay.ts`** — lazily-built Three.js objects:
+
+```typescript
+function makeMeasureLabelSprite(text: string): THREE.Sprite
+function makeMeasureMarkerSprite(): THREE.Sprite
+function buildMeasureLine(a: THREE.Vector3, b: THREE.Vector3): THREE.Line
+function disposeMeasureObject(obj: THREE.Object3D): void
+```
+
+Follows `geometryBuilder.ts`'s `dotTexture()` lazy-build discipline exactly —
+canvases are built on first *call*, never at module load, since this module is
+reachable from pure-function tests with zero DOM/jsdom available (a
+module-scope `document.createElement("canvas")` already broke tests once in
+this codebase, per the Points feature's history). Only one measurement
+overlay is ever live at a time (a new pick or mode toggle disposes the
+previous one first), so repainting the single shared label canvas and
+wrapping it in a fresh `CanvasTexture` per call is safe.
+
+`main.ts`'s `setupMeasureControls()` wires the `#measure-group` toolbar
+(toggle/tool `<select>`/Clear/readout span), dispatches completed picks to
+`measurement.ts`'s functions via `computeMeasurementResult()`, and calls
+`Viewer.showMeasurementMarker`/`showMeasurementOverlay`/`clearMeasurementOverlay`
+to display the result. See [Extension Host API](./extension-host-api.md) — no
+entry there, since this feature has zero host involvement.
+
+---
+
+## `src/webview/visibilityState.ts`, `src/webview/treeFilter.ts`
+
+Transient, session-only state for the Parts panel's eye-toggle/Isolate action
+and the Components tree's per-node eye-toggle/filter — display-only, **never**
+written to any sidecar (mirrors `SelectionSet`'s "transient, not persisted"
+precedent) and deliberately kept separate from `PartsModel`'s persisted
+`Part[]` list.
+
+```typescript
+class VisibilityState {
+  toggleHiddenPart(index: number): void
+  isPartHidden(index: number): boolean
+  hiddenPartIndices(): number[]
+  setIsolatedPart(index: number | null): void
+  toggleIsolatedPart(index: number): void   // clicking the already-isolated part clears isolation
+  isolatedPartIndex(): number | null
+  isPartIsolated(index: number): boolean
+  onPartCountChanged(count: number): void   // drops stale indices after a part delete
+  toggleTreeGroupHidden(groupId: string): void
+  isTreeGroupHidden(groupId: string): boolean
+  hiddenTreeGroupIds(): string[]
+}
+```
+
+Isolating a part clears no other state — hidden parts stay hidden once
+isolate is cleared, and vice versa; both compose because `main.ts`'s
+`applyVisibilityState()` recomputes the full `Viewer.applyPartVisibility()`
+input fresh from this state + `PartsModel.entitiesOf()` on every change
+(including after every model rebuild, via `refreshColors()`, since a fresh
+model's `THREE.Object3D`s start fully visible with no memory of prior
+hide/isolate calls).
+
+```typescript
+function filterTree(nodes: TreeNode[], query: string): Set<string>
+```
+Returns the ids of every node whose `label` case-insensitively contains
+`query`, plus every ancestor id needed to keep a match reachable when the
+tree renders filtered (auto-expand, not persisted-collapse-state — the
+simplest correct option, since `TreePanel.render()` already rebuilds
+`innerHTML` from scratch on every call with no collapse state to preserve).
+An empty/blank `query` matches everything.
+
+`TreePanel`'s constructor now takes an `onToggleVisible: (id: string) => void`
+callback (alongside the existing `onSelect`) and a `VisibilityState` for
+read-only querying (rendering the eye icon's state); `filter(query: string)`
+re-runs the row builder against `filterTree()`'s result;
+`refreshVisibility()` re-renders eye icons without touching selection/filter
+state (called after a visibility change). `PartsPanel` similarly gains
+`onToggleVisible`/`onToggleIsolate` callbacks and a `VisibilityState`
+constructor param — a per-row eye button plus one panel-level "⊙ Isolate"
+button in `#parts-header` acting on the currently-selected part.
+
+---
+
+## `src/webview/explodePreview.ts`
+
+Live exploded-view preview — lifts `meshEdits.ts`'s `applyMeshExplode()` math
+(already proven correct for the *committed* mesh-format explode op) into a
+format-agnostic, display-only preview usable on `viewer.getModel()`'s root
+directly, for **both** B-rep and mesh sources — genuinely new capability,
+since the authoritative `explode` op still requires a full OCCT host
+round-trip for B-rep, but the live preview needs none at all.
+
+```typescript
+interface ExplodeBase {
+  object: THREE.Object3D
+  basePosition: THREE.Vector3
+  offsetFromCentre: THREE.Vector3   // groupCentre - modelCentre at capture time
+}
+
+function captureExplodeBase(root: THREE.Object3D): ExplodeBase[]
+function applyExplodePreview(bases: ExplodeBase[], factor: number): void
+function resetExplodePreview(bases: ExplodeBase[]): void
+```
+
+`captureExplodeBase` snapshots every `userData.groupId`-tagged top-level
+child's pristine position (deliberately excluding a B-rep root's untagged
+top-level "edges"/"points" groups — they stay in place during the live
+preview, a known limitation; the *committed* op still repositions everything
+correctly since OCCT re-tessellates the whole shape). `applyExplodePreview`
+computes every group's new position from the **cached** base every call —
+never compounding onto the previous frame's already-offset position, the
+correctness trap a dedicated test (`explodePreview.test.ts`) verifies
+directly. `resetExplodePreview` restores pristine positions.
+
+`editsPanel.ts`'s Explode form gets a slider (`explodeSliderField()`, reusing
+`meshingPanel.ts`'s `.meshing-slider` CSS) alongside the existing `factor`
+number field: slider focus/mousedown → `captureExplodeBase`; every `input`
+event → `applyExplodePreview` (live, no gating — unlike the meshing slider,
+there's nothing to persist here) plus syncing the number field's value;
+Apply click → `resetExplodePreview` **then** the existing
+`editsModel.push({op:"explode", factor})` commit, so the preview transform is
+never left stacked on top of the authoritative replay. `editsPanel.ts`'s
+`selectOp()` (switching/collapsing op forms) also calls a new
+`onExplodePreviewCancel` callback unconditionally, so leaving the Explode
+form without applying always discards any in-progress preview.
+
+---
+
+## `src/webview/clipping.ts`
+
+```typescript
+type ClipAxis = 'x' | 'y' | 'z'
+function planeForAxis(axis: ClipAxis, offsetFrac: number, box: THREE.Box3): THREE.Plane
+```
+Pure `THREE.Plane`/`THREE.Box3` math, no scene needed. Builds a world-space
+plane perpendicular to `axis` at a fractional offset across `box`'s extent
+along that axis (`-1` = min face, `0` = centre, `1` = max face, clamped). The
+plane's normal points in the **positive** `axis` direction — three.js
+clipping keeps geometry on the side the normal faces
+(`plane.distanceToPoint(point) >= 0`) and clips away the opposite side, so
+sweeping `offsetFrac` from `-1` toward `1` moves the cut plane from the box's
+min face toward its max face, progressively clipping away more of the model
+from the max-axis end.
+
+`main.ts`'s `setupClippingControls()` recomputes the plane from
+`viewer.getModel()`'s current `THREE.Box3` on every axis-button click or
+slider `input` event and calls `viewer.setClippingPlane()` — see
+[`Viewer.setClippingPlane`](#src-webview-viewer-ts) for the "uncapped in v1"
+scope note and the FE-mesh-overlay-needs-the-same-plane behavior.
+
+## `src/webview/displayMode.ts`
+
+Pure data: `DisplayMode = "shaded" | "wireframe" | "xray" | "hiddenLines" |
+"flat"`, `DISPLAY_MODES` (the array, in UI order), `DISPLAY_MODE_LABELS`
+(button label text), `isDisplayMode(value): value is DisplayMode` (a type
+guard used to validate `.dataset.mode` off `#display-mode-group`'s buttons).
+No DOM/Three.js — imported by both `viewer.ts` (behavior, see
+`Viewer.setDisplayMode`) and `main.ts` (the button-group wiring) so the two
+can't drift.
+
+## `src/webview/labelOverlay.ts`
+
+```typescript
+function drawLabel(source: HTMLCanvasElement, label: string): HTMLCanvasElement
+```
+Draws a small dark-background/white-text label box in the top-left corner of
+a **copy** of `source`, returning the new canvas (`source` itself is
+untouched). Plain Canvas2D, only ever called at runtime from
+`Viewer.captureLabeledScreenshotBase64()` — used by the headless
+`render_snapshot` MCP tool's `renderViewRequest` handler so each of the
+packet's same-shaped images is self-identifying ("TOP", "ISO-A", ...).
+
+## `src/webview/canvasComposite.ts`
+
+```typescript
+function compositeCanvas(base: HTMLCanvasElement, overlay: HTMLCanvasElement | null): HTMLCanvasElement
+```
+Draws `overlay` on top of a **copy** of `base` and returns the merged canvas
+(returns `base` itself, unmodified, if `overlay` is `null`). Used by
+`Viewer.captureScreenshotBase64()`/`captureLabeledScreenshotBase64()` to bake
+the Markup annotation layer into Screenshot exports. `overlay`'s backing
+resolution need not match `base`'s — `drawImage`'s destination-size form
+stretch-fits it, so no devicePixelRatio bookkeeping is needed.
+
+## `src/webview/markupModel.ts`, `src/webview/markupCanvas.ts`
+
+The Markup annotation overlay's data/rendering split (mirrors
+`partsSidecar.ts`/`partsStore.ts`'s pure-vs-DOM convention).
+
+```typescript
+type Point = { x: number; y: number }                       // CSS-pixel canvas coordinates
+type DrawTool = "freehand" | "line" | "arrow" | "rectangle" | "circle"
+type MarkupTool = DrawTool | "eraser"
+interface MarkupStroke { tool: DrawTool; color: string; points: Point[] }
+
+class MarkupModel {
+  push(stroke: MarkupStroke): void
+  undo(): void
+  redo(): void
+  clear(): void
+  list(): readonly MarkupStroke[]
+  canUndo(): boolean
+  canRedo(): boolean
+  eraseAt(pt: Point): boolean        // true if anything was removed
+}
+```
+`markupModel.ts` is pure/DOM-free (unit-tested in `markupModel.test.ts`).
+**The eraser is deliberately NOT part of the undo/redo history** — `eraseAt()`
+removes any stroke with a point within a fixed pixel radius of `pt`
+immediately and permanently for the session, rather than trying to make an
+arbitrary (not necessarily most-recent) removal compose with a linear
+undo/redo stack the way `EditsModel`'s op stack does.
+
+```typescript
+function drawStroke(ctx: CanvasRenderingContext2D, stroke: MarkupStroke): void
+function redrawAll(canvas: HTMLCanvasElement, strokes: readonly MarkupStroke[], preview?: MarkupStroke): void
+```
+`markupCanvas.ts` is the DOM-touching half — `redrawAll` clears then redraws
+every committed stroke plus an optional in-progress `preview` stroke on top
+(used for the live freehand/shape preview while the pointer is still down).
+Not realistically unit-testable under this repo's vitest setup (no jsdom/
+canvas polyfill) — verified only via manual F5, same caveat as
+`labelOverlay.ts`.
+
+`main.ts`'s `setupMarkupControls()` owns the `#markup-canvas` element
+(`viewerDom.ts`) and all pointer-event wiring: `pointerdown` starts a stroke
+(or, in eraser mode, calls `eraseAt` immediately); `pointermove` extends a
+freehand stroke or updates a shape stroke's second point, redrawing a live
+preview each time; `pointerup` commits the finished stroke via
+`model.push()`. The canvas is `pointer-events:none` by default (see
+`viewer.css`) so it never intercepts orbit/pick input — toggling **✎ Markup**
+flips it to `"auto"` for the duration markup mode is active. `viewer.
+setMarkupCanvas(canvas)` registers it once at setup so
+`captureScreenshotBase64()`/`captureLabeledScreenshotBase64()` can composite
+it into every future screenshot.

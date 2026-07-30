@@ -36,6 +36,7 @@ export function viewerBodyHtml(): string {
       <div id="tree-panel">
         <div id="tree-header">
           <span id="tree-title">Components</span>
+          <input id="tree-filter" type="search" placeholder="Filter…" title="Filter components by name">
           <button id="tree-close" title="Close panel">${icon("close")}</button>
         </div>
         <div id="tree-body"></div>
@@ -43,7 +44,10 @@ export function viewerBodyHtml(): string {
       <div id="parts-panel">
         <div id="parts-header">
           <span id="parts-title">Parts</span>
-          <button id="parts-new" title="New part">＋ New</button>
+          <div id="parts-header-actions">
+            <button id="parts-isolate" title="Isolate the selected part (show only it)">⊙ Isolate</button>
+            <button id="parts-new" title="New part">＋ New</button>
+          </div>
         </div>
         <div id="parts-body"></div>
       </div>
@@ -81,14 +85,25 @@ export function viewerBodyHtml(): string {
         <div id="meshing-progress"></div>
         <div id="meshing-body"></div>
         <div id="meshing-status"></div>
+        <div id="meshing-quality"></div>
+      </div>
+      <div id="mass-panel">
+        <div id="mass-header">
+          <span id="mass-title">Mass Properties</span>
+          <button id="mass-refresh" title="Compute for the current selection, or the whole model if nothing is selected">${icon("generate")} Compute</button>
+        </div>
+        <div id="mass-body"></div>
       </div>
     </div>
-    <div id="app"></div>
+    <div id="app">
+      <canvas id="markup-canvas"></canvas>
+    </div>
   </div>
   <div id="toolbar">
     <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
-    <button id="wireframe" title="Toggle wireframe">${icon("wireframe")} Wireframe</button>
     <button id="grid" title="Toggle grid">▦ Grid</button>
+    <button id="edges" title="Toggle edge visibility">📐 Edges</button>
+    <button id="screenshot" title="Save the current view as a PNG">📷 Screenshot</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">${icon("tree")} Tree</button>
     <button id="meshing-toggle" title="Toggle FE mesh overlay">${icon("feMesh")} FE Mesh</button>
     <div id="select-group" title="Pick entities in the view to assign to a part">
@@ -97,6 +112,32 @@ export function viewerBodyHtml(): string {
       <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">${icon("volume")} Vol</button>
       <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">${icon("surface")} Surf</button>
       <button class="sel-mode" data-mode="line" title="Pick lines (edges)">${icon("line")} Line</button>
+    </div>
+    <div id="measure-group" title="Measure distances, lengths, angles, and radii">
+      <button id="measure-toggle" title="Toggle measure mode">📏 Measure</button>
+      <select id="measure-tool" title="Measurement tool">
+        <option value="distance">Distance</option>
+        <option value="edgeLength">Edge Length</option>
+        <option value="angle">Angle</option>
+        <option value="radius">Radius</option>
+      </select>
+      <button id="measure-clear" title="Clear current measurement">Clear</button>
+      <span id="measure-readout"></span>
+    </div>
+    <div id="markup-group" title="Draw review annotations over the 3D view">
+      <button id="markup-toggle" title="Toggle markup mode">✎ Markup</button>
+      <select id="markup-tool" title="Markup tool">
+        <option value="freehand">Freehand</option>
+        <option value="line">Line</option>
+        <option value="arrow">Arrow</option>
+        <option value="rectangle">Rectangle</option>
+        <option value="circle">Circle</option>
+        <option value="eraser">Eraser</option>
+      </select>
+      <input type="color" id="markup-color" title="Stroke colour" value="#ff3b30">
+      <button id="markup-undo" title="Undo last stroke">Undo</button>
+      <button id="markup-redo" title="Redo">Redo</button>
+      <button id="markup-clear" title="Clear all annotations">Clear</button>
     </div>
   </div>
   <div id="view-controls">
@@ -137,6 +178,44 @@ export function viewerBodyHtml(): string {
       <div class="vc-row">
         <button id="view-fit" title="Fit to view">Fit</button>
         <button id="view-reset" title="Reset to default view">Ctr</button>
+      </div>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">Clip</span>
+      <div class="vc-segments">
+        <button class="clip-axis active" data-axis="x">X</button>
+        <button class="clip-axis" data-axis="y">Y</button>
+        <button class="clip-axis" data-axis="z">Z</button>
+      </div>
+      <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset">
+      <button id="clip-toggle" title="Toggle clipping">Off</button>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">Appearance</span>
+      <div class="vc-row">
+        <input type="color" id="vc-background" title="Background colour" value="#1e1e1e">
+        <input type="range" id="vc-opacity" class="meshing-slider" min="0" max="100" value="100" title="Model opacity">
+        <button id="vc-ortho" title="Toggle orthographic/perspective projection">Persp</button>
+      </div>
+      <div class="vc-row">
+        <label for="vc-unit" class="vc-label">Units</label>
+        <select id="vc-unit" title="Display unit for measurements and mass properties">
+          <option value="mm">mm</option>
+          <option value="cm">cm</option>
+          <option value="m">m</option>
+          <option value="in">in</option>
+          <option value="ft">ft</option>
+        </select>
+      </div>
+    </div>
+    <div class="vc-group">
+      <span class="vc-label">Display</span>
+      <div class="vc-segments" id="display-mode-group">
+        <button class="display-mode-btn active" data-mode="shaded" title="Shaded — normal lit faces">Shaded</button>
+        <button class="display-mode-btn" data-mode="wireframe" title="Wireframe — faces rendered as a mesh of lines">${icon("wireframe")} Wire</button>
+        <button class="display-mode-btn" data-mode="xray" title="X-Ray — translucent faces, edges visible through them">X-Ray</button>
+        <button class="display-mode-btn" data-mode="hiddenLines" title="Hidden Lines — occluded edges shown faintly through solids">Hidden</button>
+        <button class="display-mode-btn" data-mode="flat" title="Flat — unlit constant-colour faces, no shading gradient">Flat</button>
       </div>
     </div>
     </div>

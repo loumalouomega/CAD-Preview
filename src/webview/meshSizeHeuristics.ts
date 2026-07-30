@@ -28,6 +28,17 @@ export function defaultTargetSize(diagonal: number): number {
   return diagonal / DEFAULT_SIZE_DIVISOR;
 }
 
+/**
+ * Like {@link defaultTargetSize}, but scaled by the `cadPreview.defaultMeshSizePreset`
+ * setting's divisor instead of the fixed `DEFAULT_SIZE_DIVISOR` — used to seed a
+ * model that has no saved `.mesh.json` sidecar yet (see `syncMeshSizeSeed` in
+ * `src/webview/main.ts`). `"medium"` is equivalent to {@link defaultTargetSize}
+ * since `PRESET_DIVISORS.medium === DEFAULT_SIZE_DIVISOR`.
+ */
+export function targetSizeForPreset(diagonal: number, preset: keyof typeof PRESET_DIVISORS): number {
+  return diagonal / PRESET_DIVISORS[preset];
+}
+
 function clamp01(t: number): number {
   return Math.min(1, Math.max(0, t));
 }

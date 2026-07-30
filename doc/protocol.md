@@ -193,6 +193,39 @@ is the single tolerance gate — an individually invalid field falls back to
 host → webview in `meshingOptions` (hydration) and webview → host in
 `meshingChanged`/`meshingGenerate`/`meshingExport`.
 
+### `ViewerDefaults` and `MassProperties`
+
+```typescript
+interface ViewerDefaults {
+  background: string                              // CSS hex color
+  meshSizePreset: 'coarse' | 'medium' | 'fine'
+  showGridAndAxes: boolean
+  upAxis: 'y' | 'z'
+}
+
+interface MassProperties {
+  volume: number | null            // whole model or a solid-N only (never face-N/edge-N)
+  area: number | null              // whole model, a solid-N (boundary area), or a face-N
+  length: number | null            // a single edge-N only
+  centerOfMass: [number, number, number] | null
+  momentsOfInertia: { ixx: number; iyy: number; izz: number; ixy: number; ixz: number; iyz: number } | null  // about the centroid
+}
+
+interface QualitySummary {
+  min: number
+  mean: number
+  histogram: number[]   // bucket i covers [i/N, (i+1)/N) of the quality range; see meshingResult below
+}
+```
+
+`ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) —
+cross-document defaults only; a per-document sidecar value or a runtime toggle
+(the toolbar Grid button) always wins once set. `MassProperties` is computed
+via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources
+compute the equivalent client-side and never send it over this protocol at
+all (no host round trip) — see [Extension Host API](./extension-host-api.md)
+and [Webview API](./webview-api.md).
+
 ---
 
 ## Host → Webview Messages (`HostToWebview`)
@@ -200,8 +233,9 @@ host → webview in `meshingOptions` (hydration) and webview → host in
 ```typescript
 type HostToWebview =
   | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
-  | { type: 'tree';     root: TreeNode }
+  | { type: 'tree';     root: TreeNode; sourceUnit?: string }
   | { type: 'loadUrl';  url: string; format: CadFormat }
+  | { type: 'loadMeshBytes'; sourceFormat: CadFormat; dataBase64: string }
   | { type: 'parts';    parts: Part[] }
   | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'status';   text: string }
@@ -210,8 +244,12 @@ type HostToWebview =
   | { type: 'exportMesh'; requestId: string; format: CadFormat }
   | { type: 'meshingOptions'; options: MeshOptions }
   | { type: 'meshingResult'; positions: string; indices: string; nodeCount: number; elementCount: number;
-      elementGroups: MeshElementGroup[]; elapsedMs: number }
+      elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary }
   | { type: 'meshingError'; message: string }
+  | ({ type: 'viewerDefaults' } & ViewerDefaults)
+  | { type: 'screenshotRequest'; requestId: string }
+  | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
+  | { type: 'massPropertiesError'; requestId: string; message: string }
 ```
 
 ### `geometry`
@@ -242,9 +280,21 @@ per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group
 
 Sent alongside (or shortly after) `geometry` for B-rep files. Also sent for Three.js mesh files after the model is loaded and the Object3D hierarchy is walked.
 
+`sourceUnit` is the STEP file's declared length unit (e.g. `"INCH"`,
+`"MILLIMETRE"`), detected by a plain-text scan of the `DATA` section
+(`src/stepUnits.ts`'s `detectStepLengthUnit`) — `undefined` for IGES/BREP (no
+unit metadata) or a STEP file with no unit declaration. It is purely
+informational: OCCT's STEP reader already auto-converts every shape to one
+internal cascade unit (millimetres) regardless of this value, so geometry
+numbers are always already consistent. The webview uses it only to seed the
+view-controls "Units" display-unit selector (`src/webview/units.ts`) —
+switching that selector never changes any stored value, only how Mass
+Properties/Measurement numbers are formatted.
+
 ```json
 {
   "type": "tree",
+  "sourceUnit": "INCH",
   "root": {
     "id": "root",
     "label": "STEP Assembly",
@@ -265,6 +315,32 @@ Sent for mesh-format files (STL/OBJ/PLY/glTF). The `url` is a `vscode-webview://
   "type": "loadUrl",
   "url": "vscode-webview://.../.../examples/STL/cube.stl",
   "format": "stl"
+}
+```
+
+### `loadMeshBytes`
+
+Sent for meshio++-only source files (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA — see
+[File Formats](./file-formats.md#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa)).
+Unlike `loadUrl`, the webview has no native loader for these formats at all,
+so the host converts the file host-side first
+(`src/meshioService.ts`'s `convertToStlBoundary()`, via meshio++'s
+`convertSurface`) and sends the resulting **STL bytes** directly over
+postMessage as base64 — the same transport pattern `geometry` already uses
+for large buffers, deliberately not a `data:` URL (sidesteps any webview
+CSP/size-limit uncertainty around those). `sourceFormat` is the document's
+*actual* source format (e.g. `"vtk"`), used only for the Components tree
+root's label — the bytes themselves are always `"stl"` and are fed through
+the exact same `loadMeshFromUrl(url, "stl")` call `loadUrl` uses, via a
+`blob:` object URL (`URL.createObjectURL`) instead of a `vscode-webview://`
+fetch. From this point on, a meshio-imported document is indistinguishable
+from a native `.stl` open to every other feature.
+
+```json
+{
+  "type": "loadMeshBytes",
+  "sourceFormat": "vtk",
+  "dataBase64": "c29saWQgeA0K..."
 }
 ```
 
@@ -360,7 +436,7 @@ echo back as a `meshingChanged` write) and renders the FE Mesh panel form.
 ```json
 {
   "type": "meshingOptions",
-  "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "elementShape": "simplex", "optimize": true, "stlAngle": 40 }
+  "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "elementShape": "simplex", "optimize": true, "stlAngle": 40 }
 }
 ```
 
@@ -378,7 +454,12 @@ indexCount}`, with a trailing `name`/`color` = `null` run for triangles not clai
 by any part) so the overlay can be built multi-material with per-part colours. The
 webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices,
 msg.elementGroups))` and renders the stats (counts + time) in the panel's status
-line.
+line. `quality` (optional — omitted if it couldn't be computed, e.g. a 1D mesh)
+is a `{min, mean, histogram}` summary over the mesh's top-dimension elements'
+`minSICN` quality (via Gmsh's own `getElementQualities` — see
+`src/gmshService.ts`'s `computeMeshQuality` for the verified call shape),
+rendered as a small min/mean line + bar histogram below the FE Mesh panel's
+status line.
 
 ```json
 {
@@ -388,7 +469,8 @@ line.
     { "name": "inlet", "color": "#ff0000", "indexStart": 0, "indexCount": 264 },
     { "name": null, "color": null, "indexStart": 264, "indexCount": 5412 }
   ],
-  "elapsedMs": 3217
+  "elapsedMs": 3217,
+  "quality": { "min": 0.043, "mean": 0.71, "histogram": [1, 3, 8, 20, 45, 90, 210, 340, 180, 62] }
 }
 ```
 
@@ -403,6 +485,55 @@ panel's status line — it does not use the general `#error-overlay` `error` mes
 { "type": "meshingError", "message": "No mesh geometry available: missing STL data." }
 ```
 
+### `viewerDefaults`
+
+Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading
+`workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s
+`normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as
+`validateMeshOptions`). Arrives in no deterministic order relative to
+`geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler
+must tolerate either order — `background`/`showGridAndAxes` apply immediately
+(scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()`
+call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()`
+already computes. These are cross-document **defaults only** — a persisted
+per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
+
+```json
+{ "type": "viewerDefaults", "background": "#1e1e1e", "meshSizePreset": "medium", "showGridAndAxes": true, "upAxis": "y" }
+```
+
+### `screenshotRequest`
+
+Sent in reply to `screenshotButtonClicked` or the `cad-preview.screenshot`
+command, mirroring `exportMesh`'s request/response shape exactly (same
+`pending` map, same `requestId` correlation) — just with the format fixed to
+PNG, so there's no `format` field. The webview force-renders a fresh frame
+(`Viewer.render()`, avoiding a persistent `preserveDrawingBuffer`) then reads
+`renderer.domElement.toDataURL("image/png")`, replying with
+`screenshotResult`/`screenshotError`.
+
+```json
+{ "type": "screenshotRequest", "requestId": "1234-0.56" }
+```
+
+### `massPropertiesResult` / `massPropertiesError`
+
+Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh
+sources compute `MassProperties` entirely client-side and never send this
+request at all (no host round trip, since there's no OCCT shape to query).
+`properties.volume` is only ever non-`null` for the whole model or a
+`solid-N`; a `face-N` gets `area` only, an `edge-N` gets `length` only. See
+[Extension Host API](./extension-host-api.md#src-massproperties-ts)'s verified
+`BRepGProp` call sequence.
+
+```json
+{ "type": "massPropertiesResult", "requestId": "1234-0.56", "properties": { "volume": 24, "area": 52, "length": null, "centerOfMass": [1, 1.5, 2], "momentsOfInertia": { "ixx": 50, "iyy": 40, "izz": 26, "ixy": 0, "ixz": 0, "iyz": 0 } } }
+```
+
+```json
+{ "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -414,6 +545,7 @@ type WebviewToHost =
   | { type: 'partsChanged'; parts: Part[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'openFile' }
+  | { type: 'openPath'; path: string }
   | { type: 'saveSidecars' }
   | { type: 'exportRequest' }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
@@ -421,6 +553,10 @@ type WebviewToHost =
   | { type: 'meshingChanged'; options: MeshOptions }
   | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
   | { type: 'meshingExport'; target: 'msh' | 'geoUnrolled'; options: MeshOptions; stl?: string }
+  | { type: 'screenshotButtonClicked' }
+  | { type: 'screenshotResult'; requestId: string; data: string }
+  | { type: 'screenshotError'; requestId: string; message: string }
+  | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
 ```
 
 ### `partsChanged`
@@ -470,7 +606,7 @@ GMSH by itself — that only happens on `meshingGenerate`/`meshingExport`. See
 [GMSH Integration](./gmsh-integration.md).
 
 ```json
-{ "type": "meshingChanged", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+{ "type": "meshingChanged", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
 ```
 
 ### `meshingGenerate`
@@ -485,7 +621,7 @@ re-exports the live OCCT shape to STEP itself. The host replies with
 `meshingResult` or `meshingError`.
 
 ```json
-{ "type": "meshingGenerate", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+{ "type": "meshingGenerate", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
 ```
 
 ### `meshingExport`
@@ -511,7 +647,7 @@ there is no `meshingResult` reply for this message; failures post the general
 `error` message instead of `meshingError`.
 
 ```json
-{ "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 4, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+{ "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
 ```
 
 ### `ready`
@@ -539,6 +675,21 @@ file to this custom editor via `vscode.openWith`. The same action backs the
 
 ```json
 { "type": "openFile" }
+```
+
+### `openPath`
+
+Sent when a file is dropped onto the viewer canvas AND the browser `File`
+object exposed a real filesystem path (`file.path` — a legacy Electron
+extension to the standard `File` object, not guaranteed present in every VS
+Code/Electron version). The host opens it the same way `openFile` does
+(`vscode.openWith`), just from an already-known path instead of a fresh
+dialog. **Fallback**: when no path is exposed on drop, the webview posts the
+plain `openFile` message instead (opens the normal dialog) — drag-and-drop
+degrades to "just opens a dialog" rather than silently failing.
+
+```json
+{ "type": "openPath", "path": "/home/user/models/bull.stp" }
 ```
 
 ### `saveSidecars`
@@ -580,6 +731,44 @@ writes the decoded bytes to the path chosen in the save dialog.
 
 ```json
 { "type": "exportError", "requestId": "1234-0.56", "message": "No model loaded" }
+```
+
+### `screenshotButtonClicked`
+
+Sent when the toolbar's **📷 Screenshot** button is clicked — the webview-initiated
+trigger for the same `handleScreenshot` flow the `cad-preview.screenshot`
+command drives, so there is exactly one code path regardless of trigger
+surface. The host prompts a save dialog and follows up with `screenshotRequest`.
+
+```json
+{ "type": "screenshotButtonClicked" }
+```
+
+### `screenshotResult` / `screenshotError`
+
+Sent in reply to `screenshotRequest`. `data` is always base64 PNG bytes (no
+`binary` field — unlike `exportResult`, the format is never anything else).
+Correlated to the pending save via `requestId`, same as `exportResult`.
+
+```json
+{ "type": "screenshotResult", "requestId": "1234-0.56", "data": "iVBORw0KGgo..." }
+```
+
+```json
+{ "type": "screenshotError", "requestId": "1234-0.56", "message": "No model loaded" }
+```
+
+### `massPropertiesRequest`
+
+Sent when the Mass Properties panel's **Compute** button is clicked, for a
+B-rep source only (mesh sources never send this — see `massPropertiesResult`
+above). `entityId` is `null` for the whole model, or the current selection's
+single entity id (`solid-N` / `face-N` / `edge-N`) — the panel refuses to
+guess when 2+ entities are selected, showing a guidance message instead of
+sending a request.
+
+```json
+{ "type": "massPropertiesRequest", "requestId": "1234-0.56", "entityId": "solid-0" }
 ```
 
 ---

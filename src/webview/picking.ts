@@ -57,3 +57,39 @@ export function collectTargets(root: Object3D, mode: EntityType): Object3D[] {
   });
   return out;
 }
+
+/**
+ * Measurement's raycast target set — unlike {@link collectTargets}, this is
+ * NOT mode-gated: every pickable surface/line/point is a candidate at once,
+ * since a measurement (distance, angle) may combine picks of different kinds
+ * in a single session. Deliberately excludes anything tagged `"mesh"` (the FE
+ * overlay) — same exclusion `collectTargets` gets implicitly by only matching
+ * `"surface"|"line"|"point"`.
+ */
+export function collectMeasureTargets(root: Object3D): Object3D[] {
+  const out: Object3D[] = [];
+  root.traverse((o) => {
+    const t = (o.userData as EntityUserData)?.entityType;
+    if (t === "surface" || t === "line" || t === "point") out.push(o);
+  });
+  return out;
+}
+
+/**
+ * Resolves a raycast hit's `userData` to a measurement target — unlike
+ * {@link resolvePick}, never "resolves up" to a parent solid (a `surface` hit
+ * stays a `surface`); measurement always operates on the leaf entity actually
+ * clicked.
+ */
+export function resolveMeasurePick(userData: EntityUserData): PickResult | null {
+  if (userData.entityType === "surface" && userData.entityId) {
+    return { entityType: "surface", entityId: userData.entityId };
+  }
+  if (userData.entityType === "line" && userData.entityId) {
+    return { entityType: "line", entityId: userData.entityId };
+  }
+  if (userData.entityType === "point" && userData.entityId) {
+    return { entityType: "point", entityId: userData.entityId };
+  }
+  return null;
+}

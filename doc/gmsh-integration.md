@@ -101,6 +101,22 @@ Both paths converge on the shared options application in
 then `generateMesh` calls `gmsh.model.mesh.generate(options.dimension)` and reads
 the result back with `gmsh.model.mesh.getNodes()` / `gmsh.model.mesh.getElements()`.
 
+**meshio++-imported documents (VTK/MED/CGNS/Exodus/XDMF/MDPA) still take the
+"Mesh source" `{kind: "stl"}` branch above, in the interactive extension —
+no third `MeshGenerationInput` kind was added.** They're converted to an STL
+boundary surface once at import time (`convertToStlBoundary`, host-side —
+see "The meshio++ bridge" below) and displayed in the webview as an ordinary
+`THREE.Object3D`, indistinguishable from a native `.stl` open from that point
+on; when meshing runs, the *webview* re-serializes that already-displayed
+object to STL exactly like any other mesh source, following the same code
+path described above. The **headless MCP server** is the one place a genuinely
+new STL-sourcing mechanism exists: `mcpTools.ts`'s `resolveMeshInputHeadless`
+calls `convertToStlBoundary` directly (no webview involved at all, since the
+MCP server has none) to turn the raw file bytes into `{kind: "stl", stlBytes}`
+— which is *more* capable than `.obj`/`.ply`/`.gltf` get headless, since
+meshio++ runs entirely host-side and those three genuinely have no headless
+equivalent (only the webview's Three.js loaders can parse them).
+
 ## Element shapes & order
 
 Two options control the generated cell geometry:
@@ -126,9 +142,12 @@ Two options control the generated cell geometry:
   on boundary"* — all-hex 3D instead needs the subdivision algorithm. `subdivided`
   works with both the Delaunay (`Algorithm3D=1`) and Frontal (`4`) 3D algorithms.
 
-  A **hex-*dominant* mixed mode** (tets+prisms+pyramids+hexes, via
-  `Mesh.Recombine3DAll`) is deliberately **not offered** — see
-  [Known limitations](#known-limitations).
+  A **hex-*dominant* mixed mode** (`elementShape: "hexDominant"`, 3D only —
+  `Mesh.Algorithm3D=9` RTree + `Mesh.Recombine3DAll=1`) is also offered,
+  producing tets + hexes stitched by an unmapped "trihedron" connector type
+  Gmsh's own writers handle natively but Kratos MDPA export cannot represent
+  — see [Known limitations](#known-limitations) for the full verification
+  trail and exactly what degrades where.
 
 The single generic per-element-type table `src/gmshElementTypes.ts`
 (`GMSH_ELEMENT_TYPES`) is the source of truth for every supported gmsh type's
@@ -320,7 +339,7 @@ parse/serialize functions):
   Mesh.MeshSizeMin = 0;
   Mesh.MeshSizeMax = 1e22;
   Mesh.Algorithm = 6;
-  Mesh.Algorithm3D = 4;
+  Mesh.Algorithm3D = 1;
   Mesh.ElementOrder = 1;
   Mesh.RecombineAll = 0;
   Mesh.SubdivisionAlgorithm = 0;
@@ -369,7 +388,7 @@ option-string enumeration, found via a `strings` scan of the `.wasm` binary):
 | Result | Formats |
 |---|---|
 | Works | `msh` (v4.1, default), `msh2` (legacy v2.2 — selected purely by writing to a `.msh2` path, no `Mesh.MshFileVersion` option needed), `geo_unrolled` (existing, XAO-companion caveat below), `vtk`, `unv` (I-DEAS Universal), `inp` (Abaqus), `bdf`/`nas` (Nastran Bulk Data — same writer, only `bdf` is registered), `su2`, `mesh` (INRIA Medit), `stl`, `diff` (Diffpack), `off`, plus a few registered but not offered in the UI as redundant/niche for FE/CFD interchange: `ply2`, `wrl`, `x3d`, `dat`, `m`/`matlab`, `ir3`, `celum` |
-| Compiled out | `cgns`, `med` — both extension-recognized (Gmsh's dispatch code path exists) but throw `"This version of Gmsh was compiled without CGNS support"` / `"Gmsh must be compiled with MED support to write '...'"`; both formats need HDF5-backed libraries (`libCGNS`, `libMED`) this WASM build doesn't statically link. Not a CAD-Preview limitation — would need `@loumalouomega/gmsh-wasm` rebuilt with those libs linked in. |
+| Compiled out | `cgns`, `med` — both extension-recognized (Gmsh's dispatch code path exists) but throw `"This version of Gmsh was compiled without CGNS support"` / `"Gmsh must be compiled with MED support to write '...'"`; both formats need HDF5-backed libraries (`libCGNS`, `libMED`) this WASM build doesn't statically link. Rebuilding `@loumalouomega/gmsh-wasm` with those libs linked in is the "fix Gmsh itself" path — not attempted; instead CAD-Preview bridges through a **second, independent** WASM module for these (and adds `xdmf`, which Gmsh's own writer table doesn't even recognize as an extension) — see "The meshio++ bridge" below. |
 | Unusable for this pipeline | `p3d`, `neu` — wrote 0 bytes for a tri/tet mesh (structured-grid/quad-oriented formats); `vtk_bin`, `tochnog`, `matlab` (as a bare unrecognized extension distinct from `.m`) — not recognized as output extensions at all in this build. |
 
 All working text formats are read back via `gmsh.FS.readFile(path, {
@@ -443,8 +462,11 @@ are **truncated** to Kratos's `Prism3D15` / `Pyramid3D13` — verified against t
 live WASM that PRI18's first 15 / PYR14's first 13 reference-node coordinates
 coincide with the shorter element's, so dropping the extra face nodes is exact.
 The dropped nodes remain in `Begin Nodes` (possibly unreferenced). This only
-matters for a hex-dominant order-2 mesh, which this WASM build can't produce
-anyway (see Known limitations).
+matters for an order-2 mesh containing prism/pyramid elements — the RTree
+`elementShape: "hexDominant"` mode (see Known limitations) does NOT produce
+either kind (it produces tet + hex + an unmapped trihedron connector type
+only), so in practice this table row exists for future/manually-constructed
+prism/pyramid meshes, not anything the hex-dominant option itself generates.
 
 Both a kind's root block and its `SubModelPart*` sub-block are **omitted when
 empty** — never an empty `Begin`/`End` pair. A genuinely unmapped element type
@@ -507,6 +529,126 @@ hex8/quad4 & hex27/quad9), no `orientCell` warnings, no negative tets, and
 both MDPA modes emitted every expected block name with all connectivity ids in
 range. Corner-only overlay display makes the boundary-triangle count identical
 between order 1 and order 2 of the same shape.
+
+### The meshio++ bridge (MED, CGNS, XDMF — not `gmsh.write()` formats either)
+
+Like MDPA above, MED/CGNS/XDMF export never calls `gmsh.write()` — but unlike
+MDPA, they're not hand-serialized either. `src/meshioService.ts`'s
+`exportViaMeshio()` re-encodes an already-generated mesh through a **second,
+independent** WASM module, [`@meshioplusplus/wasm`](https://github.com/loumalouomega/meshioplusplus)
+(MIT-licensed; see the README's Licensing section), which this gmsh-wasm build
+simply doesn't have writers for at all.
+
+**Bridge mechanics.** `generateMesh()`'s own `mshText` (modern MSH 4.1,
+Gmsh's default output version) is handed straight to `exportViaMeshio()`,
+which writes those bytes into meshio++'s own MEMFS and calls its
+`convert()`/`readMesh()`+`writeMesh()` (see below), bridging the two
+modules' independent virtual filesystems via a plain buffer round trip — no
+browser, no shared memory.
+
+**MSH 4.1 input requires `@meshioplusplus/wasm` ≥ 9.7.0 — before that, the
+bridge needed a legacy MSH 2.2 detour (kept here as the historical record,
+per this doc's convention).** Against 9.4.1, feeding MSH 4.1 text into
+meshio++'s `convert(..., {inFormat: "gmsh"})` threw
+`"Gmsh $Entities not supported by the C++ reader"` immediately — that
+build's C++ Gmsh reader only understood the older MSH 2.2 schema, so the
+bridge routed through `exportMeshFormat(..., "msh2")` first. 9.7.0 parses
+`$Entities` natively (ascii and binary), and — the genuinely valuable part —
+resolves **physical-group membership** from it: a 4.1 read now yields named
+`regions` (one per physical group, i.e. one per CAD-Preview part), which the
+2.2 path never produced (re-verified: a 2.2 read of the same mesh yields no
+regions — `$PhysicalNames` alone isn't enough; 4.1's `$Entities` is where
+membership lives). The bridge input was switched back to `generateMesh()`'s
+own 4.1 `mshText` accordingly, dropping the extra `gmsh.write()` round trip.
+
+**MED still needs a MED-specific two-step, re-verified against the live
+9.7.0 WASM — but it's now group-PRESERVING, where the 9.4.1-era workaround
+was group-dropping.** Two independent obstacles remain on the direct
+`convert(..., {outFormat: "med"})` path:
+1. It still throws `"MED: gmsh physical groups handled by Python fallback"`
+   whenever `cell_data` carries gmsh's own `"gmsh:physical"`/
+   `"gmsh:geometrical"` tags, which `readMesh(..., "gmsh")` **always**
+   attaches to a gmsh-sourced mesh (this meshio++ build's MED writer defers
+   that case to Python, unavailable in WASM).
+2. MED separately rejects MSH 4.1's natural one-block-per-*entity* cell
+   layout with `"MED files cannot have two sections of the same cell type"`
+   (a meshed unit box arrives as 27 blocks: 8 vertex + 12 line + 6 triangle
+   + 1 tetra).
+The fix for both at once: `readMesh()` the 4.1 text, run the result through
+**`merge([mesh])`** — meshio++'s own merge consolidates same-type cell
+blocks into one (MED's requirement) *and* remaps every named region's
+block-major cell indices onto the merged layout (verified: region entry
+counts survive exactly) — then hand-build a **brand-new plain JS object**
+containing only `{points, dim, cells, regions}` (no `cell_data`/
+`point_data`/`field_data` key at all — dropping them is what dodges obstacle
+1; scalar field data is a theoretical loss only, this pipeline's generated
+meshes never carry any) and `writeMesh()` **that** to MED. meshio++ 9.6.0's
+MED writer synthesizes MED families from the regions, so **parts/physical
+groups now round-trip into MED as named groups** — verified end-to-end: a
+box with `MyVolume`/`MySurface` physical groups wrote a MED whose read-back
+listed both regions with identical entry counts (90 surface triangles, 1101
+tets). Under 9.4.1 this path silently dropped all groups. CGNS/XDMF/VTK need
+none of this; plain `convert()` works directly on the 4.1 text.
+
+**CGNS has one more, narrower limitation — verified on 9.4.1 and
+RE-verified unchanged on 9.7.0**: exporting a **pure-surface** mesh
+(triangle/quad only, no volume cells — i.e. every 2D-dimension FE-mesh
+generate) produces a CGNS file this same WASM build's own reader can't read
+back (`"HDF5: missing dataset ' data'"`). Confirmed via a controlled pair of
+probes: a volume (tet) mesh round-trips through `convert()`+`readMesh()`
+correctly; a triangle-only mesh fails on read-back with that exact error.
+MED and XDMF have **no** such gap (verified: both round-trip a pure-surface
+mesh correctly). CAD-Preview still writes the CGNS file in this case (the
+failure is on *read*, not *write*, and `exportViaMeshio()` never reads its
+own output back) — a 2D-dimension CGNS export may therefore produce a file
+some *other* downstream CGNS reader also rejects; there is no
+CAD-Preview-side workaround for this one. (All three remaining upstream
+gaps — the MED Python-fallback trip, the MED same-type-blocks rejection,
+and this CGNS read-back failure — are written up with exact reproductions
+in a ready-to-run prompt at the meshio++ repo:
+`PROMPT_close_wasm_gmsh_bridge_gaps.md`.)
+
+**XDMF writes an HDF5 companion file**, confirmed against the live WASM:
+`convert(..., "/out.xdmf", ...)` also writes `/out.h5` (same MEMFS basename,
+swapped extension) and the `.xdmf` XML's `<DataItem Format="HDF">` elements
+reference it by that bare filename (e.g. `out.h5:/data0`). `exportViaMeshio()`
+returns `bytes`/`companion` separately so the caller can write both under the
+*user-chosen save filename's* basename and rewrite the embedded reference to
+match — `provider.ts`'s `meshingExport` handler (and `mcpTools.ts`'s
+`exportMeshTool`) do this the same way they already rewrite `.geo_unrolled`'s
+`Merge "...xao"` stub for B-rep sources.
+
+**Loading order / packaging.** `@meshioplusplus/wasm` is ESM-only with no
+`require` condition at all (unlike gmsh-wasm, which is dual CJS/ESM) —
+`meshioService.ts` loads it via a dynamic `await import(...)`, not a static
+top-of-file import, and it must stay `external` in `esbuild.mjs` for that
+reason (plus the same eager-pthread-worker-spawn risk gmsh-wasm's own comment
+documents, if it were ever bundled). It's always loaded with
+`{ variant: "seq" }` explicitly — **never** `"auto"`, since the package's own
+`resolveVariant()` picks the threaded build whenever
+`typeof crossOriginIsolated === "undefined"`, which is unconditionally true
+under Node, so `"auto"` would always pick the eager-worker-spawning threaded
+build here. `.vscodeignore` carves out only the sequential variant's four
+files (`package.json`, `src/index.mjs`, `dist/meshioplusplus_wasm.mjs`,
+`dist/meshioplusplus_wasm.wasm`) — the threaded variant's files are dead
+weight given `"seq"` is always forced.
+
+**Same module also powers document import** for VTK/VTU/MED/CGNS/Exodus/
+XDMF/MDPA — see `doc/getting-started.md`'s Supported Formats note and
+`meshioService.ts`'s `convertToStlBoundary()` (the reverse direction:
+source file → STL boundary surface, via `convertSurface` rather than
+`convert`, so multi-component data survives inside meshio++'s C++ core for
+as long as it's there — though the STL output format itself still can't
+carry it out).
+
+**Verified end-to-end against the live WASM build** via `npm run mcp:smoke`:
+a hand-built tetrahedron `.vtk` file is loaded (`load_model` routes it
+through meshio, reports it as headlessly meshable — unlike `.obj`/`.ply`/
+`.gltf`, which aren't), meshed (`generate_mesh`, real node/element counts),
+and exported to MED, CGNS (3D, since the 2D limitation above doesn't apply),
+and XDMF (confirming the `.h5` companion is written and its embedded
+reference correctly rewritten to the chosen output filename) — all through
+the real `dist/mcp-server.js` process, not a mocked pipeline.
 
 ## Webview: panel, model, and overlay display
 
@@ -606,23 +748,87 @@ second time inside gmsh-wasm's bundled OCCT). The GPL obligation is triggered by
 gmsh-wasm's presence in the extension bundle, not by whether a given user ever
 opens the FE Mesh panel.
 
+`@meshioplusplus/wasm` (the meshio++ bridge, see above) is **MIT**-licensed,
+including its compiled `.wasm` binary — bundling it doesn't change
+CAD-Preview's overall license (already GPL-2.0-or-later because of gmsh-wasm),
+it's simply an additional MIT dependency alongside `@modelcontextprotocol/sdk`/
+`zod`/`fflate`. See the README's Licensing section for the full attribution list.
+
 ## Known limitations
 
-- **No working 3D recombination (hex-dominant meshing) in the bundled WASM build.**
-  The all-hex `subdivided` shape works (via `Mesh.SubdivisionAlgorithm=2`), but a
-  hex-*dominant* mixed mesh (tets+prisms+pyramids+hexes via
-  `Mesh.Recombine3DAll`) is completely non-functional here: every variant probed —
+- **The meshio++ MED/CGNS export bridge has two narrow, verified gaps** — see
+  "The meshio++ bridge" above for the full write-up: MED needs a
+  strip-to-`{points,dim,cells}`-before-writing workaround (drops any point/
+  cell scalar field data, which this pipeline's generated meshes never carry
+  anyway); CGNS export of a pure-2D (surface-only) mesh produces a file this
+  same WASM build's own reader can't read back (3D volume meshes are
+  unaffected). Neither is a CAD-Preview bug to fix — both are confirmed
+  limitations of the bundled `@meshioplusplus/wasm` build itself.
+
+- **No working 3D recombination (hex-dominant meshing) in the bundled WASM build
+  — TRUE for `@loumalouomega/gmsh-wasm` 0.2.x, SUPERSEDED in 0.3.0 (see the
+  update below).** The all-hex `subdivided` shape works (via
+  `Mesh.SubdivisionAlgorithm=2`), but a hex-*dominant* mixed mesh
+  (tets+prisms+pyramids+hexes via `Mesh.Recombine3DAll`) was completely
+  non-functional in 0.2.x: every variant probed at the time —
   `Recombine3DAll=1` alone, combined with `RecombineAll`, with
   `Recombine3DConformity`/`Recombine3DLevel`, under Delaunay or Frontal —
   produced **pure tetrahedra** (no recombination at all) or threw *"Cannot use
-  frontal 3D algorithm with quadrangles on boundary"*. This build was evidently
-  compiled without the experimental 3D recombination support. So `elementShape` is
-  restricted to `simplex`/`subdivided` and no hex-dominant option is offered
-  (`validateMeshOptions` rejects `"hexDominant"` to a default). The
-  `gmshElementTypes.ts` table still carries prism/pyramid rows (their permutations
-  are verified) so the pipeline is ready if a rebuilt WASM ever enables it — they
-  are simply unreachable today. `Mesh.Algorithm3D=10` (HXT) is separately broken in
-  this build too (empty mesh), unrelated to this feature.
+  frontal 3D algorithm with quadrangles on boundary"*. **That probing pass never
+  tried `Mesh.Algorithm3D=9` (RTree)** — the specific algorithm Gmsh's hex-tet
+  hybrid recombiner is gated behind (confirmed by re-probing, see below) — so the
+  0.2.x "compiled without 3D recombination support" conclusion was itself
+  incomplete, not just a since-fixed build limitation. So `elementShape` was
+  restricted to `simplex`/`subdivided` and no hex-dominant option was offered
+  (`validateMeshOptions` still rejects `"hexDominant"`, unchanged as of this
+  writing — see `doc/roadmap.md`'s "Hex-dominant FE meshing" candidate for what
+  adding it properly would need). The `gmshElementTypes.ts` table still carries
+  prism/pyramid rows (their permutations are verified) so the pipeline is ready
+  if this is ever implemented — they remain unreachable today, by choice, not by
+  WASM limitation. `Mesh.Algorithm3D=10` (HXT) was also broken in 0.2.x (empty
+  mesh) — see the update below, same root cause as the 3D Delaunay bug two
+  bullets down.
+
+  **Update, `@loumalouomega/gmsh-wasm` 0.3.0, verified against the live WASM on
+  `examples/STP/block.stp`:** re-probing with `Mesh.Algorithm3D=9` (RTree) +
+  `Mesh.Recombine3DAll=1` — the exact combination the 0.2.x pass never tried —
+  now produces a genuine hex-dominant mesh: element types `[4, 5, 140]` (702
+  tetrahedra, 165 hexahedra, 366 type-140 "trihedron" connector elements
+  stitching the tet/hex interface), completing in 482ms with no error. Gmsh's
+  own upstream framing (relayed via GMSH-JS's README/docs) still calls the
+  RTree path "experimental" and recommends Delaunay/HXT for production meshes.
+  `gmsh.model.mesh.getElementProperties(140)` **throws** (`"Size of basis
+  incompatible with element type"`) — the coordinate-matching method every
+  other element kind's Kratos node permutation in `gmshElementTypes.ts` was
+  derived from doesn't extend to the trihedron connector, so **that element's
+  geometry remains unverifiable and deliberately has no table entry.**
+
+  **Update, shipped as `elementShape: "hexDominant"` (3D-only, `doc/
+  roadmap.md`'s "Hex-dominant FE meshing" item):** rather than block on
+  verifying type 140's geometry, every existing consumer of
+  `gmshElementTypes.ts`'s lookup already treats an unmapped type as a graceful
+  skip, not a throw (`surfaceTriangles`/`boundaryTriangles`/`surfaceEdges` all
+  `continue` past it) — so the overlay/wireframe/quality pipeline needed ZERO
+  changes and just silently omits type-140 elements' (non-existent, in
+  practice — they're interior tet/hex transition connectors) contribution to
+  the boundary surface. Re-verified end-to-end on `examples/STP/block.stp`
+  with the real shipped code: `generateMesh()` with `elementShape:
+  "hexDominant"` produced 446 nodes / 1289 elements with a POPULATED overlay
+  (6384 triangle indices, 3348 edge-buffer values — confirming the boundary
+  extraction produced real, non-empty output despite the unmapped type 140
+  mixed in) and a working quality summary (`computeMeshQuality` — min 0.163,
+  mean 0.865, no crash on the mixed tet/hex/trihedron element-tag set); VTK
+  export (Gmsh's own native writer, unaffected by our table at all) produced
+  a valid 47.7KB file. **Kratos MDPA export is the one path that genuinely
+  cannot represent this mesh** (no `MdpaCellKind` exists for a tet/hex
+  transition connector) — `gmshService.ts`'s `collectCells` gives type 140 a
+  specific, actionable rejection message distinct from the generic
+  "unsupported element type" one every other truly-unexpected type still
+  gets; re-verified live that `exportMdpa()` throws it correctly rather than
+  producing silently-wrong Kratos output. HXT (`Algorithm3D=10`) on the same
+  OCC-imported geometry completed correctly (37ms, 1254 tets, no hang/
+  empty-mesh) in the same 0.3.0 re-probe — see the 3D Delaunay bug entry
+  below, which covers HXT's identical root cause and fix.
 
 Per the original goal of this integration — flag anything GMSH-JS is missing so it
 can be reported upstream — five real gaps were found while building this feature
@@ -723,21 +929,49 @@ confirmation:
   block any future adaptive or local (per-region, per-curvature) mesh sizing UI
   that wanted to compute sizes in JS on the fly.
 
-- **The WASM build has a known 3D Delaunay boundary-recovery failure on
-  re-imported CAD geometry**, documented in GMSH-JS's own README under "Known
-  issues": the default 3D algorithm (Delaunay) can fail boundary recovery —
-  producing zero tetrahedra — specifically for geometry that has round-tripped
-  through STEP/IGES import in this Emscripten target (native Gmsh builds recover
-  reliably; the issue is tracked upstream for a future fix). Since every B-rep
+- **The WASM build had a known 3D Delaunay boundary-recovery failure on
+  re-imported CAD geometry — FIXED upstream in `@loumalouomega/gmsh-wasm`
+  0.3.0; kept here as the historical record + verification trail, per this
+  doc's convention of not deleting superseded findings.** Documented in
+  GMSH-JS's own README under "Known issues" at the time: the default 3D
+  algorithm (Delaunay) could fail boundary recovery — producing zero
+  tetrahedra, or hanging — specifically for geometry that had round-tripped
+  through STEP/IGES import in this Emscripten target. Since every B-rep
   source CAD-Preview meshes has, by definition, just been imported via
-  `gmsh.model.occ.importShapes`, this failure mode is directly in the feature's
-  hot path — not a corner case. That is why `DEFAULT_MESH_OPTIONS.algorithm3D` in
-  `src/meshOptions.ts` is set to **`4` (Frontal)** instead of Gmsh's own default,
-  matching the workaround GMSH-JS's README recommends verbatim
-  (`gmsh.option.setNumber('Mesh.Algorithm3D', 4)`). Users can still pick Delaunay
-  (`1`) from the 3D algorithm dropdown for native `geo`/`occ` solids or STL
-  remeshes where it isn't affected — the default just avoids the failure mode for
-  the common case (opening a STEP/IGES/BREP file) out of the box.
+  `gmsh.model.occ.importShapes`, this failure mode was directly in the
+  feature's hot path — not a corner case. That is why
+  `DEFAULT_MESH_OPTIONS.algorithm3D` in `src/meshOptions.ts` was set to **`4`
+  (Frontal)** instead of Gmsh's own default, matching the workaround
+  GMSH-JS's README recommended at the time
+  (`gmsh.option.setNumber('Mesh.Algorithm3D', 4)`).
+
+  **Root cause and fix, per GMSH-JS's own 0.3.0 changelog/CLAUDE.md
+  (`loumalouomega/GMSH-JS` commit `0cd8b24`):** not an algorithm-correctness
+  bug at all — a wasm32 stack-overflow. Gmsh's tetgen-derived 3D boundary
+  recovery (used by both the default Delaunay algorithm and HXT) recurses
+  deeply; at `-O3` with no stack checks, overflowing Emscripten's 64 KiB
+  default stack (shared by the main thread and every pthread) silently
+  corrupted adjacent linear memory instead of trapping — surfacing as a hang
+  or an empty mesh, reproducible even on small, non-degenerate geometry, not
+  just pathological inputs. Fixed by raising
+  `-sSTACK_SIZE=4MB`/`-sDEFAULT_PTHREAD_STACK_SIZE=2MB` in GMSH-JS's own
+  `scripts/build-wasm.sh` — a real fix to the actual defect, not a
+  CAD-Preview-side workaround.
+
+  **Re-verified against the live 0.3.0 WASM** (`examples/STP/block.stp`, the
+  exact `gmsh.model.occ.importShapes` re-import path CAD-Preview always
+  uses): `Algorithm3D=1` (Delaunay) completed in 88ms producing 1282
+  tetrahedra — no hang, no empty mesh; `Algorithm3D=10` (HXT, sharing the
+  same tetgen-derived recursion and therefore the same bug/fix) completed in
+  37ms producing 1254 tetrahedra. Both fully fixed, not merely improved.
+  **`DEFAULT_MESH_OPTIONS.algorithm3D` was updated from `4` back to `1`**
+  (Gmsh's own default) accordingly — existing documents are unaffected
+  (they already have their own explicit value persisted in
+  `<model>.mesh.json`; this only changes the seed for new documents that
+  have never saved mesh options). Frontal (`4`) and HXT (`10`) both remain
+  fully selectable from the 3D algorithm dropdown, and both still work
+  correctly — there was never a reason to remove them, only to stop forcing
+  one of them as the default.
 
 - **Parts → physical groups + per-part sizing fields: verified working against
   the live WASM** (`examples/STP/angle1.stp`, one volume-scoped part with

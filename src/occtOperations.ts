@@ -1476,7 +1476,7 @@ function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" 
 
 /** The bounding-box diagonal length of a shape (via `Bnd_Box` corners). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function bboxDiagonal(oc: any, s: any, cleanup: Array<{ delete(): void }>): number {
+export function bboxDiagonal(oc: any, s: any, cleanup: Array<{ delete(): void }>): number {
   const box = new oc.Bnd_Box_1();
   cleanup.push(box);
   oc.BRepBndLib.Add(s, box, false);
@@ -1500,9 +1500,13 @@ export function bboxCenter(oc: any, s: any, cleanup: Array<{ delete(): void }>):
   return [(mn.X() + mx.X()) / 2, (mn.Y() + mx.Y()) / 2, (mn.Z() + mx.Z()) / 2];
 }
 
-/** The (point, normal) of a planar face, or null if the face is not planar. */
+/**
+ * The (point, normal) of a planar face, or null if the face is not planar.
+ * Exported for `src/entityFacts.ts`'s `inspect`/`measure` MCP tools (its only
+ * consumer besides `mateShape` below).
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function facePlane(oc: any, face: any, cleanup: Array<{ delete(): void }>): { pt: Vec3; nl: Vec3 } | null {
+export function facePlane(oc: any, face: any, cleanup: Array<{ delete(): void }>): { pt: Vec3; nl: Vec3 } | null {
   try {
     const surf = new oc.BRepAdaptor_Surface_2(face, true);
     cleanup.push(surf);

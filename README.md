@@ -33,6 +33,19 @@ loaders. Rendering is always Three.js.
 | OBJ    | `.obj`              | Three.js `OBJLoader`                     |
 | PLY    | `.ply`              | Three.js `PLYLoader`                     |
 | glTF   | `.gltf`, `.glb`     | Three.js `GLTFLoader`                    |
+| VTK    | `.vtk`, `.vtu`      | meshio++ → STL boundary surface → Three.js |
+| MED    | `.med`              | meshio++ → STL boundary surface → Three.js |
+| CGNS   | `.cgns`             | meshio++ → STL boundary surface → Three.js |
+| Exodus | `.exo`, `.e`        | meshio++ → STL boundary surface → Three.js |
+| XDMF   | `.xdmf`             | meshio++ → STL boundary surface → Three.js |
+| Kratos MDPA | `.mdpa`        | meshio++ → STL boundary surface → Three.js |
+
+> The last six formats are imported as a triangulated **boundary surface**
+> (meshio++'s `convertSurface`, host-side) — same capabilities as an STL open
+> (Parts, Edits, Export, Mass Properties, Measurement all work identically),
+> but region/scalar-field/multi-material data in the source file is not
+> preserved. This is separate from the FE Meshing feature's own MDPA/MED/CGNS
+> *export* path below, which writes a newly generated mesh, not the source file.
 
 ## Features
 
@@ -43,20 +56,32 @@ loaders. Rendering is always Three.js.
   whichever parts/edits/mesh sidecars exist as a single portable `.zip`).
   Every item is also a VS Code command with a keyboard shortcut (Ctrl+O / Ctrl+S /
   Ctrl+Shift+S / Ctrl+E / Ctrl+Alt+S / Ctrl+Alt+O, scoped to a focused CAD Preview tab).
-- Interactive camera: orbit, pan, zoom (OrbitControls with damping)
+  You can also drag a file onto the 3D view to open it, falling back to the **Open…**
+  dialog if the drop doesn't expose a filesystem path.
+- Interactive camera: orbit, pan, zoom (OrbitControls with damping); an **Ortho/Persp**
+  toggle switches between orthographic and perspective projection at any time
 - View-manipulation panel: stepped rotate (15° / 45° / 90°), pan, zoom, **Fit**
-  (reframe in place) and **Ctr** (reset to the default isometric view). The panel is
-  collapsible — use the **⌄ / ⌃** button to hide or show it.
+  (reframe in place) and **Ctr** (reset to the default isometric view); a **Clip**
+  group with a live, uncapped section plane along X/Y/Z; an **Appearance** group
+  for a session-only background colour override, whole-model opacity, the
+  ortho/perspective toggle, and a **Units** selector (mm/cm/m/in/ft) that
+  rescales Mass Properties/Measurement readouts — display-only, seeded from a
+  STEP file's own declared unit when present (geometry itself is always
+  internally consistent in millimetres regardless of the source file's unit).
+  The panel is collapsible — use the **⌄ / ⌃** button to hide or show it.
 - Orientation cube: a labeled gizmo in the top-left corner that mirrors the current
   view; click a face to snap to that standard view
 - Fit-to-view on open and on demand
-- Shaded / wireframe toggle
+- Shaded / wireframe toggle; edges can be shown/hidden independently of faces
 - Axes and grid helpers
 - Loading status indicator and error reporting
 - **Parts**: define named groups by clicking volumes / surfaces / lines / points in
   the 3D view and assigning them to a part; assignments are colour-highlighted,
   listed in a tree panel, and saved to a `<model>.parts.json` sidecar (the CAD file
-  stays read-only)
+  stays read-only). Each part has a per-row eye-toggle, and a panel-level
+  **⊙ Isolate** button shows only the selected part; both are display-only and
+  compose with each other (never persisted). The Components tree has a matching
+  per-row eye-toggle and a name filter.
 - **Edits**: apply non-destructive operations — **transforms** (move / rotate / scale /
   mirror), **booleans** (unite / subtract / intersect), **fillet/chamfer**, **feature
   modeling** (extrude / revolve / sweep / loft), **assembly** (explode / mate),
@@ -64,7 +89,8 @@ loaders. Rendering is always Three.js.
   **2D profile sketches** (circle, rectangle, N-sided polygon — pick one later as an
   extrude/revolve/sweep/loft profile), and **bottom-up wireframe modeling** (points,
   lines, arcs → build a surface from a set of lines → build a volume from a set of
-  surfaces); operations are undoable, replayable, and saved
+  surfaces); Explode has a live-preview slider that spreads the bodies as you drag
+  before you commit it with Apply; operations are undoable, replayable, and saved
   to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are
   baked in only on **Export**. (Transforms, booleans, explode, and primitive creation
   work on both B-rep and mesh; fillet/chamfer, feature modeling, mate, 2D profile
@@ -76,17 +102,34 @@ loaders. Rendering is always Three.js.
   overlay on top of the existing view. Options (dimension, element size, algorithm,
   element order) are set in the **FE Mesh** panel and autosaved to a
   `<model>.mesh.json` sidecar alongside a generated, editable `<model>.geo` script;
+  a generate also reports an element-quality summary (min/mean `minSICN` plus a
+  histogram) alongside the node/element counts;
   **📤 Export** saves the mesh to disk in any format the panel's dropdown offers,
   defaulting to **Kratos MDPA** (hand-written, in either an Elements+Conditions
   or a Geometries layout, preserving named Parts as Kratos SubModelParts), or
-  Gmsh `.msh`/`.msh2`/`.geo_unrolled`, VTK, I-DEAS Universal, Abaqus, Nastran,
-  SU2, INRIA Medit, STL, Diffpack, OFF. The CAD file stays read-only. See
+  Gmsh `.msh`/`.msh2`/`.geo_unrolled`, VTK, **MED**, **CGNS**, **XDMF** (the
+  last three bridged through [meshio++](https://github.com/loumalouomega/meshioplusplus),
+  since this Gmsh build can't write them itself), I-DEAS Universal, Abaqus,
+  Nastran, SU2, INRIA Medit, STL, Diffpack, OFF. The CAD file stays read-only. See
   [GMSH Integration](https://loumalouomega.github.io/CAD-Preview/gmsh-integration)
   for details.
 - **MCP server**: a standalone [Model Context Protocol](https://modelcontextprotocol.io)
   server (`dist/mcp-server.js`) exposes the same load/edit/mesh/export pipeline to AI
   agents (e.g. Claude Code) headless, persisting to the same sidecar files the
   extension reads — see [MCP Server](#mcp-server) below.
+- **Measurement tools**: measure distance, edge length, angle, and circle/arc radius
+  directly in the 3D view — a display-only overlay, never an edit operation, never
+  persisted anywhere.
+- **Mass properties**: volume, surface area, length, center of mass, and moments of
+  inertia for the whole model or a single selected entity — computed via OpenCascade.js's
+  `BRepGProp` for B-rep sources, or entirely client-side for mesh sources.
+- **Screenshot**: save the current 3D view as a PNG via a native Save dialog.
+- **Settings**: a handful of `cadPreview.*` VS Code settings (default background,
+  mesh-size preset, grid/axes visibility, up-axis) for newly opened documents.
+- **Compare Models**: diff two STEP/IGES/BREP files solid-by-solid — matched
+  by bounding-box-centroid proximity and volume similarity, reporting
+  added/removed/matched solids with each match's raw centre displacement and
+  volume delta (never a hidden moved/unchanged guess). B-rep only, display-only.
 
 ## Export
 
@@ -175,6 +218,8 @@ Source lives in the [`doc/`](doc/) folder, built with [VitePress](https://vitepr
 deployed automatically to GitHub Pages on every push to `master`.
 See [`.github/workflows/docs.yml`](.github/workflows/docs.yml).
 
+Planned and candidate features are tracked in the [Roadmap](doc/roadmap.md).
+
 ## CI
 
 GitHub Actions runs on every push and pull request to `master`:
@@ -212,12 +257,17 @@ and [`zod`](https://github.com/colinhacks/zod), both distributed under the **MIT
 License** — GPL-compatible, so bundling them into the shipped extension is fine.
 [`fflate`](https://github.com/101arrowz/fflate) (used to build/read the Save/Load
 Preprocess `.zip` archives, in both the extension and MCP server bundles) is also
-**MIT**-licensed.
+**MIT**-licensed. [`@meshioplusplus/wasm`](https://github.com/loumalouomega/meshioplusplus)
+(mesh I/O for VTK/MED/CGNS/Exodus/XDMF/MDPA and more, compiled to WebAssembly,
+used to import those formats and to export generated FE meshes to MED/CGNS) is
+also **MIT**-licensed, including the compiled `.wasm` binary as shipped in its
+npm package.
 
 ### Attribution
 
 - **Gmsh** — C. Geuzaine and J.-F. Remacle. <https://gmsh.info>
 - **OpenCASCADE Technology (OCCT)** — <https://dev.opencascade.org>
+- **meshio++** — V. Mataix Ferrándiz. <https://github.com/loumalouomega/meshioplusplus>
 
 ## License
 

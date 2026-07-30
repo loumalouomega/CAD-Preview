@@ -1,5 +1,6 @@
 import type { Part } from "../protocol";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
+import type { VisibilityState } from "./visibilityState";
 
 export interface PartsPanelCallbacks {
   onCreate: () => void;
@@ -10,6 +11,10 @@ export interface PartsPanelCallbacks {
   onMeshSize: (index: number, size: number | undefined) => void;
   onRemoveEntity: (index: number, entityType: "volume" | "surface" | "line" | "point", entityId: string) => void;
   onSelectPart: (index: number | null) => void;
+  /** Toggles whether this part's entities are hidden (display-only, never persisted). */
+  onToggleVisible: (index: number) => void;
+  /** Toggles isolating this part (show only it); called with the currently selected part. */
+  onToggleIsolate: (index: number) => void;
 }
 
 /**
@@ -17,20 +22,30 @@ export interface PartsPanelCallbacks {
  * entity counts, an "assign current selection" action, delete, and an expandable
  * list of assigned entities. VS Code webviews block `prompt()`, so renaming uses
  * an inline `<input>` rather than a dialog. Selecting a part row highlights its
- * entities via {@link PartsPanelCallbacks.onSelectPart}.
+ * entities via {@link PartsPanelCallbacks.onSelectPart}. `visibility` is read-only
+ * here — it's owned by `main.ts`, this panel only queries it to paint the eye
+ * icon / Isolate button state; `render()` must be re-called after any visibility
+ * change for the panel to reflect it (visibility mutations don't themselves fire
+ * `PartsModel.onChange`, since hide/isolate state isn't part of the persisted `Part`).
  */
 export class PartsPanel {
   private readonly body: HTMLElement;
   private readonly newBtn: HTMLElement;
+  private readonly isolateBtn: HTMLButtonElement;
   private selectedIndex: number | null = null;
 
   constructor(
     private readonly panel: HTMLElement,
-    private readonly cb: PartsPanelCallbacks
+    private readonly cb: PartsPanelCallbacks,
+    private readonly visibility: VisibilityState
   ) {
     this.body = panel.querySelector("#parts-body")!;
     this.newBtn = panel.querySelector("#parts-new")!;
     this.newBtn.addEventListener("click", () => this.cb.onCreate());
+    this.isolateBtn = panel.querySelector("#parts-isolate")!;
+    this.isolateBtn.addEventListener("click", () => {
+      if (this.selectedIndex !== null) this.cb.onToggleIsolate(this.selectedIndex);
+    });
   }
 
   render(parts: Part[]): void {
@@ -39,6 +54,11 @@ export class PartsPanel {
       this.selectedIndex = null;
     }
     parts.forEach((part, index) => this.body.appendChild(this.buildPart(part, index)));
+    this.isolateBtn.disabled = this.selectedIndex === null;
+    this.isolateBtn.classList.toggle(
+      "active",
+      this.selectedIndex !== null && this.visibility.isPartIsolated(this.selectedIndex)
+    );
   }
 
   private buildPart(part: Part, index: number): HTMLElement {
@@ -94,6 +114,15 @@ export class PartsPanel {
     badge.title = "volumes / surfaces / lines / points";
     row.appendChild(badge);
 
+    const hidden = this.visibility.isPartHidden(index);
+    const eye = document.createElement("button");
+    eye.className = "part-btn part-eye";
+    eye.classList.toggle("hidden-off", hidden);
+    eye.textContent = hidden ? "🙈" : "👁";
+    eye.title = hidden ? "Show this part" : "Hide this part";
+    eye.addEventListener("click", (e) => { e.stopPropagation(); this.cb.onToggleVisible(index); });
+    row.appendChild(eye);
+
     const assign = document.createElement("button");
     assign.className = "part-btn";
     assign.textContent = "＋";
@@ -124,6 +153,11 @@ export class PartsPanel {
       this.selectedIndex = this.selectedIndex === index ? null : index;
       this.cb.onSelectPart(this.selectedIndex);
       this.markSelection();
+      this.isolateBtn.disabled = this.selectedIndex === null;
+      this.isolateBtn.classList.toggle(
+        "active",
+        this.selectedIndex !== null && this.visibility.isPartIsolated(this.selectedIndex)
+      );
     });
 
     return item;

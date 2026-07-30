@@ -13,13 +13,22 @@ import type { Part } from "./protocol";
 /**
  * The element *geometry* to generate. `"simplex"` is Gmsh's native
  * triangles/tetrahedra; `"subdivided"` recombines into all-quadrilateral (2D)
- * / all-hexahedral (3D) cells. A hex-*dominant* mixed mode (tets+prisms+
- * pyramids+hexes via `Mesh.Recombine3DAll`) is deliberately NOT offered — it is
- * completely non-functional in the bundled gmsh-wasm build (every variant
- * probed produced pure tetrahedra or threw), so exposing it would be an
- * always-broken option. See `doc/gmsh-integration.md`'s "Element shapes".
+ * / all-hexahedral (3D) cells. `"hexDominant"` (3D only) is the RTree
+ * hex-tet hybrid recombiner (`Mesh.Algorithm3D = 9` + `Mesh.Recombine3DAll =
+ * 1`) — non-functional in the gmsh-wasm build this codebase used to bundle
+ * (every variant probed produced pure tetrahedra or threw), but confirmed
+ * working after the 0.3.0 upgrade (see the "Meshing (GMSH-JS)" section of
+ * CLAUDE.md for the wasm32-stack-overflow root cause that fix addressed, and
+ * "Hex-dominant FE meshing" for this option's own verification trail — a
+ * mesh in this mode always contains a third gmsh element type, 140
+ * ("trihedron", a tet/hex transition connector), whose node geometry cannot
+ * be verified against this WASM build (`getElementProperties(140)` throws) —
+ * every consumer of raw element types treats it as an unmapped type and
+ * skips it gracefully, EXCEPT Kratos MDPA export, which has no geometry to
+ * represent it at all and rejects a hex-dominant mesh outright with an
+ * actionable error). See `doc/gmsh-integration.md`'s "Element shapes".
  */
-export type MeshElementShape = "simplex" | "subdivided";
+export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
 
 export interface MeshOptions {
   dimension: 1 | 2 | 3;
@@ -47,7 +56,7 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   sizeMin: 0,
   sizeMax: SIZE_MAX_SENTINEL,
   algorithm2D: 6 /* Frontal-Delaunay */,
-  algorithm3D: 4 /* Frontal */,
+  algorithm3D: 1 /* Delaunay — Gmsh's own default; see the "Meshing (GMSH-JS)" section of CLAUDE.md for why this was Frontal (4) before gmsh-wasm 0.3.0 */,
   elementOrder: 1,
   elementShape: "simplex",
   optimize: true,
@@ -55,29 +64,39 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
 };
 
 /**
- * Maps an {@link MeshElementShape} to the Gmsh recombination/subdivision option
- * values, given the mesh `dimension`. Shared by `gmshService.ts`'s
- * `loadGeometryAndApplyOptions` (live meshing) and `meshOptionsSidecar.ts`'s
- * `generateGeoScript` (the emitted `.geo`), so the two can never drift.
+ * Maps an {@link MeshElementShape} to the Gmsh recombination/subdivision/
+ * algorithm option values, given the mesh `dimension`. Shared by
+ * `gmshService.ts`'s `loadGeometryAndApplyOptions` (live meshing) and
+ * `meshOptionsSidecar.ts`'s `generateGeoScript` (the emitted `.geo`), so the
+ * two can never drift.
  *
  * The recipe is **dimension-dependent and verified against the live gmsh-wasm
  * build** (see `doc/gmsh-integration.md`): 2D quads come out cleanest from
  * Blossom recombination (`RecombineAll`), while 3D hexes require the
  * subdivision algorithm (`SubdivisionAlgorithm = 2`) — the 3D `RecombineAll`
  * path throws "Cannot use frontal 3D algorithm with quadrangles on boundary".
- * Both fields are always returned (never left implicit) because the gmsh
- * singleton persists options across `clear()`, so a prior run's values must be
- * overwritten every time.
+ * `"hexDominant"` is 3D-only and mutually exclusive with the other two
+ * fields' mechanism entirely — it sets `recombine3DAll` instead, and
+ * `algorithm3DOverride` (RTree, id 9) takes priority over whatever
+ * `MeshOptions.algorithm3D` the user separately selected, since RTree is a
+ * requirement of this mode, not a suggestion (a 2D request or any other
+ * shape leaves `algorithm3DOverride: null`, letting the caller's own
+ * `algorithm3D` field apply unchanged). All fields are always returned
+ * (never left implicit) because the gmsh singleton persists options across
+ * `clear()`, so a prior run's values must be overwritten every time.
  */
 export function gmshShapeOptions(
   shape: MeshElementShape,
   dimension: 1 | 2 | 3
-): { recombineAll: number; subdivisionAlgorithm: number } {
-  if (shape === "subdivided") {
-    if (dimension === 3) return { recombineAll: 0, subdivisionAlgorithm: 2 };
-    if (dimension === 2) return { recombineAll: 1, subdivisionAlgorithm: 0 };
+): { recombineAll: number; subdivisionAlgorithm: number; recombine3DAll: number; algorithm3DOverride: number | null } {
+  if (shape === "hexDominant" && dimension === 3) {
+    return { recombineAll: 0, subdivisionAlgorithm: 0, recombine3DAll: 1, algorithm3DOverride: 9 };
   }
-  return { recombineAll: 0, subdivisionAlgorithm: 0 };
+  if (shape === "subdivided") {
+    if (dimension === 3) return { recombineAll: 0, subdivisionAlgorithm: 2, recombine3DAll: 0, algorithm3DOverride: null };
+    if (dimension === 2) return { recombineAll: 1, subdivisionAlgorithm: 0, recombine3DAll: 0, algorithm3DOverride: null };
+  }
+  return { recombineAll: 0, subdivisionAlgorithm: 0, recombine3DAll: 0, algorithm3DOverride: null };
 }
 
 function isFiniteNumber(v: unknown): v is number {
@@ -103,7 +122,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     o.elementOrder === 1 || o.elementOrder === 2 ? o.elementOrder : DEFAULT_MESH_OPTIONS.elementOrder;
 
   const elementShape: MeshOptions["elementShape"] =
-    o.elementShape === "simplex" || o.elementShape === "subdivided"
+    o.elementShape === "simplex" || o.elementShape === "subdivided" || o.elementShape === "hexDominant"
       ? o.elementShape
       : DEFAULT_MESH_OPTIONS.elementShape;
 

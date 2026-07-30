@@ -1,7 +1,7 @@
 {
   "name": "cad-preview",
   "displayName": "CAD Preview",
-  "description": "Interactive 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside VS Code.",
+  "description": "Interactive 3D preview, non-destructive editing, and FE mesh generation for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF, VTK, MED, CGNS, and more) inside VS Code, with an MCP server for AI agents.",
   "version": "1.0.5",
   "publisher": "kratos-multiphysics",
   "license": "GPL-2.0-or-later",
@@ -53,6 +53,30 @@
           },
           {
             "filenamePattern": "*.brep"
+          },
+          {
+            "filenamePattern": "*.vtk"
+          },
+          {
+            "filenamePattern": "*.vtu"
+          },
+          {
+            "filenamePattern": "*.med"
+          },
+          {
+            "filenamePattern": "*.cgns"
+          },
+          {
+            "filenamePattern": "*.exo"
+          },
+          {
+            "filenamePattern": "*.e"
+          },
+          {
+            "filenamePattern": "*.xdmf"
+          },
+          {
+            "filenamePattern": "*.mdpa"
           }
         ],
         "priority": "default"
@@ -86,6 +110,14 @@
       {
         "command": "cad-preview.whatsNew",
         "title": "CAD Preview: Show What's New"
+      },
+      {
+        "command": "cad-preview.screenshot",
+        "title": "CAD Preview: Screenshot to PNG…"
+      },
+      {
+        "command": "cad-preview.compareModels",
+        "title": "CAD Preview: Compare Models…"
       }
     ],
     "keybindings": [
@@ -124,6 +156,12 @@
         "key": "ctrl+alt+o",
         "mac": "cmd+alt+o",
         "when": "activeCustomEditorId == 'cad-preview.mesh'"
+      },
+      {
+        "command": "cad-preview.screenshot",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "activeCustomEditorId == 'cad-preview.mesh'"
       }
     ],
     "menus": {
@@ -143,8 +181,46 @@
         {
           "command": "cad-preview.savePreprocess",
           "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.screenshot",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
         }
       ]
+    },
+    "configuration": {
+      "title": "CAD Preview",
+      "properties": {
+        "cadPreview.background": {
+          "type": "string",
+          "default": "#1e1e1e",
+          "description": "Default 3D view background color (CSS hex) for newly opened models."
+        },
+        "cadPreview.defaultMeshSizePreset": {
+          "type": "string",
+          "enum": [
+            "coarse",
+            "medium",
+            "fine"
+          ],
+          "default": "medium",
+          "description": "Default FE mesh element-size preset seeded for models with no saved .mesh.json sidecar."
+        },
+        "cadPreview.showGridAndAxesOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the ground grid and axes helper when a model is opened."
+        },
+        "cadPreview.upAxis": {
+          "type": "string",
+          "enum": [
+            "y",
+            "z"
+          ],
+          "default": "y",
+          "description": "Default up-axis orientation for newly opened models."
+        }
+      }
     }
   },
   "scripts": {
@@ -163,7 +239,8 @@
     "docs:screenshots": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/screenshots/capture.mjs"
   },
   "dependencies": {
-    "@loumalouomega/gmsh-wasm": "^0.2.0",
+    "@loumalouomega/gmsh-wasm": "^0.3.0",
+    "@meshioplusplus/wasm": "^9.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "fflate": "^0.8.3",
     "opencascade.js": "^1.1.1",

@@ -13,6 +13,12 @@ CAD Preview supports two classes of 3D files: **B-rep** (boundary representation
 | OBJ | `.obj` | Three.js OBJLoader | per-object |
 | PLY | `.ply` | Three.js PLYLoader | — |
 | glTF | `.gltf`, `.glb` | Three.js GLTFLoader | per-mesh node |
+| VTK / VTU | `.vtk`, `.vtu` | meshio++ → STL boundary → Three.js STLLoader | — |
+| MED | `.med` | meshio++ → STL boundary → Three.js STLLoader | — |
+| CGNS | `.cgns` | meshio++ → STL boundary → Three.js STLLoader | — |
+| Exodus | `.exo`, `.e` | meshio++ → STL boundary → Three.js STLLoader | — |
+| XDMF | `.xdmf` | meshio++ → STL boundary → Three.js STLLoader | — |
+| Kratos MDPA | `.mdpa` | meshio++ → STL boundary → Three.js STLLoader | — |
 
 ## B-rep Formats (OCCT Pipeline)
 
@@ -87,6 +93,59 @@ Binary and ASCII STL are both supported via `STLLoader`. The result is a single 
 **Limitations:**
 - Animation playback is not supported. Only the bind pose (frame 0) is rendered.
 - The component tree is built from the `Object3D` name hierarchy, not from glTF extras.
+
+---
+
+## meshio++ Bridge Formats (VTK, MED, CGNS, Exodus, XDMF, Kratos MDPA)
+
+These six formats have no native Three.js loader, so the extension host
+converts them to a triangulated **boundary surface** in STL form first —
+[meshio++](https://github.com/loumalouomega/meshioplusplus) (`@meshioplusplus/wasm`,
+a third host-side WASM module alongside OCCT and Gmsh) reads the source file
+and calls `convertSurface` (entirely inside its C++ core — a volume mesh
+becomes its boundary, everything else passes through), producing ASCII STL
+bytes. Those bytes are sent to the webview (`loadMeshBytes` protocol message,
+base64-over-postMessage) and fed through the **exact same STL loader** a
+native `.stl` open uses — see `src/meshioService.ts`'s `convertToStlBoundary()`
+and `doc/gmsh-integration.md`'s "The meshio++ bridge" section (which also
+covers the reverse direction: exporting a *generated* FE mesh to MED/CGNS/
+XDMF, independent of this import path).
+
+### Processing Steps
+
+1. **Read + convert** — `convertToStlBoundary(sourceBytes, format)` writes the
+   raw file bytes into meshio++'s own virtual filesystem and calls
+   `convertSurface(inPath, outPath, {inFormat: format, outFormat: "stl"})`.
+2. **Transport** — the resulting STL bytes are base64-encoded and posted as
+   `{type: "loadMeshBytes", sourceFormat, dataBase64}`.
+3. **Load** — the webview base64-decodes them, wraps them in a `blob:` object
+   URL, and calls the same `loadMeshFromUrl(url, "stl")` a native `.stl` open
+   uses — from this point on, a meshio-imported document is **indistinguishable
+   from a native STL** to every other feature (facet splitting, Parts, Edits,
+   Export, Mass Properties, Measurement all work identically).
+
+### What's Preserved, What's Not
+
+Only geometry (points + triangle connectivity) survives this funnel. Region
+names, scalar point/cell data (temperatures, stresses, …), and
+multi-material grouping in the source file are **not** carried through — this
+is a deliberate v1 scope decision (see CLAUDE.md's "meshio++ integration"
+section), not a bug. If you need that richer data, use a dedicated FE
+post-processing tool (e.g. ParaView) for these formats; CAD-Preview's support
+here is for quick geometry previews alongside your CAD files.
+
+### Kratos MDPA note
+
+Unlike the MDPA **export** path (`src/mdpaWriter.ts`, hand-written — see
+`doc/gmsh-integration.md`'s "Kratos MDPA" section), **importing** an `.mdpa`
+file as a document goes through meshio++'s own native MDPA reader (mesh-level
+blocks only — `Nodes`/`Elements`/`Conditions`/`SubModelPart`; Kratos
+`Properties`/`Table`/`Geometries`/`Constraints` blocks are not represented in
+the WASM binding and throw if present, same as everywhere else meshio++ reads
+MDPA). These are two entirely independent code paths that happen to share a
+file extension — one reads MDPA (via meshio++, for the Components view), the
+other writes MDPA (hand-rolled, for FE mesh export) — neither replaces the
+other.
 
 ---
 
@@ -255,7 +314,7 @@ the vscode-free `src/meshOptionsSidecar.ts` so they are unit-tested.
     "sizeMin": 0,
     "sizeMax": 1e22,
     "algorithm2D": 6,
-    "algorithm3D": 4,
+    "algorithm3D": 1,
     "elementOrder": 1,
     "optimize": true,
     "stlAngle": 40
@@ -272,7 +331,7 @@ Merge "bull.stp";
 Mesh.MeshSizeMin = 0;
 Mesh.MeshSizeMax = 1e22;
 Mesh.Algorithm = 6;
-Mesh.Algorithm3D = 4;
+Mesh.Algorithm3D = 1;
 Mesh.ElementOrder = 1;
 Mesh.RecombineAll = 0;
 Mesh.SubdivisionAlgorithm = 0;
@@ -363,8 +422,11 @@ targets depend on the source file's pipeline (`exportTargetsFor()` in
 |---|---|
 | B-rep (STEP/IGES/BREP) | the other two B-rep formats, **plus** STL/OBJ/PLY/glTF |
 | Mesh (STL/OBJ/PLY/glTF) | the other mesh formats only |
+| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA) | STL/OBJ/PLY/glTF — the displayed model is an ordinary `THREE.Object3D` by this point (see the meshio++ Bridge Formats section above), so it exports exactly like a native mesh source |
 
-The source format is never offered as its own export target.
+The source format is never offered as its own export target (moot for the
+meshio++ row above, since none of those formats are export targets to begin
+with).
 
 **B-rep targets** are written entirely in the extension host: the source file is
 re-parsed with the same OCCT reader used to open it, the current edit op-list is

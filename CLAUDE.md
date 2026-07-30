@@ -722,14 +722,27 @@ Non-negotiable invariants:
   printErr })`, so gmsh's log output goes through `console.error` (and, in the
   MCP server, is still safely on stderr) regardless of which stream this
   package's own default would pick in a future version.
-- **Default 3D algorithm is Frontal (`Mesh.Algorithm3D = 4`), not GMSH's own
-  default.** The WASM build has a documented 3D Delaunay boundary-recovery bug on
-  geometry re-imported via `gmsh.model.occ.importShapes` — i.e. every B-rep source
-  this feature meshes, by definition, since it's always imported that way. Frontal
-  avoids the failure mode for the common case (opening a STEP/IGES/BREP file) out
-  of the box; users can still pick Delaunay (`1`) from the 3D algorithm dropdown
-  for cases it doesn't affect. See `doc/gmsh-integration.md`'s "Known limitations"
-  for the full verification trail (GMSH-JS's own README documents this upstream).
+- **Default 3D algorithm is Gmsh's own default, Delaunay (`Mesh.Algorithm3D =
+  1`) — this used to be Frontal (`4`) as a workaround, fixed upstream in
+  `@loumalouomega/gmsh-wasm` 0.3.0.** The 0.2.x WASM build had a real
+  wasm32-stack-overflow bug in Gmsh's tetgen-derived 3D boundary recovery
+  (shared by Delaunay and HXT): Emscripten's 64 KiB default stack overflowed
+  silently (no trap, no error) instead of trapping, corrupting adjacent linear
+  memory — surfacing as a hang or an empty mesh specifically on geometry
+  re-imported via `gmsh.model.occ.importShapes` (i.e. every B-rep source this
+  feature meshes, by definition). 0.3.0 fixed the root cause upstream
+  (`-sSTACK_SIZE=4MB`/`-sDEFAULT_PTHREAD_STACK_SIZE=2MB` in GMSH-JS's own
+  build), not just for CAD-Preview's specific symptom. **Re-verified against
+  the live 0.3.0 WASM on `examples/STP/block.stp`**: Delaunay completed in
+  88ms (1282 tets, no hang), and HXT (`Algorithm3D=10`, previously also
+  broken by the same bug) completed in 37ms (1254 tets) — both fully fixed,
+  not just "improved." `DEFAULT_MESH_OPTIONS.algorithm3D` was updated from
+  `4` to `1` accordingly; **existing documents keep whatever value is already
+  in their `<model>.mesh.json` sidecar** (this only changes the seed for
+  *new* documents that have never saved mesh options). Frontal (`4`) and HXT
+  (`10`) both remain fully selectable from the 3D algorithm dropdown. See
+  `doc/gmsh-integration.md`'s "Known limitations" for the full verification
+  trail (both the original bug and the 0.3.0 fix).
 - **The panel's primary size control is a coarser→finer slider with a
   bbox-derived default — and seeding it must never create sidecars.**
   `DEFAULT_MESH_OPTIONS.sizeMax` is the Gmsh "unbounded" `SIZE_MAX_SENTINEL`
@@ -755,17 +768,41 @@ Non-negotiable invariants:
   via `setSourceKind` — into a collapsed-by-default "Advanced settings" section.
 - **Element shape & order.** `MeshOptions.elementOrder: 1|2` → `Mesh.ElementOrder`
   (quadratic adds mid-side nodes; the overlay draws corner geometry only).
-  `MeshOptions.elementShape: "simplex"|"subdivided"` → `Mesh.RecombineAll` +
-  `Mesh.SubdivisionAlgorithm` via the shared `gmshShapeOptions(shape, dimension)`
-  helper (`src/meshOptions.ts`), reused by both `loadGeometryAndApplyOptions` and
-  `generateGeoScript` so they can't drift. Recipe is **dimension-dependent and
-  WASM-verified**: 2D quads via Blossom `RecombineAll=1`; 3D hexes via
-  `SubdivisionAlgorithm=2` (3D `RecombineAll` throws). Both option values are set
-  every generate (the singleton persists options across `clear()`). **A
-  hex-*dominant* mixed mode is deliberately NOT offered** — `Mesh.Recombine3DAll`
-  is completely non-functional in the bundled gmsh-wasm build (every variant
-  probed produced pure tets or threw); `validateMeshOptions` rejects
-  `"hexDominant"`. See `doc/gmsh-integration.md`'s "Known limitations".
+  `MeshOptions.elementShape: "simplex"|"subdivided"|"hexDominant"` →
+  `Mesh.RecombineAll`/`Mesh.SubdivisionAlgorithm`/`Mesh.Recombine3DAll`/an
+  `Mesh.Algorithm3D` override via the shared `gmshShapeOptions(shape,
+  dimension)` helper (`src/meshOptions.ts`), reused by both
+  `loadGeometryAndApplyOptions` and `generateGeoScript` so they can't drift.
+  Recipe is **dimension-dependent and WASM-verified**: 2D quads via Blossom
+  `RecombineAll=1`; 3D hexes via `SubdivisionAlgorithm=2` (3D `RecombineAll`
+  throws); 3D hex-*dominant* (mixed tet/hex) via `Algorithm3D=9` (RTree) +
+  `Recombine3DAll=1` — `algorithm3DOverride` wins over the user's own
+  `algorithm3D` selection when set, since RTree is a requirement of the mode,
+  not a suggestion. All option values are set every generate (the singleton
+  persists options across `clear()`); `"hexDominant"` outside 3D degrades to
+  plain simplex options (harmless, not rejected — the panel additionally
+  disables the `<option>` for non-3D dimensions as a UX nicety).
+  `"hexDominant"` always produces a THIRD element type alongside tet(4)/
+  hex(5): gmsh type 140 ("trihedron", a tet/hex transition connector) with NO
+  `gmshElementTypes.ts` table entry — `gmsh.model.mesh.getElementProperties
+  (140)` throws (`"Size of basis incompatible with element type"`), so its
+  node geometry is unverifiable and deliberately never added. This is safe
+  because every existing consumer of the table (`surfaceTriangles`/
+  `boundaryTriangles`/`surfaceEdges`) already treats an unmapped type as a
+  graceful skip, not a throw — **re-verified live**: `generateMesh()` with
+  `elementShape:"hexDominant"` on `examples/STP/block.stp` produced a
+  populated overlay (446 nodes, 1289 elements, 6384 triangle indices, 3348
+  edge values — non-empty despite the unmapped type mixed in) and a working
+  quality summary (no crash on the mixed tag set); VTK export (Gmsh's own
+  native writer) produced a valid file untouched by our table at all.
+  **Kratos MDPA export is the one path that genuinely cannot represent this
+  mesh** (no `MdpaCellKind` for a tet/hex connector) — `collectCells`
+  (`gmshService.ts`) gives gmsh type 140 specifically a distinct, actionable
+  rejection message ("...has no Kratos geometry equivalent... export a
+  different format...") rather than the generic "unsupported element type"
+  one every other truly-unexpected type still gets; re-verified live that
+  `exportMdpa()` throws it correctly. See `doc/gmsh-integration.md`'s "Known
+  limitations" for the full probing/verification trail.
 - **Sidecar pair `<model>.mesh.json` + `<model>.geo`, beside parts/edits.** The
   FE-mesh options (`MeshOptions` — a flat bag, not an op-list) autosave (~500 ms,
   its own debounce timer, separate from parts/edits) to `<model>.mesh.json` via
@@ -926,7 +963,11 @@ Non-negotiable invariants:
   `#meshing-generate` and shows a CSS keyframe-sweep progress bar
   (`#meshing-progress`) plus a `"Generating…"` status line. **📤 Export** (any
   format) isn't wired to it — its save-dialog completion already surfaces
-  through the generic toolbar status bar.
+  through the generic toolbar status bar. **The MCP server's `generate_mesh`/
+  `export_mesh` tools have the identical limitation** — they emit
+  `notifications/progress` at start(0) and done(1) only (see the "Agent
+  feedback tools" section above for the mechanism), never a genuine
+  percentage, for exactly this reason.
 - **Parts are preserved in generated meshes as Gmsh physical groups —
   B-rep sources only**, matching the existing `BREP_ONLY_OPS` scope (Gmsh's STL
   reclassification pipeline produces brand-new surface/volume tags with zero
@@ -1158,12 +1199,37 @@ invariants:
   bundle can reach; `npm run mcp:smoke` fails on any stdout pollution (it breaks
   the JSON-RPC framing immediately).
 - **Module split for testability:** `mcpServer.ts` (SDK wiring + zod schemas, the
-  only file that imports the real `occtService`/`gmshService` functions) →
-  `mcpTools.ts` (the 11 tool handlers over an injected `Pipeline` object;
-  imports **only `import type`** from `occtService`/`gmshService` — their `.wasm`
-  imports resolve under esbuild's wasm-path plugin, never under vitest) →
+  only file that imports the real `occtService`/`gmshService`/`entityFacts`/
+  `renderService` functions) → `mcpTools.ts` (18 tool handlers over an injected
+  `Pipeline` object; imports **only `import type`** from `occtService`/
+  `gmshService`/`entityFacts`/`renderService` — their `.wasm` imports (or, for
+  `renderService.ts`, its dynamic `import("playwright")`) resolve under
+  esbuild's wasm-path plugin/external list, never under vitest) →
   `mcpSidecars.ts` (node-fs sidecar store over the same pure `*Sidecar.ts`
   parsers the extension uses; must stay byte-compatible with `provider.ts`).
+- **`wrap()` (`mcpServer.ts`) does two things beyond the original JSON-result
+  round trip, both additive — every pre-existing `wrap((args) => tool(ctx,
+  args))` call site is untouched.** (1) Its handler now takes a second
+  `onProgress: ProgressCallback` parameter (the type is defined in
+  `mcpTools.ts`, not `mcpServer.ts`, so `mcpTools.ts` stays MCP-SDK-free —
+  `wrap()` builds it from the SDK's real `extra: RequestHandlerExtra`
+  argument, calling `extra.sendNotification({method:"notifications/progress",
+  params:{progressToken,...}})` only when the caller opted in via
+  `_meta.progressToken`; a no-op otherwise). Only `generate_mesh`/
+  `export_mesh` use it, and only for start(0)/done(1) signaling — Gmsh's
+  `generate()` has no mid-call progress hook (see "Meshing (GMSH-JS)" below),
+  so this is never a genuine percentage. **`describe_capabilities` is the one
+  tool NOT registered through `wrap()`** — it has no `inputSchema`, so the
+  SDK calls its callback with a single `extra` argument (no `args`), an arity
+  `wrap()` doesn't model; it's inlined directly instead (harmless, since it's
+  instant/pure and progress reporting would be meaningless for it). (2) A
+  handler result carrying an `images: RenderImage[]` field (currently only
+  `render_snapshot`'s) gets one text block (JSON, with `images` summarized as
+  `[{label, mimeType}]` — base64 omitted so the JSON payload doesn't double
+  the response size) followed by one `{type:"image", data, mimeType}` content
+  block per image — the SDK's `CallToolResultSchema` already supports an
+  image content type (`@modelcontextprotocol/sdk` 1.29.0's
+  `ImageContentSchema`, confirmed present in the installed version).
 - **Stateless per call, sidecars are the state.** Every tool re-reads the model +
   sidecars fresh and writes sidecars back — the same `<model>.edits.json` /
   `.parts.json` / `.mesh.json` / `.geo` files the extension reads on reopen, so
@@ -1187,6 +1253,916 @@ invariants:
 - `@modelcontextprotocol/sdk` + `zod` are MIT (GPL-compatible, per the License
   section's bundled-dependency rule) and are bundled only into
   `dist/mcp-server.js`, never `dist/extension.js`.
+
+## Agent feedback tools: inspect, measure, render_snapshot (P1 roadmap features)
+
+Three tools closing the "agent edits headlessly, then can't verify or see the
+result" gap `doc/roadmap.md`'s P1 tier identified, mined from
+`earthtojake/text-to-cad`'s agent-feedback conventions (fact-only tools,
+three-valued pass/fail/need-more-info verdicts, "visual review is diagnostic
+not authoritative"). Non-negotiable invariants:
+
+- **`inspect`/`measure` (`src/entityFacts.ts`) are B-rep-only, same gate as
+  `get_mass_properties`/`compare_models`**, and follow the identical
+  dispatch convention: `mcpTools.ts` never parses `solid-N`/`face-N`/
+  `edge-N`/`point-N` ids itself, it forwards raw strings into the pipeline
+  function, which regex-dispatches (mirroring `massProperties.ts`'s
+  `computeMassProperties` exactly) to `collectSolids`/`collectFaces`/
+  `collectEdges`/`collectVertices` (all four already exported from
+  `occtOperations.ts`). One parse/replay per call (`readShape` +
+  `applyEditsBRep`, no shape cache), same as every other B-rep read path.
+- **`inspect`'s `center` is deliberately the bounding-box centre
+  (`bboxCenter`), NOT `get_mass_properties`' area/volume-weighted
+  `centerOfMass`** — for an asymmetric shape these are different points.
+  Stated in both the code doc comment and the tool description so an agent
+  doesn't conflate the two. `measure`'s distance/axis-component math is
+  built on the same bbox-centre convention.
+- **`facePlane` (`occtOperations.ts`) was promoted from module-private to
+  exported** for `entityFacts.ts`'s `normal` field — its only other caller
+  is `mateShape`, unchanged.
+- **`SurfaceType` mapping, verified against the live WASM** (brute-force
+  probing, same convention as every other OCCT call in this codebase):
+  `GeomAbs_SurfaceType.GeomAbs_Plane.value = 0`, `GeomAbs_Cylinder = 1`,
+  `GeomAbs_Cone = 2`, `GeomAbs_Sphere = 3`, `GeomAbs_Torus = 4` — confirmed
+  by building a box/cylinder/cone/sphere/torus via `BRepPrimAPI_Make*` (the
+  already-verified primitive ctors from the "Geometry editing" section
+  above) and reading `BRepAdaptor_Surface_2(face,true).GetType().value` off
+  each. The remaining members (`BezierSurface=5`, `BSplineSurface=6`,
+  `SurfaceOfRevolution=7`, `SurfaceOfExtrusion=8`, `OffsetSurface=9`,
+  `OtherSurface=10`) were read off the enum directly, not individually
+  probed — `entityFacts.ts` collapses all of them to `"other"`.
+- **`render_snapshot` (`src/renderService.ts`) is the runtime sibling of
+  `scripts/screenshots/`'s Playwright docs-build harness** — same real
+  `media/viewer.js` bundle + `viewerDom.ts`'s `viewerBodyHtml()` DOM, same
+  tiny static-file server + `/__harness` route + SwiftShader launch flags,
+  but driven programmatically (one `renderViewRequest`/result round trip per
+  view) instead of a fixed shot list, and fed geometry directly from an
+  in-process `loadBRep()` result via `encodeBuffer()` (the exact transform
+  `scripts/screenshots/fixtures-entry.ts` already uses) — **no temp file
+  write or re-parse**. `scripts/screenshots/capture.mjs` itself is untouched;
+  this is a deliberate sibling implementation for a different consumer
+  (`dist/mcp-server.js` at agent-call time vs. `npm run docs:screenshots` at
+  build time).
+- **Playwright stays a devDependency — `render_snapshot` degrades
+  gracefully, it never crashes the MCP server.** `.vscodeignore` excludes
+  `node_modules/**` wholesale with no carve-out for `playwright`, and its
+  Chromium binary is a separate ~150–300MB download
+  (`npx playwright install chromium`) that never runs for an installed
+  `.vsix`. `renderService.ts` does a dynamic `await import("playwright")` in
+  a try/catch (and a separate `isRenderAvailable()` launch-then-close probe
+  `render_snapshot` calls before doing any real work) — either path returns
+  `{supported: false, reason}` instead of throwing when Playwright/Chromium
+  aren't present, the same shape `get_mass_properties`/`compare_models`
+  already use for mesh-format sources. `esbuild.mjs`'s `mcpConfig.external`
+  lists `"playwright"` (alongside `gmsh-wasm`/`meshioplusplus`) so the
+  dynamic import resolves via real `node_modules` at runtime rather than
+  getting inlined into the bundle.
+- **New protocol messages, deliberately separate from `screenshotRequest`/
+  `screenshotResult`/`screenshotError`** (the interactive single-view
+  Screenshot feature): `renderViewRequest` (host→webview: `direction`, `up?`,
+  `label`, `focus?`/`hide?` as `{entityType,entityId}[]`, `wireframe?`) →
+  `renderViewResult`/`renderViewError` (webview→host). A separate pair avoids
+  `requestId` namespace confusion and carries fields the interactive feature
+  has no reason to. `focus`/`hide` are typed `{entityType,entityId}[]`
+  (matching `SelectedEntity`) rather than bare id strings because **no
+  id-prefix-to-`EntityType` parser exists anywhere in the webview** (every
+  existing caller already carries `entityType` alongside `entityId`) —
+  `renderService.ts`'s `toSelectedEntity()` (host-side, already B-rep-aware
+  from its own `solid-N`/`face-N`/`edge-N`/`point-N` regex dispatch) is the
+  natural place to attach it.
+- **`main.ts`'s `renderViewRequest` handler needs no state restoration**
+  after mutating camera-up/view-direction/visibility/wireframe — every
+  request this feature ever sends targets a disposable, harness-only
+  headless page (`renderService.ts` creates and closes one Chromium page per
+  `render_snapshot` call), never a live interactive session.
+- **`Viewer.setCameraUp()`** (new, one-liner beside the existing
+  `getCameraUp()`) is required for a near-vertical `direction` (the TOP view,
+  `up:[0,0,-1]`) to avoid a gimbal-lock-like flip — the default `[0,1,0]` up
+  is parallel to a straight-down/up view direction. **The default 4-view
+  packet** (`renderService.ts`'s `DEFAULT_VIEWS`): two opposed isometrics
+  (`[1,0.8,1]`/`[-1,-0.8,-1]` — negating all 3 components guarantees every
+  outward face normal has a positive dot product with at least one of the
+  two, by construction) + TOP + FRONT.
+- **`src/webview/labelOverlay.ts`'s `drawLabel()` must never run at module
+  load / import time** (no jsdom/canvas polyfill in this repo's vitest
+  config — the exact trap `geometryBuilder.ts`'s `dotTexture()` hit once
+  already, see the Points section above) — it's plain Canvas2D, only ever
+  invoked from inside `Viewer.captureLabeledScreenshotBase64`, itself only
+  reachable via a real `renderViewRequest` message. Not realistically
+  unit-testable under this repo's setup; verified via manual F5 + `mcp:smoke`
+  only.
+- **`describe_capabilities` does NOT call `isRenderAvailable()`** — that
+  would add a full browser launch/close to a tool meant to be instant and
+  side-effect-free. Availability is self-discovered by calling
+  `render_snapshot` and checking `supported`.
+- **`describeCapabilities()`'s new `verdictConventions` field** states the
+  fact-only/three-valued-verdict framing (tools report facts; agents render
+  pass/fail/need-more-info; a `supported:false`/tool-or-network failure is
+  need-more-info, never a silent pass or fail; `render_snapshot`'s images are
+  diagnostic, convert concerns into `inspect`/`measure` checks) — referenced
+  from `inspect`/`measure`/`render_snapshot`'s tool descriptions rather than
+  repeating the policy prose in each one.
+
+## Standard-parts sourcing: step.parts integration (roadmap feature)
+
+Two MCP tools, `search_standard_parts` and `download_standard_part`
+(`src/stepPartsService.ts`), over the hosted
+[step.parts](https://www.step.parts) REST API (`api.step.parts`) — this
+extension's **first and only external network dependency**. Fasteners,
+bearings, connectors, extrusions, etc. as ordinary STEP files the existing
+pipeline already opens — no new format support needed.
+
+- **API shape verified directly against the live service, not assumed from
+  documentation** (same "verify against the real thing" convention this
+  codebase applies to OCCT/Gmsh/meshio++ WASM calls, here applied to an HTTP
+  API instead): fetched the real `GET https://api.step.parts/v1/openapi.json`
+  spec AND ran a real `GET .../v1/parts?q=bolt&pageSize=3` search to confirm
+  field names against an actual response, not just the schema. No
+  authentication required. `/v1/parts` (search: `q` fuzzy text +
+  `tag`/`category`/`family`/`standard` repeatable filters +
+  `page`/`pageSize` pagination) and `/v1/parts/{id}` (single-part detail) are
+  the two endpoints used. `stepUrl` (the STEP file's own download URL,
+  confirmed to live on a **different host**,
+  `media.githubusercontent.com`, than the API itself — `download_standard_part`
+  makes two separate network round trips, detail then file) and `sha256`
+  (confirmed **nullable** — not every part has a recorded checksum) are the
+  fields that matter for downloading.
+- **Every function is opt-in by construction — nothing calls this API except
+  the two tools an agent explicitly invokes; there is no automatic/background
+  network activity anywhere in the extension.** This is why no separate
+  settings toggle or enable/disable switch was added: the tool boundary
+  itself already is the opt-in gate the roadmap asked for.
+- **Network/API failure is `{available: false, reason}`, never a thrown
+  error** — `stepPartsService.ts`'s `fetchJson()` catches both HTTP non-2xx
+  responses and network/DNS/timeout errors into the same shape (a 10s search
+  timeout, 30s download timeout, via a hand-rolled `AbortController` timeout
+  rather than `AbortSignal.timeout()` for wider Node-version compatibility).
+  `search_standard_parts`/`download_standard_part` (`mcpTools.ts`) surface
+  this as `supported: false` with the reason in `warnings` — **adopted
+  verbatim from step.parts' own error semantics per the roadmap**: this is
+  need-more-info/inconclusive, explicitly NOT "no matching parts" or "part
+  unavailable" (see `describeCapabilities()`'s `verdictConventions` /
+  `headlessLimitations` entries, which call this out by name).
+- **Checksum verification is real, not cosmetic** — `downloadStandardPart()`
+  hashes the downloaded bytes with Node's built-in `crypto.createHash
+  ("sha256")` (no new dependency) and compares against the part record's
+  `sha256` (lowercased, matching the API's lowercase hex convention).
+  `verifiedChecksum` is `true` **only** when a `sha256` was present AND
+  matched — never true for a part with no recorded checksum (nothing to
+  verify against is a different state than "verified and passed", and
+  `downloadStandardPartTool` warns distinctly for each: "no recorded sha256"
+  vs. "downloaded bytes do NOT match"). **Re-verified end-to-end against the
+  live API** (`npm run mcp:smoke`): searched real results, downloaded a real
+  part, confirmed a genuine sha256 match — not mocked.
+- **No new webview/protocol/rendering work at all** — a downloaded part is
+  an ordinary `.step` file on disk; opening it goes through the exact same
+  `routeFile`/OCCT pipeline as any other STEP file. This tool only ever
+  writes a fresh file at the caller-chosen `outputPath`; it never touches
+  any currently-open document's sidecars, so no `assertNotSourcePath`-style
+  guard applies here (there is no "source" being protected against).
+
+## Parametric script-as-source: run_parametric_script (roadmap feature)
+
+`run_parametric_script` (`src/parametricScript.ts`'s `compileParametricScript`)
+closes the roadmap's last exploratory item — a durable, diffable,
+re-runnable source artifact for from-scratch parts (a bolt circle of N
+holes costs one script, not N tool calls) — by compiling a small declarative
+document into ops appended via the **exact same path** `apply_edit_ops`
+already uses.
+
+- **Deliberately NOT a general-purpose scripting language — this is the
+  answer to all three of the roadmap's open questions at once.** A script is
+  `{variables?, steps}`, where each step is either one `EditOp` (identical
+  to an `apply_edit_ops` entry) or ONE flat `repeat: {times, indexVar,
+  body}` loop (no nesting, no other control flow) whose body ops reference
+  the loop index — and any document/script variable — through the SAME
+  `exprs`/`paramExpr.ts` expression evaluator op fields already use
+  (`sin`/`cos`/`tan` in degrees, `sqrt`, arithmetic — no `eval`, per
+  `paramExpr.ts`'s existing CSP-driven "never reintroduce eval" rule).
+  *Language/engine*: none embedded — no build123d/Python runtime, just this
+  hand-written compiler reusing the existing expression evaluator.
+  *Sandboxing agent-authored code*: moot by construction — there is no
+  general-purpose interpreter, no I/O, no code execution to sandbox; the
+  compiler only ever calls `validateEditOp`/`evalExpr` on data. *Composition
+  with interactive edit-ops*: automatic — a compiled script's output IS an
+  `EditOp[]`, appended to the SAME `<model>.edits.json` op stack manual/
+  agent `apply_edit_ops` calls already write to, so there is no separate
+  "script mode" the sidecar replay model needs to know about at all.
+- **Repeat-generated ops are fully baked, not left parametrically live — a
+  stated v1 scope choice.** Each iteration's body op is resolved against
+  `{...documentVariables, ...scriptVariables, [indexVar]: n}` via the same
+  clone-eval-`setNumericField`-revalidate sequence `editVariables.ts`'s
+  `resolveEditOps` already uses (duplicated here, not called directly,
+  since it also needs to strip `exprs` afterward — `resolveEditOps` keeps
+  it) — then the compiled op's `exprs` annotation is DROPPED entirely.
+  Keeping a loop-index expression alive would be actively wrong on a future
+  replay (no document variable named e.g. `"i"` exists to resolve it
+  against — unlike a real persisted variable, this isn't "stale", it's
+  unresolvable forever). A **plain** (non-repeated) `op` step is untouched
+  by this: it passes straight through `validateEditOp` with `exprs` intact,
+  identical to `apply_edit_ops`'s own behavior — so a value that SHOULD stay
+  live/editable later needs a real document variable (`set_variables`) and a
+  plain op step, not the repeat construct. Script-local `variables` are
+  themselves NEVER persisted — they're compile-time-only convenience,
+  entirely separate from the document's own persisted variable table (a
+  script variable shadows a same-named document variable for that one
+  compile, nothing more).
+- **Safety caps, not sandboxing, bound resource use**: `MAX_STEPS=200`,
+  `MAX_REPEAT_TIMES=1000` (per repeat block, clamped, never negative),
+  `MAX_TOTAL_OPS=5000` (across the whole compiled script) — hit any of these
+  and `truncated: true` is returned with the dropped-scope stated in
+  `issues`, never a silent truncation (same "no silent caps" convention as
+  every workflow/agent-facing tool in this codebase).
+- **Every malformed step degrades gracefully, per-step, never crashes the
+  whole compile** — same philosophy as `apply_edit_ops`'s per-op
+  accept/reject report: an invalid op, an invalid `repeat.indexVar`, a
+  `repeat.times` expression that fails to evaluate, or a body op whose
+  `exprs` fails against that iteration's values all just get skipped with a
+  reason in `report`/`issues` — the rest of the script still compiles.
+- **`run_parametric_script`'s own tool-level behavior mirrors
+  `apply_edit_ops` exactly**: same B-rep-only-op gate for mesh-format
+  sources (`BREP_ONLY_OPS`, same warning phrasing), same `dryRun` (compile +
+  report, no persist), same post-replay entity-inventory response for B-rep
+  sources (topology-changing compiled ops renumber `face-N`/`edge-N` ids,
+  same as any other op). **Re-verified end-to-end against real OCCT**
+  (`npm run mcp:smoke`): a real bolt-circle script (`R*cos(i*360/N)`/
+  `R*sin(i*360/N)` over 4 iterations) compiled, baked, persisted, and
+  re-tessellated correctly — the first cylinder landed at the expected
+  `(R, 0)` position (angle 0), confirming the trig/loop-index math is
+  correct against live geometry, not just the pure-function unit tests.
+
+## Settings, screenshot, mass properties, and measurement (P1 roadmap features)
+
+Four independent, additive features (`doc/roadmap.md`'s P1 tier): the first
+`contributes.configuration` settings surface, a view screenshot, a mass-
+properties readout, and webview-only measurement tools. None touches the
+read-only-CAD-file invariant.
+
+- **Settings are cross-document *defaults* only, never a per-document
+  override.** `src/viewerDefaults.ts` (`normalizeViewerDefaults`, same
+  clamp-per-field tolerance-gate style as `validateMeshOptions`) reads
+  `workspace.getConfiguration("cadPreview")` in `provider.ts`'s
+  `sendViewerDefaults()`, posted as a `viewerDefaults` message in the `ready`
+  handshake alongside `parts`/`meshingOptions` — arrival order relative to
+  `geometry`/`loadUrl` is **not** deterministic (same discipline as the
+  mesh-size-seed synchronization above), so the webview handler must tolerate
+  either order. `background`/`showGridAndAxes` apply immediately
+  (scene-level); `upAxis` is stored and applied at the next `setModel()`
+  call, rotating the **model root** (`object.rotation.x = -Math.PI/2` for
+  `"z"`) — deliberately NOT `THREE.Object3D.DEFAULT_UP`, a static shared by
+  every `Object3D` including the gizmo/helpers, which would silently affect
+  unrelated code. `resetView()`'s isometric direction is defined in the
+  camera's fixed Y-up world frame and stays meaningful regardless of the
+  setting. `defaultMeshSizePreset` feeds `syncMeshSizeSeed()` via
+  `meshSizeHeuristics.ts`'s `targetSizeForPreset()` (reusing the existing
+  `PRESET_DIVISORS` the Coarse/Medium/Fine buttons already use) — like every
+  other seed input, a persisted per-document `.mesh.json` value always wins.
+- **Screenshot reuses the `exportMesh`/`exportResult`/`exportError` +
+  `pending`-map pattern exactly**, just with the format fixed to PNG (no
+  `format` field) — `provider.ts`'s `handleScreenshot()` mirrors
+  `handleExport()`'s mesh-target branch, and the toolbar button
+  (`#screenshot`, posting `screenshotButtonClicked`) and the
+  `cad-preview.screenshot` command (via `EditorSession.screenshot()`) both
+  converge on it, so there is exactly one code path regardless of trigger
+  surface. The webview calls `Viewer.render()` (force a fresh frame) then
+  `captureScreenshotBase64()` (`renderer.domElement.toDataURL("image/png")`)
+  — no persistent `preserveDrawingBuffer: true` renderer flag.
+- **Mass properties (`src/massProperties.ts`) is the first `BRepGProp` usage
+  in this codebase — every call shape below is verified against the live
+  WASM**, not assumed from upstream OCCT docs, via the same brute-force
+  overload/arg-count probing convention as everything else in this file:
+  `new oc.GProp_GProps_1()` is the *only* accessible constructor (the
+  unsuffixed `GProp_GProps` has none). `oc.BRepGProp.VolumeProperties_1(
+  shape, props, onlyClosed, skipShared, useTriangulation)` takes exactly 5
+  args (all `false` verified correct — a 2×3×4 box gave `Mass()` = 24).
+  `oc.BRepGProp.SurfaceProperties_1(shape, props, skipShared,
+  useTriangulation)` takes exactly 4 (area 52 on the same box).
+  `oc.BRepGProp.LinearProperties(shape, props, skipShared, ?)` is
+  **unsuffixed** but still needs exactly 4 args in this binding, and must
+  only ever be called on a single already-resolved `TopoDS_Edge` — over an
+  entire B-rep shape it double-counts every edge shared by two faces (a
+  2×3×4 box's `LinearProperties` on the whole shape gave `72`, exactly
+  double the true 36-unit total edge length). `props.CentreOfMass()` returns
+  a `gp_Pnt`-like handle (`.X()/.Y()/.Z()`, needs `.delete()`).
+  `props.MatrixOfInertia()` returns a `gp_Mat`-like handle (`.Value(r, c)`,
+  1-based, needs `.delete()`) — **verified numerically to be about the
+  CENTROID, not the origin** (the same box gave `Ixx=50`, exactly
+  `(1/12)·24·(3²+4²)`, the standard centroid-based box formula; an
+  origin-based value would have been 200). Volume is only ever computed for
+  the whole model or a `solid-N` (`collectSolids`'s `TopAbs_SOLID` explorer
+  guarantees closure) — never `face-N`/`edge-N` — sidestepping the
+  documented open-shell "plausible-looking but wrong" `VolumeProperties`
+  trap noted near `addVolumeFromSurfaces` above. Entity resolution reuses
+  the **already-shared** `collectSolids`/`collectFaces`/`collectEdges`
+  (`occtOperations.ts`) — the same helpers every edit op uses, so no new
+  id-resolution logic was needed. Mesh sources compute the client-side
+  equivalent (`src/webview/meshMassProperties.ts`, promoted from
+  `meshEdits.test.ts`'s test-only `volumeOf()` signed-tetrahedra helper) with
+  **zero host round trip** — no protocol message is ever sent for a mesh
+  source, verified by the panel never posting `massPropertiesRequest` when
+  `sourceKind === "mesh"`. `mcpTools.ts`'s `get_mass_properties` follows the
+  same B-rep-only gate, returning `{supported: false}` with a warning for
+  mesh formats (no `OP_PARAM_DOCS` entry needed — that table is
+  `EditOpKind`-only).
+- **Measurement is entirely webview-side, display-only, and deliberately
+  independent of `SelectionSet`** — a measurement click must never populate
+  the Parts/Edits working selection, so `MeasurementState`
+  (`src/webview/measurementState.ts`) is its own small 0–2-pick buffer, not
+  `SelectionSet`. `Viewer.setMeasureMode()`/`onMeasurePick` is a **parallel**
+  pick path to `selectionMode`/`onEntityPick`, taking priority for a given
+  click when both happen to be active (`onSelectPointerUp`'s widened guard).
+  Measurement picking uses new unfiltered `picking.ts` helpers
+  (`collectMeasureTargets`/`resolveMeasurePick`) that never "resolve up" to a
+  parent solid, unlike `collectTargets`/`resolvePick` — a face hit stays a
+  face. The raycast intersection's **world-space hit point** (`h.point`) is
+  threaded through for the first time here — the normal `onEntityPick` path
+  only ever forwarded the resolved `{entityType, entityId}` and discarded it.
+  `Viewer.buildMeasurementPick()` also derives, when applicable to the hit
+  entity kind, a world-space direction (face normal via the intersection's
+  local `face.normal` + normal matrix, or edge tangent from the two polyline
+  points straddling the hit — used by the "angle" tool) and the picked
+  edge's full world-space polyline (used by "edgeLength"/"radius" —
+  `measurement.ts`'s `polylineLength`/`circleRadiusFromArcPoints` reuse data
+  already transmitted as `EncodedEdge.positions`, needing no new host work).
+  Exact BRep-precision entity-to-entity distance (`BRepExtrema_DistShapeShape`)
+  is explicitly out of scope — client-side triangulated-approximation
+  precision (tied to the existing 0.1 tessellation deflection tolerance) is
+  accepted for this display-only overlay. `measurementOverlay.ts`'s canvas
+  label/marker builders **must** follow `geometryBuilder.ts`'s `dotTexture()`
+  lazy-build-on-first-call discipline (no module-scope
+  `document.createElement("canvas")`) — this exact mistake already broke
+  headless tests once, per the Points feature's history above. The overlay's
+  label sprite is rescaled every `animate()` frame (`distance-to-camera ×
+  0.06`) to stay a constant on-screen size while zooming — deliberately
+  different from the point-sprite scale in `frame()`, which only updates on
+  fit/reset, since a label specifically needs to stay legible while
+  continuously zooming, unlike a point marker which only needs to stay
+  visible. No protocol messages, no MCP tool — this feature has zero host
+  involvement by design.
+
+## Visualization & UX depth (P2 roadmap features)
+
+Seven additive, mostly-webview-only features (`doc/roadmap.md`'s P2 tier):
+drag-and-drop open, per-part isolate/hide + Components-tree search, a live
+exploded-view slider, appearance controls (background/edges/opacity), live
+clipping/section planes, FE mesh quality statistics, and an orthographic/
+perspective camera toggle. Like P1, none of these touch the
+read-only-CAD-file invariant, and all new state (visibility, clip plane,
+opacity override, explode preview, background override, projection mode) is
+session-only — never written to a sidecar.
+
+- **Drag-and-drop's `File.path` availability is UNVERIFIED — do not treat it
+  as settled.** `main.ts`'s `setupDragAndDrop()` reads
+  `(file as File & {path?: string}).path` off the dropped `File` (a
+  long-standing Electron/VS-Code-webview extension to the DOM `File` API, not
+  a call ever exercised against a real F5 Extension Development Host in this
+  codebase's development so far). If `path` is falsy for any reason
+  (browser/VS Code version, sandboxing, a future Electron change), the code
+  **falls back to `post({type:"openFile"})`** (the normal Open dialog) rather
+  than failing silently — so the feature always degrades to "one extra click"
+  worst-case, never a dead drop target. Confirm the true-path branch actually
+  fires in a real session before relying on it; if it turns out never to
+  fire, the fallback-only behavior is still correct (if less convenient) and
+  needs no code change, only a doc correction here.
+- **Isolate/hide is transient state, deliberately NOT on `Part`/`PartsModel`.**
+  `src/webview/visibilityState.ts`'s `VisibilityState` (hidden-part indices +
+  at-most-one isolated index + hidden tree-group ids) mirrors `SelectionSet`'s
+  "transient, never serialized" precedent, not `PartsModel`'s persisted
+  `Part[]`. `main.ts`'s `applyVisibilityState()` recomputes the full
+  `Viewer.applyPartVisibility()`/`setGroupVisible()` input fresh from this
+  state + `PartsModel.entitiesOf()` on every call (including after every
+  model rebuild), since a freshly built `THREE.Object3D` tree starts fully
+  visible with no memory of prior hide/isolate state. Hiding and isolating
+  **compose** rather than one clobbering the other — clearing isolation never
+  un-hides a part you'd independently hidden.
+- **Composing opacity with selection dimming needed a shared baseline, not
+  two writers fighting over `material.opacity`.** `highlightGroup()`'s
+  dim-non-selected behavior and the new Appearance opacity slider both need
+  to scale a material's opacity, and naively writing `mat.opacity` directly
+  from both call sites means whichever runs last wins and silently erases the
+  other's effect. Fixed by tracking `material.userData.baseOpacity` (default
+  `1`, written only by `Viewer.setOpacity()`) and having `highlightGroup()`
+  multiply against it (`mat.opacity = baseOpacity * (dimmed ? factor : 1)`)
+  instead of overwriting — `applyOpacityBaseline()` seeds it on every
+  `setModel()`. Any future feature that dims/fades materials must follow the
+  same multiply-against-`baseOpacity` convention, not a raw assignment.
+- **The exploded-view slider previews live by re-deriving from a cached base
+  every frame, never compounding onto the previous frame's result.**
+  `src/webview/explodePreview.ts`'s `captureExplodeBase(root)` snapshots each
+  top-level `userData.groupId`-tagged child's pristine position once (on
+  slider focus/mousedown); every subsequent `applyExplodePreview(bases,
+  factor)` call recomputes each group's position as `basePosition +
+  offsetFromCentre * factor` from that same cached base — the correctness
+  trap a dedicated regression test in `explodePreview.test.ts` covers
+  directly (two consecutive calls with different factors must not compound).
+  It deliberately does **not** reposition a B-rep root's untagged top-level
+  edges/points groups (only `groupId`-tagged solids) — a known, accepted
+  limitation of the live preview only; the *committed* `explode` op still
+  repositions everything correctly since OCCT re-tessellates the whole shape
+  on replay. `editsPanel.ts`'s Apply handler always calls
+  `resetExplodePreview()` immediately before pushing the real op, so the
+  preview transform is never left stacked underneath the authoritative
+  replay; `selectOp()` (switching or collapsing any op form) unconditionally
+  fires the panel's `onExplodePreviewCancel` callback too, so navigating away
+  mid-drag without clicking Apply can't leave an orphaned, unpersisted
+  preview transform on screen.
+- **Clipping ships intentionally uncapped in this v1 — a scoped decision, not
+  an oversight.** `src/webview/clipping.ts`'s `planeForAxis(axis, offsetFrac,
+  box)` is pure `THREE.Plane`/`THREE.Box3` math (normal always points in the
+  **positive** axis direction; sweeping `offsetFrac` from `-1` to `1` moves
+  the cut from the box's min face to its max face). `Viewer.setClippingPlane()`
+  sets `renderer.localClippingEnabled` and assigns `material.clippingPlanes`
+  across every material on **both** `model` and `meshOverlay` (the FE Mesh
+  overlay explicitly needs the same plane per the roadmap item), and must be
+  re-applied from `setModel()`/`setMeshOverlay()` — `geometryBuilder.ts`'s
+  material factories build fresh materials with no clipping state of their
+  own, so the active plane is cached on `Viewer` and reapplied on every
+  (re)build. `MeshStandardMaterial` + `clippingPlanes` does **not**
+  automatically cap the cut cross-section with a solid face — three.js needs
+  a separate stencil-buffer cap technique for that, which this stage
+  deliberately does not implement; the cut face is see-through. A capped v2
+  is a candidate P3 follow-up, not scope creep to backfill here.
+- **FE mesh quality statistics use `gmsh.model.mesh.getElementQualities`,
+  confirmed bound and working in the bundled `@loumalouomega/gmsh-wasm`
+  build** (this was open discovery work — not assumed from upstream Gmsh
+  docs). `src/gmshService.ts`'s `computeMeshQuality(gmsh, dimension)`:
+  `gmsh.model.mesh.getElements(dim, -1)` returns a **plain object**
+  `{elementTypes, elementTags, nodeTags}` — `elementTags` is an array
+  *per element type*, so every type's tags must be concatenated into one flat
+  array before quality lookup, **not** destructured as a tuple (an early
+  attempt assuming array/tuple shape threw "object is not iterable").
+  `getElementQualities(tags, "minSICN")` returns `{elementsQuality:
+  number[]}`, one value per tag, in the same order — `"minSICN"` (0=degenerate,
+  1=ideal) is the metric used; `summarizeQuality()` (`src/meshQuality.ts`,
+  pure/host-side/unit-tested) reduces it to `{min, mean, histogram}`.
+  **Known unreproduced anomaly, handled defensively rather than assumed
+  fixed:** a single early probe run returned an empty quality array against a
+  real generated mesh; 5+ subsequent attempts (including varying whether the
+  tags array was reused vs. freshly copied, and a full `npm run mcp:smoke`
+  pass against complex multi-solid geometry with edits applied) never
+  reproduced it. `computeMeshQuality()` validates `values.length ===
+  tags.length` and returns `undefined` (never throws) on any mismatch, so a
+  future recurrence degrades to "no quality summary shown" rather than
+  crashing generation or reporting wrong numbers — `MeshResult.quality`
+  and the `meshingResult` protocol field are both `optional` for exactly
+  this reason. **Separately confirmed while probing this:** GMSH's own
+  default 3D meshing algorithm hangs indefinitely (confirmed via `ps aux`
+  at 27+ minutes / 98% CPU on a trivial box) not only for OCC-*imported*
+  geometry as previously documented above, but for geometry built directly
+  via `gmsh.model.occ.addBox()` too — i.e. the existing `Mesh.Algorithm3D =
+  4` (Frontal) default this codebase already sets is load-bearing for
+  **any** OCC-kernel-sourced 3D mesh, not just the STEP-import path.
+  Worst-element highlighting in the 3D overlay (colouring the worst-quality
+  tetrahedra) was explicitly scoped OUT of this stage: the 3D overlay only
+  renders **boundary** surface triangles, but bad-quality tets are frequently
+  interior and invisible in that overlay, so a naive implementation would be
+  either misleading or need new, fragile tet-to-boundary-face correlation
+  logic — shipped the quantitative min/mean/histogram summary only, which
+  was the roadmap item's core ask.
+- **Orthographic/perspective toggle uses a dual-camera-kept-alive-and-swapped
+  architecture** (`Viewer` gains a `readonly orthoCamera:
+  THREE.OrthographicCamera` alongside the existing `camera:
+  THREE.PerspectiveCamera`, plus an `activeCamera: ViewerCamera` field that
+  everything else — `frame()`, `render()`, `animate()`, the raycaster,
+  `getViewDirection()`/`getCameraUp()` — reads from instead of the old
+  hardcoded `this.camera`), not destroy/recreate-on-toggle, to avoid
+  disrupting `OrbitControls`' internal state and view continuity.
+  `setOrthographic(enabled)` copies position/near/far from the outgoing
+  camera to the incoming one, reassigns `this.controls.object` (three.js
+  supports retargeting `OrbitControls.object` at runtime — `controls` had to
+  be made non-`readonly` for this), and re-`frame()`s in the same view
+  direction. **Use `camera instanceof THREE.OrthographicCamera` to narrow the
+  `ViewerCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera` union —
+  NOT the `.isOrthographicCamera` flag property.** three.js's own type
+  declarations don't expose that flag consistently across the two classes in
+  this project's TypeScript setup (`tsc --noEmit` rejected every
+  `camera.isOrthographicCamera` call site with "property does not exist on
+  type PerspectiveCamera"); `instanceof` narrows correctly and compiles clean.
+  `cameraControls.ts`'s `pan()`/`dolly()` both gained an ortho branch:
+  `pan()`'s per-pixel amount uses the orthographic frustum's `(top-bottom)/
+  zoom/2` instead of the perspective FOV-tangent distance; `dolly()` under
+  orthographic scales `camera.zoom` (+ `updateProjectionMatrix()`) instead of
+  moving `camera.position`, since moving the camera is a visual no-op under
+  parallel projection.
+
+## Display modes (P1 roadmap feature)
+
+Five mutually exclusive whole-model rendering modes (`src/webview/
+displayMode.ts`'s `DisplayMode`: `shaded`/`wireframe`/`xray`/`hiddenLines`/
+`flat`) replacing the old standalone Wireframe toolbar toggle, driven by a
+new `#display-mode-group` segmented button group in the view-controls
+Appearance area. `Viewer.setDisplayMode()`/`applyDisplayMode()` in
+`src/webview/viewer.ts` is the single entry point; `main.ts`'s wiring is the
+only caller and always follows it with `refreshColors()` (see below for why).
+
+- **Materials are still built once at load time and only ever have
+  properties mutated — except Flat mode, the one deliberate exception.**
+  Every other mode (shaded/wireframe/xray/hiddenLines) reuses the mesh's
+  original `MeshStandardMaterial`, stashed once as `userData.standardMaterial`
+  at construction time (`geometryBuilder.ts`'s `buildFaceMesh()` and
+  `meshFacets.ts`'s per-facet mesh builder both set it explicitly;
+  `applyDisplayMode()` also lazily captures it from `mesh.material` on its own
+  first run per mesh, as a safety net for the "kept whole" mesh-facet path
+  that doesn't explicitly stash it). Flat needs a genuinely unlit look
+  (`MeshStandardMaterial` always samples scene lights — there is no property
+  to disable that while keeping the class), so it swaps `mesh.material` to a
+  lazily-built, cached `MeshBasicMaterial` (`userData.flatMaterial`) instead.
+  `clearModel()` disposes BOTH cached materials (whichever isn't the
+  currently-active `mesh.material`, already disposed via the normal path) so
+  a mode never used, or used and left behind, doesn't leak.
+- **Colours/selection are NOT tracked per-material, so `setDisplayMode()`
+  callers MUST re-apply them afterward.** Because Flat's material is a
+  different instance than the standard one, switching modes can leave the
+  newly-active material at its default colour with no selection highlight.
+  Rather than have `Viewer` maintain two parallel colour/highlight caches,
+  the contract is the same one `setModel()` already relies on for parts/
+  selection: the caller re-applies. `main.ts`'s `refreshColors()` (already
+  called after every model rebuild/parts change) does exactly this —
+  `setEntityColors()` + `renderHighlight()`/`renderSelection()` — so the
+  Display group's click handler just calls it right after
+  `viewer.setDisplayMode()`. Since `MeshBasicMaterial` has no `.emissive`
+  (unlike `MeshStandardMaterial`, which `renderSelection()`'s face branch
+  used exclusively before this feature), that branch now checks
+  `"emissive" in mat` and falls back to a direct `.color` swap (the same
+  technique edges/points already used for selection) when it's absent.
+- **X-Ray's extra translucency is folded into the EXISTING `baseOpacity`
+  composition, not a new opacity writer.** `highlightGroup()`'s formula
+  (already documented above as the one-and-only place `material.opacity`
+  gets written, to avoid the exact "two writers fight over opacity" bug a
+  P2-stage feature already fixed once) gained one more multiplicand:
+  `mat.opacity = base * displayOpacityFactor() * (selected ? 1 : 0.08)`,
+  where `displayOpacityFactor()` returns `0.35` for `"xray"` mode and `1`
+  otherwise. Any future feature that dims/fades face materials must extend
+  this same formula, never write `.opacity` directly.
+- **Hidden Lines needs no per-pixel occlusion logic** — it exploits three.js's
+  own opaque-then-transparent render ordering. `buildHiddenLineGhosts()`
+  builds one dimmed `LineBasicMaterial({transparent:true, opacity:0.35,
+  depthTest:false, depthWrite:false})` copy of every edge line, SHARING
+  geometry with the real edge (never disposing it — `clearHiddenLineGhosts()`
+  only disposes materials), grouped into `hiddenLineGhosts: THREE.Group`, a
+  scene sibling of `model` (never a child — same pattern as `meshOverlay`/
+  `measurementOverlay`), which is why `collectTargets` (`picking.ts`, only
+  ever traverses `this.model`) naturally excludes ghosts from picking with no
+  `raycast` override needed. Because `transparent:true` objects always render
+  in a pass strictly after every opaque object in three.js (faces AND the
+  real, depth-tested edges — bucket membership is decided by
+  `material.transparent`, independent of `renderOrder`), a ghost is
+  guaranteed to paint faintly over the already-fully-rendered frame
+  everywhere its line passes, regardless of true 3D depth — while the real
+  edge, drawn earlier in the opaque pass with normal depth testing, already
+  painted full-strength at every pixel where it's genuinely unoccluded, so it
+  stays visually dominant there (the ghost technically also draws a faint
+  tint on top at those pixels too, a minor accepted cosmetic artifact, not a
+  correctness bug). `applyClippingPlane()` was extended to also traverse
+  `hiddenLineGhosts` so the two features compose correctly together.
+- **`setWireframe()`/`this.wireframe` remain a standalone public
+  primitive**, not folded away into `setDisplayMode()`-only internals —
+  `applyDisplayMode()` drives it (`this.wireframe = displayMode ===
+  "wireframe"`) for the interactive Display group, but `render_snapshot`'s
+  per-call `wireframe` override (`src/renderService.ts`, `renderViewRequest`'s
+  `wireframe` field) calls `viewer.setWireframe()` directly, bypassing
+  display-mode state entirely — safe because every `renderViewRequest` this
+  feature ever sends targets a disposable, harness-only headless page with no
+  interactive display-mode session to preserve (same invariant the
+  `render_snapshot` section above documents).
+
+## Markup annotation overlay (P1 roadmap feature)
+
+A 2D drawing overlay (freehand/line/arrow/rectangle/circle/eraser, undo/
+redo) over the 3D view for review notes, composited into Screenshot exports.
+Session-only, never persisted — same rule as every other display-only
+feature (explode preview, clip plane, measurement).
+
+- **Pure-model/DOM split, mirroring `partsSidecar.ts`/`partsStore.ts`**:
+  `src/webview/markupModel.ts` (`MarkupStroke`, `MarkupModel` — push/undo/
+  redo/clear/list/eraseAt, DOM-free, unit-tested) vs. `src/webview/
+  markupCanvas.ts` (`drawStroke`/`redrawAll`, DOM-touching, only ever called
+  at runtime, same discipline `geometryBuilder.ts`'s lazily-built
+  `dotTexture()` established — **the actual `<canvas id="markup-canvas">`
+  element itself lives in static `viewerDom.ts` markup, which is fine: a
+  `<canvas>` tag in an HTML template string executes no JS at module load,
+  it's only `document.createElement("canvas")`/`.getContext()` calls at
+  module scope that break headless vitest imports**).
+- **The eraser is deliberately NOT part of undo/redo** — `MarkupModel.
+  eraseAt()` removes any stroke with a point within a fixed pixel radius of
+  the cursor immediately and permanently for the session, rather than trying
+  to make an arbitrary (not necessarily most-recent) removal compose with a
+  linear undo/redo stack. `undo()`/`redo()` only ever add/remove the single
+  most-recently-pushed stroke, exactly like `EditsModel`'s op stack.
+- **`#markup-canvas` is a scene sibling of the WebGL canvas inside `#app`**
+  (`position:absolute; inset:0`, `z-index` above it), `pointer-events:none`
+  by default so it never intercepts orbit/pick input while markup mode is
+  off — `main.ts`'s `setupMarkupControls()` flips it to `"auto"` for exactly
+  as long as **✎ Markup** is toggled on. Its backing-store resolution is
+  sized in plain CSS pixels (`canvas.width = rect.width`, no
+  devicePixelRatio scaling) — deliberately simpler than matching the WebGL
+  renderer canvas's device-pixel resolution, since `compositeCanvas()`'s
+  `drawImage(overlay, 0, 0, base.width, base.height)` stretch-fits it to the
+  base canvas's size at composite time regardless of any resolution
+  mismatch, at the cost of the interactive on-screen strokes possibly
+  looking very slightly softer on a high-DPI display — an accepted
+  simplicity/quality tradeoff for a review-annotation feature.
+- **Composited into Screenshot exports via `Viewer.setMarkupCanvas()` +
+  `src/webview/canvasComposite.ts`'s `compositeCanvas()`** — registered once
+  at webview setup (`main.ts` calls it unconditionally, not just when markup
+  mode is active; an empty/untouched markup canvas composites as a no-op
+  transparent layer, so there's nothing to gate). Both
+  `captureScreenshotBase64()` (the interactive Screenshot feature) and
+  `captureLabeledScreenshotBase64()` (the headless `render_snapshot` MCP
+  tool's per-view capture) composite it in — so an agent calling
+  `render_snapshot` on a document where a human had left markup strokes in
+  an interactive session would see them too, which is correct/expected
+  (`Viewer` has exactly one markup canvas, not a per-caller one).
+- **Cleared on every genuinely new model load** (`case "geometry":` for
+  B-rep, `loadMeshObjectFromUrl()` for mesh formats), via a module-level
+  `clearMarkupOverlay` callback `setupMarkupControls()` assigns — strokes
+  aren't geometrically stale (pure screen-space pixels, no model reference
+  at all), but leaving them plastered over a totally different part reads as
+  wrong far more often than useful, so a fresh load resets them like every
+  other session-only display state (explode preview, cached mass
+  properties). Switching *display mode* or applying an *edit* to the SAME
+  document does not clear them — only a genuinely different model does.
+- **Live preview while drawing**: `pointermove` calls `redrawAll(canvas,
+  model.list(), previewStroke)` on every event — clears and redraws every
+  committed stroke, then the in-progress stroke on top, so the shape
+  tracks the cursor with no artifacts left behind from the previous frame's
+  preview. Freehand accumulates every sampled point into the live stroke;
+  line/arrow/rectangle/circle keep exactly two points (`[start, current]`)
+  and just overwrite the second one each move.
+
+## Units handling (P3 roadmap feature)
+
+`doc/roadmap.md`'s "Units handling" item (P3 #12) is a **presentation-layer-
+only** feature — display formatting on top of numbers that are already
+internally consistent, not a unit-conversion engine.
+
+- **OCCT's STEP reader already auto-converts every shape to one internal
+  cascade unit (millimetres) at read time, regardless of the source file's
+  declared unit — confirmed against the live WASM, not assumed.** Loaded
+  `bull.stp` (declares `INCH` per its `GLOBAL_UNIT_ASSIGNED_CONTEXT`) and
+  `angle1.stp` (declares `MILLIMETRE`) through the exact `STEPControl_Reader_1`
+  → `TransferRoots()` → `OneShape()` path `occtService.ts`'s `readShape()`
+  already uses, then read each result's `Bnd_Box`: `bull.stp`'s bounding box
+  came out `161.29 × 35.04 × 84.04` (mm) — `161.29 / 25.4 ≈ 6.35 in`, a
+  plausible size for the toy-bull model it renders as, confirming OCCT applied
+  the inch→mm conversion during `TransferRoots()` rather than leaving raw
+  inch-scale numbers. **This means there is nothing to convert** — every
+  number this codebase already computes (mass properties, measurement,
+  mesh-size options, edit-op params) is already in one consistent unit. The
+  feature is therefore scoped to (a) surfacing what unit the file was
+  *authored* in, informationally, and (b) a display-unit selector that
+  rescales what a number *looks like* — never what's stored.
+- **Detecting a STEP file's declared unit is a plain-text scan, not an OCCT
+  call — this was a deliberate pivot after hitting the usual embind gap.**
+  `UnitsMethods.GetCasCadeLengthUnit()` is bound and callable, but returns the
+  cascade *target* unit (a constant, same for every file) — not what was
+  asked. The natural next step, downcasting `reader.WS().get().Model()` to
+  `StepData_StepModel` and reading its `DynamicType().get().Name()`, hits this
+  build's recurring `"Cannot call ... due to unbound types: PKc"` gap (the
+  same class of binding hole as `Bnd_Box.Get()` and
+  `TopTools_IndexedMapOfShape`, documented above). STEP (ISO-10303-21) is
+  ASCII text, so `src/stepUnits.ts`'s `detectStepLengthUnit()` scans the raw
+  file bytes directly instead: it finds `GLOBAL_UNIT_ASSIGNED_CONTEXT`'s
+  referenced entity ids (the ids that actually govern the shape's coordinate
+  values) and resolves whichever of them is a `LENGTH_UNIT()` complex entity,
+  parsing either its `CONVERSION_BASED_UNIT('INCH', ...)` name or its bare
+  `SI_UNIT(.MILLI., .METRE.)` prefix+base. **Deliberately does NOT just take
+  the first `LENGTH_UNIT()` entity in the file** — verified wrong on
+  `bull.stp`: its first such entity (`#115`) is `SI_UNIT(.CENTI.,.METRE.)`,
+  the *intermediate conversion basis* the file's `INCH` unit (`#121`) is
+  defined against, not the unit actually assigned to the model. Falls back to
+  scanning every `LENGTH_UNIT()` entity (preferring a `CONVERSION_BASED_UNIT`
+  over a bare `SI_UNIT`) when there's no `GLOBAL_UNIT_ASSIGNED_CONTEXT` at
+  all, and returns `undefined` (never throws) for files with no unit
+  declaration whatsoever — confirmed genuinely absent, not a parser miss, in
+  3 of the ~53 fixtures under `examples/STP/`. IGES/BREP get no detection at
+  all in this stage (IGES's unit flag lives in a positional Global-section
+  field, a different-enough format to not be worth the same treatment for a
+  presentation-only feature; BREP has no unit metadata whatsoever).
+- **The display-unit selector (`#vc-unit`, view-controls' Appearance group)
+  is session-only state in `main.ts`, exactly like every other Stage-2
+  Appearance control** — never written to a sidecar, reset to the detected
+  unit (or `"mm"`) on every new model load. `src/webview/units.ts`'s
+  `convertLength`/`convertArea`/`convertVolume` scale by the unit's mm factor
+  raised to the 1st/2nd/3rd power respectively; `main.ts` caches the *raw*
+  (mm) Mass Properties result (`lastRawMassProperties`) rather than the
+  already-converted one specifically so that changing the selector can
+  live-rescale an already-displayed result without a new host round trip or
+  mesh recomputation.
+- **Moments of inertia are explicitly left unconverted, in both the panel and
+  `units.ts`'s `convertLengthBasedProperties()` — a scope decision, not an
+  oversight.** They're a geometric (not mass-weighted — this codebase has no
+  density concept) moment about the centroid, dimensionally length^5-ish;
+  building a clean unit-suffix story for that on top of the existing
+  ixx/iyy/izz display was judged disproportionate complexity for this stage.
+- **The FE Mesh panel's size readout always shows a literal `"mm"` suffix,
+  never `currentDisplayUnit`** (`meshingPanel.ts`'s `refreshSizeReadout()`) —
+  Gmsh's `Mesh.MeshSizeMin`/`MeshSizeMax` options are set and stored in the
+  cascade unit regardless of what the display-unit selector shows elsewhere,
+  so labeling them with anything but `"mm"` would be actively misleading.
+- **"Optionally convert units on export" (mentioned in the roadmap) is
+  explicitly out of scope for this stage** — it would require a real
+  geometric scale transform applied before every OCCT/mesh writer (STEP/IGES/
+  BREP export, STL/OBJ/PLY/glTF export, Gmsh mesh export), not a display
+  change, and is a natural, separately-scoped v2 follow-up.
+- **MCP**: `get_mass_properties` (and every other MCP tool) always returns raw
+  cascade-unit (mm) numbers — the display-unit selector is webview-only state
+  with no host or MCP-server counterpart; `doc/mcp-server.md` documents this
+  explicitly so an agent consuming the tool knows what unit it's getting.
+
+## Model comparison (P3 roadmap feature)
+
+`doc/roadmap.md`'s "Model comparison" item (P3 #13) shipped as a B-rep-only,
+host-only diff **report** — deliberately not a merged 3D scene — which
+resolves both open design questions the roadmap itself left unanswered.
+
+- **"How do two documents share one custom-editor architecture" — they
+  already do, today, for free.** Investigated before writing any code:
+  `provider.ts`'s `resolveCustomEditor` has no `Map<uri, State>` singleton;
+  every open document gets its own fully-independent closure (`pending` map,
+  debounce timers, `currentEdits`/`currentParts`/`currentMeshOptions`,
+  `session`). `activeSession` is a single provider-instance field, but it's
+  purely a "which tab is currently focused" router for keybindings/Command
+  Palette (set on `onDidChangeViewState`, cleared on `onDidDispose`) — it has
+  no bearing on how many documents can be open. VS Code's Custom Editor API
+  already supports opening the same `viewType` against N different URIs
+  concurrently. **So "view two models side by side" needed zero new code** —
+  open both files in separate tabs and use VS Code's native split-editor UI.
+  What was actually missing was the *diff computation*, which is all this
+  feature adds.
+- **"How to avoid misleading false matches" — never collapse a match into a
+  binary verdict; always show the raw numbers behind it.** `src/modelDiff.ts`'s
+  `diffSolids()` (greedy nearest-neighbor bipartite matching by centroid
+  distance, volume as a tie-breaker) attaches `centreDistance`/
+  `volumeDeltaPct` to every `SolidMatch`, and both `modelComparePanel.ts`'s
+  table and `compare_models`'s JSON surface them directly — a "matched" row
+  with a large displacement or volume delta reads as "heavily edited," not as
+  a false "unchanged," because the confidence numbers are right there instead
+  of hidden behind a computed label.
+- **Scoped to B-rep only, and to a report rather than a merged scene — both
+  deliberate, not oversights.** Mesh formats (STL/OBJ/PLY/glTF) have no
+  OCCT shape for the host to independently query; their geometry only exists
+  once parsed by the webview's Three.js loaders, and there's no host-side
+  mesh parser anywhere in this codebase — a mesh compare would need an
+  entirely different (webview-round-trip) architecture for comparatively
+  little payoff, so it's rejected up front with a clear message instead.
+  `Viewer` is hard-wired to one `model: THREE.Object3D | null`
+  (`setModel()` replaces, never adds) — hosting two models in one 3D view
+  with independent visibility/color would be real new `Viewer`/protocol
+  work; a text report was judged sufficient for this stage, given
+  side-by-side *visual* comparison already works today via split tabs.
+- **Reuses existing OCCT helpers with zero new geometry code**:
+  `occtOperations.ts`'s `bboxCenter` (already exported) and `bboxDiagonal`
+  (module-private until this feature — now exported, since
+  `modelDiffHost.ts` needed it and duplicating the identical `Bnd_Box`/
+  `CornerMin`/`CornerMax` logic would have been the actual oversight) are the
+  same centroid/diagonal math `explodeSolids` already uses; volume comes from
+  the exact `BRepGProp.VolumeProperties_1(solid, props, false, false, false)`
+  call shape `massProperties.ts`'s `solidProperties` uses. The absolute
+  centroid-distance tolerance is `1e-3 × the larger model's whole-shape
+  bboxDiagonal` — the same tolerance-fraction convention `gmshPartsMap.ts`
+  already established for geometric bbox-center matching.
+- **`modelComparePanel.ts` is the second standalone
+  `vscode.window.createWebviewPanel` in this extension** (`whatsNew.ts` was
+  the first) — `enableScripts: false`, plain HTML tables, no nonce/script
+  needed since there's no interactivity beyond closing the tab. The
+  `cad-preview.compareModels` command is registered standalone (like
+  `cad-preview.open`/`whatsNew`, not gated behind `activeSession`, since it
+  should work with no CAD Preview tab focused) but still reads
+  `this.activeSession?.uri` as the default for model A, so comparing against
+  "whatever I currently have open" needs only one file picker, not two.
+- **Verified end-to-end against the real WASM via `npm run mcp:smoke`**, not
+  just unit-tested: the smoke script diffs the edited fixture (`bull.stp` +
+  an `addBox` op, 2 solids) against a fresh unedited copy of the same fixture
+  (1 solid) and asserts exactly 1 matched (the bull, `centreDistance`/
+  `volumeDeltaPct` both ~0 — an exact self-match), 0 added, 1 removed (the
+  box) — confirming the matching direction (`removed` = "only in A", the
+  edited/first argument) is exactly as documented, not backwards.
+
+## meshio++ integration (P3 roadmap feature)
+
+`doc/roadmap.md`'s "meshio++ WASM integration" item (P3 #11) bundles a
+**third** host-side WASM module, [`@meshioplusplus/wasm`](https://github.com/loumalouomega/meshioplusplus)
+(MIT-licensed, maintained by this repo's own maintainer), alongside OCCT and
+Gmsh — to import mesh-only formats (VTK/VTU/MED/CGNS/Exodus/XDMF/Kratos MDPA)
+as viewable documents, and to export generated FE meshes to formats Gmsh's
+own writers can't produce (MED, CGNS, and XDMF, which Gmsh doesn't even
+recognize as an output extension).
+
+- **Import funnels every meshio-only format through meshio++'s own STL
+  writer — a deliberate scope decision, not a shortcut.** Rather than
+  building a new tessellation/rendering path for ~40 formats, `src/
+  meshioService.ts`'s `convertToStlBoundary()` calls `convertSurface()`
+  (stays inside meshio++'s C++ core — a volume mesh becomes its boundary,
+  confirmed correct via a hand-built tetrahedron: converting to MED/CGNS/
+  Exodus/XDMF and then `convertSurface`-ing each back to STL all produced the
+  same correct 4-facet boundary), producing plain ASCII STL bytes the webview
+  loads through the **exact same STL loader** a native `.stl` open uses (a
+  new `loadMeshBytes` protocol message, base64-over-postMessage — not a
+  `data:` URL, sidestepping CSP/size-limit uncertainty). This means a
+  meshio-imported document inherits the **entire existing mesh (Three.js)
+  pipeline for free** — facet splitting, Parts, every mesh-legal edit op,
+  Export, Mass Properties, Measurement — with **zero new `Viewer`/webview
+  geometry code**. The trade-off: region names, scalar point/cell data, and
+  multi-material grouping in the source file are **not** preserved, only
+  geometry. Import format list is curated to the roadmap's explicitly-named
+  formats (`src/fileRouter.ts`'s `MESHIO_FORMATS`) rather than all ~40
+  meshio++ supports — the extension-map table is cheap to extend later.
+- **Must load via a DYNAMIC `import()`, not gmsh-wasm's static-import
+  pattern — verified against the live package, a genuine gotcha.**
+  `@meshioplusplus/wasm`'s `package.json` is `"type": "module"`,
+  `"main": "./src/index.mjs"`, with **no `"exports"` map and no `require`
+  condition at all** — unlike `@loumalouomega/gmsh-wasm`, which is dual
+  CJS/ESM (a real `dist/gmsh-core.cjs` Node's "require" condition resolves
+  to, letting a static `import` compile to a working `require()` in this
+  CJS-bundled extension host). `require("@meshioplusplus/wasm")` here throws
+  `ERR_REQUIRE_ESM`. `meshioService.ts`'s `getMeshio()` instead does
+  `const { loadMeshioPlusPlus } = await import("@meshioplusplus/wasm")`
+  inside its lazy-init function — esbuild's `"cjs"` output format leaves a
+  dynamic `import()` of an **external** module as a literal runtime
+  `import()` call (not converted to `require()`), and Node's CJS modules are
+  permitted to `await import(...)` an ESM package at runtime. Must stay
+  `external` in `esbuild.mjs` for this reason (nothing statically imports
+  its `.wasm`, so no `wasmPathPlugin` change was needed either).
+- **Always loads with `{ variant: "seq" }` — never `"auto"`, the package's
+  own default — for the same class of risk this repo already hit once with
+  gmsh's worker pool.** The package's `resolveVariant()` picks the threaded
+  (pthread) build whenever `typeof crossOriginIsolated === "undefined"`,
+  which is **unconditionally true under Node** — so `"auto"` would always
+  pick the threaded build here, eagerly spawning ~8 `worker_threads.Worker`s
+  at load. Forcing `"seq"` avoids that risk entirely; the sequential build is
+  plenty fast for this pipeline's file sizes. `.vscodeignore` accordingly
+  carves out only the sequential variant's four files (`package.json`,
+  `src/index.mjs`, `dist/meshioplusplus_wasm.mjs`,
+  `dist/meshioplusplus_wasm.wasm`) — the threaded variant's files would be
+  dead weight given `"seq"` is always forced, and skipping them roughly
+  halves this package's footprint in the packaged `.vsix`.
+- **Console output already goes through `console.log`/`console.error` by
+  default (confirmed against the live package's built glue) — like OCCT,
+  unlike gmsh 0.2.0's raw-fd writes — so `mcpServer.ts`'s existing
+  top-of-file stdout rebinding already covers it.** No new suppression code
+  was needed, unlike gmsh's `print`/`printErr` override.
+- **Not copied to `dist/` via `copyWasm()`, unlike OCCT/gmsh — a real,
+  verified deviation from the established WASM-packaging convention.**
+  OCCT/gmsh pass `wasmBinary` explicitly to bypass the module's own file
+  lookup, so their `.wasm` files can live anywhere and get copied to `dist/`
+  for a predictable path. `@meshioplusplus/wasm`'s loader instead
+  auto-locates its own `.wasm` sibling via `import.meta.url` — confirmed:
+  its raw glue derives `scriptDirectory` from `import.meta.url` under Node
+  and reads its own `.wasm` relative to that — which only resolves correctly
+  if the package's files stay in place under `node_modules/`, never copied
+  elsewhere. So this package is handled entirely by the `.vscodeignore`
+  carve-out above; `esbuild.mjs`'s `copyWasm()` needed no new entry.
+- **The export bridge (`exportViaMeshio()`) takes `generateMesh()`'s own
+  MSH 4.1 `mshText` directly — requires `@meshioplusplus/wasm` ≥ 9.7.0, and
+  its history is a live-WASM discovery trail worth keeping.** Against 9.4.1,
+  feeding MSH 4.1 into `convert(..., {inFormat: "gmsh"})` threw
+  `"Gmsh $Entities not supported by the C++ reader"`, forcing a legacy
+  MSH 2.2 detour (`exportMeshFormat(..., "msh2")`); 9.7.0 parses
+  `$Entities` natively **and resolves physical-group membership from it**,
+  so a 4.1 read yields named `regions` (one per part) that 2.2 never
+  carried — re-verified: a 2.2 read of the same grouped mesh yields NO
+  regions, so 4.1 input is load-bearing for group preservation, not just a
+  convenience. **MED still needs a MED-specific two-step, re-verified on
+  9.7.0 — now group-PRESERVING where the old workaround was
+  group-dropping**: direct `convert(→ med)` still throws `"MED: gmsh
+  physical groups handled by Python fallback"` on gmsh's always-attached
+  `"gmsh:physical"` cell_data, and MED separately rejects 4.1's
+  one-block-per-entity layout (`"MED files cannot have two sections of the
+  same cell type"` — a meshed unit box arrives as 27 blocks). Fix for both:
+  `readMesh()` → **`merge([mesh])`** (meshio++'s own merge consolidates
+  same-type blocks AND remaps every region's block-major cell indices —
+  verified: entry counts survive exactly) → a brand-new plain object of
+  only `{points, dim, cells, regions}` (no `cell_data`/`point_data`/
+  `field_data` keys at all) → `writeMesh(→ med)`. 9.6.0's region→family
+  synthesis then writes the groups: verified end-to-end, a box with
+  `MyVolume`/`MySurface` physical groups round-tripped both as named MED
+  groups (90 tris / 1101 tets). CGNS/XDMF/VTK need none of this — plain
+  `convert()` works directly on 4.1 text.
+  Full write-up (including the separate, narrower CGNS pure-2D-mesh
+  read-back limitation — re-verified still present on 9.7.0 — and the XDMF
+  `.h5`-companion handling) lives in `doc/gmsh-integration.md`'s "The
+  meshio++ bridge" section; the remaining upstream gaps are filed as a
+  ready-to-run prompt in the meshio++ repo
+  (`PROMPT_close_wasm_gmsh_bridge_gaps.md`).
+- **`resolveMeshInputHeadless` in `mcpTools.ts` gives meshio-only formats a
+  genuinely NEW headless capability, beyond what `.obj`/`.ply`/`.gltf`
+  get** — since `convertToStlBoundary()` runs entirely host-side (no
+  webview needed, unlike those three, which only the webview's Three.js
+  loaders can parse), `load_model`/`generate_mesh`/`export_mesh` all work
+  headlessly for VTK/MED/CGNS/Exodus/XDMF/MDPA sources, verified end-to-end
+  via `npm run mcp:smoke` against the real WASM (not mocked): a hand-built
+  tetrahedron `.vtk` file is loaded, meshed, and exported to MED, CGNS
+  (3D — the pure-2D CGNS gap doesn't apply), and XDMF (confirming the `.h5`
+  companion is written and its embedded reference correctly rewritten).
+- **MDPA import (via meshio++'s native reader) and MDPA export (the
+  hand-written `mdpaWriter.ts`, unchanged by this feature) are two entirely
+  independent code paths that happen to share a file extension** — a
+  considered-and-rejected idea, not a gap: meshio++'s WASM MDPA
+  reader/writer can't represent Kratos `Properties`/`Table`/`Geometries`/
+  `Constraints` blocks (the `MdpaInfo` side-channel isn't forwarded through
+  the WASM binding), so it could never replace the hand-written exporter's
+  richer SubModelPart/property support without regressing it.
 
 ## Build & test
 
@@ -1228,7 +2204,7 @@ newer value (e.g. `"9.9.9"`), reload the Extension Development Host window
 panel now appears **automatically** (the upgrade path); reload again unchanged →
 confirm it does **not** reappear. Revert the temporary version edit afterward.
 
-Confirm the toolbar/panel icons (Fit, Wireframe, Tree, FE Mesh, Select,
+Confirm the toolbar/panel icons (Fit, the Display group's Wire icon, Tree, FE Mesh, Select,
 Point/Vol/Surf/Line, the File menu's Open/Save/Save As/Export, the FE Mesh panel's
 Generate/Export, tree-close, Parts delete/remove, and the large-mesh warning) render
 crisply and legibly at their
@@ -1392,10 +2368,23 @@ names, that geometries-mode ids form one continuous space across kinds, and (wit
 parts assigned) per-part `SubModelPart` blocks still appear with non-empty membership.
 Set **Dimension** to 2D with shape "Quads / Hexahedra" → confirm an all-quad 2D overlay
 and a `Quadrilateral3D4`/`SurfaceCondition3D4N` MDPA. Repeat one subdivided generate on
-`cube.stl` (reclassified STL path — hexes still generate). Note: only "Triangles /
-Tetrahedra" and "Quads / Hexahedra" are offered — hex-dominant mixed meshing is
-unavailable in this WASM build (see `doc/gmsh-integration.md`'s Known limitations).
-Regenerate across shapes/orders repeatedly → host memory stays flat (same leak check).
+`cube.stl` (reclassified STL path — hexes still generate). Regenerate across shapes/
+orders repeatedly → host memory stays flat (same leak check).
+
+Then exercise **Hex-Dominant meshing**: on `bull.stp` with Dimension set to 3D,
+set **Element shape** to "Hex-Dominant (3D)" and **▶ Generate** → confirm a mixed
+tet/hex overlay renders (a visibly different mix from pure "Triangles /
+Tetrahedra") with no crash and a populated quality summary. Switch **Dimension**
+to 2D → confirm the "Hex-Dominant (3D)" option becomes disabled/unselectable in
+the `<select>` (it silently degrades to plain simplex behavior if somehow still
+selected — never invalid, just meaningless outside 3D). Back on 3D Hex-Dominant,
+try exporting to **Kratos MDPA** (either mode) → confirm a clear, specific error
+naming the unsupported tet/hex transition connector (not a generic "unsupported
+type" message, and not a crash or silently-wrong file) — then export to **Gmsh
+Mesh (.msh)** or **VTK** instead → confirm those succeed normally (Gmsh's own
+writers handle the mesh natively; only our hand-written MDPA path is affected).
+Regenerate/export-fail repeatedly + open/close the tab → host memory stays flat
+(same leak check as above).
 
 Then exercise **parts-preserving meshing**: on `angle1.stp` (or another multi-face
 STEP), create 2+ parts covering different faces/solids and set one part's **mesh
@@ -1431,10 +2420,181 @@ unaffected; set two parts' mesh sizes → confirm it silently falls back to the 
 own global size (ambiguous, ignored). Apply/regenerate repeatedly + open/close the
 tab → watch extension-host memory stay flat (same leak check as above).
 
+Then exercise **Settings, Screenshot, Mass Properties, and Measurement**: in VS
+Code Settings UI, search "CAD Preview" → confirm all 4 `cadPreview.*` settings
+appear; set `background`/`showGridAndAxesOnOpen`/`upAxis` and open a fresh file
+→ confirm the new view reflects them (a per-document `.mesh.json` size still
+wins over `defaultMeshSizePreset`). Click the toolbar **📷 Screenshot** button
+and run **CAD Preview: Screenshot to PNG…** → both prompt a save dialog; rotate
++ toggle Wireframe before saving to confirm the PNG reflects the current view,
+not a stale/default frame. On `bull.stp`, open the **Mass Properties** panel,
+click **Compute** with nothing selected (whole model), then with exactly one
+solid/face/edge selected, then with 2+ selected (guidance message, no request
+sent) → confirm plausible, differing numbers each time; confirm `cube.stl`
+computes with **zero** `massPropertiesRequest` postMessages (DevTools). Click
+**📏 Measure**, try each of Distance/Edge Length/Angle/Radius → confirm a
+line+label overlay appears that stays legible while zooming, Clear/tool-switch
+reset in-progress picks, and toggling Measure never leaves stray entries in the
+Parts `SelectionSet`. Repeat all of the above open/close a few times → watch
+extension-host memory stay flat (same leak check as above).
+
+Then exercise the **P2 visualization/UX features**: drag `bull.stp`/`cube.stl`
+from the OS file explorer onto the 3D view → confirm it opens the same as
+File▸Open (if the drop doesn't expose a path in this environment, confirm it
+falls back to the Open dialog instead of doing nothing). On `bull.stp` with
+2+ parts assigned, click each part's eye-toggle → confirm only that part's
+entities hide; click **⊙ Isolate** on a selected part → confirm only its
+entities show; clear isolation → confirm independently-hidden parts stay
+hidden (composition, not clobbering); confirm nothing is written to
+`bull.stp.parts.json` throughout. Type into the Components tree's filter
+field → confirm non-matching rows hide while matches and their ancestors stay
+visible, and each row's eye-toggle independently hides/shows that
+solid/mesh's entities including edges/points. In the Edits panel, open
+**Explode** and drag its slider → confirm the bodies spread live with no lag
+and no sidecar write, return to 0 → exact original layout, then **Apply** →
+confirm the op commits once (not a compounded double-spread) and Undo
+reverts cleanly; drag the slider then switch to a different op form without
+Apply → confirm the preview resets, not left stacked on the model. Toggle the
+toolbar **Edges** button → confirm only edge lines hide/show, faces
+unaffected. In the view-controls panel's new **Appearance** group, change the
+background swatch → confirm it updates live and reverts to the
+`cadPreview.background` setting's value on reload; drag the opacity slider →
+confirm the whole model fades, then select/isolate a part at partial opacity
+→ confirm dimming and the opacity baseline compose sensibly rather than one
+overriding the other. Click **Persp/Ortho** → confirm no camera jump, orbit/
+pan/zoom/picking/the orientation cube all keep working, resizing the window
+behaves correctly under both projections, and toggling back returns cleanly.
+In the new **Clip** group, enable each axis and drag the offset slider →
+confirm the model cuts away live (see-through at the cut face — expected,
+v1 is uncapped), the FE Mesh overlay (if shown) respects the same plane, and
+turning Clip off instantly restores the full model with no sidecar write. On
+the FE Mesh panel, **Generate** → confirm a quality summary (min/mean +
+histogram) appears below the node/element counts, updates on regenerate at a
+different size, and degrades gracefully (no summary, no crash) if the
+underlying WASM call ever returns an empty/mismatched result. Repeat
+open/close and toggle-heavy interaction a few times across all of the above →
+watch extension-host memory stay flat (same leak check as above).
+
+Then exercise **Display modes**: on `bull.stp`, click through each button in
+the view-controls **Display** group. **Shaded** → normal lit faces (the
+default). **Wire** → faces render as a line mesh, same as the old Wireframe
+toolbar toggle used to. **X-Ray** → faces turn translucent and edges remain
+visible through them; select/isolate a part while in X-Ray → confirm dimming
+and the X-Ray translucency compose (neither overrides the other). **Hidden**
+→ confirm edges normally hidden behind solid faces now show faintly through
+them, while genuinely visible edges stay full-strength/crisp; enable a Clip
+plane at the same time → confirm the ghost lines are clipped away past the
+plane too, not left floating beyond it. **Flat** → faces go unlit/flat-shaded
+with no lighting gradient; recolour a part (Parts panel) and select an
+entity (Edits/Parts) while in Flat → confirm both the colour change and the
+selection highlight still show correctly (a direct colour swap, since Flat's
+material has no emissive channel to use); switch back to **Shaded** →
+confirm the recolour/selection are still correct on the original material
+too (nothing was lost across the mode switch). Apply an edit that rebuilds
+the model (e.g. any primitive) while in a non-Shaded mode → confirm the
+rebuilt model keeps the same display mode. Switch modes repeatedly + open/
+close the tab a few times → watch extension-host/webview memory stay flat
+(same leak-check discipline as every other feature above — this is JS/WebGL
+material disposal, not an OCCT WASM handle, but the same "no leftover
+objects from a discarded mode" principle applies).
+
+Then exercise the **Markup annotation overlay**: click **✎ Markup** →
+confirm orbiting/panning/picking stop working on the view (the overlay now
+captures pointer input) while the toolbar's other buttons/panels remain
+usable. Try each tool — **Freehand** (draw a squiggle), **Line**, **Arrow**
+(confirm an arrowhead renders at the end point, not the start), **Rectangle**,
+**Circle** — confirm each previews live while dragging and commits on
+release. **Undo** repeatedly → strokes disappear most-recent-first; **Redo**
+→ they come back in the same order; drawing a new stroke after an Undo →
+confirm Redo is no longer available (the redo stack was cleared). Switch the
+colour swatch mid-session → confirm only NEW strokes use the new colour,
+already-drawn ones keep their original colour. Select **Eraser** and click
+on an existing stroke → confirm it's removed immediately, and that **Undo**
+does NOT bring it back (erasing is intentionally outside the undo/redo
+history). **Clear** → confirm every stroke is gone. Toggle **✎ Markup** off
+→ confirm orbiting/panning/picking work normally again and the drawn
+annotations remain visible on screen (toggling off only releases pointer
+capture, it doesn't hide anything). Draw a few strokes, then click
+**📷 Screenshot** → confirm the saved PNG includes the annotations baked in,
+matching what's on screen. Resize the editor pane while markup mode is
+active/inactive → confirm the overlay canvas resizes to match and existing
+strokes remain in the correct screen position (not stretched/misaligned).
+Load a different model (or reload the tab) → confirm annotations are
+cleared (session-only, never persisted — nothing is written to any
+sidecar). Repeat draw/undo/redo/erase/screenshot a few times + open/close
+the tab → watch webview memory stay flat (same leak-check discipline as
+above).
+
+Then exercise **Units handling**: open `examples/STP/bull.stp` (declares
+`INCH`) → confirm the view-controls **Units** dropdown auto-selects **in**;
+open `examples/STP/angle1.stp` (declares `MILLIMETRE`) → confirm it
+auto-selects **mm**; open `examples/STL/cube.stl` → confirm it resets to
+**mm** (mesh sources have no unit metadata). On `bull.stp`, **Compute** Mass
+Properties, then switch the Units dropdown through mm/cm/m/in/ft → confirm
+Volume/Area/Length/Center of mass rescale correctly and their labels show the
+right unit + exponent (e.g. `Volume (in³)`), **Ixx/Iyy/Izz stay raw and
+unlabeled** throughout. Take a **Distance**/**Edge Length**/**Radius**
+measurement, switch units → confirm the *next* measurement reflects the new
+unit (already-shown results are not retroactively rescaled); confirm
+**Angle** always reads in degrees regardless of the unit setting. Expand the
+FE Mesh panel's size slider readout → confirm it always shows **mm**, never
+following the Units dropdown. Confirm the selector resets to the
+freshly-detected/default unit on every new file open and that nothing is
+written to any sidecar throughout.
+
+Then exercise **Compare Models**: with `bull.stp` open and focused, run **CAD
+Preview: Compare Models…** → confirm it skips straight to prompting only for
+model B (A defaults to the focused tab); pick `bull.stp` itself again as B →
+confirm the results tab reports every solid **Matched** with ~0 centre
+displacement and ~0 volume delta, 0 Added, 0 Removed. Apply an edit (e.g.
+**Box** primitive) to a copy of `bull.stp`, export it, then compare the
+original against the export → confirm the added box shows up under **Added**
+(or **Removed**, depending on which side you pick as A) and the untouched
+bull solid still shows as an exact match. Try comparing `bull.stp` against
+`cube.stl` → confirm a clear rejection message, not a crash. Run with no
+CAD Preview tab focused → confirm it prompts for both A and B.
+
+Then exercise **meshio++ import/export**: open a VTK, MED, CGNS, Exodus (`.exo`
+or `.e`), XDMF, and Kratos MDPA file (generate small fixtures if none exist
+under `examples/` — e.g. export `bull.stp`'s FE mesh to each format first,
+per the FE Meshing steps above, then reopen the result) → confirm each opens
+as a triangulated boundary surface, behaves exactly like an STL open (facet
+splitting, **Select** in Vol/Surf mode, assign a **Part**, apply a mesh-legal
+**Edit** op, **Export** to STL/OBJ/PLY/glTF, compute **Mass Properties**,
+take a **Measurement**) — and that Line/Point pick modes and B-rep-only
+Edit ops stay disabled, same as any other mesh source. Confirm the
+Components tree root shows the true source format (e.g. "VTK", not "STL").
+Try opening a deliberately malformed file with one of these extensions →
+confirm a clear load error, not a crash. On the FE Mesh panel (any source),
+pick **MED**, **CGNS**, and **XDMF** in the export format dropdown and
+**📤 Export** each → confirm they save and are non-empty; for XDMF, confirm
+a companion `.h5` file is written beside it and the `.xdmf` text references
+the companion by its actual saved name (not a stale internal name). Repeat
+open/close and generate/export a few times → watch extension-host memory
+stay flat (same leak check as above — the meshio WASM singleton is reused
+across calls, same discipline as OCCT/Gmsh).
+
 Then exercise the **MCP server**: `npm run mcp:smoke` must pass (it drives the real
 `dist/mcp-server.js` over stdio against a temp copy of `bull.stp`: load → an
-`addBox` edit → Gmsh generate → export `.msh` + `.geo_unrolled`/`.xao` + `.brep`,
-asserting the CAD source stays byte-identical and stdout stays pure JSON-RPC).
+`addBox` edit → a `compare_models` diff against a fresh unedited copy of the
+same fixture (asserting the edited/original direction resolves to exactly 1
+matched + 1 removed, not swapped) → Gmsh generate → export `.msh` +
+`.geo_unrolled`/`.xao` + `.brep` → a hand-built `.vtk` tetrahedron loaded
+through the meshio++ bridge (confirming `load_model` reports it as headlessly
+meshable, unlike `.obj`/`.ply`/`.gltf`), meshed, and exported to MED, CGNS
+(3D), and XDMF (confirming the `.h5` companion + rewritten reference) →
+a hex-dominant generate (msh export succeeds, Kratos MDPA export rejects
+with a specific error naming the unmapped tet/hex connector type) →
+`search_standard_parts`/`download_standard_part` against the real
+step.parts API (tolerates the API being unreachable in this environment —
+that's a real, expected `supported:false` outcome, not a bug — but when
+reachable, verifies a genuine sha256 checksum match) → `run_parametric_script`
+compiling a real bolt-circle (4 cylinders via a `repeat` loop + trig `exprs`
+over the loop index, confirming the first lands at the expected `(R, 0)`
+position and that every compiled op's `exprs` annotation was stripped) →
+`save_preprocess` → `load_preprocess` — asserting the CAD source stays
+byte-identical and stdout stays pure JSON-RPC throughout (now across all
+three bundled WASM modules, plus one external network call).
 For the sidecar round-trip through the real extension: register the server with an
 MCP client (`claude mcp add cad-preview -- node $PWD/dist/mcp-server.js`), have the
 agent `apply_edit_ops` on a copy of `bull.stp`, then open that file in the F5

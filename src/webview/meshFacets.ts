@@ -149,6 +149,9 @@ export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string): THREE.O
     g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     g.computeVertexNormals();
     const m = new THREE.Mesh(g, makeFaceMaterial());
+    // Same stash `geometryBuilder.ts`'s `buildFaceMesh()` does — required by
+    // `Viewer.setDisplayMode()`'s Flat mode material swap.
+    m.userData.standardMaterial = m.material;
     m.userData.groupId = volumeId;
     m.userData.entityType = "surface";
     m.userData.entityId = `${volumeId}/face-${fIdx}`;

@@ -1,4 +1,5 @@
 import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions } from "../meshOptions";
+import type { QualitySummary } from "../meshQuality";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import type { Part } from "../protocol";
@@ -24,6 +25,9 @@ export interface MeshingStats {
   nodeCount: number;
   elementCount: number;
   elapsedMs?: number;
+  /** Per-element quality summary (min/mean/histogram) — omitted if it
+   * couldn't be computed for this generate (e.g. a 1D mesh). */
+  quality?: QualitySummary;
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -75,6 +79,7 @@ const ALGORITHM_3D: Array<[number, string]> = [
 export class MeshingPanel {
   private readonly body: HTMLElement;
   private readonly statusEl: HTMLElement;
+  private readonly qualityEl: HTMLElement;
   private readonly progressEl: HTMLElement;
   private readonly generateBtn: HTMLButtonElement;
   private readonly exportFormatSelect: HTMLSelectElement;
@@ -108,6 +113,7 @@ export class MeshingPanel {
   ) {
     this.body = panel.querySelector("#meshing-body")!;
     this.statusEl = panel.querySelector("#meshing-status")!;
+    this.qualityEl = panel.querySelector("#meshing-quality")!;
     this.progressEl = panel.querySelector("#meshing-progress")!;
     this.generateBtn = panel.querySelector("#meshing-generate")!;
     this.exportFormatSelect = panel.querySelector("#meshing-export-format")!;
@@ -273,9 +279,11 @@ export class MeshingPanel {
     this.elementShapeSelect = this.select(form, "Element shape", [
       ["simplex", "Triangles / Tetrahedra"],
       ["subdivided", "Quads / Hexahedra"],
+      ["hexDominant", "Hex-Dominant (3D)"],
     ]);
     this.elementShapeSelect.title =
-      "Quads/Hexahedra recombines the mesh into quadrilaterals (2D) or hexahedra (3D).";
+      "Quads/Hexahedra recombines the mesh into quadrilaterals (2D) or hexahedra (3D). " +
+      "Hex-Dominant (3D only) is a mixed tet/hex mesh via GMSH's RTree recombiner — not exportable to Kratos MDPA.";
     this.elementShapeSelect.addEventListener("change", () => {
       cb.onOptionsChange({ elementShape: this.elementShapeSelect.value as MeshOptions["elementShape"] });
     });
@@ -337,6 +345,11 @@ export class MeshingPanel {
     this.setSelectValue(this.algorithm2DSelect, options.algorithm2D);
     this.setSelectValue(this.algorithm3DSelect, options.algorithm3D);
     this.elementOrderSelect.value = String(options.elementOrder);
+    // Hex-Dominant is 3D-only (gmshShapeOptions degrades it to plain simplex
+    // options outside 3D — never invalid, just meaningless — so disabling the
+    // option is a UX nicety, not a correctness requirement).
+    const hexDominantOpt = this.elementShapeSelect.querySelector<HTMLOptionElement>('option[value="hexDominant"]');
+    if (hexDominantOpt) hexDominantOpt.disabled = options.dimension !== 3;
     this.elementShapeSelect.value = options.elementShape;
     this.optimizeCheckbox.checked = options.optimize;
     this.stlAngleInput.value = String(options.stlAngle);
@@ -346,13 +359,43 @@ export class MeshingPanel {
     this.statusEl.classList.remove("meshing-status-error");
     if (!status) {
       this.statusEl.textContent = "";
+      this.renderQuality(undefined);
     } else if ("error" in status) {
       this.statusEl.textContent = status.error;
       this.statusEl.classList.add("meshing-status-error");
+      this.renderQuality(undefined);
     } else {
       const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
       this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}`;
+      this.renderQuality(status.quality);
     }
+  }
+
+  /** Renders the per-element quality summary as a min/mean line plus a
+   * compact text histogram — cleared (no row) when `quality` is `undefined`
+   * (nothing generated yet, an error, or a mesh dimension quality couldn't be
+   * computed for). Uses `textContent`, not `innerHTML`, for the same
+   * defensive-against-injection reason every other panel readout does. */
+  private renderQuality(quality: QualitySummary | undefined): void {
+    this.qualityEl.innerHTML = "";
+    if (!quality) return;
+    const summary = document.createElement("div");
+    summary.className = "meshing-quality-summary";
+    summary.textContent = `Quality (minSICN) — min: ${quality.min.toFixed(3)} · mean: ${quality.mean.toFixed(3)}`;
+    this.qualityEl.appendChild(summary);
+
+    const total = quality.histogram.reduce((a, b) => a + b, 0);
+    const bars = document.createElement("div");
+    bars.className = "meshing-quality-histogram";
+    quality.histogram.forEach((count, i) => {
+      const bar = document.createElement("div");
+      bar.className = "meshing-quality-bar";
+      const pct = total > 0 ? (count / total) * 100 : 0;
+      bar.style.height = `${Math.max(2, pct)}%`;
+      bar.title = `[${(i / quality.histogram.length).toFixed(1)}, ${((i + 1) / quality.histogram.length).toFixed(1)}): ${count} element${count === 1 ? "" : "s"}`;
+      bars.appendChild(bar);
+    });
+    this.qualityEl.appendChild(bars);
   }
 
   /**
@@ -464,14 +507,18 @@ export class MeshingPanel {
       return;
     }
     if (!this.extents) {
-      this.sliderReadout.textContent = `Size: ${formatSize(size)}`;
+      // Always millimetres — Gmsh's internal cascade unit, regardless of the
+      // view-controls Appearance group's display-unit selector (a display-only
+      // rescale of Mass Properties/Measurement; mesh-size options are never
+      // rescaled, see `src/webview/units.ts`'s doc comment).
+      this.sliderReadout.textContent = `Size: ${formatSize(size)} mm`;
       this.warningEl.hidden = true;
       return;
     }
     const dimension = this.lastOptions?.dimension ?? 3;
     const shape = this.lastOptions?.elementShape ?? "simplex";
     const estimate = estimateElementCount(this.extents.size, size, dimension, shape);
-    this.sliderReadout.textContent = `Size: ${formatSize(size)} · ${formatCount(estimate)} elements`;
+    this.sliderReadout.textContent = `Size: ${formatSize(size)} mm · ${formatCount(estimate)} elements`;
     if (estimate > LARGE_ELEMENT_COUNT) {
       this.warningEl.innerHTML = `<span class="toolbar-icon">${TOOLBAR_ICONS.warning}</span> Estimated ${formatCount(estimate)} elements — generation may be slow or run out of memory.`;
       this.warningEl.hidden = false;

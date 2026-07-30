@@ -48,7 +48,7 @@ describe("validateMeshOptions", () => {
       algorithm2D: "x", // invalid -> default
       algorithm3D: null, // invalid -> default
       elementOrder: 3, // invalid -> default
-      elementShape: "hexDominant", // invalid (excluded) -> default
+      elementShape: "octahedral", // invalid (not a real shape) -> default
       optimize: "yes", // invalid -> default
       stlAngle: 400, // invalid -> default
     });
@@ -70,11 +70,11 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ elementOrder: 0 })?.elementOrder).toBe(DEFAULT_MESH_OPTIONS.elementOrder);
   });
 
-  it("defaults elementShape unless it is exactly 'simplex' or 'subdivided'", () => {
+  it("defaults elementShape unless it is exactly 'simplex', 'subdivided', or 'hexDominant'", () => {
     expect(validateMeshOptions({ elementShape: "simplex" })?.elementShape).toBe("simplex");
     expect(validateMeshOptions({ elementShape: "subdivided" })?.elementShape).toBe("subdivided");
-    // hexDominant is intentionally excluded (broken in the WASM build) -> default
-    expect(validateMeshOptions({ elementShape: "hexDominant" })?.elementShape).toBe(DEFAULT_MESH_OPTIONS.elementShape);
+    expect(validateMeshOptions({ elementShape: "hexDominant" })?.elementShape).toBe("hexDominant");
+    expect(validateMeshOptions({ elementShape: "octahedral" })?.elementShape).toBe(DEFAULT_MESH_OPTIONS.elementShape);
     expect(validateMeshOptions({ elementShape: 2 })?.elementShape).toBe(DEFAULT_MESH_OPTIONS.elementShape);
   });
 
@@ -135,19 +135,30 @@ describe("applyStlPartSizeOverride", () => {
 });
 
 describe("gmshShapeOptions", () => {
+  const plain = { recombineAll: 0, subdivisionAlgorithm: 0, recombine3DAll: 0, algorithm3DOverride: null };
+
   it("simplex never recombines or subdivides, any dimension", () => {
     for (const d of [1, 2, 3] as const) {
-      expect(gmshShapeOptions("simplex", d)).toEqual({ recombineAll: 0, subdivisionAlgorithm: 0 });
+      expect(gmshShapeOptions("simplex", d)).toEqual(plain);
     }
   });
 
   it("subdivided uses Blossom recombination in 2D and hex subdivision in 3D", () => {
-    expect(gmshShapeOptions("subdivided", 2)).toEqual({ recombineAll: 1, subdivisionAlgorithm: 0 });
-    expect(gmshShapeOptions("subdivided", 3)).toEqual({ recombineAll: 0, subdivisionAlgorithm: 2 });
+    expect(gmshShapeOptions("subdivided", 2)).toEqual({ ...plain, recombineAll: 1 });
+    expect(gmshShapeOptions("subdivided", 3)).toEqual({ ...plain, subdivisionAlgorithm: 2 });
   });
 
   it("subdivided in 1D degrades to plain simplex options", () => {
-    expect(gmshShapeOptions("subdivided", 1)).toEqual({ recombineAll: 0, subdivisionAlgorithm: 0 });
+    expect(gmshShapeOptions("subdivided", 1)).toEqual(plain);
+  });
+
+  it("hexDominant in 3D sets the RTree recombiner and overrides algorithm3D to 9", () => {
+    expect(gmshShapeOptions("hexDominant", 3)).toEqual({ ...plain, recombine3DAll: 1, algorithm3DOverride: 9 });
+  });
+
+  it("hexDominant outside 3D degrades to plain simplex options", () => {
+    expect(gmshShapeOptions("hexDominant", 1)).toEqual(plain);
+    expect(gmshShapeOptions("hexDominant", 2)).toEqual(plain);
   });
 });
 
@@ -162,7 +173,7 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       sizeMin: 0,
       sizeMax: 1e22,
       algorithm2D: 6,
-      algorithm3D: 4,
+      algorithm3D: 1,
       elementOrder: 1,
       elementShape: "simplex",
       optimize: true,

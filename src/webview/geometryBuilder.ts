@@ -68,6 +68,12 @@ function buildFaceMesh(em: EncodedMesh): THREE.Mesh {
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   geometry.computeVertexNormals();
   const mesh = new THREE.Mesh(geometry, makeFaceMaterial());
+  // Stashed so `Viewer.setDisplayMode()`'s Flat mode (a genuine material-class
+  // swap to an unlit `MeshBasicMaterial`, cached lazily in `userData.flatMaterial`
+  // on first use) always has a reliable reference back to the original shaded
+  // material to swap back to — `mesh.material` itself may already BE the flat
+  // material by the time a later mode switch runs.
+  mesh.userData.standardMaterial = mesh.material;
   // `groupId` keeps the existing per-solid `highlightGroup` working; the entity
   // fields drive picking and per-part colouring.
   mesh.userData.groupId = em.groupId;

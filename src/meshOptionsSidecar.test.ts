@@ -99,6 +99,28 @@ describe("generateGeoScript", () => {
     expect(script).toContain("Mesh.SubdivisionAlgorithm = 2;");
   });
 
+  it("emits the RTree recombiner and overrides Algorithm3D to 9 for a hex-dominant mesh", () => {
+    const script = generateGeoScript("bull.stp", {
+      ...DEFAULT_MESH_OPTIONS,
+      dimension: 3,
+      elementShape: "hexDominant",
+      algorithm3D: 1,
+    });
+    expect(script).toContain("Mesh.Algorithm3D = 9;");
+    expect(script).toContain("Mesh.Recombine3DAll = 1;");
+  });
+
+  it("hexDominant outside 3D degrades to a plain simplex mesh, algorithm3D unchanged", () => {
+    const script = generateGeoScript("bull.stp", {
+      ...DEFAULT_MESH_OPTIONS,
+      dimension: 2,
+      elementShape: "hexDominant",
+      algorithm3D: 1,
+    });
+    expect(script).toContain("Mesh.Algorithm3D = 1;");
+    expect(script).toContain("Mesh.Recombine3DAll = 0;");
+  });
+
   it("encodes optimize=false as 0", () => {
     const options: MeshOptions = { ...DEFAULT_MESH_OPTIONS, optimize: false };
     const script = generateGeoScript("cube.stl", options);

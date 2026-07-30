@@ -35,6 +35,7 @@ import * as path from "path";
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
 import { gmshShapeOptions, type MeshOptions } from "./meshOptions";
+import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
 import { meshExportFormat, type MeshExportFormatId } from "./meshExportFormats";
@@ -143,6 +144,12 @@ export interface MeshResult {
   nodeCount: number;
   elementCount: number;
   mshText: string;
+  /** Per-element quality summary (min/mean/histogram) over the mesh's
+   * top-dimension elements (tets/hexes for a 3D generate, tris/quads for 2D) —
+   * `undefined` if quality couldn't be computed (e.g. a 1D mesh, or the one
+   * anomalous-empty-result case observed while verifying `getElementQualities`
+   * against the live WASM; see `computeMeshQuality`'s doc comment). */
+  quality?: QualitySummary;
 }
 
 /**
@@ -194,15 +201,19 @@ async function loadGeometryAndApplyOptions(
   gmsh.option.setNumber("Mesh.MeshSizeMin", options.sizeMin);
   gmsh.option.setNumber("Mesh.MeshSizeMax", options.sizeMax);
   gmsh.option.setNumber("Mesh.Algorithm", options.algorithm2D);
-  gmsh.option.setNumber("Mesh.Algorithm3D", options.algorithm3D);
-  gmsh.option.setNumber("Mesh.ElementOrder", options.elementOrder);
-  // Element geometry (simplex vs. quad/hex subdivision). Both option values are
-  // set every time — the gmsh singleton persists options across `clear()`, so a
-  // prior run's shape must be overwritten, not left implicit. See
-  // `gmshShapeOptions` for the dimension-dependent, WASM-verified recipe.
+  // Element geometry (simplex vs. quad/hex subdivision vs. hex-dominant RTree).
+  // All option values are set every time — the gmsh singleton persists options
+  // across `clear()`, so a prior run's shape must be overwritten, not left
+  // implicit. See `gmshShapeOptions` for the dimension-dependent, WASM-verified
+  // recipe. `algorithm3DOverride` (hex-dominant's RTree, id 9) wins over the
+  // user's own `algorithm3D` selection when set — RTree is a requirement of
+  // that mode, not a suggestion.
   const shape = gmshShapeOptions(options.elementShape, options.dimension);
+  gmsh.option.setNumber("Mesh.Algorithm3D", shape.algorithm3DOverride ?? options.algorithm3D);
+  gmsh.option.setNumber("Mesh.ElementOrder", options.elementOrder);
   gmsh.option.setNumber("Mesh.RecombineAll", shape.recombineAll);
   gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", shape.subdivisionAlgorithm);
+  gmsh.option.setNumber("Mesh.Recombine3DAll", shape.recombine3DAll);
   gmsh.option.setNumber("Mesh.Optimize", options.optimize ? 1 : 0);
   // Gmsh's default (0) writes only elements belonging to a physical group once
   // ANY physical group exists in the model — i.e. the instant one part has a
@@ -256,6 +267,7 @@ export async function generateMesh(
       nodeCount: nodes.nodeTags.length,
       elementCount: countElements(gmsh, options.dimension),
       mshText,
+      quality: computeMeshQuality(gmsh, options.dimension),
     };
   } finally {
     if (tmpPath) {
@@ -495,6 +507,21 @@ function collectCells(gmsh: GmshApi, dim: 2 | 3, out: MdpaCell[], ownerTags: num
       const type = els.elementTypes[t];
       const info = GMSH_ELEMENT_TYPES.get(type);
       if (!info || info.dim !== dim) {
+        // Type 140 ("trihedron") is the tet/hex transition connector a
+        // hexDominant (RTree) mesh always contains alongside plain tets/hexes
+        // — its node geometry can't be verified against this WASM build
+        // (`getElementProperties(140)` throws), so it has no `MdpaCellKind`
+        // at all and can never be represented in Kratos MDPA output. Give
+        // this specific, expected case an actionable message instead of the
+        // generic "unsupported type" one below.
+        if (type === 140) {
+          throw new Error(
+            "Kratos MDPA export does not support hex-dominant meshes: gmsh element type 140 " +
+              "(the tet/hex transition connector RTree recombination always produces) has no " +
+              "Kratos geometry equivalent. Export a different format (e.g. .msh or .vtk), or " +
+              "regenerate with a non-hex-dominant element shape."
+          );
+        }
         throw new Error(
           `Kratos MDPA export: unsupported ${dim}D gmsh element type (${type}) in entity ${tag}. ` +
             "Adjust the mesh options and try again."
@@ -749,4 +776,43 @@ function countElements(gmsh: GmshApi, dimension: MeshOptions["dimension"]): numb
   let total = 0;
   for (const tags of els.elementTags) total += tags.length;
   return total;
+}
+
+/**
+ * Per-element quality summary over the mesh's top-dimension elements, via
+ * Gmsh's own `getElementQualities` — no host-side geometry math needed.
+ *
+ * **Verified against the live WASM** (brute-force probing, the usual
+ * convention — see CLAUDE.md): `gmsh.model.mesh.getElements(dim, -1)` (dim,
+ * ALL entities) returns a plain OBJECT `{elementTypes, elementTags,
+ * nodeTags}` — NOT the tuple/array shape some Gmsh JS API docs imply —
+ * where `elementTags` is one array PER element type, so callers must flatten
+ * across types (same pattern `countElements` above already uses).
+ * `gmsh.model.mesh.getElementQualities(tags: number[], qualityType: string)`
+ * accepts a plain JS number array (also confirmed accepting a typed array,
+ * but a plain array is simplest) and returns `{elementsQuality: number[]}`,
+ * one value per input tag IN THE SAME ORDER — confirmed with `"minSICN"`
+ * (Signed Inverse Condition Number, ~[-1, 1], 1 = perfect, <= 0 = degenerate/
+ * inverted) on a synthetic box mesh; `"minSJ"`/`"gamma"`/`"minSIGE"`/
+ * `"volume"` are also accepted quality-type strings, an invalid string
+ * throws `"Unknown quality name '...'"`. One anomalous run during
+ * verification returned an EMPTY `elementsQuality` array for a full-size,
+ * otherwise-valid call (never reproduced across 5+ follow-up runs with
+ * identical inputs) — defensively treated as "quality unavailable" (`return
+ * undefined`) rather than trusted blindly, matching this codebase's
+ * graceful-skip convention for every other WASM-call edge case.
+ */
+function computeMeshQuality(gmsh: GmshApi, dimension: MeshOptions["dimension"]): QualitySummary | undefined {
+  const dim = dimension === 1 ? 1 : dimension;
+  try {
+    const els = gmsh.model.mesh.getElements(dim, -1) as { elementTags: number[][] };
+    const tags: number[] = ([] as number[]).concat(...els.elementTags);
+    if (tags.length === 0) return undefined;
+    const result = gmsh.model.mesh.getElementQualities(tags, "minSICN") as { elementsQuality: number[] };
+    const values = result.elementsQuality;
+    if (!Array.isArray(values) || values.length !== tags.length) return undefined;
+    return summarizeQuality(values);
+  } catch {
+    return undefined;
+  }
 }

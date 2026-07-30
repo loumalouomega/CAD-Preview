@@ -7,12 +7,20 @@ import {
   allOpKinds,
   OP_PARAM_DOCS,
   loadModel,
+  getMassProperties,
+  compareModelsTool,
   getState,
   applyEditOps,
+  runParametricScriptTool,
   removeEditOp,
   setVariables,
   setPart,
   setMeshOptions,
+  inspectEntity,
+  measureTool,
+  renderSnapshotTool,
+  searchStandardPartsTool,
+  downloadStandardPartTool,
   generateMeshTool,
   exportMeshTool,
   exportBRepTool,
@@ -28,9 +36,15 @@ import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
+import type { MassProperties } from "./massProperties";
+import type { EntityFacts, MeasureResult } from "./entityFacts";
+import type { RenderResult } from "./renderService";
+import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
+import type { ModelDiff } from "./modelDiff";
 
 let dir: string;
 let stpModel: string;
+let stpModel2: string;
 let stlModel: string;
 let objModel: string;
 
@@ -61,6 +75,87 @@ const FAKE_MESH_RESULT: MeshResult = {
   mshText: "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n",
 };
 
+const FAKE_MASS_PROPERTIES: MassProperties = {
+  volume: 24,
+  area: 52,
+  length: null,
+  centerOfMass: [1, 1.5, 2],
+  momentsOfInertia: { ixx: 50, iyy: 40, izz: 26, ixy: 0, ixz: 0, iyz: 0 },
+};
+
+const FAKE_ENTITY_FACTS: EntityFacts = {
+  entityId: "solid-0",
+  kind: "solid",
+  bbox: { min: [0, 0, 0], max: [1, 1, 5], diagonal: Math.hypot(1, 1, 5) },
+  center: [0.5, 0.5, 2.5],
+  area: 52,
+  length: null,
+  normal: null,
+  surfaceType: null,
+};
+
+const FAKE_MEASURE_RESULT: MeasureResult = {
+  from: "solid-0",
+  to: "solid-1",
+  fromPoint: [0, 0, 0],
+  toPoint: [3, 4, 0],
+  distance: 5,
+  delta: [3, 4, 0],
+};
+
+const FAKE_RENDER_RESULT: RenderResult = {
+  supported: true,
+  images: [
+    { label: "ISO-A", mimeType: "image/png", dataBase64: "aXNvLWE=" },
+    { label: "ISO-B", mimeType: "image/png", dataBase64: "aXNvLWI=" },
+    { label: "TOP", mimeType: "image/png", dataBase64: "dG9w" },
+    { label: "FRONT", mimeType: "image/png", dataBase64: "ZnJvbnQ=" },
+  ],
+};
+
+const FAKE_PART_SEARCH_RESULT: PartSearchResult = {
+  items: [
+    {
+      id: "iso4017_hex_head_cap_screw_m6x25",
+      name: "ISO 4017 hex head cap screw, M6 x 25",
+      description: "ISO 4017, hex head cap screw, M6 x 25.",
+      category: "fastener",
+      tags: ["screw", "bolt"],
+      aliases: [],
+      attributes: { thread: "M6" },
+      stepUrl: "https://media.githubusercontent.com/media/example/part.step",
+      glbUrl: "https://example.com/part.glb",
+      pngUrl: "https://example.com/part.png",
+      byteSize: 1234,
+      sha256: null,
+      pageUrl: "https://www.step.parts/parts/iso4017_hex_head_cap_screw_m6x25",
+      apiUrl: "https://api.step.parts/v1/parts/iso4017_hex_head_cap_screw_m6x25",
+    },
+  ],
+  page: 1,
+  pageSize: 100,
+  total: 1,
+  totalPages: 1,
+  hasNextPage: false,
+  hasPreviousPage: false,
+  facets: { tags: [], categories: [], families: [], standards: [] },
+};
+
+const FAKE_DOWNLOADED_PART: DownloadedPart = {
+  id: "iso4017_hex_head_cap_screw_m6x25",
+  bytes: new TextEncoder().encode("ISO-10303-21;"),
+  sha256: "abc123",
+  verifiedChecksum: true,
+  stepUrl: "https://media.githubusercontent.com/media/example/part.step",
+  pageUrl: "https://www.step.parts/parts/iso4017_hex_head_cap_screw_m6x25",
+};
+
+const FAKE_MODEL_DIFF: ModelDiff = {
+  added: [],
+  removed: [],
+  matched: [{ a: { id: "solid-0", centre: [0, 0, 0], diagonal: 10, volume: 24 }, b: { id: "solid-0", centre: [0, 0, 0], diagonal: 10, volume: 24 }, centreDistance: 0, volumeDeltaPct: 0 }],
+};
+
 function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   return {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
@@ -69,6 +164,16 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportMeshFormat: vi.fn(async () => "vtk-content"),
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
     exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "/out.geo_unrolled.xao";\n', xao: new Uint8Array([9]) })),
+    computeMassProperties: vi.fn(async () => FAKE_MASS_PROPERTIES),
+    getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
+    measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
+    renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
+    isRenderAvailable: vi.fn(async () => ({ available: true })),
+    searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
+    downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
+    compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
+    convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
+    exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     ...overrides,
   } as Pipeline;
 }
@@ -80,9 +185,11 @@ function ctx(pipeline: Pipeline = fakePipeline()): ToolContext {
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-tools-"));
   stpModel = path.join(dir, "model.stp");
+  stpModel2 = path.join(dir, "model2.stp");
   stlModel = path.join(dir, "model.stl");
   objModel = path.join(dir, "model.obj");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
+  await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
   await fs.writeFile(objModel, "v 0 0 0\n", "utf8");
 });
@@ -151,6 +258,254 @@ describe("load_model", () => {
   it("rejects unsupported extensions", async () => {
     await expect(loadModel(ctx(), { path: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
   });
+
+  it("notes meshio++ sources ARE meshable headless, unlike obj/ply/gltf", async () => {
+    const c = ctx();
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const vtkResult = await loadModel(c, { path: vtkModel });
+    expect(vtkResult.warnings[0]).toMatch(/meshable via generate_mesh/i);
+
+    const objResult = await loadModel(c, { path: objModel });
+    expect(objResult.warnings[0]).not.toMatch(/meshable via generate_mesh/i);
+  });
+});
+
+describe("get_mass_properties", () => {
+  it("computes whole-model mass properties for a B-rep source", async () => {
+    const c = ctx();
+    const result = await getMassProperties(c, { path: stpModel });
+    expect(c.pipeline.computeMassProperties).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], null);
+    expect(result).toMatchObject({ supported: true, entityId: "whole-model", volume: 24, area: 52 });
+  });
+
+  it("passes a resolved entityId through to the pipeline", async () => {
+    const c = ctx();
+    const result = await getMassProperties(c, { path: stpModel, entityId: "solid-0" });
+    expect(c.pipeline.computeMassProperties).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], "solid-0");
+    expect(result.entityId).toBe("solid-0");
+  });
+
+  it("replays sidecar ops before computing", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    await getMassProperties(c, { path: stpModel });
+    const lastCall = vi.mocked(c.pipeline.computeMassProperties).mock.lastCall!;
+    expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await getMassProperties(c, { path: stlModel });
+    expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/client-side/i);
+  });
+
+  it("rejects unsupported extensions", async () => {
+    await expect(getMassProperties(ctx(), { path: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
+  });
+});
+
+describe("inspect", () => {
+  it("resolves entity facts for a B-rep source", async () => {
+    const c = ctx();
+    const result = await inspectEntity(c, { path: stpModel, entityId: "solid-0" });
+    expect(c.pipeline.getEntityFacts).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], "solid-0");
+    expect(result).toMatchObject({ supported: true, entityId: "solid-0", kind: "solid", area: 52 });
+  });
+
+  it("replays sidecar ops before resolving", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    await inspectEntity(c, { path: stpModel, entityId: "solid-0" });
+    const lastCall = vi.mocked(c.pipeline.getEntityFacts).mock.lastCall!;
+    expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await inspectEntity(c, { path: stlModel, entityId: "node-0" });
+    expect(c.pipeline.getEntityFacts).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/headless/i);
+  });
+});
+
+describe("measure", () => {
+  it("measures the distance between two entities for a B-rep source", async () => {
+    const c = ctx();
+    const result = await measureTool(c, { path: stpModel, from: "solid-0", to: "solid-1" });
+    expect(c.pipeline.measureEntities).toHaveBeenCalledWith(
+      dir,
+      expect.any(Uint8Array),
+      "step",
+      [],
+      "solid-0",
+      "solid-1",
+      undefined
+    );
+    expect(result).toMatchObject({ supported: true, distance: 5 });
+  });
+
+  it("passes an optional axis through to the pipeline", async () => {
+    const c = ctx();
+    await measureTool(c, { path: stpModel, from: "solid-0", to: "solid-1", axis: [1, 0, 0] });
+    const lastCall = vi.mocked(c.pipeline.measureEntities).mock.lastCall!;
+    expect(lastCall[6]).toEqual([1, 0, 0]);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await measureTool(c, { path: stlModel, from: "node-0", to: "node-1" });
+    expect(c.pipeline.measureEntities).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/headless/i);
+  });
+});
+
+describe("render_snapshot", () => {
+  it("returns the pipeline's images for a B-rep source when the renderer is available", async () => {
+    const c = ctx();
+    const result = await renderSnapshotTool(c, { path: stpModel });
+    expect(c.pipeline.isRenderAvailable).toHaveBeenCalled();
+    expect(c.pipeline.renderSnapshot).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], {
+      focus: undefined,
+      hide: undefined,
+      wireframe: undefined,
+    });
+    expect(result.supported).toBe(true);
+    expect(result.images).toHaveLength(4);
+  });
+
+  it("maps displayMode: wireframe to the pipeline's wireframe flag", async () => {
+    const c = ctx();
+    await renderSnapshotTool(c, { path: stpModel, displayMode: "wireframe" });
+    const lastCall = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall!;
+    expect(lastCall[4].wireframe).toBe(true);
+  });
+
+  it("returns supported: false without calling the pipeline when the renderer is unavailable", async () => {
+    const c = ctx(fakePipeline({ isRenderAvailable: vi.fn(async () => ({ available: false, reason: "no chromium" })) }));
+    const result = await renderSnapshotTool(c, { path: stpModel });
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result).toEqual({ supported: false, images: [], warnings: ["no chromium"] });
+  });
+
+  it("returns supported: false with a warning for mesh sources, without checking availability", async () => {
+    const c = ctx();
+    const result = await renderSnapshotTool(c, { path: stlModel });
+    expect(c.pipeline.isRenderAvailable).not.toHaveBeenCalled();
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/mesh-format/i);
+  });
+});
+
+describe("search_standard_parts", () => {
+  it("returns the pipeline's search result when the API is reachable", async () => {
+    const c = ctx();
+    const result = await searchStandardPartsTool(c, { q: "bolt" });
+    expect(c.pipeline.searchStandardParts).toHaveBeenCalledWith({ q: "bolt" });
+    expect(result.supported).toBe(true);
+    expect(result.items).toHaveLength(1);
+    expect(result.total).toBe(1);
+  });
+
+  it("returns supported: false with a warning on a network/API failure, never throws", async () => {
+    const c = ctx(
+      fakePipeline({ searchStandardParts: vi.fn(async () => ({ available: false as const, reason: "step.parts API unreachable (timeout)." })) })
+    );
+    const result = await searchStandardPartsTool(c, { q: "bolt" });
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/unreachable/i);
+    expect(result.items).toBeUndefined();
+  });
+});
+
+describe("download_standard_part", () => {
+  it("writes the downloaded STEP bytes and reports provenance/checksum status", async () => {
+    const c = ctx();
+    const out = path.join(dir, "part.step");
+    const result = await downloadStandardPartTool(c, { id: "iso4017_hex_head_cap_screw_m6x25", outputPath: out });
+    expect(c.pipeline.downloadStandardPart).toHaveBeenCalledWith("iso4017_hex_head_cap_screw_m6x25");
+    expect(result.supported).toBe(true);
+    expect(result.written).toBe(out);
+    expect(result.verifiedChecksum).toBe(true);
+    expect(await fs.readFile(out, "utf8")).toBe("ISO-10303-21;");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("warns (but still succeeds) when the part has no recorded checksum", async () => {
+    const c = ctx(
+      fakePipeline({
+        downloadStandardPart: vi.fn(async () => ({
+          available: true as const,
+          value: { ...FAKE_DOWNLOADED_PART, sha256: null, verifiedChecksum: false },
+        })),
+      })
+    );
+    const result = await downloadStandardPartTool(c, { id: "x", outputPath: path.join(dir, "x.step") });
+    expect(result.supported).toBe(true);
+    expect(result.warnings[0]).toMatch(/no recorded sha256/i);
+  });
+
+  it("warns when the downloaded bytes fail checksum verification", async () => {
+    const c = ctx(
+      fakePipeline({
+        downloadStandardPart: vi.fn(async () => ({
+          available: true as const,
+          value: { ...FAKE_DOWNLOADED_PART, verifiedChecksum: false },
+        })),
+      })
+    );
+    const result = await downloadStandardPartTool(c, { id: "x", outputPath: path.join(dir, "x2.step") });
+    expect(result.supported).toBe(true);
+    expect(result.warnings[0]).toMatch(/do NOT match/);
+  });
+
+  it("returns supported: false without writing anything on a network/API failure", async () => {
+    const c = ctx(
+      fakePipeline({ downloadStandardPart: vi.fn(async () => ({ available: false as const, reason: "step.parts API unreachable." })) })
+    );
+    const out = path.join(dir, "unreached.step");
+    const result = await downloadStandardPartTool(c, { id: "x", outputPath: out });
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/unreachable/i);
+    await expect(fs.access(out)).rejects.toThrow();
+  });
+});
+
+describe("compare_models", () => {
+  it("diffs two B-rep sources via the pipeline", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2 });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], expect.any(Uint8Array), "step", []);
+    expect(result).toEqual({ formatA: "step", formatB: "step", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+  });
+
+  it("replays each side's sidecar ops before comparing", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel2, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2 });
+    const lastCall = vi.mocked(c.pipeline.compareModels).mock.lastCall!;
+    expect(lastCall[3]).toEqual([]); // A has no ops
+    expect(lastCall[6]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]); // B does
+  });
+
+  it("returns supported: false with a warning when either side is a mesh source, without touching WASM", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel });
+    expect(c.pipeline.compareModels).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.diff).toBeUndefined();
+    expect(result.warnings[0]).toMatch(/mesh format/i);
+  });
+
+  it("rejects unsupported extensions on either path", async () => {
+    await expect(compareModelsTool(ctx(), { pathA: path.join(dir, "x.txt"), pathB: stpModel2 })).rejects.toThrow(/unsupported/i);
+    await expect(compareModelsTool(ctx(), { pathA: stpModel, pathB: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
+  });
 });
 
 describe("apply_edit_ops", () => {
@@ -200,6 +555,96 @@ describe("apply_edit_ops", () => {
     expect(result.applied).toBe(0);
     expect(result.report[0].accepted).toBe(true);
     await expect(fs.access(editsSidecarPath(stpModel))).rejects.toThrow();
+  });
+});
+
+describe("run_parametric_script", () => {
+  it("compiles a bolt-circle repeat and appends the baked ops", async () => {
+    const c = ctx();
+    const result = await runParametricScriptTool(c, {
+      path: stpModel,
+      script: {
+        variables: [
+          { name: "R", expr: "10" },
+          { name: "N", expr: "4" },
+        ],
+        steps: [
+          {
+            repeat: {
+              times: "N",
+              indexVar: "i",
+              body: [
+                {
+                  op: "addCylinder",
+                  center: [0, 0, 0],
+                  axis: [0, 0, 1],
+                  radius: 1,
+                  height: 5,
+                  exprs: { "center[0]": "R*cos(i*360/N)", "center[1]": "R*sin(i*360/N)" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(result.applied).toBe(4);
+    expect(result.rejected).toBe(0);
+    expect(result.stackLength).toBe(4);
+    expect(result.model).not.toBeNull();
+    const persisted = (await readEdits(stpModel)).ops;
+    expect(persisted).toHaveLength(4);
+    expect(persisted.every((op: any) => op.exprs === undefined)).toBe(true);
+  });
+
+  it("a plain op step's exprs stay live in the persisted sidecar", async () => {
+    const result = await runParametricScriptTool(ctx(), {
+      path: stpModel,
+      script: {
+        steps: [{ op: { op: "addBox", center: [0, 0, 0], size: [20, 10, 5], exprs: { "size[0]": "L" } } }],
+      },
+    });
+    expect(result.applied).toBe(1);
+    const persisted = (await readEdits(stpModel)).ops;
+    expect(persisted[0].exprs).toEqual({ "size[0]": "L" });
+  });
+
+  it("rejects BREP_ONLY_OPS compiled for a mesh-format source but persists mesh-legal ones", async () => {
+    const result = await runParametricScriptTool(ctx(), {
+      path: stlModel,
+      script: {
+        steps: [
+          { op: { op: "addWedge", center: [0, 0, 0], axis: [0, 0, 1], up: [1, 0, 0], dx: 1, dy: 1, dz: 1, ltx: 0 } },
+          { op: { op: "translate", targets: ["node-0"], vec: [1, 0, 0] } },
+        ],
+      },
+    });
+    expect(result.applied).toBe(1);
+    expect(result.rejected).toBe(1);
+    expect(result.warnings.some((w: string) => /B-rep only/.test(w))).toBe(true);
+    expect((await readEdits(stlModel)).ops).toHaveLength(1);
+  });
+
+  it("dryRun compiles and reports without persisting", async () => {
+    const result = await runParametricScriptTool(ctx(), {
+      path: stpModel,
+      script: { steps: [{ op: { op: "addSphere", center: [0, 0, 0], radius: 2 } }] },
+      dryRun: true,
+    });
+    expect(result.dryRun).toBe(true);
+    expect(result.applied).toBe(0);
+    expect(result.report[0]).toMatchObject({ kind: "op", applied: 1 });
+    await expect(fs.access(editsSidecarPath(stpModel))).rejects.toThrow();
+  });
+
+  it("surfaces per-step rejection reasons without throwing", async () => {
+    const result = await runParametricScriptTool(ctx(), {
+      path: stpModel,
+      script: { steps: [{ op: { op: "addBox" } }, { repeat: { times: 2, indexVar: "not valid!", body: [] } }] },
+    });
+    expect(result.applied).toBe(0);
+    expect(result.rejected).toBe(2);
+    expect(result.report).toHaveLength(2);
   });
 });
 
@@ -311,6 +756,20 @@ describe("generate_mesh", () => {
     expect(result.nodeCount).toBe(42);
     expect(result.elementCount).toBe(99);
     expect(result).not.toHaveProperty("positions");
+    expect(result.quality).toBeNull(); // FAKE_MESH_RESULT has no quality field
+  });
+
+  it("surfaces the pipeline's quality summary when present", async () => {
+    const c = ctx(
+      fakePipeline({
+        generateMesh: vi.fn(async () => ({
+          ...FAKE_MESH_RESULT,
+          quality: { min: 0.2, mean: 0.7, histogram: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] },
+        })),
+      })
+    );
+    const result = await generateMeshTool(c, { path: stpModel });
+    expect(result.quality).toEqual({ min: 0.2, mean: 0.7, histogram: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] });
   });
 
   it("meshes raw STL bytes with the single-part size override and drops parts", async () => {
@@ -329,6 +788,28 @@ describe("generate_mesh", () => {
 
   it("rejects obj/ply/gltf sources with a clear message", async () => {
     await expect(generateMeshTool(ctx(), { path: objModel })).rejects.toThrow(/webview/i);
+  });
+
+  it("meshes meshio++-only sources via a host-side STL boundary conversion, with no webview involved", async () => {
+    const c = ctx();
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content, mocked pipeline doesn't parse it", "utf8");
+    await applyEditOps(c, { path: vtkModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await generateMeshTool(c, { path: vtkModel });
+    expect(c.pipeline.convertToStlBoundary).toHaveBeenCalledWith(expect.any(Uint8Array), "vtk");
+    const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
+    expect(genCall[1].kind).toBe("stl");
+    expect(result.warnings.some((w) => w.includes("NOT baked"))).toBe(true);
+    expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
+  });
+
+  it("reports start (0) then done (1) progress when a callback is given", async () => {
+    const c = ctx();
+    const onProgress = vi.fn();
+    await generateMeshTool(c, { path: stpModel }, onProgress);
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress.mock.calls[0][0]).toMatchObject({ progress: 0, total: 1 });
+    expect(onProgress.mock.calls[1][0]).toMatchObject({ progress: 1, total: 1 });
   });
 });
 
@@ -375,6 +856,45 @@ describe("export_mesh", () => {
     await expect(
       exportMeshTool(ctx(), { path: stpModel, format: "msh", outputPath: stpModel })
     ).rejects.toThrow(/source/i);
+  });
+
+  it("bridges med/cgns through meshio with no companion file, fed generateMesh's MSH 4.1 text", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out.med");
+    const result = await exportMeshTool(c, { path: stpModel, format: "med", outputPath: out });
+    // meshio++ 9.7.0 reads MSH 4.1 natively — the bridge takes generateMesh's
+    // own mshText directly, no legacy msh2 re-export detour.
+    expect(vi.mocked(c.pipeline.exportViaMeshio).mock.lastCall).toEqual([FAKE_MESH_RESULT.mshText, "med"]);
+    expect(c.pipeline.exportMeshFormat).not.toHaveBeenCalled();
+    expect(await fs.readFile(out, "utf8")).toBe("fake-meshio-bytes");
+    expect(result.written.map((w) => w.path)).toEqual([out]);
+  });
+
+  it("writes the HDF5 companion and rewrites embedded references for xdmf", async () => {
+    const pipeline = fakePipeline({
+      exportViaMeshio: vi.fn(async () => ({
+        bytes: new TextEncoder().encode('<DataItem Format="HDF">out.h5:/data0</DataItem>'),
+        companion: { name: "out.h5", bytes: new Uint8Array([1, 2, 3]) },
+      })),
+    });
+    const out = path.join(dir, "result.xdmf");
+    const result = await exportMeshTool(ctx(pipeline), { path: stpModel, format: "xdmf", outputPath: out });
+    const text = await fs.readFile(out, "utf8");
+    expect(text).toBe('<DataItem Format="HDF">result.h5:/data0</DataItem>');
+    const h5Path = path.join(dir, "result.h5");
+    expect(new Uint8Array(await fs.readFile(h5Path))).toEqual(new Uint8Array([1, 2, 3]));
+    expect(result.written.map((w) => w.path)).toEqual([out, h5Path]);
+    expect(result.warnings.some((w) => w.includes("companion"))).toBe(true);
+  });
+
+  it("reports start (0) then done (1) progress when a callback is given", async () => {
+    const c = ctx();
+    const onProgress = vi.fn();
+    const out = path.join(dir, "progress.msh");
+    await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out }, onProgress);
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress.mock.calls[0][0]).toMatchObject({ progress: 0, total: 1 });
+    expect(onProgress.mock.calls[1][0]).toMatchObject({ progress: 1, total: 1 });
   });
 });
 

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
+import type { CadFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh } from "./geometryBuilder";
 import { splitMeshesIntoFacets } from "./meshFacets";
@@ -15,10 +16,22 @@ import { evaluateVariables, resolveEditOps } from "../editVariables";
 import { extractIdentifiers } from "../paramExpr";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
-import { defaultTargetSize } from "./meshSizeHeuristics";
+import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
+import { computeMeshMassProperties } from "./meshMassProperties";
+import { targetSizeForPreset } from "./meshSizeHeuristics";
 import { SIZE_MAX_SENTINEL } from "../meshOptions";
+import type { MeshSizePreset } from "../viewerDefaults";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
+import { VisibilityState } from "./visibilityState";
+import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
+import { planeForAxis, type ClipAxis } from "./clipping";
+import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
+import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
+import { convertLength, convertLengthBasedProperties, displayUnitFromStepName, type DisplayUnit, type LengthBasedProperties } from "./units";
+import { isDisplayMode } from "./displayMode";
+import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
+import { redrawAll } from "./markupCanvas";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -33,8 +46,26 @@ const panelEl = document.getElementById("tree-panel")!;
 const toggleBtn = document.getElementById("tree-toggle") as HTMLButtonElement;
 
 const viewer = new Viewer(app);
-const treePanel = new TreePanel(panelEl, (id) => {
-  viewer.highlightGroup(id);
+
+// ── Visibility (Parts hide/isolate, Tree per-node hide) ─────────────────────
+// Transient, session-only, never persisted — see visibilityState.ts.
+const visibilityState = new VisibilityState();
+
+const treePanel = new TreePanel(
+  panelEl,
+  (id) => {
+    viewer.highlightGroup(id);
+  },
+  (id) => {
+    visibilityState.toggleTreeGroupHidden(id);
+    viewer.setGroupVisible(id, !visibilityState.isTreeGroupHidden(id));
+    treePanel.refreshVisibility();
+  },
+  visibilityState
+);
+
+document.getElementById("tree-filter")?.addEventListener("input", (e) => {
+  treePanel.filter((e.target as HTMLInputElement).value);
 });
 
 // ── Parts / selection state ──────────────────────────────────────────────
@@ -45,29 +76,44 @@ const partsModel = new PartsModel(() => {
   // Fired on every parts mutation: persist, recolour, re-render (both the
   // Parts panel and the FE Mesh panel's mirrored "Part sizes" rows).
   post({ type: "partsChanged", parts: partsModel.list() });
-  refreshColors();
+  visibilityState.onPartCountChanged(partsModel.size);
+  refreshColors(); // also re-applies visibility state, see refreshColors()
   partsPanel.render(partsModel.list());
   meshingPanel.renderParts(partsModel.list());
 });
 
-const partsPanel = new PartsPanel(document.getElementById("parts-panel")!, {
-  onCreate: () => partsModel.create(),
-  onAssign: (index) => {
-    partsModel.assign(index, selection.list());
-    selection.clear();
-    previewPartIndex = null;
-    renderHighlight();
+const partsPanel = new PartsPanel(
+  document.getElementById("parts-panel")!,
+  {
+    onCreate: () => partsModel.create(),
+    onAssign: (index) => {
+      partsModel.assign(index, selection.list());
+      selection.clear();
+      previewPartIndex = null;
+      renderHighlight();
+    },
+    onRemovePart: (index) => partsModel.remove(index),
+    onRename: (index, name) => partsModel.rename(index, name),
+    onRecolor: (index, color) => partsModel.recolor(index, color),
+    onMeshSize: (index, size) => partsModel.setMeshSize(index, size),
+    onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
+    onSelectPart: (index) => {
+      previewPartIndex = index;
+      renderHighlight();
+    },
+    onToggleVisible: (index) => {
+      visibilityState.toggleHiddenPart(index);
+      applyVisibilityState();
+      partsPanel.render(partsModel.list());
+    },
+    onToggleIsolate: (index) => {
+      visibilityState.toggleIsolatedPart(index);
+      applyVisibilityState();
+      partsPanel.render(partsModel.list());
+    },
   },
-  onRemovePart: (index) => partsModel.remove(index),
-  onRename: (index, name) => partsModel.rename(index, name),
-  onRecolor: (index, color) => partsModel.recolor(index, color),
-  onMeshSize: (index, size) => partsModel.setMeshSize(index, size),
-  onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
-  onSelectPart: (index) => {
-    previewPartIndex = index;
-    renderHighlight();
-  },
-});
+  visibilityState
+);
 
 // ── Edits (replayable op-stack) + parametric variables ───────────────────
 // The webview owns the op-stack; the host persists it and (for B-rep) re-applies
@@ -133,6 +179,32 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
 let booleanA: string[] = [];
 const selectedVolumes = (): string[] =>
   selection.list().filter((e) => e.entityType === "volume").map((e) => e.entityId);
+
+/** Explode's live-preview state — `null` when no preview is in progress.
+ * Captured lazily on the first slider `input` event (see `onExplodePreview`
+ * below) so a session always starts from a fresh, pristine base. */
+let explodePreviewBases: ExplodeBase[] | null = null;
+
+/** Set by `setupMarkupControls()` once the Markup overlay is wired up;
+ * called on every genuinely new model load (`case "geometry":`,
+ * `loadMeshObjectFromUrl()`) — unlike the mesh/measurement overlays, markup
+ * strokes aren't geometrically stale (they're plain screen-space pixels with
+ * no reference to the model at all), but leaving them plastered over a
+ * totally different part is confusing more often than useful, so a fresh
+ * model load clears them, same as opening a new document resets every other
+ * session-only display state. */
+let clearMarkupOverlay: (() => void) | null = null;
+
+/** Restores any in-progress Explode preview to its pristine positions and
+ * clears the session — called both when the user leaves the Explode form
+ * without applying, and right before the real op-stack commit (which
+ * rebuilds everything from the authoritative op-list anyway). */
+function cancelExplodePreview(): void {
+  if (!explodePreviewBases) return;
+  const model = viewer.getModel();
+  if (model) resetExplodePreview(explodePreviewBases);
+  explodePreviewBases = null;
+}
 
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onUndo: () => editsModel.undo(),
@@ -221,11 +293,19 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     setStatus("");
   },
   onApplyExplode: (factor, exprs) => {
+    cancelExplodePreview(); // discard the live preview — the real op replay rebuilds everything
     const op: EditOp = { op: "explode", factor };
     if (exprs) op.exprs = exprs;
     editsModel.push(op);
     setStatus("");
   },
+  onExplodePreview: (factor) => {
+    const model = viewer.getModel();
+    if (!model) return;
+    if (!explodePreviewBases) explodePreviewBases = captureExplodeBase(model);
+    applyExplodePreview(explodePreviewBases, factor);
+  },
+  onExplodePreviewCancel: cancelExplodePreview,
   onApplyMate: () => {
     // Mate aligns the first selected face onto the second (Surf mode), B-rep only.
     const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
@@ -574,11 +654,115 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   },
 });
 
+// ── Mass properties ──────────────────────────────────────────────────────
+// B-rep sources round-trip through the host (OCCT `BRepGProp`); mesh sources
+// compute entirely client-side (pure Three.js triangle math, no WASM
+// dependency) — see `computeAndRenderMeshMassProperties` below.
+let sourceKind: "brep" | "mesh" | null = null;
+let massPropertiesRequestId: string | null = null;
+
+// ── Display unit (session-only presentation layer, never persisted) ────────
+// Everything computed host/client-side is already in one internal unit
+// (millimetres — OCCT's STEP reader auto-converts every shape to its cascade
+// unit at read time, verified against the live WASM; see
+// `src/stepUnits.ts`'s doc comment). This only rescales what Mass Properties/
+// Measurement *display*; nothing stored is ever rescaled.
+let currentDisplayUnit: DisplayUnit = "mm";
+let lastRawMassProperties: (LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"] }) | null = null;
+
+/** Sets the display unit, syncs the `<select>`, and live-rescales the
+ * currently-shown Mass Properties result (if any) — measurements already on
+ * screen are not retroactively rescaled, matching every other Stage-2
+ * appearance control's "affects what's rendered from now on" precedent. */
+function setDisplayUnit(unit: DisplayUnit): void {
+  currentDisplayUnit = unit;
+  const sel = document.getElementById("vc-unit") as HTMLSelectElement | null;
+  if (sel) sel.value = unit;
+  if (lastRawMassProperties) massPropertiesPanel.render(convertLengthBasedProperties(lastRawMassProperties, unit), unit);
+}
+
+/** Caches the raw (mm) result and renders it converted to `currentDisplayUnit`. */
+function renderMassProperties(raw: LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"] }): void {
+  lastRawMassProperties = raw;
+  massPropertiesPanel.render(convertLengthBasedProperties(raw, currentDisplayUnit), currentDisplayUnit);
+}
+
+const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mass-panel")!, {
+  onRefresh: () => {
+    const list = selection.list();
+    if (list.length > 1) {
+      massPropertiesPanel.renderMessage("Select exactly one entity, or none for the whole model.", true);
+      return;
+    }
+    const target = list[0] ?? null;
+    if (sourceKind === "mesh") {
+      computeAndRenderMeshMassProperties(target);
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random()}`;
+    massPropertiesRequestId = requestId;
+    massPropertiesPanel.renderMessage("Computing…");
+    post({ type: "massPropertiesRequest", requestId, entityId: target ? target.entityId : null });
+  },
+});
+
 /**
- * Seeds a bbox-derived default target size while `sizeMax` is still the
- * "unbounded" sentinel. Called from the `geometry`, `loadUrl`, AND
- * `meshingOptions` handlers — model geometry and the options sidecar arrive
- * in no deterministic order (B-rep tessellation is async), so whichever lands
+ * Mesh-source mass properties: resolves `target` to the matching facet
+ * `THREE.Mesh`(es) in the currently displayed model and sums them via
+ * `computeMeshMassProperties` — entirely in the webview, no host round trip
+ * (mesh sources have no OCCT shape to query). A `null` target means the whole
+ * model; only a single open facet ("surface") lacks a meaningful volume, so
+ * only that case suppresses `volume`/uses the area-weighted centroid.
+ */
+function computeAndRenderMeshMassProperties(target: SelectedEntity | null): void {
+  const model = viewer.getModel();
+  if (!model) {
+    massPropertiesPanel.renderMessage("No model loaded.", true);
+    return;
+  }
+  if (target && target.entityType !== "volume" && target.entityType !== "surface") {
+    massPropertiesPanel.renderMessage("Mass properties aren't available for this entity type.", true);
+    return;
+  }
+
+  const meshes: THREE.Mesh[] = [];
+  model.traverse((o) => {
+    if (!(o instanceof THREE.Mesh) || o.userData.entityType !== "surface") return;
+    if (!target) meshes.push(o);
+    else if (target.entityType === "volume" && o.userData.groupId === target.entityId) meshes.push(o);
+    else if (target.entityType === "surface" && o.userData.entityId === target.entityId) meshes.push(o);
+  });
+  if (meshes.length === 0) {
+    massPropertiesPanel.renderMessage("Nothing to measure for this selection.", true);
+    return;
+  }
+
+  const isClosedTarget = target === null || target.entityType === "volume";
+  const { volume, area, volumeCentroid, areaCentroid } = computeMeshMassProperties(meshes);
+  renderMassProperties({
+    volume: isClosedTarget ? volume : null,
+    area,
+    length: null,
+    centerOfMass: isClosedTarget ? volumeCentroid : areaCentroid,
+    momentsOfInertia: null,
+  });
+}
+
+/**
+ * The `cadPreview.defaultMeshSizePreset` setting, hydrated by the
+ * `viewerDefaults` handler below (arrives in no deterministic order relative
+ * to `geometry`/`loadUrl`/`meshingOptions`, same as the rest of the seed
+ * inputs) and consumed by `syncMeshSizeSeed`. `"medium"` reproduces the
+ * pre-setting behavior exactly (`PRESET_DIVISORS.medium === DEFAULT_SIZE_DIVISOR`).
+ */
+let meshSizePreset: MeshSizePreset = "medium";
+
+/**
+ * Seeds a bbox-derived default target size (scaled by {@link meshSizePreset})
+ * while `sizeMax` is still the "unbounded" sentinel. Called from the
+ * `geometry`, `loadUrl`, `meshingOptions`, AND `viewerDefaults` handlers —
+ * model geometry, the options sidecar, and the preset setting all arrive in
+ * no deterministic order (B-rep tessellation is async), so whichever lands
  * last completes the seed. A persisted user value (≠ sentinel) always wins,
  * and once seeded the repeat calls (e.g. re-tessellation after each B-rep
  * edit) are no-ops. Deliberately uses `load()` (which does NOT fire onChange)
@@ -590,7 +774,7 @@ function syncMeshSizeSeed(): void {
   const extents = viewer.getModelExtents();
   if (!extents) return;
   if (meshingModel.get().sizeMax !== SIZE_MAX_SENTINEL) return;
-  meshingModel.load({ ...meshingModel.get(), sizeMax: defaultTargetSize(extents.diagonal) });
+  meshingModel.load({ ...meshingModel.get(), sizeMax: targetSizeForPreset(extents.diagonal, meshSizePreset) });
   meshingPanel.render(meshingModel.get());
 }
 
@@ -614,6 +798,22 @@ function nonParallel(a: [number, number, number], b: [number, number, number]): 
 function refreshColors(): void {
   viewer.setEntityColors(partsModel.colorMap());
   renderHighlight();
+  applyVisibilityState();
+}
+
+/** Re-applies both the Parts hide/isolate state and the Tree per-node hide
+ * state to the (possibly freshly rebuilt) model — new `THREE.Object3D`s from
+ * a model reload start fully visible, so this must run on every model
+ * rebuild, not just when visibility itself changes. Called from
+ * `refreshColors()`, which every model-rebuild/parts-change path already
+ * calls, so a single hook here covers every call site. */
+function applyVisibilityState(): void {
+  const parts = partsModel.list();
+  const hidden = visibilityState.hiddenPartIndices().flatMap((i) => partsModel.entitiesOf(i));
+  const isolated = visibilityState.isolatedPartIndex();
+  const isolatedEntities = isolated !== null && isolated < parts.length ? partsModel.entitiesOf(isolated) : null;
+  viewer.applyPartVisibility(hidden, isolatedEntities);
+  for (const groupId of visibilityState.hiddenTreeGroupIds()) viewer.setGroupVisible(groupId, false);
 }
 
 /** Draws either the previewed part's entities or the working selection. */
@@ -634,6 +834,7 @@ function rebuildMeshModel(): void {
   const edited = applyEditsMesh(pristineMesh.clone(), currentResolvedOps().ops);
   const model = splitMeshesIntoFacets(edited);
   viewer.setModel(model);
+  explodePreviewBases = null; // stale references to the just-replaced model's objects
   refreshColors();
   // Edits can change the bounding box; keep the FE Mesh panel's element-count
   // estimate honest. (B-rep sources get the equivalent via the re-posted
@@ -714,8 +915,130 @@ function setSelectableModes(modes: EntityType[]): void {
   }
 }
 
+// ── Measurement toolbar (distance/edge length/angle/radius) ────────────────
+// Entirely webview-side, display-only overlay — never an edit op, never
+// persisted to any sidecar, never a host round trip.
+
+interface MeasurementResult {
+  text: string;
+  anchor: Vec3;
+  /** 2 points to connect with a line (distance/angle), or none (edgeLength/radius). */
+  linePoints: Vec3[];
+}
+
+function polylinePointAt(flat: Float32Array, i: number): Vec3 {
+  return [flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]];
+}
+
+function midpoint(a: Vec3, b: Vec3): Vec3 {
+  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+}
+
+function formatMeasure(n: number): string {
+  return Number.isFinite(n) ? String(Number(n.toPrecision(5))) : "—";
+}
+
+/** Formats a raw millimetre length, converted to `currentDisplayUnit` with its suffix. */
+function formatMeasureLength(mmValue: number): string {
+  return `${formatMeasure(convertLength(mmValue, currentDisplayUnit))} ${currentDisplayUnit}`;
+}
+
+/** Dispatches the completed pick set to the matching pure math in `measurement.ts`.
+ * Distance/edgeLength/radius are length-dimensioned and rescale with the
+ * current display unit; angle (in degrees) never does. */
+function computeMeasurementResult(tool: MeasureTool, picks: MeasurementPick[]): MeasurementResult | null {
+  if (tool === "distance") {
+    const [a, b] = picks;
+    if (!a || !b) return null;
+    return { text: formatMeasureLength(pointDistance(a.point, b.point)), anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+  }
+  if (tool === "edgeLength") {
+    const [a] = picks;
+    if (!a?.polyline) return null;
+    return { text: `L = ${formatMeasureLength(polylineLength(a.polyline))}`, anchor: a.point, linePoints: [] };
+  }
+  if (tool === "angle") {
+    const [a, b] = picks;
+    if (!a?.direction || !b?.direction) return null;
+    const deg = angleBetweenVectors(a.direction, b.direction);
+    if (Number.isNaN(deg)) return null;
+    return { text: `${formatMeasure(deg)}°`, anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+  }
+  if (tool === "radius") {
+    const [a] = picks;
+    if (!a?.polyline || a.polyline.length < 9) return null;
+    const n = a.polyline.length / 3;
+    const r = circleRadiusFromArcPoints(
+      polylinePointAt(a.polyline, 0),
+      polylinePointAt(a.polyline, Math.floor(n / 2)),
+      polylinePointAt(a.polyline, n - 1)
+    );
+    return r === null ? null : { text: `R = ${formatMeasureLength(r)}`, anchor: a.point, linePoints: [] };
+  }
+  return null;
+}
+
+const measurementState = new MeasurementState();
+
+function setMeasureReadout(text: string, isError = false): void {
+  const el = document.getElementById("measure-readout");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("measure-readout-error", isError);
+}
+
+function setupMeasureControls(): void {
+  const toggle = document.getElementById("measure-toggle");
+  const toolSelect = document.getElementById("measure-tool") as HTMLSelectElement | null;
+  const clearBtn = document.getElementById("measure-clear");
+  let measuring = false;
+
+  viewer.setOnMeasurePick((pick) => {
+    const { done, picks } = measurementState.addPick(pick);
+    if (!done) {
+      viewer.showMeasurementMarker(new THREE.Vector3(...pick.point));
+      setMeasureReadout("Pick another point…");
+      return;
+    }
+    const result = computeMeasurementResult(measurementState.getTool(), picks);
+    if (!result) {
+      viewer.clearMeasurementOverlay();
+      setMeasureReadout("Couldn't compute a result for that pick — try a different entity.", true);
+      return;
+    }
+    viewer.showMeasurementOverlay(
+      result.linePoints.map((p) => new THREE.Vector3(...p)),
+      new THREE.Vector3(...result.anchor),
+      result.text
+    );
+    setMeasureReadout(result.text);
+  });
+
+  toggle?.addEventListener("click", () => {
+    measuring = !measuring;
+    toggle.classList.toggle("active", measuring);
+    viewer.setMeasureMode(measuring);
+    measurementState.clear();
+    viewer.clearMeasurementOverlay();
+    setMeasureReadout(measuring ? "Pick a point…" : "");
+  });
+
+  toolSelect?.addEventListener("change", () => {
+    measurementState.setTool(toolSelect.value as MeasureTool);
+    viewer.clearMeasurementOverlay();
+    setMeasureReadout(measuring ? "Pick a point…" : "");
+  });
+
+  clearBtn?.addEventListener("click", () => {
+    measurementState.clear();
+    viewer.clearMeasurementOverlay();
+    setMeasureReadout("");
+  });
+}
+
 document.getElementById("fit")?.addEventListener("click", () => viewer.fitView());
 document.getElementById("grid")?.addEventListener("click", () => viewer.toggleGrid());
+document.getElementById("screenshot")?.addEventListener("click", () => post({ type: "screenshotButtonClicked" }));
 document.getElementById("tree-close")?.addEventListener("click", () => {
   treePanel.hide();
   window.dispatchEvent(new Event("resize"));
@@ -723,12 +1046,6 @@ document.getElementById("tree-close")?.addEventListener("click", () => {
 document.getElementById("tree-toggle")?.addEventListener("click", () => {
   treePanel.toggle();
   window.dispatchEvent(new Event("resize"));
-});
-
-let wireframe = false;
-document.getElementById("wireframe")?.addEventListener("click", () => {
-  wireframe = !wireframe;
-  viewer.setWireframe(wireframe);
 });
 
 // ── View-manipulation control panel ──────────────────────────────────────
@@ -814,10 +1131,223 @@ function setupFileMenu(): void {
   });
 }
 
+/**
+ * Drop a CAD/mesh file onto the viewer to open it. `dragover` must call
+ * `preventDefault()` or the browser never fires `drop`. Whether the dropped
+ * `File` exposes a real filesystem path (`.path`, a legacy Electron
+ * extension to the standard `File` object) is VS Code/Electron-version
+ * dependent — when it isn't there, fall back to the plain `{type:"openFile"}`
+ * message (opens the normal dialog) rather than silently doing nothing.
+ */
+function setupDragAndDrop(): void {
+  app.addEventListener("dragover", (e) => {
+    e.preventDefault();
+  });
+  app.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    const path = (file as (File & { path?: string }) | undefined)?.path;
+    if (path) post({ type: "openPath", path });
+    else post({ type: "openFile" });
+  });
+}
+
+/**
+ * Appearance controls: Edges toolbar toggle (discrete on/off, like Wireframe/
+ * Grid), background swatch + opacity slider (continuous, `#view-controls`'
+ * "Appearance" group). All session-only — never persisted, mirroring
+ * `setWireframe`/`toggleGrid`'s "always wins once set" precedent.
+ */
+function setupAppearanceControls(): void {
+  let edgesVisible = true;
+  document.getElementById("edges")?.addEventListener("click", () => {
+    edgesVisible = !edgesVisible;
+    viewer.setEdgesVisible(edgesVisible);
+  });
+
+  document.getElementById("vc-background")?.addEventListener("input", (e) => {
+    viewer.setBackground((e.target as HTMLInputElement).value);
+  });
+
+  document.getElementById("vc-opacity")?.addEventListener("input", (e) => {
+    viewer.setOpacity(Number((e.target as HTMLInputElement).value) / 100);
+  });
+
+  let ortho = false;
+  const orthoBtn = document.getElementById("vc-ortho");
+  orthoBtn?.addEventListener("click", () => {
+    ortho = !ortho;
+    viewer.setOrthographic(ortho);
+    orthoBtn.textContent = ortho ? "Ortho" : "Persp";
+    orthoBtn.classList.toggle("active", ortho);
+  });
+
+  document.getElementById("vc-unit")?.addEventListener("change", (e) => {
+    setDisplayUnit((e.target as HTMLSelectElement).value as DisplayUnit);
+  });
+
+  // Display mode replaces the old standalone Wireframe toolbar toggle —
+  // Shaded/Wireframe are two of five mutually exclusive states now (see
+  // src/webview/displayMode.ts). A material-affecting switch (Flat swaps the
+  // active material instance) needs colours/selection re-applied afterward —
+  // refreshColors() already does both, the same contract setModel() relies on.
+  const modeBtns = [...document.querySelectorAll<HTMLButtonElement>(".display-mode-btn")];
+  for (const btn of modeBtns) {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode ?? "";
+      if (!isDisplayMode(mode)) return;
+      viewer.setDisplayMode(mode);
+      refreshColors();
+      for (const b of modeBtns) b.classList.toggle("active", b === btn);
+    });
+  }
+}
+
+/**
+ * Live clipping/section plane — display-only, distinct from the `section`
+ * edit op. Every slider `input` applies immediately (no commit-gating, unlike
+ * the meshing size slider — there's nothing to persist here).
+ */
+function setupClippingControls(): void {
+  let clipAxis: ClipAxis = "x";
+  let clipEnabled = false;
+  const axisBtns = [...document.querySelectorAll<HTMLButtonElement>(".clip-axis")];
+  const offsetSlider = document.getElementById("clip-offset") as HTMLInputElement | null;
+  const toggleBtn = document.getElementById("clip-toggle");
+
+  const applyClip = () => {
+    if (!clipEnabled || !offsetSlider) {
+      viewer.setClippingPlane(null);
+      return;
+    }
+    const model = viewer.getModel();
+    const box = model ? new THREE.Box3().setFromObject(model) : null;
+    if (!box || box.isEmpty()) {
+      viewer.setClippingPlane(null);
+      return;
+    }
+    viewer.setClippingPlane(planeForAxis(clipAxis, Number(offsetSlider.value) / 100, box));
+  };
+
+  for (const btn of axisBtns) {
+    btn.addEventListener("click", () => {
+      clipAxis = btn.dataset.axis as ClipAxis;
+      axisBtns.forEach((b) => b.classList.toggle("active", b === btn));
+      applyClip();
+    });
+  }
+  offsetSlider?.addEventListener("input", applyClip);
+  toggleBtn?.addEventListener("click", () => {
+    clipEnabled = !clipEnabled;
+    toggleBtn.classList.toggle("active", clipEnabled);
+    toggleBtn.textContent = clipEnabled ? "On" : "Off";
+    applyClip();
+  });
+}
+
+/**
+ * Markup annotation overlay: freehand/line/arrow/rectangle/circle strokes on
+ * a transparent `<canvas>` stacked over the 3D view (`#markup-canvas`, see
+ * `viewerDom.ts`), composited into Screenshot exports by `Viewer` (see
+ * `canvasComposite.ts`). Session-only, never persisted — same rule as every
+ * other display-only feature (explode preview, clip plane, measurement).
+ * The canvas is `pointer-events:none` until markup mode is toggled on, so it
+ * never interferes with orbiting/picking while inactive.
+ */
+function setupMarkupControls(): void {
+  const canvas = document.getElementById("markup-canvas") as HTMLCanvasElement | null;
+  const toggleBtn = document.getElementById("markup-toggle");
+  const toolSelect = document.getElementById("markup-tool") as HTMLSelectElement | null;
+  const colorInput = document.getElementById("markup-color") as HTMLInputElement | null;
+  if (!canvas || !toggleBtn || !toolSelect || !colorInput) return;
+
+  const model = new MarkupModel();
+  let active = false;
+  let drawing = false;
+  let current: Point[] = [];
+
+  function resizeCanvas(): void {
+    const rect = canvas!.getBoundingClientRect();
+    canvas!.width = Math.max(1, Math.round(rect.width));
+    canvas!.height = Math.max(1, Math.round(rect.height));
+    redraw();
+  }
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+
+  function redraw(preview?: MarkupStroke): void {
+    redrawAll(canvas!, model.list(), preview);
+  }
+
+  function currentTool(): MarkupTool {
+    return toolSelect!.value as MarkupTool;
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (!active) return;
+    const pt: Point = { x: e.offsetX, y: e.offsetY };
+    if (currentTool() === "eraser") {
+      if (model.eraseAt(pt)) redraw();
+      return;
+    }
+    drawing = true;
+    current = [pt];
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!active || !drawing) return;
+    const tool = currentTool();
+    if (tool === "eraser") return;
+    const pt: Point = { x: e.offsetX, y: e.offsetY };
+    if (tool === "freehand") current.push(pt);
+    else current[1] = pt; // line/arrow/rectangle/circle: live-preview the second point only
+    redraw({ tool, color: colorInput!.value, points: current });
+  });
+  canvas.addEventListener("pointerup", () => {
+    if (!active || !drawing) return;
+    drawing = false;
+    const tool = currentTool();
+    if (tool !== "eraser" && current.length >= 2) {
+      model.push({ tool, color: colorInput!.value, points: [...current] });
+    }
+    current = [];
+    redraw();
+  });
+
+  toggleBtn.addEventListener("click", () => {
+    active = !active;
+    canvas.style.pointerEvents = active ? "auto" : "none";
+    toggleBtn.classList.toggle("active", active);
+  });
+  document.getElementById("markup-undo")?.addEventListener("click", () => {
+    model.undo();
+    redraw();
+  });
+  document.getElementById("markup-redo")?.addEventListener("click", () => {
+    model.redo();
+    redraw();
+  });
+  document.getElementById("markup-clear")?.addEventListener("click", () => {
+    model.clear();
+    redraw();
+  });
+
+  clearMarkupOverlay = () => {
+    model.clear();
+    redraw();
+  };
+
+  viewer.setMarkupCanvas(canvas);
+}
+
 try {
   setupViewControls();
   setupSelectionControls();
+  setupMeasureControls();
   setupFileMenu();
+  setupDragAndDrop();
+  setupAppearanceControls();
+  setupClippingControls();
+  setupMarkupControls();
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
   console.error(message, err);
@@ -864,9 +1394,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         setStatus("Building geometry…");
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group);
+        explodePreviewBases = null; // stale references to the just-replaced model's objects
+        lastRawMassProperties = null; // stale — refers to the just-replaced model
+        clearMarkupOverlay?.();
         refreshColors();
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
+        sourceKind = "brep";
         meshingPanel.setSourceKind("brep");
         meshingPanel.setModelExtents(viewer.getModelExtents());
         syncMeshSizeSeed();
@@ -878,12 +1412,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "tree":
+      setDisplayUnit(displayUnitFromStepName(msg.sourceUnit) ?? "mm");
       showTree(msg.root);
       break;
 
     case "parts":
       partsModel.load(msg.parts);
-      refreshColors();
+      visibilityState.onPartCountChanged(partsModel.size);
+      refreshColors(); // also re-applies visibility state, see refreshColors()
       partsPanel.render(partsModel.list());
       meshingPanel.renderParts(partsModel.list());
       showSidebar();
@@ -901,26 +1437,26 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadUrl":
+      await loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase());
+      break;
+
+    case "loadMeshBytes":
+      // Host-converted bytes (meshio++-imported document — VTK/MED/CGNS/
+      // Exodus/XDMF/MDPA — funneled through `convertToStlBoundary()` into an
+      // STL boundary surface; see `src/meshioService.ts`). Fed through the
+      // exact same STL-loading path a native `.stl` open uses, via a `blob:`
+      // object URL instead of a `vscode-webview://` fetch — base64-over-
+      // postMessage rather than a `data:` URL, the same proven pattern
+      // `geometry` already uses for large buffers, sidestepping any webview
+      // CSP/size-limit uncertainty around `data:` URLs.
       try {
-        setStatus("Loading model…");
-        const object = await loadMeshFromUrl(msg.url, msg.format);
-        tagMeshEntities(object);
-        // Build the Components tree from the original hierarchy (before the mesh
-        // is split into facets, so the tree lists whole objects, not facets).
-        const root = extractObjectTree(object, msg.format.toUpperCase());
-        // Cache the pristine object; the displayed model is rebuilt from it with
-        // the current edits applied (no-op when there are none).
-        pristineMesh = object;
-        rebuildMeshModel();
-        // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
-        setSelectableModes(["volume", "surface"]);
-        editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
-        meshingPanel.setSourceKind("mesh");
-        meshingPanel.setModelExtents(viewer.getModelExtents());
-        syncMeshSizeSeed();
-        showSidebar();
-        setStatus("");
-        if (hasMultipleNodes(root)) showTree(root);
+        const bytes = Uint8Array.from(atob(msg.dataBase64), (c) => c.charCodeAt(0));
+        const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "model/stl" }));
+        try {
+          await loadMeshObjectFromUrl(blobUrl, "stl", msg.sourceFormat.toUpperCase());
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
       } catch (err) {
         setStatus(`Failed to load model: ${(err as Error).message}`, true);
       }
@@ -956,6 +1492,58 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshingPanel.render(meshingModel.get());
       break;
 
+    case "viewerDefaults":
+      // Cross-document settings — only ever initial state; per-document sidecar
+      // values and runtime toggles (the toolbar Grid button) always win once set.
+      meshSizePreset = msg.meshSizePreset;
+      viewer.applyDefaults(msg);
+      syncMeshSizeSeed();
+      {
+        const bg = document.getElementById("vc-background") as HTMLInputElement | null;
+        if (bg) bg.value = msg.background;
+      }
+      break;
+
+    case "screenshotRequest":
+      try {
+        viewer.render(); // force a fresh frame right before capture (no persistent preserveDrawingBuffer)
+        const data = viewer.captureScreenshotBase64();
+        post({ type: "screenshotResult", requestId: msg.requestId, data });
+      } catch (err) {
+        post({ type: "screenshotError", requestId: msg.requestId, message: (err as Error).message });
+      }
+      break;
+
+    case "renderViewRequest":
+      // Every renderViewRequest this feature ever sends targets a
+      // disposable, harness-only headless page (src/renderService.ts) —
+      // never a live interactive session — so mutating camera-up/wireframe/
+      // visibility here needs no state restoration afterward.
+      try {
+        viewer.setCameraUp(new THREE.Vector3(...(msg.up ?? [0, 1, 0])));
+        viewer.setViewDirection(new THREE.Vector3(...msg.direction));
+        if (msg.focus || msg.hide) {
+          viewer.applyPartVisibility(msg.hide ?? [], msg.focus?.length ? msg.focus : null);
+        }
+        if (msg.wireframe !== undefined) viewer.setWireframe(msg.wireframe);
+        viewer.render();
+        const data = viewer.captureLabeledScreenshotBase64(msg.label);
+        post({ type: "renderViewResult", requestId: msg.requestId, data });
+      } catch (err) {
+        post({ type: "renderViewError", requestId: msg.requestId, message: (err as Error).message });
+      }
+      break;
+
+    case "massPropertiesResult":
+      if (msg.requestId !== massPropertiesRequestId) break; // stale — a newer refresh superseded it
+      renderMassProperties(msg.properties);
+      break;
+
+    case "massPropertiesError":
+      if (msg.requestId !== massPropertiesRequestId) break;
+      massPropertiesPanel.renderMessage(msg.message, true);
+      break;
+
     case "meshingResult":
       meshingPanel.setBusy(false);
       viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups));
@@ -970,6 +1558,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         nodeCount: msg.nodeCount,
         elementCount: msg.elementCount,
         elapsedMs: msg.elapsedMs,
+        quality: msg.quality,
       });
       break;
 
@@ -981,6 +1570,45 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
   }
 });
+
+/**
+ * Shared load path for both `"loadUrl"` (a `vscode-webview://` fetch of a
+ * native STL/OBJ/PLY/glTF file) and `"loadMeshBytes"` (a `blob:` URL wrapping
+ * host-converted bytes for a meshio++-imported document, always `"stl"`
+ * format regardless of the original file's format — see the `case
+ * "loadMeshBytes"` handler). `loaderFormat` picks the Three.js loader;
+ * `treeLabel` is what the Components tree root shows (the *original* source
+ * format for a meshio-imported document, not always `"STL"`).
+ */
+async function loadMeshObjectFromUrl(url: string, loaderFormat: CadFormat, treeLabel: string): Promise<void> {
+  try {
+    setStatus("Loading model…");
+    setDisplayUnit("mm"); // mesh sources carry no unit metadata
+    lastRawMassProperties = null; // stale — refers to the just-replaced model
+    clearMarkupOverlay?.();
+    const object = await loadMeshFromUrl(url, loaderFormat);
+    tagMeshEntities(object);
+    // Build the Components tree from the original hierarchy (before the mesh
+    // is split into facets, so the tree lists whole objects, not facets).
+    const root = extractObjectTree(object, treeLabel);
+    // Cache the pristine object; the displayed model is rebuilt from it with
+    // the current edits applied (no-op when there are none).
+    pristineMesh = object;
+    rebuildMeshModel();
+    // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
+    setSelectableModes(["volume", "surface"]);
+    editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
+    sourceKind = "mesh";
+    meshingPanel.setSourceKind("mesh");
+    meshingPanel.setModelExtents(viewer.getModelExtents());
+    syncMeshSizeSeed();
+    showSidebar();
+    setStatus("");
+    if (hasMultipleNodes(root)) showTree(root);
+  } catch (err) {
+    setStatus(`Failed to load model: ${(err as Error).message}`, true);
+  }
+}
 
 /**
  * Tags a Three.js-loaded model with STABLE ids (traversal order, not uuid) so
