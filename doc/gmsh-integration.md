@@ -561,52 +561,45 @@ regions — `$PhysicalNames` alone isn't enough; 4.1's `$Entities` is where
 membership lives). The bridge input was switched back to `generateMesh()`'s
 own 4.1 `mshText` accordingly, dropping the extra `gmsh.write()` round trip.
 
-**MED still needs a MED-specific two-step, re-verified against the live
-9.7.0 WASM — but it's now group-PRESERVING, where the 9.4.1-era workaround
-was group-dropping.** Two independent obstacles remain on the direct
-`convert(..., {outFormat: "med"})` path:
-1. It still throws `"MED: gmsh physical groups handled by Python fallback"`
-   whenever `cell_data` carries gmsh's own `"gmsh:physical"`/
-   `"gmsh:geometrical"` tags, which `readMesh(..., "gmsh")` **always**
-   attaches to a gmsh-sourced mesh (this meshio++ build's MED writer defers
-   that case to Python, unavailable in WASM).
-2. MED separately rejects MSH 4.1's natural one-block-per-*entity* cell
-   layout with `"MED files cannot have two sections of the same cell type"`
-   (a meshed unit box arrives as 27 blocks: 8 vertex + 12 line + 6 triangle
-   + 1 tetra).
-The fix for both at once: `readMesh()` the 4.1 text, run the result through
-**`merge([mesh])`** — meshio++'s own merge consolidates same-type cell
-blocks into one (MED's requirement) *and* remaps every named region's
-block-major cell indices onto the merged layout (verified: region entry
-counts survive exactly) — then hand-build a **brand-new plain JS object**
-containing only `{points, dim, cells, regions}` (no `cell_data`/
-`point_data`/`field_data` key at all — dropping them is what dodges obstacle
-1; scalar field data is a theoretical loss only, this pipeline's generated
-meshes never carry any) and `writeMesh()` **that** to MED. meshio++ 9.6.0's
-MED writer synthesizes MED families from the regions, so **parts/physical
-groups now round-trip into MED as named groups** — verified end-to-end: a
-box with `MyVolume`/`MySurface` physical groups wrote a MED whose read-back
-listed both regions with identical entry counts (90 surface triangles, 1101
-tets). Under 9.4.1 this path silently dropped all groups. CGNS/XDMF/VTK need
-none of this; plain `convert()` works directly on the 4.1 text.
+**Every format, MED included, is a single, uniform `convert()` call as of
+`@meshioplusplus/wasm` 9.8.0 — the MED-specific two-step below is now
+historical.** Under 9.7.0, direct `convert(..., {outFormat: "med"})` hit two
+independent obstacles: it threw `"MED: gmsh physical groups handled by
+Python fallback"` whenever `cell_data` carried gmsh's own `"gmsh:physical"`/
+`"gmsh:geometrical"` tags (which `readMesh(..., "gmsh")` **always** attaches
+to a gmsh-sourced mesh), and MED separately rejected MSH 4.1's natural
+one-block-per-*entity* cell layout with `"MED files cannot have two sections
+of the same cell type"` (a meshed unit box arrives as 27 blocks: 8 vertex +
+12 line + 6 triangle + 1 tetra). The workaround was: `readMesh()` the 4.1
+text, run the result through `merge([mesh])` to consolidate same-type
+blocks and remap region indices, then hand-build a brand-new plain object of
+only `{points, dim, cells, regions}` (dropping `cell_data` to dodge the
+Python-fallback throw) and `writeMesh()` that to MED.
 
-**CGNS has one more, narrower limitation — verified on 9.4.1 and
-RE-verified unchanged on 9.7.0**: exporting a **pure-surface** mesh
+9.8.0's `write_med` now bridges `gmsh:physical` to MED families **and**
+consolidates same-type blocks natively in C++ — both obstacles are gone, so
+that entire workaround was deleted from `meshioService.ts`. Re-verified
+end-to-end against the live 9.8.0 WASM with a real Gmsh-generated 4.1 file
+(box, tet-meshed, `MyVolume`/`MySurface` physical groups, `Mesh.SaveAll`
+forced on — the exact shape `generateMesh()` produces), not just a unit
+test: `convert(inPath, "/out.med", {inFormat: "gmsh", outFormat: "med"})`
+followed by `readMesh("/out.med", "med")` returned both region names intact
+with no special-casing. CGNS/XDMF/VTK never needed this; plain `convert()`
+already worked directly on the 4.1 text.
+
+**The CGNS pure-surface read-back gap is also closed in 9.8.0** — previously
+verified broken on 9.4.1 and 9.7.0: exporting a **pure-surface** mesh
 (triangle/quad only, no volume cells — i.e. every 2D-dimension FE-mesh
-generate) produces a CGNS file this same WASM build's own reader can't read
-back (`"HDF5: missing dataset ' data'"`). Confirmed via a controlled pair of
-probes: a volume (tet) mesh round-trips through `convert()`+`readMesh()`
-correctly; a triangle-only mesh fails on read-back with that exact error.
-MED and XDMF have **no** such gap (verified: both round-trip a pure-surface
-mesh correctly). CAD-Preview still writes the CGNS file in this case (the
-failure is on *read*, not *write*, and `exportViaMeshio()` never reads its
-own output back) — a 2D-dimension CGNS export may therefore produce a file
-some *other* downstream CGNS reader also rejects; there is no
-CAD-Preview-side workaround for this one. (All three remaining upstream
-gaps — the MED Python-fallback trip, the MED same-type-blocks rejection,
-and this CGNS read-back failure — are written up with exact reproductions
-in a ready-to-run prompt at the meshio++ repo:
-`PROMPT_close_wasm_gmsh_bridge_gaps.md`.)
+generate) produced a CGNS file this same WASM build's own reader couldn't
+read back (`"HDF5: missing dataset ' data'"`), because CGNS was a private,
+tetrahedra-only encoding whose writer emitted only the first `tetra` block
+it found — a mesh with no tetra block at all (every 2D generate) wrote an
+empty `ElementRange`/`ElementConnectivity`. 9.8.0 rewrote CGNS to a genuine
+CGNS/SIDS-compliant unstructured-mesh subset, one section per cell block
+rather than "first tetra block only". Re-verified against a real Gmsh
+2D-dimension generate fed through the same `convert()` path
+`exportViaMeshio()` uses: the CGNS round-trips clean through this WASM's own
+reader. Volume (3D tet/hex) meshes were never affected by the old bug.
 
 **XDMF writes an HDF5 companion file**, confirmed against the live WASM:
 `convert(..., "/out.xdmf", ...)` also writes `/out.h5` (same MEMFS basename,
@@ -756,14 +749,18 @@ it's simply an additional MIT dependency alongside `@modelcontextprotocol/sdk`/
 
 ## Known limitations
 
-- **The meshio++ MED/CGNS export bridge has two narrow, verified gaps** — see
-  "The meshio++ bridge" above for the full write-up: MED needs a
-  strip-to-`{points,dim,cells}`-before-writing workaround (drops any point/
-  cell scalar field data, which this pipeline's generated meshes never carry
-  anyway); CGNS export of a pure-2D (surface-only) mesh produces a file this
-  same WASM build's own reader can't read back (3D volume meshes are
-  unaffected). Neither is a CAD-Preview bug to fix — both are confirmed
-  limitations of the bundled `@meshioplusplus/wasm` build itself.
+- **The meshio++ MED/CGNS export bridge had two narrow, verified gaps —
+  TRUE for `@meshioplusplus/wasm` ≤ 9.7.0, CLOSED in 9.8.0 (see "The meshio++
+  bridge" above for the full write-up and re-verification).** MED needed a
+  strip-to-`{points,dim,cells}`-before-writing workaround (dropping any
+  point/cell scalar field data, which this pipeline's generated meshes never
+  carried anyway), and CGNS export of a pure-2D (surface-only) mesh produced
+  a file this same WASM build's own reader couldn't read back (3D volume
+  meshes were unaffected). Neither was a CAD-Preview bug — both were
+  confirmed limitations of the bundled `@meshioplusplus/wasm` build itself,
+  and both are gone as of 9.8.0: MED bridges `gmsh:physical` and
+  consolidates same-type blocks natively now, and CGNS was rewritten to a
+  genuine SIDS-compliant subset with no "first tetra block only" writer bug.
 
 - **No working 3D recombination (hex-dominant meshing) in the bundled WASM build
   — TRUE for `@loumalouomega/gmsh-wasm` 0.2.x, SUPERSEDED in 0.3.0 (see the

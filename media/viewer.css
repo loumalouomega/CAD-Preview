@@ -1535,8 +1535,13 @@ input[type="range"].meshing-slider:focus {
 .op-btn.disabled { opacity: 0.4; pointer-events: none; }
 
 .op-icon {
+  display: inline-flex;
   font-size: 14px;
   line-height: 1;
+}
+.op-icon svg {
+  width: 1em;
+  height: 1em;
 }
 
 .op-name {

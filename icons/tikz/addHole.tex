@@ -3,8 +3,12 @@
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \draw[thick, fill=gray!15] (-10,-8) rectangle (10,8);
-  \fill[white] (-3,-8) rectangle (3,8);
+  % Fill the block MINUS the channel as one compound (even-odd) path, rather
+  % than punching a `\fill[white]` hole over it — a literal white fill would
+  % show as a solid white block against this button's actual (non-white,
+  % theme-dependent) background instead of reading as empty space.
+  \fill[gray!15, even odd rule] (-10,-8) rectangle (10,8) (-3,-8) rectangle (3,8);
+  \draw[thick] (-10,-8) rectangle (10,8);
   \draw[dashed] (-3,-8) -- (-3,8);
   \draw[dashed] (3,-8) -- (3,8);
 \end{tikzpicture}

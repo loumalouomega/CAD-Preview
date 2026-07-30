@@ -1,9 +1,13 @@
-% Op icon: torus — outer ring ellipse with a white inner-hole ellipse.
+% Op icon: torus — ring ellipse with a genuinely open (not white-filled)
+% inner hole, via one compound even-odd path — a literal `\fill=white` inner
+% ellipse would show as a solid white blob against this button's actual
+% (non-white, theme-dependent) background rather than reading as a hole.
 \documentclass[tikz,border=2mm]{standalone}
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \draw[thick, fill=gray!20] (0,0) ellipse (10 and 5);
-  \draw[thick, fill=white] (0,0) ellipse (4 and 2);
+  \fill[gray!20, even odd rule] (0,0) ellipse (10 and 5) (0,0) ellipse (4 and 2);
+  \draw[thick] (0,0) ellipse (10 and 5);
+  \draw[thick] (0,0) ellipse (4 and 2);
 \end{tikzpicture}
 \end{document}

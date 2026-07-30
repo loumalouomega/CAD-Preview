@@ -29,7 +29,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
 | `src/webview/opCatalog.ts` | Op catalog: GEOMETRY/EDIT tab structure + `describeOp`, DOM-free (unit-tested) |
-| `src/webview/opIcons.ts` | Per-op icon placeholders — the one file to edit for real icons |
+| `src/webview/opIcons.ts` | Generated per-op SVG icons (`icons/build-op-icons.mjs`) |
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
@@ -845,10 +845,12 @@ reachability.
 
 ## `src/webview/opIcons.ts`
 
-`OP_ICONS: Record<PanelOpId, string>` — the **one file to edit to swap in real
-icons**. Each value renders as the text of the button's `<span class="op-icon">`;
-the current values are placeholder unicode glyphs. The `Record` type makes a
-missing icon a compile error.
+**GENERATED — never hand-edit.** `OP_ICONS: Record<PanelOpId, string>`, one
+inline-SVG value per Edits-panel op button, produced by
+`icons/build-op-icons.mjs` from `icons/tikz/*.tex` (`cd icons && make ops-ts`)
+— the same `currentColor`-based pipeline `src/toolbarIcons.ts` uses (see
+`icons/README.md`). `editsPanel.ts`'s `buildTabContent()` sets each value via
+`innerHTML` on the button's `<span class="op-icon">`, not `textContent`.
 
 ## `src/webview/editsPanel.ts`
 

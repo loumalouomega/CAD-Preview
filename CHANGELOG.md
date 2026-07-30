@@ -22,7 +22,9 @@ fast and bundled multiple features per bump).
   placeholder (`⊙ ＋ ↶ ↷`) is now a generated, monochrome SVG icon that tracks
   the VS Code theme — 41 icons in total, covering the toolbar, both tool
   pickers, the five Display modes, and the Parts/Edits/Variables/FE&nbsp;Mesh
-  panel buttons.
+  panel buttons. The Edits panel's 46 op buttons (Move, Box, Fillet, Boolean
+  Subtract, and so on) are now real icons too, replacing their unicode
+  placeholders.
 - **Display modes** — five mutually exclusive whole-model rendering modes
   (Shaded, Wireframe, X-Ray, Hidden Lines, Flat), replacing the old standalone
   Wireframe toggle.
@@ -68,6 +70,11 @@ fast and bundled multiple features per bump).
   wasm-stack-overflow bug that forced the Frontal workaround was fixed upstream
   in `@loumalouomega/gmsh-wasm` 0.3.0. Existing documents keep whatever is
   already saved in their `.mesh.json`.
+- Bumped `@meshioplusplus/wasm` to 9.8.0, which closes two upstream gaps this
+  extension previously had to work around: exporting a generated mesh to MED
+  now preserves part names directly (no more MED-specific two-step), and
+  exporting a 2D-dimension mesh to CGNS now produces a file that reads back
+  correctly (it used to round-trip cleanly only for 3D volume meshes).
 
 ### Fixed
 - The **File ▾** menu could not be dismissed by clicking its own icon — the

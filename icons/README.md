@@ -3,43 +3,76 @@
 This directory holds three independent TikZ-drawn icon sets for CAD-Preview.
 The two panel/toolbar sets follow the same visual language (`line width=1.3pt,
 line cap=round, line join=round, >=Stealth, x=1mm,y=1mm` on the `tikzpicture`,
-canvas coordinates roughly -13..13); the extension icon is a separate,
-full-color design. They're built and wired very differently — see whichever
-section applies before editing.
+canvas coordinates roughly -13..13) **and the same currentColor SVG pipeline**
+(`svgIconPostProcess.mjs`, shared by both generator scripts); the extension
+icon is a separate, full-color design built and wired very differently — see
+whichever section applies before editing.
 
 | | `tikz/` (Edits panel) | `tikz-ui/` (toolbar/panels) | `tikz-icon/` (extension icon) |
 |---|---|---|---|
 | Count | 46, one per `PanelOpId` | 41, one per toolbar/panel icon | 1 |
-| Output format | PNG (flat, fixed gray/black) | inline SVG (`currentColor`-based) | PNG (fixed teal/white, 512x512) |
-| Wired into the running extension? | **No** — still unicode-glyph placeholders in `opIcons.ts` | **Yes** — replaces the emoji that used to be there | **Yes** — `package.json`'s `"icon"` field |
-| Theme-adaptive? | No (fixed colors) | Yes (tracks VS Code light/dark via `currentColor`) | No (fixed teal-on-white/transparent) |
+| Output format | inline SVG (`currentColor`-based) | inline SVG (`currentColor`-based) | PNG (fixed teal/white, 512x512) |
+| Wired into the running extension? | **Yes** — `src/webview/opIcons.ts` | **Yes** — replaces the emoji that used to be there | **Yes** — `package.json`'s `"icon"` field |
+| Theme-adaptive? | Yes (tracks VS Code light/dark via `currentColor`) | Yes (tracks VS Code light/dark via `currentColor`) | No (fixed teal-on-white/transparent) |
 
-## `tikz/` — Edits panel op icons (46, PNG, not yet wired)
+## `tikz/` — Edits panel op icons (46, SVG, wired in)
 
 One standalone TikZ file per Edits-panel operation button (`tikz/<PanelOpId>.tex`),
 matching the `PanelOpId` keys in
-[`src/webview/opCatalog.ts`](../src/webview/opCatalog.ts) and the placeholders in
-[`src/webview/opIcons.ts`](../src/webview/opIcons.ts) 1:1. Each compiles to its
-own PNG; previews are committed at `png/<id>.png` (600 DPI).
+[`src/webview/opCatalog.ts`](../src/webview/opCatalog.ts) and the **generated,
+committed** module [`../src/webview/opIcons.ts`](../src/webview/opIcons.ts)
+1:1 — which is what `editsPanel.ts` actually imports and renders (via
+`innerHTML`, not `textContent` — an op icon is inline SVG markup, not a text
+glyph). This set originally shipped as flat-color PNG previews with no wiring;
+it now goes through the exact same `svgIconPostProcess.mjs` pipeline as
+`tikz-ui/` below, just into its own `svg-ops/` output directory and its own
+generator script (`build-op-icons.mjs`) — kept separate from
+`build-toolbar-icons.mjs` because `opIcons.ts`'s generated type is
+`Record<PanelOpId, string>` (imported from `opCatalog.ts`) rather than a
+self-contained union, so a missing/extra id is a `tsc` error, not just a
+runtime completeness check.
 
 ```bash
 cd icons
-make            # builds png/<id>.png for every tikz/<id>.tex, at 600 DPI
-make clean      # removes build/ and png/
+make ops        # tikz/*.tex → svg-ops/*.svg (needs pdflatex + pdftocairo)
+make ops-ts     # (re-)runs `make ops`, then regenerates ../src/webview/opIcons.ts
+node build-op-icons.mjs   # re-run codegen alone, no LaTeX needed,
+                          # as long as svg-ops/*.svg is already current
 ```
 
-No `pdftoppm`? Swap the recipe's second line in `Makefile` for ImageMagick instead:
-`convert -density 600 $(BUILDDIR)/$*.pdf $(PNGDIR)/$*.png`.
+`svg-ops/*.svg` previews are committed for exactly that last case. To change
+an icon: edit its `tikz/<id>.tex`, run `make ops-ts`, done — never hand-edit
+`src/webview/opIcons.ts` (regenerated wholesale, any manual edit is silently
+lost next time someone runs it). Adding a new op icon means also adding its
+id to `PanelOpId` in `opCatalog.ts` first — the generator's `Record` type
+turns a mismatch into a compile error rather than a silent gap.
 
-To rebuild a single icon: `make png/addBox.png` (or run `pdflatex`/`pdftoppm`
-directly on that one file).
-
-**Wiring PNGs into the extension is a deliberate, not-yet-done follow-up** —
-`opIcons.ts` currently renders `OP_ICONS[id]` as the text content of a
-`<span class="op-icon">` (unicode glyph placeholders). Doing so would need
-bundling `icons/png/*.png` into `media/`, changing `opIcons.ts`'s value type
-to an image path, and `editsPanel.ts` setting the icon `<span>`'s
-`background-image` (or an `<img>`) instead of `textContent`.
+**Because these icons live on a small (~30px) button with only a
+`--vscode-button-secondaryBackground` background behind them, not a fixed
+white page, a few of the original 46 sources needed real fixes, not just a
+pipeline swap** — the same "only fills get gray→currentColor, strokes never
+do" rule `tikz-ui/`'s README section below documents was violated in two ways
+that only mattered once real theming was wired in:
+- **Bare `\draw[gray]` strokes** (14 files: de-emphasized outlines, ghost/
+  reference lines) stayed literally mid-gray in every theme instead of
+  tracking `currentColor`. Fixed the same way `tikz-ui/isolate.tex` already
+  did: drop the stroke color, keep (or add) `dashed` for de-emphasis instead.
+- **`\fill[white]` "erase" hacks** (5 files — the three hole ops, the torus,
+  and boolean subtract) used to punch a visual hole by painting literal white
+  over a filled shape. Against this button's real (non-white, theme-dependent)
+  background, that showed as a solid white blob instead of empty space. Fixed
+  with a genuine even-odd compound path instead (`\fill[gray!N, even odd
+  rule] (outer) (hole);`, tracing the hole as a single non-self-overlapping
+  polygon when two sub-holes would otherwise overlap and double-cancel), which
+  leaves the hole area transparent — for boolean subtract specifically (two
+  circles that only partially overlap, not one fully containing the other),
+  the same trick is applied to a *clip* instead of a fill: `\pgfseteorule` +
+  `\clip (circleA) (circleB);` clips to "A xor B", and filling A inside that
+  clip yields exactly the "A minus B" crescent with the excluded lens left
+  genuinely transparent. (Note: `\clip[even odd rule] (...)` and
+  `\path[clip, even odd rule] (...)` both error — `"Extra options not allowed
+  for clipping path command"` — in this TikZ version; the low-level
+  `\pgfseteorule` call before a plain `\clip` is what actually works.)
 
 ## `tikz-ui/` — toolbar/panel icons (41, SVG, wired in)
 

@@ -3,9 +3,14 @@
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \draw[thick, fill=gray!15] (-10,-8) rectangle (10,8);
-  \fill[white] (-3,-8) rectangle (3,8);
-  \fill[white] (-6,3) rectangle (6,8);
+  % One compound (even-odd) path for the block minus the stepped hole, traced
+  % as a single non-self-overlapping polygon (the narrow channel and the wide
+  % counterbore step share an edge, so two separate rectangle subpaths would
+  % double-cancel where they overlap) — see addHole.tex for why this replaces
+  % a `\fill[white]` punch.
+  \fill[gray!15, even odd rule] (-10,-8) rectangle (10,8)
+    (-3,-8) -- (3,-8) -- (3,3) -- (6,3) -- (6,8) -- (-6,8) -- (-6,3) -- (-3,3) -- cycle;
+  \draw[thick] (-10,-8) rectangle (10,8);
   \draw[dashed] (-3,-8) -- (-3,3);
   \draw[dashed] (3,-8) -- (3,3);
   \draw[thick] (-6,3) -- (-6,8);
