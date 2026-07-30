@@ -53,7 +53,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
 3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, and `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`.
 4. Call `setupViewControls(viewer)`, `setupViewMenu()`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()`, `setupDragAndDrop()`, `setupAppearanceControls()`, `setupClippingControls()`, `setupMarkupControls()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
-5. Wire toolbar buttons. Only `#fit`, `#tree-toggle`, and `#meshing-toggle` sit directly on the strip; everything else lives inside one of four dropdown panels (`#view-dropdown`, `#select-dropdown`, `#measure-dropdown`, `#markup-dropdown`) wired by `dropdownMenu.ts` (see below). `#screenshot` (in **View ▾**) posts `{ type: "screenshotButtonClicked" }` — it shows no UI itself, the host owns the save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. The measure mode toggle / `.measure-tool-btn` row / Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted at all. `#grid` and `#edges` are `menuitemcheckbox`es whose `aria-checked` reflects `viewer.toggleGrid()`'s return value and `setupAppearanceControls()`'s `edgesVisible` flag respectively, purely session-side. There is no standalone `#wireframe` toolbar button — Wireframe is one of five mutually exclusive **Display mode** states (`#display-mode-group` in the view-controls Appearance area, `setupAppearanceControls()`) driving `viewer.setDisplayMode()`; see below.
+5. Wire toolbar buttons. Only `#fit`, `#tree-toggle`, and `#meshing-toggle` sit directly on the strip; everything else lives inside one of four dropdown panels (`#view-dropdown`, `#select-dropdown`, `#measure-dropdown`, `#markup-dropdown`) wired by `dropdownMenu.ts` (see below). `#screenshot` (in **View ▾**) posts `{ type: "screenshotButtonClicked" }` — it shows no UI itself, the host owns the save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. The measure mode toggle / `.measure-tool-btn` row / Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted, **except** the `#measure-exact-btn` (⟟ Exact) that appears next to a completed distance/edge-length/radius result, which round-trips a `measureExactRequest` to the host for a true B-rep-precision value (see below). `#grid` and `#edges` are `menuitemcheckbox`es whose `aria-checked` reflects `viewer.toggleGrid()`'s return value and `setupAppearanceControls()`'s `edgesVisible` flag respectively, purely session-side. There is no standalone `#wireframe` toolbar button — Wireframe is one of five mutually exclusive **Display mode** states (`#display-mode-group` in the view-controls Appearance area, `setupAppearanceControls()`) driving `viewer.setDisplayMode()`; see below.
 6. Register `window.addEventListener('message', ...)` for host messages.
 7. Post `{ type: 'ready' }` to the host.
 
@@ -1450,8 +1450,38 @@ wrapping it in a fresh `CanvasTexture` per call is safe.
 (toggle/tool `<select>`/Clear/readout span), dispatches completed picks to
 `measurement.ts`'s functions via `computeMeasurementResult()`, and calls
 `Viewer.showMeasurementMarker`/`showMeasurementOverlay`/`clearMeasurementOverlay`
-to display the result. See [Extension Host API](./extension-host-api.md) — no
-entry there, since this feature has zero host involvement.
+to display the result.
+
+**Exact-precision measurement (`#measure-exact-btn`, ⟟).** The triangulated
+webview computation above is always approximate (tied to the 0.1 tessellation
+deflection tolerance) — for a B-rep source, a true OCCT-precision value is one
+click away. `main.ts` tracks the last completed measurement in module state
+(`lastMeasurement: { tool: MeasureTool; picks: MeasurementPick[] } | null`),
+set by the same `viewer.setOnMeasurePick()` callback that renders the
+approximate result, and cleared on Clear/tool-switch/mode-toggle/a pick that
+fails to resolve, and on every new model load (both the B-rep `geometry`
+handler and the mesh `loadUrl`/`loadMeshBytes` path — the latter also hides
+`#measure-exact-btn`, since mesh sources have no host-side B-rep to re-derive
+an exact value from). `refreshExactButton()` shows/enables the button only
+when `sourceKind === "brep"`, `exactMeasureKindFor(tool)` (which maps every
+`MeasureTool` straight through except `"angle"` → `null` — no OCCT call this
+codebase uses computes an exact face/edge angle, so the button never appears
+after an angle measurement) returns non-null, and the pick(s) resolved to
+real `entityId`s (both, for `"distance"`). Clicking it posts
+`{ type: "measureExactRequest", requestId, kind, entityIdA, entityIdB? }` (a
+fresh `measureExactRequestId`, same stale-response-guard pattern as
+`massPropertiesRequest`), disables the button, and appends "· computing
+exact…" to the current readout text. The host resolves the *live* entities
+(through the current edit-op stack, exactly like `inspect`/`measure`) via
+`BRepExtrema_DistShapeShape` (distance), `BRepGProp.LinearProperties` (edge
+length), or the edge's own `BRepAdaptor_Curve_2`/`Circle()` (radius — throws a
+clear, surfaced error for a non-circular edge) and replies with
+`measureExactResult`/`measureExactError` (see [Protocol](./protocol.md)). A
+successful result **replaces** the readout with `D_exact`/`L_exact`/`R_exact
+= <value>` (`formatMeasureLength()`, so it still tracks the Units dropdown);
+an error replaces it with the message instead, same as any other measurement
+error path. See [Extension Host API](./extension-host-api.md) for the
+host-side `measureExact()` implementation this now depends on.
 
 ---
 

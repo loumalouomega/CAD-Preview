@@ -52,6 +52,17 @@ export interface EntityFacts {
   surfaceType: SurfaceType | null;
 }
 
+export type ExactMeasureKind = "distance" | "edgeLength" | "radius";
+
+export interface ExactMeasureResult {
+  kind: ExactMeasureKind;
+  value: number;
+  /** Set only for `kind: "distance"` — the actual nearest points OCCT found
+   * on each shape (not necessarily either entity's centre or an endpoint). */
+  fromPoint?: Vec3;
+  toPoint?: Vec3;
+}
+
 export interface MeasureResult {
   from: string;
   to: string;
@@ -245,6 +256,129 @@ export async function measureEntities(
       result.axisComponent = delta[0] * unit[0] + delta[1] * unit[1] + delta[2] * unit[2];
     }
     return result;
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try {
+        cleanup[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * Exact B-rep-precision measurement — a host round trip an agent (or, via
+ * `measureExactRequest`, the interactive webview Measure tool) opts into on
+ * top of the always-available, instant client-side triangulated
+ * approximation (`src/webview/measurement.ts`, tied to `meshExtract.ts`'s
+ * 0.1 tessellation deflection). Reuses `resolveEntity` (this file) for id
+ * resolution, so it accepts the same `solid-N`/`face-N`/`edge-N`/`point-N`
+ * ids every other entity-facts path does.
+ *
+ * **`kind: "distance"`** — the true minimum distance between two arbitrary
+ * shapes (point/edge/face/solid, any combination), via
+ * `BRepExtrema_DistShapeShape`. **Verified against the live WASM** (brute-
+ * force probing, the usual convention): only 3 constructor overloads exist
+ * in this binding — `_1` (0 args), `_2` (4 args), `_3` (5 args); calling `_1`
+ * or `_2`/`_3` directly with `(shape1, shape2)` throws an argument-count
+ * error (their real params are `(shape1, shape2, extFlag, extAlgo[,
+ * deflection])`, and guessing the `Extrema_ExtFlag`/`Extrema_ExtAlgo` enum
+ * values felt riskier than the alternative that's guaranteed to hit the same
+ * defaults: construct with `_1()` (0 args) and call `.LoadS1(shape1)` →
+ * `.LoadS2(shape2)` → `.Perform()` — confirmed working end-to-end on a real
+ * box-vs-cylinder pair, returning a genuine geometric distance (not a bbox
+ * approximation) and nearest points that land exactly where hand-computed
+ * geometry predicts. `.IsDone()` gates a real, non-degenerate result;
+ * `.Value()` is the distance; `.PointOnShape1(1)`/`.PointOnShape2(1)` (1
+ * = first solution — `BRepExtrema_DistShapeShape` supports multiple
+ * equidistant solutions in general, but this feature only ever wants "a"
+ * nearest-point pair) return `gp_Pnt`-like handles for the actual nearest
+ * points OCCT found — NOT necessarily either entity's centre, an endpoint,
+ * or any point a user could have picked, which is exactly the extra
+ * precision a triangulated approximation can't give.
+ *
+ * **`kind: "edgeLength"`** — reuses the exact `BRepGProp.LinearProperties`
+ * call shape `getEntityFacts` above already verified (single-edge only, per
+ * that function's own doc comment — never call it over multiple edges).
+ *
+ * **`kind: "radius"`** — only valid for an edge whose underlying curve is a
+ * true circle: `BRepAdaptor_Curve_2(edge).GetType()` compared symbolically
+ * against `oc.GeomAbs_CurveType.GeomAbs_Circle.value` (never a hardcoded
+ * literal, so this stays correct regardless of the enum's actual numeric
+ * value in a given build) — then `.Circle()` returns a `gp_Circ`-like
+ * handle, `.Radius()` the exact radius. **Verified end-to-end against the
+ * live WASM**, not just that the calls don't throw: a cylinder primitive
+ * added via `addCylinder(radius: 3, ...)` and re-measured through this exact
+ * path (`apply_edit_ops` → `measure_exact`) resolved its rim edges' radius
+ * as exactly `3`, and an unrelated circular edge already present in
+ * `bull.stp` resolved to a plausible `2.5399999999998477`. A non-circular
+ * edge (line, B-spline, ellipse, …) throws a clear, actionable error rather
+ * than silently returning a meaningless "best-fit" number.
+ */
+export async function measureExact(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  kind: ExactMeasureKind,
+  entityIdA: string,
+  entityIdB?: string
+): Promise<ExactMeasureResult> {
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/me.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    const a = resolveEntity(oc, shape, entityIdA, cleanup);
+
+    if (kind === "distance") {
+      if (!entityIdB) throw new Error('"distance" requires entityIdB');
+      const b = resolveEntity(oc, shape, entityIdB, cleanup);
+      const dist = new oc.BRepExtrema_DistShapeShape_1();
+      cleanup.push(dist);
+      dist.LoadS1(a.handle);
+      dist.LoadS2(b.handle);
+      dist.Perform();
+      if (!dist.IsDone()) throw new Error("BRepExtrema_DistShapeShape did not converge for these entities");
+      const p1 = dist.PointOnShape1(1);
+      cleanup.push(p1);
+      const p2 = dist.PointOnShape2(1);
+      cleanup.push(p2);
+      return {
+        kind,
+        value: dist.Value(),
+        fromPoint: [p1.X(), p1.Y(), p1.Z()],
+        toPoint: [p2.X(), p2.Y(), p2.Z()],
+      };
+    }
+
+    if (kind === "edgeLength") {
+      if (a.kind !== "edge") throw new Error('"edgeLength" requires an edge entity');
+      const props = new oc.GProp_GProps_1();
+      cleanup.push(props);
+      oc.BRepGProp.LinearProperties(a.handle, props, false, false);
+      return { kind, value: props.Mass() };
+    }
+
+    // kind === "radius"
+    if (a.kind !== "edge") throw new Error('"radius" requires an edge entity');
+    const curve = new oc.BRepAdaptor_Curve_2(a.handle);
+    cleanup.push(curve);
+    if (curve.GetType().value !== oc.GeomAbs_CurveType.GeomAbs_Circle.value) {
+      throw new Error("This edge is not a circular arc — radius is only defined for circular edges");
+    }
+    const circ = curve.Circle();
+    cleanup.push(circ);
+    return { kind, value: circ.Radius() };
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {

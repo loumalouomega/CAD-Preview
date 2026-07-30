@@ -13,6 +13,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export (op-list aware) |
 | `src/occtOperations.ts` | Host-side OCCT edit engine — folds the op-list over a `TopoDS_Shape` |
 | `src/massProperties.ts` | Volume/area/length/CoG/inertia for a B-rep shape via OCCT `BRepGProp` (vscode-free) |
+| `src/entityFacts.ts` | Per-entity geometric facts (`inspect`), bbox-centre distance (`measure`), and exact OCCT-precision distance/edge-length/radius (`measure_exact`) for a B-rep shape (vscode-free) |
 | `src/stepUnits.ts` | Pure text scan of a STEP file's `DATA` section for its declared length unit (vscode/OCCT-free, unit-tested) |
 | `src/igesUnits.ts` | Sibling scanner for IGES's fixed-width Global-section unit flag — same purpose, different (positional, not named-entity) format (vscode/OCCT-free, unit-tested) |
 | `src/lengthUnits.ts` | Shared `DisplayUnit` type + mm scale-factor table + `displayUnitFromUnitName` — backs both the webview's display-unit selector and unit-conversion-on-export (vscode/DOM/THREE-free) |
@@ -328,6 +329,119 @@ sources compute the equivalent client-side in the webview — see
 [Webview API](./webview-api.md)); `mcpTools.ts`'s `get_mass_properties`
 follows the identical B-rep-only gate, returning `{supported: false}` with a
 warning for mesh formats.
+
+---
+
+## `src/entityFacts.ts`
+
+Three B-rep-only, `vscode`-free functions sharing one private
+`resolveEntity()` id-resolver (`solid-N`/`face-N`/`edge-N`/`point-N`, via the
+already-shared `collectSolids`/`collectFaces`/`collectEdges`/`collectVertices`
+from `occtOperations.ts`) and the same read-parse-cleanup skeleton every other
+B-rep read path in this codebase follows — re-parse `bytes`, replay `ops`,
+resolve, compute, `.delete()` every handle in reverse order, `unlink` the
+MEMFS temp file. Backs the `inspect`/`measure`/`measure_exact` MCP tools
+(`mcpTools.ts`) and, for `measure_exact` only, the interactive webview's
+"⟟ Exact" measurement button (`measureExactRequest`, see
+[Protocol](./protocol.md) and [Webview API](./webview-api.md)).
+
+```typescript
+type SurfaceType = 'plane' | 'cylinder' | 'cone' | 'sphere' | 'torus' | 'other'
+
+interface EntityFacts {
+  entityId: string
+  kind: 'solid' | 'face' | 'edge' | 'point'
+  bbox: { min: Vec3; max: Vec3; diagonal: number } | null
+  center: Vec3       // bounding-box centre, NOT the mass centroid
+  area: number | null    // solid: boundary area; face: its own area; null otherwise
+  length: number | null  // edge only
+  normal: Vec3 | null       // planar face only
+  surfaceType: SurfaceType | null   // face only
+}
+
+async function getEntityFacts(
+  extensionPath: string, bytes: Uint8Array, format: BRepFormat,
+  ops: EditOp[], entityId: string
+): Promise<EntityFacts>
+
+interface MeasureResult {
+  from: string; to: string; fromPoint: Vec3; toPoint: Vec3
+  distance: number; delta: Vec3          // toPoint - fromPoint
+  axis?: Vec3; axisComponent?: number    // delta · normalize(axis), only when axis given
+}
+
+async function measureEntities(
+  extensionPath: string, bytes: Uint8Array, format: BRepFormat,
+  ops: EditOp[], from: string, to: string, axis?: Vec3
+): Promise<MeasureResult>
+
+type ExactMeasureKind = 'distance' | 'edgeLength' | 'radius'   // no "angle" — see below
+
+interface ExactMeasureResult {
+  kind: ExactMeasureKind
+  value: number
+  fromPoint?: Vec3; toPoint?: Vec3   // "distance" only — OCCT's actual nearest points, not a centre/endpoint
+}
+
+async function measureExact(
+  extensionPath: string, bytes: Uint8Array, format: BRepFormat, ops: EditOp[],
+  kind: ExactMeasureKind, entityIdA: string, entityIdB?: string
+): Promise<ExactMeasureResult>
+```
+
+**`getEntityFacts`/`measureEntities`** are both deliberately bbox-centre-based
+(`bboxCenter`, `occtOperations.ts`) — for an asymmetric shape this is a
+*different* point than `get_mass_properties`' area/volume-weighted
+`centerOfMass`; use `inspect`/`measure` for "where roughly is X" and
+`get_mass_properties` when the mass-weighted centroid itself is the thing
+being asked about. `EntityFacts.surfaceType`'s `GeomAbs_SurfaceType` mapping
+was verified against the live WASM the same way `massProperties.ts`'s
+`BRepGProp` calls were — see the type's doc comment in `entityFacts.ts` for
+the full brute-force-probing trail (`GeomAbs_Plane=0` … `GeomAbs_Torus=4`,
+confirmed by building one of each primitive and reading
+`BRepAdaptor_Surface_2(face,true).GetType().value`).
+
+**`measureExact`** is the opt-in true-OCCT-precision sibling to the always-
+available, instant, but only *approximate* triangulated measurement (client-
+side, `src/webview/measurement.ts`, tied to `meshExtract.ts`'s 0.1
+tessellation deflection) — a host round trip an agent or the interactive
+Measure tool's "⟟ Exact" button opts into per pick, not the default. Every
+call shape below is **verified against the live WASM**, not assumed from
+upstream OCCT docs (same brute-force overload-probing convention as every
+other OCCT call in this codebase):
+
+- **`kind: "distance"`** — the true minimum distance between two arbitrary
+  entities (point/edge/face/solid, any combination) via
+  `BRepExtrema_DistShapeShape`. Only 3 constructor overloads exist in this
+  binding (`_1` 0-arg, `_2` 4-arg, `_3` 5-arg); calling `_2`/`_3` directly
+  with just `(shape1, shape2)` throws an argument-count error (their real
+  params include `Extrema_ExtFlag`/`Extrema_ExtAlgo` enums this codebase
+  never needed to guess the values of), so `measureExact` instead constructs
+  with `_1()` and calls `.LoadS1(shape)` → `.LoadS2(shape)` → `.Perform()` —
+  confirmed end-to-end on a real box-vs-cylinder pair, returning a genuine
+  geometric distance and nearest points matching hand-computed geometry.
+  `.IsDone()` gates a real result; `.PointOnShape1(1)`/`.PointOnShape2(1)`
+  (solution 1 of potentially several equidistant ones — this feature only
+  ever wants "a" nearest-point pair) return the actual nearest points OCCT
+  found, not either entity's centre or an endpoint.
+- **`kind: "edgeLength"`** — reuses `getEntityFacts`'s already-verified
+  single-edge `BRepGProp.LinearProperties` call shape.
+- **`kind: "radius"`** — only valid for an edge whose underlying curve is a
+  true circle: `BRepAdaptor_Curve_2(edge).GetType()` compared **symbolically**
+  against `oc.GeomAbs_CurveType.GeomAbs_Circle.value` (never a hardcoded
+  numeric literal), then `.Circle().Radius()`. Verified end-to-end: a
+  `addCylinder(radius: 3, ...)` primitive's rim edge, re-measured through
+  `apply_edit_ops` → `measure_exact`, resolved to exactly `3`; a non-circular
+  edge throws a clear, actionable error instead of a meaningless best-fit
+  number. There is deliberately no `"angle"` kind —
+  `BRepExtrema_DistShapeShape` has no exact-angle analogue, so
+  `src/webview/main.ts`'s `exactMeasureKindFor()` maps the Measure tool's
+  `"angle"` mode to `null` and the "⟟ Exact" button never appears for it.
+
+`provider.ts` handles `measureExactRequest` for B-rep sources only (there is
+no client-side/webview computation to fall back to — the button itself is
+hidden for mesh sources, see [Webview API](./webview-api.md));
+`mcpTools.ts`'s `measure_exact` follows the identical B-rep-only gate.
 
 ---
 

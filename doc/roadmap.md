@@ -51,16 +51,12 @@ recorded in `CLAUDE.md`. None is a bug.
    `CONVERSION_BASED_UNIT` STEP entity via text surgery — judged too
    high-risk to attempt without a way to validate the result beyond this
    codebase's own text-pattern-matching reader.
-3. **Exact-precision measurement** (**M**). Distances are computed client-side
-   against the triangulated approximation (tied to the 0.1 tessellation
-   deflection). `BRepExtrema_DistShapeShape` in the host would give exact B-rep
-   precision, at the cost of a round trip per measurement.
-4. **Entity-id rebinding after topology-changing ops** (**L**). Booleans,
+3. **Entity-id rebinding after topology-changing ops** (**L**). Booleans,
    fillets, and feature modeling re-tessellate into fresh `face-N`/`edge-N`
    ids, so existing *part* assignments referencing them are dropped on reload
    (gracefully, by the tolerant sidecar parser). A geometric rebinding pass
    could preserve them; the matching heuristics are the hard part.
-5. **OBJ/PLY/glTF support for `compare_models`** (**M**). STL is now
+4. **OBJ/PLY/glTF support for `compare_models`** (**M**). STL is now
    supported via a new host-side parser (`stlParser.ts`/`meshComponents.ts`);
    OBJ/PLY/glTF remain webview-only. OBJ is plain text and comparatively easy
    to add on the same pattern; PLY (binary+ASCII variants) and glTF (JSON +
@@ -69,12 +65,12 @@ recorded in `CLAUDE.md`. None is a bug.
 
 ### Tier 3 — upstream-dependent
 
-6. **Richer meshio++ import** (**M**, partly upstream). Imported VTK/MED/CGNS/
+5. **Richer meshio++ import** (**M**, partly upstream). Imported VTK/MED/CGNS/
    Exodus/XDMF/MDPA files funnel through meshio++'s STL-boundary writer, so
    region names, scalar point/cell data, and multi-material grouping are lost —
    only geometry survives. Preserving them needs a genuinely different import
    path, not just a flag.
-7. **Confirm Kratos MDPA block names** (**S**, needs Kratos-dev input). The
+6. **Confirm Kratos MDPA block names** (**S**, needs Kratos-dev input). The
    geometry block names are certain; the newer kinds' `Element*`/`Condition*`
    names are best-guess transcriptions. `"elements"` mode already pre-flights
    an actionable error for any kind whose name is unknown, so the guard is in
@@ -82,7 +78,7 @@ recorded in `CLAUDE.md`. None is a bug.
 
 ### Verification debt
 
-8. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
+7. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
    reads `File.path` (a legacy Electron extension) and falls back to the Open
    dialog when it's absent, so the feature always works — but the true-path
    branch has never been exercised against a real Extension Development Host.

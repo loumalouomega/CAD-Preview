@@ -18,6 +18,7 @@ import {
   setMeshOptions,
   inspectEntity,
   measureTool,
+  measureExactTool,
   renderSnapshotTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
@@ -37,7 +38,7 @@ import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
 import type { MassProperties } from "./massProperties";
-import type { EntityFacts, MeasureResult } from "./entityFacts";
+import type { EntityFacts, MeasureResult, ExactMeasureResult } from "./entityFacts";
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { ModelDiff } from "./modelDiff";
@@ -101,6 +102,13 @@ const FAKE_MEASURE_RESULT: MeasureResult = {
   toPoint: [3, 4, 0],
   distance: 5,
   delta: [3, 4, 0],
+};
+
+const FAKE_EXACT_MEASURE_RESULT: ExactMeasureResult = {
+  kind: "distance",
+  value: 5,
+  fromPoint: [0, 0, 0],
+  toPoint: [3, 4, 0],
 };
 
 const FAKE_RENDER_RESULT: RenderResult = {
@@ -167,6 +175,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     computeMassProperties: vi.fn(async () => FAKE_MASS_PROPERTIES),
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
+    measureExact: vi.fn(async () => FAKE_EXACT_MEASURE_RESULT),
     renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
     isRenderAvailable: vi.fn(async () => ({ available: true })),
     searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
@@ -361,6 +370,40 @@ describe("measure", () => {
     expect(c.pipeline.measureEntities).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
     expect(result.warnings[0]).toMatch(/headless/i);
+  });
+});
+
+describe("measure_exact", () => {
+  it("computes an exact distance for a B-rep source", async () => {
+    const c = ctx();
+    const result = await measureExactTool(c, { path: stpModel, kind: "distance", entityIdA: "solid-0", entityIdB: "solid-1" });
+    expect(c.pipeline.measureExact).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], "distance", "solid-0", "solid-1");
+    expect(result).toMatchObject({ supported: true, kind: "distance", value: 5 });
+  });
+
+  it("passes entityIdB through as undefined for edgeLength/radius (no second operand)", async () => {
+    const c = ctx();
+    await measureExactTool(c, { path: stpModel, kind: "radius", entityIdA: "edge-0" });
+    expect(c.pipeline.measureExact).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], "radius", "edge-0", undefined);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await measureExactTool(c, { path: stlModel, kind: "distance", entityIdA: "node-0", entityIdB: "node-1" });
+    expect(c.pipeline.measureExact).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/headless/i);
+  });
+
+  it("propagates the pipeline's error for an invalid kind/entity combination (e.g. distance with no entityIdB)", async () => {
+    const c = ctx(
+      fakePipeline({
+        measureExact: vi.fn(async () => {
+          throw new Error('"distance" requires entityIdB');
+        }),
+      })
+    );
+    await expect(measureExactTool(c, { path: stpModel, kind: "distance", entityIdA: "solid-0" })).rejects.toThrow(/entityIdB/);
   });
 });
 

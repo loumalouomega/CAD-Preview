@@ -19,6 +19,7 @@ import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
 import { normalizeViewerDefaults } from "./viewerDefaults";
 import { computeMassProperties } from "./massProperties";
+import { measureExact } from "./entityFacts";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseEditsJson } from "./editsSidecar";
@@ -504,6 +505,28 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           post({ type: "massPropertiesResult", requestId: msg.requestId, properties });
         } catch (err) {
           post({ type: "massPropertiesError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "measureExactRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Exact measurement requires a B-rep source; mesh sources have no host-side geometry to re-derive it from.");
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const result = await measureExact(
+            this.context.extensionPath,
+            bytes,
+            route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+            currentEdits,
+            msg.kind,
+            msg.entityIdA,
+            msg.entityIdB
+          );
+          post({ type: "measureExactResult", requestId: msg.requestId, result });
+        } catch (err) {
+          post({ type: "measureExactError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }

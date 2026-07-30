@@ -225,6 +225,15 @@ interface WorstElementsMsg {
   shownCount: number       // elements actually included in `indices` (capped)
   belowThresholdCount: number  // total elements below `threshold` found (>= shownCount if capped)
 }
+
+type ExactMeasureKind = 'distance' | 'edgeLength' | 'radius'   // src/entityFacts.ts — no "angle" (BRepExtrema_DistShapeShape has no such analogue)
+
+interface ExactMeasureResult {
+  kind: ExactMeasureKind
+  value: number
+  fromPoint?: [number, number, number]   // kind: "distance" only — the actual nearest points OCCT found
+  toPoint?: [number, number, number]
+}
 ```
 
 `ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) —
@@ -259,6 +268,8 @@ type HostToWebview =
   | { type: 'screenshotRequest'; requestId: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
+  | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
+  | { type: 'measureExactError'; requestId: string; message: string }
 ```
 
 ### `geometry`
@@ -566,6 +577,25 @@ request at all (no host round trip, since there's no OCCT shape to query).
 { "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
 ```
 
+### `measureExactResult` / `measureExactError`
+
+Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as
+`massPropertiesResult`. A genuine host round trip via live OCCT geometry
+(`BRepExtrema_DistShapeShape` for `kind: "distance"`, `BRepGProp` for
+`"edgeLength"`, the edge's own curve for `"radius"`), distinct from both the
+interactive Measure tool's default instant triangulated-approximation result
+and `measure`'s bbox-centre-to-bbox-centre convention. See [Extension Host
+API](./extension-host-api.md#src-entityfacts-ts)'s verified call sequence for
+each `kind`.
+
+```json
+{ "type": "measureExactResult", "requestId": "1234-0.56", "result": { "kind": "distance", "value": 83.305, "fromPoint": [0.5, 0.5, 0.5], "toPoint": [47.88, 47.88, 50] } }
+```
+
+```json
+{ "type": "measureExactError", "requestId": "1234-0.56", "message": "This edge is not a circular arc — radius is only defined for circular edges" }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -589,6 +619,7 @@ type WebviewToHost =
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
+  | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
 ```
 
 ### `partsChanged`
@@ -801,6 +832,19 @@ sending a request.
 
 ```json
 { "type": "massPropertiesRequest", "requestId": "1234-0.56", "entityId": "solid-0" }
+```
+
+### `measureExactRequest`
+
+Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep
+source only (mesh sources never send this — the button never appears; see
+`measureExactResult` above). `kind` mirrors the current measurement tool
+(`"distance"`/`"edgeLength"`/`"radius"` — never `"angle"`, which has no
+button at all); `entityIdA`/`entityIdB` are the completed measurement's
+picked entity ids (`entityIdB` only for `kind: "distance"`).
+
+```json
+{ "type": "measureExactRequest", "requestId": "1234-0.56", "kind": "distance", "entityIdA": "solid-0", "entityIdB": "solid-1" }
 ```
 
 ---

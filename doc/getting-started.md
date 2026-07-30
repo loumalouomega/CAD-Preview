@@ -320,6 +320,16 @@ not for metrology-grade output. Distance, Edge Length, and Radius results are
 shown in whatever unit the view-controls **Units** dropdown is set to (see
 [Units](#units) above); Angle is always degrees.
 
+For a STEP/IGES/BREP model, a **⟟ Exact** button appears next to a completed
+Distance, Edge Length, or Radius result (not Angle — there's no exact
+counterpart for that one). Clicking it asks the extension host to recompute
+the same measurement against the true OCCT geometry instead of the displayed
+triangulation — the readout updates to `D_exact`/`L_exact`/`R_exact = …` once
+it comes back. This is a real (if fast) computation, not instant like the
+triangulated result, and only works for CAD sources — mesh formats (STL, OBJ,
+…) have no exact B-rep geometry to fall back to, so the button never appears
+for them.
+
 ### Defining Parts
 
 CAD Preview lets you group geometry into named **parts** (the FEM

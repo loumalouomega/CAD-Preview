@@ -7,6 +7,7 @@ import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
+import type { ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -131,6 +132,8 @@ export type HostToWebview =
   | { type: "screenshotRequest"; requestId: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
+  | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
+  | { type: "measureExactError"; requestId: string; message: string }
   | {
       type: "renderViewRequest";
       /** Deliberately separate from `screenshotRequest`'s requestId
@@ -186,6 +189,14 @@ export type WebviewToHost =
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
+  | {
+      type: "measureExactRequest";
+      requestId: string;
+      kind: ExactMeasureKind;
+      entityIdA: string;
+      /** Required for `kind: "distance"`, absent otherwise. */
+      entityIdB?: string;
+    }
   | { type: "renderViewResult"; requestId: string; data: string }
   | { type: "renderViewError"; requestId: string; message: string };
 

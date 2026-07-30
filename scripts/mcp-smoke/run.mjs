@@ -104,6 +104,17 @@ async function call(name, args) {
   return JSON.parse(result.content?.[0]?.text ?? "");
 }
 
+/** Like `call`, but an `isError` result is reported as `{error}` instead of
+ * `callRaw`'s usual fail()-and-exit — for call sites that expect SOME calls
+ * in a loop/sequence to legitimately fail (e.g. scanning edges for the one
+ * that's circular) and need to inspect the error rather than abort the
+ * whole smoke run on the first non-matching one. */
+async function callTolerant(name, args) {
+  const result = await request("tools/call", { name, arguments: args });
+  if (result.isError) return { error: result.content?.[0]?.text ?? "" };
+  return { value: JSON.parse(result.content?.[0]?.text ?? "") };
+}
+
 // --- the scenario ------------------------------------------------------------
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-preview-mcp-smoke-"));
@@ -121,7 +132,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 21, `tools/list exposes 21 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 22, `tools/list exposes 22 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -160,6 +171,65 @@ try {
   assert(
     measured.supported === true && measured.distance > 0,
     `measure reports a positive distance between solid-0 and solid-1 (got ${measured.distance})`
+  );
+
+  // measure_exact (roadmap "Exact-precision measurement"): a genuine host
+  // round trip against the live OCCT shape — BRepExtrema_DistShapeShape for
+  // distance, BRepAdaptor_Curve for radius/edgeLength — distinct from both
+  // `measure`'s bbox-centre convention above and the interactive viewer's
+  // triangulated-approximation Measure tool.
+  const exactDist = await call("measure_exact", { path: model, kind: "distance", entityIdA: "solid-0", entityIdB: "solid-1" });
+  assert(
+    exactDist.supported === true && exactDist.value > 0 && Array.isArray(exactDist.fromPoint) && Array.isArray(exactDist.toPoint),
+    `measure_exact reports a real geometric distance + nearest points between solid-0 and solid-1 (got ${exactDist.value})`
+  );
+
+  // A cylinder with a known radius, added specifically to verify radius/
+  // edgeLength against an exact expected value (not just "the call didn't
+  // throw") — its circular rim edge is found by scanning the new edge count
+  // (measure_exact rejects non-circular edges by design), not a hardcoded
+  // index, so this stays robust against edge-numbering shifts. Uses its OWN
+  // copy of the fixture (not the shared `model`) so this extra solid doesn't
+  // throw off the solid/edge counts every later step in this script assumes.
+  const radiusTestModel = path.join(dir, "bull-for-radius-test.stp");
+  fs.copyFileSync(FIXTURE, radiusTestModel);
+  const knownRadius = s / 4;
+  const cylApplied = await call("apply_edit_ops", {
+    path: radiusTestModel,
+    ops: [{ op: "addCylinder", center: [bbox.max[0] + 3 * s, 0, 0], radius: knownRadius, height: s, axis: [0, 0, 1] }],
+  });
+  assert(cylApplied.applied === 1, "apply_edit_ops accepts the cylinder for measure_exact radius verification");
+  let cylinderRadiusFound = null;
+  for (let i = 0; i < cylApplied.model.edgeCount; i++) {
+    // Tolerant call: most edges are non-circular (an expected MCP tool-level
+    // error, not a protocol failure) — `callTolerant` reports that as
+    // `{error}` instead of `callRaw`'s usual fail()-on-isError, so the loop
+    // can just skip past it.
+    const r = await callTolerant("measure_exact", { path: radiusTestModel, kind: "radius", entityIdA: `edge-${i}` });
+    if (r.error || Math.abs(r.value.value - knownRadius) > 1e-6) continue;
+    cylinderRadiusFound = r.value;
+    const len = await call("measure_exact", { path: radiusTestModel, kind: "edgeLength", entityIdA: `edge-${i}` });
+    assert(
+      Math.abs(len.value - 2 * Math.PI * knownRadius) < 1e-6,
+      `measure_exact edgeLength on the cylinder's rim matches its circumference exactly (2*pi*r = ${(2 * Math.PI * knownRadius).toFixed(6)}, got ${len.value})`
+    );
+    break;
+  }
+  assert(
+    cylinderRadiusFound !== null,
+    `measure_exact radius finds the cylinder's rim edge and resolves its exact radius (expected ${knownRadius})`
+  );
+
+  // Error paths degrade to a clear, actionable error, never a meaningless number.
+  const distanceWithoutB = await callTolerant("measure_exact", { path: model, kind: "distance", entityIdA: "solid-0" });
+  assert(
+    distanceWithoutB.error && /entityIdB/.test(distanceWithoutB.error),
+    "measure_exact distance without entityIdB fails with a clear, actionable error"
+  );
+  const nonCircular = await callTolerant("measure_exact", { path: model, kind: "radius", entityIdA: "edge-0" });
+  assert(
+    nonCircular.error && /not a circular arc/.test(nonCircular.error),
+    "measure_exact radius on a non-circular edge fails with a clear, actionable error rather than a meaningless best-fit number"
   );
 
   // compare_models: the edited model (bull + added box) against a fresh,

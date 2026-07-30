@@ -1807,10 +1807,12 @@ read-only-CAD-file invariant.
   edge's full world-space polyline (used by "edgeLength"/"radius" —
   `measurement.ts`'s `polylineLength`/`circleRadiusFromArcPoints` reuse data
   already transmitted as `EncodedEdge.positions`, needing no new host work).
-  Exact BRep-precision entity-to-entity distance (`BRepExtrema_DistShapeShape`)
-  is explicitly out of scope — client-side triangulated-approximation
-  precision (tied to the existing 0.1 tessellation deflection tolerance) is
-  accepted for this display-only overlay. `measurementOverlay.ts`'s canvas
+  Client-side triangulated-approximation precision (tied to the existing 0.1
+  tessellation deflection tolerance) is the **default**, always-instant
+  result for this display-only overlay — an opt-in exact host round trip was
+  later added on top (roadmap "Exact-precision measurement", closed; see the
+  dedicated bullet below), never replacing this fast default.
+  `measurementOverlay.ts`'s canvas
   label/marker builders **must** follow `geometryBuilder.ts`'s `dotTexture()`
   lazy-build-on-first-call discipline (no module-scope
   `document.createElement("canvas")`) — this exact mistake already broke
@@ -1820,8 +1822,57 @@ read-only-CAD-file invariant.
   different from the point-sprite scale in `frame()`, which only updates on
   fit/reset, since a label specifically needs to stay legible while
   continuously zooming, unlike a point marker which only needs to stay
-  visible. No protocol messages, no MCP tool — this feature has zero host
-  involvement by design.
+  visible. The default triangulated-approximation path has no protocol
+  messages and no MCP tool — zero host involvement by design; see the next
+  bullet for the opt-in exact path, which does.
+- **Exact-precision measurement (roadmap item, closed)** is a genuine host
+  round trip an agent (or the webview's own `⟳ Exact` button, opt-in on top
+  of the default approximation above) can take for a B-rep source.
+  `src/entityFacts.ts`'s `measureExact(extensionPath, bytes, format, ops,
+  kind, entityIdA, entityIdB?)` handles three kinds:
+  - `"distance"` — the true minimum distance between two arbitrary shapes
+    (any point/edge/face/solid combination), via `BRepExtrema_DistShapeShape`.
+    **Verified against the live WASM, not assumed from docs**: only 3
+    constructor overloads exist in this binding, and calling any of them
+    directly with `(shape1, shape2)` throws an argument-count error (their
+    real params are `(shape1, shape2, extFlag, extAlgo[, deflection])`).
+    Rather than guess the `Extrema_ExtFlag`/`Extrema_ExtAlgo` enum values,
+    the working path is the 0-arg constructor + `.LoadS1(shape1)` →
+    `.LoadS2(shape2)` → `.Perform()` — confirmed end-to-end on a real
+    box-vs-cylinder pair, returning a genuine geometric distance (not a
+    bbox approximation) whose `.PointOnShape1(1)`/`.PointOnShape2(1)`
+    nearest points land exactly where hand-computed geometry predicts.
+  - `"edgeLength"` — reuses the exact `BRepGProp.LinearProperties` call shape
+    `getEntityFacts`'s single-edge length already uses.
+  - `"radius"` — only valid for an edge whose `BRepAdaptor_Curve_2(edge).
+    GetType()` compares (symbolically, never a hardcoded enum literal) equal
+    to `GeomAbs_CurveType.GeomAbs_Circle`; `.Circle().Radius()` gives the
+    exact value. **Verified end-to-end, not just that the calls don't
+    throw**: a cylinder primitive added via `addCylinder(radius: R, ...)`
+    and re-measured through `apply_edit_ops` → `measure_exact` resolved its
+    rim edges' radius as exactly `R` and its edge length as exactly `2·π·R`.
+    A non-circular edge throws a clear, actionable error rather than a
+    meaningless best-fit number.
+  This is **strictly additive** to `measure`'s existing bbox-centre-to-
+  bbox-centre MCP convention (unchanged, still documented as deliberate —
+  `measure_exact` is a new, separate tool, not a replacement) and to the
+  interactive Measure tool's instant triangulated-approximation default
+  (unchanged). New protocol pair `measureExactRequest`/(`measureExactResult`
+  | `measureExactError`), mirroring the existing `massPropertiesRequest`
+  round-trip pattern exactly (same requestId + stale-response-guard idiom).
+  `main.ts` tracks `lastMeasurement: {tool, picks} | null` (the most recently
+  completed measurement's resolved entity ids) and shows/enables a new
+  `#measure-exact-btn` only when `sourceKind === "brep"`, the tool has an
+  exact counterpart (not `"angle"` — `BRepExtrema_DistShapeShape` has no
+  "angle between two picks" analogue), and the picks actually resolved to
+  real entity ids; reset to `null` on every new model load, tool switch, or
+  Clear, same "stale state" discipline `lastRawMassProperties`/
+  `explodePreviewBases` already follow elsewhere. `provider.ts`'s handler
+  mirrors `massPropertiesRequest`'s exactly (B-rep-only gate, try/catch →
+  result/error). MCP gets a sibling `measure_exact` tool
+  (`mcpTools.ts`'s `measureExactTool`), same B-rep-only gate as `measure`/
+  `inspect`, verified end-to-end via `npm run mcp:smoke` (not just
+  unit-tested with a fake pipeline).
 
 ## Visualization & UX depth (P2 roadmap features)
 
@@ -2901,8 +2952,17 @@ computes with **zero** `massPropertiesRequest` postMessages (DevTools). Click
 **📏 Measure**, try each of Distance/Edge Length/Angle/Radius → confirm a
 line+label overlay appears that stays legible while zooming, Clear/tool-switch
 reset in-progress picks, and toggling Measure never leaves stray entries in the
-Parts `SelectionSet`. Repeat all of the above open/close a few times → watch
-extension-host memory stay flat (same leak check as above).
+Parts `SelectionSet`. For Distance/Edge Length/Radius (not Angle — it has no
+exact counterpart) confirm a **⟳ Exact** button appears next to the readout
+after a completed pick; click it → confirm the button disables while
+computing, then the readout updates to an `_exact` value (compare it against
+the approximate one — they should be close but not necessarily identical,
+since the approximation is tied to the 0.1 tessellation deflection); on
+`cube.stl` confirm the button never appears at all (mesh sources have no
+`measureExactRequest` path — check DevTools for zero such postMessages).
+Switch tools or hit Clear mid-computation → confirm no stale exact result
+ever overwrites a newer/cleared readout. Repeat all of the above open/close a
+few times → watch extension-host memory stay flat (same leak check as above).
 
 Then exercise the **P2 visualization/UX features**: drag `bull.stp`/`cube.stl`
 from the OS file explorer onto the 3D view → confirm it opens the same as

@@ -29,6 +29,7 @@ import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
+import type { ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode } from "./displayMode";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
@@ -1007,11 +1008,43 @@ function setMeasureReadout(text: string, isError = false): void {
   el.classList.toggle("measure-readout-error", isError);
 }
 
+/** Maps a `MeasureTool` to its exact-measurement counterpart, or `null` for
+ * `"angle"` — `measureExact` (`entityFacts.ts`) has no "angle between two
+ * picks" host analogue, only distance/edgeLength/radius. */
+function exactMeasureKindFor(tool: MeasureTool): ExactMeasureKind | null {
+  return tool === "angle" ? null : tool;
+}
+
+/** The most recently completed measurement's tool + resolved picks — the
+ * source `#measure-exact-btn` builds a `measureExactRequest` from. `null`
+ * whenever there's no current result to refine (mode just turned on, tool
+ * switched, Clear pressed, or the pick set didn't resolve to entity ids). */
+let lastMeasurement: { tool: MeasureTool; picks: MeasurementPick[] } | null = null;
+let measureExactRequestId: string | null = null;
+
+/** Shows/hides and enables/disables `#measure-exact-btn` based on whether
+ * the current measurement could plausibly be refined: a B-rep source, a
+ * tool with an exact counterpart, and picks that actually resolved to real
+ * entity ids (a measurement can complete from a raw point-in-space pick with
+ * no `entityId` in principle, though every current tool always picks a real
+ * entity in practice). */
+function refreshExactButton(): void {
+  const btn = document.getElementById("measure-exact-btn") as HTMLButtonElement | null;
+  if (!btn) return;
+  const kind = lastMeasurement ? exactMeasureKindFor(lastMeasurement.tool) : null;
+  const entityIdA = lastMeasurement?.picks[0]?.entityId;
+  const entityIdB = lastMeasurement?.picks[1]?.entityId;
+  const available = sourceKind === "brep" && kind !== null && !!entityIdA && (kind !== "distance" || !!entityIdB);
+  btn.hidden = !available;
+  btn.disabled = !available;
+}
+
 function setupMeasureControls(): void {
   const menu = setupDropdown("measure-menu", "measure-dropdown");
   const toggle = document.getElementById("measure-toggle");
   const toolBtns = [...document.querySelectorAll<HTMLButtonElement>(".measure-tool-btn")];
   const clearBtn = document.getElementById("measure-clear");
+  const exactBtn = document.getElementById("measure-exact-btn") as HTMLButtonElement | null;
   let measuring = false;
 
   const reflect = () => {
@@ -1030,10 +1063,13 @@ function setupMeasureControls(): void {
       setMeasureReadout("Pick another point…");
       return;
     }
-    const result = computeMeasurementResult(measurementState.getTool(), picks);
+    const tool = measurementState.getTool();
+    const result = computeMeasurementResult(tool, picks);
     if (!result) {
       viewer.clearMeasurementOverlay();
       setMeasureReadout("Couldn't compute a result for that pick — try a different entity.", true);
+      lastMeasurement = null;
+      refreshExactButton();
       return;
     }
     viewer.showMeasurementOverlay(
@@ -1042,6 +1078,8 @@ function setupMeasureControls(): void {
       result.text
     );
     setMeasureReadout(result.text);
+    lastMeasurement = { tool, picks };
+    refreshExactButton();
   });
 
   toggle?.addEventListener("click", () => {
@@ -1052,6 +1090,8 @@ function setupMeasureControls(): void {
     measurementState.clear();
     viewer.clearMeasurementOverlay();
     setMeasureReadout(measuring ? "Pick a point…" : "");
+    lastMeasurement = null;
+    refreshExactButton();
     reflect();
   });
 
@@ -1061,6 +1101,8 @@ function setupMeasureControls(): void {
       for (const b of toolBtns) b.classList.toggle("active", b === btn);
       viewer.clearMeasurementOverlay();
       setMeasureReadout(measuring ? "Pick a point…" : "");
+      lastMeasurement = null;
+      refreshExactButton();
       reflect();
     });
   }
@@ -1069,6 +1111,21 @@ function setupMeasureControls(): void {
     measurementState.clear();
     viewer.clearMeasurementOverlay();
     setMeasureReadout("");
+    lastMeasurement = null;
+    refreshExactButton();
+  });
+
+  exactBtn?.addEventListener("click", () => {
+    if (!lastMeasurement) return;
+    const kind = exactMeasureKindFor(lastMeasurement.tool);
+    const entityIdA = lastMeasurement.picks[0]?.entityId;
+    const entityIdB = lastMeasurement.picks[1]?.entityId ?? undefined;
+    if (!kind || !entityIdA) return;
+    const requestId = `${Date.now()}-${Math.random()}`;
+    measureExactRequestId = requestId;
+    exactBtn.disabled = true;
+    setMeasureReadout(`${document.getElementById("measure-readout")?.textContent ?? ""} · computing exact…`);
+    post({ type: "measureExactRequest", requestId, kind, entityIdA, entityIdB });
   });
 }
 
@@ -1469,11 +1526,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         viewer.setModel(group);
         explodePreviewBases = null; // stale references to the just-replaced model's objects
         lastRawMassProperties = null; // stale — refers to the just-replaced model
+        lastMeasurement = null; // stale entity ids — refer to the just-replaced model
         clearMarkupOverlay?.();
         refreshColors();
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
         sourceKind = "brep";
+        refreshExactButton();
         meshingPanel.setSourceKind("brep");
         meshingPanel.setModelExtents(viewer.getModelExtents());
         syncMeshSizeSeed();
@@ -1617,6 +1676,20 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       massPropertiesPanel.renderMessage(msg.message, true);
       break;
 
+    case "measureExactResult": {
+      if (msg.requestId !== measureExactRequestId) break; // stale — a newer request/Clear superseded it
+      const label = msg.result.kind === "distance" ? "D" : msg.result.kind === "edgeLength" ? "L" : "R";
+      setMeasureReadout(`${label}_exact = ${formatMeasureLength(msg.result.value)}`);
+      (document.getElementById("measure-exact-btn") as HTMLButtonElement | null)?.removeAttribute("disabled");
+      break;
+    }
+
+    case "measureExactError":
+      if (msg.requestId !== measureExactRequestId) break;
+      setMeasureReadout(msg.message, true);
+      (document.getElementById("measure-exact-btn") as HTMLButtonElement | null)?.removeAttribute("disabled");
+      break;
+
     case "meshingResult":
       meshingPanel.setBusy(false);
       viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups));
@@ -1691,6 +1764,8 @@ async function loadMeshObjectFromUrl(url: string, loaderFormat: CadFormat, treeL
     setSelectableModes(["volume", "surface"]);
     editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
     sourceKind = "mesh";
+    lastMeasurement = null; // stale entity ids — refer to the just-replaced model; also hides #measure-exact-btn (mesh sources can't use it)
+    refreshExactButton();
     meshingPanel.setSourceKind("mesh");
     meshingPanel.setModelExtents(viewer.getModelExtents());
     syncMeshSizeSeed();

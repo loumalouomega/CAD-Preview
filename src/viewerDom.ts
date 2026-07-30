@@ -161,7 +161,10 @@ export function viewerBodyHtml(): string {
       </div>
     </div>
   </div>
-  <span id="measure-readout"></span>
+  <div id="measure-readout-row">
+    <span id="measure-readout"></span>
+    <button id="measure-exact-btn" title="Recompute at exact B-rep precision (a host round trip, vs. the instant triangulated approximation above)" hidden>${icon("generate")} Exact</button>
+  </div>
   <div id="view-controls">
     <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">⌄</button>
     <div id="vc-body">

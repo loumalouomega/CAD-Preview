@@ -93,6 +93,7 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | `get_mass_properties` | Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources only headless (OCCT `BRepGProp`); mesh formats return `supported: false`. All lengths/areas/volumes are in the model's internal cascade unit (millimetres — OCCT's STEP reader auto-converts every shape to it regardless of the source file's declared unit, e.g. inches); this tool never applies the extension's webview-only display-unit selector, so a caller wanting a different unit converts the raw mm-based numbers itself. |
 | `inspect` | Per-entity facts for one `solid-N`/`face-N`/`edge-N`/`point-N` id: bounding box, bbox-center (**not** `get_mass_properties`' mass-weighted centroid — they differ for an asymmetric shape), area/length, and — for a planar face — its normal and surface type (`plane`/`cylinder`/`cone`/`sphere`/`torus`/`other`). B-rep sources only headless. |
 | `measure` | Straight-line distance between two entities' bbox centers, plus (with an optional `axis` vector) the signed component of that displacement along it. B-rep sources only headless. |
+| `measure_exact` | Exact B-rep-precision measurement via live OCCT geometry — `kind: "distance"` (`BRepExtrema_DistShapeShape`, any entity combination, needs `entityIdB`), `"edgeLength"` (`BRepGProp`), or `"radius"` (the edge's own curve — errors on a non-circular edge). Not an approximation, unlike `measure`'s bbox-centre convention above. B-rep sources only headless. |
 | `render_snapshot` | 4 labelled PNGs of the current model (sidecar edits replayed) — two opposed isometrics + top + front, optional `focus`/`hide` by entity id, optional `displayMode` (shaded/wireframe) for the whole packet. B-rep sources only, and **requires Playwright + a Chromium binary in this environment** — see "Prerequisites for render_snapshot" below; check the response's `supported` field rather than assuming availability. |
 | `search_standard_parts` | Faceted search over the hosted [step.parts](https://www.step.parts) catalog (fasteners, bearings, connectors, extrusions, ...) — `q` fuzzy text + `tag`/`category`/`family`/`standard` filters + pagination. **Network call** — `supported: false` on any API/network failure (inconclusive, never "no matching parts"). |
 | `download_standard_part` | Downloads one step.parts part's STEP file to `outputPath`, verifying it against the part's recorded `sha256` if present (`verifiedChecksum` in the result). The file is an ordinary STEP file — opens through the normal pipeline. **Network call**, same graceful-failure convention as `search_standard_parts`. |
@@ -229,8 +230,8 @@ headlessly capable than those three, since `convertToStlBoundary()` produces
 the same STL bytes the extension itself would show, with zero webview
 involvement.
 
-`get_mass_properties`, `inspect`, `measure`, `render_snapshot`, and
-`compare_models` aren't columns above since all are read-only and orthogonal
+`get_mass_properties`, `inspect`, `measure`, `measure_exact`, `render_snapshot`,
+and `compare_models` aren't columns above since all are read-only and orthogonal
 to the edit/mesh/export pipeline: B-rep sources get the full OCCT
 `BRepGProp`/`bboxCenter`+`bboxDiagonal` computation (or, for
 `render_snapshot`, a real headless render) for any of the three format

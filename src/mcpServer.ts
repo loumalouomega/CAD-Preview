@@ -26,7 +26,7 @@ import { z } from "zod";
 import { loadBRep, exportBRep } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
 import { computeMassProperties } from "./massProperties";
-import { getEntityFacts, measureEntities } from "./entityFacts";
+import { getEntityFacts, measureEntities, measureExact } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
@@ -37,6 +37,7 @@ import {
   getMassProperties,
   inspectEntity,
   measureTool,
+  measureExactTool,
   renderSnapshotTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
@@ -76,6 +77,7 @@ const ctx: ToolContext = {
     computeMassProperties,
     getEntityFacts,
     measureEntities,
+    measureExact,
     renderSnapshot,
     isRenderAvailable,
     searchStandardParts,
@@ -225,6 +227,23 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; from: string; to: string; axis?: [number, number, number] }) => measureTool(ctx, args))
+);
+
+server.registerTool(
+  "measure_exact",
+  {
+    description:
+      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true nearest points found, not either entity's centre. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      kind: z.enum(["distance", "edgeLength", "radius"]),
+      entityIdA: z.string().describe("solid-N / face-N / edge-N / point-N id"),
+      entityIdB: z.string().optional().describe("solid-N / face-N / edge-N / point-N id — required for kind='distance'"),
+    },
+  },
+  wrap((args: { path: string; kind: "distance" | "edgeLength" | "radius"; entityIdA: string; entityIdB?: string }) =>
+    measureExactTool(ctx, args)
+  )
 );
 
 server.registerTool(

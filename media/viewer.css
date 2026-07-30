@@ -1672,12 +1672,18 @@ input[type="range"].meshing-slider:focus {
  * error string would otherwise stretch the right-anchored toolbar off-canvas.
  * Wraps instead of `nowrap` for the same reason. */
 
-#measure-readout {
+#measure-readout-row {
   position: absolute;
   top: 74px;
   right: 8px;
   z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   max-width: min(40vw, 420px);
+}
+
+#measure-readout {
   padding: 2px 6px;
   border-radius: 3px;
   background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
@@ -1691,4 +1697,26 @@ input[type="range"].meshing-slider:focus {
 }
 #measure-readout.measure-readout-error {
   color: var(--vscode-errorForeground, #f48771);
+}
+
+#measure-exact-btn {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 6px;
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
+  border: 1px solid var(--vscode-widget-border, #3c3c3c);
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.9;
+}
+#measure-exact-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+}
+#measure-exact-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }

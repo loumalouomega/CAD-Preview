@@ -38,7 +38,7 @@ import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, MassProperties } from "./massProperties";
-import type { getEntityFacts, measureEntities, EntityFacts, MeasureResult } from "./entityFacts";
+import type { getEntityFacts, measureEntities, measureExact, EntityFacts, MeasureResult, ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 import type { renderSnapshot, isRenderAvailable, RenderImage } from "./renderService";
 import type {
   searchStandardParts,
@@ -88,6 +88,7 @@ export interface Pipeline {
   computeMassProperties: typeof computeMassProperties;
   getEntityFacts: typeof getEntityFacts;
   measureEntities: typeof measureEntities;
+  measureExact: typeof measureExact;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
   searchStandardParts: typeof searchStandardParts;
@@ -444,6 +445,47 @@ export async function measureTool(
     params.from,
     params.to,
     params.axis
+  );
+  return { format: route.format, supported: true, ...result, warnings: [] };
+}
+
+/**
+ * Exact B-rep-precision measurement via `entityFacts.ts`'s `measureExact`
+ * (`BRepExtrema_DistShapeShape` for `"distance"`, `BRepGProp.LinearProperties`
+ * for `"edgeLength"`, the edge's own curve for `"radius"`) — a genuine host
+ * round trip against the live OCCT shape, distinct from `measure`'s
+ * bbox-centre-to-bbox-centre convention above (kept as-is, unchanged) and
+ * from the interactive webview Measure tool's default instant-but-
+ * triangulated-approximation result. Same B-rep-only gate as every other
+ * entity-facts tool; a bad `kind`/entity-id combination (e.g. `"radius"` on
+ * a non-circular edge, or `"distance"` with no `entityIdB`) surfaces as a
+ * clear thrown error rather than a silently meaningless number.
+ */
+export async function measureExactTool(
+  ctx: ToolContext,
+  params: { path: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<ExactMeasureResult>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: exact measurement requires host-side B-rep topology, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.measureExact(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    ops,
+    params.kind,
+    params.entityIdA,
+    params.entityIdB
   );
   return { format: route.format, supported: true, ...result, warnings: [] };
 }
