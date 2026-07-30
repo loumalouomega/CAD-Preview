@@ -5,6 +5,8 @@ import type { ViewerCamera } from "./cameraControls";
 import { OrientationCube } from "./orientationCube";
 import { collectTargets, resolvePick, collectMeasureTargets, resolveMeasurePick, type PickResult } from "./picking";
 import { DEFAULT_EDGE_COLOR, DEFAULT_FACE_COLOR, DEFAULT_POINT_COLOR } from "./geometryBuilder";
+import { capCenterAndSize } from "./clipping";
+import { buildClipCap, repositionClipCap, disposeClipCap } from "./clipCap";
 import {
   makeMeasureLabelSprite,
   makeMeasureMarkerSprite,
@@ -102,6 +104,23 @@ export class Viewer {
    * display-only, re-applied to `model`/`meshOverlay` materials whenever
    * either is (re)built, since fresh materials carry no clipping state. */
   private activeClippingPlane: THREE.Plane | null = null;
+  /** The solid stencil-buffer cap over `activeClippingPlane`'s cross-section
+   * (`null` when clipping is off, or nothing is currently clipped) — a scene
+   * sibling of `model`, same pattern as `meshOverlay`/`hiddenLineGhosts`. See
+   * `rebuildClipCap`/`updateClipCapPlane`. */
+  private clipCap: THREE.Group | null = null;
+  /** The single mutable `Plane` instance every clip-cap material's
+   * `clippingPlanes` array references. An offset-slider drag or axis switch
+   * mutates this IN PLACE (`updateClipCapPlane`) instead of rebuilding the
+   * cap's meshes/materials from scratch on every `input` event, which would
+   * needlessly alloc+dispose dozens of THREE objects per drag tick — only a
+   * genuine STRUCTURAL change (which meshes are being capped) rebuilds for
+   * real. */
+  private clipCapPlane: THREE.Plane | null = null;
+  /** The model+overlay bounding box `rebuildClipCap` computed the cap's
+   * center/size from — cached so `updateClipCapPlane` can reuse it on every
+   * cheap plane move instead of re-walking the model's geometry per tick. */
+  private clipCapBox: THREE.Box3 | null = null;
   /** The Appearance panel's display mode — session-only, re-applied to every
    * fresh material on `setModel()`, same "materials carry no baseline state
    * on rebuild" rule as opacity/clipping. See `setDisplayMode()`. */
@@ -138,7 +157,11 @@ export class Viewer {
     this.orthoCamera.position.set(5, 5, 5);
     this.activeCamera = this.camera;
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // `stencil: true` is required for the clip-cap technique (`clipCap.ts`) —
+    // this three.js version's WebGLRenderer defaults it to `false`, unlike
+    // older versions; without it the stencil-marking passes are silent
+    // no-ops and clipping falls back to looking uncapped/hollow.
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(width, height);
     container.appendChild(this.renderer.domElement);
@@ -206,6 +229,7 @@ export class Viewer {
     this.applyDisplayMode();
     this.scene.add(object);
     this.applyClippingPlane(); // fresh model materials carry no clipping state yet
+    this.rebuildClipCap(); // fresh geometry — a no-op if clipping is currently off
     this.resetView();
   }
 
@@ -227,6 +251,7 @@ export class Viewer {
   private clearModel(): void {
     if (!this.model) return;
     this.clearHiddenLineGhosts(); // references the model's edge geometries, about to be disposed
+    this.clearClipCap(); // ditto — its stencil markers reference the model's face geometries
     this.scene.remove(this.model);
     this.model.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
@@ -252,6 +277,7 @@ export class Viewer {
    * geometry completely untouched. Pass `null` to just clear the overlay.
    */
   setMeshOverlay(obj: THREE.Object3D | null): void {
+    this.clearClipCap(); // its stencil markers may reference the old overlay's geometry, about to be disposed
     if (this.meshOverlay) {
       this.scene.remove(this.meshOverlay);
       this.meshOverlay.traverse((o) => {
@@ -275,6 +301,7 @@ export class Viewer {
     // moment the overlay is cleared. Display-only (Object3D.visible), never
     // touches geometry.
     this.setModelFacesVisible(this.meshOverlay === null);
+    this.rebuildClipCap(); // overlay content/visibility changed — a no-op if clipping is off
   }
 
   /**
@@ -289,6 +316,7 @@ export class Viewer {
     if (!this.meshOverlay) return;
     this.meshOverlay.visible = visible;
     this.setModelFacesVisible(!visible);
+    this.rebuildClipCap(); // which content is capped just flipped — a no-op if clipping is off
   }
 
   /** Shows/hides the model's shaded face meshes (`entityType === "surface"`), leaving edges/points untouched. */
@@ -501,16 +529,93 @@ export class Viewer {
    * automatically from `setModel()`/`setMeshOverlay()` too, since fresh
    * materials from a model/overlay rebuild carry no clipping state.
    *
-   * v1 is deliberately UNCAPPED: `MeshStandardMaterial` + `clippingPlanes`
-   * does not auto-cap the cut cross-section (three.js needs a separate
-   * stencil-buffer technique for a solid-looking cut) — a clipped solid is
-   * see-through/hollow at the cut face, not filled. Still useful for "see
-   * inside the model"; capping is a documented follow-up, not in this cut.
+   * The cut face is solid-filled via a stencil-buffer cap (`clipCap.ts`), not
+   * left see-through/hollow. A structural rebuild (new target mesh set) only
+   * happens when clipping is toggled on from off, or the model/overlay
+   * changes; an axis switch or offset-slider drag — this method's highest-
+   * frequency caller, firing on every `input` event — takes the cheap
+   * `updateClipCapPlane` path instead, mutating the existing cap in place
+   * rather than reallocating it every tick.
    */
   setClippingPlane(plane: THREE.Plane | null): void {
     this.activeClippingPlane = plane;
     this.renderer.localClippingEnabled = plane !== null;
     this.applyClippingPlane();
+    if (plane && this.clipCap && this.clipCapPlane) this.updateClipCapPlane(plane);
+    else this.rebuildClipCap();
+  }
+
+  /**
+   * Full (re)build of the clip cap's stencil-marking meshes — one back/front
+   * pair per currently-visible target mesh (`model`'s face meshes, plus the
+   * FE-mesh overlay's fill mesh when it's the thing actually shown) — and the
+   * cap quad itself. Called whenever WHICH meshes need capping could have
+   * changed: clipping just turned on, or `model`/`meshOverlay` changed.
+   *
+   * Deliberately does NOT reactively track Parts/Components-tree per-entity
+   * hide/isolate (`applyPartVisibility`/`setGroupVisible`, both of which set
+   * `.visible` directly on the affected meshes with no hook into this class) —
+   * a part hidden after the cap was last (re)built keeps showing its
+   * cross-section until the next structural rebuild or plane move. Accepted,
+   * not fixed: reactively tracking every visibility mutation site for a
+   * display-only capping nicety was judged disproportionate complexity, the
+   * same call this codebase already made for the FE-mesh overlay's
+   * surface-scoped-part colouring gap and several other known, documented
+   * edge cases (see CLAUDE.md's "Visualization & UX depth" section).
+   */
+  private rebuildClipCap(): void {
+    this.clearClipCap();
+    if (!this.activeClippingPlane || !this.model) return;
+
+    // `matrixWorld` is only kept current by the render loop; force it here so
+    // a rebuild triggered mid-frame (e.g. synchronously inside setModel(),
+    // before the next animate() tick) still captures accurate transforms.
+    this.model.updateMatrixWorld(true);
+    this.meshOverlay?.updateMatrixWorld(true);
+
+    const targets: THREE.Mesh[] = [];
+    this.model.traverse((obj) => {
+      if (obj instanceof THREE.Mesh && obj.userData.entityType === "surface" && obj.visible) targets.push(obj);
+    });
+    // The overlay's own fill mesh, only when it's actually the thing being
+    // shown — model faces are already hidden in that state (setModelFacesVisible),
+    // so this and the branch above are naturally mutually exclusive in practice.
+    if (this.meshOverlay?.visible) {
+      this.meshOverlay.traverse((obj) => {
+        if (obj instanceof THREE.Mesh && obj.userData.entityType === "mesh") targets.push(obj);
+      });
+    }
+    if (targets.length === 0) return;
+
+    const box = new THREE.Box3().setFromObject(this.model);
+    if (this.meshOverlay?.visible) box.union(new THREE.Box3().setFromObject(this.meshOverlay));
+    if (box.isEmpty()) return;
+
+    this.clipCapPlane = this.activeClippingPlane.clone();
+    this.clipCapBox = box;
+    const { center, size } = capCenterAndSize(this.clipCapPlane, box);
+    this.clipCap = buildClipCap(targets, this.clipCapPlane, center, size, DEFAULT_FACE_COLOR);
+    this.scene.add(this.clipCap);
+  }
+
+  /** Moves the existing cap to a new plane WITHOUT rebuilding its meshes —
+   * see `setClippingPlane`'s doc comment for when this applies vs a full
+   * `rebuildClipCap`. Reuses the bounding box `rebuildClipCap` cached, since
+   * neither an axis switch nor an offset move changes the model's extents. */
+  private updateClipCapPlane(plane: THREE.Plane): void {
+    this.clipCapPlane!.copy(plane);
+    if (!this.clipCap || !this.clipCapBox) return;
+    const { center, size } = capCenterAndSize(this.clipCapPlane!, this.clipCapBox);
+    repositionClipCap(this.clipCap.userData.capMesh as THREE.Mesh, this.clipCapPlane!, center, size);
+  }
+
+  private clearClipCap(): void {
+    if (!this.clipCap) return;
+    this.scene.remove(this.clipCap);
+    disposeClipCap(this.clipCap);
+    this.clipCap = null;
+    this.clipCapPlane = null;
+    this.clipCapBox = null;
   }
 
   private applyClippingPlane(): void {
@@ -607,6 +712,11 @@ export class Viewer {
     this.clearMeasurementOverlay();
     const marker = makeMeasureMarkerSprite();
     marker.position.copy(point);
+    // Sprite scale defaults to 1 world unit — huge on a small (e.g. mm-scale)
+    // model. Same proportional-to-model-radius sizing as point-mode vertex
+    // sprites (`pointSpriteScale`, set in `frame()`), just a bit larger since
+    // this marker is active pick feedback, not a passive vertex indicator.
+    marker.scale.setScalar(this.pointSpriteScale * 3.0);
     this.measurementOverlay = marker;
     this.scene.add(marker);
   }
@@ -742,9 +852,16 @@ export class Viewer {
     this.applyWireframe();
   }
 
-  toggleGrid(): void {
+  /** Flips the grid + axis helpers, returning their new visibility so callers
+   *  (the View ▾ menu's checkable item) can reflect it without tracking it. */
+  toggleGrid(): boolean {
     this.grid.visible = !this.grid.visible;
     this.axes.visible = this.grid.visible;
+    return this.grid.visible;
+  }
+
+  isGridVisible(): boolean {
+    return this.grid.visible;
   }
 
   private applyWireframe(): void {

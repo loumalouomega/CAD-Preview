@@ -3,10 +3,16 @@
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \fill[gray!25] (-3,0) circle (7);
+  % Clip to (A xor B) — i.e. everything except the lens where they overlap —
+  % then fill A inside that clip: the intersection of "A" with "A xor B" is
+  % exactly "A minus B", the crescent, with the excluded lens left genuinely
+  % transparent rather than painted over with a literal `\fill[white]`, which
+  % would show as a solid white blob against this button's actual (non-white,
+  % theme-dependent) background.
   \begin{scope}
-    \clip (3,0) circle (7);
-    \fill[white] (-3,0) circle (7);
+    \pgfseteorule
+    \clip (-3,0) circle (7) (3,0) circle (7);
+    \fill[gray!25] (-3,0) circle (7);
   \end{scope}
   \draw (-3,0) circle (7);
   \draw[dashed] (3,0) circle (7);

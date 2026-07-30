@@ -1,0 +1,14 @@
+% Toolbar icon: measure — ruler: a tilted rectangle with alternating tick marks.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \begin{scope}[rotate=-22]
+    \draw[thick, fill=gray!12] (-11.5,-3.6) rectangle (11.5,3.6);
+    \draw[thick] (-7,3.6) -- (-7,-0.4);
+    \draw[thick] (-2.3,3.6) -- (-2.3,-1.8);
+    \draw[thick] (2.4,3.6) -- (2.4,-0.4);
+    \draw[thick] (7.1,3.6) -- (7.1,-1.8);
+  \end{scope}
+\end{tikzpicture}
+\end{document}

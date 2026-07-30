@@ -550,9 +550,10 @@ form in the shared `#edits-params` area. Non-negotiable invariants:
   `brepOnly` ↔ `BREP_ONLY_OPS` agreement over `kinds`, every `EditOpKind`
   reachable from ≥1 button, and **every 2D-tab entry B-rep-only** (that last
   one is what makes greying the whole 2D subtab for meshes valid).
-- **`src/webview/opIcons.ts` is the ONE file to edit to swap in real icons**
-  (`Record<PanelOpId, string>` — a missing icon is a compile error). Values
-  render as `<span class="op-icon">` text; placeholders are unicode glyphs.
+- **`src/webview/opIcons.ts` is GENERATED** (`Record<PanelOpId, string>` — a
+  missing icon is a compile error) — see the "Toolbar/panel icons" section
+  below for the pipeline. Values are inline SVG, set via `innerHTML` on each
+  button's `<span class="op-icon">`.
 - `setBRepOnly` works per op-button (each brepOnly button is in `brepOnlyEls`,
   held by reference) plus the whole **2D subtab**; disabling also collapses an
   open B-rep-only form and auto-switches 2D→3D. The callback-draft
@@ -1062,16 +1063,52 @@ Non-negotiable invariants:
 The toolbar and a few panels (tree-close, parts delete/remove, the meshing
 large-mesh warning) used plain-color emoji (📤🔍🕸️🌳🔬🖱️📍🧊◼️📏▶, plus ⚠/✕) as
 button icons. These are now monochrome, `currentColor`-based inline SVG that
-track VS Code's light/dark theme automatically, replacing the emoji.
+track VS Code's light/dark theme automatically, replacing the emoji. The set
+grew from 17 to **41** with the toolbar-dropdown regroup (see the next
+section): every remaining emoji (`▦ 📐 📷 ✎`) and unicode placeholder
+(`⊙ ＋ ↶ ↷`) is now a generated icon too, along with the Measure/Markup tool
+pickers and the five Display-mode buttons.
 
 - **`src/toolbarIcons.ts` is GENERATED — never hand-edit it.** It's produced
   wholesale by `icons/build-toolbar-icons.mjs` from `icons/svg-ui/*.svg`
   (themselves built from `icons/tikz-ui/*.tex` via `pdflatex` +
   `pdftocairo -svg`). To change an icon: edit its `.tex` source, then
-  `cd icons && make ts`. See `icons/README.md` for the full pipeline — it's a
-  separate, differently-wired set from the 46 `icons/tikz/*.tex` Edits-panel
-  op icons (those stay flat PNG, still unwired into the running extension;
-  this toolbar set is SVG and *is* wired in).
+  `cd icons && make ts`. See `icons/README.md` for the full pipeline.
+- **The 46 `icons/tikz/*.tex` Edits-panel op icons go through the identical
+  pipeline into a SEPARATE generated file, `src/webview/opIcons.ts`** — a
+  distinct generator (`icons/build-op-icons.mjs`, `cd icons && make ops-ts`)
+  reading `icons/svg-ops/*.svg`, not `svg-ui/*.svg`, and sharing the
+  currentColor/fill-opacity post-processing logic with
+  `build-toolbar-icons.mjs` via `icons/svgIconPostProcess.mjs` (kept in one
+  place so the two can't drift). Separate generator because `opIcons.ts`'s
+  type is `Record<PanelOpId, string>` — `PanelOpId` imported from
+  `opCatalog.ts`, not a self-contained union like `ToolbarIconId` — so an
+  id mismatch is a `tsc` error, not just a runtime check. This set used to be
+  flat-color PNG previews with no wiring at all; `editsPanel.ts`'s
+  `buildTabContent()` now sets each icon via `icon.innerHTML = OP_ICONS
+  [entry.id]` (a plain `Record` index — no `?? fallback` needed, the `Record`
+  type already makes a missing key unreachable).
+- **A handful of the 46 op-icon sources needed real redesigns, not just a
+  pipeline swap, because a small `.op-btn` has a real (non-white,
+  theme-dependent) `--vscode-button-secondaryBackground` behind it, unlike a
+  fixed white PNG canvas.** Two categories, both caught by rendering the set
+  against the actual panel background before wiring it in: (1) 14 files used
+  a bare `\draw[gray]` stroke (not a `gray!N` *fill*) for de-emphasis/ghost
+  lines — fixed the same way `isolate.tex` already did, dropping the stroke
+  color and keeping/adding `dashed`. (2) 5 files (the three hole ops, the
+  torus, and boolean subtract) used `\fill[white]` to visually "erase" part of
+  a filled shape — against a non-white background this painted a solid white
+  blob instead of reading as a hole. Fixed with a genuine even-odd compound
+  path (`\fill[gray!N, even odd rule] (outer)(hole);`, one non-self-
+  overlapping polygon when two sub-holes would otherwise double-cancel) so
+  the hole area is actually transparent; boolean subtract (two circles that
+  only *partially* overlap, not a hole-in-a-container shape) needed the same
+  trick applied to a clip instead — `\pgfseteorule` + `\clip (A)(B);` clips to
+  "A xor B", and filling A inside that clip gives exactly the "A minus B"
+  crescent. Note `\clip[even odd rule] (...)` and `\path[clip, even odd rule]
+  (...)` both throw `"Extra options not allowed for clipping path command"`
+  in this TikZ version — the low-level `\pgfseteorule` call before a plain
+  `\clip` is what actually works. Full write-up: `icons/README.md`.
 - **Every icon is `currentColor`-based, not a fixed color** — the generator
   strips `pdftocairo`'s literal black (`rgb(0%, 0%, 0%)`) stroke/fill down to
   `currentColor`, and any gray shading fill (from a TikZ `gray!N` fill) down
@@ -1099,7 +1136,35 @@ track VS Code's light/dark theme automatically, replacing the emoji.
 - Chevrons (`▾▸⌄⌃`), plain arrows (`↑↓←→`), and the zoom `−`/`+` are
   deliberately NOT covered by this — they already render as clean monochrome
   glyphs in every renderer, unlike real emoji, so replacing them would add
-  icons for no visual benefit.
+  icons for no visual benefit. Same for `#vc-ortho` and the clip axis letters.
+- **Only FILLS get the gray→`currentColor` mapping — never strokes.** The
+  generator's second regex matches `fill="rgb(X%, X%, X%)" fill-opacity="1"`
+  specifically; a TikZ `gray!N` *stroke* comes out of `pdftocairo` as
+  `stroke="rgb(X%, X%, X%)"` and is left untouched, i.e. frozen at a literal
+  gray in both themes. So shade with `fill=gray!N`, and where an icon needs a
+  de-emphasised outline use `dashed` instead (what `isolate` does).
+- **Design at 1em, not at 34px** — two things that look fine large and fail at
+  real toolbar size, both found by rendering the set headlessly through
+  `media/viewer.css`'s actual `.toolbar-icon svg { width: 1em }` rule:
+  a `>=Stealth` arrow tip on an `arc` disappears entirely (`undo`/`redo` use
+  an explicit `\filldraw` triangle instead of `->`), and glyphs sharing a
+  silhouette need a **fill** difference, not just an edge-style one
+  (`edges`/`xray`/`hiddenLines`/`flat`/`wireframe` are five variants of the
+  same isometric cube, separated by `gray!10`…`gray!35` fill levels).
+- **`pdftocairo` (poppler-utils) is required and has no safe substitute.** The
+  generator keys on the exact literal `rgb(0%, 0%, 0%)` that `pdftocairo -svg`
+  emits. `dvisvgm` writes `fill='#000'` instead, so the black→`currentColor`
+  rewrite would silently no-op — and because the result then contains no
+  `rgb(0%, 0%, 0%)` literal, `toolbarIcons.test.ts`'s "no literal black"
+  assertion still **passes** while every icon is permanently black in dark
+  themes. Silent, test-invisible corruption; install poppler-utils instead.
+- **Rebuild only the ids you changed** (`make svg-ui/<id>.svg` + `node
+  build-toolbar-icons.mjs`, or `make svg-ops/<id>.svg` + `node
+  build-op-icons.mjs` for an op icon), not bare `make ts`/`make ops-ts` —
+  each depends on `ui`/`ops`, which re-renders every `.tex` file in that set,
+  and a different local TeX Live/poppler version produces byte-different path
+  rounding that churns every committed `svg-ui/*.svg`/`svg-ops/*.svg` and the
+  whole of the corresponding generated `.ts` file.
 
 ## Top File menu (Open / Save / Save As / Export)
 
@@ -1133,6 +1198,69 @@ Non-negotiable invariants:
   the same `try/catch` as the other view-control setup so a failure can't block
   the `ready` handshake. The File icons (`home`/`open`/`save`/`saveAs`) are part
   of the generated `tikz-ui` toolbar-icon set — see the section above.
+- The File menu's own open/close plumbing now lives in the shared
+  `src/webview/dropdownMenu.ts` (see the next section); `setupFileMenu()` is
+  just the `item(id, msg)` wiring on top of a `setupDropdown()` handle.
+
+## Toolbar dropdown menus
+
+The toolbar collapsed from ~21 inline controls into 3 always-visible buttons
+(`#fit`, `#tree-toggle`, `#meshing-toggle`) plus 4 dropdown triggers
+(**View ▾** / **Select ▾** / **Measure ▾** / **Markup ▾**), all sharing the
+File ▾ menu's markup pattern. Non-negotiable invariants:
+
+- **`src/webview/dropdownMenu.ts` is the ONE implementation** — `setupDropdown
+  (triggerId, panelId)` returns a `DropdownHandle | null` (null, never a throw,
+  on a missing element, since callers sit in `main.ts`'s shared setup `try`).
+  Module scope holds only a `Set<DropdownHandle>` and a `boolean`; all DOM
+  access is inside the functions, per this repo's no-DOM-at-import rule (no
+  jsdom in vitest — the trap `dotTexture()`/`labelOverlay.ts` already hit).
+  Opening one menu closes the others; exactly 2 global listeners total exist
+  regardless of menu count.
+- **Two bugs this fixed, don't reintroduce them.** (1) The old containment test
+  was `e.target !== btn`; every trigger wraps its icon in a
+  `<span class="toolbar-icon"><svg>`, so clicking an *open* menu's own icon
+  made `e.target` the `<svg>` → `pointerdown` closed it → the trigger's `click`
+  reopened it, i.e. the File menu could not be dismissed by clicking its icon.
+  Use `trigger.contains(t) || panel.contains(t)`. (2) The dismissing
+  `pointerdown` runs in the **capture** phase and calls `preventDefault()` +
+  `stopPropagation()`, so the click that closes a menu doesn't also reach what's
+  underneath — `#markup-canvas` is `pointer-events:auto` while markup mode is
+  on, so without this, clicking away from the Markup menu drew a stroke.
+- **Clicks inside a panel deliberately do NOT close it** (flip a mode, pick a
+  tool, choose a colour in one visit). One-shot items (`#menu-*`, `#screenshot`)
+  call `handle.close()` themselves.
+- **Every pre-existing element id survived the move** — `#grid`, `#edges`,
+  `#screenshot`, `#sel-toggle`, `.sel-mode[data-mode]`, `#select-group`,
+  `#measure-toggle`, `#measure-clear`, `#measure-readout`, `#markup-toggle`,
+  `#markup-color`, `#markup-undo/redo/clear` are all still queried by
+  `getElementById`/`querySelectorAll` exactly as before, just nested deeper.
+  `#measure-tool`/`#markup-tool` kept their ids but changed from `<select>` to
+  a `.tb-row` container of `data-tool` buttons (an `<option>` can't hold an
+  SVG), so `.value`/`change` readers became a click loop + a local variable.
+  `#measure-group`/`#markup-group` are gone.
+- **`#meshing-toggle` stays top-level on purpose** — its `.active` is
+  host-driven (`main.ts`'s `meshingResult` adds it, the panel's Clear removes
+  it) and must stay truthful about whether an overlay is displayed. Folding it
+  into a menu would force those two host paths to also update a trigger.
+- **A trigger mirrors its mode's `.active`** so the collapsed toolbar still
+  shows that Select/Measure/Markup is live, plus a `::after` dot (because
+  `inputValidation-infoBackground` is nearly invisible in some light themes)
+  and a dynamic `title`. Never a dynamic *label* — the toolbar is
+  right-anchored, so a width change jitters the whole row.
+- **Two CSS specificity traps.** `#toolbar button` is `(0,1,0,1)` and paints
+  every descendant button solid blue, so (a) menu-item styling must be written
+  `#toolbar .tb-dropdown button, #file-dropdown button` `(0,1,1,1)`, not a bare
+  `.tb-dropdown button` `(0,0,1,1)` which loses; and (b) the 1-of-N segments
+  then lose to *that*, so they're `#toolbar .tb-dropdown .sel-mode` `(0,1,2,0)`.
+  The mode toggles (`#toolbar #measure-toggle.active` etc.) are `(0,2,1,0)` and
+  need no change.
+- **`#toolbar`'s z-index is 15**, above `#view-controls` (10) and
+  `#markup-canvas` (5), so an open panel paints over both; `.tb-dropdown`'s 30
+  is local to that stacking context. `#measure-readout` is a **sibling of**
+  `#toolbar`, not a child, on its own absolutely-positioned line at
+  `top: 74px` — inline, its longest error string would stretch the
+  right-anchored strip off-canvas, the exact problem this regroup fixed.
 
 ## What's New panel (post-update changelog)
 
@@ -1666,8 +1794,7 @@ session-only — never written to a sidecar.
   fires the panel's `onExplodePreviewCancel` callback too, so navigating away
   mid-drag without clicking Apply can't leave an orphaned, unpersisted
   preview transform on screen.
-- **Clipping ships intentionally uncapped in this v1 — a scoped decision, not
-  an oversight.** `src/webview/clipping.ts`'s `planeForAxis(axis, offsetFrac,
+- **Clipping.** `src/webview/clipping.ts`'s `planeForAxis(axis, offsetFrac,
   box)` is pure `THREE.Plane`/`THREE.Box3` math (normal always points in the
   **positive** axis direction; sweeping `offsetFrac` from `-1` to `1` moves
   the cut from the box's min face to its max face). `Viewer.setClippingPlane()`
@@ -1677,11 +1804,66 @@ session-only — never written to a sidecar.
   re-applied from `setModel()`/`setMeshOverlay()` — `geometryBuilder.ts`'s
   material factories build fresh materials with no clipping state of their
   own, so the active plane is cached on `Viewer` and reapplied on every
-  (re)build. `MeshStandardMaterial` + `clippingPlanes` does **not**
-  automatically cap the cut cross-section with a solid face — three.js needs
-  a separate stencil-buffer cap technique for that, which this stage
-  deliberately does not implement; the cut face is see-through. A capped v2
-  is a candidate P3 follow-up, not scope creep to backfill here.
+  (re)build.
+- **The cut face is a real solid cap, not see-through** — `src/webview/
+  clipCap.ts`, the standard three.js stencil-buffer technique (mirrors the
+  official `webgl_clipping_stencil` example). `MeshStandardMaterial` +
+  `clippingPlanes` alone doesn't paint a cross-section; the cap is built by
+  rendering every clipped mesh's FULL boundary twice into the stencil buffer
+  (back faces increment, front faces decrement, both invisible and ignoring
+  depth) so the accumulated value is nonzero exactly where a point on the cut
+  plane sits inside a solid, then drawing one large quad with a `stencilFunc:
+  NotEqual` test against 0 on top. **Submitted per SOURCE MESH, not merged
+  into one watertight geometry first** — this codebase represents a solid as
+  N separate per-face `THREE.Mesh`es (`geometryBuilder.ts`), not one
+  `BufferGeometry` per solid, but the stencil buffer accumulates additively
+  across draw calls regardless of how many geometries contribute the same
+  triangles, so no merge step is needed (verified: feeding the same solid's
+  boundary in twice — e.g. by accident — is harmless for a `!= 0` test;
+  doubling a nonzero count stays nonzero). **Requires the renderer be created
+  with `{ stencil: true }`** — this three.js version (0.185) defaults it to
+  `false`, unlike older versions; get this wrong and the marking passes
+  silently no-op, degrading gracefully back to the old uncapped look rather
+  than erroring.
+- **Structural rebuild vs. cheap plane move — a real perf split, not
+  premature optimization.** `#clip-offset`'s slider fires `setClippingPlane()`
+  on every `input` event during a drag. A full rebuild (dispose+recreate two
+  marker meshes per target mesh, every tick) would be visibly janky for any
+  model with more than a handful of faces. `Viewer.rebuildClipCap()` (full
+  rebuild: new target mesh set) only runs when clipping is toggled on from
+  off, or `model`/`meshOverlay` changes; an axis switch or offset drag takes
+  `updateClipCapPlane()` instead, which mutates the ONE shared `THREE.Plane`
+  instance every marker/cap material's `clippingPlanes` array already
+  references (three.js reads `.normal`/`.constant` at render time, not at
+  assignment time, so an in-place `.copy()` propagates to every material for
+  free) and repositions/rescales the cap mesh via the model+overlay bounding
+  box **cached at the last structural rebuild** (`clipCapBox` — neither an
+  axis switch nor an offset move changes the model's extents, so
+  recalculating it every tick would be wasted `Box3.setFromObject` work).
+- **Known, accepted limitation: does NOT reactively track Parts/Components-
+  tree per-entity hide/isolate.** `applyPartVisibility`/`setGroupVisible`
+  (`Viewer`) set `.visible` directly on the affected meshes with no hook into
+  the clip-cap machinery, so a part hidden after the cap was last built keeps
+  showing its cross-section until the next structural rebuild or plane move.
+  The one visibility distinction the cap DOES get right, because it's
+  unavoidable for correctness: `rebuildClipCap()` targets `model`'s
+  `entityType==="surface"` meshes only when `.visible`, and separately
+  targets the FE-mesh overlay's fill mesh only when `this.meshOverlay?.
+  visible` — since `setModelFacesVisible()` already keeps those two in sync
+  (model faces hidden exactly when the overlay is shown), this correctly
+  excludes whichever of the two isn't currently displayed, with no ancestor-
+  visibility walk needed.
+- **`buildClipCap`/`repositionClipCap`/`disposeClipCap` (`clipCap.ts`) are
+  not unit-tested** — same "not realistically unit-testable under this
+  repo's setup" call as `labelOverlay.ts`; verified via manual F5 + a
+  throwaway Playwright script driving the real `media/viewer.js` bundle
+  against real OCCT geometry (confirmed: a solid, correctly-lit cross-section
+  at the cut, a clean toggle-off back to the original uncapped model, and a
+  working axis switch mid-session — the cheap-update path). `capCenterAndSize
+  (plane, box)` (`clipping.ts`) — the pure "where to centre the cap, how big
+  to make it" math the builder needs — IS unit-tested (`clipping.test.ts`),
+  same pure/impure module split this codebase already uses for `planeForAxis`
+  vs. the THREE-application code in `viewer.ts`.
 - **FE mesh quality statistics use `gmsh.model.mesh.getElementQualities`,
   confirmed bound and working in the bundled `@loumalouomega/gmsh-wasm`
   build** (this was open discovery work — not assumed from upstream Gmsh
@@ -2114,7 +2296,7 @@ recognize as an output extension).
   elsewhere. So this package is handled entirely by the `.vscodeignore`
   carve-out above; `esbuild.mjs`'s `copyWasm()` needed no new entry.
 - **The export bridge (`exportViaMeshio()`) takes `generateMesh()`'s own
-  MSH 4.1 `mshText` directly — requires `@meshioplusplus/wasm` ≥ 9.7.0, and
+  MSH 4.1 `mshText` directly — requires `@meshioplusplus/wasm` ≥ 9.8.0, and
   its history is a live-WASM discovery trail worth keeping.** Against 9.4.1,
   feeding MSH 4.1 into `convert(..., {inFormat: "gmsh"})` threw
   `"Gmsh $Entities not supported by the C++ reader"`, forcing a legacy
@@ -2123,28 +2305,36 @@ recognize as an output extension).
   so a 4.1 read yields named `regions` (one per part) that 2.2 never
   carried — re-verified: a 2.2 read of the same grouped mesh yields NO
   regions, so 4.1 input is load-bearing for group preservation, not just a
-  convenience. **MED still needs a MED-specific two-step, re-verified on
-  9.7.0 — now group-PRESERVING where the old workaround was
-  group-dropping**: direct `convert(→ med)` still throws `"MED: gmsh
-  physical groups handled by Python fallback"` on gmsh's always-attached
-  `"gmsh:physical"` cell_data, and MED separately rejects 4.1's
-  one-block-per-entity layout (`"MED files cannot have two sections of the
-  same cell type"` — a meshed unit box arrives as 27 blocks). Fix for both:
-  `readMesh()` → **`merge([mesh])`** (meshio++'s own merge consolidates
-  same-type blocks AND remaps every region's block-major cell indices —
-  verified: entry counts survive exactly) → a brand-new plain object of
-  only `{points, dim, cells, regions}` (no `cell_data`/`point_data`/
-  `field_data` keys at all) → `writeMesh(→ med)`. 9.6.0's region→family
-  synthesis then writes the groups: verified end-to-end, a box with
-  `MyVolume`/`MySurface` physical groups round-tripped both as named MED
-  groups (90 tris / 1101 tets). CGNS/XDMF/VTK need none of this — plain
-  `convert()` works directly on 4.1 text.
-  Full write-up (including the separate, narrower CGNS pure-2D-mesh
-  read-back limitation — re-verified still present on 9.7.0 — and the XDMF
-  `.h5`-companion handling) lives in `doc/gmsh-integration.md`'s "The
-  meshio++ bridge" section; the remaining upstream gaps are filed as a
-  ready-to-run prompt in the meshio++ repo
-  (`PROMPT_close_wasm_gmsh_bridge_gaps.md`).
+  convenience. **Every format, MED included, is now a single, uniform
+  `convert()` call — the MED-specific two-step is gone as of 9.8.0.** Under
+  9.7.0, direct `convert(→ med)` threw `"MED: gmsh physical groups handled
+  by Python fallback"` on gmsh's always-attached `"gmsh:physical"`
+  cell_data, and separately rejected 4.1's one-block-per-entity layout
+  (`"MED files cannot have two sections of the same cell type"` — a meshed
+  unit box arrives as 27 blocks), forcing a `readMesh()` → `merge([mesh])`
+  → rebuild-without-`cell_data` → `writeMesh(→ med)` workaround. 9.8.0's
+  `write_med` now bridges `gmsh:physical` to MED families and consolidates
+  same-type blocks natively in C++, so that entire workaround was deleted —
+  re-verified end-to-end against the live 9.8.0 WASM with a real
+  Gmsh-generated 4.1 file (not just a unit test): a box with
+  `MyVolume`/`MySurface` physical groups round-tripped both region names
+  through the plain `convert()` path with no special-casing. CGNS/XDMF/VTK
+  never needed this — plain `convert()` already worked directly on 4.1 text.
+  Full write-up (including the XDMF `.h5`-companion handling) lives in
+  `doc/gmsh-integration.md`'s "The meshio++ bridge" section.
+- **The CGNS pure-surface (2D-dimension) read-back gap is also closed in
+  9.8.0 — re-verified against the live WASM, not assumed from the
+  changelog.** Before 9.8.0, CGNS was a private tetrahedra-only encoding
+  whose writer emitted only the first `tetra` block it found, so every
+  2D-dimension FE-mesh generate (which has no tetra block at all) wrote a
+  file this same WASM build's own reader rejected
+  (`"HDF5: missing dataset ' data'"`) — volume (3D) meshes were unaffected,
+  since they always have a `tetra`/`hexahedron` block. 9.8.0 rewrote CGNS to
+  a genuine CGNS/SIDS-compliant subset (one section per cell block, not
+  "first tetra block only"), and re-verifying against a real Gmsh
+  2D-dimension generate (fed through the same pipeline `exportViaMeshio()`
+  uses) confirms the round trip is now clean. `doc/gmsh-integration.md`'s
+  "Known limitations" no longer lists this.
 - **`resolveMeshInputHeadless` in `mcpTools.ts` gives meshio-only formats a
   genuinely NEW headless capability, beyond what `.obj`/`.ply`/`.gltf`
   get** — since `convertToStlBoundary()` runs entirely host-side (no
@@ -2195,6 +2385,25 @@ same actions (and `Ctrl+S` must NOT trigger VS Code's own read-only-save error),
 the `CAD Preview: …` commands appear in the Command Palette. The dropdown closes on
 item click, outside click, and Escape.
 
+Exercise the **toolbar dropdowns**: confirm the strip is just **Fit / Tree / FE Mesh**
+plus **View ▾ / Select ▾ / Measure ▾ / Markup ▾**. Each opens on trigger click and
+closes on a second click — **including when that click lands on the trigger's inner
+SVG icon** (the old File-menu bug: the icon click used to close-then-immediately-
+reopen). Escape and an outside click close too; opening one closes any other. With
+Markup ▾ open, pick a tool, open `#markup-color`'s native picker, and hit Undo →
+the panel must stay open throughout. Turn **Markup mode** on, leave the panel open,
+then click on the 3D view → the panel closes and **no stroke is drawn** (the
+capture-phase `preventDefault`). Toggle Measure and Markup on → both triggers light
+up with their dot and stay lit after the panel closes; toggle off → both clear.
+Generate an FE mesh → **FE Mesh** lights (host-driven), panel **Clear** → it
+unlights. In **View ▾**, confirm Grid/Edges show a tick matching their real state
+(open a file with `cadPreview.showGridAndAxesOnOpen` set false → Grid starts
+unticked) and that **Screenshot…** dismisses the menu. Take a measurement → the
+result appears on its own line under the toolbar with the menu closed; force the
+error path (Radius on a flat face) → the long message wraps instead of shifting the
+toolbar. On `cube.stl`, open **Select ▾** → Point/Surf/Line greyed, Vol auto-selected.
+Open `bull.stp` → **Tree** appears; `cube.stl` → it stays hidden.
+
 Exercise the **What's New** panel: run **CAD Preview: Show What's New** from the
 Command Palette → confirm a panel opens beside the editor with the full changelog
 (headings/bullets/inline code rendered, theme-matched in both light and dark), and
@@ -2204,15 +2413,26 @@ newer value (e.g. `"9.9.9"`), reload the Extension Development Host window
 panel now appears **automatically** (the upgrade path); reload again unchanged →
 confirm it does **not** reappear. Revert the temporary version edit afterward.
 
-Confirm the toolbar/panel icons (Fit, the Display group's Wire icon, Tree, FE Mesh, Select,
-Point/Vol/Surf/Line, the File menu's Open/Save/Save As/Export, the FE Mesh panel's
-Generate/Export, tree-close, Parts delete/remove, and the large-mesh warning) render
-crisply and legibly at their
-actual small size — this is the one thing automated tests can't check. Then
+Confirm the toolbar/panel icons render crisply and legibly at their actual small
+size — all 41 of them: the toolbar's Fit/Tree/FE Mesh, the four dropdown triggers
+(View/Select/Measure/Markup), View ▾'s Grid/Edges/Screenshot, Select ▾'s
+Point/Vol/Surf/Line, Measure ▾'s Distance/Length/Angle/Radius, Markup ▾'s six tool
+buttons and Undo/Redo/Clear, the view-controls Display group's
+Shaded/Wire/X-Ray/Hidden/Flat (five variants of the same cube — check they're
+actually distinguishable), the File menu's Open/Save/Save As/Export, the FE Mesh
+panel's Generate/Export/Clear, Parts' Isolate/New/delete, Edits' Undo/Redo/Clear,
+Variables' New, tree-close, and the large-mesh warning — this is the one thing automated tests can't check. Then
 switch VS Code to a light theme (`Ctrl+K Ctrl+T` → e.g. "Light+") and confirm
 every one of those icons re-colors to match (dark strokes on the now-light
 toolbar buttons) without needing a reload; switch back to a dark theme and
 confirm the reverse.
+
+Also confirm the Edits panel's 46 op-button icons (GEOMETRY 2D/3D subtabs +
+EDIT categories) render as real icons, not unicode glyphs — pay particular
+attention to the five that used to punch a `\fill[white]` hole (Torus, Hole,
+Counterbore Hole, Countersink Hole, and Boolean Subtract's crescent): the
+"removed" area must read as empty against the button's actual background in
+BOTH themes, never as a solid white patch.
 
 Exercise **Export**: on `bull.stp`, confirm the quick-pick offers IGES/BREP/STL/OBJ/
 PLY/glTF (not STEP again); on `cube.stl`, confirm it offers only OBJ/PLY/glTF. Export
@@ -2465,9 +2685,15 @@ overriding the other. Click **Persp/Ortho** → confirm no camera jump, orbit/
 pan/zoom/picking/the orientation cube all keep working, resizing the window
 behaves correctly under both projections, and toggling back returns cleanly.
 In the new **Clip** group, enable each axis and drag the offset slider →
-confirm the model cuts away live (see-through at the cut face — expected,
-v1 is uncapped), the FE Mesh overlay (if shown) respects the same plane, and
-turning Clip off instantly restores the full model with no sidecar write. On
+confirm the model cuts away live with a solid, correctly-lit cap at the cut
+face (not see-through), that dragging the slider and switching axes both stay
+smooth (the cheap plane-move path, not a per-tick rebuild), that the FE Mesh
+overlay (if shown) respects the same plane and is capped too, and that
+turning Clip off instantly restores the full uncapped model with no sidecar
+write. Also confirm a part hidden via Parts/Components-tree AFTER enabling
+Clip keeps showing its cross-section in the cap until you next move the
+slider or toggle Clip — a known, accepted limitation (see `CLAUDE.md`'s
+clipping section), not a bug to chase. On
 the FE Mesh panel, **Generate** → confirm a quality summary (min/mean +
 histogram) appears below the node/element counts, updates on regenerate at a
 different size, and degrades gracefully (no summary, no crash) if the

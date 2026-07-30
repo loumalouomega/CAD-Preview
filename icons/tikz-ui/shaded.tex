@@ -1,0 +1,9 @@
+% Toolbar icon: shaded — a lit sphere: a shaded disc with a lighter highlight blob.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!40] (0,0) circle (9);
+  \fill[gray!10] (-3.2,3.2) circle (3.4);
+\end{tikzpicture}
+\end{document}

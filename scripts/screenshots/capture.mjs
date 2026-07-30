@@ -136,6 +136,15 @@ const SHOTS = [
     setup: async (page) => { await populate(page); await page.click("#file-menu"); await sleep(150); },
     target: { clip: { x: 0, y: 0, width: 320, height: 250 } },
   },
+  // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
+  // locator screenshot clips to the element box, which would cut off the
+  // panel hanging below it. The toolbar is right-anchored in a 1360px
+  // viewport, so the region below/left of its right edge covers every panel.
+  ...["view", "select", "measure", "markup"].map((name) => ({
+    file: `${name}-menu.png`,
+    setup: async (page) => { await populate(page); await page.click(`#${name}-menu`); await sleep(150); },
+    target: { clip: { x: 830, y: 30, width: 530, height: 300 } },
+  })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },
   {

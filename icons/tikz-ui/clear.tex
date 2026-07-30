@@ -1,0 +1,13 @@
+% Toolbar icon: clear — trash can: lid, handle, tapered body, two slots. Also backs the
+% Edits/FE-Mesh panel Clear buttons.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-3.5,8) -- (-3.5,10.5) -- (3.5,10.5) -- (3.5,8);
+  \draw[very thick] (-9.5,8) -- (9.5,8);
+  \draw[thick, fill=gray!12] (-7,8) -- (-5.5,-10) -- (5.5,-10) -- (7,8) -- cycle;
+  \draw[thick] (-2.6,4.5) -- (-2.1,-6.5);
+  \draw[thick] (2.6,4.5) -- (2.1,-6.5);
+\end{tikzpicture}
+\end{document}

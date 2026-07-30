@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { planeForAxis } from "./clipping";
+import { planeForAxis, capCenterAndSize } from "./clipping";
 
 const box = new THREE.Box3(new THREE.Vector3(-2, -4, -6), new THREE.Vector3(2, 4, 6));
 
@@ -40,3 +40,37 @@ describe("planeForAxis", () => {
 function plane_distanceAt(plane: THREE.Plane, point: [number, number, number]): number {
   return plane.distanceToPoint(new THREE.Vector3(...point));
 }
+
+describe("capCenterAndSize", () => {
+  it("centres on the box centre, projected onto the plane, for a plane through the box centre", () => {
+    const plane = planeForAxis("x", 0, box);
+    const { center } = capCenterAndSize(plane, box);
+    expect(center.toArray()).toEqual([0, 0, 0]); // box centre is already on this plane
+  });
+
+  it("projects the box centre onto an off-centre plane along the plane's own normal", () => {
+    const plane = planeForAxis("x", 1, box); // x = 2 plane
+    const { center } = capCenterAndSize(plane, box);
+    // x snaps onto the plane; y/z stay at the box centre's own coordinates
+    expect(center.x).toBeCloseTo(2, 6);
+    expect(center.y).toBeCloseTo(0, 6);
+    expect(center.z).toBeCloseTo(0, 6);
+    expect(plane.distanceToPoint(center)).toBeCloseTo(0, 6); // genuinely on the plane
+  });
+
+  it("is unaffected by the box being far from the world origin", () => {
+    const farBox = box.clone().translate(new THREE.Vector3(1000, -1000, 500));
+    const plane = planeForAxis("x", 1, farBox);
+    const { center } = capCenterAndSize(plane, farBox);
+    // Would be nowhere near the model if centred on the plane's closest point to
+    // the origin instead of the box's own centre — assert it tracks the box.
+    const farCenter = farBox.getCenter(new THREE.Vector3());
+    expect(center.distanceTo(farCenter)).toBeLessThan(farBox.getSize(new THREE.Vector3()).length());
+  });
+
+  it("sizes to the box's full 3D diagonal", () => {
+    const plane = planeForAxis("z", 0, box);
+    const { size } = capCenterAndSize(plane, box);
+    expect(size).toBeCloseTo(box.getSize(new THREE.Vector3()).length(), 6);
+  });
+});

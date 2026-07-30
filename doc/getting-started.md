@@ -128,25 +128,67 @@ last session.
 
 ### Toolbar
 
-The toolbar appears at the top-right of the editor, just below the menu bar:
+The toolbar appears at the top-right of the editor, just below the menu bar.
+Three always-visible buttons sit on the left; everything else is grouped behind
+four dropdown menus, so the strip stays compact:
 
-![The viewer toolbar: Fit, Edges, Grid, Tree, FE Mesh, and the Select / Point·Vol·Surf·Line pick modes.](/screenshots/toolbar.png)
+![The viewer toolbar: Fit, Tree, FE Mesh, and the View / Select / Measure / Markup dropdown menus.](/screenshots/toolbar.png)
 
 | Button | Action |
 |--------|--------|
 | **Fit** | Reframe the model to fill the viewport (keeps current camera orientation) |
-| **Edges** | Show/hide edge lines independently of the shaded faces |
-| **Grid** | Show/hide the world-space grid and axis helpers |
-| **📷 Screenshot** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
 | **Tree** | Show/hide the component tree panel (visible only for models with multiple components) |
-| **🔬 FE Mesh** | Toggle the generated finite-element mesh overlay on/off (see [Generating an FE Mesh](#generating-an-fe-mesh)). The **FE Mesh** panel itself is always visible in the sidebar; this button only shows/clears the overlay. |
-| **Select / Point·Vol·Surf·Line** | Toggle entity selection mode and choose what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). |
-| **📏 Measure / tool `<select>`** | Toggle measurement mode and choose what to measure — Distance, Edge Length, Angle, or Radius (see [Measuring](#measuring)) |
-| **✎ Markup / tool `<select>`** | Toggle markup mode and draw review annotations over the 3D view — Freehand, Line, Arrow, Rectangle, Circle, or Eraser (see [Markup Annotations](#markup-annotations)) |
+| **FE Mesh** | Toggle the generated finite-element mesh overlay on/off (see [Generating an FE Mesh](#generating-an-fe-mesh)). The **FE Mesh** panel itself is always visible in the sidebar; this button only shows/clears the overlay. |
+
+A dropdown closes when you click its trigger again, press `Escape`, or click
+anywhere outside it; opening one closes any other that was open. Clicks
+*inside* a panel leave it open, so you can flip a mode on, pick a tool, and
+choose a colour in one visit. When the mode behind a menu is active, its
+trigger stays highlighted with a small dot, so you can tell at a glance that
+Measure or Markup is still live after the panel has closed.
+
+**View ▾**
+
+![The View menu: Grid, Edges, Screenshot.](/screenshots/view-menu.png)
+
+| Item | Action |
+|------|--------|
+| **Grid** | Show/hide the world-space grid and axis helpers (ticked when shown) |
+| **Edges** | Show/hide edge lines independently of the shaded faces (ticked when shown) |
+| **Screenshot…** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
+
+**Select ▾**
+
+![The Select menu: Selection mode plus the Point/Vol/Surf/Line pick modes.](/screenshots/select-menu.png)
+
+**Selection mode** toggles entity picking; the **Point · Vol · Surf · Line**
+row chooses what a click picks — points (vertices), volumes (solids), surfaces
+(faces), or lines (edges). Used to assign geometry to parts (see
+[Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer
+(see [Editing Geometry](#editing-geometry)). Pick modes a given file format
+can't offer are greyed out.
+
+**Measure ▾**
+
+![The Measure menu: Measure mode, the four tools, and Clear measurement.](/screenshots/measure-menu.png)
+
+**Measure mode** toggles measurement picking; the tool row selects **Distance**,
+**Length**, **Angle**, or **Radius**, and **Clear measurement** discards the
+current one (see [Measuring](#measuring)). The result appears on its own line
+just below the toolbar, so it stays readable with the menu closed.
+
+**Markup ▾**
+
+![The Markup menu: Markup mode, the six tools, a colour swatch, and Undo/Redo/Clear.](/screenshots/markup-menu.png)
+
+**Markup mode** toggles annotation drawing; the tool row selects **Freehand**,
+**Line**, **Arrow**, **Rectangle**, **Circle**, or **Eraser**, the swatch sets
+the stroke colour, and **Undo** / **Redo** / **Clear** manage the strokes (see
+[Markup Annotations](#markup-annotations)).
 
 ### Taking a Screenshot
 
-Click **📷 Screenshot** in the toolbar (or run **CAD Preview: Screenshot to
+Click **View ▾ → Screenshot…** in the toolbar (or run **CAD Preview: Screenshot to
 PNG…** from the Command Palette, `Ctrl+Alt+P`) to save the current 3D view —
 whatever orientation, display mode, mesh overlay, **and markup annotations**
 are currently shown — as a PNG. A native Save dialog defaults to the source
@@ -154,9 +196,9 @@ file's folder.
 
 ### Markup Annotations
 
-Click **✎ Markup** in the toolbar to start drawing review notes directly over
-the 3D view — "this boss", "gap here" — without leaving the viewer. Pick a
-tool from the `<select>` next to the toggle (**Freehand**, **Line**,
+Open **Markup ▾** in the toolbar and click **Markup mode** to start drawing
+review notes directly over the 3D view — "this boss", "gap here" — without
+leaving the viewer. Pick a tool from the row below it (**Freehand**, **Line**,
 **Arrow**, **Rectangle**, **Circle**, or **Eraser**) and a stroke colour from
 the swatch, then click-drag on the view to draw. **Undo**/**Redo** step
 through your strokes one at a time; **Clear** removes them all. Annotations
@@ -166,9 +208,9 @@ view and export the annotated image in one flow. Loading a different model
 clears any existing annotations; switching display mode, applying an edit,
 or rotating/panning the view does not. Erasing a stroke with the
 **Eraser** tool is immediate and does not go through Undo/Redo. Toggle
-**✎ Markup** off (or click elsewhere with it off) to resume orbiting/panning/
-picking normally — while markup mode is active, clicks draw instead of
-orbiting the camera.
+**Markup mode** off to resume orbiting/panning/picking normally — while it is
+active, clicks draw instead of orbiting the camera. The **Markup ▾** trigger
+stays highlighted while the mode is on, even after the menu closes.
 
 ### View-Controls Panel
 
@@ -182,10 +224,10 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Ctr** — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
 - **Clip group** — Enable a live section/clipping plane along **X**, **Y**, or
   **Z**, then drag the offset slider to sweep it across the model's bounding
-  box (`-1` = min face, `0` = centre, `1` = max face). The cut is uncapped
-  (see-through at the cross-section, not solid-filled) and also applies to the
-  FE Mesh overlay when shown. Nothing is written anywhere — turning it off (or
-  reloading) instantly restores the full model.
+  box (`-1` = min face, `0` = centre, `1` = max face). The cross-section is
+  solid-filled, not see-through, and also applies to the FE Mesh overlay when
+  shown. Nothing is written anywhere — turning it off (or reloading) instantly
+  restores the full model.
 - **Appearance group** — A background-colour swatch (live preview only — the
   session-only override always wins over the [`cadPreview.background`
   setting](#settings) until you reload), an opacity slider for the whole
@@ -250,11 +292,11 @@ toggle, same as the Parts panel's (see below), never saved to a sidecar.
 
 ### Measuring
 
-The **📏 Measure** toolbar group lets you measure distances, edge lengths,
+The **Measure ▾** toolbar menu lets you measure distances, edge lengths,
 angles, and circle/arc radii directly in the 3D view — display-only, never an
 edit operation, never saved anywhere.
 
-1. Click **📏 Measure** to enter measurement mode (orbit/pan/zoom still work
+1. Open **Measure ▾** and click **Measure mode** (orbit/pan/zoom still work
    normally — a measurement pick is a click without a drag, same as part
    selection).
 2. Pick a tool from the dropdown: **Distance** and **Angle** need two picks;
@@ -280,7 +322,7 @@ component tree in the left sidebar.
 
 To assign geometry to a part:
 
-1. Click **Select** in the toolbar to enter selection mode, and choose a pick
+1. Open **Select ▾** in the toolbar, click **Selection mode**, and choose a pick
    target: **Vol** (solids), **Surf** (faces), or **Line** (edges).
 2. Click entities in the 3D view to select them — they highlight blue.
    Shift-click to add or remove from the selection; a plain click selects just
@@ -339,7 +381,7 @@ other B-rep-only button grey out.
 
 To apply a transform:
 
-1. Click **Select**, choose **Vol** mode, and click one or more volumes (solids).
+1. Open **Select ▾**, click **Selection mode**, choose **Vol**, and click one or more volumes (solids).
 2. In the **Edits** panel open the **EDIT** tab and pick an operation — **Move**,
    **Rotate**, **Scale**, or **Mirror** — and fill in the numeric fields.
 3. Click **Apply**. The model updates live and the operation is added to the list.
@@ -467,7 +509,7 @@ To generate a mesh:
    element quality (Gmsh's `minSICN` metric, 0–1, higher is better) plus a
    small histogram of the distribution — useful for spotting a generate that
    technically succeeded but produced a lot of sliver elements.
-3. Click **🔬 FE Mesh** in the toolbar to show/hide the overlay without
+3. Click **FE Mesh** in the toolbar to show/hide the overlay without
    discarding it; click **Clear** in the panel to remove it entirely.
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">

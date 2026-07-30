@@ -1,0 +1,9 @@
+% Toolbar icon: undo — a left-pointing arrowhead with the shaft sweeping right and down.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[very thick] (-2,6) .. controls (6,6) and (10,2) .. (10,-6);
+  \filldraw (-9.5,6) -- (-2,10.5) -- (-2,1.5) -- cycle;
+\end{tikzpicture}
+\end{document}

@@ -19,9 +19,9 @@ function icon(id: keyof typeof TOOLBAR_ICONS): string {
  */
 export function viewerBodyHtml(): string {
   return /* html */ `<div id="menubar">
-    <div id="file-menu-wrap">
-      <button id="file-menu" title="File menu" aria-haspopup="true" aria-expanded="false">${icon("home")} File ▾</button>
-      <div id="file-dropdown" class="hidden" role="menu">
+    <div id="file-menu-wrap" class="tb-menu-wrap">
+      <button id="file-menu" class="tb-menu" title="File menu" aria-haspopup="true" aria-expanded="false">${icon("home")} File ▾</button>
+      <div id="file-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="menu-open" role="menuitem" title="Open a CAD/mesh file">${icon("open")} Open…</button>
         <button id="menu-save" role="menuitem" title="Save parts/edits/mesh sidecars now">${icon("save")} Save</button>
         <button id="menu-saveas" role="menuitem" title="Export the model to a new file/format">${icon("saveAs")} Save As…</button>
@@ -45,8 +45,8 @@ export function viewerBodyHtml(): string {
         <div id="parts-header">
           <span id="parts-title">Parts</span>
           <div id="parts-header-actions">
-            <button id="parts-isolate" title="Isolate the selected part (show only it)">⊙ Isolate</button>
-            <button id="parts-new" title="New part">＋ New</button>
+            <button id="parts-isolate" title="Isolate the selected part (show only it)">${icon("isolate")} Isolate</button>
+            <button id="parts-new" title="New part">${icon("add")} New</button>
           </div>
         </div>
         <div id="parts-body"></div>
@@ -55,16 +55,16 @@ export function viewerBodyHtml(): string {
         <div id="edits-header">
           <span id="edits-title">Edits</span>
           <div id="edits-actions">
-            <button id="edits-undo" title="Undo last edit" disabled>↶</button>
-            <button id="edits-redo" title="Redo edit" disabled>↷</button>
-            <button id="edits-clear" title="Clear all edits" disabled>Clear</button>
+            <button id="edits-undo" title="Undo last edit" disabled>${icon("undo")}</button>
+            <button id="edits-redo" title="Redo edit" disabled>${icon("redo")}</button>
+            <button id="edits-clear" title="Clear all edits" disabled>${icon("clear")} Clear</button>
           </div>
         </div>
         <div id="edits-scroll">
           <div id="variables-section">
             <div id="variables-header">
               <span id="variables-title">Variables</span>
-              <button id="variables-add" title="New variable">＋ New</button>
+              <button id="variables-add" title="New variable">${icon("add")} New</button>
             </div>
             <div id="variables-body"></div>
           </div>
@@ -79,7 +79,7 @@ export function viewerBodyHtml(): string {
             <button id="meshing-generate" title="Generate mesh">${icon("generate")} Generate</button>
             <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
             <button id="meshing-export" title="Export mesh">${icon("export")} Export</button>
-            <button id="meshing-clear" title="Clear generated mesh">Clear</button>
+            <button id="meshing-clear" title="Clear generated mesh">${icon("clear")} Clear</button>
           </div>
         </div>
         <div id="meshing-progress"></div>
@@ -101,45 +101,66 @@ export function viewerBodyHtml(): string {
   </div>
   <div id="toolbar">
     <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
-    <button id="grid" title="Toggle grid">▦ Grid</button>
-    <button id="edges" title="Toggle edge visibility">📐 Edges</button>
-    <button id="screenshot" title="Save the current view as a PNG">📷 Screenshot</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">${icon("tree")} Tree</button>
     <button id="meshing-toggle" title="Toggle FE mesh overlay">${icon("feMesh")} FE Mesh</button>
-    <div id="select-group" title="Pick entities in the view to assign to a part">
-      <button id="sel-toggle" title="Toggle selection mode">${icon("select")} Select</button>
-      <button class="sel-mode" data-mode="point" title="Pick points (vertices)">${icon("point")} Point</button>
-      <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">${icon("volume")} Vol</button>
-      <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">${icon("surface")} Surf</button>
-      <button class="sel-mode" data-mode="line" title="Pick lines (edges)">${icon("line")} Line</button>
+    <div class="tb-menu-wrap">
+      <button id="view-menu" class="tb-menu" title="View options" aria-haspopup="true" aria-expanded="false">${icon("view")} View ▾</button>
+      <div id="view-dropdown" class="tb-dropdown hidden" role="menu">
+        <button id="grid" role="menuitemcheckbox" aria-checked="false" title="Toggle the grid and axis helpers">${icon("grid")} Grid</button>
+        <button id="edges" role="menuitemcheckbox" aria-checked="true" title="Toggle edge visibility">${icon("edges")} Edges</button>
+        <div class="tb-sep"></div>
+        <button id="screenshot" role="menuitem" title="Save the current view as a PNG">${icon("screenshot")} Screenshot…</button>
+      </div>
     </div>
-    <div id="measure-group" title="Measure distances, lengths, angles, and radii">
-      <button id="measure-toggle" title="Toggle measure mode">📏 Measure</button>
-      <select id="measure-tool" title="Measurement tool">
-        <option value="distance">Distance</option>
-        <option value="edgeLength">Edge Length</option>
-        <option value="angle">Angle</option>
-        <option value="radius">Radius</option>
-      </select>
-      <button id="measure-clear" title="Clear current measurement">Clear</button>
-      <span id="measure-readout"></span>
+    <div class="tb-menu-wrap">
+      <button id="select-menu" class="tb-menu" title="Pick entities in the view to assign to a part" aria-haspopup="true" aria-expanded="false">${icon("select")} Select ▾</button>
+      <div id="select-dropdown" class="tb-dropdown hidden" role="menu">
+        <button id="sel-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle selection mode">${icon("select")} Selection mode</button>
+        <div id="select-group" class="tb-row" title="What a click picks">
+          <button class="sel-mode" data-mode="point" title="Pick points (vertices)">${icon("point")} Point</button>
+          <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">${icon("volume")} Vol</button>
+          <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">${icon("surface")} Surf</button>
+          <button class="sel-mode" data-mode="line" title="Pick lines (edges)">${icon("line")} Line</button>
+        </div>
+      </div>
     </div>
-    <div id="markup-group" title="Draw review annotations over the 3D view">
-      <button id="markup-toggle" title="Toggle markup mode">✎ Markup</button>
-      <select id="markup-tool" title="Markup tool">
-        <option value="freehand">Freehand</option>
-        <option value="line">Line</option>
-        <option value="arrow">Arrow</option>
-        <option value="rectangle">Rectangle</option>
-        <option value="circle">Circle</option>
-        <option value="eraser">Eraser</option>
-      </select>
-      <input type="color" id="markup-color" title="Stroke colour" value="#ff3b30">
-      <button id="markup-undo" title="Undo last stroke">Undo</button>
-      <button id="markup-redo" title="Redo">Redo</button>
-      <button id="markup-clear" title="Clear all annotations">Clear</button>
+    <div class="tb-menu-wrap">
+      <button id="measure-menu" class="tb-menu" title="Measure distances, lengths, angles, and radii" aria-haspopup="true" aria-expanded="false">${icon("measure")} Measure ▾</button>
+      <div id="measure-dropdown" class="tb-dropdown hidden" role="menu">
+        <button id="measure-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle measure mode">${icon("measure")} Measure mode</button>
+        <div id="measure-tool" class="tb-row" title="Measurement tool">
+          <button class="measure-tool-btn active" data-tool="distance" title="Distance between two picks">${icon("distance")} Distance</button>
+          <button class="measure-tool-btn" data-tool="edgeLength" title="Length of a picked edge">${icon("edgeLength")} Length</button>
+          <button class="measure-tool-btn" data-tool="angle" title="Angle between two picks">${icon("angle")} Angle</button>
+          <button class="measure-tool-btn" data-tool="radius" title="Radius of a picked arc">${icon("radius")} Radius</button>
+        </div>
+        <div class="tb-sep"></div>
+        <button id="measure-clear" role="menuitem" title="Clear current measurement">${icon("clear")} Clear measurement</button>
+      </div>
+    </div>
+    <div class="tb-menu-wrap">
+      <button id="markup-menu" class="tb-menu" title="Draw review annotations over the 3D view" aria-haspopup="true" aria-expanded="false">${icon("markup")} Markup ▾</button>
+      <div id="markup-dropdown" class="tb-dropdown hidden" role="menu">
+        <button id="markup-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle markup mode">${icon("markup")} Markup mode</button>
+        <div id="markup-tool" class="tb-row" title="Markup tool">
+          <button class="markup-tool-btn active" data-tool="freehand" title="Freehand">${icon("freehand")}</button>
+          <button class="markup-tool-btn" data-tool="line" title="Line">${icon("line")}</button>
+          <button class="markup-tool-btn" data-tool="arrow" title="Arrow">${icon("arrow")}</button>
+          <button class="markup-tool-btn" data-tool="rectangle" title="Rectangle">${icon("rectangle")}</button>
+          <button class="markup-tool-btn" data-tool="circle" title="Circle">${icon("circle")}</button>
+          <button class="markup-tool-btn" data-tool="eraser" title="Eraser">${icon("eraser")}</button>
+        </div>
+        <label class="tb-field" for="markup-color">Colour
+          <input type="color" id="markup-color" title="Stroke colour" value="#ff3b30">
+        </label>
+        <div class="tb-sep"></div>
+        <button id="markup-undo" role="menuitem" title="Undo last stroke">${icon("undo")} Undo</button>
+        <button id="markup-redo" role="menuitem" title="Redo">${icon("redo")} Redo</button>
+        <button id="markup-clear" role="menuitem" title="Clear all annotations">${icon("clear")} Clear</button>
+      </div>
     </div>
   </div>
+  <span id="measure-readout"></span>
   <div id="view-controls">
     <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">⌄</button>
     <div id="vc-body">
@@ -211,11 +232,11 @@ export function viewerBodyHtml(): string {
     <div class="vc-group">
       <span class="vc-label">Display</span>
       <div class="vc-segments" id="display-mode-group">
-        <button class="display-mode-btn active" data-mode="shaded" title="Shaded — normal lit faces">Shaded</button>
+        <button class="display-mode-btn active" data-mode="shaded" title="Shaded — normal lit faces">${icon("shaded")} Shaded</button>
         <button class="display-mode-btn" data-mode="wireframe" title="Wireframe — faces rendered as a mesh of lines">${icon("wireframe")} Wire</button>
-        <button class="display-mode-btn" data-mode="xray" title="X-Ray — translucent faces, edges visible through them">X-Ray</button>
-        <button class="display-mode-btn" data-mode="hiddenLines" title="Hidden Lines — occluded edges shown faintly through solids">Hidden</button>
-        <button class="display-mode-btn" data-mode="flat" title="Flat — unlit constant-colour faces, no shading gradient">Flat</button>
+        <button class="display-mode-btn" data-mode="xray" title="X-Ray — translucent faces, edges visible through them">${icon("xray")} X-Ray</button>
+        <button class="display-mode-btn" data-mode="hiddenLines" title="Hidden Lines — occluded edges shown faintly through solids">${icon("hiddenLines")} Hidden</button>
+        <button class="display-mode-btn" data-mode="flat" title="Flat — unlit constant-colour faces, no shading gradient">${icon("flat")} Flat</button>
       </div>
     </div>
     </div>

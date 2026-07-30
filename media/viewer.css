@@ -235,7 +235,11 @@ body {
   z-index: 20;
 }
 
-#file-menu-wrap {
+/* ── Dropdown menus (File ▾ in the menubar; View/Select/Measure/Markup in the
+ * toolbar). One shared pattern — `.tb-menu-wrap` > `.tb-menu` trigger +
+ * `.tb-dropdown` panel — wired by src/webview/dropdownMenu.ts. ───────────── */
+
+.tb-menu-wrap {
   position: relative;
 }
 
@@ -257,10 +261,9 @@ body {
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 }
 
-#file-dropdown {
+.tb-dropdown {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
   min-width: 200px;
   display: flex;
   flex-direction: column;
@@ -273,10 +276,27 @@ body {
   z-index: 30;
 }
 
-#file-dropdown.hidden {
+/* The menubar is left-anchored; the toolbar is right-anchored, so its panels
+ * must hang off the right edge or they'd run off the viewport. */
+#file-dropdown {
+  left: 0;
+}
+
+#toolbar .tb-dropdown {
+  right: 0;
+  left: auto;
+  min-width: 220px;
+}
+
+.tb-dropdown.hidden {
   display: none;
 }
 
+/* `#toolbar button` below is an id-specificity rule that paints every
+ * descendant button solid blue — these menu-item rules must out-specify it, so
+ * they're written with the `#toolbar`/`#file-dropdown` id prefix rather than as
+ * a bare `.tb-dropdown button`. */
+#toolbar .tb-dropdown button,
 #file-dropdown button {
   font: inherit;
   display: flex;
@@ -291,20 +311,60 @@ body {
   cursor: pointer;
 }
 
+#toolbar .tb-dropdown button:hover,
 #file-dropdown button:hover {
   background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground, #094771));
   color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground, #fff));
 }
 
+/* A checkable menu item reserves room for its tick so the labels stay aligned
+ * whether or not it's currently checked. */
+#toolbar .tb-dropdown button[role="menuitemcheckbox"]::before,
+#toolbar .tb-dropdown button[role="menuitemcheckbox"][aria-checked="true"]::before {
+  content: "✓";
+  width: 1em;
+  flex: 0 0 auto;
+  opacity: 0;
+}
+
+#toolbar .tb-dropdown button[role="menuitemcheckbox"][aria-checked="true"]::before {
+  opacity: 1;
+}
+
+/* Rows of segmented buttons (pick modes, measure/markup tools) and labelled
+ * fields (the markup colour swatch) inside a dropdown panel. */
+#toolbar .tb-dropdown .tb-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px 8px 4px;
+}
+
+#toolbar .tb-dropdown .tb-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.tb-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--vscode-editorWidget-border, #454545);
+}
+
 /* ── Toolbar ────────────────────────────────────────────────────────── */
 
+/* Above #view-controls (10) and #markup-canvas (5) so an open dropdown panel
+ * paints over both. #menubar stays at 20 but never overlaps geometrically. */
 #toolbar {
   position: absolute;
   top: 42px;
   right: 8px;
   display: flex;
   gap: 4px;
-  z-index: 10;
+  z-index: 15;
 }
 
 #toolbar button {
@@ -319,6 +379,37 @@ body {
 
 #toolbar button:hover {
   background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+/* A dropdown trigger. `.active` means "the mode behind this menu is currently
+ * on" — the same idiom #sel-toggle/#meshing-toggle already use, plus a small
+ * dot, because inputValidation-infoBackground is nearly invisible in some
+ * light themes and the trigger's own label doesn't say which mode is live. */
+#toolbar .tb-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#toolbar .tb-menu[aria-expanded="true"] {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+#toolbar .tb-menu.active {
+  background: var(--vscode-inputValidation-infoBackground, #063b49);
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+}
+
+#toolbar .tb-menu.active::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vscode-focusBorder, #007fd4);
 }
 
 /* Generated, currentColor-based icons (src/toolbarIcons.ts) — used in the
@@ -426,6 +517,10 @@ body {
 .clip-axis,
 .display-mode-btn {
   padding: 3px 7px;
+  /* Every one of these is icon + short label; without this the group wraps
+   * mid-word ("X-Ray" splitting at the hyphen) instead of at button
+   * boundaries when the panel runs short of room. */
+  white-space: nowrap;
 }
 
 .seg-btn.active,
@@ -1440,8 +1535,13 @@ input[type="range"].meshing-slider:focus {
 .op-btn.disabled { opacity: 0.4; pointer-events: none; }
 
 .op-icon {
+  display: inline-flex;
   font-size: 14px;
   line-height: 1;
+}
+.op-icon svg {
+  width: 1em;
+  height: 1em;
 }
 
 .op-name {
@@ -1494,107 +1594,54 @@ input[type="range"].meshing-slider:focus {
 }
 #edits-params:empty { margin-top: 0; }
 
-/* ── Selection-mode toolbar group ───────────────────────────────────── */
-
-#select-group {
-  display: flex;
-  gap: 2px;
-  margin-left: 6px;
-  padding-left: 6px;
-  border-left: 1px solid var(--vscode-editorWidget-border, #454545);
-}
+/* ── Mode toggles and segmented tool rows inside the toolbar dropdowns ──
+ *
+ * The two `.active` idioms this file uses are deliberately kept apart:
+ *   - "this mode is on"  → infoBackground + a focus-colour outline
+ *     (#sel-toggle, #meshing-toggle, #measure-toggle, #markup-toggle, and the
+ *     .tb-menu triggers that mirror them)
+ *   - "selected 1-of-N"  → the plain primary button background
+ *     (.sel-mode, .measure-tool-btn, .markup-tool-btn, .display-mode-btn)
+ *
+ * The mode-toggle rules are (0,2,1,0) and already out-specify the menu-item
+ * rule above; the 1-of-N segments are not, so they carry a `.tb-dropdown`
+ * class to reach (0,1,2,0). */
 
 #toolbar #sel-toggle.active,
-#toolbar #meshing-toggle.active {
-  background: var(--vscode-inputValidation-infoBackground, #063b49);
-  outline: 1px solid var(--vscode-focusBorder, #007fd4);
-}
-
-#toolbar .sel-mode {
-  background: var(--vscode-button-secondaryBackground, #3a3d41);
-  padding: 4px 8px;
-}
-#toolbar .sel-mode.active {
-  background: var(--vscode-button-background, #0e639c);
-}
-#toolbar .sel-mode:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-/* ── Measurement toolbar group ──────────────────────────────────────── */
-
-#measure-group {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 6px;
-  padding-left: 6px;
-  border-left: 1px solid var(--vscode-editorWidget-border, #454545);
-}
-
-#toolbar #measure-toggle.active {
-  background: var(--vscode-inputValidation-infoBackground, #063b49);
-  outline: 1px solid var(--vscode-focusBorder, #007fd4);
-}
-
-#measure-tool {
-  font: inherit;
-  font-size: 12px;
-  color: var(--vscode-input-foreground, #ccc);
-  background: var(--vscode-input-background, #1e1e1e);
-  border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
-  padding: 3px 4px;
-}
-#measure-tool:focus {
-  outline: none;
-  border-color: var(--vscode-focusBorder, #007fd4);
-}
-
-#toolbar #measure-clear {
-  background: var(--vscode-button-secondaryBackground, #3a3d41);
-  padding: 4px 8px;
-}
-
-#measure-readout {
-  font-size: 11px;
-  color: var(--vscode-foreground, #ccc);
-  opacity: 0.9;
-  white-space: nowrap;
-}
-#measure-readout.measure-readout-error {
-  color: var(--vscode-errorForeground, #f48771);
-}
-
-/* ── Markup toolbar group ────────────────────────────────────────────── */
-
-#markup-group {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 6px;
-  padding-left: 6px;
-  border-left: 1px solid var(--vscode-editorWidget-border, #454545);
-}
-
+#toolbar #meshing-toggle.active,
+#toolbar #measure-toggle.active,
 #toolbar #markup-toggle.active {
   background: var(--vscode-inputValidation-infoBackground, #063b49);
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
 }
 
-#markup-tool {
-  font: inherit;
-  font-size: 12px;
-  color: var(--vscode-input-foreground, #ccc);
-  background: var(--vscode-input-background, #1e1e1e);
-  border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
-  padding: 3px 4px;
+#toolbar .tb-dropdown .sel-mode,
+#toolbar .tb-dropdown .measure-tool-btn,
+#toolbar .tb-dropdown .markup-tool-btn {
+  display: inline-flex;
+  gap: 5px;
+  padding: 4px 8px;
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #ccc));
 }
-#markup-tool:focus {
-  outline: none;
-  border-color: var(--vscode-focusBorder, #007fd4);
+
+#toolbar .tb-dropdown .sel-mode.active,
+#toolbar .tb-dropdown .measure-tool-btn.active,
+#toolbar .tb-dropdown .markup-tool-btn.active {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+
+#toolbar .tb-dropdown .sel-mode:disabled,
+#toolbar .tb-dropdown .measure-tool-btn:disabled,
+#toolbar .tb-dropdown .markup-tool-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The markup tool buttons are icon-only, so they need no label gap. */
+#toolbar .tb-dropdown .markup-tool-btn {
+  padding: 5px 7px;
 }
 
 #markup-color {
@@ -1607,9 +1654,29 @@ input[type="range"].meshing-slider:focus {
   cursor: pointer;
 }
 
-#toolbar #markup-undo,
-#toolbar #markup-redo,
-#toolbar #markup-clear {
-  background: var(--vscode-button-secondaryBackground, #3a3d41);
-  padding: 4px 8px;
+/* ── Measurement readout ─────────────────────────────────────────────────
+ * Its own line under the toolbar rather than an inline toolbar item: it's
+ * live feedback you need while the Measure menu is *closed*, and its longest
+ * error string would otherwise stretch the right-anchored toolbar off-canvas.
+ * Wraps instead of `nowrap` for the same reason. */
+
+#measure-readout {
+  position: absolute;
+  top: 74px;
+  right: 8px;
+  z-index: 12;
+  max-width: min(40vw, 420px);
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
+  text-align: right;
+  font-size: 11px;
+  color: var(--vscode-foreground, #ccc);
+  opacity: 0.9;
+}
+#measure-readout:empty {
+  display: none;
+}
+#measure-readout.measure-readout-error {
+  color: var(--vscode-errorForeground, #f48771);
 }

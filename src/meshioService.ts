@@ -107,40 +107,28 @@ export async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat
  * group, i.e. per CAD-Preview part) that 2.2 never carried. The 2.2 detour
  * is gone.
  *
- * **MED still needs a MED-specific two-step, re-verified against the live
- * 9.7.0 WASM** — but it's now a group-PRESERVING one, not group-dropping:
- * 1. Direct `convert(..., {outFormat: "med"})` still throws
- *    `"MED: gmsh physical groups handled by Python fallback"` whenever
- *    `cell_data` carries gmsh's `"gmsh:physical"` tags (which
- *    `readMesh(..., "gmsh")` always attaches), and additionally MED rejects
- *    MSH 4.1's per-*entity* cell blocks outright
- *    (`"MED files cannot have two sections of the same cell type"` — a unit
- *    box meshes into 27 blocks: 8 vertex + 12 line + 6 triangle + 1 tetra).
- * 2. The fix: `readMesh()` the 4.1 text, run it through **`merge([mesh])`**
- *    (meshio++'s own merge consolidates same-type blocks into one — MED's
- *    requirement — and remaps every region's block-major cell indices to
- *    the merged layout, verified: region entry counts survive exactly),
- *    then hand-build a **brand-new plain object** of only
- *    `{points, dim, cells, regions}` — no `cell_data`/`point_data`/
- *    `field_data` keys at all (dropping them is what dodges the
- *    Python-fallback throw; scalar field data is a theoretical loss only,
- *    CAD-Preview's generated meshes never carry any) — and `writeMesh()`
- *    THAT to MED. 9.6.0's MED writer synthesizes MED families from the
- *    regions, so **physical groups (CAD-Preview parts) now round-trip into
- *    MED as named groups** — verified: a box with `MyVolume`/`MySurface`
- *    physical groups wrote a MED whose read-back listed both regions with
- *    identical entry counts. Under 9.4.1 this path dropped all groups.
- * CGNS/XDMF/VTK need none of this — plain `convert()` works directly on
- * the 4.1 text.
+ * **Every format, MED included, is now a plain `convert()` call — since
+ * `@meshioplusplus/wasm` 9.8.0.** Two gaps this bridge used to work around
+ * were both closed upstream in 9.8.0 (re-verified against the live WASM with
+ * a real Gmsh-generated 4.1 file carrying named volume + surface physical
+ * groups, not just unit-tested): `write_med` now bridges
+ * `cell_data["gmsh:physical"]` to MED families natively in C++ instead of
+ * throwing `"MED: gmsh physical groups handled by Python fallback"`, and it
+ * now consolidates MSH 4.1's per-*entity* cell blocks into one section per
+ * type itself instead of throwing `"MED files cannot have two sections of
+ * the same cell type"` — so the old `readMesh` → `merge([mesh])` →
+ * rebuild-without-`cell_data` → `writeMesh` two-step (which needed the
+ * `merge` purely to satisfy that same-type-block restriction) is gone. A box
+ * with `MyVolume`/`MySurface` physical groups round-trips both region names
+ * through a direct `convert(..., {outFormat: "med"})` with no special-casing.
  *
- * **Known separate limitation, RE-verified against the live 9.7.0 WASM,
- * still present**: CGNS export of a PURE-SURFACE mesh (triangle/quad only,
- * no volume elements — i.e. every 2D-dimension FE-mesh generate) produces a
- * file this same WASM build's own reader can't read back
- * (`"HDF5: missing dataset ' data'"`); volume (3D tet/hex) meshes are
- * unaffected, and MED/XDMF have no such gap at all. CAD-Preview still writes
- * the file (the failure is on *read*, not *write*) but the limitation is
- * documented here and in `doc/gmsh-integration.md`.
+ * **The pure-surface CGNS read-back gap is also closed in 9.8.0** — CGNS was
+ * rewritten from a private tetrahedra-only encoding (whose writer emitted
+ * only the first `tetra` block it found, so any 2D-dimension FE-mesh
+ * generate wrote a file this same WASM's own reader rejected with
+ * `"HDF5: missing dataset ' data'"`) to a genuine CGNS/SIDS-compliant
+ * unstructured-mesh subset, one section per cell block. Re-verified against
+ * a real Gmsh 2D-dimension generate: the CGNS round-trips clean.
  *
  * **XDMF writes an HDF5 companion file, like `.geo_unrolled`'s `.xao`
  * companion** — confirmed against the live WASM: `convert(..., "/out.xdmf",
@@ -162,26 +150,6 @@ export async function exportViaMeshio(
   const companionPath = "/out.h5";
   m.FS.writeFile(inPath, Buffer.from(gmshMshText, "utf8"));
   try {
-    if (outMeshioFormat === "med") {
-      const parsed = m.readMesh(inPath, "gmsh");
-      // merge([single mesh]) consolidates MSH 4.1's per-entity cell blocks
-      // into one block per type (MED's hard requirement) and remaps the
-      // named regions' cell indices onto the merged layout.
-      const merged = m.merge([parsed]);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cells = (merged.cells as any[]).map((c) => ({ type: c.type, data: c.data, nodesPerCell: c.nodesPerCell }));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const regions = (merged.regions as any[]) ?? [];
-      const freshMesh = {
-        points: merged.points,
-        dim: merged.dim,
-        cells,
-        ...(regions.length > 0 ? { regions } : {}),
-      };
-      m.writeMesh(outPath, freshMesh, "med");
-      return { bytes: m.FS.readFile(outPath) };
-    }
-
     m.convert(inPath, outPath, { inFormat: "gmsh", outFormat: outMeshioFormat });
     const bytes = m.FS.readFile(outPath);
     if (outMeshioFormat !== "xdmf") return { bytes };

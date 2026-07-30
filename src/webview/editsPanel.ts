@@ -1,7 +1,7 @@
 import type { EditOp, ExprMap, Vec3 } from "../editOps";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
-import { OP_ICONS, DEFAULT_OP_ICON } from "./opIcons";
+import { OP_ICONS } from "./opIcons";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 
 // Re-exported for compatibility — `describeOp` now lives in the pure, headless-
@@ -420,7 +420,7 @@ export class EditsPanel {
         btn.className = "op-btn";
         const icon = document.createElement("span");
         icon.className = "op-icon";
-        icon.textContent = OP_ICONS[entry.id] ?? DEFAULT_OP_ICON;
+        icon.innerHTML = OP_ICONS[entry.id];
         const name = document.createElement("span");
         name.className = "op-name";
         name.textContent = entry.label;

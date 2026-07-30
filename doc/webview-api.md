@@ -7,6 +7,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | Module | Responsibility |
 |--------|---------------|
 | `src/webview/main.ts` | Entry point, VS Code API, message routing, UI wiring |
+| `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, gizmo |
 | `src/webview/cameraControls.ts` | Pure camera math utilities (unit-testable) |
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
@@ -28,7 +29,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
 | `src/webview/opCatalog.ts` | Op catalog: GEOMETRY/EDIT tab structure + `describeOp`, DOM-free (unit-tested) |
-| `src/webview/opIcons.ts` | Per-op icon placeholders — the one file to edit for real icons |
+| `src/webview/opIcons.ts` | Generated per-op SVG icons (`icons/build-op-icons.mjs`) |
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
@@ -39,6 +40,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/treeFilter.ts` | Pure Components-tree label-substring filter + ancestor inclusion (unit-tested) |
 | `src/webview/explodePreview.ts` | Live exploded-view preview math (capture/apply/reset base positions), DOM-free but THREE-typed (unit-tested) |
 | `src/webview/clipping.ts` | Pure clip-plane-from-bounding-box math (unit-tested) |
+| `src/webview/clipCap.ts` | Stencil-buffer solid cap over a clip plane's cross-section (not unit-tested — THREE-mesh-building code) |
 
 ---
 
@@ -50,14 +52,15 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 1. Acquire VS Code API: `const vscode = acquireVsCodeApi()`.
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
 3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, and `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`.
-4. Call `setupViewControls(viewer)`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()`, `setupDragAndDrop()`, `setupAppearanceControls()`, `setupClippingControls()`, `setupMarkupControls()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
-5. Wire toolbar buttons (`#fit`, `#grid`, `#edges`, `#screenshot`, `#export`, `#tree-toggle`, `#meshing-toggle`, `#measure-group`). `#export` posts `{ type: "exportRequest" }`; `#screenshot` posts `{ type: "screenshotButtonClicked" }` — neither shows any UI itself, the host owns the quick-pick/save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. `#measure-group`'s toggle/tool-`<select>`/Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted at all. `#edges` toggles `viewer.setEdgesVisible()`, purely session-side like Grid. There is no standalone `#wireframe` toolbar button anymore — Wireframe is one of five mutually exclusive **Display mode** states (`#display-mode-group` in the view-controls Appearance area, `setupAppearanceControls()`) driving `viewer.setDisplayMode()`; see below.
+4. Call `setupViewControls(viewer)`, `setupViewMenu()`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()`, `setupDragAndDrop()`, `setupAppearanceControls()`, `setupClippingControls()`, `setupMarkupControls()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
+5. Wire toolbar buttons. Only `#fit`, `#tree-toggle`, and `#meshing-toggle` sit directly on the strip; everything else lives inside one of four dropdown panels (`#view-dropdown`, `#select-dropdown`, `#measure-dropdown`, `#markup-dropdown`) wired by `dropdownMenu.ts` (see below). `#screenshot` (in **View ▾**) posts `{ type: "screenshotButtonClicked" }` — it shows no UI itself, the host owns the save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. The measure mode toggle / `.measure-tool-btn` row / Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted at all. `#grid` and `#edges` are `menuitemcheckbox`es whose `aria-checked` reflects `viewer.toggleGrid()`'s return value and `setupAppearanceControls()`'s `edgesVisible` flag respectively, purely session-side. There is no standalone `#wireframe` toolbar button — Wireframe is one of five mutually exclusive **Display mode** states (`#display-mode-group` in the view-controls Appearance area, `setupAppearanceControls()`) driving `viewer.setDisplayMode()`; see below.
 6. Register `window.addEventListener('message', ...)` for host messages.
 7. Post `{ type: 'ready' }` to the host.
 
 **Additional setup functions** (same guarded-`try` bank as step 4 above):
 - `setupDragAndDrop()` — `dragover`/`drop` on `#app`; posts `{type:"openPath", path}` when the dropped `File` exposes a real fs path, else falls back to `{type:"openFile"}`.
-- `setupAppearanceControls()` — wires `#edges` (toolbar), `#vc-background`/`#vc-opacity`/`#vc-ortho` (`#view-controls`' "Appearance" group) to `viewer.setEdgesVisible`/`setBackground`/`setOpacity`/`setOrthographic`, and `#vc-unit` to `setDisplayUnit()` (`src/webview/units.ts` — see below).
+- `setupViewMenu()` — wires the toolbar's **View ▾** dropdown: `#grid` (calling `viewer.toggleGrid()` and reflecting its returned visibility into the item's `aria-checked` tick — the initial state comes from the `cadPreview.showGridAndAxesOnOpen` setting via `applyDefaults()`, so it can't be assumed on) and dismissing the menu after the one-shot `#screenshot` action.
+- `setupAppearanceControls()` — wires `#edges` (View ▾ menu), `#vc-background`/`#vc-opacity`/`#vc-ortho` (`#view-controls`' "Appearance" group) to `viewer.setEdgesVisible`/`setBackground`/`setOpacity`/`setOrthographic`, and `#vc-unit` to `setDisplayUnit()` (`src/webview/units.ts` — see below).
 - `setupClippingControls()` — wires `#view-controls`' "Clip" group (`.clip-axis` buttons, `#clip-offset` slider, `#clip-toggle`) to `viewer.setClippingPlane()`, computing a `THREE.Plane` via `clipping.ts`'s `planeForAxis()` from `viewer.getModel()`'s current bounding box on every change.
 
 **Message handler (host → webview):**
@@ -130,6 +133,55 @@ Builds a `TreeNode` hierarchy from a Three.js `Object3D` tree. Uses `obj.name` (
 function hasMultipleNodes(root: TreeNode): boolean
 ```
 Returns `true` if the root has more than one child (or any grandchild). The tree panel is shown only when this is true.
+
+---
+
+## `src/webview/dropdownMenu.ts`
+
+Shared plumbing for every dropdown in the webview: the **File ▾** menubar menu
+and the toolbar's **View ▾** / **Select ▾** / **Measure ▾** / **Markup ▾**
+menus. The markup contract is a `.tb-menu-wrap` (`position: relative`)
+containing a `.tb-menu` trigger button (`aria-haspopup`, `aria-expanded`) and a
+sibling `.tb-dropdown.hidden[role=menu]` panel.
+
+```typescript
+interface DropdownHandle {
+  readonly trigger: HTMLElement;
+  readonly panel: HTMLElement;
+  open(): void;
+  close(): void;
+  toggle(): void;
+  isOpen(): boolean;
+}
+
+function setupDropdown(triggerId: string, panelId: string): DropdownHandle | null
+function closeAllDropdowns(): void
+```
+
+- **Returns `null`, never throws**, when either element is missing — callers
+  run inside `main.ts`'s shared setup `try` block, where a throw must not
+  block the `ready` handshake.
+- **Mutual exclusion**: `open()` closes every other registered handle first.
+- **Two global listeners total**, registered lazily on the first
+  `setupDropdown()` call regardless of how many menus exist: a capture-phase
+  `pointerdown` on `window` that closes the open menu when the click landed
+  outside every registered trigger *and* panel, and a `keydown` for `Escape`.
+  The containment test is `trigger.contains(target) || panel.contains(target)`
+  — an identity comparison against the trigger fails, because every trigger
+  wraps its icon in a `<span class="toolbar-icon"><svg>` that becomes the
+  event target.
+- The dismissing `pointerdown` calls `preventDefault()` + `stopPropagation()`,
+  so the click that closes a menu does not also reach whatever is underneath.
+  This matters because `#markup-canvas` is `pointer-events: auto` while markup
+  mode is on — without it, clicking away from the Markup menu would draw a
+  stroke.
+- **Clicks inside a panel deliberately leave it open** (toggling a mode,
+  picking a tool, and choosing a colour are one visit). One-shot items — the
+  `#menu-*` File actions and `#screenshot` — call `close()` themselves.
+
+Module scope holds only a `Set<DropdownHandle>` and a `boolean`; all DOM access
+happens inside the exported functions, per this repo's no-DOM-at-import rule
+(vitest runs without jsdom).
 
 ---
 
@@ -366,11 +418,17 @@ material on **both** `model` and `meshOverlay` (the FE-mesh overlay needs the
 same plane — re-applied automatically from `setModel()`/`setMeshOverlay()`
 too, since fresh materials from either rebuild start with no clipping state).
 Callers compute `plane` via `clipping.ts`'s `planeForAxis()` from the model's
-current bounding box. **v1 is deliberately uncapped**: `MeshStandardMaterial`
-+ `clippingPlanes` does not auto-cap the cut cross-section (three.js needs a
-separate stencil-buffer technique for a solid-looking cut) — a clipped solid
-is see-through/hollow at the cut face, not filled; capping is a documented
-follow-up, not attempted here.
+current bounding box.
+
+The cut face is a real solid cap, not see-through — `clipCap.ts`'s
+stencil-buffer technique (see `CLAUDE.md`'s clipping section for the full
+write-up). `setClippingPlane` takes one of two paths depending on whether the
+change is structural: `rebuildClipCap()` (dispose+recreate the stencil-marker
+meshes) only when clipping just turned on, or `model`/`meshOverlay` changed;
+`updateClipCapPlane()` (mutate the shared `Plane` instance in place, reposition
+the cap) for every other call — in particular the `#clip-offset` slider's
+`input`-per-tick firing, which a full rebuild every tick would make visibly
+janky.
 
 **Visibility (Parts hide/isolate, Tree per-node hide — display-only, transient, never persisted):**
 
@@ -794,10 +852,12 @@ reachability.
 
 ## `src/webview/opIcons.ts`
 
-`OP_ICONS: Record<PanelOpId, string>` — the **one file to edit to swap in real
-icons**. Each value renders as the text of the button's `<span class="op-icon">`;
-the current values are placeholder unicode glyphs. The `Record` type makes a
-missing icon a compile error.
+**GENERATED — never hand-edit.** `OP_ICONS: Record<PanelOpId, string>`, one
+inline-SVG value per Edits-panel op button, produced by
+`icons/build-op-icons.mjs` from `icons/tikz/*.tex` (`cd icons && make ops-ts`)
+— the same `currentColor`-based pipeline `src/toolbarIcons.ts` uses (see
+`icons/README.md`). `editsPanel.ts`'s `buildTabContent()` sets each value via
+`innerHTML` on the button's `<span class="op-icon">`, not `textContent`.
 
 ## `src/webview/editsPanel.ts`
 
@@ -1286,7 +1346,7 @@ overlay is ever live at a time (a new pick or mode toggle disposes the
 previous one first), so repainting the single shared label canvas and
 wrapping it in a fresh `CanvasTexture` per call is safe.
 
-`main.ts`'s `setupMeasureControls()` wires the `#measure-group` toolbar
+`main.ts`'s `setupMeasureControls()` wires the `#measure-dropdown` toolbar
 (toggle/tool `<select>`/Clear/readout span), dispatches completed picks to
 `measurement.ts`'s functions via `computeMeasurementResult()`, and calls
 `Viewer.showMeasurementMarker`/`showMeasurementOverlay`/`clearMeasurementOverlay`
@@ -1413,8 +1473,38 @@ from the max-axis end.
 `main.ts`'s `setupClippingControls()` recomputes the plane from
 `viewer.getModel()`'s current `THREE.Box3` on every axis-button click or
 slider `input` event and calls `viewer.setClippingPlane()` — see
-[`Viewer.setClippingPlane`](#src-webview-viewer-ts) for the "uncapped in v1"
-scope note and the FE-mesh-overlay-needs-the-same-plane behavior.
+[`Viewer.setClippingPlane`](#src-webview-viewer-ts) for the solid-cap and
+FE-mesh-overlay-needs-the-same-plane behavior.
+
+```typescript
+function capCenterAndSize(plane: THREE.Plane, box: THREE.Box3): { center: THREE.Vector3; size: number }
+```
+Also pure. Where to centre the clip cap and how large to make it: projects
+`box`'s own centre onto `plane` (not the plane's closest point to the world
+origin, which could sit far from a model that isn't near the origin), sized
+to `box`'s full 3D diagonal so it safely covers any 2D cross-section through
+it. `Viewer.rebuildClipCap()`/`updateClipCapPlane()` are the only callers.
+
+## `src/webview/clipCap.ts`
+
+```typescript
+function buildClipCap(targets: THREE.Mesh[], plane: THREE.Plane, center: THREE.Vector3, size: number, color: number): THREE.Group
+function repositionClipCap(cap: THREE.Mesh, plane: THREE.Plane, center: THREE.Vector3, size: number): void
+function disposeClipCap(group: THREE.Group): void
+```
+The stencil-buffer clip-cap technique (see `CLAUDE.md`'s clipping section for
+the full write-up of how/why it works and the structural-rebuild-vs-cheap-
+move split). `buildClipCap` creates one back/front stencil-marking mesh pair
+per target (reusing each target's geometry, positioned via a frozen
+`matrix` copy of its `matrixWorld` rather than parenting) plus one cap quad,
+stashing `capMesh`/`capGeometry` in the returned group's `userData` so
+`repositionClipCap`/`disposeClipCap` can find them without a `traverse()`.
+`disposeClipCap` disposes every material plus the cap's own `PlaneGeometry`
+— never the marker meshes' geometry, which belongs to `model`/`meshOverlay`
+and is disposed there. Not unit-tested (THREE-mesh-building code with no
+realistic headless test, same class as `geometryBuilder.ts`'s builders) —
+verified via manual F5 and a throwaway Playwright script against the real
+`media/viewer.js` bundle.
 
 ## `src/webview/displayMode.ts`
 

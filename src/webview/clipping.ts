@@ -27,3 +27,19 @@ export function planeForAxis(axis: ClipAxis, offsetFrac: number, box: THREE.Box3
   const normal = new THREE.Vector3(axis === "x" ? 1 : 0, axis === "y" ? 1 : 0, axis === "z" ? 1 : 0);
   return new THREE.Plane(normal, -value);
 }
+
+/**
+ * Where to centre a solid "cap" over `plane`'s cross-section through `box`,
+ * and how large to make it — for the stencil-buffer clip-cap technique (see
+ * `clipCap.ts`). Projects `box`'s own centre onto the plane, NOT the plane's
+ * closest point to the world origin: a model far from the origin would put
+ * that point (and therefore the cap) nowhere near the model. Sized to the
+ * box's full 3D diagonal, which safely covers any 2D cross-section through
+ * it regardless of where along the plane's own axes that cross-section sits.
+ */
+export function capCenterAndSize(plane: THREE.Plane, box: THREE.Box3): { center: THREE.Vector3; size: number } {
+  const boxCenter = box.getCenter(new THREE.Vector3());
+  const center = boxCenter.clone().addScaledVector(plane.normal, -plane.distanceToPoint(boxCenter));
+  const size = box.getSize(new THREE.Vector3()).length();
+  return { center, size };
+}

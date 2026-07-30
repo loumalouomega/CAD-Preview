@@ -1,0 +1,12 @@
+% Toolbar icon: grid — 3x3 lattice: an outer square plus two interior lines each way.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-9,-9) rectangle (9,9);
+  \draw[thick] (-3,-9) -- (-3,9);
+  \draw[thick] (3,-9) -- (3,9);
+  \draw[thick] (-9,-3) -- (9,-3);
+  \draw[thick] (-9,3) -- (9,3);
+\end{tikzpicture}
+\end{document}
