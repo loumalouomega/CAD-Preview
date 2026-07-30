@@ -480,7 +480,11 @@ describe("compare_models", () => {
   it("diffs two B-rep sources via the pipeline", async () => {
     const c = ctx();
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2 });
-    expect(c.pipeline.compareModels).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], expect.any(Uint8Array), "step", []);
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
+      { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] }
+    );
     expect(result).toEqual({ formatA: "step", formatB: "step", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
   });
 
@@ -488,18 +492,53 @@ describe("compare_models", () => {
     const c = ctx();
     await applyEditOps(c, { path: stpModel2, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
     await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2 });
-    const lastCall = vi.mocked(c.pipeline.compareModels).mock.lastCall!;
-    expect(lastCall[3]).toEqual([]); // A has no ops
-    expect(lastCall[6]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]); // B does
+    const [, sourceA, sourceB] = vi.mocked(c.pipeline.compareModels).mock.lastCall!;
+    expect((sourceA as { kind: "brep"; ops: unknown[] }).ops).toEqual([]); // A has no ops
+    expect((sourceB as { kind: "brep"; ops: unknown[] }).ops).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]); // B does
   });
 
-  it("returns supported: false with a warning when either side is a mesh source, without touching WASM", async () => {
+  it("diffs a B-rep source against an STL source, as raw STL bytes with no edits baked", async () => {
     const c = ctx();
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
+      { kind: "stl", bytes: expect.any(Uint8Array) }
+    );
+    expect(result).toEqual({ formatA: "step", formatB: "stl", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+  });
+
+  it("diffs two STL sources", async () => {
+    const c = ctx();
+    const stlModel2 = path.join(dir, "model2.stl");
+    await fs.writeFile(stlModel2, "solid y\nendsolid y\n", "utf8");
+    const result = await compareModelsTool(c, { pathA: stlModel, pathB: stlModel2 });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "stl", bytes: expect.any(Uint8Array) },
+      { kind: "stl", bytes: expect.any(Uint8Array) }
+    );
+    expect(result.supported).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("warns (but still compares the raw file) when an STL side has pending edits that can't be baked in", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel });
+    expect(result.supported).toBe(true);
+    expect(result.warnings[0]).toMatch(/not baked in/i);
+    const [, , sourceB] = vi.mocked(c.pipeline.compareModels).mock.lastCall!;
+    expect(sourceB).toEqual({ kind: "stl", bytes: expect.any(Uint8Array) });
+  });
+
+  it("returns supported: false with a warning when either side is an unsupported mesh format (OBJ/PLY/glTF), without touching WASM", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: objModel });
     expect(c.pipeline.compareModels).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
     expect(result.diff).toBeUndefined();
-    expect(result.warnings[0]).toMatch(/mesh format/i);
+    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/STL/i);
   });
 
   it("rejects unsupported extensions on either path", async () => {

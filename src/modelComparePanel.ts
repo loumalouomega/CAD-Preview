@@ -1,65 +1,74 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
 import { readEdits } from "./editsStore";
-import { compareModels } from "./modelDiffHost";
+import { compareModels, type CompareSource } from "./modelDiffHost";
 import type { ModelDiff, SolidSignature } from "./modelDiff";
 import type { BRepFormat } from "./massProperties";
 
-const BREP_FILTER = { "STEP / IGES / BREP": ["step", "stp", "iges", "igs", "brep"] };
+const COMPARE_FILTER = { "STEP / IGES / BREP / STL": ["step", "stp", "iges", "igs", "brep", "stl"] };
 
-async function pickBRepFile(title: string): Promise<vscode.Uri | undefined> {
+async function pickCompareFile(title: string): Promise<vscode.Uri | undefined> {
   const uris = await vscode.window.showOpenDialog({
     canSelectMany: false,
     openLabel: title,
-    filters: BREP_FILTER,
+    filters: COMPARE_FILTER,
   });
   return uris?.[0];
 }
 
+/** Builds the `CompareSource` `compareModels()` needs for one side, plus any
+ * warning about what it couldn't account for — `undefined` (with a warning)
+ * when the file's format isn't compare-able at all (OBJ/PLY/glTF/meshio
+ * formats: no host-side geometry to independently derive centroids/volumes
+ * from without a webview — the same gap this feature always had, now
+ * narrowed to just those, since STEP/IGES/BREP/STL are all supported). */
+async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareSource; warning?: string } | { source: undefined; warning: string }> {
+  const route = routeFile(uri.fsPath);
+  const name = vscode.workspace.asRelativePath(uri);
+  if (!route || (route.strategy !== "occt" && route.format !== "stl")) {
+    return { source: undefined, warning: `${name}: unsupported format for Compare Models (STEP/IGES/BREP/STL only).` };
+  }
+  const bytes = await vscode.workspace.fs.readFile(uri);
+  if (route.strategy === "occt") {
+    const { ops } = await readEdits(uri);
+    return { source: { kind: "brep", bytes, format: route.format as BRepFormat, ops } };
+  }
+  const { ops } = await readEdits(uri);
+  const warning = ops.length > 0 ? `${name}: pending edits are NOT baked in (STL sources have no host-side edit engine) — comparing the raw file only.` : undefined;
+  return { source: { kind: "stl", bytes }, warning };
+}
+
 /**
  * "CAD Preview: Compare Models…" — a standalone command (like `open`/
- * `whatsNew`), not gated on a focused editor. Prompts for two B-rep files (A
+ * `whatsNew`), not gated on a focused editor. Prompts for two files (A
  * defaults to `defaultUri` — the currently-focused editor's file, if any —
  * skipping straight to picking B), diffs them via `modelDiffHost.ts`'s
  * `compareModels()`, and renders the result in a standalone webview panel
- * mirroring `whatsNew.ts`'s precedent. B-rep only — the panel rejects with a
- * clear message rather than crashing on a mesh-format file, matching every
- * other B-rep-only feature's graceful-skip convention (see CLAUDE.md's
- * "Compare Models" section for why: mesh formats have no host-side geometry
- * to independently re-derive centroids/volumes from without a webview).
+ * mirroring `whatsNew.ts`'s precedent. STEP/IGES/BREP (edits baked in) and
+ * STL (raw file bytes — no host-side mesh edit engine to bake edits with)
+ * are supported, in any combination; OBJ/PLY/glTF/meshio-only formats are
+ * rejected with a clear message rather than crashing, matching this
+ * feature's original B-rep-only graceful-skip convention (see CLAUDE.md's
+ * "Compare Models" section for why those remain out of reach headlessly).
  */
 export async function runCompareModelsCommand(context: vscode.ExtensionContext, defaultUri?: vscode.Uri): Promise<void> {
   try {
-    const uriA = defaultUri ?? (await pickBRepFile("Select model A"));
+    const uriA = defaultUri ?? (await pickCompareFile("Select model A"));
     if (!uriA) return;
-    const uriB = await pickBRepFile("Select model B");
+    const uriB = await pickCompareFile("Select model B");
     if (!uriB) return;
 
-    const routeA = routeFile(uriA.fsPath);
-    const routeB = routeFile(uriB.fsPath);
-    if (!routeA || routeA.strategy !== "occt" || !routeB || routeB.strategy !== "occt") {
-      void vscode.window.showErrorMessage("Compare Models only supports STEP, IGES, and BREP files.");
+    const [resolvedA, resolvedB] = await Promise.all([resolveCompareSource(uriA), resolveCompareSource(uriB)]);
+    if (!resolvedA.source || !resolvedB.source) {
+      const message = [resolvedA.warning, resolvedB.warning].filter(Boolean).join(" ");
+      void vscode.window.showErrorMessage(`Compare Models: ${message}`);
       return;
     }
 
-    const [bytesA, bytesB, editsA, editsB] = await Promise.all([
-      vscode.workspace.fs.readFile(uriA),
-      vscode.workspace.fs.readFile(uriB),
-      readEdits(uriA),
-      readEdits(uriB),
-    ]);
+    const diff = await compareModels(context.extensionPath, resolvedA.source, resolvedB.source);
+    const warnings = [resolvedA.warning, resolvedB.warning].filter((w): w is string => !!w);
 
-    const diff = await compareModels(
-      context.extensionPath,
-      bytesA,
-      routeA.format as BRepFormat,
-      editsA.ops,
-      bytesB,
-      routeB.format as BRepFormat,
-      editsB.ops
-    );
-
-    showModelDiffPanel(uriA, uriB, diff);
+    showModelDiffPanel(uriA, uriB, diff, warnings);
   } catch (err) {
     void vscode.window.showErrorMessage(`Compare Models failed: ${(err as Error).message}`);
   }
@@ -78,7 +87,7 @@ function matchRow(m: ModelDiff["matched"][number]): string {
   return `<tr><td>${m.a.id}</td><td>${m.b.id}</td><td>${fmt(m.centreDistance)}</td><td>${fmt(m.volumeDeltaPct)}%</td><td>${confidence}</td></tr>`;
 }
 
-function showModelDiffPanel(uriA: vscode.Uri, uriB: vscode.Uri, diff: ModelDiff): void {
+function showModelDiffPanel(uriA: vscode.Uri, uriB: vscode.Uri, diff: ModelDiff, warnings: string[] = []): void {
   const panel = vscode.window.createWebviewPanel(
     "cadPreviewModelDiff",
     "Compare Models — CAD Preview",
@@ -95,6 +104,9 @@ function showModelDiffPanel(uriA: vscode.Uri, uriB: vscode.Uri, diff: ModelDiff)
     : `<tr><td colspan="5" class="md-empty">No matched solids.</td></tr>`;
   const removedRows = diff.removed.length ? diff.removed.map(signatureRow).join("\n") : `<tr><td colspan="3" class="md-empty">None.</td></tr>`;
   const addedRows = diff.added.length ? diff.added.map(signatureRow).join("\n") : `<tr><td colspan="3" class="md-empty">None.</td></tr>`;
+  const warningsBlock = warnings.length
+    ? `<div class="md-warning">${warnings.map((w) => `⚠ ${w}`).join("<br/>")}</div>`
+    : "";
 
   panel.webview.html = /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -128,11 +140,19 @@ function showModelDiffPanel(uriA: vscode.Uri, uriB: vscode.Uri, diff: ModelDiff)
       font-size: 0.85em;
       color: var(--vscode-descriptionForeground);
     }
+    .md-warning {
+      margin-bottom: 16px;
+      padding: 8px 12px;
+      background: var(--vscode-inputValidation-warningBackground, #352a05);
+      border-left: 3px solid var(--vscode-inputValidation-warningBorder, #b89500);
+      font-size: 0.85em;
+    }
   </style>
 </head>
 <body>
   <h1>Compare Models</h1>
   <div class="md-files">A: <code>${nameA}</code> &nbsp;·&nbsp; B: <code>${nameB}</code></div>
+  ${warningsBlock}
   <div class="md-summary">
     <div class="md-stat"><b>${diff.added.length}</b>Added</div>
     <div class="md-stat"><b>${diff.removed.length}</b>Removed</div>

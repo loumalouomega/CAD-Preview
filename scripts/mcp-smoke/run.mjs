@@ -179,6 +179,34 @@ try {
     "compare_models reports the matched bull solid as an exact match (0 displacement, 0 volume delta)"
   );
 
+  // compare_models: STL support (roadmap "Mesh-source model comparison").
+  // A real 10x10x10 STL cube (examples/STL/cube.stl, volume 1000) against
+  // itself — a pure host-side STL parse + connected-component segmentation,
+  // no WASM involved at all for the STL side.
+  const cubeStl = path.join(dir, "cube.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), cubeStl);
+  const stlSelfDiff = await call("compare_models", { pathA: cubeStl, pathB: cubeStl });
+  assert(stlSelfDiff.supported === true, "compare_models supports STL sources");
+  assert(
+    stlSelfDiff.diff.matched.length === 1 && stlSelfDiff.diff.added.length === 0 && stlSelfDiff.diff.removed.length === 0,
+    `compare_models(cube.stl, cube.stl): 1 matched, 0 added, 0 removed — got matched=${stlSelfDiff.diff.matched.length} added=${stlSelfDiff.diff.added.length} removed=${stlSelfDiff.diff.removed.length}`
+  );
+  assert(
+    Math.abs(stlSelfDiff.diff.matched[0].a.volume - 1000) < 1e-3,
+    `compare_models resolves the STL cube's real volume (1000) — got ${stlSelfDiff.diff.matched[0].a.volume}`
+  );
+  assert(
+    stlSelfDiff.diff.matched[0].centreDistance < 1e-6 && stlSelfDiff.diff.matched[0].volumeDeltaPct < 1e-6,
+    "compare_models(cube.stl, cube.stl) is an exact self-match"
+  );
+
+  // Cross-format: STEP vs STL in one call — confirms the mixed-source path
+  // (one side OCCT, one side the pure STL parser) works end-to-end without
+  // either side needing to match the other's format.
+  const crossDiff = await call("compare_models", { pathA: model, pathB: cubeStl });
+  assert(crossDiff.supported === true, "compare_models supports a B-rep source diffed against an STL source");
+  assert(crossDiff.formatA === "step" && crossDiff.formatB === "stl", "compare_models reports each side's real format");
+
   // render_snapshot: Playwright/Chromium is a devDependency this environment
   // may or may not have installed (`npx playwright install chromium`) — this
   // MUST tolerate both outcomes, never hard-require Chromium in CI/smoke.

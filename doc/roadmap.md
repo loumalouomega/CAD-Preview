@@ -51,19 +51,21 @@ recorded in `CLAUDE.md`. None is a bug.
    `CONVERSION_BASED_UNIT` STEP entity via text surgery — judged too
    high-risk to attempt without a way to validate the result beyond this
    codebase's own text-pattern-matching reader.
-3. **Mesh-source model comparison** (**L**). `compare_models` is B-rep-only:
-   mesh formats have no host-side shape to query, and there is no host-side
-   mesh parser anywhere in the codebase. Would need a webview round trip or a
-   new host-side parser.
-4. **Exact-precision measurement** (**M**). Distances are computed client-side
+3. **Exact-precision measurement** (**M**). Distances are computed client-side
    against the triangulated approximation (tied to the 0.1 tessellation
    deflection). `BRepExtrema_DistShapeShape` in the host would give exact B-rep
    precision, at the cost of a round trip per measurement.
-5. **Entity-id rebinding after topology-changing ops** (**L**). Booleans,
+4. **Entity-id rebinding after topology-changing ops** (**L**). Booleans,
    fillets, and feature modeling re-tessellate into fresh `face-N`/`edge-N`
    ids, so existing *part* assignments referencing them are dropped on reload
    (gracefully, by the tolerant sidecar parser). A geometric rebinding pass
    could preserve them; the matching heuristics are the hard part.
+5. **OBJ/PLY/glTF support for `compare_models`** (**M**). STL is now
+   supported via a new host-side parser (`stlParser.ts`/`meshComponents.ts`);
+   OBJ/PLY/glTF remain webview-only. OBJ is plain text and comparatively easy
+   to add on the same pattern; PLY (binary+ASCII variants) and glTF (JSON +
+   binary chunks, node hierarchy/transforms to resolve) are progressively
+   more involved parsers to write from scratch.
 
 ### Tier 3 — upstream-dependent
 

@@ -38,8 +38,11 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/changelogParser.ts` | Pure `CHANGELOG.md` parser + markdown→HTML renderer for the What's New panel (vscode-free, unit-tested) |
 | `src/whatsNew.ts` | Version-upgrade check (`context.globalState`) + the standalone "What's New" webview panel |
 | `src/modelDiff.ts` | Pure bounding-box-centroid + volume solid-matching heuristic for Compare Models (vscode/OCCT-free, unit-tested) |
-| `src/modelDiffHost.ts` | OCCT-side signature extraction (per-solid centre/diagonal/volume) + `compareModels()`, feeding `modelDiff.ts`'s matcher |
+| `src/modelDiffHost.ts` | Dispatches `CompareSource` (B-rep via OCCT, or STL) per side to signature extraction + `compareModels()`, feeding `modelDiff.ts`'s matcher |
 | `src/modelComparePanel.ts` | Standalone "Compare Models" webview panel + the `cad-preview.compareModels` command flow |
+| `src/stlParser.ts` | Pure host-side STL parser (binary + ASCII, auto-detected) into a flat triangle soup (vscode/OCCT/THREE-free, unit-tested) |
+| `src/meshComponents.ts` | Pure triangle-soup helpers: vertex welding, connected-component ("solid") segmentation, bbox, signed volume (vscode/OCCT/THREE-free, unit-tested) |
+| `src/stlSolidSignatures.ts` | Wires `stlParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' STL side (pure, unit-tested) |
 | `src/mcpServer.ts` | Standalone stdio MCP server entry (own `dist/mcp-server.js` bundle, not part of the extension) |
 | `src/mcpTools.ts` | MCP tool handlers over the headless pipeline (MCP-SDK/WASM-free, unit-tested) |
 | `src/mcpSidecars.ts` | Node-fs sidecar store for the MCP server — mirrors the three `*Store.ts` wrappers (vscode-free, unit-tested) |
@@ -111,7 +114,7 @@ export function showWhatsNewPanel(context, version, entries: readonly ChangelogE
 
 ---
 
-## `src/modelDiff.ts`, `src/modelDiffHost.ts`, and `src/modelComparePanel.ts`
+## `src/modelDiff.ts`, `src/modelDiffHost.ts`, `src/modelComparePanel.ts`, and the STL trio
 
 "Compare Models" (`doc/roadmap.md`'s P3 #13) resolves the roadmap's own open
 design question — "how do two documents share one custom-editor architecture"
@@ -120,7 +123,10 @@ independently-open documents (confirmed: `resolveCustomEditor` has no
 Map-keyed singleton, just N independent per-call closures), and VS Code's
 Custom Editor API already lets a user place two `cad-preview.mesh` tabs side
 by side. What was actually missing was the *diff computation*, which this
-trio adds as a B-rep-only, host-only feature with no new `Viewer` work.
+group adds as a host-only feature with no new `Viewer` work — originally
+B-rep only, since extended (roadmap "Mesh-source model comparison", closed)
+to also support STL via a new host-side STL parser (`src/stlParser.ts` +
+`src/meshComponents.ts` + `src/stlSolidSignatures.ts`, all pure).
 
 ```typescript
 // modelDiff.ts (pure)
@@ -130,10 +136,19 @@ interface ModelDiff { added: SolidSignature[]; removed: SolidSignature[]; matche
 function diffSolids(a: SolidSignature[], b: SolidSignature[], toleranceAbs: number): ModelDiff
 
 // modelDiffHost.ts
-async function compareModels(extensionPath, bytesA, formatA, opsA, bytesB, formatB, opsB, toleranceFrac = 1e-3): Promise<ModelDiff>
+type CompareSource = { kind: "brep"; bytes: Uint8Array; format: BRepFormat; ops: EditOp[] } | { kind: "stl"; bytes: Uint8Array }
+async function compareModels(extensionPath: string, a: CompareSource, b: CompareSource, toleranceFrac = 1e-3): Promise<ModelDiff>
 
 // modelComparePanel.ts
 async function runCompareModelsCommand(context: vscode.ExtensionContext, defaultUri?: vscode.Uri): Promise<void>
+
+// stlParser.ts / meshComponents.ts / stlSolidSignatures.ts (all pure)
+function parseStl(bytes: Uint8Array): Float32Array   // flat, ungrouped triangle soup — 9 floats/triangle
+function weldTriangleSoup(soup: Float32Array, epsilon = 1e-5): { positions: Float32Array; indices: Uint32Array }
+function connectedComponents(indices: Uint32Array): number[][]   // one triangle-index array per "solid"
+function boundsOfTriangles(positions, indices, triangles: number[]): { min: Vec3; max: Vec3 } | undefined
+function volumeOfTriangles(positions, indices, triangles: number[]): number
+function extractStlSolidSignatures(bytes: Uint8Array): { signatures: SolidSignature[]; diagonal: number }
 ```
 
 - `diffSolids` is a greedy nearest-neighbor bipartite match by centroid
@@ -143,38 +158,71 @@ async function runCompareModelsCommand(context: vscode.ExtensionContext, default
   and the MCP tool can show the heuristic's actual confidence instead of
   hiding it behind a guess. This is the concrete answer to the roadmap's other
   open question ("how to present the diff without misleading false matches").
-- `compareModels` reads both files independently via the existing
-  `readShape()` (no shared state, no webview) and resolves each solid's
-  signature via the already-shared `collectSolids`/`bboxCenter`/(the newly
-  **exported**) `bboxDiagonal` (`occtOperations.ts` — previously module-private,
-  since nothing outside that file needed it before this feature) plus a
-  volume via the exact `BRepGProp.VolumeProperties_1` call shape
-  `massProperties.ts`'s `solidProperties` uses. `toleranceFrac` (default
-  `1e-3`) is multiplied by the **larger** of the two models' whole-shape
-  `bboxDiagonal`s to get the absolute centroid-distance tolerance —
+  Needs zero changes for STL support — it only ever sees plain
+  `SolidSignature[]`, indifferent to which extractor produced them.
+- `compareModels(extensionPath, a, b, toleranceFrac?)` takes a `CompareSource`
+  per side and dispatches: `{kind: "brep", ...}` goes through
+  `extractBrepSolidSignatures` (module-private — reads the file independently
+  via the existing `readShape()`, no shared state, no webview; resolves each
+  solid's signature via the already-shared `collectSolids`/`bboxCenter`/(the
+  **exported**, previously module-private) `bboxDiagonal` from
+  `occtOperations.ts`, plus a volume via the exact
+  `BRepGProp.VolumeProperties_1` call shape `massProperties.ts`'s
+  `solidProperties` uses); `{kind: "stl", ...}` goes through
+  `extractStlSolidSignatures` (pure, synchronous, no WASM handles to clean
+  up). Either side can be either kind, in any combination. `toleranceFrac`
+  (default `1e-3`) is multiplied by the **larger** of the two models'
+  whole-shape diagonals to get the absolute centroid-distance tolerance —
   mirroring `gmshPartsMap.ts`'s existing tolerance-fraction convention.
+- **The STL trio, verified against a real file (`examples/STL/cube.stl`, a
+  10×10×10 cube) via `npm run mcp:smoke`, not just unit-tested:**
+  - `parseStl` auto-detects binary vs. ASCII by exact expected-size match
+    (`84 + declaredTriangleCount * 50`) against the binary header's own
+    triangle count — NOT by sniffing the header text for `"solid"`, the
+    classic trap (a binary file's free-form 80-byte header may itself start
+    with that word; a unit test builds a binary fixture with exactly that
+    trap baked into its header to confirm detection isn't fooled).
+  - `weldTriangleSoup` dedups STL's unindexed, vertex-per-triangle-instance
+    format via a quantized-position hash — the same technique the webview's
+    `meshFacets.ts`'s `canonOf` already uses for the identical problem.
+  - `connectedComponents` is a plain edge-adjacency-map + BFS flood-fill with
+    **no** angle gate (any two triangles sharing an edge are the same
+    component) — the scaffolding is the same shape as `meshFacets.ts`'s
+    `segmentCoplanarFacets`, which solves the *opposite* problem (splitting
+    one solid into flat faces by gating the flood-fill on face-normal angle).
+  - `volumeOfTriangles` is the signed-tetrahedra-vs-origin sum, the same
+    formula `gmshElementTypes.ts`'s `signedVolume` and the webview's
+    `meshMassProperties.ts` already use elsewhere in this codebase — verified
+    against a unit box (volume 1) and, as a deliberate cross-engine check,
+    the *same* 2×3×4 box (volume 24) `CLAUDE.md`'s `BRepGProp` verification
+    already used, confirming both engines agree.
+  - `extractStlSolidSignatures` wires the above into `SolidSignature[]`, ids
+    `solid-0`/`solid-1`/… by first-encountered-triangle order.
 - `runCompareModelsCommand` backs the standalone `cad-preview.compareModels`
   command (registered in `provider.ts` like `cad-preview.open`/`whatsNew`,
   passing `this.activeSession?.uri` as `defaultUri` so a focused tab's file
   is offered as "A" automatically). It picks two files via `showOpenDialog`
-  (STEP/IGES/BREP filter only), rejects up front with a clear
-  `showErrorMessage` if either resolved `FileRoute.strategy !== "occt"`
-  (never attempts a webview-less mesh-format diff — there's no host-side
-  Three.js to independently re-derive centroids/volumes from), reads each
-  file's `.edits.json` sidecar via the existing `readEdits()` so the
-  comparison reflects currently-applied edits (consistent with how
-  everything else in this codebase treats "the model" as base+edits, not
-  just the raw CAD file), and renders the result via `showModelDiffPanel` —
-  a second standalone `vscode.window.createWebviewPanel` (`enableScripts:
-  false`, static HTML tables, no script/nonce needed since there's no
-  interactivity beyond closing the tab).
-- **B-rep only, by design, not by oversight**: mesh formats (STL/OBJ/PLY/
-  glTF) have no OCCT shape for the host to independently query — their
-  geometry only exists once parsed by the webview's Three.js loaders, and
-  there is deliberately no host-side mesh parser in this codebase. A
-  mesh-format compare therefore isn't attempted at all (a clear rejection
-  message, not a crash) — see `mcpTools.ts`'s `compareModelsTool` for the
-  identical B-rep-only gate on the MCP side.
+  (`COMPARE_FILTER`: STEP/IGES/BREP/STL), rejects up front with a clear
+  `showErrorMessage` if either resolved file is neither `FileRoute.strategy
+  === "occt"` nor `format === "stl"` (OBJ/PLY/glTF/meshio formats still have
+  no host-side geometry to independently re-derive centroids/volumes from),
+  reads each file's `.edits.json` sidecar via the existing `readEdits()` —
+  for a B-rep source this bakes the edits in (consistent with how everything
+  else in this codebase treats "the model" as base+edits); for an STL source
+  edits can NOT be baked in (no host-side mesh edit engine exists), so a
+  pending-ops warning is collected instead and shown as a `⚠` banner in the
+  report — and renders the result via `showModelDiffPanel` (a second
+  standalone `vscode.window.createWebviewPanel`, `enableScripts: false`,
+  static HTML tables, no script/nonce needed since there's no interactivity
+  beyond closing the tab).
+- **OBJ/PLY/glTF/meshio formats remain unsupported, by design, not by
+  oversight**: none of them has an OCCT shape OR a host-side parser this
+  codebase can independently query — their geometry only exists once parsed
+  by the webview's Three.js loaders (OBJ/PLY/glTF) or meshio++'s WASM module
+  (VTK/MED/CGNS/etc., which never exposes a triangle array back to JS). A
+  compare against one of these still isn't attempted at all (a clear
+  rejection message, not a crash) — see `mcpTools.ts`'s `compareModelsTool`
+  for the identical gate on the MCP side.
 - **No merged 3D scene in v1** — `Viewer` is hard-wired to one `model:
   THREE.Object3D | null` (`setModel()` replaces, never adds); hosting two
   models simultaneously in one view would need real new `Viewer`/protocol

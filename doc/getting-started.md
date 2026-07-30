@@ -627,10 +627,11 @@ surfaces, which is why mesh sources can't export to STEP/IGES/BREP.
 ### Comparing Models
 
 Run **CAD Preview: Compare Models…** from the Command Palette to diff two
-STEP/IGES/BREP files solid-by-solid — useful for checking what actually
-changed between two versions of a model. If a CAD Preview tab is focused when
-you run the command, its file is used as model **A** automatically and you're
-only prompted for **B**; otherwise you're prompted for both.
+STEP/IGES/BREP or STL files (any combination of the two) solid-by-solid —
+useful for checking what actually changed between two versions of a model.
+If a CAD Preview tab is focused when you run the command, its file is used
+as model **A** automatically and you're only prompted for **B**; otherwise
+you're prompted for both.
 
 A results tab opens beside the editor showing:
 
@@ -644,11 +645,13 @@ A results tab opens beside the editor showing:
 
 This is a display-only report (no 3D view, no merge) — to actually look at
 both models side by side, open each in its own tab and use VS Code's split
-editor layout. Comparison is B-rep only: mesh formats (STL/OBJ/PLY/glTF) have
-no host-side geometry to match without opening them in the viewer first, so
-they aren't supported by this command. The comparison reflects each file's
-currently-applied edits (its `.edits.json` sidecar, if any), not just the raw
-CAD file.
+editor layout. STEP/IGES/BREP and STL are both supported, in any combination
+(OBJ/PLY/glTF still aren't — they have no host-side geometry to match
+without opening them in the viewer first). For a STEP/IGES/BREP file, the
+comparison reflects its currently-applied edits (its `.edits.json` sidecar,
+if any); for an STL file, edits are **not** baked in (there's no way to
+replay a mesh edit outside the viewer) — a warning banner says so if the
+file has pending edits, and the comparison runs against the raw file as-is.
 
 ## Known Limitations
 

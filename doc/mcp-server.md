@@ -96,7 +96,7 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | `render_snapshot` | 4 labelled PNGs of the current model (sidecar edits replayed) — two opposed isometrics + top + front, optional `focus`/`hide` by entity id, optional `displayMode` (shaded/wireframe) for the whole packet. B-rep sources only, and **requires Playwright + a Chromium binary in this environment** — see "Prerequisites for render_snapshot" below; check the response's `supported` field rather than assuming availability. |
 | `search_standard_parts` | Faceted search over the hosted [step.parts](https://www.step.parts) catalog (fasteners, bearings, connectors, extrusions, ...) — `q` fuzzy text + `tag`/`category`/`family`/`standard` filters + pagination. **Network call** — `supported: false` on any API/network failure (inconclusive, never "no matching parts"). |
 | `download_standard_part` | Downloads one step.parts part's STEP file to `outputPath`, verifying it against the part's recorded `sha256` if present (`verifiedChecksum` in the result). The file is an ordinary STEP file — opens through the normal pipeline. **Network call**, same graceful-failure convention as `search_standard_parts`. |
-| `compare_models` | Diff two B-rep models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict). B-rep sources only headless; mesh formats return `supported: false`. |
+| `compare_models` | Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict). STEP/IGES/BREP (edits baked in) and STL (raw file bytes — a host-side parser, no edits baked in) are supported headless, in any combination; OBJ/PLY/glTF/meshio-only formats return `supported: false`. |
 | `get_state` | The sidecar state without loading geometry: edit-op stack (indexed, described), variables (evaluated), parts, mesh options. |
 | `apply_edit_ops` | Validate and append raw `EditOp` JSON objects to the op stack; per-op accept/reject report; for B-rep sources returns the post-replay entity inventory. `dryRun` validates without persisting. |
 | `run_parametric_script` | Compiles a declarative `{variables?, steps}` script (each step is one op, or one flat `repeat` loop expanding a template op-list with the loop index available to `exprs`) into ops and appends them via the same path as `apply_edit_ops` — NOT a general scripting language, no code execution. See "Parametric scripts" below. |
@@ -234,13 +234,20 @@ involvement.
 to the edit/mesh/export pipeline: B-rep sources get the full OCCT
 `BRepGProp`/`bboxCenter`+`bboxDiagonal` computation (or, for
 `render_snapshot`, a real headless render) for any of the three format
-families; every mesh format (`.stl` included) returns `{supported: false}`
-with a warning — mass properties are computed client-side in the webview's
-Three.js scene (no headless equivalent), `inspect`/`measure` need host-side
-B-rep topology that doesn't exist for a mesh source outside the webview, and
-`compare_models` has no host-side geometry to derive solid centroids/volumes
-from for a mesh source at all (nothing parses `.stl`/`.obj`/`.ply`/`.gltf`
-outside the webview's Three.js loaders). `render_snapshot` additionally
+families; every OTHER mesh format (`.stl` included, EXCEPT for
+`compare_models` — see below) returns `{supported: false}` with a warning —
+mass properties are computed client-side in the webview's Three.js scene (no
+headless equivalent), and `inspect`/`measure` need host-side B-rep topology
+that doesn't exist for a mesh source outside the webview.
+**`compare_models` is the one exception**: `src/stlParser.ts` +
+`src/meshComponents.ts` give it a genuine host-side STL parser (binary and
+ASCII, connected-component segmentation, signed-tetrahedra volume) — so
+`.stl` sources ARE supported headless for this one tool specifically
+(`.obj`/`.ply`/`.gltf`/meshio-only formats still return `{supported:
+false}` — nothing parses those outside the webview's Three.js loaders).
+An STL source's sidecar edits are never baked in (no host-side mesh edit
+engine exists), surfaced as a `warnings` entry rather than silently comparing
+stale-looking geometry. `render_snapshot` additionally
 returns `{supported: false}` when Playwright/Chromium aren't available in
 this environment, independent of source format — see "Prerequisites for
 render_snapshot" above. `search_standard_parts`/`download_standard_part`

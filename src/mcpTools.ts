@@ -46,7 +46,7 @@ import type {
   SearchStandardPartsParams,
   PartSearchResult,
 } from "./stepPartsService";
-import type { compareModels } from "./modelDiffHost";
+import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, exportViaMeshio } from "./meshioService";
 import type {
@@ -499,14 +499,16 @@ export async function renderSnapshotTool(
 // compare_models
 
 /**
- * Diffs two B-rep models solid-by-solid via `modelDiffHost.ts`'s
- * `compareModels()` — bounding-box-centroid + volume matching, the same
- * heuristic `explodeSolids`/`gmshPartsMap.ts` already use elsewhere. Mirrors
- * `get_mass_properties`'s B-rep-only gate: mesh-format sources return
- * `supported: false` with a warning rather than throwing, since neither file
- * has an OCCT shape to independently re-derive centroids/volumes from
- * headlessly (STL/OBJ/PLY/glTF geometry only exists once parsed by the
- * webview's Three.js loaders — no host-side equivalent here).
+ * Diffs two models solid-by-solid via `modelDiffHost.ts`'s `compareModels()`
+ * — bounding-box-centroid + volume matching, the same heuristic
+ * `explodeSolids`/`gmshPartsMap.ts` already use elsewhere. STEP/IGES/BREP
+ * (edits baked in via the live OCCT shape) and STL (raw file bytes — no
+ * host-side mesh edit engine to bake edits with, same accepted limitation
+ * `generate_mesh`'s STL path already has) are supported, in any combination.
+ * OBJ/PLY/glTF/meshio-only formats return `supported: false` with a warning
+ * rather than throwing, mirroring `get_mass_properties`'s graceful-skip
+ * convention: none of those formats has host-side geometry to independently
+ * re-derive centroids/volumes from without a webview.
  */
 export async function compareModelsTool(
   ctx: ToolContext,
@@ -515,35 +517,35 @@ export async function compareModelsTool(
   const routeA = requireRoute(params.pathA);
   const routeB = requireRoute(params.pathB);
 
-  if (routeA.strategy !== "occt" || routeB.strategy !== "occt") {
+  const compareable = (route: typeof routeA) => route.strategy === "occt" || route.format === "stl";
+  if (!compareable(routeA) || !compareable(routeB)) {
     return {
       formatA: routeA.format,
       formatB: routeB.format,
       supported: false,
       warnings: [
-        "compare_models only supports STEP/IGES/BREP sources headlessly — mesh formats have no host-side geometry to independently derive solid centroids/volumes from without a webview.",
+        "compare_models only supports STEP/IGES/BREP/STL sources headlessly — other mesh formats have no host-side geometry to independently derive solid centroids/volumes from without a webview.",
       ],
     };
   }
 
-  const [{ ops: opsA }, { ops: opsB }, bytesA, bytesB] = await Promise.all([
-    readEdits(params.pathA),
-    readEdits(params.pathB),
-    readModelBytes(params.pathA),
-    readModelBytes(params.pathB),
-  ]);
+  const warnings: string[] = [];
+  const resolveSource = async (modelPath: string, route: typeof routeA): Promise<CompareSource> => {
+    if (route.strategy === "occt") {
+      const [{ ops }, bytes] = await Promise.all([readEdits(modelPath), readModelBytes(modelPath)]);
+      return { kind: "brep", bytes, format: route.format as BRepFormat, ops };
+    }
+    const [{ ops }, bytes] = await Promise.all([readEdits(modelPath), readModelBytes(modelPath)]);
+    if (ops.length > 0) {
+      warnings.push(`${modelPath}: pending edits are NOT baked in (STL sources have no host-side edit engine) — comparing the raw file only.`);
+    }
+    return { kind: "stl", bytes };
+  };
 
-  const diff = await ctx.pipeline.compareModels(
-    ctx.extensionPath,
-    bytesA,
-    routeA.format as BRepFormat,
-    opsA,
-    bytesB,
-    routeB.format as BRepFormat,
-    opsB
-  );
+  const [sourceA, sourceB] = await Promise.all([resolveSource(params.pathA, routeA), resolveSource(params.pathB, routeB)]);
+  const diff = await ctx.pipeline.compareModels(ctx.extensionPath, sourceA, sourceB);
 
-  return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings: [], diff };
+  return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff };
 }
 
 // ---------------------------------------------------------------------------

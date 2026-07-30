@@ -2370,18 +2370,56 @@ resolves both open design questions the roadmap itself left unanswered.
   with a large displacement or volume delta reads as "heavily edited," not as
   a false "unchanged," because the confidence numbers are right there instead
   of hidden behind a computed label.
-- **Scoped to B-rep only, and to a report rather than a merged scene — both
-  deliberate, not oversights.** Mesh formats (STL/OBJ/PLY/glTF) have no
-  OCCT shape for the host to independently query; their geometry only exists
-  once parsed by the webview's Three.js loaders, and there's no host-side
-  mesh parser anywhere in this codebase — a mesh compare would need an
-  entirely different (webview-round-trip) architecture for comparatively
-  little payoff, so it's rejected up front with a clear message instead.
-  `Viewer` is hard-wired to one `model: THREE.Object3D | null`
+- **Scoped to a report rather than a merged scene — deliberate, not an
+  oversight.** `Viewer` is hard-wired to one `model: THREE.Object3D | null`
   (`setModel()` replaces, never adds) — hosting two models in one 3D view
   with independent visibility/color would be real new `Viewer`/protocol
-  work; a text report was judged sufficient for this stage, given
-  side-by-side *visual* comparison already works today via split tabs.
+  work; a text report was judged sufficient, given side-by-side *visual*
+  comparison already works today via split tabs.
+- **STL support (roadmap "Mesh-source model comparison", closed) — a new
+  host-side STL parser, not a webview round trip.** Originally B-rep only:
+  mesh formats had no OCCT shape for the host to independently query, and
+  "there is no host-side mesh parser anywhere in this codebase" was a
+  standing, explicitly documented limitation (`compare_models`'s own error
+  message said so verbatim). Closed by writing one, scoped to STL
+  specifically (not OBJ/PLY/glTF) — STL is this codebase's own
+  lowest-common-denominator mesh interchange format already
+  (`meshioService.ts` funnels every meshio-only format through it), and its
+  flat, unindexed triangle-soup structure is by far the simplest of the four
+  to parse from scratch; OBJ/PLY/glTF remain webview-only and still rejected
+  with a clear message. Three new pure (vscode/OCCT/THREE-free), independently
+  unit-tested modules: `src/stlParser.ts` (`parseStl()` — binary STL detected
+  by exact expected-size match against the header's declared triangle count,
+  `84 + count*50`, NOT by sniffing the header text for `"solid"`, the classic
+  trap: a binary file's free-form 80-byte header may itself start with that
+  word); `src/meshComponents.ts` (`weldTriangleSoup()` — quantized-position
+  hash dedup, the same technique `meshFacets.ts`'s `canonOf` already uses for
+  the identical "STL has no native shared-vertex indexing" problem;
+  `connectedComponents()` — edge-adjacency-map + BFS flood-fill with NO
+  angle gate, i.e. `meshFacets.ts`'s `segmentCoplanarFacets` scaffolding
+  solving the *opposite* problem: that one merges triangles into flat FACES
+  by gating on face-normal angle, this one merges triangles into whole
+  SOLIDS with no gate at all; `boundsOfTriangles`/`boundsCenter`/
+  `boundsDiagonal`; `volumeOfTriangles` — signed-tetrahedra-vs-origin sum,
+  the same formula `gmshElementTypes.ts`'s `signedVolume` and the webview's
+  `meshMassProperties.ts` already use elsewhere in this codebase, verified
+  against a unit box (volume 1) and the *same* 2×3×4 box CLAUDE.md's B-rep
+  `BRepGProp` verification uses (volume 24 — a deliberate cross-check that
+  both engines agree)); `src/stlSolidSignatures.ts` (`extractStlSolidSignatures()`
+  — wires the above into the `SolidSignature[]` shape `modelDiff.ts` needs,
+  one signature per connected component, ids `solid-0`/`solid-1`/… by
+  first-encountered-triangle order). **`modelDiffHost.ts`'s `compareModels()`
+  was generalized to a `CompareSource` discriminated union**
+  (`{kind:"brep", bytes, format, ops}` | `{kind:"stl", bytes}`) instead of
+  positional B-rep-only params, dispatching to `extractBrepSolidSignatures`
+  (unchanged OCCT path) or `extractStlSolidSignatures` per side — either side
+  can be either kind, in any combination. **STL edits are NOT baked in**
+  (there is no host-side mesh edit engine — same accepted limitation
+  `generate_mesh`'s STL path already has) — both `modelComparePanel.ts` and
+  `compareModelsTool` check for pending sidecar ops on an STL side and
+  surface a `⚠`/`warnings` entry rather than silently comparing stale-looking
+  geometry with no explanation. `modelComparePanel.ts`'s file picker/gate
+  (`COMPARE_FILTER`) now accepts `.stl` alongside STEP/IGES/BREP.
 - **Reuses existing OCCT helpers with zero new geometry code**:
   `occtOperations.ts`'s `bboxCenter` (already exported) and `bboxDiagonal`
   (module-private until this feature — now exported, since
@@ -2408,7 +2446,13 @@ resolves both open design questions the roadmap itself left unanswered.
   (1 solid) and asserts exactly 1 matched (the bull, `centreDistance`/
   `volumeDeltaPct` both ~0 — an exact self-match), 0 added, 1 removed (the
   box) — confirming the matching direction (`removed` = "only in A", the
-  edited/first argument) is exactly as documented, not backwards.
+  edited/first argument) is exactly as documented, not backwards. The STL
+  path is verified against a real file too, not a synthetic fixture:
+  `examples/STL/cube.stl` (a real 10×10×10 cube) against itself resolves the
+  correct real volume (1000, exactly) and an exact self-match with zero WASM
+  involvement on either side, and a STEP-vs-STL cross-format call (`bull.stp`
+  against `cube.stl`) confirms the mixed-source dispatch path (one side OCCT,
+  one side the pure parser) works end-to-end.
 
 ## meshio++ integration (P3 roadmap feature)
 
@@ -2994,8 +3038,18 @@ displacement and ~0 volume delta, 0 Added, 0 Removed. Apply an edit (e.g.
 **Box** primitive) to a copy of `bull.stp`, export it, then compare the
 original against the export → confirm the added box shows up under **Added**
 (or **Removed**, depending on which side you pick as A) and the untouched
-bull solid still shows as an exact match. Try comparing `bull.stp` against
-`cube.stl` → confirm a clear rejection message, not a crash. Run with no
+bull solid still shows as an exact match. Compare `cube.stl` against itself
+→ confirm the file picker offers `.stl` now, one solid **Matched** with ~0
+displacement/delta and a reported volume of 1000. Compare `bull.stp` against
+`cube.stl` (mixed formats) → confirm it completes without crashing (both
+sides resolve their own solids independently — an unrelated shape/size pair
+is expected to report mostly/all Added+Removed, not a specific match count).
+Add an edit op to a copy of `cube.stl` (e.g. **Translate**) without exporting
+it, then compare it against the unedited original → confirm a **⚠ pending
+edits are NOT baked in** warning appears in the report (STL has no
+host-side edit engine) and the comparison still runs against the raw file.
+Try comparing `bull.stp` against `examples/OBJ/cube.obj` → confirm a clear
+rejection message (OBJ/PLY/glTF remain unsupported), not a crash. Run with no
 CAD Preview tab focused → confirm it prompts for both A and B.
 
 Then exercise **meshio++ import/export**: open a VTK, MED, CGNS, Exodus (`.exo`
