@@ -180,6 +180,87 @@ for the compatibility matrix (`exportTargetsFor`):
   OCCT build — every `.brep` open threw immediately. The 4th param of
   `BRepTools.Read_2` is actually a `Handle_Message_ProgressIndicator`, same type the
   BREP writer above takes.
+- **Unit conversion on export (roadmap item, closed — for BREP + mesh targets;
+  STEP/IGES deliberately excluded, see below)** is a real geometric scale
+  applied to the *exported file's* coordinates — distinct from `src/webview/
+  units.ts`'s display-unit selector, which only ever rescales what a number
+  *looks like* (Mass Properties/Measurement panels) and never touches geometry.
+  Both sides now build on one shared, pure `src/lengthUnits.ts` (`DisplayUnit`,
+  `unitScaleFactor`, `UNIT_LABELS`, `displayUnitFromStepName` — extracted so the
+  factor table can't drift between the two features) — `units.ts` re-exports its
+  types for backward compatibility and keeps only the presentation-specific
+  `convertLength`/`convertArea`/`convertVolume`/`convertLengthBasedProperties`
+  helpers.
+  - **`src/exportTargets.ts`'s new `UNIT_CONVERTIBLE_FORMATS`** (`{brep, stl,
+    obj, ply, gltf}` — STEP and IGES excluded) is the single gate every call
+    site checks. **Why STEP/IGES are excluded, verified against the live
+    WASM, not assumed:** both formats declare a length unit in their own
+    header that MUST match the geometry's actual scale to mean anything, and
+    this OCCT WASM build has no working way to set that declared unit on
+    write. Probed two real OCCT mechanisms: (1) `Interface_Static.IsPresent
+    ("write.step.unit")` returns `false` even *after* constructing a
+    `STEPControl_Writer` (which in desktop OCCT registers that XSTEP static)
+    — the parameter never exists in this build, so `SetCVal` is a no-op;
+    confirmed by writing a file with `unit: "in"` anyway and finding its
+    `LENGTH_UNIT()`/`SI_UNIT(.MILLI.,.METRE.)` entity unchanged regardless of
+    the requested unit. (2) `IGESControl_Writer_2("IN", 0)` (an alternate,
+    unit-aware constructor overload, distinct from the `IGESControl_Writer_1`
+    default this codebase already uses) constructs fine and its `Write_2()`
+    call reports success — but the written file could not be read back for
+    verification (`FS error`), so its correctness is unconfirmed and it was
+    not trusted. Rather than ship a "scale the numbers but leave the header
+    saying millimetres" file — which reopens 25.4× too small in ANY correct
+    reader, including this extension's own `detectStepLengthUnit` — STEP/IGES
+    are excluded from unit conversion entirely and always export at native mm,
+    regardless of what unit is requested. BREP has no unit metadata at all
+    (nothing to mismatch); the mesh formats enforce none either — scaling
+    their raw numbers is complete and correct on its own.
+  - **BREP target:** `exportBRep()` gained an optional `scaleFactor = 1`
+    (no-op default — every other caller, meshing input, `compare_models`, mass
+    properties, etc., is unaffected) applied via a new `occtOperations.ts`
+    export, `scaleShapeForExport(oc, shape, factor, cleanup)`, reusing the
+    exact verified `gp_Trsf.SetScale` + `BRepBuilderAPI_Transform` pattern the
+    `"scale"` edit op already uses — but scaled about the **origin**, not a
+    centroid/edit-op `center`, since unit conversion means "multiply every
+    coordinate," not "resize around a point." `exportBRep()` itself doesn't
+    gate by format — every caller is responsible for only ever passing a
+    non-`1` factor for a `"brep"` target (verified end-to-end in
+    `npm run mcp:smoke`: a real inch-converted `.brep` re-read via
+    `get_mass_properties` has volume = original × (1/25.4)³, exactly).
+  - **Mesh targets:** `meshExporters.ts`'s `exportModel()` gained an optional
+    `unit` param; a non-`"mm"` unit clones the model root (children share
+    geometry/material references — cheap, and the live displayed model is
+    never mutated), scales the clone's `.scale`, and force-calls
+    `updateMatrixWorld(true)` (the render loop never ticks for a parentless,
+    off-scene clone, and every Three.js exporter bakes `matrixWorld` into its
+    output).
+  - **UI:** `provider.ts`'s `handleExport()` (the model Export/Save As
+    command) shows a new unit quick-pick after the format pick — but ONLY
+    when `UNIT_CONVERTIBLE_FORMATS.has(targetFormat)`; picking STEP or IGES
+    skips the prompt entirely (forced `"mm"`) rather than offering a choice
+    that would silently do nothing. When shown, it defaults to `"mm"`
+    (native, no conversion) both as the pre-highlighted first item AND on
+    Escape — declining this optional step must never cancel the export
+    itself, unlike declining the format pick. The chosen unit threads
+    through as an extra `exportBRep()` arg (BREP) or a new `unit?:
+    DisplayUnit` field on the `exportMesh`/`exportResult` protocol round trip
+    (mesh).
+  - **MCP:** `export_brep` gained an optional `unit` string param
+    (`mcpTools.ts`'s `exportBRepTool`) — an unrecognized value OR a
+    convertible-unit request against a non-`"brep"` target both degrade
+    gracefully (fall back to `"mm"` with a `warnings` entry), never throw,
+    same convention as every other tool's invalid-input handling.
+  - **Deliberately out of scope:** the FE Mesh panel's own Gmsh-format export
+    (`.msh`/Kratos MDPA/VTK/etc., via `meshingExport` — a *different* export
+    flow from the model Export command above) still writes in the native mm
+    cascade unit only. Converting it correctly would also need proportionally
+    rescaling `MeshOptions.sizeMin`/`sizeMax` (otherwise an absolute mm-valued
+    size target applied to inch-scaled input geometry produces a wildly
+    different — usually far coarser — mesh density than intended) and, for
+    mesh-format (STL-sourced) documents, a host-side STL vertex scaler this
+    codebase has never needed before (there is still no host-side mesh parser
+    anywhere in this codebase, the same gap `compare_models` already
+    documents).
 
 ## Geometry parts (editing)
 
@@ -2214,11 +2295,21 @@ internally consistent, not a unit-conversion engine.
   Gmsh's `Mesh.MeshSizeMin`/`MeshSizeMax` options are set and stored in the
   cascade unit regardless of what the display-unit selector shows elsewhere,
   so labeling them with anything but `"mm"` would be actively misleading.
-- **"Optionally convert units on export" (mentioned in the roadmap) is
-  explicitly out of scope for this stage** — it would require a real
-  geometric scale transform applied before every OCCT/mesh writer (STEP/IGES/
-  BREP export, STL/OBJ/PLY/glTF export, Gmsh mesh export), not a display
-  change, and is a natural, separately-scoped v2 follow-up.
+- **"Optionally convert units on export" (mentioned in the roadmap) has since
+  shipped for the model Export command, for BREP (via OCCT) and
+  STL/OBJ/PLY/glTF (via Three.js) targets** — a real geometric scale
+  transform, not a display change; see the "Export" section above for the
+  full write-up. **STEP and IGES targets are deliberately excluded** — both
+  declare a length unit in their own file header that this OCCT WASM build
+  has no verified way to set on write (confirmed by probing two real OCCT
+  mechanisms against the live WASM — see the "Export" section's
+  `UNIT_CONVERTIBLE_FORMATS` entry for the full trail), so scaling their
+  geometry without also fixing the header would silently mislabel the file;
+  the export-unit quick-pick simply doesn't appear for those two targets.
+  **Also still deliberately out of scope: the FE Mesh panel's own Gmsh-format
+  export** (`.msh`/Kratos MDPA/VTK/etc.) — also documented in that same
+  section, with the reason (proportional `MeshOptions` size rescaling plus a
+  host-side STL vertex scaler this codebase has never needed before).
 - **MCP**: `get_mass_properties` (and every other MCP tool) always returns raw
   cascade-unit (mm) numbers — the display-unit selector is webview-only state
   with no host or MCP-server counterpart; `doc/mcp-server.md` documents this
@@ -2507,8 +2598,18 @@ Counterbore Hole, Countersink Hole, and Boolean Subtract's crescent): the
 BOTH themes, never as a solid white patch.
 
 Exercise **Export**: on `bull.stp`, confirm the quick-pick offers IGES/BREP/STL/OBJ/
-PLY/glTF (not STEP again); on `cube.stl`, confirm it offers only OBJ/PLY/glTF. Export
-to each target and reopen the output file to confirm it round-trips. Repeat
+PLY/glTF (not STEP again); on `cube.stl`, confirm it offers only OBJ/PLY/glTF. Pick
+**IGES** → confirm export proceeds straight to the save dialog with **no** unit
+quick-pick (STEP/IGES can't honestly represent a converted unit in this OCCT build —
+see CLAUDE.md's Export section). Pick **BREP** → confirm a second quick-pick DOES ask
+for an export unit, with "Native (mm) — no conversion" first/pre-highlighted; press
+Enter immediately (native) for one export, then repeat picking **in** (inches) for
+another → reopen both outputs (Mass Properties' Volume) and confirm the inches one's
+volume is smaller by a factor of ~(1/25.4)³, while the native one is unchanged.
+Repeat once more for an STL/OBJ/PLY/glTF target → confirm the unit quick-pick appears
+there too and behaves the same way. Press Escape on the unit quick-pick → confirm it
+still exports (native mm), not a cancelled export. Export to each target at the
+native unit and reopen the output file to confirm it round-trips. Repeat
 export/cancel a few times and watch extension-host memory, same leak check as above.
 
 Exercise **Parts**: on `bull.stp`, click **Select**, then pick faces in **Surf** mode,

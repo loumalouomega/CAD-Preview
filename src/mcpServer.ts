@@ -429,14 +429,15 @@ server.registerTool(
   "export_brep",
   {
     description:
-      "Export a B-rep source to another B-rep format (step/iges/brep, excluding the source's own format) with all sidecar edits baked in, written to outputPath. Mesh-format targets (STL/OBJ/PLY/glTF) are webview-only and unavailable headless.",
+      "Export a B-rep source to another B-rep format (step/iges/brep, excluding the source's own format) with all sidecar edits baked in, written to outputPath. Mesh-format targets (STL/OBJ/PLY/glTF) are webview-only and unavailable headless. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the exported file's coordinates — this is unit CONVERSION, not the source's own declared unit; the live model and every other tool always stay in mm regardless of this parameter. Only supported for targetFormat=brep (BREP has no unit metadata to mismatch) — step/iges targets fall back to mm with a warning rather than producing a file whose header unit doesn't match its scaled geometry, since this OCCT build has no verified way to set STEP/IGES's own declared unit on write.",
     inputSchema: {
       path: modelPath,
       targetFormat: z.string().describe("step | iges | brep"),
       outputPath: z.string().describe("Destination file path (must not be the CAD source)"),
+      unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
     },
   },
-  wrap((args: { path: string; targetFormat: string; outputPath: string }) => exportBRepTool(ctx, args))
+  wrap((args: { path: string; targetFormat: string; outputPath: string; unit?: string }) => exportBRepTool(ctx, args))
 );
 
 server.registerTool(

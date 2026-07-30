@@ -25,7 +25,7 @@ import {
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { compileParametricScript } from "./parametricScript";
 import { routeFile, type CadFormat, type FileRoute } from "./fileRouter";
-import { exportTargetsFor, EXPORT_EXTENSION } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import {
   DEFAULT_MESH_OPTIONS,
   SIZE_MAX_SENTINEL,
@@ -73,6 +73,7 @@ import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
+import { DISPLAY_UNITS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 
 type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
 
@@ -1104,7 +1105,7 @@ export async function exportMeshTool(
 
 export async function exportBRepTool(
   ctx: ToolContext,
-  params: { path: string; targetFormat: string; outputPath: string }
+  params: { path: string; targetFormat: string; outputPath: string; unit?: string }
 ) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -1124,6 +1125,25 @@ export async function exportBRepTool(
   }
   const outputPath = path.resolve(params.outputPath);
   assertNotSourcePath(modelPath, outputPath);
+  const warnings: string[] = [];
+
+  let unit: DisplayUnit = "mm";
+  if (params.unit != null) {
+    if (!DISPLAY_UNITS.includes(params.unit as DisplayUnit)) {
+      warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm" (no conversion).`);
+    } else if (params.unit !== "mm" && !UNIT_CONVERTIBLE_FORMATS.has(target)) {
+      // STEP/IGES declare a unit in their own header that this OCCT WASM build
+      // has no verified way to set on write — see UNIT_CONVERTIBLE_FORMATS'
+      // doc comment. Converting geometry without fixing the header would
+      // silently mislabel the file, so this degrades to mm with a warning
+      // rather than producing one.
+      warnings.push(
+        `Unit conversion is only supported for a "brep" export target (this OCCT build can't set STEP/IGES' own declared header unit) — exporting "${target}" at native mm instead.`
+      );
+    } else {
+      unit = params.unit as DisplayUnit;
+    }
+  }
 
   const { ops } = await readEdits(modelPath);
   const sourceBytes = await readModelBytes(modelPath);
@@ -1132,7 +1152,8 @@ export async function exportBRepTool(
     sourceBytes,
     route.format as BRepFormat,
     target,
-    ops
+    ops,
+    unitScaleFactor(unit)
   );
   await fs.writeFile(outputPath, bytes);
   return {
@@ -1140,7 +1161,8 @@ export async function exportBRepTool(
     bytes: bytes.byteLength,
     extension: EXPORT_EXTENSION[target],
     editsBaked: ops.length,
-    warnings: [],
+    unit,
+    warnings,
   };
 }
 

@@ -1,53 +1,31 @@
 /**
  * Display-unit conversion — pure, DOM-free (mirrors `measurement.ts`'s
  * convention). Presentation-layer only: every number this module touches is
- * already in the model's one internal length unit (millimetres — OCCT's STEP
- * reader auto-converts every shape to its cascade unit at read time, verified
- * against the live WASM; see `src/stepUnits.ts`'s doc comment). Nothing
- * stored — edit-op params, sidecars, mesh-size options — is ever rescaled;
- * this only changes what a number *looks like* to the user. "Optionally
- * convert units on export" (mentioned in the roadmap) is intentionally out of
- * scope here — it would need a real geometric transform before every OCCT/
- * mesh writer, not a display change.
+ * already in the model's one internal length unit (millimetres — see
+ * `../lengthUnits.ts`'s doc comment). Nothing stored — edit-op params,
+ * sidecars, mesh-size options — is ever rescaled; this only changes what a
+ * number *looks like* to the user. Unit conversion on EXPORT (a real
+ * geometric transform before the OCCT/mesh writers) is a separate feature —
+ * see `occtOperations.ts`'s `scaleShapeForExport` and
+ * `meshExporters.ts`'s `exportModel` — built on the same shared
+ * `../lengthUnits.ts` factor table as this file, so the two can't drift.
  */
 
-export type DisplayUnit = "mm" | "cm" | "m" | "in" | "ft";
+export type { DisplayUnit } from "../lengthUnits";
+export { DISPLAY_UNITS, displayUnitFromStepName } from "../lengthUnits";
 
-export const DISPLAY_UNITS: readonly DisplayUnit[] = ["mm", "cm", "m", "in", "ft"];
-
-/** Multiply a millimetre value by this to get the unit's value. */
-const UNIT_FACTORS: Record<DisplayUnit, number> = {
-  mm: 1,
-  cm: 0.1,
-  m: 0.001,
-  in: 1 / 25.4,
-  ft: 1 / 304.8,
-};
+import { unitScaleFactor, type DisplayUnit } from "../lengthUnits";
 
 export function convertLength(mmValue: number, unit: DisplayUnit): number {
-  return mmValue * UNIT_FACTORS[unit];
+  return mmValue * unitScaleFactor(unit);
 }
 
 export function convertArea(mm2Value: number, unit: DisplayUnit): number {
-  return mm2Value * UNIT_FACTORS[unit] ** 2;
+  return mm2Value * unitScaleFactor(unit) ** 2;
 }
 
 export function convertVolume(mm3Value: number, unit: DisplayUnit): number {
-  return mm3Value * UNIT_FACTORS[unit] ** 3;
-}
-
-/** Maps a detected STEP unit name (`src/stepUnits.ts`) to a `DisplayUnit`, or
- * `undefined` if it's not one of the five this UI offers (e.g. an exotic or
- * unrecognized unit) — the caller falls back to `"mm"` in that case. */
-export function displayUnitFromStepName(name: string | undefined): DisplayUnit | undefined {
-  switch (name) {
-    case "MILLIMETRE": return "mm";
-    case "CENTIMETRE": return "cm";
-    case "METRE": return "m";
-    case "INCH": return "in";
-    case "FOOT": return "ft";
-    default: return undefined;
-  }
+  return mm3Value * unitScaleFactor(unit) ** 3;
 }
 
 /** Volume/area/length/centerOfMass fields, in millimetres — the shape both

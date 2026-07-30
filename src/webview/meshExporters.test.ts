@@ -46,6 +46,28 @@ describe("exportModel", () => {
   it("rejects unsupported formats", async () => {
     await expect(exportModel(makeTriangleMesh(), "step")).rejects.toThrow();
   });
+
+  it("mm (or no unit) leaves coordinates untouched — no clone/scale cost", async () => {
+    const withoutUnit = await exportModel(makeTriangleMesh(), "obj");
+    const withMm = await exportModel(makeTriangleMesh(), "obj", "mm");
+    expect(withoutUnit.data).toContain("v 1 0 0");
+    expect(withMm.data).toBe(withoutUnit.data);
+  });
+
+  it("applies a real geometric scale for a non-mm export unit", async () => {
+    const result = await exportModel(makeTriangleMesh(), "obj", "in");
+    expect(result.data).toContain("v 0 0 0"); // the origin vertex is unaffected by any uniform scale
+    expect(result.data).not.toContain("v 1 0 0"); // the (1,0,0) mm vertex must NOT survive unscaled
+    const vertexXs = [...result.data.matchAll(/^v (-?[\d.]+) 0 0$/gm)].map((m) => Number(m[1]));
+    expect(vertexXs).toContainEqual(expect.closeTo(1 / 25.4, 4));
+  });
+
+  it("never mutates the live model — the same object exports unscaled afterward", async () => {
+    const mesh = makeTriangleMesh();
+    await exportModel(mesh, "obj", "in");
+    const after = await exportModel(mesh, "obj");
+    expect(after.data).toContain("v 1 0 0");
+  });
 });
 
 describe("arrayBufferToBase64", () => {

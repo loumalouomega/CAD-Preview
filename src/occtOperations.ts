@@ -159,6 +159,24 @@ function makeTransformer(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>
   }
 }
 
+/**
+ * Uniformly scales `shape` about the origin by `factor` — the geometric half
+ * of "unit conversion on export" (`src/occtService.ts`'s `exportBRep`), reusing
+ * the exact verified `gp_Trsf.SetScale` + `BRepBuilderAPI_Transform` call
+ * shape the `"scale"` edit op above already uses. Scaling about the origin
+ * (not the shape's centroid, and not exposed as a per-op `center` the way the
+ * edit op is) is deliberate: unit conversion means "multiply every coordinate
+ * by this factor," not "resize the shape around some point" — scaling about
+ * any other point would also translate the shape.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function scaleShapeForExport(oc: any, shape: any, factor: number, cleanup: Array<{ delete(): void }>): any {
+  const push = <T extends { delete(): void }>(o: T): T => (cleanup.push(o), o);
+  const t = push(new oc.gp_Trsf_1());
+  t.SetScale(push(new oc.gp_Pnt_3(0, 0, 0)), factor);
+  return rigid(oc, t, cleanup)(shape);
+}
+
 /** Wraps a `gp_Trsf` into a transformer via `BRepBuilderAPI_Transform`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function rigid(oc: any, trsf: any, cleanup: Array<{ delete(): void }>): Transformer {

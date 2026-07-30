@@ -265,6 +265,10 @@ starts from `mm`. Moments of inertia in the Mass Properties panel are
 intentionally never rescaled by this setting. The selection is session-only —
 it resets on every new file open and is never written to a sidecar.
 
+This dropdown is unrelated to (and doesn't drive) the **Export** flow's own
+unit conversion — see [Exporting a Model](#exporting-a-model), which applies
+a real geometric scale to the exported file, not just a display change.
+
 ### Orientation Cube
 
 A labeled orientation cube sits in the top-left corner of the 3D view. It mirrors the current camera direction in real time.
@@ -597,11 +601,20 @@ different file. The list of offered target formats depends on the file you opene
 | STEP, IGES, or BREP | the other two B-rep formats, plus STL, OBJ, PLY, and glTF |
 | STL, OBJ, PLY, or glTF | the other mesh formats only |
 
-The format you opened is never offered as an export target. After picking a format
-from the quick-pick, a native Save dialog lets you choose the destination — it
-defaults to the source file's folder with the new extension. glTF export always
-produces a single binary `.glb` file (no separate `.bin`/texture references to
-manage).
+The format you opened is never offered as an export target. For a **BREP**, STL, OBJ,
+PLY, or glTF target, picking the format opens a second quick-pick asking for an
+**export unit** — "Native (mm) — no conversion" is first and pre-highlighted, so
+pressing Enter immediately exports unchanged; picking cm/m/in/ft instead applies a
+real geometric scale to the exported file (not just a display change — the model
+reopens at the new size). Pressing Escape on this step also exports natively rather
+than cancelling. **STEP and IGES targets skip this step entirely and always export
+at native scale** — both formats declare their own length unit in the file, and this
+extension has no verified way to set that declared unit correctly on write, so
+offering a unit choice that wouldn't actually apply would be misleading. A native
+Save dialog then lets you choose the destination — it defaults to the source file's
+folder with the new extension. glTF export always produces a single binary `.glb`
+file (no separate
+`.bin`/texture references to manage).
 
 B-rep targets are converted by OpenCascade.js's own writers, so STEP ↔ IGES ↔ BREP
 round-trips preserve true CAD geometry, not just a tessellated approximation. Mesh

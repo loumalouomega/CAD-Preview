@@ -521,6 +521,20 @@ const EXPORT_LABEL: Record<CadFormat, string>       // e.g. gltf → "glTF Binar
 Used by `provider.ts`'s `handleExport()` to build the quick-pick items and the save
 dialog's default filename/filter.
 
+```typescript
+const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat>  // {"brep", "stl", "obj", "ply", "gltf"}
+```
+The gate for unit-conversion-on-export: `"step"`/`"iges"` are deliberately absent.
+Both declare a length unit in their own header that must match the geometry's
+actual scale — this OCCT WASM build has no verified way to set that declared unit
+on write (`Interface_Static`'s `"write.step.unit"` static never registers;
+`IGESControl_Writer`'s alternate unit-aware constructor writes successfully but its
+output couldn't be read back to verify), so converting their geometry without also
+fixing the header would silently mislabel the file. `"brep"` has no unit metadata
+to mismatch; the mesh formats enforce none either. `provider.ts`'s `handleExport`
+and `mcpTools.ts`'s `exportBRepTool` both gate on this set — see `exportBRep`'s
+`scaleFactor` param below for the full write-up.
+
 ---
 
 ## `src/occtService.ts`
@@ -585,7 +599,8 @@ async function exportBRep(
   bytes: Uint8Array,
   sourceFormat: "step" | "iges" | "brep",
   targetFormat: "step" | "iges" | "brep",
-  ops?: EditOp[]            // replayable edit op-list (default [])
+  ops?: EditOp[],            // replayable edit op-list (default [])
+  scaleFactor?: number       // unit-conversion-on-export scale (default 1, no-op)
 ): Promise<Uint8Array>
 ```
 Re-parses `bytes` with `readShape()`, applies the edit op-list via `applyEditsBRep()`,
@@ -594,6 +609,23 @@ and writes the resulting `TopoDS_Shape` out as `targetFormat` via the private
 virtual filesystem) — so **Export bakes the edits in**. Cleans up every handle —
 reader/writer/shape/progress-indicator — in a `finally`, plus `oc.FS.unlink()` on
 both the input and output virtual paths, same discipline as `loadBRep`.
+
+`scaleFactor` (default `1`) applies `occtOperations.ts`'s `scaleShapeForExport(oc,
+shape, factor, cleanup)` — a uniform scale about the **origin** — right after edits
+and before the writer, when not `1`. This is the real geometric half of unit
+conversion on export (`src/lengthUnits.ts`'s `unitScaleFactor(unit)`); the in-memory
+model and every other caller of `exportBRep` (meshing input, `compare_models`, mass
+properties) always pass the default and stay in the native mm cascade unit.
+`exportBRep()` itself doesn't gate this by `targetFormat` — it's the caller's job to
+only ever pass a non-default value for a `"brep"` target. `provider.ts`'s
+`handleExport` (the model Export/Save As command) only shows its export-unit
+quick-pick for `UNIT_CONVERTIBLE_FORMATS`-listed targets (`exportTargets.ts`) — BREP
+and the mesh formats, NOT STEP/IGES, which declare their own length unit in a file
+header this OCCT build has no verified way to set on write (see that constant's doc
+comment for the live-WASM probe trail). `mcpTools.ts`'s `exportBRepTool` mirrors the
+same gate defensively (an agent could pass any combination): a convertible-unit
+request against a STEP/IGES target degrades to `scaleFactor: 1` with a warning,
+never a silently mislabeled file.
 
 ```typescript
 function writeShape(
@@ -639,6 +671,15 @@ targeted (or the shape has no solids) the whole shape is transformed; otherwise 
 `TopoDS_Compound` is assembled from the transformed targets plus the untouched rest.
 The `gp_Trsf`/`gp_GTrsf` suffix details are recorded in `CLAUDE.md` (verified against
 the live WASM).
+
+```typescript
+function scaleShapeForExport(oc: any, shape: any, factor: number, cleanup: { delete(): void }[]): any  // TopoDS_Shape (scaled)
+```
+Exported (unlike the op-transform helpers above, which stay private) for
+`exportBRep()`'s unit-conversion-on-export feature — see [`src/occtService.ts`](#src-occtservicets)
+below. A uniform `gp_Trsf.SetScale` + `BRepBuilderAPI_Transform` about the
+**origin** (not a centroid or an op-supplied `center`), since unit conversion
+means "multiply every coordinate by this factor," not "resize around a point."
 
 **Booleans (M2)** are applied by `booleanSolids()` via `BRepAlgoAPI_{Fuse,Cut,
 Common}_3(s1, s2).Shape()` (the progress-range arg is optional/unbound). Each operand

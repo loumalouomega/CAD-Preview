@@ -767,7 +767,7 @@ Three.js geometry in the scene.
 ```typescript
 interface ExportedMesh { data: string; binary: boolean }
 
-async function exportModel(model: THREE.Object3D, format: CadFormat): Promise<ExportedMesh>
+async function exportModel(model: THREE.Object3D, format: CadFormat, unit?: DisplayUnit): Promise<ExportedMesh>
 ```
 
 | `format` | Exporter | Result |
@@ -776,6 +776,18 @@ async function exportModel(model: THREE.Object3D, format: CadFormat): Promise<Ex
 | `"obj"` | `OBJExporter` | text (OBJ has no binary form) |
 | `"ply"` | `PLYExporter` (`{ binary: false }`, callback-based — wrapped in a `Promise`) | text |
 | `"gltf"` | `GLTFExporter.parseAsync(model, { binary: true })` | `ArrayBuffer` (`.glb`) → base64 |
+
+`unit` (optional, `DisplayUnit` from `../lengthUnits.ts`; `undefined`/`"mm"` is a
+no-op) is unit-conversion-on-export's mesh-target half — a REAL geometric scale,
+distinct from `units.ts`'s presentation-only display rescale. Implemented by a
+private `applyExportScale(model, unit)`: for a non-`"mm"` unit, `model.clone(true)`
+(children cloned too, but geometries/materials stay shared references — cheap, and
+the live displayed model is never mutated) has its root `.scale` multiplied by
+`unitScaleFactor(unit)`, then `updateMatrixWorld(true)` is force-called (the render
+loop never ticks for a parentless, off-scene clone, and every exporter above bakes
+`matrixWorld` into its output) before being handed to the exporter instead of
+`model`. Set on `provider.ts`'s `exportMesh` message field of the same name, which
+`main.ts`'s handler passes straight through.
 
 ```typescript
 function arrayBufferToBase64(buf: ArrayBufferLike): string
@@ -1261,24 +1273,42 @@ re-requesting anything from the host or recomputing the mesh-source case.
 
 ---
 
-## `src/webview/units.ts`
+## `src/lengthUnits.ts`
 
-Display-unit conversion for Mass Properties and Measurement — pure, DOM-free
-(mirrors `measurement.ts`'s convention). Presentation-layer only: every number
-this module touches is already in the model's one internal length unit
-(millimetres — OCCT's STEP reader auto-converts every shape to its cascade
-unit at read time; see `src/stepUnits.ts`'s doc comment for the live-WASM
-verification). Nothing stored — edit-op params, sidecars, mesh-size options —
-is ever rescaled; this only changes what a number *looks like*.
+The shared, pure (vscode/DOM/THREE-free) length-unit table BOTH
+`src/webview/units.ts` (display conversion, below) and unit-conversion-on-export
+(`occtOperations.ts`'s `scaleShapeForExport`, this file's `meshExporters.ts`
+section above) build on, so the factor table can't drift between the two
+features. `mm: 1` is the identity/no-op case both default to.
 
 ```typescript
 type DisplayUnit = 'mm' | 'cm' | 'm' | 'in' | 'ft'
 const DISPLAY_UNITS: readonly DisplayUnit[]
 
+function unitScaleFactor(unit: DisplayUnit): number   // multiply a millimetre value by this
+const UNIT_LABELS: Record<DisplayUnit, string>          // e.g. "Inches (in)" — for a unit picker
+function displayUnitFromStepName(name: string | undefined): DisplayUnit | undefined
+```
+
+## `src/webview/units.ts`
+
+Display-unit conversion for Mass Properties and Measurement — pure, DOM-free
+(mirrors `measurement.ts`'s convention), built on `../lengthUnits.ts` above
+(re-exports `DisplayUnit`/`DISPLAY_UNITS`/`displayUnitFromStepName` for
+backward-compatible imports). Presentation-layer only: every number this
+module touches is already in the model's one internal length unit
+(millimetres — OCCT's STEP reader auto-converts every shape to its cascade
+unit at read time; see `src/stepUnits.ts`'s doc comment for the live-WASM
+verification). Nothing stored — edit-op params, sidecars, mesh-size options —
+is ever rescaled; this only changes what a number *looks like*. Unit
+conversion on EXPORT (a real geometric transform) is a separate feature — see
+`meshExporters.ts`'s `exportModel` above and `occtOperations.ts`'s
+`scaleShapeForExport` (extension-host-api.md).
+
+```typescript
 function convertLength(mmValue: number, unit: DisplayUnit): number
 function convertArea(mm2Value: number, unit: DisplayUnit): number
 function convertVolume(mm3Value: number, unit: DisplayUnit): number
-function displayUnitFromStepName(name: string | undefined): DisplayUnit | undefined
 
 interface LengthBasedProperties {
   volume: number | null

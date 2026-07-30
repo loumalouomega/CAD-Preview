@@ -17,6 +17,27 @@ export function exportTargetsFor(route: FileRoute): CadFormat[] {
   return MESH_FORMATS.filter((f) => f !== route.format);
 }
 
+/**
+ * Formats whose export can honestly represent a converted, correctly-labeled
+ * unit. **STEP and IGES are deliberately excluded** — both declare a length
+ * unit in their own header that MUST match the geometry's actual scale to
+ * mean anything, and this OCCT WASM build has no verified way to set that
+ * declared unit on write: `Interface_Static`'s `"write.step.unit"` parameter
+ * never registers (`IsPresent`/`SetCVal` both report failure even after
+ * constructing a `STEPControl_Writer`, which in desktop OCCT registers it),
+ * and probing `IGESControl_Writer`'s alternate unit-aware constructor
+ * produced a `Write()` call that reported success but whose output could not
+ * be read back to verify — neither could be trusted. Scaling STEP/IGES
+ * geometry without also fixing the header would silently mislabel the file
+ * (e.g. a "converted to inches" STEP file whose header still says
+ * millimetres reopens 25.4× too small in any correct reader, including this
+ * extension's own) — excluded here entirely rather than shipped half-correct.
+ * BREP has no unit metadata at all (nothing to mismatch); the mesh formats
+ * (STL/OBJ/PLY/glTF) enforce no unit metadata either, so scaling their raw
+ * numbers is complete and correct on its own.
+ */
+export const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat> = new Set(["brep", "stl", "obj", "ply", "gltf"]);
+
 /** File extension to use when saving an export of the given format. */
 export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   step: "step",

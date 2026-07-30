@@ -940,6 +940,41 @@ describe("export_brep", () => {
       /source/i
     );
   });
+
+  it("defaults to mm (scale factor 1, no conversion)", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out-mm.brep");
+    const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out });
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1);
+    expect(result.unit).toBe("mm");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("passes the verified mm scale factor for a real unit", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out-in.brep");
+    const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "in" });
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1 / 25.4);
+    expect(result.unit).toBe("in");
+  });
+
+  it("falls back to mm and warns on an unrecognized unit, rather than throwing", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out-bad.brep");
+    const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "parsec" });
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1);
+    expect(result.unit).toBe("mm");
+    expect(result.warnings[0]).toMatch(/unknown unit/i);
+  });
+
+  it("falls back to mm and warns for an iges target — STEP/IGES can't honestly represent a converted unit", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out.iges");
+    const result = await exportBRepTool(c, { path: stpModel, targetFormat: "iges", outputPath: out, unit: "in" });
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], 1);
+    expect(result.unit).toBe("mm");
+    expect(result.warnings[0]).toMatch(/unit conversion is only supported for a "brep"/i);
+  });
 });
 
 describe("get_state", () => {

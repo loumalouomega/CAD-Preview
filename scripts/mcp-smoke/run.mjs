@@ -257,6 +257,35 @@ try {
   const breped = await call("export_brep", { path: model, targetFormat: "brep", outputPath: brepOut });
   assert(breped.editsBaked === 1 && fs.statSync(brepOut).size > 0, "export_brep writes with the edit baked in");
 
+  // Unit conversion on export — a REAL geometric scale, verified end-to-end
+  // against the live WASM (not just unit-tested): BREP has no unit metadata
+  // to mismatch, so its scale is applied and correct. Round-trip through
+  // get_mass_properties (volume scales by factor^3) on the two exported
+  // files, each read fresh as its own independent document.
+  const brepOutIn = path.join(dir, "out-in.brep");
+  const exportedIn = await call("export_brep", { path: model, targetFormat: "brep", outputPath: brepOutIn, unit: "in" });
+  assert(exportedIn.unit === "in" && exportedIn.warnings.length === 0, "export_brep converts to inches for a brep target, no warnings");
+  const volumeMm = (await call("get_mass_properties", { path: brepOut })).volume;
+  const volumeIn = (await call("get_mass_properties", { path: brepOutIn })).volume;
+  const expectedRatio = Math.pow(1 / 25.4, 3);
+  assert(
+    Math.abs(volumeIn / volumeMm - expectedRatio) < 1e-6,
+    `export_brep's inch scale is geometrically real: volume ratio ${(volumeIn / volumeMm).toFixed(9)} ≈ (1/25.4)^3 = ${expectedRatio.toFixed(9)}`
+  );
+
+  // STEP/IGES headers declare a unit that this OCCT WASM build has no
+  // verified way to set on write (Interface_Static's "write.step.unit"
+  // never registers) — converting their geometry without fixing the header
+  // would silently mislabel the file, so it's deliberately unsupported:
+  // falls back to mm with an explicit warning, never a silent wrong file.
+  const igesOut = path.join(dir, "out-unsupported.iges");
+  const igesResult = await call("export_brep", { path: model, targetFormat: "iges", outputPath: igesOut, unit: "in" });
+  assert(igesResult.unit === "mm", "export_brep falls back to mm for an iges target (unit conversion unsupported)");
+  assert(
+    igesResult.warnings.some((w) => /unit conversion/i.test(w)),
+    "export_brep warns, rather than silently ignoring, the unsupported iges+unit combination"
+  );
+
   // meshio++ integration: a VTK source (meshio-only format, no OCCT/gmsh-native
   // reader) is meshable headless via a host-side STL-boundary conversion, and
   // a generated mesh can be re-encoded to formats gmsh-wasm's own writer can't

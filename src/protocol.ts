@@ -6,6 +6,7 @@ import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
+import type { DisplayUnit } from "./lengthUnits";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -86,7 +87,15 @@ export type HostToWebview =
   | { type: "status"; text: string }
   | { type: "error"; message: string }
   | { type: "editError"; message: string }
-  | { type: "exportMesh"; requestId: string; format: CadFormat }
+  | {
+      type: "exportMesh";
+      requestId: string;
+      format: CadFormat;
+      /** Real geometric unit conversion (not the display-unit selector) —
+       * `undefined`/`"mm"` means no scaling, matching the model's native
+       * cascade unit. See `src/webview/meshExporters.ts`'s `exportModel`. */
+      unit?: DisplayUnit;
+    }
   | { type: "meshingOptions"; options: MeshOptions }
   | {
       type: "meshingResult";

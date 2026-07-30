@@ -5,7 +5,7 @@ import { detectStepLengthUnit } from "./stepUnits";
 import { convertToStlBoundary, exportViaMeshio } from "./meshioService";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
-import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
@@ -22,6 +22,7 @@ import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
+import { DISPLAY_UNITS, UNIT_LABELS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
@@ -649,9 +650,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   }
 
   /**
-   * Prompts for a target format and destination, then writes the export. B-rep
-   * targets are written directly via OCCT; mesh targets are serialized in the
-   * webview (which already holds the triangulated Three.js model) and relayed back.
+   * Prompts for a target format, an optional unit conversion, and a
+   * destination, then writes the export. B-rep targets are written directly
+   * via OCCT; mesh targets are serialized in the webview (which already holds
+   * the triangulated Three.js model) and relayed back.
    */
   private async handleExport(
     uri: vscode.Uri,
@@ -674,6 +676,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     if (!picked) return;
 
     const targetFormat = picked.format;
+    // STEP/IGES can't honestly represent a converted unit in this OCCT build
+    // (see UNIT_CONVERTIBLE_FORMATS' doc comment) — skip the prompt entirely
+    // rather than offering a choice that silently falls back to mm.
+    const unit = UNIT_CONVERTIBLE_FORMATS.has(targetFormat) ? await this.pickExportUnit() : "mm";
 
     await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async (_saveUri) => {
       if (BREP_FORMATS.has(targetFormat)) {
@@ -683,17 +689,40 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           sourceBytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
-          ops
+          ops,
+          unitScaleFactor(unit)
         );
       }
 
       const requestId = `${Date.now()}-${Math.random()}`;
       const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
         pending.set(requestId, { resolve, reject });
-        post({ type: "exportMesh", requestId, format: targetFormat });
+        post({ type: "exportMesh", requestId, format: targetFormat, unit });
       });
       return result.binary ? Buffer.from(result.data, "base64") : Buffer.from(result.data, "utf8");
     }, post);
+  }
+
+  /**
+   * Real unit conversion on export — a geometric scale applied to the
+   * exported file's coordinates, distinct from the webview's display-unit
+   * selector (which only rescales what a number looks like, never geometry —
+   * see `src/webview/units.ts`). Shown as its own quick-pick step after the
+   * format is chosen, defaulting to `"mm"` (native, no conversion — the
+   * codebase's one internal cascade unit) both as the first/pre-highlighted
+   * item AND on Escape: this step is a nice-to-have on top of the primary
+   * "export the model" action, so declining it must never cancel the export
+   * itself the way declining the format pick does.
+   */
+  private async pickExportUnit(): Promise<DisplayUnit> {
+    const picked = await vscode.window.showQuickPick(
+      DISPLAY_UNITS.map((unit) => ({
+        label: unit === "mm" ? "Native (mm) — no conversion" : UNIT_LABELS[unit],
+        unit,
+      })),
+      { placeHolder: "Export unit…" }
+    );
+    return picked?.unit ?? "mm";
   }
 
   /**

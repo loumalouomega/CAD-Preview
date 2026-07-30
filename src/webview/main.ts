@@ -1551,7 +1551,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       try {
         const model = viewer.getModel();
         if (!model) throw new Error("No model loaded");
-        const { data, binary } = await exportModel(model, msg.format);
+        const { data, binary } = await exportModel(model, msg.format, msg.unit);
         post({ type: "exportResult", requestId: msg.requestId, data, binary });
       } catch (err) {
         post({ type: "exportError", requestId: msg.requestId, message: (err as Error).message });

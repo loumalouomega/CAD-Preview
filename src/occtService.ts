@@ -5,7 +5,7 @@ import * as path from "path";
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, extractVertices, type SolidGroup, type EdgeLine, type PointEntity } from "./meshExtract";
-import { applyEditsBRep } from "./occtOperations";
+import { applyEditsBRep, scaleShapeForExport } from "./occtOperations";
 import type { TreeNode } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
@@ -132,13 +132,23 @@ type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
  * resulting shape out as `targetFormat`, returning the output file's bytes — so
  * Export bakes in the same edits the view shows. Writer calls are verified against
  * the live OCCT build — see `writeShape` below for the per-format quirks.
+ *
+ * `scaleFactor` (default `1`, i.e. no-op) applies a real geometric unit-
+ * conversion scale — via `occtOperations.ts`'s `scaleShapeForExport` — right
+ * after edits and before the writer, so the *exported file's* coordinates are
+ * in the chosen unit while the live, in-memory model (and every other caller
+ * of this function — meshing input, `compare_models`, mass properties, etc.)
+ * stays untouched at the cascade unit (mm). Only `provider.ts`'s `handleExport`
+ * (the model Export/Save As command) and `mcpTools.ts`'s `exportBRepTool` ever
+ * pass a non-default value.
  */
 export async function exportBRep(
   extensionPath: string,
   bytes: Uint8Array,
   sourceFormat: BRepFormat,
   targetFormat: BRepFormat,
-  ops: EditOp[] = []
+  ops: EditOp[] = [],
+  scaleFactor = 1
 ): Promise<Uint8Array> {
   const oc = await getOcct(extensionPath);
 
@@ -158,7 +168,8 @@ export async function exportBRep(
   const cleanup: Array<{ delete(): void }> = [];
   try {
     const baseShape = readShape(oc, inPath, sourceFormat, cleanup);
-    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    let shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    if (scaleFactor !== 1) shape = scaleShapeForExport(oc, shape, scaleFactor, cleanup);
     writeShape(oc, shape, outPath, targetFormat, cleanup);
     return oc.FS.readFile(outPath);
   } finally {

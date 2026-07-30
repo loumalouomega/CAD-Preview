@@ -217,6 +217,8 @@ interface QualitySummary {
   histogram: number[]   // bucket i covers [i/N, (i+1)/N) of the quality range; see meshingResult below
 }
 
+type DisplayUnit = 'mm' | 'cm' | 'm' | 'in' | 'ft'   // src/lengthUnits.ts — shared by the webview's display-unit selector AND unit-conversion-on-export
+
 interface WorstElementsMsg {
   indices: string        // base64 Uint32Array — triangle indices into meshingResult.positions
   threshold: number       // the minSICN cutoff used to select "worst" elements
@@ -248,7 +250,7 @@ type HostToWebview =
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
   | { type: 'editError'; message: string }
-  | { type: 'exportMesh'; requestId: string; format: CadFormat }
+  | { type: 'exportMesh'; requestId: string; format: CadFormat; unit?: DisplayUnit }
   | { type: 'meshingOptions'; options: MeshOptions }
   | { type: 'meshingResult'; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
@@ -427,10 +429,15 @@ host's quick-pick. Only mesh targets round-trip through the webview — B-rep ta
 (STEP/IGES/BREP) are written entirely in the host via OCCT, with no webview
 involvement. The webview serializes the currently displayed `THREE.Object3D` with the
 matching exporter from `three/examples/jsm/exporters/` and replies with
-`exportResult`/`exportError`.
+`exportResult`/`exportError`. `unit` (optional, `DisplayUnit = 'mm'|'cm'|'m'|'in'|'ft'`
+from `src/lengthUnits.ts`, `undefined`/`'mm'` = no-op) is the export-unit quick-pick's
+answer — a REAL geometric scale (`meshExporters.ts`'s `exportModel` clones the model
+root, scales it, and force-updates its world matrix before serializing), distinct
+from the display-unit selector (`src/webview/units.ts`), which only ever rescales
+what a number looks like and never reaches this message at all.
 
 ```json
-{ "type": "exportMesh", "requestId": "1234-0.56", "format": "stl" }
+{ "type": "exportMesh", "requestId": "1234-0.56", "format": "stl", "unit": "in" }
 ```
 
 ### `meshingOptions`

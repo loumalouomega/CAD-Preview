@@ -1,0 +1,52 @@
+/**
+ * Length-unit identifiers and their millimetre scale factors — pure,
+ * vscode/DOM/THREE-free, shared by both the webview's *display* conversion
+ * (`src/webview/units.ts`, which rescales what a number looks like) and the
+ * host's *export* conversion (`occtOperations.ts`'s `scaleShapeForExport` /
+ * `src/webview/meshExporters.ts`'s `exportModel`, which apply a real
+ * geometric scale before writing). Every number this codebase computes is
+ * already in one internal length unit (millimetres — OCCT's STEP reader
+ * auto-converts every shape to its cascade unit at read time, verified
+ * against the live WASM; see `src/stepUnits.ts`'s doc comment), so `mm: 1` is
+ * the identity/no-op case both sides default to.
+ */
+
+export type DisplayUnit = "mm" | "cm" | "m" | "in" | "ft";
+
+export const DISPLAY_UNITS: readonly DisplayUnit[] = ["mm", "cm", "m", "in", "ft"];
+
+/** Multiply a millimetre value by this to get the unit's value. */
+const UNIT_FACTORS: Record<DisplayUnit, number> = {
+  mm: 1,
+  cm: 0.1,
+  m: 0.001,
+  in: 1 / 25.4,
+  ft: 1 / 304.8,
+};
+
+export function unitScaleFactor(unit: DisplayUnit): number {
+  return UNIT_FACTORS[unit];
+}
+
+/** Human-readable labels for a unit picker (quick-pick / `<select>`). */
+export const UNIT_LABELS: Record<DisplayUnit, string> = {
+  mm: "Millimetres (mm)",
+  cm: "Centimetres (cm)",
+  m: "Metres (m)",
+  in: "Inches (in)",
+  ft: "Feet (ft)",
+};
+
+/** Maps a detected STEP unit name (`src/stepUnits.ts`) to a `DisplayUnit`, or
+ * `undefined` if it's not one of the five this UI offers (e.g. an exotic or
+ * unrecognized unit) — the caller falls back to `"mm"` in that case. */
+export function displayUnitFromStepName(name: string | undefined): DisplayUnit | undefined {
+  switch (name) {
+    case "MILLIMETRE": return "mm";
+    case "CENTIMETRE": return "cm";
+    case "METRE": return "m";
+    case "INCH": return "in";
+    case "FOOT": return "ft";
+    default: return undefined;
+  }
+}
