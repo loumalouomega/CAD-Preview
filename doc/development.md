@@ -79,7 +79,7 @@ After any non-trivial change, run through:
 1. Open `examples/STP/bull.stp` — model renders, component tree visible.
 2. Open `examples/STL/cube.stl` — renders without loading the WASM.
 3. Orbit, pan, zoom with mouse — smooth movement with damping.
-4. Click each toolbar button: Fit, Wireframe, Grid, Tree toggle. Use **File ▸ Export…** (or Ctrl+E) to export.
+4. Click each toolbar button: Fit, Tree, FE Mesh, and open each of the **View ▾** / **Select ▾** / **Measure ▾** / **Markup ▾** dropdowns. Use **File ▸ Export…** (or Ctrl+E) to export.
 5. Use the view-controls panel: step rotate (15°/45°/90°), pan, zoom, Fit, Ctr (reset).
 6. Collapse and expand the view-controls panel with ⌄/⌃.
 7. Click all six faces of the orientation cube — view snaps to ±X/Y/Z.

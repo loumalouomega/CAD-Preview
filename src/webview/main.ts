@@ -32,6 +32,7 @@ import { convertLength, convertLengthBasedProperties, displayUnitFromStepName, t
 import { isDisplayMode } from "./displayMode";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
+import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -881,13 +882,27 @@ function showTree(root: TreeNode): void {
 let selectMode: EntityType = "surface";
 let selecting = false;
 function setupSelectionControls(): void {
+  const menu = setupDropdown("select-menu", "select-dropdown");
   const toggle = document.getElementById("sel-toggle");
   const modeBtns = [...document.querySelectorAll<HTMLButtonElement>(".sel-mode")];
   const apply = () => viewer.setSelectionMode(selecting ? selectMode : null);
+  // The trigger mirrors the mode toggle so the collapsed toolbar still shows
+  // that selection mode is live, and names the current pick mode in its title.
+  const reflect = () => {
+    menu?.trigger.classList.toggle("active", selecting);
+    if (menu) {
+      const label = modeBtns.find((b) => b.classList.contains("active"))?.dataset.mode ?? selectMode;
+      menu.trigger.title = selecting
+        ? `Selection mode: on — picking ${label}s`
+        : "Pick entities in the view to assign to a part";
+    }
+  };
   toggle?.addEventListener("click", () => {
     selecting = !selecting;
     toggle.classList.toggle("active", selecting);
+    toggle.setAttribute("aria-checked", String(selecting));
     apply();
+    reflect();
   });
   for (const btn of modeBtns) {
     btn.addEventListener("click", () => {
@@ -895,6 +910,7 @@ function setupSelectionControls(): void {
       selectMode = btn.dataset.mode as EntityType;
       modeBtns.forEach((b) => b.classList.toggle("active", b === btn));
       if (selecting) apply();
+      reflect();
     });
   }
 }
@@ -988,10 +1004,20 @@ function setMeasureReadout(text: string, isError = false): void {
 }
 
 function setupMeasureControls(): void {
+  const menu = setupDropdown("measure-menu", "measure-dropdown");
   const toggle = document.getElementById("measure-toggle");
-  const toolSelect = document.getElementById("measure-tool") as HTMLSelectElement | null;
+  const toolBtns = [...document.querySelectorAll<HTMLButtonElement>(".measure-tool-btn")];
   const clearBtn = document.getElementById("measure-clear");
   let measuring = false;
+
+  const reflect = () => {
+    if (!menu) return;
+    menu.trigger.classList.toggle("active", measuring);
+    const label = toolBtns.find((b) => b.classList.contains("active"))?.textContent?.trim() ?? "";
+    menu.trigger.title = measuring
+      ? `Measure mode: on — ${label}`
+      : "Measure distances, lengths, angles, and radii";
+  };
 
   viewer.setOnMeasurePick((pick) => {
     const { done, picks } = measurementState.addPick(pick);
@@ -1017,17 +1043,23 @@ function setupMeasureControls(): void {
   toggle?.addEventListener("click", () => {
     measuring = !measuring;
     toggle.classList.toggle("active", measuring);
+    toggle.setAttribute("aria-checked", String(measuring));
     viewer.setMeasureMode(measuring);
     measurementState.clear();
     viewer.clearMeasurementOverlay();
     setMeasureReadout(measuring ? "Pick a point…" : "");
+    reflect();
   });
 
-  toolSelect?.addEventListener("change", () => {
-    measurementState.setTool(toolSelect.value as MeasureTool);
-    viewer.clearMeasurementOverlay();
-    setMeasureReadout(measuring ? "Pick a point…" : "");
-  });
+  for (const btn of toolBtns) {
+    btn.addEventListener("click", () => {
+      measurementState.setTool(btn.dataset.tool as MeasureTool);
+      for (const b of toolBtns) b.classList.toggle("active", b === btn);
+      viewer.clearMeasurementOverlay();
+      setMeasureReadout(measuring ? "Pick a point…" : "");
+      reflect();
+    });
+  }
 
   clearBtn?.addEventListener("click", () => {
     measurementState.clear();
@@ -1037,7 +1069,8 @@ function setupMeasureControls(): void {
 }
 
 document.getElementById("fit")?.addEventListener("click", () => viewer.fitView());
-document.getElementById("grid")?.addEventListener("click", () => viewer.toggleGrid());
+// #grid lives in the View ▾ menu now — setupViewMenu() owns it, so it can keep
+// the menu item's `aria-checked` tick in sync with the real grid state.
 document.getElementById("screenshot")?.addEventListener("click", () => post({ type: "screenshotButtonClicked" }));
 document.getElementById("tree-close")?.addEventListener("click", () => {
   treePanel.hide();
@@ -1092,24 +1125,12 @@ function setupViewControls(): void {
 // existing export flow. Wired inside the same guard as the view controls so a
 // failure here can never block the `ready` handshake below.
 function setupFileMenu(): void {
-  const btn = document.getElementById("file-menu");
-  const dropdown = document.getElementById("file-dropdown");
-  if (!btn || !dropdown) return;
-
-  const setOpen = (open: boolean) => {
-    dropdown.classList.toggle("hidden", !open);
-    btn.setAttribute("aria-expanded", String(open));
-  };
-  const close = () => setOpen(false);
-
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    setOpen(dropdown.classList.contains("hidden"));
-  });
+  const menu = setupDropdown("file-menu", "file-dropdown");
+  if (!menu) return;
 
   const item = (id: string, msg: () => void) =>
     document.getElementById(id)?.addEventListener("click", () => {
-      close();
+      menu.close();
       msg();
     });
 
@@ -1119,16 +1140,28 @@ function setupFileMenu(): void {
   item("menu-export", () => post({ type: "exportRequest" }));
   item("menu-save-preprocess", () => post({ type: "savePreprocessRequest" }));
   item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
+}
 
-  // Close on outside click or Escape.
-  window.addEventListener("pointerdown", (e) => {
-    if (!dropdown.classList.contains("hidden") && !dropdown.contains(e.target as Node) && e.target !== btn) {
-      close();
-    }
+/**
+ * The toolbar's View ▾ menu: the Grid and Edges display toggles plus the
+ * one-shot Screenshot action. Grid/Edges are `menuitemcheckbox`es whose
+ * `aria-checked` drives the tick in the menu (see `viewer.css`), so both need
+ * their real current state — Grid's comes back from `toggleGrid()` because the
+ * initial value is seeded from the `cadPreview.showGridAndAxesOnOpen` setting
+ * via `applyDefaults()`, not assumed on.
+ */
+function setupViewMenu(): void {
+  const menu = setupDropdown("view-menu", "view-dropdown");
+
+  const grid = document.getElementById("grid");
+  grid?.addEventListener("click", () => {
+    grid.setAttribute("aria-checked", String(viewer.toggleGrid()));
   });
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") close();
-  });
+  grid?.setAttribute("aria-checked", String(viewer.isGridVisible()));
+
+  // #edges is owned by setupAppearanceControls() — it holds the visibility
+  // flag; this only reflects it. Screenshot is one-shot, so it dismisses.
+  document.getElementById("screenshot")?.addEventListener("click", () => menu?.close());
 }
 
 /**
@@ -1160,9 +1193,12 @@ function setupDragAndDrop(): void {
  */
 function setupAppearanceControls(): void {
   let edgesVisible = true;
-  document.getElementById("edges")?.addEventListener("click", () => {
+  const edgesBtn = document.getElementById("edges");
+  edgesBtn?.addEventListener("click", () => {
     edgesVisible = !edgesVisible;
     viewer.setEdgesVisible(edgesVisible);
+    // Drives the tick on the View ▾ menu's checkable item.
+    edgesBtn.setAttribute("aria-checked", String(edgesVisible));
   });
 
   document.getElementById("vc-background")?.addEventListener("input", (e) => {
@@ -1257,14 +1293,24 @@ function setupClippingControls(): void {
 function setupMarkupControls(): void {
   const canvas = document.getElementById("markup-canvas") as HTMLCanvasElement | null;
   const toggleBtn = document.getElementById("markup-toggle");
-  const toolSelect = document.getElementById("markup-tool") as HTMLSelectElement | null;
+  const toolBtns = [...document.querySelectorAll<HTMLButtonElement>(".markup-tool-btn")];
   const colorInput = document.getElementById("markup-color") as HTMLInputElement | null;
-  if (!canvas || !toggleBtn || !toolSelect || !colorInput) return;
+  if (!canvas || !toggleBtn || toolBtns.length === 0 || !colorInput) return;
 
+  const menu = setupDropdown("markup-menu", "markup-dropdown");
   const model = new MarkupModel();
   let active = false;
   let drawing = false;
+  let tool: MarkupTool = "freehand";
   let current: Point[] = [];
+
+  const reflect = () => {
+    if (!menu) return;
+    menu.trigger.classList.toggle("active", active);
+    menu.trigger.title = active
+      ? `Markup mode: on — ${tool}`
+      : "Draw review annotations over the 3D view";
+  };
 
   function resizeCanvas(): void {
     const rect = canvas!.getBoundingClientRect();
@@ -1280,7 +1326,15 @@ function setupMarkupControls(): void {
   }
 
   function currentTool(): MarkupTool {
-    return toolSelect!.value as MarkupTool;
+    return tool;
+  }
+
+  for (const btn of toolBtns) {
+    btn.addEventListener("click", () => {
+      tool = btn.dataset.tool as MarkupTool;
+      for (const b of toolBtns) b.classList.toggle("active", b === btn);
+      reflect();
+    });
   }
 
   canvas.addEventListener("pointerdown", (e) => {
@@ -1317,6 +1371,8 @@ function setupMarkupControls(): void {
     active = !active;
     canvas.style.pointerEvents = active ? "auto" : "none";
     toggleBtn.classList.toggle("active", active);
+    toggleBtn.setAttribute("aria-checked", String(active));
+    reflect();
   });
   document.getElementById("markup-undo")?.addEventListener("click", () => {
     model.undo();
@@ -1341,6 +1397,7 @@ function setupMarkupControls(): void {
 
 try {
   setupViewControls();
+  setupViewMenu();
   setupSelectionControls();
   setupMeasureControls();
   setupFileMenu();

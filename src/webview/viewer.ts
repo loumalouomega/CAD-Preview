@@ -742,9 +742,16 @@ export class Viewer {
     this.applyWireframe();
   }
 
-  toggleGrid(): void {
+  /** Flips the grid + axis helpers, returning their new visibility so callers
+   *  (the View ▾ menu's checkable item) can reflect it without tracking it. */
+  toggleGrid(): boolean {
     this.grid.visible = !this.grid.visible;
     this.axes.visible = this.grid.visible;
+    return this.grid.visible;
+  }
+
+  isGridVisible(): boolean {
+    return this.grid.visible;
   }
 
   private applyWireframe(): void {

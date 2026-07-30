@@ -1,0 +1,12 @@
+% Toolbar icon: isolate — three panels with only the middle one solid; the flankers are
+% dashed to read as 'excluded'. Dashes rather than a lighter stroke because the
+% SVG generator only maps gray FILLS to currentColor, never gray strokes.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, dashed] (-11,-4.5) rectangle (-5.5,4.5);
+  \draw[thick, dashed] (5.5,-4.5) rectangle (11,4.5);
+  \draw[thick, fill=gray!45] (-3.8,-7.5) rectangle (3.8,7.5);
+\end{tikzpicture}
+\end{document}

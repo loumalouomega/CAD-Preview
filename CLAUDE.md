@@ -1062,7 +1062,11 @@ Non-negotiable invariants:
 The toolbar and a few panels (tree-close, parts delete/remove, the meshing
 large-mesh warning) used plain-color emoji (📤🔍🕸️🌳🔬🖱️📍🧊◼️📏▶, plus ⚠/✕) as
 button icons. These are now monochrome, `currentColor`-based inline SVG that
-track VS Code's light/dark theme automatically, replacing the emoji.
+track VS Code's light/dark theme automatically, replacing the emoji. The set
+grew from 17 to **41** with the toolbar-dropdown regroup (see the next
+section): every remaining emoji (`▦ 📐 📷 ✎`) and unicode placeholder
+(`⊙ ＋ ↶ ↷`) is now a generated icon too, along with the Measure/Markup tool
+pickers and the five Display-mode buttons.
 
 - **`src/toolbarIcons.ts` is GENERATED — never hand-edit it.** It's produced
   wholesale by `icons/build-toolbar-icons.mjs` from `icons/svg-ui/*.svg`
@@ -1099,7 +1103,33 @@ track VS Code's light/dark theme automatically, replacing the emoji.
 - Chevrons (`▾▸⌄⌃`), plain arrows (`↑↓←→`), and the zoom `−`/`+` are
   deliberately NOT covered by this — they already render as clean monochrome
   glyphs in every renderer, unlike real emoji, so replacing them would add
-  icons for no visual benefit.
+  icons for no visual benefit. Same for `#vc-ortho` and the clip axis letters.
+- **Only FILLS get the gray→`currentColor` mapping — never strokes.** The
+  generator's second regex matches `fill="rgb(X%, X%, X%)" fill-opacity="1"`
+  specifically; a TikZ `gray!N` *stroke* comes out of `pdftocairo` as
+  `stroke="rgb(X%, X%, X%)"` and is left untouched, i.e. frozen at a literal
+  gray in both themes. So shade with `fill=gray!N`, and where an icon needs a
+  de-emphasised outline use `dashed` instead (what `isolate` does).
+- **Design at 1em, not at 34px** — two things that look fine large and fail at
+  real toolbar size, both found by rendering the set headlessly through
+  `media/viewer.css`'s actual `.toolbar-icon svg { width: 1em }` rule:
+  a `>=Stealth` arrow tip on an `arc` disappears entirely (`undo`/`redo` use
+  an explicit `\filldraw` triangle instead of `->`), and glyphs sharing a
+  silhouette need a **fill** difference, not just an edge-style one
+  (`edges`/`xray`/`hiddenLines`/`flat`/`wireframe` are five variants of the
+  same isometric cube, separated by `gray!10`…`gray!35` fill levels).
+- **`pdftocairo` (poppler-utils) is required and has no safe substitute.** The
+  generator keys on the exact literal `rgb(0%, 0%, 0%)` that `pdftocairo -svg`
+  emits. `dvisvgm` writes `fill='#000'` instead, so the black→`currentColor`
+  rewrite would silently no-op — and because the result then contains no
+  `rgb(0%, 0%, 0%)` literal, `toolbarIcons.test.ts`'s "no literal black"
+  assertion still **passes** while every icon is permanently black in dark
+  themes. Silent, test-invisible corruption; install poppler-utils instead.
+- **Rebuild only the ids you changed** (`make svg-ui/<id>.svg` + `node
+  build-toolbar-icons.mjs`), not bare `make ts` — `ts` depends on `ui`, which
+  re-renders all 41 `.tex` files, and a different local TeX Live/poppler
+  version produces byte-different path rounding that churns every committed
+  `svg-ui/*.svg` and all of `src/toolbarIcons.ts`.
 
 ## Top File menu (Open / Save / Save As / Export)
 
@@ -1133,6 +1163,69 @@ Non-negotiable invariants:
   the same `try/catch` as the other view-control setup so a failure can't block
   the `ready` handshake. The File icons (`home`/`open`/`save`/`saveAs`) are part
   of the generated `tikz-ui` toolbar-icon set — see the section above.
+- The File menu's own open/close plumbing now lives in the shared
+  `src/webview/dropdownMenu.ts` (see the next section); `setupFileMenu()` is
+  just the `item(id, msg)` wiring on top of a `setupDropdown()` handle.
+
+## Toolbar dropdown menus
+
+The toolbar collapsed from ~21 inline controls into 3 always-visible buttons
+(`#fit`, `#tree-toggle`, `#meshing-toggle`) plus 4 dropdown triggers
+(**View ▾** / **Select ▾** / **Measure ▾** / **Markup ▾**), all sharing the
+File ▾ menu's markup pattern. Non-negotiable invariants:
+
+- **`src/webview/dropdownMenu.ts` is the ONE implementation** — `setupDropdown
+  (triggerId, panelId)` returns a `DropdownHandle | null` (null, never a throw,
+  on a missing element, since callers sit in `main.ts`'s shared setup `try`).
+  Module scope holds only a `Set<DropdownHandle>` and a `boolean`; all DOM
+  access is inside the functions, per this repo's no-DOM-at-import rule (no
+  jsdom in vitest — the trap `dotTexture()`/`labelOverlay.ts` already hit).
+  Opening one menu closes the others; exactly 2 global listeners total exist
+  regardless of menu count.
+- **Two bugs this fixed, don't reintroduce them.** (1) The old containment test
+  was `e.target !== btn`; every trigger wraps its icon in a
+  `<span class="toolbar-icon"><svg>`, so clicking an *open* menu's own icon
+  made `e.target` the `<svg>` → `pointerdown` closed it → the trigger's `click`
+  reopened it, i.e. the File menu could not be dismissed by clicking its icon.
+  Use `trigger.contains(t) || panel.contains(t)`. (2) The dismissing
+  `pointerdown` runs in the **capture** phase and calls `preventDefault()` +
+  `stopPropagation()`, so the click that closes a menu doesn't also reach what's
+  underneath — `#markup-canvas` is `pointer-events:auto` while markup mode is
+  on, so without this, clicking away from the Markup menu drew a stroke.
+- **Clicks inside a panel deliberately do NOT close it** (flip a mode, pick a
+  tool, choose a colour in one visit). One-shot items (`#menu-*`, `#screenshot`)
+  call `handle.close()` themselves.
+- **Every pre-existing element id survived the move** — `#grid`, `#edges`,
+  `#screenshot`, `#sel-toggle`, `.sel-mode[data-mode]`, `#select-group`,
+  `#measure-toggle`, `#measure-clear`, `#measure-readout`, `#markup-toggle`,
+  `#markup-color`, `#markup-undo/redo/clear` are all still queried by
+  `getElementById`/`querySelectorAll` exactly as before, just nested deeper.
+  `#measure-tool`/`#markup-tool` kept their ids but changed from `<select>` to
+  a `.tb-row` container of `data-tool` buttons (an `<option>` can't hold an
+  SVG), so `.value`/`change` readers became a click loop + a local variable.
+  `#measure-group`/`#markup-group` are gone.
+- **`#meshing-toggle` stays top-level on purpose** — its `.active` is
+  host-driven (`main.ts`'s `meshingResult` adds it, the panel's Clear removes
+  it) and must stay truthful about whether an overlay is displayed. Folding it
+  into a menu would force those two host paths to also update a trigger.
+- **A trigger mirrors its mode's `.active`** so the collapsed toolbar still
+  shows that Select/Measure/Markup is live, plus a `::after` dot (because
+  `inputValidation-infoBackground` is nearly invisible in some light themes)
+  and a dynamic `title`. Never a dynamic *label* — the toolbar is
+  right-anchored, so a width change jitters the whole row.
+- **Two CSS specificity traps.** `#toolbar button` is `(0,1,0,1)` and paints
+  every descendant button solid blue, so (a) menu-item styling must be written
+  `#toolbar .tb-dropdown button, #file-dropdown button` `(0,1,1,1)`, not a bare
+  `.tb-dropdown button` `(0,0,1,1)` which loses; and (b) the 1-of-N segments
+  then lose to *that*, so they're `#toolbar .tb-dropdown .sel-mode` `(0,1,2,0)`.
+  The mode toggles (`#toolbar #measure-toggle.active` etc.) are `(0,2,1,0)` and
+  need no change.
+- **`#toolbar`'s z-index is 15**, above `#view-controls` (10) and
+  `#markup-canvas` (5), so an open panel paints over both; `.tb-dropdown`'s 30
+  is local to that stacking context. `#measure-readout` is a **sibling of**
+  `#toolbar`, not a child, on its own absolutely-positioned line at
+  `top: 74px` — inline, its longest error string would stretch the
+  right-anchored strip off-canvas, the exact problem this regroup fixed.
 
 ## What's New panel (post-update changelog)
 
@@ -2195,6 +2288,25 @@ same actions (and `Ctrl+S` must NOT trigger VS Code's own read-only-save error),
 the `CAD Preview: …` commands appear in the Command Palette. The dropdown closes on
 item click, outside click, and Escape.
 
+Exercise the **toolbar dropdowns**: confirm the strip is just **Fit / Tree / FE Mesh**
+plus **View ▾ / Select ▾ / Measure ▾ / Markup ▾**. Each opens on trigger click and
+closes on a second click — **including when that click lands on the trigger's inner
+SVG icon** (the old File-menu bug: the icon click used to close-then-immediately-
+reopen). Escape and an outside click close too; opening one closes any other. With
+Markup ▾ open, pick a tool, open `#markup-color`'s native picker, and hit Undo →
+the panel must stay open throughout. Turn **Markup mode** on, leave the panel open,
+then click on the 3D view → the panel closes and **no stroke is drawn** (the
+capture-phase `preventDefault`). Toggle Measure and Markup on → both triggers light
+up with their dot and stay lit after the panel closes; toggle off → both clear.
+Generate an FE mesh → **FE Mesh** lights (host-driven), panel **Clear** → it
+unlights. In **View ▾**, confirm Grid/Edges show a tick matching their real state
+(open a file with `cadPreview.showGridAndAxesOnOpen` set false → Grid starts
+unticked) and that **Screenshot…** dismisses the menu. Take a measurement → the
+result appears on its own line under the toolbar with the menu closed; force the
+error path (Radius on a flat face) → the long message wraps instead of shifting the
+toolbar. On `cube.stl`, open **Select ▾** → Point/Surf/Line greyed, Vol auto-selected.
+Open `bull.stp` → **Tree** appears; `cube.stl` → it stays hidden.
+
 Exercise the **What's New** panel: run **CAD Preview: Show What's New** from the
 Command Palette → confirm a panel opens beside the editor with the full changelog
 (headings/bullets/inline code rendered, theme-matched in both light and dark), and
@@ -2204,11 +2316,15 @@ newer value (e.g. `"9.9.9"`), reload the Extension Development Host window
 panel now appears **automatically** (the upgrade path); reload again unchanged →
 confirm it does **not** reappear. Revert the temporary version edit afterward.
 
-Confirm the toolbar/panel icons (Fit, the Display group's Wire icon, Tree, FE Mesh, Select,
-Point/Vol/Surf/Line, the File menu's Open/Save/Save As/Export, the FE Mesh panel's
-Generate/Export, tree-close, Parts delete/remove, and the large-mesh warning) render
-crisply and legibly at their
-actual small size — this is the one thing automated tests can't check. Then
+Confirm the toolbar/panel icons render crisply and legibly at their actual small
+size — all 41 of them: the toolbar's Fit/Tree/FE Mesh, the four dropdown triggers
+(View/Select/Measure/Markup), View ▾'s Grid/Edges/Screenshot, Select ▾'s
+Point/Vol/Surf/Line, Measure ▾'s Distance/Length/Angle/Radius, Markup ▾'s six tool
+buttons and Undo/Redo/Clear, the view-controls Display group's
+Shaded/Wire/X-Ray/Hidden/Flat (five variants of the same cube — check they're
+actually distinguishable), the File menu's Open/Save/Save As/Export, the FE Mesh
+panel's Generate/Export/Clear, Parts' Isolate/New/delete, Edits' Undo/Redo/Clear,
+Variables' New, tree-close, and the large-mesh warning — this is the one thing automated tests can't check. Then
 switch VS Code to a light theme (`Ctrl+K Ctrl+T` → e.g. "Light+") and confirm
 every one of those icons re-colors to match (dark strokes on the now-light
 toolbar buttons) without needing a reload; switch back to a dark theme and

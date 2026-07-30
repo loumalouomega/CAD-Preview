@@ -1,0 +1,10 @@
+% Toolbar icon: radius — a circle with an arrow from its centre out to the rim.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (0,0) circle (9);
+  \draw[thick, ->] (0,0) -- (6.4,6.4);
+  \filldraw (0,0) circle (1.5);
+\end{tikzpicture}
+\end{document}

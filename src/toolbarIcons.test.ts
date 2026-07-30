@@ -2,8 +2,19 @@ import { describe, expect, it } from "vitest";
 import { TOOLBAR_ICONS, type ToolbarIconId } from "./toolbarIcons";
 
 const EXPECTED_IDS: ToolbarIconId[] = [
+  // Original set.
   "close", "export", "feMesh", "fit", "generate", "home", "line", "open",
   "point", "save", "saveAs", "select", "surface", "tree", "volume", "warning", "wireframe",
+  // Toolbar dropdown triggers and their items.
+  "view", "grid", "edges", "screenshot", "measure", "markup", "clear",
+  // Measure tools.
+  "distance", "edgeLength", "angle", "radius",
+  // Markup tools (the "line" tool reuses the existing `line` icon).
+  "freehand", "arrow", "rectangle", "circle", "eraser",
+  // Panel buttons.
+  "undo", "redo", "add", "isolate",
+  // Display modes (Wire reuses the existing `wireframe` icon).
+  "shaded", "xray", "hiddenLines", "flat",
 ];
 
 describe("TOOLBAR_ICONS", () => {

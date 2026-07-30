@@ -9,7 +9,7 @@ section applies before editing.
 
 | | `tikz/` (Edits panel) | `tikz-ui/` (toolbar/panels) | `tikz-icon/` (extension icon) |
 |---|---|---|---|
-| Count | 46, one per `PanelOpId` | 17, one per toolbar/panel icon | 1 |
+| Count | 46, one per `PanelOpId` | 41, one per toolbar/panel icon | 1 |
 | Output format | PNG (flat, fixed gray/black) | inline SVG (`currentColor`-based) | PNG (fixed teal/white, 512x512) |
 | Wired into the running extension? | **No** — still unicode-glyph placeholders in `opIcons.ts` | **Yes** — replaces the emoji that used to be there | **Yes** — `package.json`'s `"icon"` field |
 | Theme-adaptive? | No (fixed colors) | Yes (tracks VS Code light/dark via `currentColor`) | No (fixed teal-on-white/transparent) |
@@ -41,16 +41,40 @@ bundling `icons/png/*.png` into `media/`, changing `opIcons.ts`'s value type
 to an image path, and `editsPanel.ts` setting the icon `<span>`'s
 `background-image` (or an `<img>`) instead of `textContent`.
 
-## `tikz-ui/` — toolbar/panel icons (17, SVG, wired in)
+## `tikz-ui/` — toolbar/panel icons (41, SVG, wired in)
 
 One TikZ file per toolbar/panel icon (`tikz-ui/<id>.tex`), matching the
 `ToolbarIconId` keys in the **generated, committed** module
 [`../src/toolbarIcons.ts`](../src/toolbarIcons.ts) — which is what
 `provider.ts`, `partsPanel.ts`, and `meshingPanel.ts` actually import and
-render. These replaced the toolbar's plain-color emoji (📤🔍🕸️🌳🔬🖱️📍🧊◼️📏▶,
-plus ⚠/✕) — see `docs/superpowers/specs/2026-07-06-toolbar-icons-design.md`
-for the full design rationale. The `home` / `open` / `save` / `saveAs` icons
-back the top **File** menu (Open / Save / Save As); `export` is reused there too.
+render. These replaced every plain-color emoji and unicode-glyph placeholder the UI
+used to render (📤🔍🕸️🌳🔬🖱️📍🧊◼️📏▶ ▦ 📐 📷 ✎ ⊙ ＋ ↶ ↷, plus ⚠/✕) — see
+`docs/superpowers/specs/2026-07-06-toolbar-icons-design.md` for the original
+design rationale. Roughly by area:
+
+| Icons | Where they're used |
+|---|---|
+| `home` `open` `save` `saveAs` `export` | the top **File ▾** menu |
+| `fit` `tree` `feMesh` | the always-visible toolbar buttons |
+| `view` `grid` `edges` `screenshot` | the toolbar's **View ▾** menu |
+| `select` `point` `volume` `surface` `line` | **Select ▾** (trigger + pick modes) |
+| `measure` `distance` `edgeLength` `angle` `radius` | **Measure ▾** (trigger + tools) |
+| `markup` `freehand` `arrow` `rectangle` `circle` `eraser` | **Markup ▾** (trigger + tools; the Line tool reuses `line`) |
+| `shaded` `wireframe` `xray` `hiddenLines` `flat` | the view-controls **Display** group |
+| `undo` `redo` `add` `isolate` `clear` `generate` `close` `warning` | Parts/Edits/FE&nbsp;Mesh panel buttons |
+
+**Only fills get the gray→`currentColor` treatment, never strokes** (see the
+pipeline notes below), so shade an icon with `fill=gray!N` — a `gray!N` *stroke*
+would survive into the SVG as a literal gray and stay that colour in both
+themes. Where an icon needs a de-emphasised outline, use `dashed` (as `isolate`
+does) rather than a lighter stroke colour.
+
+Two design notes learned from rendering the set at its real 1em size, worth
+keeping in mind for new icons: a `>=Stealth` arrow tip on an `arc` is
+essentially invisible at that scale (`undo`/`redo` use an explicit filled
+triangle instead), and cube-based glyphs need a *fill* difference, not just an
+edge-style difference, to stay distinguishable (`edges`/`xray`/`hiddenLines`/
+`flat`/`wireframe` are five variants of the same isometric cube).
 
 Pipeline: `pdflatex` → `pdftocairo -svg` (both already needed for the `tikz/`
 set above; no extra dependency) → `build-toolbar-icons.mjs` post-processes

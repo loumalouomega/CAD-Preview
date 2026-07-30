@@ -6,6 +6,82 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved
 fast and bundled multiple features per bump).
 
+## [1.1.0] - 2026-07-30
+
+### Added
+- **Toolbar dropdown menus.** The toolbar had grown to ~21 controls in one
+  strip; it's now three always-visible buttons (**Fit**, **Tree**,
+  **FE&nbsp;Mesh**) plus four dropdowns — **View ▾** (Grid, Edges,
+  Screenshot), **Select ▾** (selection mode + Point/Vol/Surf/Line),
+  **Measure ▾** (measure mode + Distance/Length/Angle/Radius + Clear), and
+  **Markup ▾** (markup mode + the six drawing tools, colour, Undo/Redo/Clear).
+  A trigger stays highlighted while its mode is active, so you can still tell
+  at a glance that Measure or Markup is live once the panel has closed.
+  Measurement results moved to their own line below the toolbar.
+- **A complete icon set.** Every remaining emoji (`▦ 📐 📷 ✎`) and unicode
+  placeholder (`⊙ ＋ ↶ ↷`) is now a generated, monochrome SVG icon that tracks
+  the VS Code theme — 41 icons in total, covering the toolbar, both tool
+  pickers, the five Display modes, and the Parts/Edits/Variables/FE&nbsp;Mesh
+  panel buttons.
+- **Display modes** — five mutually exclusive whole-model rendering modes
+  (Shaded, Wireframe, X-Ray, Hidden Lines, Flat), replacing the old standalone
+  Wireframe toggle.
+- **Markup annotations** — draw freehand/line/arrow/rectangle/circle review
+  notes over the 3D view, with undo/redo and an eraser. Session-only, and baked
+  into Screenshot exports.
+- **Measurement tools** — distance, edge length, angle, and radius, shown as a
+  live overlay in the view.
+- **Mass properties** — volume, surface area, centre of mass, and moments of
+  inertia for the whole model or a selected solid/face/edge.
+- **Screenshot** — save the current view as a PNG from the toolbar, the File
+  menu, or the `CAD Preview: Screenshot to PNG…` command.
+- **Settings** — cross-document defaults under **CAD Preview** in the Settings
+  UI: `background`, `showGridAndAxesOnOpen`, `upAxis`, and
+  `defaultMeshSizePreset`.
+- **Visualization and UX depth** — drag-and-drop to open, per-part
+  isolate/hide plus a Components-tree filter, a live exploded-view slider,
+  background/opacity controls, live clipping/section planes, FE mesh quality
+  statistics, and an orthographic/perspective camera toggle.
+- **Units handling** — the declared unit of a STEP file is detected and shown,
+  and a display-unit selector (mm/cm/m/in/ft) rescales mass-properties and
+  measurement readouts. Presentation only; stored geometry is unchanged.
+- **Model comparison** — `CAD Preview: Compare Models…` diffs two B-rep
+  documents and reports matched/added/removed solids with the centre
+  displacement and volume delta behind each match.
+- **meshio++ integration** — VTK/VTU, MED, CGNS, Exodus, XDMF, and Kratos MDPA
+  files open as viewable boundary surfaces, and generated FE meshes can be
+  exported to MED, CGNS, and XDMF (formats Gmsh's own writers can't produce).
+  Geometry only — region names and field data are not preserved.
+- **Hex-dominant meshing** — a third element shape alongside simplex and
+  subdivided, producing a mixed tet/hex mesh.
+- **Save / Load Preprocess** — bundle a CAD file and its sidecars into a single
+  `.zip` and restore it later.
+- **New MCP tools for agents** — `inspect` and `measure` (fact-only entity
+  queries), `render_snapshot` (headless multi-view images),
+  `get_mass_properties`, `compare_models`, `search_standard_parts` /
+  `download_standard_part` (fasteners, bearings, and more from
+  [step.parts](https://www.step.parts)), and `run_parametric_script` for
+  declarative, re-runnable part scripts.
+
+### Changed
+- Default 3D meshing algorithm is now Gmsh's own Delaunay, after the
+  wasm-stack-overflow bug that forced the Frontal workaround was fixed upstream
+  in `@loumalouomega/gmsh-wasm` 0.3.0. Existing documents keep whatever is
+  already saved in their `.mesh.json`.
+
+### Fixed
+- The **File ▾** menu could not be dismissed by clicking its own icon — the
+  click closed and immediately reopened it.
+- Clicking away from an open menu no longer also acts on whatever is
+  underneath; with markup mode on, that click used to draw a stroke.
+
+## [1.0.5] - 2026-07-19
+
+### Changed
+- Dependency maintenance: bumped `actions/setup-node` and
+  `softprops/action-gh-release`, and added `package.json` overrides for `vite`,
+  `fast-uri`, and `@hono/node-server`.
+
 ## [1.0.4] - 2026-07-18
 
 ### Added
@@ -159,6 +235,8 @@ fast and bundled multiple features per bump).
   OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and
   Three.js in the webview for rendering.
 
+[1.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.5...v1.1.0
+[1.0.5]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.1...v1.0.2

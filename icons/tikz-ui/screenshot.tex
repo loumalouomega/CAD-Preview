@@ -1,0 +1,12 @@
+% Toolbar icon: screenshot — camera: body, viewfinder bump, lens rings, flash dot.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-6,5) -- (-4.5,9) -- (0.5,9) -- (2,5);
+  \draw[thick, rounded corners=2, fill=gray!12] (-11,-9) rectangle (11,5);
+  \draw[thick, fill=gray!25] (0,-2) circle (4.6);
+  \draw[thick] (0,-2) circle (2.2);
+  \filldraw (7.5,2.5) circle (1.1);
+\end{tikzpicture}
+\end{document}
