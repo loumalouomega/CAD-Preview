@@ -400,7 +400,7 @@ server.registerTool(
   "generate_mesh",
   {
     description:
-      "Generate a finite-element mesh of the model with Gmsh (edits baked in for B-rep sources; raw file bytes for .stl) and return statistics only (node/element counts, per-part element groups, timing). Nothing is written to disk — use export_mesh for that. Emits notifications/progress at start and completion if you set _meta.progressToken — Gmsh itself has no mid-call progress hook, so this is start/done signaling only, not a genuine percentage.",
+      "Generate a finite-element mesh of the model with Gmsh (edits baked in for B-rep sources; raw file bytes for .stl) and return statistics only (node/element counts, per-part element groups, timing, a minSICN quality summary, and — for a 3D mesh with elements scoring below 0.2 — a worstElements count). Nothing is written to disk — use export_mesh for that. Emits notifications/progress at start and completion if you set _meta.progressToken — Gmsh itself has no mid-call progress hook, so this is start/done signaling only, not a genuine percentage.",
     inputSchema: { path: modelPath, options: meshOptionsOverride },
   },
   wrap((args: { path: string; options?: Record<string, unknown> }, onProgress) =>

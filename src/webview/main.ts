@@ -3,7 +3,7 @@ import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
 import type { CadFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
-import { buildGroupFromEncoded, buildFEMesh } from "./geometryBuilder";
+import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight } from "./geometryBuilder";
 import { splitMeshesIntoFacets } from "./meshFacets";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
@@ -647,10 +647,14 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   },
   onClear: () => {
     viewer.setMeshOverlay(null);
+    viewer.setWorstElementsOverlay(null);
     // Same toggle-truthfulness invariant as `meshingResult`/`meshingError`
     // below: Clear disposes the overlay, so the toggle must stop claiming "on".
     meshingEnabled = false;
     meshingToggle?.classList.remove("active");
+    worstElementsShown = false;
+    worstToggle?.classList.remove("active");
+    if (worstToggle) worstToggle.hidden = true;
     meshingPanel.render(meshingModel.get());
   },
 });
@@ -1422,6 +1426,11 @@ try {
 // of only ever being flipped by the click handler itself.
 let meshingEnabled = false;
 let meshingToggle: HTMLElement | null = null;
+// Mirrors `meshingEnabled`/`meshingToggle` above, for the worst-quality-
+// elements highlight overlay — a separate on/off state since a user may want
+// the FE mesh shown without the (visually loud) highlight, or vice versa.
+let worstElementsShown = false;
+let worstToggle: HTMLElement | null = null;
 try {
   meshingToggle = document.getElementById("meshing-toggle");
   meshingToggle?.addEventListener("click", () => {
@@ -1432,6 +1441,13 @@ try {
     // back on left the mesh gone until the next Generate. A no-op if nothing
     // has been generated yet.
     viewer.setMeshOverlayVisible(meshingEnabled);
+  });
+
+  worstToggle = document.getElementById("meshing-worst-toggle");
+  worstToggle?.addEventListener("click", () => {
+    worstElementsShown = !worstElementsShown;
+    worstToggle?.classList.toggle("active", worstElementsShown);
+    viewer.setWorstElementsOverlayVisible(worstElementsShown);
   });
 } catch (err) {
   const message = `Meshing controls failed to initialize: ${(err as Error).message}`;
@@ -1611,11 +1627,30 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // displayed (see `meshingError` below, which deliberately leaves state alone).
       meshingEnabled = true;
       meshingToggle?.classList.add("active");
+      // Worst-elements highlight: a fresh `setWorstElementsOverlay` every
+      // generate (disposes any stale one from the previous result), and —
+      // unlike the base FE-mesh toggle, which just needs to reflect reality —
+      // auto-SHOWN when present, same "surface a warning by default" framing
+      // as the large-mesh warning banner above: finding bad elements is
+      // presented as an alert, not a hidden feature the user has to discover.
+      viewer.setWorstElementsOverlay(
+        msg.worstElements ? buildWorstElementsHighlight(msg.positions, msg.worstElements.indices) : null
+      );
+      worstElementsShown = msg.worstElements != null;
+      worstToggle?.classList.toggle("active", worstElementsShown);
+      if (worstToggle) {
+        worstToggle.hidden = !msg.worstElements;
+        if (msg.worstElements) {
+          worstToggle.title = `Highlight worst-quality elements — ${msg.worstElements.belowThresholdCount} below quality ${msg.worstElements.threshold.toFixed(2)}`;
+        }
+      }
+      viewer.setWorstElementsOverlayVisible(worstElementsShown);
       meshingPanel.render(meshingModel.get(), {
         nodeCount: msg.nodeCount,
         elementCount: msg.elementCount,
         elapsedMs: msg.elapsedMs,
         quality: msg.quality,
+        worstElements: msg.worstElements,
       });
       break;
 

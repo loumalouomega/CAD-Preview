@@ -28,6 +28,9 @@ export interface MeshingStats {
   /** Per-element quality summary (min/mean/histogram) — omitted if it
    * couldn't be computed for this generate (e.g. a 1D mesh). */
   quality?: QualitySummary;
+  /** The worst-quality-elements highlight overlay's stats — omitted for a
+   * non-3D generate, or when nothing scored below the quality threshold. */
+  worstElements?: { threshold: number; shownCount: number; belowThresholdCount: number };
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -359,24 +362,33 @@ export class MeshingPanel {
     this.statusEl.classList.remove("meshing-status-error");
     if (!status) {
       this.statusEl.textContent = "";
-      this.renderQuality(undefined);
+      this.renderQuality(undefined, undefined);
     } else if ("error" in status) {
       this.statusEl.textContent = status.error;
       this.statusEl.classList.add("meshing-status-error");
-      this.renderQuality(undefined);
+      this.renderQuality(undefined, undefined);
     } else {
       const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
       this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}`;
-      this.renderQuality(status.quality);
+      this.renderQuality(status.quality, status.worstElements);
     }
   }
 
   /** Renders the per-element quality summary as a min/mean line plus a
-   * compact text histogram — cleared (no row) when `quality` is `undefined`
-   * (nothing generated yet, an error, or a mesh dimension quality couldn't be
-   * computed for). Uses `textContent`, not `innerHTML`, for the same
-   * defensive-against-injection reason every other panel readout does. */
-  private renderQuality(quality: QualitySummary | undefined): void {
+   * compact text histogram, plus (when a highlight overlay was built) a line
+   * reporting how many worst-quality elements it covers — cleared (no row)
+   * when `quality` is `undefined` (nothing generated yet, an error, or a mesh
+   * dimension quality couldn't be computed for). Uses `textContent`, not
+   * `innerHTML`, for the same defensive-against-injection reason every other
+   * panel readout does. The actual on/off toggle for the highlight overlay
+   * lives outside this panel, in `main.ts`'s `#meshing-worst-toggle` wiring —
+   * same precedent as `#meshing-toggle` itself (a host-driven on/off state
+   * that must survive across `render()` calls, unlike this readout text which
+   * is rebuilt fresh every time). */
+  private renderQuality(
+    quality: QualitySummary | undefined,
+    worstElements: { threshold: number; shownCount: number; belowThresholdCount: number } | undefined
+  ): void {
     this.qualityEl.innerHTML = "";
     if (!quality) return;
     const summary = document.createElement("div");
@@ -396,6 +408,17 @@ export class MeshingPanel {
       bars.appendChild(bar);
     });
     this.qualityEl.appendChild(bars);
+
+    if (worstElements) {
+      const note = document.createElement("div");
+      note.className = "meshing-quality-worst";
+      const shown =
+        worstElements.shownCount < worstElements.belowThresholdCount
+          ? `showing worst ${worstElements.shownCount} of ${worstElements.belowThresholdCount}`
+          : `${worstElements.shownCount}`;
+      note.textContent = `⚠ ${worstElements.belowThresholdCount} element${worstElements.belowThresholdCount === 1 ? "" : "s"} below quality ${worstElements.threshold.toFixed(2)} (${shown})`;
+      this.qualityEl.appendChild(note);
+    }
   }
 
   /**

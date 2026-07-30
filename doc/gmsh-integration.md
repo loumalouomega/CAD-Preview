@@ -709,11 +709,49 @@ the real `dist/mcp-server.js` process, not a mocked pipeline.
   overlay) are unreadable layered on top of each other; edges/points stay
   visible throughout as a feature-line reference. Display-only
   (`Object3D.visible`), never touches geometry.
+- **Worst-quality-element highlighting** closes the roadmap gap where bad
+  tets are frequently interior and invisible in the boundary-only overlay
+  above — without the tet→boundary-face correlation the roadmap flagged as
+  the hard part. `gmshService.ts`'s `computeQualityAndWorstElements` (the
+  function `computeMeshQuality` was folded into) selects, for a **3D**
+  generate only, every element scoring below `WORST_ELEMENT_QUALITY_THRESHOLD`
+  (`0.2`), sorted worst-first and capped at `MAX_WORST_ELEMENTS` (`2000`,
+  never silently truncated — `belowThresholdCount` vs `shownCount` reports
+  both), and triangulates each kept element's own full face set via the SAME
+  `boundaryTriangles()` used above — fed ONLY the worst elements, so a face
+  shared between two adjacent bad elements dedups away (an interior seam
+  within the cluster) while a face next to a good neighbor stays (the
+  cluster's true outer surface). `meshingResult`'s optional `worstElements`
+  field (`{indices, threshold, shownCount, belowThresholdCount}`) carries it
+  to the webview. `geometryBuilder.ts`'s `buildWorstElementsHighlight(msg.
+  positions, msg.worstElements.indices)` builds a `THREE.Mesh` with a bright
+  `0xff3b30` `MeshBasicMaterial` set `transparent: true, depthTest: false,
+  depthWrite: false` — the SAME ghost technique the Hidden Lines display mode
+  uses for occluded edges (see `CLAUDE.md`'s "Display modes" section) — so
+  the highlight paints through occluding faces regardless of true 3D depth:
+  the actual fix for "invisible when interior" is this webview-side styling,
+  not a host-side projection onto the boundary. `Viewer.setWorstElementsOverlay`/
+  `setWorstElementsOverlayVisible` mirror `setMeshOverlay`/`setMeshOverlayVisible`'s
+  dispose/replace and show/hide-in-place pair, but are **independent**
+  overlays — `main.ts` clears/sets both explicitly at every relevant call
+  site rather than one implicitly driving the other. The panel's
+  `#meshing-worst-toggle` button **auto-shows** itself whenever a fresh
+  generate has `worstElements` (auto-hides otherwise) — a "surface a warning
+  by default" framing, same as the large-mesh warning banner — with a
+  `renderQuality()` readout line (`⚠ N elements below quality 0.20 …`) below
+  the existing histogram. Unit-tested in `gmshService.test.ts` (dedup
+  correctness, cap/priority) against a fake `GmshApi`, and in
+  `geometryBuilder.test.ts` (the ghost material's `depthTest`/`transparent`
+  flags) — the live-WASM generate path is exercised end-to-end by
+  `npm run mcp:smoke`, though the smoke fixture's mesh happens to be
+  well-optimized enough that `worstElements` is usually absent there (a
+  valid, common outcome the unit tests cover directly instead).
 - **`src/webview/main.ts`** wires the panel's callbacks to `post()` calls
   (`meshingChanged`/`meshingGenerate`/`meshingExport`), snapshots an STL via
   `currentStlIfMeshSource()` for mesh-source documents, and handles the
   `meshingOptions`/`meshingResult`/`meshingError` messages coming back from the
-  host, calling `viewer.setMeshOverlay(buildFEMesh(...))` on a successful result
+  host, calling `viewer.setMeshOverlay(buildFEMesh(...))` (plus
+  `viewer.setWorstElementsOverlay(...)` when present) on a successful result
   and `meshingPanel.render(..., { error })` on failure. The toolbar's **🔬 FE Mesh**
   toggle (`meshingToggle`) shows/hides the panel and clears the overlay when
   switched off.
@@ -817,7 +855,7 @@ it's simply an additional MIT dependency alongside `@modelcontextprotocol/sdk`/
   "hexDominant"` produced 446 nodes / 1289 elements with a POPULATED overlay
   (6384 triangle indices, 3348 edge-buffer values — confirming the boundary
   extraction produced real, non-empty output despite the unmapped type 140
-  mixed in) and a working quality summary (`computeMeshQuality` — min 0.163,
+  mixed in) and a working quality summary (`computeQualityAndWorstElements` — min 0.163,
   mean 0.865, no crash on the mixed tet/hex/trihedron element-tag set); VTK
   export (Gmsh's own native writer, unaffected by our table at all) produced
   a valid 47.7KB file. **Kratos MDPA export is the one path that genuinely

@@ -508,9 +508,14 @@ To generate a mesh:
    Below the status line, a quality summary reports the minimum and mean
    element quality (Gmsh's `minSICN` metric, 0–1, higher is better) plus a
    small histogram of the distribution — useful for spotting a generate that
-   technically succeeded but produced a lot of sliver elements.
+   technically succeeded but produced a lot of sliver elements. If any
+   elements scored below 0.20 (for a **3D** mesh), a **Worst** button appears
+   next to **Clear** and lights up automatically, highlighting those elements
+   in bright red — visible even where they're buried inside the model,
+   so you don't need to clip or cut away anything to find them.
 3. Click **FE Mesh** in the toolbar to show/hide the overlay without
-   discarding it; click **Clear** in the panel to remove it entirely.
+   discarding it; click **Worst** to show/hide just the worst-element
+   highlight; click **Clear** in the panel to remove everything.
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
   <img src="/screenshots/fe-mesh-panel.png" alt="The FE Mesh panel: coarser→finer size slider, presets, per-part sizes." style="max-width:300px; flex:1 1 260px;" />
@@ -535,7 +540,8 @@ To generate a mesh:
 | **▶ Generate** | Run Gmsh now with the current options and show the result as an overlay |
 | **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, MED, CGNS, XDMF, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), or OFF. Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and support linear or quadratic tetrahedra/hexahedra/triangles/quadrilaterals. MED/CGNS/XDMF are bridged through meshio++ (this Gmsh build can't write them itself) — MED preserves named Parts as **named MED groups**, XDMF also writes a companion `.h5` file alongside the `.xdmf`, and CGNS export of a pure-2D mesh may produce a file this same pipeline can't read back (a narrow, documented WASM-build limitation; 3D volume meshes are unaffected). |
 | **📤 Export** | Mesh with the current options and save the result in the format picked above, via a Save dialog (independent of whether **▶ Generate** was already clicked — it always (re)generates fresh) |
-| **Clear** | Remove the mesh overlay (the original model is unaffected either way) |
+| **⚠ Worst** | Only shown after a 3D generate with at least one element below quality 0.20 (auto-shown then, since it's a warning). Toggles the worst-quality-elements highlight in place, without discarding it |
+| **Clear** | Remove the mesh overlay and the worst-elements highlight (the original model is unaffected either way) |
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
   <img src="/screenshots/part-sizes.png" alt="Per-part mesh-size inputs mirrored in the FE Mesh panel." style="max-width:260px; flex:1 1 220px;" />

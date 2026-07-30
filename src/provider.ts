@@ -315,6 +315,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             elementCount: result.elementCount,
             elapsedMs: Date.now() - startedAt,
             quality: result.quality,
+            worstElements: result.worstElements && {
+              indices: encodeBuffer(result.worstElements.indices),
+              threshold: result.worstElements.threshold,
+              shownCount: result.worstElements.shownCount,
+              belowThresholdCount: result.worstElements.belowThresholdCount,
+            },
           });
         } catch (err) {
           post({ type: "meshingError", message: (err as Error).message });

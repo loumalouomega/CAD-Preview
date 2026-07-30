@@ -953,6 +953,12 @@ input[type="range"]#vc-opacity.meshing-slider {
 #edits-actions button:disabled,
 #meshing-actions button:disabled { opacity: 0.35; cursor: default; }
 
+#meshing-worst-toggle.active {
+  opacity: 1;
+  color: var(--vscode-errorForeground, #f48771);
+  border-color: currentColor;
+}
+
 .meshing-export-select {
   font: inherit;
   font-size: 11px;
@@ -1274,6 +1280,12 @@ input[type="range"].meshing-slider:focus {
   background: var(--vscode-progressBar-background, #0e70c0);
   border-radius: 1px 1px 0 0;
   opacity: 0.8;
+}
+
+.meshing-quality-worst {
+  font-size: 10px;
+  margin-top: 4px;
+  color: var(--vscode-errorForeground, #f48771);
 }
 
 /* ── Mass properties panel ────────────────────────────────────────────── */

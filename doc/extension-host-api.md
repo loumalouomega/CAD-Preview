@@ -893,10 +893,20 @@ type MeshGenerationInput =
 interface MeshResult {
   positions: Float32Array   // boundary triangulation vertices
   indices: Uint32Array      // boundary triangulation indices (0-based)
+  edges: Uint32Array        // true element-edge line segments (index pairs) for the wireframe
+  elementGroups: MeshElementGroup[]  // per-part colour ranges into `indices`
   nodeCount: number         // full mesh node count
   elementCount: number      // full mesh element count
   mshText: string           // raw .msh file contents
-  quality?: QualitySummary  // per-element quality summary — see computeMeshQuality below
+  quality?: QualitySummary  // per-element quality summary — see computeQualityAndWorstElements below
+  worstElements?: WorstElementsOverlay  // worst-quality-elements highlight — 3D generates only
+}
+
+interface WorstElementsOverlay {
+  indices: Uint32Array      // triangle indices into the SAME `positions` buffer as MeshResult.indices
+  threshold: number         // the minSICN cutoff used to select "worst" elements
+  shownCount: number        // elements actually included in `indices` — capped at MAX_WORST_ELEMENTS
+  belowThresholdCount: number  // total elements below `threshold` found (>= shownCount if capped)
 }
 ```
 
@@ -927,7 +937,8 @@ Used by tests and for future hot-reload support.
 async function generateMesh(
   extensionPath: string,
   input: MeshGenerationInput,
-  options: MeshOptions
+  options: MeshOptions,
+  parts: Part[] = []
 ): Promise<MeshResult>
 ```
 Loads `input`'s geometry into a fresh GMSH model, applies `options` (`Mesh.
@@ -946,33 +957,66 @@ MEMFS and reads it back as `mshText`. Cleans up (`FS.unlink`) both the input and
 output MEMFS paths in a `finally`, mirroring `occtService.ts`'s handle-cleanup
 discipline (though here the "handles" are MEMFS files, not Emscripten object
 handles — GMSH-wasm's JS API doesn't expose C++ object lifetimes the way OCCT's
-bindings do). Also calls the private `computeMeshQuality()` and includes its
-result as `quality`.
+bindings do). Also calls the private `computeQualityAndWorstElements()` and
+includes its result as `quality`/`worstElements`.
 
 ```typescript
-function computeMeshQuality(gmsh: GmshApi, dimension: MeshOptions['dimension']): QualitySummary | undefined
+function computeQualityAndWorstElements(
+  gmsh: GmshApi,
+  dimension: MeshOptions['dimension'],
+  tagToIndex: Map<number, number>
+): { quality?: QualitySummary; worstElements?: WorstElementsOverlay }
 ```
 Per-element quality summary over the mesh's top-dimension elements, via
-Gmsh's own `getElementQualities` — no host-side geometry math needed.
+Gmsh's own `getElementQualities` — no host-side geometry math needed — PLUS,
+for a 3D generate only, a highlight overlay of the worst-quality elements'
+own boundary (computed together, not as two separate `getElements`/
+`getElementQualities` passes, since both need the same per-element
+type/nodeTags/quality correlation).
 **Verified against the live WASM** (the usual brute-force-probing convention):
 `gmsh.model.mesh.getElements(dim, -1)` (all entities at `dim`) returns a plain
 **object** `{elementTypes, elementTags, nodeTags}` — NOT a tuple, despite some
-Gmsh API references implying one — where `elementTags` is one array **per
-element type**, so callers flatten across types (same pattern
-`countElements()` already uses). `gmsh.model.mesh.getElementQualities(tags:
-number[], qualityType: string)` accepts a plain JS number array and returns
-`{elementsQuality: number[]}`, one value per input tag in the same order;
-verified with `"minSICN"` (Signed Inverse Condition Number, ≈[-1, 1], 1 =
-perfect, ≤ 0 = degenerate/inverted) — `"minSJ"`/`"gamma"`/`"minSIGE"`/
-`"volume"` are also accepted quality-type strings, an invalid string throws
-`"Unknown quality name '...'"`. **One anomalous verification run** returned an
-empty `elementsQuality` array for an otherwise-valid, full-size call (never
-reproduced across 5+ identical follow-up runs, including full end-to-end runs
-via `npm run mcp:smoke` against real multi-solid geometry) — `computeMeshQuality`
-defensively checks the returned array's length matches the input and returns
-`undefined` (quality omitted, not crashed) rather than trusting it blindly,
+Gmsh API references implying one — where `elementTags`/`nodeTags` are one
+array **per element type**, so callers flatten across types (same pattern
+`countElements()` already uses) to correlate against `getElementQualities`'s
+flat result. `gmsh.model.mesh.getElementQualities(tags: number[], qualityType:
+string)` accepts a plain JS number array and returns `{elementsQuality:
+number[]}`, one value per input tag in the same order as the flattened
+`elementTags`; verified with `"minSICN"` (Signed Inverse Condition Number,
+≈[-1, 1], 1 = perfect, ≤ 0 = degenerate/inverted) — `"minSJ"`/`"gamma"`/
+`"minSIGE"`/`"volume"` are also accepted quality-type strings, an invalid
+string throws `"Unknown quality name '...'"`. **One anomalous verification
+run** returned an empty `elementsQuality` array for an otherwise-valid,
+full-size call (never reproduced across 5+ identical follow-up runs,
+including full end-to-end runs via `npm run mcp:smoke` against real
+multi-solid geometry) — `computeQualityAndWorstElements` defensively checks
+the returned array's length matches the input and returns `{}` (quality/
+worstElements both omitted, not crashed) rather than trusting it blindly,
 matching this codebase's graceful-skip convention for every other WASM edge
-case. **A trivial box mesh with GMSH's own default 3D algorithm hung
+case.
+
+**Worst-element selection** (`dimension === 3` only — a 2D mesh's elements
+ARE the displayed surface already, so there's no "interior, invisible"
+problem to solve there): every element scoring below
+`WORST_ELEMENT_QUALITY_THRESHOLD` (`0.2`), sorted worst-first and capped at
+`MAX_WORST_ELEMENTS` (`2000`, never a silent truncation —
+`belowThresholdCount` vs `shownCount` reports both). Each kept element's own
+complete face set is triangulated via the SAME `boundaryTriangles()`
+(`gmshElementTypes.ts`) the main overlay's boundary uses — but fed ONLY the
+worst elements as input, so a face shared between two adjacent bad elements
+dedups away (an interior seam within the highlighted cluster) while a face
+adjacent to a good (unselected) neighbor stays (the cluster's true outer
+surface). This sidesteps the tet→boundary-face correlation problem entirely:
+rather than projecting bad *interior* elements onto the mesh's outer
+boundary, the highlight is the bad elements' own real geometry, rendered
+through the model via a depth-test-disabled "ghost" material in the webview
+(`geometryBuilder.ts`'s `buildWorstElementsHighlight`, mirroring the Hidden
+Lines display mode's ghost-line technique — see [Webview API](./webview-api.md))
+— so it stays visible no matter how deeply buried, with no clip plane or
+cutaway needed. Unit-tested in `gmshService.test.ts` against a fake `GmshApi`
+(dedup across two adjacent bad tets, no dedup against a good neighbor, and
+the cap/priority behavior with 2002 elements). **A trivial box mesh with
+GMSH's own default 3D algorithm hung
 indefinitely during verification** (confirmed: 27+ minutes of pure CPU with
 no progress, on geometry simple enough to mesh in milliseconds), against
 `@loumalouomega/gmsh-wasm` 0.2.x — this codebase's then-forced

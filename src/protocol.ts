@@ -101,9 +101,19 @@ export type HostToWebview =
       /** Wall-clock duration of the generate call, for the panel's status line. */
       elapsedMs: number;
       /** Per-element quality summary (min/mean/histogram) — `undefined` if it
-       * couldn't be computed (e.g. a 1D mesh); see `computeMeshQuality` in
-       * `src/gmshService.ts` for the verified `getElementQualities` call shape. */
+       * couldn't be computed (e.g. a 1D mesh); see
+       * `computeQualityAndWorstElements` in `src/gmshService.ts` for the
+       * verified `getElementQualities` call shape. */
       quality?: QualitySummary;
+      /** A highlight overlay of the worst-quality elements' own boundary —
+       * `undefined` for a non-3D generate, or when nothing scored below the
+       * quality threshold. See `WorstElementsOverlay` in `src/gmshService.ts`. */
+      worstElements?: {
+        indices: string; // base64 Uint32Array — triangle indices into `positions` above
+        threshold: number;
+        shownCount: number;
+        belowThresholdCount: number;
+      };
     }
   | { type: "meshingError"; message: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)

@@ -65,6 +65,11 @@ export class Viewer {
   private model: THREE.Object3D | null = null;
   /** The generated FE-mesh overlay (if any) — a scene sibling of `model`, never a child. */
   private meshOverlay: THREE.Object3D | null = null;
+  /** The worst-quality-elements highlight overlay (if any) — a scene sibling
+   * of `model`/`meshOverlay`, built from a depth-test-disabled "ghost"
+   * material so it paints through occluding geometry. See
+   * `setWorstElementsOverlay`. */
+  private worstElementsOverlay: THREE.Object3D | null = null;
   private wireframe = false;
   private readonly raycaster = new THREE.Raycaster();
   /** World-space half-thickness for picking thin edge lines; scaled per model. */
@@ -218,6 +223,7 @@ export class Viewer {
     // in-progress/completed measurement is equally stale (its points refer to
     // the old geometry) and must not linger either.
     this.setMeshOverlay(null);
+    this.setWorstElementsOverlay(null);
     this.clearMeasurementOverlay();
     this.clearModel();
     this.model = object;
@@ -317,6 +323,45 @@ export class Viewer {
     this.meshOverlay.visible = visible;
     this.setModelFacesVisible(!visible);
     this.rebuildClipCap(); // which content is capped just flipped — a no-op if clipping is off
+  }
+
+  /**
+   * Replaces the worst-quality-elements highlight overlay — disposes the
+   * previous one's geometry/material and removes it from the scene (a
+   * sibling of `model`/`meshOverlay`, never a child), same dispose/replace
+   * pattern as `setMeshOverlay`. Deliberately independent of `meshOverlay`'s
+   * own lifecycle otherwise (not auto-cleared by `setMeshOverlay(null)`) —
+   * every call site that clears/replaces the FE-mesh overlay (a fresh
+   * Generate, the panel's Clear button) is expected to also call this
+   * explicitly with the matching new/absent highlight, the same way
+   * `main.ts` already keeps `meshingEnabled`'s toggle state in sync
+   * alongside `setMeshOverlay` rather than `Viewer` inferring it internally.
+   */
+  setWorstElementsOverlay(obj: THREE.Object3D | null): void {
+    if (this.worstElementsOverlay) {
+      this.scene.remove(this.worstElementsOverlay);
+      this.worstElementsOverlay.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) mat.dispose();
+      });
+      this.worstElementsOverlay = null;
+    }
+    if (obj) {
+      this.worstElementsOverlay = obj;
+      this.scene.add(obj);
+      this.applyClippingPlane(); // fresh overlay material carries no clipping state yet
+    }
+  }
+
+  /** Shows/hides the *current* highlight overlay in place, without disposing
+   * it — the panel's "Highlight worst elements" toggle. A no-op if nothing
+   * has been generated (or nothing scored below the quality threshold). */
+  setWorstElementsOverlayVisible(visible: boolean): void {
+    if (!this.worstElementsOverlay) return;
+    this.worstElementsOverlay.visible = visible;
   }
 
   /** Shows/hides the model's shaded face meshes (`entityType === "surface"`), leaving edges/points untouched. */
@@ -630,6 +675,7 @@ export class Viewer {
     };
     this.model?.traverse(apply);
     this.meshOverlay?.traverse(apply);
+    this.worstElementsOverlay?.traverse(apply);
     this.hiddenLineGhosts?.traverse(apply);
   }
 

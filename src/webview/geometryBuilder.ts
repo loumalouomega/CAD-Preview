@@ -201,6 +201,57 @@ export function buildFEMesh(
   return group;
 }
 
+/** Highlight colour for `buildWorstElementsHighlight` — a distinct, alarming
+ * hue (unlike `DEFAULT_MESH_COLOR`, which is meant to blend in as "the mesh"). */
+const WORST_ELEMENT_COLOR = 0xff3b30;
+
+/**
+ * Builds the "worst-quality elements" highlight overlay from
+ * `MeshResult.worstElements`/`meshingResult.worstElements` — a small subset of
+ * the mesh's own worst-quality elements, closing the roadmap gap where bad
+ * tets are frequently *interior* and invisible in the boundary-only FE
+ * overlay above. `indicesB64` is already the selected elements' own full
+ * boundary (`gmshService.ts`'s `computeQualityAndWorstElements`, via
+ * `boundaryTriangles`), indexing into the SAME decoded `positions` buffer
+ * `buildFEMesh` uses — so no extra geometry work is needed here, only styling.
+ *
+ * The styling is the actual fix for "invisible when interior": mirrors
+ * `Viewer`'s existing Hidden-Lines ghost-line technique
+ * (`transparent: true, depthTest: false, depthWrite: false`) so the highlight
+ * paints through occluding faces regardless of true 3D depth — no clip plane
+ * or cutaway needed to see a bad element buried deep inside the model.
+ * Returns `null` for an empty index buffer (nothing scored below threshold),
+ * so `Viewer.setWorstElementsOverlay(null)` cleanly clears any prior overlay.
+ */
+export function buildWorstElementsHighlight(positionsB64: string, indicesB64: string): THREE.Object3D | null {
+  const indices = decodeU32(indicesB64);
+  if (indices.length === 0) return null;
+  const positions = decodeF32(positionsB64);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshBasicMaterial({
+    color: WORST_ELEMENT_COLOR,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.85,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  // Same "mesh", not "surface" — excluded from picking/parts-colouring, same
+  // reasoning as buildFEMesh's shaded mesh/wireframe above.
+  mesh.userData.entityType = "mesh";
+
+  const group = new THREE.Group();
+  group.name = "feMeshWorstElements";
+  group.add(mesh);
+  return group;
+}
+
 /**
  * Builds the model `THREE.Group` from per-face encoded meshes, per-edge
  * polylines, and per-vertex points. Layout:

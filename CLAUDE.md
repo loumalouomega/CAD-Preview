@@ -1881,7 +1881,9 @@ session-only — never written to a sidecar.
 - **FE mesh quality statistics use `gmsh.model.mesh.getElementQualities`,
   confirmed bound and working in the bundled `@loumalouomega/gmsh-wasm`
   build** (this was open discovery work — not assumed from upstream Gmsh
-  docs). `src/gmshService.ts`'s `computeMeshQuality(gmsh, dimension)`:
+  docs). `src/gmshService.ts`'s `computeMeshQuality(gmsh, dimension)` (since
+  renamed to `computeQualityAndWorstElements` when worst-element highlighting
+  was added — same call shape below, still applies):
   `gmsh.model.mesh.getElements(dim, -1)` returns a **plain object**
   `{elementTypes, elementTags, nodeTags}` — `elementTags` is an array
   *per element type*, so every type's tags must be concatenated into one flat
@@ -1896,25 +1898,30 @@ session-only — never written to a sidecar.
   real generated mesh; 5+ subsequent attempts (including varying whether the
   tags array was reused vs. freshly copied, and a full `npm run mcp:smoke`
   pass against complex multi-solid geometry with edits applied) never
-  reproduced it. `computeMeshQuality()` validates `values.length ===
-  tags.length` and returns `undefined` (never throws) on any mismatch, so a
-  future recurrence degrades to "no quality summary shown" rather than
-  crashing generation or reporting wrong numbers — `MeshResult.quality`
-  and the `meshingResult` protocol field are both `optional` for exactly
-  this reason. **Separately confirmed while probing this:** GMSH's own
-  default 3D meshing algorithm hangs indefinitely (confirmed via `ps aux`
-  at 27+ minutes / 98% CPU on a trivial box) not only for OCC-*imported*
-  geometry as previously documented above, but for geometry built directly
-  via `gmsh.model.occ.addBox()` too — i.e. the existing `Mesh.Algorithm3D =
-  4` (Frontal) default this codebase already sets is load-bearing for
-  **any** OCC-kernel-sourced 3D mesh, not just the STEP-import path.
-  Worst-element highlighting in the 3D overlay (colouring the worst-quality
-  tetrahedra) was explicitly scoped OUT of this stage: the 3D overlay only
-  renders **boundary** surface triangles, but bad-quality tets are frequently
-  interior and invisible in that overlay, so a naive implementation would be
-  either misleading or need new, fragile tet-to-boundary-face correlation
-  logic — shipped the quantitative min/mean/histogram summary only, which
-  was the roadmap item's core ask.
+  reproduced it. `computeQualityAndWorstElements()` (`src/gmshService.ts` —
+  the function this stage's `computeMeshQuality()` was later folded into, see
+  below) validates `values.length === tags.length` and returns `{}` (never
+  throws) on any mismatch, so a future recurrence degrades to "no quality
+  summary shown" rather than crashing generation or reporting wrong numbers —
+  `MeshResult.quality` and the `meshingResult` protocol field are both
+  `optional` for exactly this reason. **Separately confirmed while probing
+  this:** GMSH's own default 3D meshing algorithm hangs indefinitely
+  (confirmed via `ps aux` at 27+ minutes / 98% CPU on a trivial box) not only
+  for OCC-*imported* geometry as previously documented above, but for
+  geometry built directly via `gmsh.model.occ.addBox()` too — i.e. the
+  existing `Mesh.Algorithm3D = 4` (Frontal) default this codebase already
+  sets is load-bearing for **any** OCC-kernel-sourced 3D mesh, not just the
+  STEP-import path. Worst-element highlighting in the 3D overlay (colouring
+  the worst-quality tetrahedra) was explicitly scoped OUT of this stage: the
+  3D overlay only renders **boundary** surface triangles, but bad-quality
+  tets are frequently interior and invisible in that overlay, so a naive
+  implementation would be either misleading or need new, fragile
+  tet-to-boundary-face correlation logic — shipped the quantitative
+  min/mean/histogram summary only, which was the roadmap item's core ask.
+  **This gap was later closed** (see the "Worst-quality-element highlighting"
+  entry near the end of this section) via a different approach than the
+  tet-to-boundary-face correlation floated here — a ghost overlay of the bad
+  elements' own real geometry, not a projection onto the boundary.
 - **Orthographic/perspective toggle uses a dual-camera-kept-alive-and-swapped
   architecture** (`Viewer` gains a `readonly orthoCamera:
   THREE.OrthographicCamera` alongside the existing `camera:
@@ -1940,6 +1947,57 @@ session-only — never written to a sidecar.
   orthographic scales `camera.zoom` (+ `updateProjectionMatrix()`) instead of
   moving `camera.position`, since moving the camera is a visual no-op under
   parallel projection.
+- **Worst-quality-element highlighting (closed roadmap gap) sidesteps the
+  tet-to-boundary-face correlation problem entirely — the highlight is the
+  bad elements' own real geometry, not a projection onto the mesh boundary.**
+  `computeQualityAndWorstElements()` (`src/gmshService.ts`, the function
+  `computeMeshQuality()` above was folded into) computes the quality summary
+  and, **for a 3D generate only** (a 2D mesh's elements ARE the displayed
+  surface already — no "interior, invisible" problem there), also selects
+  every element scoring below `WORST_ELEMENT_QUALITY_THRESHOLD` (`0.2`,
+  the boundary between the two lowest histogram buckets), sorts worst-first,
+  and caps at `MAX_WORST_ELEMENTS` (`2000` — never a silent truncation:
+  `WorstElementsOverlay.belowThresholdCount` vs `shownCount` reports both).
+  Each kept element's own complete face set is triangulated via the SAME
+  `boundaryTriangles()` (`gmshElementTypes.ts`) the main overlay's boundary
+  uses — but fed ONLY the worst elements as input, so a face shared between
+  two adjacent bad elements dedups away (an interior seam within the
+  highlighted cluster) while a face adjacent to a good (unselected) neighbor
+  stays (the cluster's true outer surface); regression-tested in
+  `gmshService.test.ts` against a fake `GmshApi` (two adjacent bad tets dedup
+  their shared face; a bad tet next to a *good* one does NOT lose that face;
+  a 2002-element pool correctly keeps the worst 2000 and drops the least-bad
+  2, verified via distinctively-tagged elements at the top/bottom of the sort).
+  **The actual fix for "invisible when interior" is entirely webview-side
+  styling, not host-side projection**: `geometryBuilder.ts`'s
+  `buildWorstElementsHighlight()` renders the selected geometry through a
+  `MeshBasicMaterial` with `transparent: true, depthTest: false, depthWrite:
+  false` — the exact same "ghost" technique the Hidden Lines display mode
+  already uses for occluded edges (see below) — so the highlight paints
+  through occluding faces regardless of true 3D depth, with no clip plane or
+  cutaway needed to see a bad element buried deep inside the model. `Viewer`
+  gains a `worstElementsOverlay` field + `setWorstElementsOverlay()`/
+  `setWorstElementsOverlayVisible()`, mirroring `meshOverlay`'s dispose/
+  replace and show/hide-in-place pair exactly, but **deliberately independent
+  of `meshOverlay`'s own lifecycle** — `main.ts`'s wiring calls both
+  explicitly at every site that needs to (a fresh `meshingResult`, the
+  panel's Clear button), never one implicitly clearing the other inside
+  `Viewer`, the same "coupling lives in the wiring layer" precedent
+  `meshingEnabled`'s toggle-sync already established. `applyClippingPlane()`
+  was extended to also traverse `worstElementsOverlay` so the two features
+  compose (a clipped-away fragment is discarded regardless of `depthTest`).
+  The panel gets a `#meshing-worst-toggle` button (reuses the existing
+  `warning` toolbar icon — no new generated-icon pipeline run needed) that
+  **auto-shows itself** whenever a fresh generate has `worstElements` (and
+  auto-hides otherwise) — unlike `#meshing-toggle`, which only ever reflects
+  reality, this one actively surfaces a warning by default, the same framing
+  the large-mesh warning banner already uses; the user can still toggle it
+  off. `MeshingPanel.renderQuality()` gained a `⚠ N elements below quality
+  0.20 (showing worst M of N)` line under the existing histogram — readout
+  only, rebuilt every `render()`, distinct from the toggle's own persistent
+  on/off state which lives in `main.ts`. See `doc/protocol.md`'s
+  `meshingResult` entry and `doc/webview-api.md`'s `Viewer`/
+  `geometryBuilder.ts` sections for the full wire format and API surface.
 
 ## Display modes (P1 roadmap feature)
 
@@ -2714,9 +2772,20 @@ clipping section), not a bug to chase. On
 the FE Mesh panel, **Generate** → confirm a quality summary (min/mean +
 histogram) appears below the node/element counts, updates on regenerate at a
 different size, and degrades gracefully (no summary, no crash) if the
-underlying WASM call ever returns an empty/mismatched result. Repeat
-open/close and toggle-heavy interaction a few times across all of the above →
-watch extension-host memory stay flat (same leak check as above).
+underlying WASM call ever returns an empty/mismatched result. If the
+generated mesh has elements below quality 0.20 (try a coarse **3D** Size max
+on an intricate model, e.g. `bull.stp`, to provoke some), confirm a
+`⚠ N elements below quality 0.20 (…)` line appears under the histogram, the
+**Worst** toggle button appears next to Clear and starts lit, and bright red
+highlighted elements are visible — including through the rest of the model,
+proving they render regardless of true depth (rotate to confirm one is
+genuinely buried inside, not just on the surface). Toggle **Worst** off/on →
+confirm the highlight hides/shows in place with no need to regenerate; click
+**Clear** → confirm both the FE mesh AND the highlight disappear and the
+toggle un-lights and hides. Regenerate at a finer size (few/no bad elements)
+→ confirm the readout line and toggle disappear cleanly. Repeat open/close
+and toggle-heavy interaction a few times across all of the above → watch
+extension-host memory stay flat (same leak check as above).
 
 Then exercise **Display modes**: on `bull.stp`, click through each button in
 the view-controls **Display** group. **Shaded** → normal lit faces (the

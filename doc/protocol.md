@@ -216,6 +216,13 @@ interface QualitySummary {
   mean: number
   histogram: number[]   // bucket i covers [i/N, (i+1)/N) of the quality range; see meshingResult below
 }
+
+interface WorstElementsMsg {
+  indices: string        // base64 Uint32Array — triangle indices into meshingResult.positions
+  threshold: number       // the minSICN cutoff used to select "worst" elements
+  shownCount: number       // elements actually included in `indices` (capped)
+  belowThresholdCount: number  // total elements below `threshold` found (>= shownCount if capped)
+}
 ```
 
 `ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) —
@@ -243,8 +250,8 @@ type HostToWebview =
   | { type: 'editError'; message: string }
   | { type: 'exportMesh'; requestId: string; format: CadFormat }
   | { type: 'meshingOptions'; options: MeshOptions }
-  | { type: 'meshingResult'; positions: string; indices: string; nodeCount: number; elementCount: number;
-      elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary }
+  | { type: 'meshingResult'; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
+      elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
   | { type: 'meshingError'; message: string }
   | ({ type: 'viewerDefaults' } & ViewerDefaults)
   | { type: 'screenshotRequest'; requestId: string }
@@ -443,34 +450,48 @@ echo back as a `meshingChanged` write) and renders the FE Mesh panel form.
 ### `meshingResult`
 
 Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the
-target is `"msh"`) on a successful GMSH run. `positions`/`indices` are the base64
-`Float32Array`/`Uint32Array` boundary triangulation, encoded exactly like
-`EncodedMesh`'s buffers — for a 3D mesh these are the tetrahedra's boundary faces
-derived host-side, not the tetrahedra themselves. `nodeCount`/`elementCount` are the
-full node/element counts (not just the displayed boundary triangle count), and
-`elapsedMs` is the wall-clock duration of the generate call. `elementGroups`
-partitions `indices` into contiguous per-part runs (`{name, color, indexStart,
-indexCount}`, with a trailing `name`/`color` = `null` run for triangles not claimed
-by any part) so the overlay can be built multi-material with per-part colours. The
-webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices,
-msg.elementGroups))` and renders the stats (counts + time) in the panel's status
-line. `quality` (optional — omitted if it couldn't be computed, e.g. a 1D mesh)
-is a `{min, mean, histogram}` summary over the mesh's top-dimension elements'
-`minSICN` quality (via Gmsh's own `getElementQualities` — see
-`src/gmshService.ts`'s `computeMeshQuality` for the verified call shape),
+target is `"msh"`) on a successful GMSH run. `positions`/`indices`/`edges` are the
+base64 `Float32Array`/`Uint32Array` boundary triangulation + true element-edge line
+buffer, encoded exactly like `EncodedMesh`'s buffers — for a 3D mesh `indices` is
+the tetrahedra's boundary faces derived host-side, not the tetrahedra themselves.
+`nodeCount`/`elementCount` are the full node/element counts (not just the displayed
+boundary triangle count), and `elapsedMs` is the wall-clock duration of the generate
+call. `elementGroups` partitions `indices` into contiguous per-part runs (`{name,
+color, indexStart, indexCount}`, with a trailing `name`/`color` = `null` run for
+triangles not claimed by any part) so the overlay can be built multi-material with
+per-part colours. The webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions,
+msg.indices, msg.edges, msg.elementGroups))` and renders the stats (counts + time) in
+the panel's status line. `quality` (optional — omitted if it couldn't be computed,
+e.g. a 1D mesh) is a `{min, mean, histogram}` summary over the mesh's top-dimension
+elements' `minSICN` quality (via Gmsh's own `getElementQualities` — see
+`src/gmshService.ts`'s `computeQualityAndWorstElements` for the verified call shape),
 rendered as a small min/mean line + bar histogram below the FE Mesh panel's
 status line.
 
+`worstElements` (optional — only ever present for a **3D** generate with at least
+one element below `threshold`) is a highlight overlay of the mesh's worst-quality
+elements: `indices` is those elements' own full boundary, ready to index into the
+SAME `positions` buffer `meshingResult.indices` uses. The webview calls
+`viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions,
+msg.worstElements.indices))`, rendered with a depth-test-disabled "ghost" material
+(mirroring the Hidden Lines display mode's ghost-line technique) so it stays visible
+through occluding geometry regardless of true 3D depth — closing the roadmap gap
+where bad tets are frequently interior and invisible in the boundary-only overlay
+above. `shownCount`/`belowThresholdCount` differ only when the highlight was capped
+(`MAX_WORST_ELEMENTS`, prioritizing the lowest-quality elements first); the panel
+reports both, e.g. "showing worst 2000 of 5300".
+
 ```json
 {
-  "type": "meshingResult", "positions": "AAAA...", "indices": "BBBB...",
+  "type": "meshingResult", "positions": "AAAA...", "indices": "BBBB...", "edges": "CCCC...",
   "nodeCount": 421, "elementCount": 1893,
   "elementGroups": [
     { "name": "inlet", "color": "#ff0000", "indexStart": 0, "indexCount": 264 },
     { "name": null, "color": null, "indexStart": 264, "indexCount": 5412 }
   ],
   "elapsedMs": 3217,
-  "quality": { "min": 0.043, "mean": 0.71, "histogram": [1, 3, 8, 20, 45, 90, 210, 340, 180, 62] }
+  "quality": { "min": 0.043, "mean": 0.71, "histogram": [1, 3, 8, 20, 45, 90, 210, 340, 180, 62] },
+  "worstElements": { "indices": "DDDD...", "threshold": 0.2, "shownCount": 42, "belowThresholdCount": 42 }
 }
 ```
 

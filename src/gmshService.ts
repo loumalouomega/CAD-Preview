@@ -152,8 +152,32 @@ export interface MeshResult {
    * top-dimension elements (tets/hexes for a 3D generate, tris/quads for 2D) —
    * `undefined` if quality couldn't be computed (e.g. a 1D mesh, or the one
    * anomalous-empty-result case observed while verifying `getElementQualities`
-   * against the live WASM; see `computeMeshQuality`'s doc comment). */
+   * against the live WASM; see `computeQualityAndWorstElements`'s doc comment). */
   quality?: QualitySummary;
+  /** A highlight overlay of the worst-quality elements' own boundary — see
+   * `WorstElementsOverlay`. Only ever set for a 3D generate; `undefined` when
+   * nothing scored below the quality threshold (a good mesh) or quality
+   * couldn't be computed at all. */
+  worstElements?: WorstElementsOverlay;
+}
+
+/** A highlight overlay of the mesh's worst-quality elements, closing the
+ * roadmap gap where bad tets are frequently *interior* and invisible in the
+ * boundary-only FE overlay — see `computeQualityAndWorstElements`. */
+export interface WorstElementsOverlay {
+  /** Triangle indices into the SAME `positions` buffer as `MeshResult.indices`
+   * — the worst-quality elements' own full boundary (every face of the
+   * selected elements, not deduped against the rest of the mesh — only faces
+   * shared between two selected elements dedup away). */
+  indices: Uint32Array;
+  /** The `minSICN` quality cutoff used to select "worst" elements. */
+  threshold: number;
+  /** Elements actually included in `indices` — capped at `MAX_WORST_ELEMENTS`,
+   * prioritizing the lowest-quality elements first. */
+  shownCount: number;
+  /** Total elements below `threshold` found — may exceed `shownCount` if the
+   * cap was hit (never a silent truncation; the caller can report both). */
+  belowThresholdCount: number;
 }
 
 /**
@@ -263,6 +287,8 @@ export async function generateMesh(
     gmsh.write(outPath);
     const mshText = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
 
+    const { quality, worstElements } = computeQualityAndWorstElements(gmsh, options.dimension, tagToIndex);
+
     return {
       positions,
       indices,
@@ -271,7 +297,8 @@ export async function generateMesh(
       nodeCount: nodes.nodeTags.length,
       elementCount: countElements(gmsh, options.dimension),
       mshText,
-      quality: computeMeshQuality(gmsh, options.dimension),
+      quality,
+      worstElements,
     };
   } finally {
     if (tmpPath) {
@@ -642,9 +669,10 @@ function buildEdges(
  *   correlation this needs, since a tet-boundary face on its own carries no
  *   link back to the B-rep surface it came from.
  *
- * Exported (only) so `gmshService.test.ts` can unit-test the grouping logic
- * against a fake, minimal `GmshApi` object — every other function here needs
- * the real WASM module and is exercised only via `npm run mcp:smoke`.
+ * Exported (only, same as `computeQualityAndWorstElements` below) so
+ * `gmshService.test.ts` can unit-test the grouping logic against a fake,
+ * minimal `GmshApi` object — every other function here needs the real WASM
+ * module and is exercised only via `npm run mcp:smoke`.
  */
 export function buildIndices(
   gmsh: GmshApi,
@@ -821,41 +849,130 @@ function countElements(gmsh: GmshApi, dimension: MeshOptions["dimension"]): numb
   return total;
 }
 
+/** The `minSICN` quality cutoff below which an element counts as "worst" for
+ * `computeQualityAndWorstElements`'s highlight overlay — the boundary between
+ * the two lowest histogram buckets (`summarizeQuality`'s `[0, 0.2)` range),
+ * matching the "needs improvement" range Gmsh's own optimizer log output
+ * flags in practice (see `npm run mcp:smoke`'s console output, which reports
+ * separate `0.00 < quality < 0.10`/`0.10 < quality < 0.20` buckets). */
+export const WORST_ELEMENT_QUALITY_THRESHOLD = 0.2;
+
+/** Hard cap on how many worst-quality elements' geometry gets built into the
+ * highlight overlay, prioritizing the lowest-quality elements first — bounds
+ * the postMessage payload for a large, uniformly poor-quality mesh. Never a
+ * silent truncation: `WorstElementsOverlay.belowThresholdCount` reports the
+ * true total regardless of whether it exceeds `shownCount`. */
+export const MAX_WORST_ELEMENTS = 2000;
+
 /**
  * Per-element quality summary over the mesh's top-dimension elements, via
- * Gmsh's own `getElementQualities` — no host-side geometry math needed.
+ * Gmsh's own `getElementQualities` — no host-side geometry math needed —
+ * PLUS, for a 3D generate only, a highlight overlay of the worst-quality
+ * elements' own boundary (`WorstElementsOverlay`). Computed together, not as
+ * two separate `getElements`/`getElementQualities` passes, since both need
+ * the same per-element type/nodeTags/quality correlation.
  *
  * **Verified against the live WASM** (brute-force probing, the usual
  * convention — see CLAUDE.md): `gmsh.model.mesh.getElements(dim, -1)` (dim,
  * ALL entities) returns a plain OBJECT `{elementTypes, elementTags,
  * nodeTags}` — NOT the tuple/array shape some Gmsh JS API docs imply —
- * where `elementTags` is one array PER element type, so callers must flatten
- * across types (same pattern `countElements` above already uses).
+ * where `elementTags`/`nodeTags` are one array PER element type, so callers
+ * must flatten across types (same pattern `countElements` above already
+ * uses) to correlate against `getElementQualities`'s flat result.
  * `gmsh.model.mesh.getElementQualities(tags: number[], qualityType: string)`
  * accepts a plain JS number array (also confirmed accepting a typed array,
  * but a plain array is simplest) and returns `{elementsQuality: number[]}`,
- * one value per input tag IN THE SAME ORDER — confirmed with `"minSICN"`
- * (Signed Inverse Condition Number, ~[-1, 1], 1 = perfect, <= 0 = degenerate/
- * inverted) on a synthetic box mesh; `"minSJ"`/`"gamma"`/`"minSIGE"`/
- * `"volume"` are also accepted quality-type strings, an invalid string
- * throws `"Unknown quality name '...'"`. One anomalous run during
- * verification returned an EMPTY `elementsQuality` array for a full-size,
- * otherwise-valid call (never reproduced across 5+ follow-up runs with
- * identical inputs) — defensively treated as "quality unavailable" (`return
- * undefined`) rather than trusted blindly, matching this codebase's
+ * one value per input tag IN THE SAME ORDER as the flattened `elementTags` —
+ * confirmed with `"minSICN"` (Signed Inverse Condition Number, ~[-1, 1], 1 =
+ * perfect, <= 0 = degenerate/inverted) on a synthetic box mesh; `"minSJ"`/
+ * `"gamma"`/`"minSIGE"`/`"volume"` are also accepted quality-type strings, an
+ * invalid string throws `"Unknown quality name '...'"`. One anomalous run
+ * during verification returned an EMPTY `elementsQuality` array for a
+ * full-size, otherwise-valid call (never reproduced across 5+ follow-up runs
+ * with identical inputs) — defensively treated as "quality unavailable"
+ * (`return {}`) rather than trusted blindly, matching this codebase's
  * graceful-skip convention for every other WASM-call edge case.
+ *
+ * Worst-element selection (`dimension === 3` only — a 2D mesh's elements ARE
+ * the displayed surface already, so there's no "interior, invisible" problem
+ * to solve there): every element scoring below `WORST_ELEMENT_QUALITY_THRESHOLD`,
+ * sorted worst-first and capped at `MAX_WORST_ELEMENTS`. Each kept element's
+ * own complete face set is triangulated via the SAME `boundaryTriangles()`
+ * the main overlay's boundary uses — but fed ONLY the worst elements as
+ * input, so a face shared between two adjacent bad elements dedups away (an
+ * interior seam within the highlighted cluster, exactly like an interior
+ * tet-tet face dedups away for the whole-mesh boundary) while a face
+ * adjacent to a good (unselected) neighbor stays — the cluster's true outer
+ * surface. This sidesteps the tet→boundary-face correlation problem the
+ * roadmap flagged as the hard part: rather than trying to project bad
+ * *interior* elements onto the mesh's outer boundary, the highlight is the
+ * bad elements' own real geometry, rendered through the model via a
+ * depth-test-disabled "ghost" material in the webview (`geometryBuilder.ts`'s
+ * `buildWorstElementsHighlight`, mirroring `viewer.ts`'s existing Hidden
+ * Lines ghost-line technique) — so it stays visible no matter how deeply
+ * buried, with no clip plane or cutaway needed.
  */
-function computeMeshQuality(gmsh: GmshApi, dimension: MeshOptions["dimension"]): QualitySummary | undefined {
+export function computeQualityAndWorstElements(
+  gmsh: GmshApi,
+  dimension: MeshOptions["dimension"],
+  tagToIndex: Map<number, number>
+): { quality?: QualitySummary; worstElements?: WorstElementsOverlay } {
   const dim = dimension === 1 ? 1 : dimension;
   try {
-    const els = gmsh.model.mesh.getElements(dim, -1) as { elementTags: number[][] };
+    const els = gmsh.model.mesh.getElements(dim, -1) as GmshElementsResult & { elementTags: number[][] };
     const tags: number[] = ([] as number[]).concat(...els.elementTags);
-    if (tags.length === 0) return undefined;
+    if (tags.length === 0) return {};
     const result = gmsh.model.mesh.getElementQualities(tags, "minSICN") as { elementsQuality: number[] };
     const values = result.elementsQuality;
-    if (!Array.isArray(values) || values.length !== tags.length) return undefined;
-    return summarizeQuality(values);
+    if (!Array.isArray(values) || values.length !== tags.length) return {};
+    const quality = summarizeQuality(values);
+    if (dimension !== 3) return { quality };
+
+    const worst: Array<{ type: number; nodeTags: number[]; quality: number }> = [];
+    let cursor = 0;
+    for (let t = 0; t < els.elementTypes.length; t++) {
+      const info = GMSH_ELEMENT_TYPES.get(els.elementTypes[t]);
+      const count = els.elementTags[t].length;
+      if (info) {
+        const nodeTagsForType = els.nodeTags[t];
+        for (let i = 0; i < count; i++) {
+          const q = values[cursor + i];
+          if (q < WORST_ELEMENT_QUALITY_THRESHOLD) {
+            worst.push({
+              type: els.elementTypes[t],
+              nodeTags: nodeTagsForType.slice(i * info.numNodes, (i + 1) * info.numNodes),
+              quality: q,
+            });
+          }
+        }
+      }
+      cursor += count;
+    }
+    if (worst.length === 0) return { quality };
+
+    worst.sort((a, b) => a.quality - b.quality);
+    const belowThresholdCount = worst.length;
+    const kept = worst.slice(0, MAX_WORST_ELEMENTS);
+
+    // Re-bucket the kept elements back into `boundaryTriangles`'s per-type
+    // input shape (one flat nodeTags run per type) so its existing
+    // interior-face dedup applies across the whole kept subset, not just
+    // within a single type.
+    const byType = new Map<number, number[]>();
+    for (const el of kept) byType.set(el.type, [...(byType.get(el.type) ?? []), ...el.nodeTags]);
+    const bucketed: GmshElementsResult = { elementTypes: [...byType.keys()], nodeTags: [...byType.values()] };
+    const indices = new Uint32Array(boundaryTriangles(bucketed, tagToIndex));
+
+    return {
+      quality,
+      worstElements: {
+        indices,
+        threshold: WORST_ELEMENT_QUALITY_THRESHOLD,
+        shownCount: kept.length,
+        belowThresholdCount,
+      },
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }

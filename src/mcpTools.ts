@@ -977,6 +977,18 @@ export async function generateMeshTool(
     elapsedMs: Date.now() - started,
     elementGroups: result.elementGroups.map((g) => ({ name: g.name, color: g.color })),
     quality: result.quality ?? null,
+    // Counts only — the triangle-index buffer itself is display geometry an
+    // agent has no renderer for; the counts are the actionable fact ("N
+    // elements need attention"), same rationale as `render_snapshot`'s
+    // images being diagnostic, not authoritative (see `describeCapabilities`'s
+    // `verdictConventions`). `null` for a non-3D generate or a clean mesh.
+    worstElements: result.worstElements
+      ? {
+          threshold: result.worstElements.threshold,
+          shownCount: result.worstElements.shownCount,
+          belowThresholdCount: result.worstElements.belowThresholdCount,
+        }
+      : null,
     options,
     warnings,
   };

@@ -80,6 +80,7 @@ export function viewerBodyHtml(): string {
             <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
             <button id="meshing-export" title="Export mesh">${icon("export")} Export</button>
             <button id="meshing-clear" title="Clear generated mesh">${icon("clear")} Clear</button>
+            <button id="meshing-worst-toggle" title="Highlight worst-quality elements" hidden>${icon("warning")} Worst</button>
           </div>
         </div>
         <div id="meshing-progress"></div>

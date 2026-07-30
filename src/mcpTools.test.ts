@@ -772,6 +772,26 @@ describe("generate_mesh", () => {
     expect(result.quality).toEqual({ min: 0.2, mean: 0.7, histogram: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] });
   });
 
+  it("surfaces worst-element counts (not the index buffer) when present", async () => {
+    const c = ctx(
+      fakePipeline({
+        generateMesh: vi.fn(async () => ({
+          ...FAKE_MESH_RESULT,
+          worstElements: { indices: new Uint32Array([0, 1, 2]), threshold: 0.2, shownCount: 5, belowThresholdCount: 7 },
+        })),
+      })
+    );
+    const result = await generateMeshTool(c, { path: stpModel });
+    expect(result.worstElements).toEqual({ threshold: 0.2, shownCount: 5, belowThresholdCount: 7 });
+    expect(result.worstElements).not.toHaveProperty("indices"); // display geometry, not agent-useful
+  });
+
+  it("worstElements is null when absent (a clean mesh, or a non-3D generate)", async () => {
+    const c = ctx();
+    const result = await generateMeshTool(c, { path: stpModel });
+    expect(result.worstElements).toBeNull();
+  });
+
   it("meshes raw STL bytes with the single-part size override and drops parts", async () => {
     const c = ctx();
     await setPart({ path: stlModel, name: "Only", meshSize: 0.5 });

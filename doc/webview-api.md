@@ -78,7 +78,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"editError"` | Show `#error-overlay` with message (same rendering as `"error"`, distinct only by intent) |
 | `"exportMesh"` | `exportModel(viewer.getModel(), msg.format)` → posts back `"exportResult"` (with `data`/`binary`) or `"exportError"` on failure, correlated by `msg.requestId` |
 | `"meshingOptions"` | `MeshingModel.load(msg.options)` (hydration only) → `syncMeshSizeSeed()` → `MeshingPanel.render()` |
-| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.elementGroups))` → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs, quality: msg.quality })` |
+| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))`; if `msg.worstElements` is present, `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))` and auto-show it (else clear it) → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs, quality: msg.quality, worstElements: msg.worstElements })` |
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
 | `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`. Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
 | `"screenshotRequest"` | `viewer.render()` (force a fresh frame) → `viewer.captureScreenshotBase64()` → posts back `"screenshotResult"`/`"screenshotError"`, correlated by `msg.requestId` |
@@ -282,6 +282,25 @@ instantly, with no re-run of Generate needed. A no-op when `meshOverlay` is
 actually disposes the overlay and is reserved for a new model loading, the
 panel's Clear button, or a fresh Generate replacing it with a new one.
 
+```typescript
+setWorstElementsOverlay(obj: THREE.Object3D | null): void
+setWorstElementsOverlayVisible(visible: boolean): void
+```
+Same dispose/replace and show/hide-in-place pair as `setMeshOverlay`/
+`setMeshOverlayVisible` above, for the worst-quality-elements highlight
+overlay (from `geometryBuilder.buildWorstElementsHighlight()`) — but
+deliberately **independent** of `meshOverlay`'s own lifecycle: clearing/
+replacing the FE-mesh overlay does NOT implicitly clear this one; `main.ts`'s
+wiring calls both explicitly at every site that needs to (a fresh
+`"meshingResult"`, the panel's Clear button), the same way it already keeps
+`meshingEnabled`'s toggle state in sync alongside `setMeshOverlay` rather than
+`Viewer` inferring it internally. `setModel()` does clear it unconditionally
+(alongside `setMeshOverlay(null)`) as part of the "a previous overlay was
+computed from the old geometry" rule above. Unlike the base FE-mesh overlay,
+this one does **not** toggle the model's face visibility — it's meant to be
+seen *through* whatever else is displayed (see `buildWorstElementsHighlight`
+below), so there's nothing to hide/restore.
+
 **Camera operations:**
 
 ```typescript
@@ -414,11 +433,12 @@ setClippingPlane(plane: THREE.Plane | null): void
 ```
 Sets/clears the live clipping plane, toggling `renderer.localClippingEnabled`
 and assigning `material.clippingPlanes = plane ? [plane] : []` across every
-material on **both** `model` and `meshOverlay` (the FE-mesh overlay needs the
-same plane — re-applied automatically from `setModel()`/`setMeshOverlay()`
-too, since fresh materials from either rebuild start with no clipping state).
-Callers compute `plane` via `clipping.ts`'s `planeForAxis()` from the model's
-current bounding box.
+material on `model`, `meshOverlay`, `worstElementsOverlay`, and
+`hiddenLineGhosts` (each needs the same plane — re-applied automatically from
+`setModel()`/`setMeshOverlay()`/`setWorstElementsOverlay()` too, since fresh
+materials from any rebuild start with no clipping state). Callers compute
+`plane` via `clipping.ts`'s `planeForAxis()` from the model's current
+bounding box.
 
 The cut face is a real solid cap, not see-through — `clipCap.ts`'s
 stencil-buffer technique (see `CLAUDE.md`'s clipping section for the full
@@ -652,27 +672,49 @@ function mergeAndBuild(meshes: { positions: Float32Array; indices: Uint32Array }
 Concatenates positions and remaps indices from multiple buffers into a single `THREE.BufferGeometry`. Calls `geometry.computeVertexNormals()`. Returns a `THREE.Mesh` via `meshFromGeometry()` (imported from `viewer.ts`).
 
 ```typescript
-function buildFEMesh(positionsB64: string, indicesB64: string): THREE.Group
+function buildFEMesh(positionsB64: string, indicesB64: string, edgesB64: string, elementGroups: MeshElementGroup[]): THREE.Group
 ```
 Builds the display group for a generated FE-mesh surface (a `meshingResult`
 message's boundary triangulation), shown via `Viewer.setMeshOverlay()` — distinct
 from the model's own B-rep/native faces. Decodes the buffers, builds a
 `THREE.BufferGeometry`, and returns a `"feMesh"`-named `THREE.Group` containing:
-a shaded `THREE.Mesh` (`MeshStandardMaterial`, color `0x4ea1ff` — a distinct hue
-from the default face color so the overlay reads as separate from the model) plus
-a `THREE.LineSegments` wireframe (built from the host's true element-edge
-`edges` buffer + `LineBasicMaterial`, color `0x1a3d66` — quad perimeters for
-hexes, triangle edges for tets, never the triangulated fill's diagonals). Both are tagged
-`userData.entityType = "mesh"` — deliberately **not** `"surface"`/`"line"`, so
-the existing picking/parts-colouring code (which only recognizes
-`"volume"|"surface"|"line"|"point"`) never tries to pick or colour the overlay.
-The shaded mesh uses an unlit `MeshBasicMaterial` (not `MeshStandardMaterial`
-like other face materials) — a tet-mesh boundary's many small, irregularly
-oriented triangles shade unevenly under scene lighting, which looks like
-scattered holes even on a complete, watertight mesh; flat color avoids that.
-It also sets `polygonOffset: true` (`polygonOffsetFactor`/`polygonOffsetUnits:
+a shaded `THREE.Mesh` plus a `THREE.LineSegments` wireframe (built from the host's
+true element-edge `edges` buffer + `LineBasicMaterial`, color `0x1a3d66` — quad
+perimeters for hexes, triangle edges for tets, never the triangulated fill's
+diagonals). Both are tagged `userData.entityType = "mesh"` — deliberately **not**
+`"surface"`/`"line"`, so the existing picking/parts-colouring code (which only
+recognizes `"volume"|"surface"|"line"|"point"`) never tries to pick or colour the
+overlay. `elementGroups` partitions the triangle buffer into per-part colour ranges
+(`geometry.addGroup` per group) each with its own `MeshBasicMaterial` (color
+`g.color`, or `0x4ea1ff` for the trailing ungrouped/no-parts range — a distinct hue
+from the default face color so the overlay reads as separate from the model), so the
+shaded mesh renders multi-material. The shaded mesh uses an unlit `MeshBasicMaterial`
+(not `MeshStandardMaterial` like other face materials) — a tet-mesh boundary's many
+small, irregularly oriented triangles shade unevenly under scene lighting, which
+looks like scattered holes even on a complete, watertight mesh; flat color avoids
+that. It also sets `polygonOffset: true` (`polygonOffsetFactor`/`polygonOffsetUnits:
 1`) because its wireframe is built from that exact same geometry — perfectly
 coincident triangles/lines z-fight without it.
+
+```typescript
+function buildWorstElementsHighlight(positionsB64: string, indicesB64: string): THREE.Object3D | null
+```
+Builds the worst-quality-elements highlight overlay (a `meshingResult` message's
+`worstElements.indices`, shown via `Viewer.setWorstElementsOverlay()`) — closes the
+roadmap gap where bad tets are frequently *interior* and invisible in
+`buildFEMesh`'s boundary-only overlay above. `indicesB64` is already the selected
+elements' own full boundary (computed host-side via `boundaryTriangles()`, see
+`src/gmshService.ts`'s `computeQualityAndWorstElements`), indexing into the SAME
+decoded `positionsB64` buffer `buildFEMesh` uses, so no extra geometry work happens
+here — only styling. Returns `null` for an empty index buffer (nothing scored below
+threshold), so `Viewer.setWorstElementsOverlay(null)` cleanly clears any prior
+overlay. The styling IS the actual fix for "invisible when interior": a single
+`THREE.Mesh` (tagged `userData.entityType = "mesh"`, same exclusion-from-picking
+rule as `buildFEMesh`) with a bright, distinct-hue (`0xff3b30`) `MeshBasicMaterial`
+set `transparent: true, depthTest: false, depthWrite: false` — mirroring
+`Viewer`'s Hidden Lines display mode's ghost-line technique (see above) — so it
+paints through occluding faces regardless of true 3D depth, with no clip plane or
+cutaway needed to see a bad element buried deep inside the model.
 
 **Decode helpers:**
 
@@ -1041,7 +1083,13 @@ those — same constraint as the Parts/Edits panels).
 
 ```typescript
 interface ModelExtents { size: [number, number, number]; diagonal: number }
-interface MeshingStats { nodeCount: number; elementCount: number; elapsedMs?: number }
+interface MeshingStats {
+  nodeCount: number
+  elementCount: number
+  elapsedMs?: number
+  quality?: QualitySummary
+  worstElements?: { threshold: number; shownCount: number; belowThresholdCount: number }
+}
 interface MeshingError { error: string }
 
 interface MeshingPanelCallbacks {
@@ -1067,7 +1115,17 @@ via `sizeToSlider`; a value outside the slider's range pegs the thumb at an end
 while the readout keeps the true number) and updates the status line: blank when
 `status` is omitted, `Nodes: N · Elements: M · 3.2 s` for a `MeshingStats`
 (time from `elapsedMs`, omitted when absent), or the error string (with an
-error CSS class) for a `MeshingError`. When `options.sizeMax` is still the
+error CSS class) for a `MeshingError`. A `MeshingStats.quality` also renders a
+`min: … · mean: …` line plus a bar histogram below the status line (cleared,
+no row, when `quality` is `undefined`); a `MeshingStats.worstElements` (only
+ever alongside `quality`, for a 3D generate with something below threshold)
+adds one more line, e.g. `⚠ 42 elements below quality 0.20 (42)` or `(showing
+worst 2000 of 5300)` when the highlight overlay was capped — this is a
+readout only, rebuilt fresh on every `render()`; the actual on/off toggle for
+the highlight overlay itself lives outside this panel, in `main.ts`'s
+`#meshing-worst-toggle` wiring (see below), since a host-driven on/off state
+needs to survive across `render()` calls the same way `#meshing-toggle` does.
+When `options.sizeMax` is still the
 `SIZE_MAX_SENTINEL`, the Size max field shows an empty `auto` placeholder and
 the slider is disabled — the raw `1e+22` is never displayed. The 2D/3D
 algorithm dropdowns are populated from small curated, **not exhaustive**, lists
@@ -1101,10 +1159,20 @@ In `main.ts`, `onGenerate`/`onExport` each independently call an
 async `currentStlIfMeshSource()` helper before posting (returns `undefined` for
 B-rep documents, since the host re-exports STEP itself), then post
 `meshingGenerate`/`meshingExport` with the current `MeshingModel.get()` snapshot
-plus that optional `stl`. `onClear` calls `viewer.setMeshOverlay(null)` directly,
-resets the toolbar toggle's `meshingEnabled`/`.active` state (same
-toggle-truthfulness rule `meshingResult`/`meshingError` follow), and re-renders
-the panel with no status.
+plus that optional `stl`. `onClear` calls `viewer.setMeshOverlay(null)` AND
+`viewer.setWorstElementsOverlay(null)` directly, resets both the toolbar
+toggle's `meshingEnabled`/`.active` state and `#meshing-worst-toggle`'s
+`worstElementsShown`/`.active`/`hidden` state (same toggle-truthfulness rule
+`meshingResult`/`meshingError` follow), and re-renders the panel with no
+status. `#meshing-worst-toggle` itself mirrors `#meshing-toggle`'s wiring
+pattern exactly (own `let worstElementsShown`/`worstToggle` pair, a click
+listener calling `viewer.setWorstElementsOverlayVisible()`), but with one
+difference in the `"meshingResult"` handler: rather than only ever reflecting
+reality like the base toggle does, it's also auto-shown whenever
+`msg.worstElements` is present (and auto-hidden — `hidden = true` — otherwise)
+on every fresh generate, the same "surface a warning by default" framing the
+large-mesh warning banner already uses; the user can still turn it back off
+via the toggle.
 
 ---
 
