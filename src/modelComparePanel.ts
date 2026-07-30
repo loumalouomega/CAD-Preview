@@ -5,7 +5,9 @@ import { compareModels, type CompareSource } from "./modelDiffHost";
 import type { ModelDiff, SolidSignature } from "./modelDiff";
 import type { BRepFormat } from "./massProperties";
 
-const COMPARE_FILTER = { "STEP / IGES / BREP / STL": ["step", "stp", "iges", "igs", "brep", "stl"] };
+const COMPARABLE_MESH_FORMATS = new Set(["stl", "obj", "ply"]);
+
+const COMPARE_FILTER = { "STEP / IGES / BREP / STL / OBJ / PLY": ["step", "stp", "iges", "igs", "brep", "stl", "obj", "ply"] };
 
 async function pickCompareFile(title: string): Promise<vscode.Uri | undefined> {
   const uris = await vscode.window.showOpenDialog({
@@ -18,15 +20,16 @@ async function pickCompareFile(title: string): Promise<vscode.Uri | undefined> {
 
 /** Builds the `CompareSource` `compareModels()` needs for one side, plus any
  * warning about what it couldn't account for — `undefined` (with a warning)
- * when the file's format isn't compare-able at all (OBJ/PLY/glTF/meshio
- * formats: no host-side geometry to independently derive centroids/volumes
- * from without a webview — the same gap this feature always had, now
- * narrowed to just those, since STEP/IGES/BREP/STL are all supported). */
+ * when the file's format isn't compare-able at all (glTF/meshio formats: no
+ * host-side geometry to independently derive centroids/volumes from without
+ * a webview — the same gap this feature always had, now narrowed to just
+ * those, since STEP/IGES/BREP/STL/OBJ/PLY are all supported). */
 async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareSource; warning?: string } | { source: undefined; warning: string }> {
   const route = routeFile(uri.fsPath);
   const name = vscode.workspace.asRelativePath(uri);
-  if (!route || (route.strategy !== "occt" && route.format !== "stl")) {
-    return { source: undefined, warning: `${name}: unsupported format for Compare Models (STEP/IGES/BREP/STL only).` };
+  const meshFormat = route?.strategy === "three" && COMPARABLE_MESH_FORMATS.has(route.format) ? route.format : null;
+  if (!route || (route.strategy !== "occt" && !meshFormat)) {
+    return { source: undefined, warning: `${name}: unsupported format for Compare Models (STEP/IGES/BREP/STL/OBJ/PLY only).` };
   }
   const bytes = await vscode.workspace.fs.readFile(uri);
   if (route.strategy === "occt") {
@@ -34,8 +37,11 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
     return { source: { kind: "brep", bytes, format: route.format as BRepFormat, ops } };
   }
   const { ops } = await readEdits(uri);
-  const warning = ops.length > 0 ? `${name}: pending edits are NOT baked in (STL sources have no host-side edit engine) — comparing the raw file only.` : undefined;
-  return { source: { kind: "stl", bytes }, warning };
+  const warning =
+    ops.length > 0
+      ? `${name}: pending edits are NOT baked in (${meshFormat!.toUpperCase()} sources have no host-side edit engine) — comparing the raw file only.`
+      : undefined;
+  return { source: { kind: meshFormat as "stl" | "obj" | "ply", bytes }, warning };
 }
 
 /**
@@ -45,8 +51,8 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
  * skipping straight to picking B), diffs them via `modelDiffHost.ts`'s
  * `compareModels()`, and renders the result in a standalone webview panel
  * mirroring `whatsNew.ts`'s precedent. STEP/IGES/BREP (edits baked in) and
- * STL (raw file bytes — no host-side mesh edit engine to bake edits with)
- * are supported, in any combination; OBJ/PLY/glTF/meshio-only formats are
+ * STL/OBJ/PLY (raw file bytes — no host-side mesh edit engine to bake edits
+ * with) are supported, in any combination; glTF/meshio-only formats are
  * rejected with a clear message rather than crashing, matching this
  * feature's original B-rep-only graceful-skip convention (see CLAUDE.md's
  * "Compare Models" section for why those remain out of reach headlessly).

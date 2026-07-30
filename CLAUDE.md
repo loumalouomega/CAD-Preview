@@ -2583,12 +2583,11 @@ resolves both open design questions the roadmap itself left unanswered.
   "there is no host-side mesh parser anywhere in this codebase" was a
   standing, explicitly documented limitation (`compare_models`'s own error
   message said so verbatim). Closed by writing one, scoped to STL
-  specifically (not OBJ/PLY/glTF) — STL is this codebase's own
+  specifically (not OBJ/PLY/glTF at the time) — STL is this codebase's own
   lowest-common-denominator mesh interchange format already
   (`meshioService.ts` funnels every meshio-only format through it), and its
   flat, unindexed triangle-soup structure is by far the simplest of the four
-  to parse from scratch; OBJ/PLY/glTF remain webview-only and still rejected
-  with a clear message. Three new pure (vscode/OCCT/THREE-free), independently
+  to parse from scratch. Three new pure (vscode/OCCT/THREE-free), independently
   unit-tested modules: `src/stlParser.ts` (`parseStl()` — binary STL detected
   by exact expected-size match against the header's declared triangle count,
   `84 + count*50`, NOT by sniffing the header text for `"solid"`, the classic
@@ -2610,17 +2609,96 @@ resolves both open design questions the roadmap itself left unanswered.
   — wires the above into the `SolidSignature[]` shape `modelDiff.ts` needs,
   one signature per connected component, ids `solid-0`/`solid-1`/… by
   first-encountered-triangle order). **`modelDiffHost.ts`'s `compareModels()`
-  was generalized to a `CompareSource` discriminated union**
-  (`{kind:"brep", bytes, format, ops}` | `{kind:"stl", bytes}`) instead of
-  positional B-rep-only params, dispatching to `extractBrepSolidSignatures`
-  (unchanged OCCT path) or `extractStlSolidSignatures` per side — either side
-  can be either kind, in any combination. **STL edits are NOT baked in**
-  (there is no host-side mesh edit engine — same accepted limitation
-  `generate_mesh`'s STL path already has) — both `modelComparePanel.ts` and
-  `compareModelsTool` check for pending sidecar ops on an STL side and
-  surface a `⚠`/`warnings` entry rather than silently comparing stale-looking
-  geometry with no explanation. `modelComparePanel.ts`'s file picker/gate
-  (`COMPARE_FILTER`) now accepts `.stl` alongside STEP/IGES/BREP.
+  was generalized to a `CompareSource` discriminated union** instead of
+  positional B-rep-only params, dispatching per-side by `kind`.
+- **OBJ/PLY support (roadmap item, closed) — two more host-side parsers,
+  reusing `meshComponents.ts` unchanged; glTF remains the one genuinely
+  out-of-reach format, and deliberately so.** Both new parsers follow the
+  exact same pure/vscode/OCCT/THREE-free convention `stlParser.ts`
+  established, and both were tractable to hand-roll correctly and test
+  thoroughly (including real binary-format round-tripping for PLY) without
+  needing a full third-party mesh-loading engine:
+  - **`src/objParser.ts`** (`parseObj()`) — OBJ is plain ASCII text with
+    ALREADY-shared vertex indices (`f` lines reference `v` lines by index),
+    so unlike STL it parses directly into an indexed mesh with **no
+    `weldTriangleSoup()` pass needed at all** — this is the one structural
+    difference from the STL path. Resolves `v`/`v/vt`/`v/vt/vn`/`v//vn`
+    face-vertex reference forms (only the leading `v` index is ever used);
+    1-based positive indices and OBJ's negative *relative-to-current-vertex-
+    count* indices are both handled (verified with a fixture using `-3 -2
+    -1` against 3 known vertices). A face with more than 3 vertices is
+    fan-triangulated (`(v0,v1,v2),(v0,v2,v3),…`), matching
+    `three/examples/jsm/loaders/OBJLoader`'s own convention. A face
+    referencing an out-of-range index is skipped, never thrown — same
+    graceful-degradation rule as every other parser in this codebase.
+  - **`src/plyParser.ts`** (`parsePly()`) — the genuinely harder of the two:
+    PLY's ASCII **header** (element/property declarations) always precedes
+    the body regardless of the body's own encoding (`ascii`, `binary_
+    little_endian`, or `binary_big_endian`, declared in the header's
+    `format` line) — the header/body boundary is found by decoding the
+    WHOLE buffer as `latin1` first (1 byte = 1 char, no multi-byte
+    sequences, so a char index found via `indexOf("end_header")` is always
+    identical to the real byte offset into the original buffer, safe
+    regardless of whether the body itself is binary) and looking for the
+    newline after `end_header`. Every declared `property` (including ones
+    this codebase never reads — normals, colours, texture coordinates,
+    confidence, …) is still correctly consumed by byte-width (binary) or
+    token-count (ASCII) so the read cursor stays in sync for the NEXT
+    record — only `vertex`'s `x`/`y`/`z` and `face`'s `vertex_indices`/
+    `vertex_index` (both spellings accepted; older exporters use the
+    singular) are actually kept. Type widths cover both the modern
+    (`int8`/`uint16`/`float32`/…) and legacy (`char`/`short`/`float`/…) PLY
+    type-name spellings, since real files use either interchangeably.
+    **Verified against real hand-built binary fixtures in both
+    endiannesses** (`plyParser.test.ts` constructs actual
+    `binary_little_endian`/`binary_big_endian` byte buffers via Node's
+    `Buffer.writeFloatLE`/`writeFloatBE`, including EXTRA per-vertex
+    properties declared after `x`/`y`/`z` specifically to prove the
+    skip-unknown-properties byte-alignment logic works, not just the
+    happy-path all-positions-only case) — not assumed correct from reading
+    the spec alone. A truncated/malformed binary body degrades to whatever
+    was successfully parsed before the cutoff (never throws); a genuinely
+    unparseable file (no `end_header` at all) does throw a clear error, same
+    "structurally not this format at all" convention `stlParser.ts`'s
+    sibling scanners use elsewhere in this codebase.
+  - **`src/objSolidSignatures.ts`/`src/plySolidSignatures.ts`** mirror
+    `stlSolidSignatures.ts` exactly (same `connectedComponents`/
+    `boundsOfTriangles`/`boundsCenter`/`boundsDiagonal`/`volumeOfTriangles`
+    calls from `meshComponents.ts`, zero new geometry code needed) — the ONLY
+    difference from the STL version is skipping the `weldTriangleSoup()` step,
+    since both formats already hand over shared-vertex indices.
+  - **`modelDiffHost.ts`'s `CompareSource` union** gained `{kind:"obj",
+    bytes}`/`{kind:"ply", bytes}` alongside the existing `"brep"`/`"stl"` —
+    any side can be any kind, in any combination (verified end-to-end:
+    OBJ-vs-PLY directly, and each against the STEP bull). **glTF was
+    evaluated and deliberately left out of scope, not merely postponed for
+    lack of time.** Unlike OBJ (plain shared-index text) and PLY
+    (well-specified, linearly-decodable binary/ASCII), a correct glTF parser
+    needs: accessor decoding across 5 component types with an optional
+    `normalized` flag, sparse-accessor overlays, interleaved `bufferView`
+    `byteStride` handling, and — the part with no OBJ/PLY analogue at
+    all — full scene-graph traversal composing each node's TRS (or matrix)
+    transform down to its mesh primitives. That is meaningfully more surface
+    area to get right than either format above, and — critically — this
+    codebase had no ready way to validate a hand-rolled implementation
+    against the breadth of real-world glTF files/exporters the way
+    `plyParser.ts`'s binary path could be validated against hand-built
+    fixtures covering the spec's actual decision points. Shipping a
+    plausible-looking-but-subtly-wrong glTF parser would be worse than
+    not supporting the format at all — silently mismatched centroids/volumes
+    are exactly the "misleading false result" failure mode this whole
+    feature's design (see the bullet above) was built to avoid. `compare_models`
+    still rejects glTF with the same clear, actionable message it always
+    has (updated to list the now-larger supported set).
+  - **Mesh-format edits are NOT baked in for any of STL/OBJ/PLY** (there is
+    no host-side mesh edit engine — same accepted limitation `generate_mesh`'s
+    STL path already has) — `modelComparePanel.ts` and `compareModelsTool`
+    both check for pending sidecar ops on a mesh-format side and surface a
+    `⚠`/`warnings` entry (now naming the actual format, e.g. "OBJ sources
+    have no host-side edit engine") rather than silently comparing
+    stale-looking geometry with no explanation. `modelComparePanel.ts`'s file
+    picker/gate (`COMPARE_FILTER`) now accepts `.obj`/`.ply` alongside
+    STEP/IGES/BREP/STL.
 - **Reuses existing OCCT helpers with zero new geometry code**:
   `occtOperations.ts`'s `bboxCenter` (already exported) and `bboxDiagonal`
   (module-private until this feature — now exported, since
@@ -2647,13 +2725,20 @@ resolves both open design questions the roadmap itself left unanswered.
   (1 solid) and asserts exactly 1 matched (the bull, `centreDistance`/
   `volumeDeltaPct` both ~0 — an exact self-match), 0 added, 1 removed (the
   box) — confirming the matching direction (`removed` = "only in A", the
-  edited/first argument) is exactly as documented, not backwards. The STL
-  path is verified against a real file too, not a synthetic fixture:
+  edited/first argument) is exactly as documented, not backwards. Every mesh
+  format is verified against a real file too, not a synthetic fixture:
   `examples/STL/cube.stl` (a real 10×10×10 cube) against itself resolves the
   correct real volume (1000, exactly) and an exact self-match with zero WASM
-  involvement on either side, and a STEP-vs-STL cross-format call (`bull.stp`
-  against `cube.stl`) confirms the mixed-source dispatch path (one side OCCT,
-  one side the pure parser) works end-to-end.
+  involvement on either side; `examples/OBJ/cube.obj` and `examples/PLY/
+  cube.ply` (both a real unit cube) each resolve volume 1 against themselves,
+  and directly against each other (`formatA:"obj", formatB:"ply"`, confirming
+  the mixed-mesh-source dispatch path, not just mesh-vs-B-rep); a STEP-vs-STL
+  and a STEP-vs-OBJ cross-format call each confirm the mixed-source dispatch
+  path (one side OCCT, one side a pure parser) works end-to-end; and a
+  STEP-vs-glTF call confirms glTF still degrades to a clear `supported:false`
+  message (listing the now-larger STEP/IGES/BREP/STL/OBJ/PLY supported set),
+  not a crash, now that three of its former format-family siblings are
+  supported.
 
 ## meshio++ integration (P3 roadmap feature)
 
@@ -3274,18 +3359,23 @@ displacement and ~0 volume delta, 0 Added, 0 Removed. Apply an edit (e.g.
 original against the export → confirm the added box shows up under **Added**
 (or **Removed**, depending on which side you pick as A) and the untouched
 bull solid still shows as an exact match. Compare `cube.stl` against itself
-→ confirm the file picker offers `.stl` now, one solid **Matched** with ~0
-displacement/delta and a reported volume of 1000. Compare `bull.stp` against
-`cube.stl` (mixed formats) → confirm it completes without crashing (both
-sides resolve their own solids independently — an unrelated shape/size pair
-is expected to report mostly/all Added+Removed, not a specific match count).
-Add an edit op to a copy of `cube.stl` (e.g. **Translate**) without exporting
-it, then compare it against the unedited original → confirm a **⚠ pending
-edits are NOT baked in** warning appears in the report (STL has no
-host-side edit engine) and the comparison still runs against the raw file.
-Try comparing `bull.stp` against `examples/OBJ/cube.obj` → confirm a clear
-rejection message (OBJ/PLY/glTF remain unsupported), not a crash. Run with no
-CAD Preview tab focused → confirm it prompts for both A and B.
+→ confirm the file picker offers `.stl`/`.obj`/`.ply` now, one solid
+**Matched** with ~0 displacement/delta and a reported volume of 1000.
+Compare `bull.stp` against `cube.stl` (mixed formats) → confirm it completes
+without crashing (both sides resolve their own solids independently — an
+unrelated shape/size pair is expected to report mostly/all Added+Removed,
+not a specific match count). Add an edit op to a copy of `cube.stl` (e.g.
+**Translate**) without exporting it, then compare it against the unedited
+original → confirm a **⚠ pending edits are NOT baked in** warning appears in
+the report (STL has no host-side edit engine) and the comparison still runs
+against the raw file. Repeat with `examples/OBJ/cube.obj` and `examples/PLY/
+cube.ply` (both a real unit cube — expect volume 1) against themselves, then
+against each other directly, then each against `bull.stp` → confirm each
+resolves correctly, same as STL. Try comparing `bull.stp` against
+`examples/GLTF/cube.gltf` → confirm a clear rejection message (glTF remains
+unsupported — see CLAUDE.md's "Model comparison" section for why) not a
+crash. Run with no CAD Preview tab focused → confirm it prompts for both A
+and B.
 
 Then exercise **meshio++ import/export**: open a VTK, MED, CGNS, Exodus (`.exo`
 or `.e`), XDMF, and Kratos MDPA file (generate small fixtures if none exist

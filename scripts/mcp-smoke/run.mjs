@@ -372,6 +372,53 @@ try {
   assert(crossDiff.supported === true, "compare_models supports a B-rep source diffed against an STL source");
   assert(crossDiff.formatA === "step" && crossDiff.formatB === "stl", "compare_models reports each side's real format");
 
+  // compare_models: OBJ/PLY support (roadmap item, closed). examples/OBJ/cube.obj
+  // and examples/PLY/cube.ply are both a real unit cube (volume 1) — pure
+  // host-side parsers (objParser.ts/plyParser.ts), no WASM involved for
+  // either side.
+  const cubeObj = path.join(dir, "cube.obj");
+  fs.copyFileSync(path.join(ROOT, "examples", "OBJ", "cube.obj"), cubeObj);
+  const objSelfDiff = await call("compare_models", { pathA: cubeObj, pathB: cubeObj });
+  assert(objSelfDiff.supported === true, "compare_models supports OBJ sources");
+  assert(
+    objSelfDiff.diff.matched.length === 1 && objSelfDiff.diff.added.length === 0 && objSelfDiff.diff.removed.length === 0,
+    `compare_models(cube.obj, cube.obj): 1 matched, 0 added, 0 removed — got matched=${objSelfDiff.diff.matched.length} added=${objSelfDiff.diff.added.length} removed=${objSelfDiff.diff.removed.length}`
+  );
+  assert(
+    Math.abs(objSelfDiff.diff.matched[0].a.volume - 1) < 1e-4,
+    `compare_models resolves the OBJ cube's real volume (1) — got ${objSelfDiff.diff.matched[0].a.volume}`
+  );
+
+  const cubePly = path.join(dir, "cube.ply");
+  fs.copyFileSync(path.join(ROOT, "examples", "PLY", "cube.ply"), cubePly);
+  const plySelfDiff = await call("compare_models", { pathA: cubePly, pathB: cubePly });
+  assert(plySelfDiff.supported === true, "compare_models supports PLY sources");
+  assert(
+    Math.abs(plySelfDiff.diff.matched[0].a.volume - 1) < 1e-4,
+    `compare_models resolves the PLY cube's real volume (1) — got ${plySelfDiff.diff.matched[0].a.volume}`
+  );
+
+  // Cross-format: OBJ vs PLY directly, and both against the STEP bull — the
+  // exact-same mixed-source dispatch path the STL case already confirmed,
+  // now covering the two newer parsers too.
+  const objVsPly = await call("compare_models", { pathA: cubeObj, pathB: cubePly });
+  assert(
+    objVsPly.supported === true && objVsPly.formatA === "obj" && objVsPly.formatB === "ply",
+    "compare_models diffs an OBJ source against a PLY source directly"
+  );
+  const bullVsObj = await call("compare_models", { pathA: model, pathB: cubeObj });
+  assert(bullVsObj.supported === true, "compare_models diffs a B-rep source against an OBJ source");
+
+  // glTF remains unsupported headless (no host-side parser, by design — see
+  // CLAUDE.md) — confirms it still degrades to a clear message, not a crash
+  // (a normal supported:false response, not a tool error), now that OBJ/PLY
+  // are supported alongside it in the same format family.
+  const gltfRejected = await call("compare_models", { pathA: model, pathB: path.join(ROOT, "examples", "GLTF", "cube.gltf") });
+  assert(
+    gltfRejected.supported === false && /STEP\/IGES\/BREP\/STL\/OBJ\/PLY/i.test(gltfRejected.warnings?.[0] ?? ""),
+    `compare_models still rejects glTF with a clear message, not a crash (got: ${JSON.stringify(gltfRejected)})`
+  );
+
   // render_snapshot: Playwright/Chromium is a devDependency this environment
   // may or may not have installed (`npx playwright install chromium`) — this
   // MUST tolerate both outcomes, never hard-require Chromium in CI/smoke.

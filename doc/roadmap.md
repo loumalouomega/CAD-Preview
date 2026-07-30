@@ -39,12 +39,23 @@ recorded in `CLAUDE.md`. None is a bug.
    hand-authoring/patching a valid `CONVERSION_BASED_UNIT` STEP entity via
    text surgery — judged too high-risk to attempt without a way to validate
    the result beyond this codebase's own text-pattern-matching reader.
-2. **OBJ/PLY/glTF support for `compare_models`** (**M**). STL is now
-   supported via a new host-side parser (`stlParser.ts`/`meshComponents.ts`);
-   OBJ/PLY/glTF remain webview-only. OBJ is plain text and comparatively easy
-   to add on the same pattern; PLY (binary+ASCII variants) and glTF (JSON +
-   binary chunks, node hierarchy/transforms to resolve) are progressively
-   more involved parsers to write from scratch.
+2. **glTF support for `compare_models`** (**M–L**, evaluated and
+   deliberately scoped out, not merely postponed). STL/OBJ/PLY are all now
+   supported via dedicated host-side parsers (`stlParser.ts`/`objParser.ts`/
+   `plyParser.ts`, all backed by `meshComponents.ts`) — OBJ (plain, already-
+   indexed text) and PLY (a well-specified ASCII/binary format, linearly
+   decodable via one shared header parser) both turned out tractable to
+   hand-roll correctly and validate thoroughly with real fixtures. glTF is a
+   different order of complexity: accessor decoding across 5 component types
+   with an optional `normalized` flag, sparse-accessor overlays, interleaved
+   `bufferView` byte-stride handling, and full scene-graph TRS/matrix
+   composition down to each mesh primitive — with no realistic way to
+   validate a hand-rolled implementation against real-world exporter variety
+   the way the other two formats' fixtures could be validated. Shipping a
+   plausible-looking-but-subtly-wrong parser would risk exactly the
+   "misleading false match" failure mode Compare Models' own design was
+   built to avoid — see CLAUDE.md's "Model comparison" section for the full
+   reasoning.
 
 ### Tier 3 — upstream-dependent
 

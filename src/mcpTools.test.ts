@@ -49,6 +49,52 @@ let stpModel: string;
 let stpModel2: string;
 let stlModel: string;
 let objModel: string;
+let plyModel: string;
+let gltfModel: string;
+
+/** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
+const UNIT_CUBE_OBJ = `
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+v 0 0 1
+v 1 0 1
+v 1 1 1
+v 0 1 1
+f 1 4 3 2
+f 5 6 7 8
+f 1 2 6 5
+f 2 3 7 6
+f 3 4 8 7
+f 4 1 5 8
+`;
+
+/** A real, closed unit-cube PLY (ASCII, quad faces) — matches `plySolidSignatures.test.ts`'s fixture. */
+const UNIT_CUBE_PLY = `ply
+format ascii 1.0
+element vertex 8
+property float x
+property float y
+property float z
+element face 6
+property list uchar int vertex_indices
+end_header
+0 0 0
+1 0 0
+1 1 0
+0 1 0
+0 0 1
+1 0 1
+1 1 1
+0 1 1
+4 0 3 2 1
+4 4 5 6 7
+4 0 1 5 4
+4 1 2 6 5
+4 2 3 7 6
+4 3 0 4 7
+`;
 
 const FAKE_BREP_RESULT: BRepResult = {
   groups: [
@@ -202,10 +248,14 @@ beforeEach(async () => {
   stpModel2 = path.join(dir, "model2.stp");
   stlModel = path.join(dir, "model.stl");
   objModel = path.join(dir, "model.obj");
+  plyModel = path.join(dir, "model.ply");
+  gltfModel = path.join(dir, "model.gltf");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
-  await fs.writeFile(objModel, "v 0 0 0\n", "utf8");
+  await fs.writeFile(objModel, UNIT_CUBE_OBJ, "utf8");
+  await fs.writeFile(plyModel, UNIT_CUBE_PLY, "utf8");
+  await fs.writeFile(gltfModel, "{}", "utf8");
 });
 
 afterEach(async () => {
@@ -580,13 +630,55 @@ describe("compare_models", () => {
     expect(sourceB).toEqual({ kind: "stl", bytes: expect.any(Uint8Array) });
   });
 
-  it("returns supported: false with a warning when either side is an unsupported mesh format (OBJ/PLY/glTF), without touching WASM", async () => {
+  it("diffs a B-rep source against an OBJ source, as raw OBJ bytes with no edits baked", async () => {
     const c = ctx();
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: objModel });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
+      { kind: "obj", bytes: expect.any(Uint8Array) }
+    );
+    expect(result).toEqual({ formatA: "step", formatB: "obj", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+  });
+
+  it("diffs a B-rep source against a PLY source, as raw PLY bytes with no edits baked", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: plyModel });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
+      { kind: "ply", bytes: expect.any(Uint8Array) }
+    );
+    expect(result).toEqual({ formatA: "step", formatB: "ply", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+  });
+
+  it("diffs OBJ against PLY directly", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: objModel, pathB: plyModel });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "obj", bytes: expect.any(Uint8Array) },
+      { kind: "ply", bytes: expect.any(Uint8Array) }
+    );
+    expect(result.supported).toBe(true);
+  });
+
+  it("warns (but still compares the raw file) when an OBJ/PLY side has pending edits that can't be baked in", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: objModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: objModel });
+    expect(result.supported).toBe(true);
+    expect(result.warnings[0]).toMatch(/not baked in/i);
+    expect(result.warnings[0]).toMatch(/OBJ/);
+  });
+
+  it("returns supported: false with a warning when either side is an unsupported format (glTF), without touching WASM", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: gltfModel });
     expect(c.pipeline.compareModels).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
     expect(result.diff).toBeUndefined();
-    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/STL/i);
+    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/STL\/OBJ\/PLY/i);
   });
 
   it("rejects unsupported extensions on either path", async () => {

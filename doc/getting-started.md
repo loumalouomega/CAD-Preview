@@ -651,7 +651,7 @@ surfaces, which is why mesh sources can't export to STEP/IGES/BREP.
 ### Comparing Models
 
 Run **CAD Preview: Compare Models…** from the Command Palette to diff two
-STEP/IGES/BREP or STL files (any combination of the two) solid-by-solid —
+STEP/IGES/BREP, STL, OBJ, or PLY files (any combination) solid-by-solid —
 useful for checking what actually changed between two versions of a model.
 If a CAD Preview tab is focused when you run the command, its file is used
 as model **A** automatically and you're only prompted for **B**; otherwise
@@ -669,19 +669,21 @@ A results tab opens beside the editor showing:
 
 This is a display-only report (no 3D view, no merge) — to actually look at
 both models side by side, open each in its own tab and use VS Code's split
-editor layout. STEP/IGES/BREP and STL are both supported, in any combination
-(OBJ/PLY/glTF still aren't — they have no host-side geometry to match
-without opening them in the viewer first). For a STEP/IGES/BREP file, the
-comparison reflects its currently-applied edits (its `.edits.json` sidecar,
-if any); for an STL file, edits are **not** baked in (there's no way to
-replay a mesh edit outside the viewer) — a warning banner says so if the
-file has pending edits, and the comparison runs against the raw file as-is.
+editor layout. STEP/IGES/BREP, STL, OBJ, and PLY are all supported, in any
+combination (glTF still isn't — it has no host-side geometry to match
+without opening it in the viewer first; see the "Known Limitations" section
+below). For a STEP/IGES/BREP file, the comparison reflects its
+currently-applied edits (its `.edits.json` sidecar, if any); for an
+STL/OBJ/PLY file, edits are **not** baked in (there's no way to replay a
+mesh edit outside the viewer) — a warning banner says so if the file has
+pending edits, and the comparison runs against the raw file as-is.
 
 ## Known Limitations
 
 - **No texture support for OBJ.** MTL material files are not loaded; a default grey material is applied.
 - **No glTF animations.** Animation playback is not implemented — only the first frame (bind pose) is shown.
 - **No BRep-embedded geometry in glTF.** Only triangulated `mesh` primitives inside glTF are rendered.
+- **No Compare Models support for glTF.** STEP/IGES/BREP/STL/OBJ/PLY are all supported (any combination); glTF's format complexity (accessor/sparse-accessor decoding, scene-graph transform composition) was judged too large a surface to hand-roll and validate correctly, so it's excluded from Compare Models specifically (it still opens and previews normally everywhere else).
 - **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in-process in the Node extension host — there is no streaming.
 - **One-time WASM startup.** The first B-rep file open triggers OpenCascade.js initialization (~300 ms on a typical machine). Subsequent B-rep files open faster because the kernel is memoized.
 - **Source CAD file is never modified.** CAD Preview never writes the opened CAD file. **Export** writes a new, separate file; **part** definitions are saved to a `<model>.parts.json` sidecar; and **edit operations** are saved to a `<model>.edits.json` sidecar — the original geometry is always left untouched. Edits are non-destructive and replayable, and are baked in only when you **Export**.

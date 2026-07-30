@@ -126,10 +126,11 @@ loaders. Rendering is always Three.js.
 - **Screenshot**: save the current 3D view as a PNG via a native Save dialog.
 - **Settings**: a handful of `cadPreview.*` VS Code settings (default background,
   mesh-size preset, grid/axes visibility, up-axis) for newly opened documents.
-- **Compare Models**: diff two STEP/IGES/BREP files solid-by-solid — matched
-  by bounding-box-centroid proximity and volume similarity, reporting
+- **Compare Models**: diff two files solid-by-solid — matched by
+  bounding-box-centroid proximity and volume similarity, reporting
   added/removed/matched solids with each match's raw centre displacement and
-  volume delta (never a hidden moved/unchanged guess). B-rep only, display-only.
+  volume delta (never a hidden moved/unchanged guess). STEP/IGES/BREP, STL,
+  OBJ, and PLY are supported, in any combination (glTF isn't); display-only.
 
 ## Export
 

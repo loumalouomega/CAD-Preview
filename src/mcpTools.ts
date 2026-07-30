@@ -230,7 +230,7 @@ export function describeCapabilities() {
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
-      "compare_models (bounding-box-centroid + volume solid matching between two files) is B-rep sources only headless for the same reason — mesh formats have no host-side geometry to derive centroids/volumes from without a webview.",
+      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; glTF and meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
@@ -553,17 +553,24 @@ export async function renderSnapshotTool(
 // ---------------------------------------------------------------------------
 // compare_models
 
+/** Mesh formats `compareModelsTool`/`modelComparePanel.ts` can independently
+ * derive solid centroids/volumes for headless, without a webview — mirrors
+ * `modelComparePanel.ts`'s own `COMPARABLE_MESH_FORMATS` constant (kept as
+ * two separate declarations since the two files don't otherwise share an
+ * import, same as the rest of this pair's independent-but-parallel design). */
+const COMPARABLE_MESH_FORMATS = new Set(["stl", "obj", "ply"]);
+
 /**
  * Diffs two models solid-by-solid via `modelDiffHost.ts`'s `compareModels()`
  * — bounding-box-centroid + volume matching, the same heuristic
  * `explodeSolids`/`gmshPartsMap.ts` already use elsewhere. STEP/IGES/BREP
- * (edits baked in via the live OCCT shape) and STL (raw file bytes — no
- * host-side mesh edit engine to bake edits with, same accepted limitation
+ * (edits baked in via the live OCCT shape) and STL/OBJ/PLY (raw file bytes —
+ * no host-side mesh edit engine to bake edits with, same accepted limitation
  * `generate_mesh`'s STL path already has) are supported, in any combination.
- * OBJ/PLY/glTF/meshio-only formats return `supported: false` with a warning
- * rather than throwing, mirroring `get_mass_properties`'s graceful-skip
- * convention: none of those formats has host-side geometry to independently
- * re-derive centroids/volumes from without a webview.
+ * glTF/meshio-only formats return `supported: false` with a warning rather
+ * than throwing, mirroring `get_mass_properties`'s graceful-skip convention:
+ * none of those formats has host-side geometry to independently re-derive
+ * centroids/volumes from without a webview.
  */
 export async function compareModelsTool(
   ctx: ToolContext,
@@ -572,14 +579,14 @@ export async function compareModelsTool(
   const routeA = requireRoute(params.pathA);
   const routeB = requireRoute(params.pathB);
 
-  const compareable = (route: typeof routeA) => route.strategy === "occt" || route.format === "stl";
+  const compareable = (route: typeof routeA) => route.strategy === "occt" || COMPARABLE_MESH_FORMATS.has(route.format);
   if (!compareable(routeA) || !compareable(routeB)) {
     return {
       formatA: routeA.format,
       formatB: routeB.format,
       supported: false,
       warnings: [
-        "compare_models only supports STEP/IGES/BREP/STL sources headlessly — other mesh formats have no host-side geometry to independently derive solid centroids/volumes from without a webview.",
+        "compare_models only supports STEP/IGES/BREP/STL/OBJ/PLY sources headlessly — glTF and meshio-only formats have no host-side geometry to independently derive solid centroids/volumes from without a webview.",
       ],
     };
   }
@@ -592,9 +599,11 @@ export async function compareModelsTool(
     }
     const [{ ops }, bytes] = await Promise.all([readEdits(modelPath), readModelBytes(modelPath)]);
     if (ops.length > 0) {
-      warnings.push(`${modelPath}: pending edits are NOT baked in (STL sources have no host-side edit engine) — comparing the raw file only.`);
+      warnings.push(
+        `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — comparing the raw file only.`
+      );
     }
-    return { kind: "stl", bytes };
+    return { kind: route.format as "stl" | "obj" | "ply", bytes };
   };
 
   const [sourceA, sourceB] = await Promise.all([resolveSource(params.pathA, routeA), resolveSource(params.pathB, routeB)]);
