@@ -2,6 +2,7 @@ import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions } from "../me
 import type { QualitySummary } from "../meshQuality";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
+import { DISPLAY_UNITS, UNIT_LABELS, type DisplayUnit } from "../lengthUnits";
 import type { Part } from "../protocol";
 import {
   LARGE_ELEMENT_COUNT,
@@ -44,8 +45,11 @@ export interface MeshingPanelCallbacks {
   /** A part's target mesh size changed in the "Part sizes" section (`undefined` = inherit global). */
   onPartMeshSize: (index: number, size: number | undefined) => void;
   onGenerate: () => void;
-  /** Export in the format currently picked in the format `<select>`. */
-  onExport: (format: MeshExportFormatId) => void;
+  /** Export in the format/unit currently picked in the two `<select>`s. `unit`
+   * is a real geometric scale applied before Gmsh ever sees the geometry
+   * (mirroring the model Export command's own unit conversion) — "mm" is
+   * native/no-op. */
+  onExport: (format: MeshExportFormatId, unit: DisplayUnit) => void;
   onClear: () => void;
 }
 
@@ -70,12 +74,17 @@ const ALGORITHM_3D: Array<[number, string]> = [
  * section mirroring the Parts panel's per-part size inputs, and a collapsed
  * "Advanced settings" section holding the raw GMSH options (dimension, size
  * min/max, algorithm choice, element order, optimize, STL angle) — plus
- * Generate/Export-format-`<select>`+Export/Clear controls, a large-mesh
- * warning, and a stats/error readout. The export format picker is a single
- * `<select>` populated from `MESH_EXPORT_FORMATS` (`meshExportFormats.ts`)
- * rather than one button per format — that list only grows over time, and a
- * dedicated button per Gmsh output format doesn't scale in a sidebar panel.
- * DOM-only — no business logic (all size math is `meshSizeHeuristics.ts`),
+ * Generate/Export-format-`<select>`+Export-unit-`<select>`+Export/Clear
+ * controls, a large-mesh warning, and a stats/error readout. The export
+ * format picker is a single `<select>` populated from `MESH_EXPORT_FORMATS`
+ * (`meshExportFormats.ts`) rather than one button per format — that list only
+ * grows over time, and a dedicated button per Gmsh output format doesn't
+ * scale in a sidebar panel. The export unit picker (`DISPLAY_UNITS`,
+ * `lengthUnits.ts`) is a real geometric scale applied before Gmsh sees the
+ * geometry — mirrors the model Export command's own unit picker, defaults to
+ * "mm" (native, no conversion), and is entirely separate from the view-
+ * controls Units dropdown (display-only, never touches geometry). DOM-only —
+ * no business logic (all size math is `meshSizeHeuristics.ts`),
  * no `prompt()`/`alert()` (VS Code webviews block them; see `partsPanel.ts`
  * for the established inline-`<input>` convention this codebase uses instead).
  */
@@ -86,6 +95,7 @@ export class MeshingPanel {
   private readonly progressEl: HTMLElement;
   private readonly generateBtn: HTMLButtonElement;
   private readonly exportFormatSelect: HTMLSelectElement;
+  private readonly exportUnitSelect: HTMLSelectElement;
   private readonly exportBtn: HTMLButtonElement;
   private readonly clearBtn: HTMLButtonElement;
 
@@ -120,6 +130,7 @@ export class MeshingPanel {
     this.progressEl = panel.querySelector("#meshing-progress")!;
     this.generateBtn = panel.querySelector("#meshing-generate")!;
     this.exportFormatSelect = panel.querySelector("#meshing-export-format")!;
+    this.exportUnitSelect = panel.querySelector("#meshing-export-unit")!;
     this.exportBtn = panel.querySelector("#meshing-export")!;
     this.clearBtn = panel.querySelector("#meshing-clear")!;
 
@@ -130,8 +141,20 @@ export class MeshingPanel {
       this.exportFormatSelect.appendChild(opt);
     }
 
+    // "mm" first/default — native cascade unit, no conversion, matching the
+    // model Export command's own unit picker's default.
+    for (const unit of DISPLAY_UNITS) {
+      const opt = document.createElement("option");
+      opt.value = unit;
+      opt.textContent = unit;
+      opt.title = UNIT_LABELS[unit];
+      this.exportUnitSelect.appendChild(opt);
+    }
+
     this.generateBtn.addEventListener("click", () => cb.onGenerate());
-    this.exportBtn.addEventListener("click", () => cb.onExport(this.exportFormatSelect.value as MeshExportFormatId));
+    this.exportBtn.addEventListener("click", () =>
+      cb.onExport(this.exportFormatSelect.value as MeshExportFormatId, this.exportUnitSelect.value as DisplayUnit)
+    );
     this.clearBtn.addEventListener("click", () => cb.onClear());
 
     // ── Large-mesh warning (above everything, visible regardless of collapse) ──

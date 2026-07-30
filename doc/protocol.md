@@ -614,7 +614,7 @@ type WebviewToHost =
   | { type: 'exportError'; requestId: string; message: string }
   | { type: 'meshingChanged'; options: MeshOptions }
   | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
-  | { type: 'meshingExport'; target: 'msh' | 'geoUnrolled'; options: MeshOptions; stl?: string }
+  | { type: 'meshingExport'; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: 'screenshotButtonClicked' }
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
@@ -704,13 +704,23 @@ other id (`"msh2"`, `"vtk"`, `"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`,
 mesh-then-`gmsh.write()` for whatever other Gmsh output formats this WASM
 build actually supports (confirmed by probing every format Gmsh's writer table
 recognizes — see `doc/gmsh-integration.md`). Same `options`/optional `stl`
-payload as `meshingGenerate`. The host prompts a save dialog (reusing the same
+payload as `meshingGenerate`, plus an optional `unit` (`DisplayUnit`, default
+`"mm"`) from the panel's `#meshing-export-unit` `<select>` — a REAL geometric
+scale applied to the geometry before Gmsh ever sees it (B-rep sources via
+`exportBRep`'s `scaleFactor`, mesh-format sources via the new
+`scaleStlBytes`), with `MeshOptions.sizeMin`/`sizeMax` and any per-part
+`meshSize` proportionally rescaled to match (`scaleMeshOptionsForUnit`/
+`scalePartsMeshSizeForUnit`, `src/meshOptions.ts`) — see CLAUDE.md's Meshing
+section for the full write-up. `unit` is scoped to this message only:
+`meshingGenerate` always meshes at native mm, since its overlay is
+display-only with no exported file whose numbers need to mean anything
+externally. The host prompts a save dialog (reusing the same
 `promptSaveAndWrite` helper Export uses) and writes the result directly —
 there is no `meshingResult` reply for this message; failures post the general
 `error` message instead of `meshingError`.
 
 ```json
-{ "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+{ "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 }, "unit": "in" }
 ```
 
 ### `ready`

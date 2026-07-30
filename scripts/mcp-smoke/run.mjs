@@ -115,6 +115,27 @@ async function callTolerant(name, args) {
   return { value: JSON.parse(result.content?.[0]?.text ?? "") };
 }
 
+/** Max absolute coordinate magnitude across every node in a Gmsh MSH 4.1
+ * `$Nodes` block — a cheap proxy for "how big is this mesh's geometry" used
+ * to verify export_mesh's unit conversion produced a REAL geometric scale,
+ * not just a label. MSH 4.1 node blocks interleave a run of node TAGS (one
+ * bare integer per line) followed by a run of coordinate lines (exactly 3
+ * floats) per entity — filtering for lines with exactly 3 whitespace-
+ * separated float-parseable tokens cleanly distinguishes coordinate lines
+ * from both the single-integer tag lines and the 4-token block header lines. */
+function maxAbsMshCoord(mshText) {
+  const body = mshText.split("$Nodes")[1]?.split("$EndNodes")[0] ?? "";
+  let max = 0;
+  for (const line of body.split("\n")) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens.length !== 3) continue;
+    const nums = tokens.map(Number);
+    if (nums.some((n) => Number.isNaN(n))) continue;
+    for (const n of nums) max = Math.max(max, Math.abs(n));
+  }
+  return max;
+}
+
 // --- the scenario ------------------------------------------------------------
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-preview-mcp-smoke-"));
@@ -344,6 +365,69 @@ try {
   await call("export_mesh", { path: model, format: "msh", outputPath: mshOut, options: { sizeMax: bbox.diagonal / 15 } });
   const msh = fs.readFileSync(mshOut, "utf8");
   assert(msh.includes("$MeshFormat") && msh.includes("$Elements"), "export_mesh msh writes a real Gmsh mesh");
+
+  // Unit conversion for export_mesh (roadmap item, closed) — a REAL geometric
+  // scale applied BEFORE Gmsh ever sees the geometry (mirroring export_brep's
+  // unit param). `options` stays in the SAME native-mm numeric space as the
+  // plain mm export above — the tool itself rescales sizeMin/sizeMax to match
+  // internally (scaleMeshOptionsForUnit); pre-dividing here too would double-
+  // scale it into an absurdly fine mesh (confirmed the hard way: this exact
+  // mistake once made this call stall past the 300s client timeout instead of
+  // erroring, since the "size too small" degenerate case is slow, not a
+  // clean failure). Verified against the live WASM by comparing the two
+  // exported .msh files' own node coordinate magnitudes, not just trusting
+  // the tool didn't throw.
+  const mshInOut = path.join(dir, "out-in.msh");
+  const mshIn = await call("export_mesh", {
+    path: model,
+    format: "msh",
+    outputPath: mshInOut,
+    unit: "in",
+    options: { sizeMax: bbox.diagonal / 15 },
+  });
+  assert(mshIn.warnings.length === 0, "export_mesh unit=in produces no warnings for a B-rep source");
+  const mmMax = maxAbsMshCoord(msh);
+  const inMax = maxAbsMshCoord(fs.readFileSync(mshInOut, "utf8"));
+  assert(mmMax > 0 && inMax > 0, "both exported .msh files have real node coordinates to compare");
+  assert(
+    Math.abs(inMax / mmMax - 1 / 25.4) < 0.02,
+    `export_mesh unit=in scales node coordinates by ~1/25.4 (mm max ${mmMax.toFixed(3)}, in max ${inMax.toFixed(3)}, ratio ${(inMax / mmMax).toFixed(5)})`
+  );
+
+  const mshUnknownUnit = await call("export_mesh", {
+    path: model,
+    format: "msh",
+    outputPath: path.join(dir, "out-badunit.msh"),
+    unit: "parsec",
+    options: { sizeMax: bbox.diagonal / 15 },
+  });
+  assert(
+    mshUnknownUnit.warnings.some((w) => /unknown unit/i.test(w)),
+    "export_mesh falls back to mm and warns for an unrecognized unit"
+  );
+
+  // Same unit conversion for an STL (raw-file-meshed, not OCCT re-exported)
+  // source — exercises the new host-side scaleStlBytes path, not exportBRep's
+  // scaleFactor. cube.stl is a 10x10x10 cube (see the compare_models section
+  // above), so its own max node coordinate should sit near half the diagonal.
+  const cubeMshOut = path.join(dir, "cube.msh");
+  await call("export_mesh", { path: cubeStl, format: "msh", outputPath: cubeMshOut, options: { sizeMax: 5 } });
+  const cubeMshInOut = path.join(dir, "cube-in.msh");
+  const cubeMshIn = await call("export_mesh", {
+    path: cubeStl,
+    format: "msh",
+    outputPath: cubeMshInOut,
+    unit: "in",
+    options: { sizeMax: 5 }, // same native-mm value as the mm export above — see the B-rep case's comment
+  });
+  assert(cubeMshIn.warnings.length === 0, "export_mesh unit=in produces no warnings for an STL source");
+  const cubeMmMax = maxAbsMshCoord(fs.readFileSync(cubeMshOut, "utf8"));
+  const cubeInMax = maxAbsMshCoord(fs.readFileSync(cubeMshInOut, "utf8"));
+  assert(cubeMmMax > 0 && cubeInMax > 0, "both exported STL-sourced .msh files have real node coordinates to compare");
+  assert(
+    Math.abs(cubeInMax / cubeMmMax - 1 / 25.4) < 0.02,
+    `export_mesh unit=in scales an STL source's node coordinates by ~1/25.4 too (mm max ${cubeMmMax.toFixed(3)}, in max ${cubeInMax.toFixed(3)}, ratio ${(cubeInMax / cubeMmMax).toFixed(5)})`
+  );
 
   const geoOut = path.join(dir, "out.geo_unrolled");
   const geoResult = await call("export_mesh", { path: model, format: "geoUnrolled", outputPath: geoOut, options: { sizeMax: bbox.diagonal / 15 } });

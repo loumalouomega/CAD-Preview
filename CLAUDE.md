@@ -250,17 +250,12 @@ for the compatibility matrix (`exportTargetsFor`):
     convertible-unit request against a non-`"brep"` target both degrade
     gracefully (fall back to `"mm"` with a `warnings` entry), never throw,
     same convention as every other tool's invalid-input handling.
-  - **Deliberately out of scope:** the FE Mesh panel's own Gmsh-format export
-    (`.msh`/Kratos MDPA/VTK/etc., via `meshingExport` — a *different* export
-    flow from the model Export command above) still writes in the native mm
-    cascade unit only. Converting it correctly would also need proportionally
-    rescaling `MeshOptions.sizeMin`/`sizeMax` (otherwise an absolute mm-valued
-    size target applied to inch-scaled input geometry produces a wildly
-    different — usually far coarser — mesh density than intended) and, for
-    mesh-format (STL-sourced) documents, a host-side STL vertex scaler this
-    codebase has never needed before (there is still no host-side mesh parser
-    anywhere in this codebase, the same gap `compare_models` already
-    documents).
+  - **The FE Mesh panel's own Gmsh-format export** (`.msh`/Kratos MDPA/VTK/etc.,
+    via `meshingExport` — a *different* export flow from the model Export
+    command above) also gained unit conversion (roadmap item, closed) — see
+    the dedicated write-up in the "Meshing (GMSH-JS)" section below for the
+    full mechanism (STL vertex scaler, proportional `MeshOptions` rescaling,
+    Export-only scoping).
 
 ## Geometry parts (editing)
 
@@ -1147,6 +1142,49 @@ Non-negotiable invariants:
   one volume before the shared-tet-face dedup runs — which stays correct even
   for two touching part-volumes, since Gmsh tags each tet by its single owning
   volume regardless of geometric adjacency.
+- **Unit conversion for the FE Mesh panel's Gmsh-format export (roadmap item,
+  closed).** `meshingExport` (the `.msh`/Kratos MDPA/VTK/etc. flow — a
+  *different* export path from the model Export command's own unit
+  conversion, see the "Export" section above) gained an optional `unit`,
+  mirroring `exportBRep`'s `scaleFactor` mechanism rather than duplicating
+  it: `provider.ts`'s `resolveMeshInput()` re-exports B-rep sources via the
+  ALREADY-verified `exportBRep(..., unitScaleFactor(unit))` (the exact same
+  geometric scale the model Export command uses), so Gmsh imports
+  already-scaled STEP bytes and never needs to know unit conversion
+  happened. STL/mesh-format sources have no OCCT re-export to hook, so this
+  is the host-side STL vertex scaler CLAUDE.md previously flagged as
+  needed: `stlParser.ts`'s new `scaleStlBytes(bytes, factor)` reuses the
+  existing `parseStl()` triangle-soup parser, scales every vertex, and
+  re-serializes as ASCII STL — facet normals are always recomputed from the
+  (post-scale) winding via cross product, never trusted from the input file,
+  matching `parseStl`'s own established convention. **`MeshOptions.sizeMin`/
+  `sizeMax` (and any per-part `meshSize`) are rescaled by the SAME factor**
+  (`meshOptions.ts`'s new `scaleMeshOptionsForUnit`/
+  `scalePartsMeshSizeForUnit`, applied in `provider.ts`'s
+  `resolveMeshPartsAndOptions` AFTER the pre-existing `applyStlPartSizeOverride`
+  step, so a single sized STL part's raw-mm override is itself correctly
+  carried into the target unit's space too) — this is exactly the
+  proportional-rescaling requirement the roadmap item identified: an
+  absolute mm-valued size target applied to now-inch-scaled geometry would
+  otherwise produce a wildly different (usually far coarser) mesh density
+  than intended. The `SIZE_MAX_SENTINEL` (`1e22`, "no explicit size yet") is
+  left untouched by the scale — it's a flag, not a real mm value. **Scoped
+  to Export only — Generate (interactive or `generate_mesh`) always stays
+  native mm**, since its overlay is display-only with no exported file whose
+  numbers need to mean anything to an external tool; `resolveMeshInput`'s
+  `unit` param defaults to `"mm"` and only the FE Mesh panel's **Export**
+  button (`onExport`, via a new `#meshing-export-unit` `<select>` beside the
+  format picker, `DISPLAY_UNITS`-populated, defaulting to `"mm"`) and the MCP
+  `export_mesh` tool's optional `unit` param (mirroring `export_brep`'s, but
+  simpler — every Gmsh output format is scale-agnostic, unlike STEP/IGES'
+  declared-header-unit gotcha, so there's no format-dependent fallback) ever
+  pass a non-`"mm"` value. **Verified end-to-end against the live WASM, not
+  just unit-tested**: exported the same `bull.stp` FE mesh at native mm and
+  at `unit: "in"`, parsed both `.msh` files' `$Nodes` blocks, and confirmed
+  the inch export's max node-coordinate magnitude is the mm export's ×
+  exactly `1/25.4` (mm max 186.309 → in max 7.335, ratio 0.03937) — and
+  repeated the same check for an STL-sourced (`cube.stl`) export to confirm
+  the `scaleStlBytes` path independently produces the identical ratio.
 - Bundling gmsh-wasm is *why this project is GPL-2.0-or-later, not MIT* — see the
   "License" section above and the README's "Licensing" section for the full
   rationale. Full technical write-up (input paths, GMSH API call sequences,
@@ -2383,10 +2421,10 @@ internally consistent, not a unit-conversion engine.
   `UNIT_CONVERTIBLE_FORMATS` entry for the full trail), so scaling their
   geometry without also fixing the header would silently mislabel the file;
   the export-unit quick-pick simply doesn't appear for those two targets.
-  **Also still deliberately out of scope: the FE Mesh panel's own Gmsh-format
-  export** (`.msh`/Kratos MDPA/VTK/etc.) — also documented in that same
-  section, with the reason (proportional `MeshOptions` size rescaling plus a
-  host-side STL vertex scaler this codebase has never needed before).
+  **The FE Mesh panel's own Gmsh-format export** (`.msh`/Kratos MDPA/VTK/etc.)
+  also gained unit conversion (roadmap item, closed) — see the "Meshing
+  (GMSH-JS)" section for the full write-up (STL vertex scaler, proportional
+  `MeshOptions` rescaling, Export-only scoping).
 - **MCP**: `get_mass_properties` (and every other MCP tool) always returns raw
   cascade-unit (mm) numbers — the display-unit selector is webview-only state
   with no host or MCP-server counterpart; `doc/mcp-server.md` documents this
@@ -2850,7 +2888,15 @@ formats at two schema versions; `.geo_unrolled` is the fully-expanded script, no
 sidecar `.geo` — see below) to confirm they contain real content. Also pick a couple
 of the other formats (e.g. VTK, Abaqus `.inp`, or STL) and confirm those export and
 reopen too. Set **Element order** to Quadratic (2) and try exporting either MDPA
-format → confirm a clear error message instead of a corrupt file. Close and reopen the tab → confirm
+format → confirm a clear error message instead of a corrupt file. Then exercise the new
+export-unit `<select>` beside the format picker (defaults to "mm"): set it to **in**
+and export "Gmsh Mesh (.msh)" for both this B-rep source and a mesh-format source
+(e.g. `cube.stl`) → open each result in a text editor and confirm the `$Nodes`
+coordinates are the native-mm export's values divided by ~25.4 (a real geometric
+scale, not just a label) and that the mesh density looks comparable to the native
+export (sizeMin/sizeMax were rescaled proportionally, not left at the mm-scale
+numbers). Leave it at **mm** and confirm output is byte-for-byte the same as before
+this feature existed. Close and reopen the tab → confirm
 `bull.stp.mesh.json` (the options) and `bull.stp.geo` (the generated, editable script)
 exist next to the source, are valid JSON/text, and the CAD file itself is untouched;
 hand-edit `bull.stp.geo` and change an option in the panel → confirm your hand-edit is

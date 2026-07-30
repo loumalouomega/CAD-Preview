@@ -1088,7 +1088,9 @@ collapsed-by-default "Advanced settings" section with the raw options form
 (dimension, size min/max, 2D/3D algorithm dropdowns, element shape, element
 order, optimize checkbox, STL angle) — plus a Generate button, an export-format `<select>`
 (populated from `MESH_EXPORT_FORMATS` in `src/meshExportFormats.ts` — one
-shared registry instead of one button per format) + Export button, a Clear
+shared registry instead of one button per format), an export-**unit**
+`<select>` (`#meshing-export-unit`, populated from `DISPLAY_UNITS` in
+`src/lengthUnits.ts`, defaulting to `"mm"`) + Export button, a Clear
 button, and a status line. Pure DOM, no business logic (size math delegates to
 `meshSizeHeuristics.ts`), no `prompt()`/`alert()` (VS Code webviews block
 those — same constraint as the Parts/Edits panels).
@@ -1108,7 +1110,7 @@ interface MeshingPanelCallbacks {
   onOptionsChange: (patch: Partial<MeshOptions>) => void
   onPartMeshSize: (index: number, size: number | undefined) => void  // undefined = inherit global
   onGenerate: () => void
-  onExport: (format: MeshExportFormatId) => void  // the format currently picked in the `<select>`
+  onExport: (format: MeshExportFormatId, unit: DisplayUnit) => void  // format + unit currently picked in the two `<select>`s
   onClear: () => void
 }
 
@@ -1171,7 +1173,12 @@ In `main.ts`, `onGenerate`/`onExport` each independently call an
 async `currentStlIfMeshSource()` helper before posting (returns `undefined` for
 B-rep documents, since the host re-exports STEP itself), then post
 `meshingGenerate`/`meshingExport` with the current `MeshingModel.get()` snapshot
-plus that optional `stl`. `onClear` calls `viewer.setMeshOverlay(null)` AND
+plus that optional `stl`; `onExport` additionally forwards its `unit` argument
+straight onto the outgoing `meshingExport` message's own `unit` field (a real
+geometric scale applied host-side before Gmsh sees the geometry — `unit` is
+`"mm"`-default and has no bearing on `meshingGenerate`, which always meshes at
+native mm; see CLAUDE.md's Meshing section for the full mechanism). `onClear`
+calls `viewer.setMeshOverlay(null)` AND
 `viewer.setWorstElementsOverlay(null)` directly, resets both the toolbar
 toggle's `meshingEnabled`/`.active` state and `#meshing-worst-toggle`'s
 `worstElementsShown`/`.active`/`hidden` state (same toggle-truthfulness rule

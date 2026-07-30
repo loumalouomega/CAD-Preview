@@ -14,7 +14,7 @@ import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
-import { applyStlPartSizeOverride } from "./meshOptions";
+import { applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
 import { normalizeViewerDefaults } from "./viewerDefaults";
@@ -25,6 +25,7 @@ import { parsePartsJson } from "./partsSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, UNIT_LABELS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
+import { scaleStlBytes } from "./stlParser";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
@@ -333,12 +334,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "meshingExport") {
         try {
-          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl);
+          const unit = msg.unit ?? "mm";
+          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, unit);
           if (!input) {
             post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
             return;
           }
-          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
+          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options, unit);
           if (msg.target === "msh") {
             const result = await generateMesh(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
@@ -632,13 +634,28 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * already-triangulated data, passed in as base64 `stl`. Returns `undefined`
    * when a mesh-format document has no `stl` payload — callers should treat
    * that as a graceful "nothing to mesh yet", not a thrown error.
+   *
+   * `unit` defaults to `"mm"` (native, no conversion) — the interactive
+   * **Generate** call site always passes `"mm"` explicitly, since its overlay
+   * is display-only with no exported file whose numbers need to mean
+   * anything externally. Only the FE Mesh panel's **Export** flow passes a
+   * real unit: B-rep sources get it via `exportBRep`'s existing `scaleFactor`
+   * param (the same geometric-scale mechanism the model Export command
+   * already uses — see `UNIT_CONVERTIBLE_FORMATS`), and STL sources get it
+   * via the new `scaleStlBytes` (`stlParser.ts`). The caller is responsible
+   * for proportionally rescaling `MeshOptions.sizeMin`/`sizeMax` (and any
+   * per-part `meshSize`) by the same factor — see `scaleMeshOptionsForUnit`/
+   * `scalePartsMeshSizeForUnit` in `meshOptions.ts` — or the resulting mesh
+   * density won't match what was asked for.
    */
   private async resolveMeshInput(
     uri: vscode.Uri,
     route: FileRoute | undefined,
     ops: EditOp[],
-    stl: string | undefined
+    stl: string | undefined,
+    unit: DisplayUnit = "mm"
   ): Promise<MeshGenerationInput | undefined> {
+    const factor = unitScaleFactor(unit);
     if (route && route.strategy === "occt") {
       const sourceBytes = await vscode.workspace.fs.readFile(uri);
       const stepBytes = await exportBRep(
@@ -646,13 +663,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         sourceBytes,
         route.format as Extract<CadFormat, "step" | "iges" | "brep">,
         "step",
-        ops
+        ops,
+        factor
       );
       return { kind: "brep", stepBytes };
     }
 
     if (!stl) return undefined;
-    return { kind: "stl", stlBytes: Buffer.from(stl, "base64") };
+    const stlBytes = Buffer.from(stl, "base64");
+    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
   }
 
   /**
@@ -662,16 +681,23 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * sources can't get true physical groups (see `gmshPartsMap.ts`), so `parts`
    * is dropped ([]) and `options` instead gets `applyStlPartSizeOverride`'s
    * one-off sizing degrade for just this call — never persisted back to the
-   * `.mesh.json` sidecar.
+   * `.mesh.json` sidecar. `unit` (default `"mm"`, matching `resolveMeshInput`'s
+   * default) applies `scaleMeshOptionsForUnit`/`scalePartsMeshSizeForUnit`
+   * LAST, after the STL override above, so a single sized STL part's raw mm
+   * `meshSize` is correctly carried into the target unit's numeric space too
+   * — not just the B-rep per-part case.
    */
   private async resolveMeshPartsAndOptions(
     uri: vscode.Uri,
     input: MeshGenerationInput,
-    options: MeshOptions
+    options: MeshOptions,
+    unit: DisplayUnit = "mm"
   ): Promise<{ parts: Part[]; options: MeshOptions }> {
-    const parts = await readParts(uri);
-    if (input.kind === "brep") return { parts, options };
-    return { parts: [], options: applyStlPartSizeOverride(options, parts) };
+    const rawParts = await readParts(uri);
+    const { parts, options: sized } =
+      input.kind === "brep" ? { parts: rawParts, options } : { parts: [], options: applyStlPartSizeOverride(options, rawParts) };
+    const factor = unitScaleFactor(unit);
+    return { parts: scalePartsMeshSizeForUnit(parts, factor), options: scaleMeshOptionsForUnit(sized, factor) };
   }
 
   /**

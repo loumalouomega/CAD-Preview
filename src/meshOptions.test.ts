@@ -3,6 +3,8 @@ import {
   validateMeshOptions,
   applyStlPartSizeOverride,
   gmshShapeOptions,
+  scaleMeshOptionsForUnit,
+  scalePartsMeshSizeForUnit,
   DEFAULT_MESH_OPTIONS,
   SIZE_MAX_SENTINEL,
 } from "./meshOptions";
@@ -131,6 +133,52 @@ describe("applyStlPartSizeOverride", () => {
 
   it("no-ops on an empty parts list", () => {
     expect(applyStlPartSizeOverride(DEFAULT_MESH_OPTIONS, [])).toBe(DEFAULT_MESH_OPTIONS);
+  });
+});
+
+describe("scaleMeshOptionsForUnit", () => {
+  it("returns options unchanged (same reference) for a factor of 1 (mm, no conversion)", () => {
+    const options = { ...DEFAULT_MESH_OPTIONS, sizeMin: 1, sizeMax: 10 };
+    expect(scaleMeshOptionsForUnit(options, 1)).toBe(options);
+  });
+
+  it("scales sizeMin and sizeMax by the given factor", () => {
+    const options = { ...DEFAULT_MESH_OPTIONS, sizeMin: 1, sizeMax: 10 };
+    const result = scaleMeshOptionsForUnit(options, 1 / 25.4);
+    expect(result.sizeMin).toBeCloseTo(1 / 25.4, 6);
+    expect(result.sizeMax).toBeCloseTo(10 / 25.4, 6);
+  });
+
+  it("leaves the SIZE_MAX_SENTINEL untouched — it's a flag, not a real mm value", () => {
+    const options = { ...DEFAULT_MESH_OPTIONS, sizeMin: 0, sizeMax: SIZE_MAX_SENTINEL };
+    const result = scaleMeshOptionsForUnit(options, 1 / 25.4);
+    expect(result.sizeMax).toBe(SIZE_MAX_SENTINEL);
+  });
+
+  it("does not mutate the input", () => {
+    const options = { ...DEFAULT_MESH_OPTIONS, sizeMin: 1, sizeMax: 10 };
+    scaleMeshOptionsForUnit(options, 2);
+    expect(options.sizeMin).toBe(1);
+    expect(options.sizeMax).toBe(10);
+  });
+});
+
+describe("scalePartsMeshSizeForUnit", () => {
+  it("returns the same array reference for a factor of 1", () => {
+    const parts = [part({ name: "A", meshSize: 5 })];
+    expect(scalePartsMeshSizeForUnit(parts, 1)).toBe(parts);
+  });
+
+  it("scales only parts with meshSize set, leaving others untouched", () => {
+    const parts = [part({ name: "A", meshSize: 10 }), part({ name: "B" })];
+    const result = scalePartsMeshSizeForUnit(parts, 1 / 25.4);
+    expect(result[0].meshSize).toBeCloseTo(10 / 25.4, 6);
+    expect(result[1].meshSize).toBeUndefined();
+    expect(parts[0].meshSize).toBe(10); // original untouched
+  });
+
+  it("no-ops on an empty parts list", () => {
+    expect(scalePartsMeshSizeForUnit([], 2)).toEqual([]);
   });
 });
 

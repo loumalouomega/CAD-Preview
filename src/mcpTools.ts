@@ -31,8 +31,11 @@ import {
   SIZE_MAX_SENTINEL,
   validateMeshOptions,
   applyStlPartSizeOverride,
+  scaleMeshOptionsForUnit,
+  scalePartsMeshSizeForUnit,
   type MeshOptions,
 } from "./meshOptions";
+import { scaleStlBytes } from "./stlParser";
 import { MESH_EXPORT_FORMATS, meshExportFormat } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part } from "./protocol";
@@ -906,12 +909,22 @@ export async function setMeshOptions(params: { path: string; options: Partial<Me
 // generate_mesh / export_mesh shared input resolution (mirrors provider.ts's
 // resolveMeshInput + resolveMeshPartsAndOptions)
 
+/**
+ * `unit` (default `"mm"`, native/no-op) mirrors `provider.ts`'s
+ * `resolveMeshInput` — only `export_mesh` ever passes a real one, matching
+ * the extension's own scoping (`generate_mesh`/interactive Generate always
+ * stay native mm; see CLAUDE.md's meshing-unit-conversion section). B-rep
+ * sources get it via `exportBRep`'s existing `scaleFactor` param; `stl`/
+ * meshio-derived sources get it via the new `scaleStlBytes`.
+ */
 async function resolveMeshInputHeadless(
   ctx: ToolContext,
   modelPath: string,
   route: FileRoute,
-  warnings: string[]
+  warnings: string[],
+  unit: DisplayUnit = "mm"
 ): Promise<MeshGenerationInput> {
+  const factor = unitScaleFactor(unit);
   if (route.strategy === "occt") {
     const { ops } = await readEdits(modelPath);
     const sourceBytes = await readModelBytes(modelPath);
@@ -920,7 +933,8 @@ async function resolveMeshInputHeadless(
       sourceBytes,
       route.format as BRepFormat,
       "step",
-      ops
+      ops,
+      factor
     );
     return { kind: "brep", stepBytes };
   }
@@ -931,7 +945,8 @@ async function resolveMeshInputHeadless(
         `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — STL edits replay in the webview only; the raw file bytes are meshed.`
       );
     }
-    return { kind: "stl", stlBytes: await readModelBytes(modelPath) };
+    const stlBytes = await readModelBytes(modelPath);
+    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
   }
   if (route.strategy === "meshio") {
     // Unlike STL/OBJ/PLY/glTF, meshio++ (`src/meshioService.ts`) runs entirely
@@ -947,30 +962,60 @@ async function resolveMeshInputHeadless(
     }
     const bytes = await readModelBytes(modelPath);
     const stlBytes = await ctx.pipeline.convertToStlBoundary(bytes, route.format);
-    return { kind: "stl", stlBytes };
+    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
   }
   throw new Error(
     `${route.format} sources cannot be meshed headless — the extension serializes them to STL via the webview's Three.js scene. Convert to STL first (e.g. via the extension's Export).`
   );
 }
 
+/**
+ * `unit`'s scale `factor` is applied LAST (after the STL sizing override
+ * below), mirroring `provider.ts`'s `resolveMeshPartsAndOptions` — see that
+ * function's doc comment for why a single sized STL part's raw mm `meshSize`
+ * must be carried into the target unit's numeric space too.
+ */
 async function resolveMeshPartsAndOptionsHeadless(
   modelPath: string,
   input: MeshGenerationInput,
   options: MeshOptions,
-  warnings: string[]
+  warnings: string[],
+  unit: DisplayUnit = "mm"
 ): Promise<{ parts: Part[]; options: MeshOptions }> {
-  const parts = await readParts(modelPath);
-  if (input.kind === "brep") return { parts, options };
-  const overridden = applyStlPartSizeOverride(options, parts);
-  if (overridden !== options) {
-    warnings.push(
-      `Applied the single sized part's meshSize (${overridden.sizeMax}) as a one-off global size override (STL sources get no per-entity sizing).`
-    );
-  } else if (parts.filter((p) => p.meshSize != null).length > 1) {
-    warnings.push("Multiple parts have meshSize set — ambiguous for an STL source, so all are ignored.");
+  const rawParts = await readParts(modelPath);
+  let parts: Part[];
+  let sized: MeshOptions;
+  if (input.kind === "brep") {
+    parts = rawParts;
+    sized = options;
+  } else {
+    const overridden = applyStlPartSizeOverride(options, rawParts);
+    if (overridden !== options) {
+      warnings.push(
+        `Applied the single sized part's meshSize (${overridden.sizeMax}) as a one-off global size override (STL sources get no per-entity sizing).`
+      );
+    } else if (rawParts.filter((p) => p.meshSize != null).length > 1) {
+      warnings.push("Multiple parts have meshSize set — ambiguous for an STL source, so all are ignored.");
+    }
+    parts = [];
+    sized = overridden;
   }
-  return { parts: [], options: overridden };
+  const factor = unitScaleFactor(unit);
+  return { parts: scalePartsMeshSizeForUnit(parts, factor), options: scaleMeshOptionsForUnit(sized, factor) };
+}
+
+/** Validates a raw `unit` param string into a `DisplayUnit`, warning and
+ * falling back to `"mm"` (no conversion) for an unrecognized value — same
+ * convention as `exportBRepTool`'s unit handling, but simpler: every Gmsh
+ * export format is scale-agnostic (no STEP/IGES-style declared-header-unit
+ * gotcha), so unlike `exportBRepTool` there's no format-dependent fallback. */
+function resolveExportMeshUnit(rawUnit: string | undefined, warnings: string[]): DisplayUnit {
+  if (rawUnit == null) return "mm";
+  if (!DISPLAY_UNITS.includes(rawUnit as DisplayUnit)) {
+    warnings.push(`Unknown unit "${rawUnit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm" (no conversion).`);
+    return "mm";
+  }
+  return rawUnit as DisplayUnit;
 }
 
 async function effectiveMeshOptions(modelPath: string, override: Partial<MeshOptions> | undefined): Promise<MeshOptions> {
@@ -1050,7 +1095,7 @@ export function rewriteGeoMerge(text: string, xaoName: string): string {
 
 export async function exportMeshTool(
   ctx: ToolContext,
-  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions> },
+  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string },
   onProgress?: ProgressCallback
 ) {
   const modelPath = params.path;
@@ -1064,10 +1109,11 @@ export async function exportMeshTool(
   const outputPath = path.resolve(params.outputPath);
   assertNotSourcePath(modelPath, outputPath);
   const warnings: string[] = [];
+  const unit = resolveExportMeshUnit(params.unit, warnings);
 
-  const input = await resolveMeshInputHeadless(ctx, modelPath, route, warnings);
+  const input = await resolveMeshInputHeadless(ctx, modelPath, route, warnings, unit);
   const base = await effectiveMeshOptions(modelPath, params.options);
-  const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
+  const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings, unit);
 
   // Same start/done-only scoping as generate_mesh — no mid-call hook exists.
   onProgress?.({ progress: 0, total: 1, message: `Generating + exporting to ${format.id}...` });

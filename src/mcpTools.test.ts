@@ -35,6 +35,7 @@ import { readEdits, readParts, editsSidecarPath, geoScriptPath, partsSidecarPath
 import { MESH_EXPORT_FORMATS } from "./meshExportFormats";
 import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
+import { parseStl } from "./stlParser";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
 import type { MassProperties } from "./massProperties";
@@ -829,9 +830,14 @@ describe("generate_mesh", () => {
     const c = ctx();
     await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
     const result = await generateMeshTool(c, { path: stpModel, options: { sizeMax: 2 } });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [
-      { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] },
-    ]);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(
+      dir,
+      expect.any(Uint8Array),
+      "step",
+      "step",
+      [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }],
+      1 // generate_mesh always meshes at native mm (factor 1) — see export_mesh for the unit-converted path
+    );
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(genCall[1]).toEqual({ kind: "brep", stepBytes: new Uint8Array([1, 2, 3]) });
     expect(genCall[2].sizeMax).toBe(2);
@@ -997,6 +1003,65 @@ describe("export_mesh", () => {
     expect(onProgress).toHaveBeenCalledTimes(2);
     expect(onProgress.mock.calls[0][0]).toMatchObject({ progress: 0, total: 1 });
     expect(onProgress.mock.calls[1][0]).toMatchObject({ progress: 1, total: 1 });
+  });
+
+  it("stays at native mm (factor 1) when unit is omitted", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out.msh");
+    await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out });
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1);
+  });
+
+  it("passes the unit scale factor through to exportBRep for a B-rep source, and rescales sizeMin/sizeMax to match", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out.msh");
+    await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out, unit: "in", options: { sizeMin: 1, sizeMax: 10 } });
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1 / 25.4);
+    const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
+    expect(genCall[2].sizeMin).toBeCloseTo(1 / 25.4, 6);
+    expect(genCall[2].sizeMax).toBeCloseTo(10 / 25.4, 6);
+  });
+
+  it("leaves the unbounded sizeMax sentinel untouched even when a unit is given", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out.msh");
+    await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out, unit: "in" });
+    const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
+    expect(genCall[2].sizeMax).toBe(DEFAULT_MESH_OPTIONS.sizeMax);
+  });
+
+  it("falls back to mm with a warning for an unrecognized unit", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out.msh");
+    const result = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out, unit: "parsec" });
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1);
+    expect(result.warnings.some((w) => w.includes('Unknown unit "parsec"'))).toBe(true);
+  });
+
+  it("scales STL vertex coordinates before meshing when a unit is given", async () => {
+    const c = ctx();
+    await fs.writeFile(
+      stlModel,
+      "solid x\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid x\n",
+      "utf8"
+    );
+    const out = path.join(dir, "out.msh");
+    await exportMeshTool(c, { path: stlModel, format: "msh", outputPath: out, unit: "in" });
+    const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
+    expect(genCall[1].kind).toBe("stl");
+    const positions = parseStl((genCall[1] as { stlBytes: Uint8Array }).stlBytes);
+    expect(positions.length).toBe(9);
+    expect(positions[3]).toBeCloseTo(1 / 25.4, 5); // second vertex's x, was 1
+  });
+
+  it("leaves STL bytes byte-for-byte unchanged when unit is mm (no round trip through scaleStlBytes)", async () => {
+    const c = ctx();
+    const raw = "solid x\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid x\n";
+    await fs.writeFile(stlModel, raw, "utf8");
+    const out = path.join(dir, "out.msh");
+    await exportMeshTool(c, { path: stlModel, format: "msh", outputPath: out });
+    const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
+    expect(Buffer.from((genCall[1] as { stlBytes: Uint8Array }).stlBytes).toString("utf8")).toBe(raw);
   });
 });
 

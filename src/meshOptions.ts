@@ -162,3 +162,39 @@ export function applyStlPartSizeOverride(options: MeshOptions, parts: Part[]): M
   const size = withSize[0].meshSize as number;
   return { ...options, sizeMin: size, sizeMax: size };
 }
+
+/**
+ * Rescales `sizeMin`/`sizeMax` by `factor` for a unit-converted Gmsh-format
+ * export (the FE Mesh panel's Export flow only — interactive **Generate**
+ * always stays native mm, since its overlay is display-only and has no
+ * exported file whose numbers need to mean anything to an external tool; see
+ * CLAUDE.md's meshing-unit-conversion section). `factor` is
+ * `unitScaleFactor(unit)` from `lengthUnits.ts` (mm → target-unit); it must
+ * be the SAME factor used to scale the geometry the caller feeds Gmsh
+ * (`exportBRep`'s `scaleFactor` param for B-rep sources, `scaleStlBytes` for
+ * STL ones) — a size target left in raw mm while the geometry is now
+ * inch-scaled would apply as a wildly wrong relative density (the exact bug
+ * this feature closes). Never persisted — the caller must not write the
+ * result back to the `.mesh.json` sidecar. `SIZE_MAX_SENTINEL` is left
+ * untouched: it's a "no explicit size yet" flag, not a real mm value, and
+ * stays effectively unbounded at any scale anyway.
+ */
+export function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): MeshOptions {
+  if (factor === 1) return options;
+  return {
+    ...options,
+    sizeMin: options.sizeMin * factor,
+    sizeMax: options.sizeMax === SIZE_MAX_SENTINEL ? SIZE_MAX_SENTINEL : options.sizeMax * factor,
+  };
+}
+
+/**
+ * The `Part[]`-side sibling of {@link scaleMeshOptionsForUnit} — rescales
+ * every part's own `meshSize` (mm) by the same `factor`, for the same
+ * unit-converted-export-only, never-persisted reason. A part with no
+ * `meshSize` set is left untouched.
+ */
+export function scalePartsMeshSizeForUnit(parts: Part[], factor: number): Part[] {
+  if (factor === 1) return parts;
+  return parts.map((p) => (p.meshSize != null ? { ...p, meshSize: p.meshSize * factor } : p));
+}

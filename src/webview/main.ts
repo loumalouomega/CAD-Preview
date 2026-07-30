@@ -643,8 +643,8 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     meshingPanel.setBusy(true);
     post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
   },
-  onExport: async (format) => {
-    post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource() });
+  onExport: async (format, unit) => {
+    post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource(), unit });
   },
   onClear: () => {
     viewer.setMeshOverlay(null);

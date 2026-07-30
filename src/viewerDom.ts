@@ -78,6 +78,7 @@ export function viewerBodyHtml(): string {
           <div id="meshing-actions">
             <button id="meshing-generate" title="Generate mesh">${icon("generate")} Generate</button>
             <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
+            <select id="meshing-export-unit" class="meshing-export-select" title="Export unit (geometric scale — mm is native, no conversion)"></select>
             <button id="meshing-export" title="Export mesh">${icon("export")} Export</button>
             <button id="meshing-clear" title="Clear generated mesh">${icon("clear")} Clear</button>
             <button id="meshing-worst-toggle" title="Highlight worst-quality elements" hidden>${icon("warning")} Worst</button>

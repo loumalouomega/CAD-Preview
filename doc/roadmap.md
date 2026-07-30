@@ -24,39 +24,27 @@ recorded in `CLAUDE.md`. None is a bug.
 
 ### Tier 2 — extending shipped features
 
-1. **Unit conversion for the FE Mesh panel's Gmsh-format export** (**S–M**).
-   The model Export/Save As command now converts units on export (a real
-   geometric scale — BREP via OCCT, STL/OBJ/PLY/glTF via Three.js; see item 2
-   below for why STEP/IGES are excluded from that). The FE Mesh panel's
-   *separate* Gmsh-format export (`.msh`/Kratos MDPA/VTK/etc., via
-   `meshingExport`) deliberately still writes native mm only: converting it
-   correctly also needs proportionally rescaling
-   `MeshOptions.sizeMin`/`sizeMax` (an absolute mm-valued size target applied
-   to inch-scaled input geometry would produce a wildly coarser mesh than
-   intended) and, for mesh-format (STL-sourced) documents, a host-side STL
-   vertex scaler this codebase has never needed before.
-2. **Unit conversion on export for STEP/IGES targets** (**M–L**, needs a
-   working OCCT mechanism, upstream-ish). Deliberately excluded from the
-   feature above: both formats declare a length unit in their own file header
-   that must match the geometry's actual scale, and this OCCT WASM build has
-   no verified way to set it on write — `Interface_Static`'s
-   `"write.step.unit"` static never registers (confirmed by probing the live
-   WASM: `IsPresent`/`SetCVal` both report failure even after constructing a
-   `STEPControl_Writer`), and `IGESControl_Writer`'s alternate unit-aware
-   constructor (`IGESControl_Writer_2(unit, modecreation)`, distinct from the
-   default `_1` overload this codebase uses) writes successfully but its
-   output couldn't be read back to verify correctness. A real fix needs
-   either a working OCCT unit-static mechanism (possibly needs XSTEP resource
-   files this WASM build doesn't bundle) or hand-authoring/patching a valid
-   `CONVERSION_BASED_UNIT` STEP entity via text surgery — judged too
-   high-risk to attempt without a way to validate the result beyond this
-   codebase's own text-pattern-matching reader.
-3. **Entity-id rebinding after topology-changing ops** (**L**). Booleans,
+1. **Unit conversion on export for STEP/IGES targets** (**M–L**, needs a
+   working OCCT mechanism, upstream-ish). Both formats declare a length unit
+   in their own file header that must match the geometry's actual scale, and
+   this OCCT WASM build has no verified way to set it on write —
+   `Interface_Static`'s `"write.step.unit"` static never registers (confirmed
+   by probing the live WASM: `IsPresent`/`SetCVal` both report failure even
+   after constructing a `STEPControl_Writer`), and `IGESControl_Writer`'s
+   alternate unit-aware constructor (`IGESControl_Writer_2(unit,
+   modecreation)`, distinct from the default `_1` overload this codebase
+   uses) writes successfully but its output couldn't be read back to verify
+   correctness. A real fix needs either a working OCCT unit-static mechanism
+   (possibly needs XSTEP resource files this WASM build doesn't bundle) or
+   hand-authoring/patching a valid `CONVERSION_BASED_UNIT` STEP entity via
+   text surgery — judged too high-risk to attempt without a way to validate
+   the result beyond this codebase's own text-pattern-matching reader.
+2. **Entity-id rebinding after topology-changing ops** (**L**). Booleans,
    fillets, and feature modeling re-tessellate into fresh `face-N`/`edge-N`
    ids, so existing *part* assignments referencing them are dropped on reload
    (gracefully, by the tolerant sidecar parser). A geometric rebinding pass
    could preserve them; the matching heuristics are the hard part.
-4. **OBJ/PLY/glTF support for `compare_models`** (**M**). STL is now
+3. **OBJ/PLY/glTF support for `compare_models`** (**M**). STL is now
    supported via a new host-side parser (`stlParser.ts`/`meshComponents.ts`);
    OBJ/PLY/glTF remain webview-only. OBJ is plain text and comparatively easy
    to add on the same pattern; PLY (binary+ASCII variants) and glTF (JSON +
@@ -65,12 +53,12 @@ recorded in `CLAUDE.md`. None is a bug.
 
 ### Tier 3 — upstream-dependent
 
-5. **Richer meshio++ import** (**M**, partly upstream). Imported VTK/MED/CGNS/
+4. **Richer meshio++ import** (**M**, partly upstream). Imported VTK/MED/CGNS/
    Exodus/XDMF/MDPA files funnel through meshio++'s STL-boundary writer, so
    region names, scalar point/cell data, and multi-material grouping are lost —
    only geometry survives. Preserving them needs a genuinely different import
    path, not just a flag.
-6. **Confirm Kratos MDPA block names** (**S**, needs Kratos-dev input). The
+5. **Confirm Kratos MDPA block names** (**S**, needs Kratos-dev input). The
    geometry block names are certain; the newer kinds' `Element*`/`Condition*`
    names are best-guess transcriptions. `"elements"` mode already pre-flights
    an actionable error for any kind whose name is unknown, so the guard is in
@@ -78,7 +66,7 @@ recorded in `CLAUDE.md`. None is a bug.
 
 ### Verification debt
 
-7. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
+6. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
    reads `File.path` (a legacy Electron extension) and falls back to the Open
    dialog when it's absent, so the feature always works — but the true-path
    branch has never been exercised against a real Extension Development Host.

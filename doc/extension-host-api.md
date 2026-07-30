@@ -145,6 +145,7 @@ async function runCompareModelsCommand(context: vscode.ExtensionContext, default
 
 // stlParser.ts / meshComponents.ts / stlSolidSignatures.ts (all pure)
 function parseStl(bytes: Uint8Array): Float32Array   // flat, ungrouped triangle soup — 9 floats/triangle
+function scaleStlBytes(bytes: Uint8Array, factor: number): Uint8Array   // rescales + re-serializes as ASCII STL
 function weldTriangleSoup(soup: Float32Array, epsilon = 1e-5): { positions: Float32Array; indices: Uint32Array }
 function connectedComponents(indices: Uint32Array): number[][]   // one triangle-index array per "solid"
 function boundsOfTriangles(positions, indices, triangles: number[]): { min: Vec3; max: Vec3 } | undefined
@@ -183,6 +184,15 @@ function extractStlSolidSignatures(bytes: Uint8Array): { signatures: SolidSignat
     classic trap (a binary file's free-form 80-byte header may itself start
     with that word; a unit test builds a binary fixture with exactly that
     trap baked into its header to confirm detection isn't fooled).
+  - `scaleStlBytes(bytes, factor)` (added for the FE Mesh panel's Gmsh-export
+    unit conversion, not Compare Models — see CLAUDE.md's Meshing section) is
+    the host-side STL vertex scaler this file's earlier history flagged as
+    missing: parses via `parseStl`, multiplies every coordinate by `factor`,
+    and re-serializes as ASCII STL — facet normals are always **recomputed**
+    from the (post-scale) triangle winding via a cross product, never trusted
+    from the input file, matching `parseStl`'s own "recomputed elsewhere,
+    never trusted from the file" convention (a uniform scale can't flip
+    winding, so this is equivalent to scaling stored normals, just simpler).
   - `weldTriangleSoup` dedups STL's unindexed, vertex-per-triangle-instance
     format via a quantized-position hash — the same technique the webview's
     `meshFacets.ts`'s `canonOf` already uses for the identical problem.
@@ -484,8 +494,11 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
    `writeMeshOptions()` and `writeGeoScript()`.
 8. On `"meshingGenerate"`/`"meshingExport"`: resolves the mesh input via
    `resolveMeshInput()` (re-exports STEP for B-rep sources; uses the message's
-   `stl` field for mesh sources) and calls `generateMesh()`/`exportGeoUnrolled()`,
-   posting `"meshingResult"`/`"meshingError"` (Generate) or writing the file via
+   `stl` field for mesh sources; `"meshingExport"`'s optional `unit` field — a
+   real geometric scale, `"mm"`-default — threads through to it and to
+   `resolveMeshPartsAndOptions()`'s matching `MeshOptions`/`Part[]` rescale)
+   and calls `generateMesh()`/`exportGeoUnrolled()`, posting
+   `"meshingResult"`/`"meshingError"` (Generate) or writing the file via
    `promptSaveAndWrite()` (Export).
 9. On `"exportRequest"`: dispatches to `handleExport()`.
 10. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
@@ -516,13 +529,33 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 
 **`sendViewerDefaults(post)`** — Private method. Reads `workspace.getConfiguration("cadPreview")`, passes it through `normalizeViewerDefaults()` (`src/viewerDefaults.ts`), and posts a `"viewerDefaults"` message — synchronous, no `await`, since it's a pure settings read.
 
-**`resolveMeshInput(uri, route, ops, stl)`** — Private method. Builds the
-`MeshGenerationInput` `generateMesh`/`exportGeoUnrolled` need: for a B-rep
-document, re-exports the source to STEP via the existing `exportBRep()` (so live
-edits are reflected); for a mesh document, decodes the caller-supplied base64
-`stl` field. Returns `undefined` when a mesh document has no `stl` payload yet —
-callers treat this as a graceful "nothing to mesh", posting `"meshingError"`
-rather than throwing.
+**`resolveMeshInput(uri, route, ops, stl, unit = "mm")`** — Private method.
+Builds the `MeshGenerationInput` `generateMesh`/`exportGeoUnrolled` need: for a
+B-rep document, re-exports the source to STEP via the existing `exportBRep()`
+(so live edits are reflected), passing `unitScaleFactor(unit)` as its
+`scaleFactor` arg; for a mesh document, decodes the caller-supplied base64
+`stl` field and, when `unit !== "mm"`, rescales it via the new
+`scaleStlBytes()` (`src/stlParser.ts`). Returns `undefined` when a mesh
+document has no `stl` payload yet — callers treat this as a graceful "nothing
+to mesh", posting `"meshingError"` rather than throwing. `unit` defaults to
+`"mm"` (native, no conversion); the `"meshingGenerate"` call site always omits
+it (Generate's overlay is display-only, with no exported file to convert),
+while `"meshingExport"` passes the message's own optional `unit` field — see
+the `resolveMeshPartsAndOptions` entry just below for the matching
+`MeshOptions`/`Part[]` rescale, and CLAUDE.md's Meshing section for the full
+write-up.
+
+**`resolveMeshPartsAndOptions(uri, input, options, unit = "mm")`** — Private
+method. Reads the parts sidecar and shapes it per `input.kind`: B-rep sources
+pass `parts` straight through; STL/mesh sources drop `parts` (`[]`, no true
+physical-group correlation — see `gmshPartsMap.ts`) and instead apply
+`applyStlPartSizeOverride()`'s one-off single-sized-part degrade. **Then**,
+regardless of kind, applies `scaleMeshOptionsForUnit()`/
+`scalePartsMeshSizeForUnit()` (`src/meshOptions.ts`) with `unitScaleFactor(unit)`
+— last, so a single sized STL part's raw-mm override is itself correctly
+carried into the target unit's numeric space too, not just the B-rep
+per-part case. A `factor` of `1` (the `"mm"` default) is a no-op returning the
+same object/array references.
 
 **`handleExport(uri, route, post, pending)`** — Private method. The whole Export flow (triggered by **File ▸ Export… / Save As…**):
 1. `exportTargetsFor(route)` → `vscode.window.showQuickPick()` of compatible formats; bails if cancelled.
@@ -1429,6 +1462,9 @@ The FE-mesh options model and its sidecar pair, mirroring the parts/edits trios
 ```typescript
 const DEFAULT_MESH_OPTIONS: MeshOptions
 function validateMeshOptions(raw: unknown): MeshOptions | null   // single tolerance gate
+function applyStlPartSizeOverride(options: MeshOptions, parts: Part[]): MeshOptions
+function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): MeshOptions
+function scalePartsMeshSizeForUnit(parts: Part[], factor: number): Part[]
 ```
 Unlike `EditOp`'s validator, `validateMeshOptions` clamps/defaults **individual**
 invalid fields to the matching `DEFAULT_MESH_OPTIONS` field rather than rejecting
@@ -1436,6 +1472,18 @@ the whole object — `raw` is only rejected outright (returns `null`) when it is
 an object at all. `sizeMin`/`sizeMax` are validated as a pair: if `sizeMin >
 sizeMax` after individually clamping each, both fall back to the defaults
 together rather than leaving an inconsistent pair.
+
+`applyStlPartSizeOverride` is STL/mesh sources' one-off sizing degrade (they
+can't get true per-entity physical groups): when *exactly one* part has
+`meshSize` set, it overrides `sizeMin`/`sizeMax` to that value for the one
+generate/export call only (never persisted). `scaleMeshOptionsForUnit`/
+`scalePartsMeshSizeForUnit` (added for the FE Mesh panel's Gmsh-export unit
+conversion) rescale `sizeMin`/`sizeMax`/`meshSize` by a `unitScaleFactor()`
+result, for the same never-persisted, this-call-only reason — both are
+identity (same-reference) no-ops at `factor === 1`, and
+`scaleMeshOptionsForUnit` leaves `SIZE_MAX_SENTINEL` untouched (a flag, not a
+real mm value). See `provider.ts`'s `resolveMeshPartsAndOptions` above for how
+the three compose on one call.
 
 `src/meshOptionsSidecar.ts` is **vscode-free** (unit-tested):
 

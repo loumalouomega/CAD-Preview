@@ -431,16 +431,20 @@ server.registerTool(
   "export_mesh",
   {
     description:
-      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
+      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects export_mesh's written file. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
     inputSchema: {
       path: modelPath,
       format: z.string().describe("Mesh export format id"),
       outputPath: z.string().describe("Destination file path (must not be the CAD source)"),
       options: meshOptionsOverride,
+      unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
     },
   },
-  wrap((args: { path: string; format: string; outputPath: string; options?: Record<string, unknown> }, onProgress) =>
-    exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
+  wrap(
+    (
+      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string },
+      onProgress
+    ) => exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )
 );
 

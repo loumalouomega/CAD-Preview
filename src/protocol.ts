@@ -184,7 +184,7 @@ export type WebviewToHost =
   | { type: "exportError"; requestId: string; message: string }
   | { type: "meshingChanged"; options: MeshOptions }
   | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
-  | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string }
+  | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: "screenshotButtonClicked" }
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }

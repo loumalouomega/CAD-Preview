@@ -70,3 +70,47 @@ export function parseStl(bytes: Uint8Array): Float32Array {
   if (isBinaryStl(bytes)) return parseBinaryStl(bytes);
   return parseAsciiStl(Buffer.from(bytes).toString("latin1"));
 }
+
+/**
+ * Rescales every vertex coordinate by `factor` and re-serializes as ASCII
+ * STL text — the host-side STL vertex scaler `CLAUDE.md`'s unit-conversion
+ * section notes this codebase never needed before item 1 (export-time unit
+ * conversion for BREP/STL/OBJ/PLY/glTF export targets, which all run in the
+ * webview or via OCCT) added a *second* consumer: the FE Mesh panel's
+ * Gmsh-format export needs the SAME scaled geometry fed to Gmsh, for a
+ * mesh-format (STL-sourced) document. Facet normals are always recomputed
+ * from the (post-scale) vertex winding via a cross product — never read from
+ * the input file — mirroring `parseStl`'s own "recomputed elsewhere, never
+ * trusted from the file" convention (a uniform scale never flips winding, so
+ * this is equivalent to scaling stored normals, just simpler to implement
+ * without carrying them through `parseStl`'s triangle-soup shape at all).
+ */
+export function scaleStlBytes(bytes: Uint8Array, factor: number): Uint8Array {
+  const positions = parseStl(bytes);
+  const triangleCount = positions.length / 9;
+  const lines: string[] = ["solid scaled"];
+  for (let t = 0; t < triangleCount; t++) {
+    const o = t * 9;
+    const v0: [number, number, number] = [positions[o] * factor, positions[o + 1] * factor, positions[o + 2] * factor];
+    const v1: [number, number, number] = [positions[o + 3] * factor, positions[o + 4] * factor, positions[o + 5] * factor];
+    const v2: [number, number, number] = [positions[o + 6] * factor, positions[o + 7] * factor, positions[o + 8] * factor];
+    const ux = v1[0] - v0[0], uy = v1[1] - v0[1], uz = v1[2] - v0[2];
+    const wx = v2[0] - v0[0], wy = v2[1] - v0[1], wz = v2[2] - v0[2];
+    let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len;
+    ny /= len;
+    nz /= len;
+    lines.push(
+      `facet normal ${nx} ${ny} ${nz}`,
+      "outer loop",
+      `vertex ${v0[0]} ${v0[1]} ${v0[2]}`,
+      `vertex ${v1[0]} ${v1[1]} ${v1[2]}`,
+      `vertex ${v2[0]} ${v2[1]} ${v2[2]}`,
+      "endloop",
+      "endfacet"
+    );
+  }
+  lines.push("endsolid scaled");
+  return Buffer.from(lines.join("\n"), "utf8");
+}
