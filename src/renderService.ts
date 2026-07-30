@@ -73,11 +73,40 @@ const NOT_AVAILABLE_REASON =
   "checkout, CI, or an agent sandbox that can run that command, but is not guaranteed present for " +
   "an installed .vsix. See doc/mcp-server.md.";
 
+/**
+ * `playwright-core`'s own `lib/bootstrap.js` (loaded as a side effect of
+ * `import("playwright")`, confirmed against the installed 1.62.1) calls
+ * `process.exit(1)` **synchronously at module-load time** when
+ * `process.versions.node`'s major version is below its own minimum (20,
+ * raised from a lower floor in a routine version bump — this codebase's
+ * `package.json` declares no Node engine requirement of its own, since the
+ * extension/MCP server run under whatever Node the host — VS Code's bundled
+ * Electron, or an MCP client — provides). `process.exit()` is not a thrown
+ * exception, so NO amount of `try/catch` around the dynamic `import()` below
+ * can catch it — it kills this entire MCP server process outright, which is
+ * exactly the "never crashes the MCP server" invariant this file's own
+ * top-of-file doc comment promises. Verified against the live package via
+ * `npm run mcp:smoke` under Node 18: without this guard, the server process
+ * dies mid-run with playwright-core's own console message the instant
+ * `isRenderAvailable`/`renderSnapshot` first imports it. Checking the Node
+ * version BEFORE ever attempting the import — never triggering
+ * `playwright-core`'s own gate at all — is the only way to keep this
+ * gracefully degrading to `{available: false}`/`{supported: false}` instead.
+ */
+const MIN_NODE_MAJOR_FOR_PLAYWRIGHT = 20;
+
+function nodeSupportsPlaywright(): boolean {
+  return parseInt(process.versions.node.split(".")[0], 10) >= MIN_NODE_MAJOR_FOR_PLAYWRIGHT;
+}
+
+const NODE_TOO_OLD_REASON = `${NOT_AVAILABLE_REASON} (this Node.js runtime is v${process.versions.node}; Playwright requires v${MIN_NODE_MAJOR_FOR_PLAYWRIGHT}+)`;
+
 /** Cheap-ish availability probe (launches + immediately closes a browser) —
  * NOT called by `describe_capabilities` (that tool is meant to be
  * instant/side-effect-free); `render_snapshot` calls this itself and reports
  * `supported: false` with {@link NOT_AVAILABLE_REASON} rather than crashing. */
 export async function isRenderAvailable(): Promise<{ available: boolean; reason?: string }> {
+  if (!nodeSupportsPlaywright()) return { available: false, reason: NODE_TOO_OLD_REASON };
   try {
     const { chromium } = await import("playwright");
     const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
@@ -169,6 +198,7 @@ export async function renderSnapshot(
   ops: EditOp[],
   opts: { focus?: string[]; hide?: string[]; wireframe?: boolean; views?: RenderView[] }
 ): Promise<RenderResult> {
+  if (!nodeSupportsPlaywright()) return { supported: false, reason: NODE_TOO_OLD_REASON };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let playwright: any;
   try {

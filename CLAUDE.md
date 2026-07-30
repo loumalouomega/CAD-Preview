@@ -1667,6 +1667,29 @@ not authoritative"). Non-negotiable invariants:
   lists `"playwright"` (alongside `gmsh-wasm`/`meshioplusplus`) so the
   dynamic import resolves via real `node_modules` at runtime rather than
   getting inlined into the bundle.
+  - **A `try/catch` around the dynamic `import()` is NOT sufficient by
+    itself — verified the hard way, via a real regression a routine
+    `playwright` dependency bump (1.61.1 → 1.62.1) introduced.**
+    `playwright-core`'s own `lib/bootstrap.js`, loaded as a side effect of
+    `import("playwright")`, calls `process.exit(1)` **synchronously at
+    module-load time** whenever `process.versions.node`'s major version is
+    below its own minimum (raised to 20 in that bump). `process.exit()` is
+    not a thrown exception — no `try/catch` can intercept it — so under
+    Node < 20 the entire MCP server process died the instant
+    `isRenderAvailable`/`renderSnapshot` first imported the package,
+    confirmed via `npm run mcp:smoke` under Node 18 (this codebase's
+    `package.json` declares no Node engine requirement of its own, since the
+    extension/MCP server run under whatever Node the host — VS Code's
+    bundled Electron, or an MCP client — provides, which may be older than
+    whatever a devDependency itself has bumped to). Fixed with a version
+    check (`nodeSupportsPlaywright()`, comparing `process.versions.node`'s
+    major against `MIN_NODE_MAJOR_FOR_PLAYWRIGHT`) BEFORE either call site
+    ever attempts `import("playwright")` at all — never triggering
+    `playwright-core`'s own gate in the first place is the only way to keep
+    this gracefully degrading rather than crashing. A lesson for any future
+    optional-dependency dynamic import in this codebase: a `try/catch`
+    around the import only catches a thrown rejection, not a dependency that
+    decides to terminate the process itself.
 - **New protocol messages, deliberately separate from `screenshotRequest`/
   `screenshotResult`/`screenshotError`** (the interactive single-view
   Screenshot feature): `renderViewRequest` (host→webview: `direction`, `up?`,
