@@ -712,6 +712,11 @@ export class Viewer {
     this.clearMeasurementOverlay();
     const marker = makeMeasureMarkerSprite();
     marker.position.copy(point);
+    // Sprite scale defaults to 1 world unit — huge on a small (e.g. mm-scale)
+    // model. Same proportional-to-model-radius sizing as point-mode vertex
+    // sprites (`pointSpriteScale`, set in `frame()`), just a bit larger since
+    // this marker is active pick feedback, not a passive vertex indicator.
+    marker.scale.setScalar(this.pointSpriteScale * 3.0);
     this.measurementOverlay = marker;
     this.scene.add(marker);
   }
