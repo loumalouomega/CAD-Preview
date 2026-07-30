@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved
 fast and bundled multiple features per bump).
 
-## [1.1.0] - 2026-07-30
+## [1.1.3] - 2026-07-30
 
 ### Added
 - **Toolbar dropdown menus.** The toolbar had grown to ~21 controls in one
@@ -83,6 +83,9 @@ fast and bundled multiple features per bump).
   click closed and immediately reopened it.
 - Clicking away from an open menu no longer also acts on whatever is
   underneath; with markup mode on, that click used to draw a stroke.
+- The measurement pick marker rendered at a fixed 1 world-unit size — massive
+  and out of proportion on small (e.g. mm-scale) models. It now scales with
+  the model, matching the existing point-mode vertex markers.
 
 ## [1.0.5] - 2026-07-19
 
@@ -244,7 +247,7 @@ fast and bundled multiple features per bump).
   OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and
   Three.js in the webview for rendering.
 
-[1.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.5...v1.1.0
+[1.1.3]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.5...v1.1.3
 [1.0.5]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.2...v1.0.3
