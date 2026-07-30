@@ -99,8 +99,8 @@ first — it returns the full op catalog with per-kind parameter documentation.
 | `download_standard_part` | Downloads one step.parts part's STEP file to `outputPath`, verifying it against the part's recorded `sha256` if present (`verifiedChecksum` in the result). The file is an ordinary STEP file — opens through the normal pipeline. **Network call**, same graceful-failure convention as `search_standard_parts`. |
 | `compare_models` | Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict). STEP/IGES/BREP (edits baked in) and STL (raw file bytes — a host-side parser, no edits baked in) are supported headless, in any combination; OBJ/PLY/glTF/meshio-only formats return `supported: false`. |
 | `get_state` | The sidecar state without loading geometry: edit-op stack (indexed, described), variables (evaluated), parts, mesh options. |
-| `apply_edit_ops` | Validate and append raw `EditOp` JSON objects to the op stack; per-op accept/reject report; for B-rep sources returns the post-replay entity inventory. `dryRun` validates without persisting. |
-| `run_parametric_script` | Compiles a declarative `{variables?, steps}` script (each step is one op, or one flat `repeat` loop expanding a template op-list with the loop index available to `exprs`) into ops and appends them via the same path as `apply_edit_ops` — NOT a general scripting language, no code execution. See "Parametric scripts" below. |
+| `apply_edit_ops` | Validate and append raw `EditOp` JSON objects to the op stack; per-op accept/reject report; for B-rep sources returns the post-replay entity inventory. `dryRun` validates without persisting. When the appended ops include a topology-changing one and Parts exist, best-effort geometrically rebinds their `face-N`/`edge-N`/`solid-N`/`point-N` references to the re-tessellated ids (see "Entity-id rebinding" below) and reports the outcome in `warnings`. |
+| `run_parametric_script` | Compiles a declarative `{variables?, steps}` script (each step is one op, or one flat `repeat` loop expanding a template op-list with the loop index available to `exprs`) into ops and appends them via the same path as `apply_edit_ops` — NOT a general scripting language, no code execution. See "Parametric scripts" below. Gets the same entity-id rebinding as `apply_edit_ops`. |
 | `remove_edit_op` | Remove one op by 0-based index (the panel's per-row ✕ equivalent). |
 | `set_variables` | Replace the named parametric variables (`L = 20`) and re-resolve every op expression — geometry rebuilds from the new values on next load/mesh. |
 | `set_part` | Create/update/remove a named part grouping entity ids; optional per-part `meshSize` for local refinement. |
@@ -180,6 +180,38 @@ invalid op, a bad `indexVar`, a `times` expression that fails to evaluate) is
 skipped with a reason in the per-step `report`, never crashes the whole
 compile — same graceful-degradation convention as `apply_edit_ops`. `dryRun`
 compiles and reports without persisting.
+
+## Entity-id rebinding
+
+Booleans, fillets, feature-modeling ops, and wireframe surface/volume builds
+re-tessellate a B-rep shape into fresh `face-N`/`edge-N`/`solid-N`/`point-N`
+ids — a Part assigned to `face-3` before such an op may find that string
+means something else entirely afterward. `apply_edit_ops`/
+`run_parametric_script` now run a best-effort geometric rebinding pass
+whenever the appended ops include a topology-changing one and the document
+has at least one Part: for each such op, it fingerprints every entity
+(bounding-box centre + area/length) immediately before and after that one
+op, greedily matches old to new by nearest centre (within a tolerance
+derived from the model's own scale), and rewrites every Part's ids through
+the match — an id with no confident match is dropped, the same graceful
+degradation the sidecar parser already applied on reload, just applied
+proactively instead of only on the next reopen.
+
+This is genuinely best-effort, not a rename tracker — it can't distinguish
+"this face moved" from "this face was deleted and a new coincidental one
+appeared nearby," and a heavily-restructuring op (a boolean that merges two
+faces into one, for instance) has no clean 1:1 mapping to find. When it
+runs, the tool response's `warnings` includes a line like `"Rebound 2
+part-entity id(s) after topology-changing op(s) (best-effort geometric
+match); dropped 1 with no confident match."` — read `dropped` as "these ids
+no longer resolve to anything in the model," the same signal an unresolved
+id in a hand-edited sidecar would give.
+
+Only ever runs for a genuine **append** (the newly-submitted ops are added
+onto the existing stack unchanged) — never for `remove_edit_op`, and never
+on `dryRun` (nothing persists). Mesh-format sources are unaffected (no B-rep
+to re-derive ids from). See CLAUDE.md's "Entity-id drift" section for the
+full algorithm and its live-WASM verification.
 
 ## The sidecar contract
 

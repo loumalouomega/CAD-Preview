@@ -41,7 +41,16 @@ import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, MassProperties } from "./massProperties";
-import type { getEntityFacts, measureEntities, measureExact, EntityFacts, MeasureResult, ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
+import type {
+  getEntityFacts,
+  measureEntities,
+  measureExact,
+  rebindPartsAcrossOps,
+  EntityFacts,
+  MeasureResult,
+  ExactMeasureKind,
+  ExactMeasureResult,
+} from "./entityFacts";
 import type { renderSnapshot, isRenderAvailable, RenderImage } from "./renderService";
 import type {
   searchStandardParts,
@@ -92,6 +101,7 @@ export interface Pipeline {
   getEntityFacts: typeof getEntityFacts;
   measureEntities: typeof measureEntities;
   measureExact: typeof measureExact;
+  rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
   searchStandardParts: typeof searchStandardParts;
@@ -617,6 +627,41 @@ export async function getState(params: { path: string }) {
   };
 }
 
+/**
+ * Shared by `apply_edit_ops` and `run_parametric_script` — both append zero
+ * or more new ops to an existing op stack and, for a B-rep source, need the
+ * same best-effort entity-id rebinding (`entityFacts.ts`'s
+ * `rebindPartsAcrossOps`) so a topology-changing append doesn't silently
+ * orphan existing Part assignments. A no-op (returns `null`) when there's
+ * nothing to rebind — dry run, no ops accepted, a mesh-format source (no
+ * B-rep to re-derive ids from), or the pass itself found nothing to change
+ * (empty parts list / no topology-changing op in `accepted`) — so callers
+ * can skip writing the sidecar and skip mentioning it in `warnings`.
+ */
+async function maybeRebindParts(
+  ctx: ToolContext,
+  modelPath: string,
+  route: FileRoute,
+  previousOps: EditOp[],
+  accepted: EditOp[]
+): Promise<{ reboundCount: number; droppedCount: number } | null> {
+  if (route.strategy !== "occt" || accepted.length === 0) return null;
+  const parts = await readParts(modelPath);
+  if (parts.length === 0) return null;
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.rebindPartsAcrossOps(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    previousOps,
+    accepted,
+    parts
+  );
+  if (result.parts === parts) return null; // nothing topology-changing, or nothing matched — same reference
+  await writeParts(modelPath, result.parts);
+  return { reboundCount: result.stats.rebound, droppedCount: result.stats.dropped };
+}
+
 // ---------------------------------------------------------------------------
 // apply_edit_ops
 
@@ -673,6 +718,13 @@ export async function applyEditOps(
     const bytes = await readModelBytes(modelPath);
     const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, newOps);
     model = entitySummary(result);
+  }
+
+  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, accepted);
+  if (rebind) {
+    warnings.push(
+      `Rebound ${rebind.reboundCount} part-entity id(s) after topology-changing op(s) (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
+    );
   }
 
   return {
@@ -744,6 +796,13 @@ export async function runParametricScriptTool(
     const bytes = await readModelBytes(modelPath);
     const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, newOps);
     model = entitySummary(result);
+  }
+
+  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, accepted);
+  if (rebind) {
+    warnings.push(
+      `Rebound ${rebind.reboundCount} part-entity id(s) after topology-changing op(s) (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
+    );
   }
 
   return {

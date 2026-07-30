@@ -10,6 +10,7 @@ import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORM
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
+import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
@@ -19,7 +20,7 @@ import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
 import { normalizeViewerDefaults } from "./viewerDefaults";
 import { computeMassProperties } from "./massProperties";
-import { measureExact } from "./entityFacts";
+import { measureExact, rebindPartsAcrossOps } from "./entityFacts";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseEditsJson } from "./editsSidecar";
@@ -212,6 +213,47 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
     };
 
+    /**
+     * Best-effort entity-id rebinding after a purely-appended, topology-
+     * changing edit — closes the "entity-id drift" gap CLAUDE.md documents
+     * (see `entityFacts.ts`'s `rebindPartsAcrossOps` for the algorithm).
+     * `newOps` must be `previousOps` plus one or more appended ops (a strict
+     * length+prefix check) — undo/redo/`remove(index)`/reorder/Clear all
+     * naturally fail this check and are left alone, same as today (no
+     * regression, just no improvement for those cases; a correctness-first
+     * MVP scope, not an oversight). Persists the parts sidecar immediately
+     * (not debounced — this is host-initiated and correctness-critical,
+     * unlike the user-typed `partsChanged` autosave) and posts a fresh
+     * `"parts"` message so the webview's `PartsModel.load()` (silent, no
+     * `onChange` echo — same contract `"edits"`'s hydration already relies
+     * on) picks up the new ids and `refreshColors()` recolours, exactly like
+     * the initial `ready` hydration's own `"parts"` message.
+     */
+    const rebindPartsOnAppend = async (previousOps: EditOp[], newOps: EditOp[]): Promise<void> => {
+      if (!route || route.strategy !== "occt") return;
+      if (newOps.length <= previousOps.length) return;
+      if (JSON.stringify(newOps.slice(0, previousOps.length)) !== JSON.stringify(previousOps)) return;
+      const appended = newOps.slice(previousOps.length);
+      if (currentParts.length === 0 || !appended.some((op) => TOPOLOGY_CHANGING_OPS.has(op.op))) return;
+      try {
+        const bytes = await vscode.workspace.fs.readFile(document.uri);
+        const result = await rebindPartsAcrossOps(
+          this.context.extensionPath,
+          bytes,
+          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+          previousOps,
+          appended,
+          currentParts
+        );
+        if (result.parts === currentParts) return; // nothing topology-changing resolved, or nothing to remap
+        currentParts = result.parts;
+        await writeParts(document.uri, currentParts);
+        post({ type: "parts", parts: currentParts });
+      } catch (err) {
+        post({ type: "error", message: `Could not rebind part entity ids: ${(err as Error).message}` });
+      }
+    };
+
     // Track this editor as the active one while it is focused, so the
     // File-menu commands/keybindings can reach it.
     const session: EditorSession = {
@@ -269,6 +311,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "editsChanged") {
+        const previousOps = currentEdits;
         currentEdits = msg.ops;
         currentVariables = msg.variables;
         // Debounced sidecar autosave (separate timer/file from parts).
@@ -281,7 +324,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         }, PARTS_SAVE_DEBOUNCE_MS);
         // B-rep edits are applied in the host, so re-tessellate immediately. Mesh
         // edits are applied in the webview itself, which already updated the view.
-        if (route && route.strategy === "occt") loadModel();
+        if (route && route.strategy === "occt") {
+          loadModel();
+          void rebindPartsOnAppend(previousOps, currentEdits);
+        }
         return;
       }
 

@@ -13,7 +13,8 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export (op-list aware) |
 | `src/occtOperations.ts` | Host-side OCCT edit engine — folds the op-list over a `TopoDS_Shape` |
 | `src/massProperties.ts` | Volume/area/length/CoG/inertia for a B-rep shape via OCCT `BRepGProp` (vscode-free) |
-| `src/entityFacts.ts` | Per-entity geometric facts (`inspect`), bbox-centre distance (`measure`), and exact OCCT-precision distance/edge-length/radius (`measure_exact`) for a B-rep shape (vscode-free) |
+| `src/entityFacts.ts` | Per-entity geometric facts (`inspect`), bbox-centre distance (`measure`), exact OCCT-precision distance/edge-length/radius (`measure_exact`), and bulk entity fingerprinting + orchestration for entity-id rebinding for a B-rep shape (vscode-free) |
+| `src/entityRebind.ts` | Pure entity-id rebinding heuristic (bipartite nearest-neighbor matching, generalized from `modelDiff.ts`'s solid matcher to solid/face/edge/point) + `Part`-id remapping (vscode/OCCT-free, unit-tested) |
 | `src/stepUnits.ts` | Pure text scan of a STEP file's `DATA` section for its declared length unit (vscode/OCCT-free, unit-tested) |
 | `src/igesUnits.ts` | Sibling scanner for IGES's fixed-width Global-section unit flag — same purpose, different (positional, not named-entity) format (vscode/OCCT-free, unit-tested) |
 | `src/lengthUnits.ts` | Shared `DisplayUnit` type + mm scale-factor table + `displayUnitFromUnitName` — backs both the webview's display-unit selector and unit-conversion-on-export (vscode/DOM/THREE-free) |
@@ -453,6 +454,90 @@ no client-side/webview computation to fall back to — the button itself is
 hidden for mesh sources, see [Webview API](./webview-api.md));
 `mcpTools.ts`'s `measure_exact` follows the identical B-rep-only gate.
 
+**Entity-id rebinding — the bulk fingerprinting + orchestration half.**
+Two more exports, added for the "entity-id drift" roadmap item (closed):
+
+```typescript
+function collectAllEntitySignatures(oc: any, shape: any, cleanup): EntitySignature[]
+
+interface RebindStats { considered: number; rebound: number; dropped: number }
+
+async function rebindPartsAcrossOps(
+  extensionPath: string, bytes: Uint8Array, format: BRepFormat,
+  opsBefore: EditOp[], newOps: EditOp[], parts: Part[]
+): Promise<{ parts: Part[]; stats: RebindStats }>
+```
+
+`collectAllEntitySignatures` is the bulk sibling of `resolveEntity` (this
+file's private single-id resolver): instead of resolving ONE caller-given
+id, it enumerates EVERY solid/face/edge/point in `shape` via the
+already-shared `collectSolids`/`collectFaces`/`collectEdges`/
+`collectVertices` (`occtOperations.ts`) — in the SAME deterministic order
+that assigns `solid-N`/`face-N`/`edge-N`/`point-N` ids elsewhere, so an
+array index here IS the id — and fingerprints each (`bboxCenter` + area via
+`BRepGProp.SurfaceProperties_1`, length via `LinearProperties`, volume via
+`VolumeProperties_1`, all the exact call shapes `massProperties.ts` already
+verified; a point's `measure` is always `0`, read via `oc.BRep_Tool.Pnt`).
+
+`rebindPartsAcrossOps` is the orchestrator `apply_edit_ops`/
+`run_parametric_script`/`provider.ts`'s `editsChanged` handler all call: for
+each op in `newOps` that's topology-changing (`TOPOLOGY_CHANGING_OPS`,
+`editOps.ts`), it builds the shape immediately BEFORE and AFTER that one op
+— two fully independent `readShape`+`applyEditsBRep` replays with their own
+`cleanup` arrays, no shared shape reuse across the boundary (matching this
+codebase's standing "no shape/session cache" discipline) — fingerprints
+both sides, matches them via `entityRebind.ts`'s `rebindEntities()` (tolerance
+`1e-3 * bboxDiagonal(shapeAfter)`, the same tolerance-fraction convention
+`gmshPartsMap.ts`/`modelDiff.ts` established), and remaps `parts` via
+`remapPartEntityIds()` — iteratively, so a list already remapped by op N
+feeds op N+1. Non-topology-changing ops are skipped entirely (their ids are
+already stable). Short-circuits to the ORIGINAL `parts` reference when
+`parts` is empty or nothing in `newOps` is topology-changing, letting
+callers cheaply detect "nothing to do" — but a genuinely-run pass that finds
+zero actual changes still returns a fresh array (`remapPartEntityIds`
+always `.map()`s), a deliberate correctness-first tradeoff, not a bug.
+
+---
+
+## `src/entityRebind.ts`
+
+The pure matching algorithm `rebindPartsAcrossOps` above delegates to —
+vscode/OCCT-free, unit-tested, mirroring `modelDiff.ts`'s pure/impure split
+(that file's `diffSolids` is this one's direct ancestor, generalized from
+solids-only to solid/face/edge/point).
+
+```typescript
+type RebindKind = 'solid' | 'face' | 'edge' | 'point'
+
+interface EntitySignature { id: string; kind: RebindKind; centre: Vec3; measure: number }
+interface EntityRebindMatch { oldId: string; newId: string; centreDistance: number; measureDeltaPct: number }
+
+function rebindEntities(oldSigs: EntitySignature[], newSigs: EntitySignature[], toleranceAbs: number): EntityRebindMatch[]
+
+interface EntityIdBag { volumes: string[]; surfaces: string[]; lines: string[]; points: string[] }
+interface RemapResult<T> { parts: T[]; reboundCount: number; droppedCount: number }
+
+function remapPartEntityIds<T extends EntityIdBag>(parts: T[], idMap: Map<string, string>): RemapResult<T>
+```
+
+`rebindEntities` runs the SAME greedy nearest-neighbor bipartite matching
+`diffSolids` established (centroid distance primary, `measure` as
+tie-breaker, capped by `toleranceAbs`) but **independently per `kind`**, so
+a face can never match an edge even if their centres coincide — `measure`
+is area for solid/face, length for edge, and always `0` for point (a
+location has no size to compare, so points match on centre distance alone).
+An entity with no candidate within tolerance is simply absent from the
+result — the caller's job to decide what "unmatched" means (here, drop).
+
+`remapPartEntityIds` takes a **structural** `EntityIdBag` type (not `Part`
+itself) so this file stays framework-agnostic — `Part` (`protocol.ts`)
+satisfies it trivially. Rewrites every id present in `idMap`, drops any
+that isn't (no confident geometric match — same graceful degradation the
+sidecar parser's unresolved-id handling already applies), and counts only
+ids that map to a **different** string as "rebound" (an id matched to
+itself, the common case for anything untouched by the op, isn't counted —
+it was never actually lost). Never mutates its input.
+
 ---
 
 ## `src/provider.ts`
@@ -489,7 +574,7 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
    `handleBRep()` (which applies the loaded edits) or posts `"loadUrl"`, then
    posts `"edits"` and calls `sendParts()`/`sendMeshOptions()`/`sendViewerDefaults()`.
 5. On `"partsChanged"`: debounces (~500 ms) then `writeParts()` to the sidecar. The CAD file is never written.
-6. On `"editsChanged"`: debounces (~500 ms, its own timer) then `writeEdits()`; for B-rep sources also re-tessellates immediately with the new op-list.
+6. On `"editsChanged"`: debounces (~500 ms, its own timer) then `writeEdits()`; for B-rep sources also re-tessellates immediately with the new op-list AND calls `rebindPartsOnAppend()` (see below) to best-effort geometrically rebind any Parts affected by a topology-changing append.
 7. On `"meshingChanged"`: debounces (~500 ms, its own timer) then writes **both**
    `writeMeshOptions()` and `writeGeoScript()`.
 8. On `"meshingGenerate"`/`"meshingExport"`: resolves the mesh input via
@@ -520,6 +605,24 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
     rather than a fresh `showOpenDialog()` result.
 
 **`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. For a `"step"` source, also calls `detectStepLengthUnit()` (`src/stepUnits.ts`); for `"iges"`, `detectIgesLengthUnit()` (`src/igesUnits.ts`) — over the raw bytes, including the result as `"tree"`'s optional `sourceUnit` field (`undefined` for BREP, which has no unit metadata at all, or an undeclared/unrecognized-unit STEP or IGES file). Posts `"error"` on failure.
+
+**`rebindPartsOnAppend(previousOps, newOps)`** — A `const` closure inside
+`resolveCustomEditor` (per-document, like `flushSidecars`/`loadModel`
+above), not a class method. Called from the `"editsChanged"` handler with
+the op list as of the PREVIOUS message and the just-received one. Requires a
+strict length-increase + prefix match (`newOps` must equal `previousOps`
+with ops appended, verbatim) — undo/redo/`remove(index)`/reorder/Clear all
+fail this check and are left alone by design (see CLAUDE.md's "Entity-id
+drift" section for why). When the appended suffix contains a
+topology-changing op AND the document has Parts, calls `entityFacts.ts`'s
+`rebindPartsAcrossOps()`, and on a real change (`result.parts !==
+currentParts`) updates `currentParts`, writes the parts sidecar
+**immediately** (not the debounced `partsChanged` timer — host-initiated
+and correctness-critical), and posts a fresh `"parts"` message so the
+webview's `PartsModel.load()` (silent, no `onChange` echo) picks up the new
+ids and recolours — the exact mechanism the initial `ready` hydration's own
+`"parts"` message already uses, so no webview-side code changes were
+needed. Posts `"error"` on failure rather than throwing.
 
 **`handleMeshio(uri, format, post)`** — Private method, `loadModel()`'s sibling branch for `route.strategy === "meshio"` (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA). Reads the raw file bytes, calls `convertToStlBoundary()` (`src/meshioService.ts`), and posts the result as `"loadMeshBytes"` (`sourceFormat` + base64 STL bytes) — no `"geometry"`/`"tree"` messages, since the webview builds its own component tree from the loaded `THREE.Object3D` hierarchy exactly like a native `.stl` open. Posts `"error"` on failure (a malformed source file, an unsupported meshio conversion, etc.).
 

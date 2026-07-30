@@ -26,7 +26,7 @@ import { z } from "zod";
 import { loadBRep, exportBRep } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
 import { computeMassProperties } from "./massProperties";
-import { getEntityFacts, measureEntities, measureExact } from "./entityFacts";
+import { getEntityFacts, measureEntities, measureExact, rebindPartsAcrossOps } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
@@ -78,6 +78,7 @@ const ctx: ToolContext = {
     getEntityFacts,
     measureEntities,
     measureExact,
+    rebindPartsAcrossOps,
     renderSnapshot,
     isRenderAvailable,
     searchStandardParts,

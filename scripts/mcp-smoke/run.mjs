@@ -253,6 +253,80 @@ try {
     "measure_exact radius on a non-circular edge fails with a clear, actionable error rather than a meaningless best-fit number"
   );
 
+  // Entity-id rebinding after topology-changing ops (roadmap item, closed) —
+  // a Part referencing face-N/edge-N ids used to silently lose them once a
+  // later topology-changing op renumbered the tessellation. Verified against
+  // the real WASM with a fully-controlled, deterministic scenario: add a
+  // detached box (a brand-new solid, appended AFTER the bull in explorer
+  // order) and assign a Part to one of ITS OWN faces, then fillet an edge of
+  // the (unrelated) bull — a successful fillet adds a new face to the bull's
+  // own topology, shifting every id that comes after it in the compound
+  // (including the box's). The box's face is geometrically untouched by any
+  // of this, so the rebind pass must find it again under its new id. Own
+  // fixture copy — this deliberately corrupts the rebindModel's op stack
+  // with a handful of no-op fillet attempts (see below), so it must not be
+  // the shared `model` other steps in this script depend on.
+  const rebindModel = path.join(dir, "bull-for-rebind-test.stp");
+  fs.copyFileSync(FIXTURE, rebindModel);
+  const rebindAdd = await call("apply_edit_ops", {
+    path: rebindModel,
+    ops: [{ op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] }],
+  });
+  const boxSolid = rebindAdd.model.solids[rebindAdd.model.solids.length - 1];
+  assert(boxSolid.faceIds.length === 6, `the added box tessellates to 6 faces (got ${boxSolid.faceIds.length})`);
+  const targetFace = boxSolid.faceIds[0];
+  const beforeFacts = await call("inspect", { path: rebindModel, entityId: targetFace });
+  assert(beforeFacts.supported === true, `inspect resolves the box's own face (${targetFace}) before the fillet`);
+
+  await call("set_part", { path: rebindModel, name: "RebindTest", surfaces: [targetFace] });
+
+  // Try a handful of the bull's own edges with a tiny fillet radius (small
+  // relative to model scale, to maximize the odds any given edge accepts
+  // it) until one genuinely adds a face to the bull's own topology — a
+  // silently-skipped fillet (radius too large for that particular edge)
+  // wouldn't exercise the rebind path at all, so this keeps trying rather
+  // than trusting edge-0 blindly. Failed attempts are harmless leftover
+  // no-op ops in rebindModel's own sidecar, never removed (this fixture is
+  // single-purpose and discarded with the rest of `dir` at the end).
+  const tinyRadius = bbox.diagonal / 5000;
+  const bullBaselineFaceCount = rebindAdd.model.solids[0].faceIds.length;
+  let filletResult = null;
+  for (let i = 0; i < 8 && !filletResult; i++) {
+    const attempt = await callTolerant("apply_edit_ops", {
+      path: rebindModel,
+      ops: [{ op: "fillet", edges: [`edge-${i}`], radius: tinyRadius }],
+    });
+    if (attempt.error) continue;
+    if (attempt.value.model.solids[0].faceIds.length > bullBaselineFaceCount) filletResult = attempt.value;
+  }
+  assert(filletResult !== null, "found a bull edge whose fillet genuinely adds a face to the bull's own topology");
+
+  const state = await call("get_state", { path: rebindModel });
+  const rebindPart = state.parts.find((p) => p.name === "RebindTest");
+  assert(rebindPart !== undefined, "the RebindTest part still exists after the fillet");
+  assert(
+    rebindPart.surfaces.length === 1,
+    `the part's face reference survived the fillet as exactly one id (got ${JSON.stringify(rebindPart.surfaces)})`
+  );
+  const afterFace = rebindPart.surfaces[0];
+  const afterFacts = await call("inspect", { path: rebindModel, entityId: afterFace });
+  assert(afterFacts.supported === true, `inspect resolves the rebound face id (${afterFace}) after the fillet`);
+  const centreDelta = Math.hypot(
+    afterFacts.center[0] - beforeFacts.center[0],
+    afterFacts.center[1] - beforeFacts.center[1],
+    afterFacts.center[2] - beforeFacts.center[2]
+  );
+  const areaDelta = Math.abs(afterFacts.area - beforeFacts.area);
+  assert(
+    centreDelta < 1e-6 && areaDelta < 1e-6,
+    `the rebound face (${targetFace} -> ${afterFace}) is geometrically identical to the box's original face ` +
+      `(centre delta ${centreDelta.toExponential(2)}, area delta ${areaDelta.toExponential(2)})`
+  );
+  assert(
+    filletResult.warnings.some((w) => /Rebound/.test(w)),
+    `apply_edit_ops surfaces a rebind summary warning (got: ${JSON.stringify(filletResult.warnings)})`
+  );
+
   // compare_models: the edited model (bull + added box) against a fresh,
   // unedited copy of the same fixture (just the bull) — the bull solid
   // should match itself exactly (centreDistance/volumeDeltaPct ~ 0) and the

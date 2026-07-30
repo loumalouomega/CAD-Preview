@@ -337,10 +337,99 @@ on top of the source model. Non-negotiable invariants:
   shape when all solids are targeted, else assembles a `TopoDS_Compound` of the
   transformed targets + untouched rest (deterministic `TopExp_Explorer` order, the
   same the read pipeline uses for ids).
-- **Entity-id drift (known, accepted):** topology-changing ops (booleans, fillet,
-  feature modeling) re-tessellate into **new** `face-N`/`edge-N` ids, so existing
-  *part* assignments may not resolve after them — the tolerant sidecar parser drops
-  unresolved ids on reload, degrading gracefully. No id-rebinding is attempted.
+- **Entity-id drift + best-effort rebinding (roadmap item, closed):**
+  topology-changing ops (booleans, fillet, feature modeling, wireframe
+  surface/volume builds, …) re-tessellate into **new** `face-N`/`edge-N`/
+  `solid-N`/`point-N` ids. A geometric rebinding pass now runs automatically
+  whenever ops are purely **appended** (never for undo/redo/`remove(index)`/
+  reorder/Clear — see below for why those are deliberately left alone), so
+  most existing *part* assignments survive; the tolerant sidecar parser's
+  drop-unresolved-ids fallback still exists and still fires for whatever the
+  heuristic can't confidently match.
+  - **`src/entityRebind.ts`** (pure, vscode/OCCT-free, unit-tested) holds the
+    matching algorithm: `EntitySignature {id, kind, centre, measure}` (measure
+    = area for solid/face, length for edge, `0` for a point — a location has
+    no size to compare) + `rebindEntities(oldSigs, newSigs, toleranceAbs)`, a
+    generalization of `modelDiff.ts`'s `diffSolids` greedy nearest-neighbor
+    bipartite matcher (centroid distance primary, `measure` as tie-breaker)
+    that runs **independently per `kind`** so a face can never match an edge.
+    `remapPartEntityIds(parts, idMap)` then rewrites every part's
+    `volumes`/`surfaces`/`lines`/`points` through the match map, dropping any
+    id with no confident match (identical in effect to what the sidecar
+    parser already did on reload, just applied proactively) and counting
+    only genuinely-*changed* ids as "rebound" (an id matched to itself isn't).
+  - **`src/entityFacts.ts`'s `collectAllEntitySignatures(oc, shape, cleanup)`**
+    is the OCCT-touching half: enumerates EVERY solid/face/edge/point via the
+    already-shared `collectSolids`/`collectFaces`/`collectEdges`/
+    `collectVertices` (same deterministic order that assigns `solid-N`/
+    `face-N`/`edge-N`/`point-N` ids elsewhere in this codebase, so an array
+    index here IS the entity's real id) and fingerprints each with
+    `bboxCenter` + the same `BRepGProp.SurfaceProperties_1`/
+    `LinearProperties`/`VolumeProperties_1` call shapes `massProperties.ts`/
+    `entityFacts.ts`'s single-id `getEntityFacts` already use.
+  - **`entityFacts.ts`'s `rebindPartsAcrossOps(extensionPath, bytes, format,
+    opsBefore, newOps, parts)`** is the orchestrator: for each op in `newOps`
+    that's topology-changing (`TOPOLOGY_CHANGING_OPS`), it builds the shape
+    immediately BEFORE and AFTER that one op — two fully independent
+    `readShape`+`applyEditsBRep` replays, **no shared shape reuse across the
+    boundary**, matching this codebase's standing "no shape/session cache"
+    discipline — fingerprints both, matches them (tolerance = `1e-3 *
+    bboxDiagonal(shapeAfter)`, the same tolerance-fraction convention
+    `gmshPartsMap.ts`/`modelDiff.ts` already established), and remaps `parts`
+    — iteratively, so a list already remapped by op N feeds op N+1.
+    Non-topology-changing ops (translate/rotate/scale/mirror/boolean-
+    operand-agnostic transforms/…) are skipped entirely — their ids are
+    already stable, so a shape-diff would be pure waste. Returns the
+    **original `parts` array (same reference)** when `parts` is empty or
+    nothing in `newOps` is topology-changing, so callers can cheaply detect
+    "nothing to do" — but NOT when the loop runs and genuinely finds zero
+    changes (every id happened to map to itself): `remapPartEntityIds`
+    always builds a fresh array via `.map()`, so that case still costs one
+    (harmless) sidecar write. Accepted as a correctness-first MVP tradeoff,
+    not a bug.
+  - **Wired at exactly the append boundary, in both the extension and MCP
+    server** — `provider.ts`'s `rebindPartsOnAppend()` (called from the
+    `editsChanged` handler) and `mcpTools.ts`'s `maybeRebindParts()` (called
+    from `apply_edit_ops`/`run_parametric_script`) both require a **strict
+    prefix match**: `newOps` must equal `previousOps` with one or more ops
+    appended (`newOps.length > previousOps.length` AND
+    `newOps.slice(0, previousOps.length)` deep-equals `previousOps`).
+    Undo/redo, `remove(index)`, drag-reordering, and Clear all naturally fail
+    this check (length decreased, or the prefix no longer matches) and are
+    **deliberately left alone** — a correctness-first MVP scope, not an
+    oversight; reversing an op or splicing one out of the middle needs a
+    fundamentally different (and much harder) approach than diffing a single
+    appended boundary, and CLAUDE.md's existing "removed a topology-changing
+    op" degrade-gracefully behavior (see `remove_edit_op`'s own warning)
+    already covers that case adequately.
+  - **`provider.ts`'s webview-facing path**: `rebindPartsOnAppend()` runs
+    after `loadModel()`'s re-tessellation (independently — it does its own
+    parse/replay, not reusing `loadModel()`'s tessellation), and on a real
+    change persists the parts sidecar **immediately** (not the debounced
+    `partsChanged` timer — this is host-initiated and correctness-critical)
+    then posts a fresh `"parts"` message. The webview's `PartsModel.load()`
+    is silent (no `onChange` echo, the same contract `"edits"`'s hydration
+    already relies on), so this is exactly the mechanism the initial `ready`
+    hydration's own `"parts"` message already uses — no new webview code was
+    needed at all.
+  - **`mcpTools.ts`'s headless path**: `maybeRebindParts()` gates on
+    `route.strategy === "occt"` (mesh-format sources have no B-rep to
+    re-derive ids from) and a non-empty parts list, and is skipped entirely
+    on `dryRun` (nothing should persist). A successful rebind appends a
+    `"Rebound N part-entity id(s) ... dropped M ..."` warning to
+    `apply_edit_ops`/`run_parametric_script`'s response so an agent knows
+    what happened, mirroring this codebase's "no silent" convention.
+  - **Verified end-to-end against the live WASM, not just unit-tested**
+    (`npm run mcp:smoke`): a fully-controlled scenario — add a detached box
+    (a brand-new solid appended after the bull in explorer order), assign a
+    Part to one of the box's OWN faces, then fillet an unrelated bull edge
+    (which adds a face to the bull's own topology, shifting every
+    subsequently-indexed id including the box's). Confirmed the box's
+    tracked face id changed from `face-36` to `face-45` (a genuine index
+    shift, not a no-op) and that `inspect`-ing the new id returns geometry
+    (`centre`/`area`) **exactly** identical to the pre-fillet baseline (zero
+    delta) — proving the rebind found the SAME real face, not merely *some*
+    face — plus the expected `"Rebound 1 ... dropped 0"` warning.
 - **OCCT transform API, verified against the live WASM** (use these exact suffixes;
   others throw `BindingError`/`UnboundTypeError`): translate
   `gp_Trsf.SetTranslation_1(gp_Vec_4)`; rotate `gp_Trsf.SetRotation_1(gp_Ax1_2(
@@ -2779,6 +2868,23 @@ entity. Close and reopen the tab → assignments reload from `bull.stp.parts.jso
 (inspect it: valid JSON, CAD file untouched). On `cube.stl`, confirm Surf/Line are
 disabled and only whole-object **Vol** assignment works and round-trips.
 
+Then exercise **entity-id rebinding**: on `bull.stp`, assign a face (Surf mode)
+to a part, note which face is highlighted, then apply a **Fillet** on a
+*different*, unrelated edge elsewhere on the model → confirm the SAME face
+stays highlighted/coloured in the part's colour afterward, even though its
+`face-N` id may have changed (check the Parts panel entry, or
+`bull.stp.parts.json`, before/after — the id string may differ, the geometry
+it points at must not). Apply a **Boolean** that fuses the part's assigned
+face into another solid entirely (no clean 1:1 mapping possible) → confirm
+the part simply loses that entity (same graceful-degradation UI as an
+unresolved id today), not a crash or a wrong-face highlight. Undo the edit →
+confirm the part's assignment is NOT retroactively restored (rebinding only
+runs on applying a new op, never on undo/redo/remove). Repeat via the MCP
+server's `apply_edit_ops` (or `run_parametric_script`) on a copy with an
+existing part assigned via `set_part` → confirm the tool's `warnings` array
+reports a `"Rebound N ... dropped M ..."` line and `get_state`'s `parts`
+reflects the new ids.
+
 Exercise **Edits**: on `bull.stp`, **Select** the solid in **Vol** mode, then in the
 **Edits** panel pick **Move/Rotate/Scale/Mirror**, enter params, **Apply** → the model
 updates live and the op appears in the list. Then exercise **booleans** (Set A on one
@@ -3180,9 +3286,14 @@ across calls, same discipline as OCCT/Gmsh).
 
 Then exercise the **MCP server**: `npm run mcp:smoke` must pass (it drives the real
 `dist/mcp-server.js` over stdio against a temp copy of `bull.stp`: load → an
-`addBox` edit → a `compare_models` diff against a fresh unedited copy of the
-same fixture (asserting the edited/original direction resolves to exactly 1
-matched + 1 removed, not swapped) → Gmsh generate → export `.msh` +
+`addBox` edit → `inspect`/`measure`/`measure_exact` → entity-id rebinding (a
+Part assigned to a freshly-added box's own face, then a real fillet elsewhere
+on the bull that shifts the box's face id — confirms the tracked id changed
+AND that `inspect`-ing the new id returns geometry identical to the pre-fillet
+baseline, not just that the tool call succeeded) → a `compare_models` diff
+against a fresh unedited copy of the same fixture (asserting the edited/original
+direction resolves to exactly 1 matched + 1 removed, not swapped) → Gmsh
+generate → export `.msh` +
 `.geo_unrolled`/`.xao` + `.brep` → a hand-built `.vtk` tetrahedron loaded
 through the meshio++ bridge (confirming `load_model` reports it as headlessly
 meshable, unlike `.obj`/`.ply`/`.gltf`), meshed, and exported to MED, CGNS

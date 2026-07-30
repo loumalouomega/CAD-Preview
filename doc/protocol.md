@@ -375,6 +375,12 @@ Sent after geometry, once the host has read the parts sidecar
 sidecar exists). The webview loads them into `PartsModel`, recolours the model,
 and renders the Parts panel.
 
+Also sent **unprompted, mid-session** (not just during the `ready` handshake)
+whenever a purely-appended, topology-changing edit triggers a successful
+entity-id rebind (`provider.ts`'s `rebindPartsOnAppend()` — see CLAUDE.md's
+"Entity-id drift" section) — the webview's handling is identical either way,
+since `PartsModel.load()` is a silent full replace with no `onChange` echo.
+
 ```json
 {
   "type": "parts",

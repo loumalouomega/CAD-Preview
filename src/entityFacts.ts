@@ -1,7 +1,19 @@
 import { getOcct, readShape } from "./occtService";
-import { applyEditsBRep, collectSolids, collectFaces, collectEdges, collectVertices, bboxCenter, facePlane } from "./occtOperations";
+import {
+  applyEditsBRep,
+  collectSolids,
+  collectFaces,
+  collectEdges,
+  collectVertices,
+  bboxCenter,
+  bboxDiagonal,
+  facePlane,
+} from "./occtOperations";
+import { rebindEntities, remapPartEntityIds, type EntitySignature } from "./entityRebind";
+import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp, Vec3 } from "./editOps";
+import type { Part } from "./protocol";
 
 export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
 
@@ -393,4 +405,171 @@ export async function measureExact(
       /* ignore */
     }
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function areaOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): number {
+  const props = new oc.GProp_GProps_1();
+  cleanup.push(props);
+  oc.BRepGProp.SurfaceProperties_1(handle, props, false, false);
+  return props.Mass();
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lengthOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): number {
+  const props = new oc.GProp_GProps_1();
+  cleanup.push(props);
+  oc.BRepGProp.LinearProperties(handle, props, false, false);
+  return props.Mass();
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function volumeOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): number {
+  const props = new oc.GProp_GProps_1();
+  cleanup.push(props);
+  oc.BRepGProp.VolumeProperties_1(handle, props, false, false, false);
+  return props.Mass();
+}
+
+/**
+ * Bulk sibling of `resolveEntity` above — instead of resolving ONE caller-
+ * given id, enumerates EVERY solid/face/edge/point in `shape` and returns a
+ * geometric fingerprint (`EntitySignature`, `entityRebind.ts`) for each, in
+ * the SAME deterministic order (`collectSolids`/`collectFaces`/
+ * `collectEdges`/`collectVertices`, `occtOperations.ts`) that assigns
+ * `solid-N`/`face-N`/`edge-N`/`point-N` ids elsewhere in this codebase — so
+ * an index `i` here IS the entity's real id. Feeds `rebindEntities()`
+ * (`entityRebind.ts`) for `rebindPartsAcrossOps` below; exported for that
+ * function's own unit-free (WASM-required) verification via `npm run
+ * mcp:smoke` only, same as every other exported OCCT-touching helper in this
+ * file.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function collectAllEntitySignatures(oc: any, shape: any, cleanup: Array<{ delete(): void }>): EntitySignature[] {
+  const out: EntitySignature[] = [];
+  for (const { id, solid } of collectSolids(oc, shape, cleanup)) {
+    out.push({ id, kind: "solid", centre: bboxCenter(oc, solid, cleanup), measure: volumeOf(oc, solid, cleanup) });
+  }
+  collectFaces(oc, shape, cleanup).forEach((face, i) => {
+    out.push({ id: `face-${i}`, kind: "face", centre: bboxCenter(oc, face, cleanup), measure: areaOf(oc, face, cleanup) });
+  });
+  collectEdges(oc, shape, cleanup).forEach((edge, i) => {
+    out.push({ id: `edge-${i}`, kind: "edge", centre: bboxCenter(oc, edge, cleanup), measure: lengthOf(oc, edge, cleanup) });
+  });
+  collectVertices(oc, shape, cleanup).forEach((vertex, i) => {
+    const pnt = oc.BRep_Tool.Pnt(vertex);
+    cleanup.push(pnt);
+    out.push({ id: `point-${i}`, kind: "point", centre: [pnt.X(), pnt.Y(), pnt.Z()], measure: 0 });
+  });
+  return out;
+}
+
+export interface RebindStats {
+  /** Ops in `newOps` that were actually topology-changing (the only ones this
+   * pass runs a shape-diff for — see `TOPOLOGY_CHANGING_OPS`). */
+  considered: number;
+  /** Part-entity ids that resolved to a DIFFERENT id after an op (a real
+   * rebind, not merely "kept the same string"). */
+  rebound: number;
+  /** Part-entity ids with no confident geometric match after an op — dropped,
+   * the same graceful degradation the tolerant sidecar parser already
+   * applies to a genuinely-unresolvable id. */
+  dropped: number;
+}
+
+/**
+ * Best-effort entity-id rebinding across one or more newly-appended ops —
+ * closes the "entity-id drift" gap CLAUDE.md documents: a topology-changing
+ * op re-tessellates into fresh ids, so a `Part` referencing the old ones used
+ * to just lose them. For each op in `newOps` that's topology-changing
+ * (`TOPOLOGY_CHANGING_OPS`), this builds the shape immediately BEFORE and
+ * AFTER that one op (two independent `readShape`+`applyEditsBRep` replays —
+ * no shared shape reuse across the boundary, matching this codebase's
+ * standing "no shape/session cache" discipline), fingerprints every
+ * solid/face/edge/point on both sides (`collectAllEntitySignatures`), and
+ * geometrically matches them (`rebindEntities`) to remap `parts`' ids
+ * (`remapPartEntityIds`) — iteratively, so a `parts` list already remapped by
+ * op N feeds op N+1. Non-topology-changing ops (translate, rotate, boolean
+ * operand-agnostic transforms, …) are skipped entirely — their ids are
+ * already stable, so paying for a shape-diff would be pure waste. Returns
+ * the ORIGINAL `parts` array (same reference) when nothing in `newOps` is
+ * topology-changing or `parts` is empty — the common case for most
+ * interactive edits — so callers can cheaply check `result.parts === parts`
+ * to skip a sidecar write.
+ *
+ * The match tolerance is `1e-3 * bboxDiagonal(shapeAfter)`, the same
+ * tolerance-fraction convention `gmshPartsMap.ts`'s geometric bbox-centre
+ * matching and `modelDiff.ts`'s solid matching already established.
+ */
+export async function rebindPartsAcrossOps(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  opsBefore: EditOp[],
+  newOps: EditOp[],
+  parts: Part[]
+): Promise<{ parts: Part[]; stats: RebindStats }> {
+  if (parts.length === 0 || !newOps.some((op) => TOPOLOGY_CHANGING_OPS.has(op.op))) {
+    return { parts, stats: { considered: 0, rebound: 0, dropped: 0 } };
+  }
+
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/rb.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  let currentParts = parts;
+  let cumulative: EditOp[] = [...opsBefore];
+  const stats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
+
+  try {
+    for (const op of newOps) {
+      const nextCumulative = [...cumulative, op];
+      if (!TOPOLOGY_CHANGING_OPS.has(op.op)) {
+        cumulative = nextCumulative;
+        continue;
+      }
+
+      const cleanupBefore: Array<{ delete(): void }> = [];
+      const cleanupAfter: Array<{ delete(): void }> = [];
+      try {
+        const shapeBefore = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupBefore), cumulative, cleanupBefore);
+        const oldSigs = collectAllEntitySignatures(oc, shapeBefore, cleanupBefore);
+
+        const shapeAfter = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupAfter), nextCumulative, cleanupAfter);
+        const newSigs = collectAllEntitySignatures(oc, shapeAfter, cleanupAfter);
+
+        const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, shapeAfter, cleanupAfter), 1e-6);
+        const idMap = new Map(rebindEntities(oldSigs, newSigs, toleranceAbs).map((m) => [m.oldId, m.newId]));
+        const result = remapPartEntityIds(currentParts, idMap);
+        currentParts = result.parts;
+        stats.rebound += result.reboundCount;
+        stats.dropped += result.droppedCount;
+        stats.considered++;
+      } finally {
+        for (let i = cleanupAfter.length - 1; i >= 0; i--) {
+          try {
+            cleanupAfter[i].delete();
+          } catch {
+            /* ignore */
+          }
+        }
+        for (let i = cleanupBefore.length - 1; i >= 0; i--) {
+          try {
+            cleanupBefore[i].delete();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      cumulative = nextCumulative;
+    }
+  } finally {
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return { parts: currentParts, stats };
 }

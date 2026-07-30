@@ -184,6 +184,10 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
+    rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts) => ({
+      parts, // identity pass-through by default — matches the real "nothing to rebind" no-op contract
+      stats: { considered: 0, rebound: 0, dropped: 0 },
+    })),
     ...overrides,
   } as Pipeline;
 }
@@ -639,6 +643,78 @@ describe("apply_edit_ops", () => {
     expect(result.report[0].accepted).toBe(true);
     await expect(fs.access(editsSidecarPath(stpModel))).rejects.toThrow();
   });
+
+  describe("entity-id rebinding after topology-changing ops", () => {
+    it("calls rebindPartsAcrossOps with the pre-append ops + newly-accepted ops, persists the result, and warns", async () => {
+      await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
+      const pipeline = fakePipeline({
+        rebindPartsAcrossOps: vi.fn(async () => ({
+          parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-2"], lines: [], points: [] }],
+          stats: { considered: 1, rebound: 1, dropped: 0 },
+        })),
+      });
+      const c = ctx(pipeline);
+      await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+      const call = vi.mocked(pipeline.rebindPartsAcrossOps).mock.lastCall!;
+      expect(call[0]).toBe(dir);
+      expect(call[2]).toBe("step");
+      expect(call[3]).toEqual([]); // previousOps — nothing applied yet
+      expect(call[4]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]); // newly-accepted ops only
+      expect(call[5]).toEqual([{ name: "P", color: expect.any(String), volumes: [], surfaces: ["face-1"], lines: [], points: [] }]);
+
+      const parts = await readParts(stpModel);
+      expect(parts[0].surfaces).toEqual(["face-2"]);
+    });
+
+    it("surfaces a warning summarizing rebound/dropped counts", async () => {
+      await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
+      const pipeline = fakePipeline({
+        rebindPartsAcrossOps: vi.fn(async () => ({
+          parts: [{ name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] }],
+          stats: { considered: 1, rebound: 0, dropped: 1 },
+        })),
+      });
+      const result = await applyEditOps(ctx(pipeline), {
+        path: stpModel,
+        ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }],
+      });
+      expect(result.warnings.some((w) => /Rebound 0.*dropped 1/.test(w))).toBe(true);
+    });
+
+    it("does not call rebindPartsAcrossOps when no parts exist", async () => {
+      const c = ctx();
+      await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+      expect(c.pipeline.rebindPartsAcrossOps).not.toHaveBeenCalled();
+    });
+
+    it("does not call rebindPartsAcrossOps or persist parts on a dry run", async () => {
+      await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
+      const c = ctx();
+      const result = await applyEditOps(c, {
+        path: stpModel,
+        ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }],
+        dryRun: true,
+      });
+      expect(c.pipeline.rebindPartsAcrossOps).not.toHaveBeenCalled();
+      expect(result.warnings.some((w) => /Rebound/.test(w))).toBe(false);
+    });
+
+    it("does not call rebindPartsAcrossOps for a mesh-format source", async () => {
+      await setPart({ path: stlModel, name: "P", volumes: ["node-0"] });
+      const c = ctx();
+      await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+      expect(c.pipeline.rebindPartsAcrossOps).not.toHaveBeenCalled();
+    });
+
+    it("adds no warning when the pipeline reports nothing to rebind (identity pass-through)", async () => {
+      await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
+      const result = await applyEditOps(ctx(), {
+        path: stpModel,
+        ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }],
+      });
+      expect(result.warnings.some((w) => /Rebound/.test(w))).toBe(false);
+    });
+  });
 });
 
 describe("run_parametric_script", () => {
@@ -728,6 +804,34 @@ describe("run_parametric_script", () => {
     expect(result.applied).toBe(0);
     expect(result.rejected).toBe(2);
     expect(result.report).toHaveLength(2);
+  });
+
+  it("rebinds part-entity ids after a topology-changing compiled op and surfaces a warning", async () => {
+    await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
+    const pipeline = fakePipeline({
+      rebindPartsAcrossOps: vi.fn(async () => ({
+        parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-7"], lines: [], points: [] }],
+        stats: { considered: 1, rebound: 1, dropped: 0 },
+      })),
+    });
+    const result = await runParametricScriptTool(ctx(pipeline), {
+      path: stpModel,
+      script: { steps: [{ op: { op: "addSphere", center: [0, 0, 0], radius: 2 } }] },
+    });
+    expect(vi.mocked(pipeline.rebindPartsAcrossOps)).toHaveBeenCalledTimes(1);
+    expect(result.warnings.some((w) => /Rebound 1.*dropped 0/.test(w))).toBe(true);
+    expect((await readParts(stpModel))[0].surfaces).toEqual(["face-7"]);
+  });
+
+  it("does not call rebindPartsAcrossOps on a dry run", async () => {
+    await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
+    const c = ctx();
+    await runParametricScriptTool(c, {
+      path: stpModel,
+      script: { steps: [{ op: { op: "addSphere", center: [0, 0, 0], radius: 2 } }] },
+      dryRun: true,
+    });
+    expect(c.pipeline.rebindPartsAcrossOps).not.toHaveBeenCalled();
   });
 });
 

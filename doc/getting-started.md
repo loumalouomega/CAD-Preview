@@ -360,6 +360,19 @@ with the per-row eye-toggles rather than overriding them — a part you'd
 already hidden stays hidden after you clear isolation. Like the eye-toggles,
 isolation is display-only and is never written to `<model>.parts.json`.
 
+**Parts usually survive topology-changing edits.** Ops like Boolean, Fillet,
+and feature modeling rebuild the model's face/edge numbering, but CAD
+Preview automatically tries to re-match each part's assigned entities to
+their new numbering by geometry (same location, same area/length) right
+after you apply such an edit — so a part assigned to a face before a fillet
+elsewhere on the model typically keeps pointing at the right face
+afterward, with no action needed. This is a best-effort match, not a
+guarantee: an entity that genuinely merges or disappears (two faces fused
+into one by a Boolean, for instance) can't be matched to anything and is
+quietly dropped from the part, same as reopening a file with a stale
+reference. Undoing or removing an earlier op doesn't trigger a re-match
+(only applying a new one does).
+
 ![The Parts panel with three colour-coded parts expanded to show their assigned volumes, surfaces, and edges.](/screenshots/parts-panel.png)
 
 Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD
