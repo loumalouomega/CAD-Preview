@@ -1794,8 +1794,7 @@ session-only — never written to a sidecar.
   fires the panel's `onExplodePreviewCancel` callback too, so navigating away
   mid-drag without clicking Apply can't leave an orphaned, unpersisted
   preview transform on screen.
-- **Clipping ships intentionally uncapped in this v1 — a scoped decision, not
-  an oversight.** `src/webview/clipping.ts`'s `planeForAxis(axis, offsetFrac,
+- **Clipping.** `src/webview/clipping.ts`'s `planeForAxis(axis, offsetFrac,
   box)` is pure `THREE.Plane`/`THREE.Box3` math (normal always points in the
   **positive** axis direction; sweeping `offsetFrac` from `-1` to `1` moves
   the cut from the box's min face to its max face). `Viewer.setClippingPlane()`
@@ -1805,11 +1804,66 @@ session-only — never written to a sidecar.
   re-applied from `setModel()`/`setMeshOverlay()` — `geometryBuilder.ts`'s
   material factories build fresh materials with no clipping state of their
   own, so the active plane is cached on `Viewer` and reapplied on every
-  (re)build. `MeshStandardMaterial` + `clippingPlanes` does **not**
-  automatically cap the cut cross-section with a solid face — three.js needs
-  a separate stencil-buffer cap technique for that, which this stage
-  deliberately does not implement; the cut face is see-through. A capped v2
-  is a candidate P3 follow-up, not scope creep to backfill here.
+  (re)build.
+- **The cut face is a real solid cap, not see-through** — `src/webview/
+  clipCap.ts`, the standard three.js stencil-buffer technique (mirrors the
+  official `webgl_clipping_stencil` example). `MeshStandardMaterial` +
+  `clippingPlanes` alone doesn't paint a cross-section; the cap is built by
+  rendering every clipped mesh's FULL boundary twice into the stencil buffer
+  (back faces increment, front faces decrement, both invisible and ignoring
+  depth) so the accumulated value is nonzero exactly where a point on the cut
+  plane sits inside a solid, then drawing one large quad with a `stencilFunc:
+  NotEqual` test against 0 on top. **Submitted per SOURCE MESH, not merged
+  into one watertight geometry first** — this codebase represents a solid as
+  N separate per-face `THREE.Mesh`es (`geometryBuilder.ts`), not one
+  `BufferGeometry` per solid, but the stencil buffer accumulates additively
+  across draw calls regardless of how many geometries contribute the same
+  triangles, so no merge step is needed (verified: feeding the same solid's
+  boundary in twice — e.g. by accident — is harmless for a `!= 0` test;
+  doubling a nonzero count stays nonzero). **Requires the renderer be created
+  with `{ stencil: true }`** — this three.js version (0.185) defaults it to
+  `false`, unlike older versions; get this wrong and the marking passes
+  silently no-op, degrading gracefully back to the old uncapped look rather
+  than erroring.
+- **Structural rebuild vs. cheap plane move — a real perf split, not
+  premature optimization.** `#clip-offset`'s slider fires `setClippingPlane()`
+  on every `input` event during a drag. A full rebuild (dispose+recreate two
+  marker meshes per target mesh, every tick) would be visibly janky for any
+  model with more than a handful of faces. `Viewer.rebuildClipCap()` (full
+  rebuild: new target mesh set) only runs when clipping is toggled on from
+  off, or `model`/`meshOverlay` changes; an axis switch or offset drag takes
+  `updateClipCapPlane()` instead, which mutates the ONE shared `THREE.Plane`
+  instance every marker/cap material's `clippingPlanes` array already
+  references (three.js reads `.normal`/`.constant` at render time, not at
+  assignment time, so an in-place `.copy()` propagates to every material for
+  free) and repositions/rescales the cap mesh via the model+overlay bounding
+  box **cached at the last structural rebuild** (`clipCapBox` — neither an
+  axis switch nor an offset move changes the model's extents, so
+  recalculating it every tick would be wasted `Box3.setFromObject` work).
+- **Known, accepted limitation: does NOT reactively track Parts/Components-
+  tree per-entity hide/isolate.** `applyPartVisibility`/`setGroupVisible`
+  (`Viewer`) set `.visible` directly on the affected meshes with no hook into
+  the clip-cap machinery, so a part hidden after the cap was last built keeps
+  showing its cross-section until the next structural rebuild or plane move.
+  The one visibility distinction the cap DOES get right, because it's
+  unavoidable for correctness: `rebuildClipCap()` targets `model`'s
+  `entityType==="surface"` meshes only when `.visible`, and separately
+  targets the FE-mesh overlay's fill mesh only when `this.meshOverlay?.
+  visible` — since `setModelFacesVisible()` already keeps those two in sync
+  (model faces hidden exactly when the overlay is shown), this correctly
+  excludes whichever of the two isn't currently displayed, with no ancestor-
+  visibility walk needed.
+- **`buildClipCap`/`repositionClipCap`/`disposeClipCap` (`clipCap.ts`) are
+  not unit-tested** — same "not realistically unit-testable under this
+  repo's setup" call as `labelOverlay.ts`; verified via manual F5 + a
+  throwaway Playwright script driving the real `media/viewer.js` bundle
+  against real OCCT geometry (confirmed: a solid, correctly-lit cross-section
+  at the cut, a clean toggle-off back to the original uncapped model, and a
+  working axis switch mid-session — the cheap-update path). `capCenterAndSize
+  (plane, box)` (`clipping.ts`) — the pure "where to centre the cap, how big
+  to make it" math the builder needs — IS unit-tested (`clipping.test.ts`),
+  same pure/impure module split this codebase already uses for `planeForAxis`
+  vs. the THREE-application code in `viewer.ts`.
 - **FE mesh quality statistics use `gmsh.model.mesh.getElementQualities`,
   confirmed bound and working in the bundled `@loumalouomega/gmsh-wasm`
   build** (this was open discovery work — not assumed from upstream Gmsh
@@ -2631,9 +2685,15 @@ overriding the other. Click **Persp/Ortho** → confirm no camera jump, orbit/
 pan/zoom/picking/the orientation cube all keep working, resizing the window
 behaves correctly under both projections, and toggling back returns cleanly.
 In the new **Clip** group, enable each axis and drag the offset slider →
-confirm the model cuts away live (see-through at the cut face — expected,
-v1 is uncapped), the FE Mesh overlay (if shown) respects the same plane, and
-turning Clip off instantly restores the full model with no sidecar write. On
+confirm the model cuts away live with a solid, correctly-lit cap at the cut
+face (not see-through), that dragging the slider and switching axes both stay
+smooth (the cheap plane-move path, not a per-tick rebuild), that the FE Mesh
+overlay (if shown) respects the same plane and is capped too, and that
+turning Clip off instantly restores the full uncapped model with no sidecar
+write. Also confirm a part hidden via Parts/Components-tree AFTER enabling
+Clip keeps showing its cross-section in the cap until you next move the
+slider or toggle Clip — a known, accepted limitation (see `CLAUDE.md`'s
+clipping section), not a bug to chase. On
 the FE Mesh panel, **Generate** → confirm a quality summary (min/mean +
 histogram) appears below the node/element counts, updates on regenerate at a
 different size, and degrades gracefully (no summary, no crash) if the

@@ -44,6 +44,8 @@ fast and bundled multiple features per bump).
   isolate/hide plus a Components-tree filter, a live exploded-view slider,
   background/opacity controls, live clipping/section planes, FE mesh quality
   statistics, and an orthographic/perspective camera toggle.
+- **Capped clipping planes.** The live clip/section plane now shows a real
+  solid cross-section at the cut face instead of a see-through hollow.
 - **Units handling** — the declared unit of a STEP file is detected and shown,
   and a display-unit selector (mm/cm/m/in/ft) rescales mass-properties and
   measurement readouts. Presentation only; stored geometry is unchanged.

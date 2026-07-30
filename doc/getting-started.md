@@ -224,10 +224,10 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Ctr** — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
 - **Clip group** — Enable a live section/clipping plane along **X**, **Y**, or
   **Z**, then drag the offset slider to sweep it across the model's bounding
-  box (`-1` = min face, `0` = centre, `1` = max face). The cut is uncapped
-  (see-through at the cross-section, not solid-filled) and also applies to the
-  FE Mesh overlay when shown. Nothing is written anywhere — turning it off (or
-  reloading) instantly restores the full model.
+  box (`-1` = min face, `0` = centre, `1` = max face). The cross-section is
+  solid-filled, not see-through, and also applies to the FE Mesh overlay when
+  shown. Nothing is written anywhere — turning it off (or reloading) instantly
+  restores the full model.
 - **Appearance group** — A background-colour swatch (live preview only — the
   session-only override always wins over the [`cadPreview.background`
   setting](#settings) until you reload), an opacity slider for the whole

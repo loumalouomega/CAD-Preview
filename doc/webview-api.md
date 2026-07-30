@@ -40,6 +40,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/treeFilter.ts` | Pure Components-tree label-substring filter + ancestor inclusion (unit-tested) |
 | `src/webview/explodePreview.ts` | Live exploded-view preview math (capture/apply/reset base positions), DOM-free but THREE-typed (unit-tested) |
 | `src/webview/clipping.ts` | Pure clip-plane-from-bounding-box math (unit-tested) |
+| `src/webview/clipCap.ts` | Stencil-buffer solid cap over a clip plane's cross-section (not unit-tested — THREE-mesh-building code) |
 
 ---
 
@@ -417,11 +418,17 @@ material on **both** `model` and `meshOverlay` (the FE-mesh overlay needs the
 same plane — re-applied automatically from `setModel()`/`setMeshOverlay()`
 too, since fresh materials from either rebuild start with no clipping state).
 Callers compute `plane` via `clipping.ts`'s `planeForAxis()` from the model's
-current bounding box. **v1 is deliberately uncapped**: `MeshStandardMaterial`
-+ `clippingPlanes` does not auto-cap the cut cross-section (three.js needs a
-separate stencil-buffer technique for a solid-looking cut) — a clipped solid
-is see-through/hollow at the cut face, not filled; capping is a documented
-follow-up, not attempted here.
+current bounding box.
+
+The cut face is a real solid cap, not see-through — `clipCap.ts`'s
+stencil-buffer technique (see `CLAUDE.md`'s clipping section for the full
+write-up). `setClippingPlane` takes one of two paths depending on whether the
+change is structural: `rebuildClipCap()` (dispose+recreate the stencil-marker
+meshes) only when clipping just turned on, or `model`/`meshOverlay` changed;
+`updateClipCapPlane()` (mutate the shared `Plane` instance in place, reposition
+the cap) for every other call — in particular the `#clip-offset` slider's
+`input`-per-tick firing, which a full rebuild every tick would make visibly
+janky.
 
 **Visibility (Parts hide/isolate, Tree per-node hide — display-only, transient, never persisted):**
 
@@ -1466,8 +1473,38 @@ from the max-axis end.
 `main.ts`'s `setupClippingControls()` recomputes the plane from
 `viewer.getModel()`'s current `THREE.Box3` on every axis-button click or
 slider `input` event and calls `viewer.setClippingPlane()` — see
-[`Viewer.setClippingPlane`](#src-webview-viewer-ts) for the "uncapped in v1"
-scope note and the FE-mesh-overlay-needs-the-same-plane behavior.
+[`Viewer.setClippingPlane`](#src-webview-viewer-ts) for the solid-cap and
+FE-mesh-overlay-needs-the-same-plane behavior.
+
+```typescript
+function capCenterAndSize(plane: THREE.Plane, box: THREE.Box3): { center: THREE.Vector3; size: number }
+```
+Also pure. Where to centre the clip cap and how large to make it: projects
+`box`'s own centre onto `plane` (not the plane's closest point to the world
+origin, which could sit far from a model that isn't near the origin), sized
+to `box`'s full 3D diagonal so it safely covers any 2D cross-section through
+it. `Viewer.rebuildClipCap()`/`updateClipCapPlane()` are the only callers.
+
+## `src/webview/clipCap.ts`
+
+```typescript
+function buildClipCap(targets: THREE.Mesh[], plane: THREE.Plane, center: THREE.Vector3, size: number, color: number): THREE.Group
+function repositionClipCap(cap: THREE.Mesh, plane: THREE.Plane, center: THREE.Vector3, size: number): void
+function disposeClipCap(group: THREE.Group): void
+```
+The stencil-buffer clip-cap technique (see `CLAUDE.md`'s clipping section for
+the full write-up of how/why it works and the structural-rebuild-vs-cheap-
+move split). `buildClipCap` creates one back/front stencil-marking mesh pair
+per target (reusing each target's geometry, positioned via a frozen
+`matrix` copy of its `matrixWorld` rather than parenting) plus one cap quad,
+stashing `capMesh`/`capGeometry` in the returned group's `userData` so
+`repositionClipCap`/`disposeClipCap` can find them without a `traverse()`.
+`disposeClipCap` disposes every material plus the cap's own `PlaneGeometry`
+— never the marker meshes' geometry, which belongs to `model`/`meshOverlay`
+and is disposed there. Not unit-tested (THREE-mesh-building code with no
+realistic headless test, same class as `geometryBuilder.ts`'s builders) —
+verified via manual F5 and a throwaway Playwright script against the real
+`media/viewer.js` bundle.
 
 ## `src/webview/displayMode.ts`
 
