@@ -6,6 +6,10 @@ import {
   SURFACE_KIND_ORDER,
   surfaceTriangles,
   boundaryTriangles,
+  boundaryFaceRings,
+  triangulateRing,
+  faceRingKey,
+  surfaceElementRings,
   surfaceEdges,
   boundaryEdges,
   type MdpaCellKind,
@@ -153,6 +157,51 @@ describe("boundaryTriangles", () => {
   it("skips unknown and 2D types", () => {
     const out = boundaryTriangles({ elementTypes: [2, 999], nodeTags: [[0, 1, 2], [0, 1, 2]] }, identityMap(2));
     expect(out).toEqual([]);
+  });
+});
+
+describe("faceRingKey / triangulateRing", () => {
+  it("is order-independent (same face, different winding, same key)", () => {
+    expect(faceRingKey([3, 1, 2])).toBe(faceRingKey([1, 2, 3]));
+    expect(faceRingKey([1, 2, 3])).toBe(faceRingKey([2, 3, 1]));
+  });
+
+  it("a triangle and a quad sharing 3 corners never collide", () => {
+    expect(faceRingKey([1, 2, 3])).not.toBe(faceRingKey([1, 2, 3, 4]));
+  });
+
+  it("triangulates a triangle ring to itself, a quad ring by fan-from-0", () => {
+    expect(triangulateRing([10, 11, 12], identityMap(12))).toEqual([[10, 11, 12]]);
+    expect(triangulateRing([0, 1, 2, 3], identityMap(3))).toEqual([
+      [0, 1, 2],
+      [0, 2, 3],
+    ]);
+  });
+});
+
+describe("boundaryFaceRings / surfaceElementRings correlation", () => {
+  it("a hex's kept boundary-face rings key-match the corresponding surface mesh's element rings", () => {
+    // A single hex (tags 0-7) is the 3D mesh; its top quad face (4,5,6,7) is
+    // separately meshed as a 2D surface element (as Gmsh would, generating
+    // the volume mesh from its own boundary surface mesh) with a different
+    // corner order/winding — the correlation `gmshService.ts`'s
+    // `buildIndices3D` relies on must still match them by faceRingKey.
+    const hexEls = { elementTypes: [5], nodeTags: [[0, 1, 2, 3, 4, 5, 6, 7]] };
+    const boundaryKeys = new Set(boundaryFaceRings(hexEls).map(faceRingKey));
+    expect(boundaryKeys.size).toBe(6); // a hex has 6 boundary quad faces
+
+    const topFaceSurfaceEls = { elementTypes: [3], nodeTags: [[6, 7, 4, 5]] }; // quad4, reordered/rewound
+    const surfaceKeys = surfaceElementRings(topFaceSurfaceEls).map(faceRingKey);
+    expect(surfaceKeys).toHaveLength(1);
+    expect(boundaryKeys.has(surfaceKeys[0])).toBe(true);
+  });
+
+  it("a surface element with no matching boundary face (interior/foreign) does not spuriously match", () => {
+    const hexEls = { elementTypes: [5], nodeTags: [[0, 1, 2, 3, 4, 5, 6, 7]] };
+    const boundaryKeys = new Set(boundaryFaceRings(hexEls).map(faceRingKey));
+    const unrelatedSurfaceEls = { elementTypes: [2], nodeTags: [[100, 101, 102]] };
+    const surfaceKeys = surfaceElementRings(unrelatedSurfaceEls).map(faceRingKey);
+    expect(boundaryKeys.has(surfaceKeys[0])).toBe(false);
   });
 });
 

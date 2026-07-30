@@ -45,6 +45,10 @@ import {
   MDPA_KIND_INFO,
   surfaceTriangles,
   boundaryTriangles,
+  boundaryFaceRings,
+  triangulateRing,
+  faceRingKey,
+  surfaceElementRings,
   surfaceEdges,
   boundaryEdges,
   type GmshElementsResult,
@@ -591,6 +595,24 @@ function buildPositions(nodes: { nodeTags: number[]; coord: number[] }): {
 }
 
 /**
+ * Builds the overlay's **wireframe** line-index buffer: the true element edges
+ * (quad perimeters for hexes/quads, triangle edges for tets/tris), NOT the
+ * triangulated fill's diagonals. Ungrouped (a single-colour wireframe), so it
+ * uses one whole-model `getElements(dim)` call rather than the per-part loops
+ * `buildIndices` needs. Empty for `dimension === 1`.
+ */
+function buildEdges(
+  gmsh: GmshApi,
+  dimension: MeshOptions["dimension"],
+  tagToIndex: Map<number, number>
+): Uint32Array {
+  if (dimension === 1) return new Uint32Array(0);
+  const els = gmsh.model.mesh.getElements(dimension) as GmshElementsResult;
+  const edges = dimension === 3 ? boundaryEdges(els, tagToIndex) : surfaceEdges(els, tagToIndex);
+  return new Uint32Array(edges);
+}
+
+/**
  * Builds the display triangulation's index buffer for the given mesh
  * `dimension`, plus `elementGroups`: a contiguous, gap-free partition of the
  * returned `indices` into per-part ranges (when `groupMaps` resolved any
@@ -613,27 +635,18 @@ function buildPositions(nodes: { nodeTags: number[]; coord: number[] }): {
  *   triangles. When grouping, this runs per-volume (`getElements(3, tag)` scoped
  *   to one volume) — correct even for two touching part-volumes, since Gmsh tags
  *   each cell by its single owning volume, so a shared face is independently
- *   each volume's own boundary. See {@link boundaryTriangles}.
+ *   each volume's own boundary. See {@link boundaryTriangles}. A face that also
+ *   matches a **surface**-scoped part's own 2D boundary mesh (by the same
+ *   sorted-corner-tag key) routes to that part's group instead of its owning
+ *   volume's — see `buildIndices3D`'s `surfaceFaceKeyToPart` for the
+ *   correlation this needs, since a tet-boundary face on its own carries no
+ *   link back to the B-rep surface it came from.
+ *
+ * Exported (only) so `gmshService.test.ts` can unit-test the grouping logic
+ * against a fake, minimal `GmshApi` object — every other function here needs
+ * the real WASM module and is exercised only via `npm run mcp:smoke`.
  */
-/**
- * Builds the overlay's **wireframe** line-index buffer: the true element edges
- * (quad perimeters for hexes/quads, triangle edges for tets/tris), NOT the
- * triangulated fill's diagonals. Ungrouped (a single-colour wireframe), so it
- * uses one whole-model `getElements(dim)` call rather than the per-part loops
- * `buildIndices` needs. Empty for `dimension === 1`.
- */
-function buildEdges(
-  gmsh: GmshApi,
-  dimension: MeshOptions["dimension"],
-  tagToIndex: Map<number, number>
-): Uint32Array {
-  if (dimension === 1) return new Uint32Array(0);
-  const els = gmsh.model.mesh.getElements(dimension) as GmshElementsResult;
-  const edges = dimension === 3 ? boundaryEdges(els, tagToIndex) : surfaceEdges(els, tagToIndex);
-  return new Uint32Array(edges);
-}
-
-function buildIndices(
+export function buildIndices(
   gmsh: GmshApi,
   dimension: MeshOptions["dimension"],
   tagToIndex: Map<number, number>,
@@ -705,7 +718,7 @@ function buildIndices3D(
   tagToIndex: Map<number, number>,
   groupMaps: PartGroupMaps | null
 ): { indices: Uint32Array; elementGroups: MeshElementGroup[] } {
-  if (!groupMaps || groupMaps.volumeTagToPart.size === 0) {
+  if (!groupMaps || (groupMaps.volumeTagToPart.size === 0 && groupMaps.surfaceTagToPart.size === 0)) {
     const boundaryTris = extractBoundaryFaces(gmsh, undefined, tagToIndex);
     return {
       indices: new Uint32Array(boundaryTris),
@@ -714,28 +727,58 @@ function buildIndices3D(
     };
   }
 
-  const out: number[] = [];
-  const elementGroups: MeshElementGroup[] = [];
-  const claimedTags = new Set<number>();
-  for (const { info, tags } of groupTagsByPart(groupMaps.volumeTagToPart)) {
-    const start = out.length;
-    for (const tag of tags) {
-      claimedTags.add(tag);
-      out.push(...extractBoundaryFaces(gmsh, tag, tagToIndex));
-    }
-    if (out.length > start) {
-      elementGroups.push({ name: info.name, color: info.color, indexStart: start, indexCount: out.length - start });
+  // A tet-boundary face carries only its owning *volume*'s tag, with no link
+  // back to the B-rep surface it came from — so a surface-scoped part (as
+  // opposed to a volume-scoped one) would otherwise never get its own overlay
+  // colour range for a 3D generate. Resolved here via the 2D surface mesh Gmsh
+  // generates as part of building the volume mesh (still live in the model
+  // after `mesh.generate(3)`, same node tags as the volume boundary it seeded):
+  // each surface-scoped part's boundary faces are identified by their sorted
+  // corner-tag key, the same key `boundaryFaceRings` already uses to dedup
+  // interior tet/hex faces.
+  const surfaceFaceKeyToPart = new Map<string, PartGroupInfo>();
+  for (const [tag, info] of groupMaps.surfaceTagToPart) {
+    const els = gmsh.model.mesh.getElements(2, tag) as GmshElementsResult;
+    for (const ring of surfaceElementRings(els)) surfaceFaceKeyToPart.set(faceRingKey(ring), info);
+  }
+
+  // Group precedence, in a stable id-independent order: existing volume-scoped
+  // parts first (unchanged from before this fix), then any surface-scoped part
+  // not already reachable through one (the new case) — a face resolves to its
+  // surface-scoped part even when its owning volume also belongs to a
+  // (different) volume-scoped part, since the surface assignment is the more
+  // specific one.
+  const groupOrder: PartGroupInfo[] = groupTagsByPart(groupMaps.volumeTagToPart).map((g) => g.info);
+  for (const { info } of groupTagsByPart(groupMaps.surfaceTagToPart)) {
+    if (!groupOrder.includes(info)) groupOrder.push(info);
+  }
+  const buckets = new Map<PartGroupInfo, number[]>(groupOrder.map((info) => [info, []]));
+  const ungrouped: number[] = [];
+
+  const allVolumes = (gmsh.model.getEntities(3).dimTags as number[]) ?? [];
+  for (let i = 0; i < allVolumes.length; i += 2) {
+    const tag = allVolumes[i + 1];
+    const volumePart = groupMaps.volumeTagToPart.get(tag) ?? null;
+    const els = gmsh.model.mesh.getElements(3, tag) as GmshElementsResult;
+    for (const ring of boundaryFaceRings(els)) {
+      const target = surfaceFaceKeyToPart.get(faceRingKey(ring)) ?? volumePart;
+      const dest = target ? buckets.get(target)! : ungrouped;
+      for (const tri of triangulateRing(ring, tagToIndex)) dest.push(...tri);
     }
   }
 
-  const allVolumes = (gmsh.model.getEntities(3).dimTags as number[]) ?? [];
-  const start = out.length;
-  for (let i = 0; i < allVolumes.length; i += 2) {
-    const tag = allVolumes[i + 1];
-    if (claimedTags.has(tag)) continue;
-    out.push(...extractBoundaryFaces(gmsh, tag, tagToIndex));
+  const out: number[] = [];
+  const elementGroups: MeshElementGroup[] = [];
+  for (const info of groupOrder) {
+    const tris = buckets.get(info)!;
+    if (tris.length === 0) continue;
+    const start = out.length;
+    out.push(...tris);
+    elementGroups.push({ name: info.name, color: info.color, indexStart: start, indexCount: out.length - start });
   }
-  if (out.length > start) {
+  if (ungrouped.length > 0) {
+    const start = out.length;
+    out.push(...ungrouped);
     elementGroups.push({ name: null, color: null, indexStart: start, indexCount: out.length - start });
   }
 

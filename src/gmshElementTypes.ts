@@ -269,12 +269,30 @@ export function surfaceTriangles(els: GmshElementsResult, tagToIndex: Map<number
 export function boundaryTriangles(els: GmshElementsResult, tagToIndex: Map<number, number>): number[] {
   const out: number[] = [];
   for (const ring of boundaryFaceRings(els)) {
-    const tris = ring.length === 3 ? TRI_TRIANGULATION : QUAD_TRIANGULATION;
-    for (const tri of tris) {
-      for (const c of tri) out.push(tagToIndex.get(ring[c]) ?? 0);
-    }
+    for (const tri of triangulateRing(ring, tagToIndex)) out.push(...tri);
   }
   return out;
+}
+
+/** Triangulates one corner-tag ring (triangle → 1 triangle, quad → 2, fan from
+ * corner 0) into compacted position indices — the per-face core {@link
+ * boundaryTriangles} uses per kept boundary face, and also usable directly by a
+ * caller that needs to re-route individual faces to different output buckets
+ * (e.g. `gmshService.ts`'s per-part 3D overlay grouping). */
+export function triangulateRing(ring: number[], tagToIndex: Map<number, number>): number[][] {
+  const tris = ring.length === 3 ? TRI_TRIANGULATION : QUAD_TRIANGULATION;
+  return tris.map((tri) => tri.map((c) => tagToIndex.get(ring[c]) ?? 0));
+}
+
+/** Sorted corner-tag key for a face ring — mid-side nodes excluded, so
+ * order-1/order-2 faces of the same corners key identically, and a triangular
+ * face can never collide with a quad face. Shared by {@link boundaryFaceRings}'
+ * interior-face dedup and `gmshService.ts`'s tet-boundary-face ↔ source-surface
+ * correlation (a boundary face and the 2D surface element it came from share
+ * the same corner tags, since Gmsh's volume mesh is built directly from its own
+ * boundary surface mesh). */
+export function faceRingKey(ring: readonly number[]): string {
+  return [...ring].sort((a, b) => a - b).join("_");
 }
 
 /** The kept boundary faces of a volume mesh, each as its corner-tag ring — the
@@ -282,7 +300,7 @@ export function boundaryTriangles(els: GmshElementsResult, tagToIndex: Map<numbe
  * {@link boundaryEdges} (which takes their perimeters). A face keyed by its
  * sorted corner tags that appears exactly once is on the boundary; a face shared
  * by two cells (appears twice) is interior and dropped. */
-function boundaryFaceRings(els: GmshElementsResult): number[][] {
+export function boundaryFaceRings(els: GmshElementsResult): number[][] {
   const faceMap = new Map<string, { ring: number[]; count: number }>();
   for (let t = 0; t < els.elementTypes.length; t++) {
     const info = GMSH_ELEMENT_TYPES.get(els.elementTypes[t]);
@@ -291,7 +309,7 @@ function boundaryFaceRings(els: GmshElementsResult): number[][] {
     for (let base = 0; base + info.numNodes <= tags.length; base += info.numNodes) {
       for (const face of info.faces) {
         const ring = face.map((c) => tags[base + c]);
-        const key = [...ring].sort((a, b) => a - b).join("_");
+        const key = faceRingKey(ring);
         const existing = faceMap.get(key);
         if (existing) existing.count++;
         else faceMap.set(key, { ring, count: 1 });
@@ -335,6 +353,16 @@ export function boundaryEdges(els: GmshElementsResult, tagToIndex: Map<number, n
  * each element's corner ring (its first `numCorners` nodes, already in perimeter
  * order); mid-side nodes are ignored. */
 export function surfaceEdges(els: GmshElementsResult, tagToIndex: Map<number, number>): number[] {
+  return polygonEdges(surfaceElementRings(els), tagToIndex);
+}
+
+/** Every 2D element's corner-tag ring (its first `numCorners` nodes, already in
+ * perimeter order; mid-side nodes ignored) — the shared core of {@link
+ * surfaceEdges} and `gmshService.ts`'s tet-boundary-face ↔ source-surface
+ * correlation (see {@link faceRingKey}). Unlike {@link boundaryFaceRings}, every
+ * 2D element is authoritative on its own — there is no interior-face dedup, a
+ * 2D mesh has no "two cells sharing a face" concept. */
+export function surfaceElementRings(els: GmshElementsResult): number[][] {
   const rings: number[][] = [];
   for (let t = 0; t < els.elementTypes.length; t++) {
     const info = GMSH_ELEMENT_TYPES.get(els.elementTypes[t]);
@@ -346,5 +374,5 @@ export function surfaceEdges(els: GmshElementsResult, tagToIndex: Map<number, nu
       rings.push(ring);
     }
   }
-  return polygonEdges(rings, tagToIndex);
+  return rings;
 }

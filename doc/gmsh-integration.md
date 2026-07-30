@@ -220,25 +220,29 @@ tetrahedron by its single owning volume regardless of geometric adjacency, so a
 face shared between two touching volumes is independently each volume's own
 boundary.
 
-**Known asymmetry, confirmed against the live WASM (`examples/STP/angle1.stp`, a
-single-solid model with one volume-scoped part and one surface-scoped part):** a
-part assigned by **surface** (not volume) still gets its own `Physical Surface` in
-`.msh`/`.geo_unrolled` output correctly — but for a **3D** (`dimension === 3`)
-generate, it will **not** get its own colour range in the live overlay, because
-`buildIndices3D` only groups by `volumeTagToPart` (a tet-boundary triangle's group
-comes from which *volume* the owning tetrahedron belongs to — Gmsh's 3D mesh
-doesn't retain a "this boundary triangle's parent B-rep surface" link the way a 2D
-surface mesh's elements do). A surface-scoped part's triangles fall into the
-trailing default-blue range in 3D mode. This is not a bug in the correlation or
-physical-group logic — both work correctly — it's a deliberate scope limit of the
-overlay-colouring bucketing specifically. **2D** (`dimension === 2`) generates are
-unaffected: `buildIndices2D` groups directly by `surfaceTagToPart` via
-`getElements(2, tag)` per surface, so a surface-scoped part colours correctly there.
-If overlay colouring for surface-scoped parts in 3D mode is ever needed, it would
-require also reading the intermediate 2D surface mesh Gmsh generates as part of a
-3D run (`getElements(2, tag)` is still populated even when `Mesh.dimension === 3`)
-and cross-referencing triangle node-tag sets against the tet-boundary triangles —
-not attempted here to keep the initial implementation's risk surface smaller.
+**Surface-scoped parts DO get their own colour range in a 3D overlay too**
+(closed roadmap gap, re-verified against the live WASM): a tet-boundary triangle
+on its own only carries its owning *volume*'s tag, with no link back to the
+B-rep surface it came from, so `buildIndices3D` cannot classify it by
+`surfaceTagToPart` directly. It resolves the correlation via the intermediate
+2D surface mesh Gmsh generates as part of building the volume mesh — still
+live in the model after a 3D `mesh.generate()`, with the **same node tags**
+as the volume boundary it seeded, since the volume mesh is built directly from
+its own boundary surface mesh. Each surface-scoped part's `getElements(2,
+tag)` result is turned into a set of sorted-corner-tag keys
+(`gmshElementTypes.ts`'s `faceRingKey`, the exact key
+`boundaryFaceRings`/`boundaryTriangles` already use to dedup interior
+tet/hex faces); every kept tet-boundary face is looked up by that same key,
+and routed to the matching surface part's group instead of its owning
+volume's when one matches — a surface-scoped part therefore wins over its own
+volume's volume-scoped part too, being the more specific assignment.
+`gmshService.test.ts` unit-tests the grouping/precedence logic directly
+against a fake `GmshApi` object (a real hex + a matching 2D quad face, no
+WASM needed); the correlation math (ring keys match regardless of winding
+order) is tested in `gmshElementTypes.test.ts`. **2D** (`dimension === 2`)
+generates were always correct here (`buildIndices2D` groups directly by
+`surfaceTagToPart` via `getElements(2, tag)` per surface) and are unaffected
+by this change.
 
 ## Per-part mesh size
 
@@ -980,10 +984,11 @@ confirmation:
   produced 499 nodes, the identical geometry with the sized part produced 235,088
   nodes (clear, correctly-directed local refinement, not a silent no-op), and the
   resulting `.msh`'s `$PhysicalNames` section listed both parts by name at the
-  right dimension (`3 1 "PartA"`, `2 2 "PartB"`). See the surface-scoped-part
-  overlay-colouring caveat in [Parts → physical groups](#parts--physical-groups-b-rep-only)
-  above for the one confirmed gap (3D-mode overlay colouring only, not physical
-  groups or sizing) found during this same verification pass. **This pass only
+  right dimension (`3 1 "PartA"`, `2 2 "PartB"`). This pass also originally
+  surfaced a 3D-mode overlay-colouring gap for surface-scoped parts (physical
+  groups/sizing were unaffected) — since closed; see
+  [Parts → physical groups](#parts--physical-groups-b-rep-only) above.
+  **This pass only
   checked live query results (`getNodes`/`getElements`) and the `$PhysicalNames`
   section's presence — not whether the written `.msh`'s `$Elements` section
   actually contained every entity, or whether `.geo_unrolled` output was

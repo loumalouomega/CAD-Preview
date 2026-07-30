@@ -1002,14 +1002,28 @@ Non-negotiable invariants:
   the same geometry with one volume-scoped part's `meshSize: 0.5` produced
   235,088 nodes (clear, correctly-directed local refinement, not a silent
   no-op), and the resulting `.msh`'s `$PhysicalNames` section listed both a
-  volume- and a surface-scoped part by name at the right dimension. One
-  confirmed gap from that same pass: for a **3D** (`dimension === 3`) generate,
-  a **surface**-scoped part still gets its own `Physical Surface` in `.msh`
-  output correctly, but does **not** get its own overlay colour range
-  (`buildIndices3D` only groups triangles by their owning *volume*, since
-  Gmsh's tet-boundary triangles carry no parent-B-rep-surface link) — it falls
-  into the default-blue trailing range instead. **2D** generates are
-  unaffected (`buildIndices2D` groups directly by surface). **`.geo_unrolled`
+  volume- and a surface-scoped part by name at the right dimension. **A
+  surface-scoped part also gets its own overlay colour range in a 3D
+  (`dimension === 3`) generate**, not just its own `Physical Surface` in
+  `.msh` output — a tet-boundary triangle carries only its owning *volume*'s
+  tag with no link back to the B-rep surface it came from, so `buildIndices3D`
+  (`src/gmshService.ts`) resolves the correlation via the intermediate 2D
+  surface mesh Gmsh generates while building the volume mesh (still live in
+  the model after a 3D generate, with the **same node tags** as the volume
+  boundary it seeded): each surface-scoped part's `getElements(2, tag)` faces
+  are keyed by their sorted corner tags (`gmshElementTypes.ts`'s
+  `faceRingKey`, the same key `boundaryFaceRings` already uses to dedup
+  interior tet/hex faces), and every kept tet-boundary face is looked up by
+  that key and routed to the matching surface part instead of its owning
+  volume's — so a surface-scoped part wins over its own volume's
+  volume-scoped part too, being the more specific assignment. `buildIndices`
+  is exported *only* so `gmshService.test.ts` can exercise this grouping/
+  precedence logic against a fake `GmshApi` object with no WASM needed; every
+  other function in that file still needs the real WASM and is exercised only
+  via `npm run mcp:smoke`. **2D** generates were always correct here
+  (`buildIndices2D` groups directly by surface) and are unaffected by this.
+  See `doc/gmsh-integration.md`'s "Parts → physical groups" section for the
+  full write-up. **`.geo_unrolled`
   output does NOT carry `Physical Volume(...)`/`Physical Surface(...)` as
   textual statements for B-rep sources at all** — see the next bullet for why
   and how it's made to round-trip them anyway. See `doc/gmsh-integration.md`'s
@@ -2610,9 +2624,12 @@ Then exercise **parts-preserving meshing**: on `angle1.stp` (or another multi-fa
 STEP), create 2+ parts covering different faces/solids and set one part's **mesh
 size** field (in its row in the Parts panel — or equivalently in the FE Mesh panel's
 mirrored **Part sizes** section; confirm a value typed in either shows up in the
-other) to a value noticeably smaller than the model's default size. Click **▶ Generate** → confirm the overlay recolours per part
+other) to a value noticeably smaller than the model's default size. Make sure at
+least one part is **surface**-scoped (assigned via **Surf** pick mode, not **Vol**)
+and Dimension is 3D. Click **▶ Generate** → confirm the overlay recolours per part
 (each part's assigned faces/solids render in that part's colour, everything else in
-the original default blue) and the sized part's region visibly refines. Pick "Gmsh
+the original default blue, **including the surface-scoped part's own faces** — not
+just volume-scoped parts) and the sized part's region visibly refines. Pick "Gmsh
 Mesh (.msh)" and click **📤 Export**, save, and open the file in a text editor →
 confirm a `$PhysicalNames` section listing the part names, AND confirm the
 `$Elements` section has more than one entity block (i.e. the *whole* model was
