@@ -289,13 +289,17 @@ per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group
 
 Sent alongside (or shortly after) `geometry` for B-rep files. Also sent for Three.js mesh files after the model is loaded and the Object3D hierarchy is walked.
 
-`sourceUnit` is the STEP file's declared length unit (e.g. `"INCH"`,
-`"MILLIMETRE"`), detected by a plain-text scan of the `DATA` section
-(`src/stepUnits.ts`'s `detectStepLengthUnit`) — `undefined` for IGES/BREP (no
-unit metadata) or a STEP file with no unit declaration. It is purely
-informational: OCCT's STEP reader already auto-converts every shape to one
-internal cascade unit (millimetres) regardless of this value, so geometry
-numbers are always already consistent. The webview uses it only to seed the
+`sourceUnit` is the source file's declared length unit (e.g. `"INCH"`,
+`"MILLIMETRE"`), detected by a plain-text scan: `src/stepUnits.ts`'s
+`detectStepLengthUnit` for a STEP file's `DATA` section, `src/igesUnits.ts`'s
+`detectIgesLengthUnit` for an IGES file's fixed-width Global-section unit
+flag (both return the same canonical name vocabulary) — `undefined` for BREP
+(no unit metadata in the format at all) or a STEP/IGES file with no unit
+declaration, or one whose value isn't among the five units this UI offers. It
+is purely informational: OCCT's STEP/IGES readers already auto-convert every
+shape to one internal cascade unit (millimetres) regardless of this value, so
+geometry numbers are always already consistent. The webview uses it only to
+seed the
 view-controls "Units" display-unit selector (`src/webview/units.ts`) —
 switching that selector never changes any stored value, only how Mass
 Properties/Measurement numbers are formatted.

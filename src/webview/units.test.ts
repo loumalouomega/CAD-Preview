@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { convertLength, convertArea, convertVolume, displayUnitFromStepName, convertLengthBasedProperties } from "./units";
+import { convertLength, convertArea, convertVolume, displayUnitFromUnitName, convertLengthBasedProperties } from "./units";
 
 describe("convertLength/convertArea/convertVolume", () => {
   it("mm is the identity", () => {
@@ -26,18 +26,18 @@ describe("convertLength/convertArea/convertVolume", () => {
   });
 });
 
-describe("displayUnitFromStepName", () => {
+describe("displayUnitFromUnitName", () => {
   it("maps recognized STEP unit names", () => {
-    expect(displayUnitFromStepName("MILLIMETRE")).toBe("mm");
-    expect(displayUnitFromStepName("CENTIMETRE")).toBe("cm");
-    expect(displayUnitFromStepName("METRE")).toBe("m");
-    expect(displayUnitFromStepName("INCH")).toBe("in");
-    expect(displayUnitFromStepName("FOOT")).toBe("ft");
+    expect(displayUnitFromUnitName("MILLIMETRE")).toBe("mm");
+    expect(displayUnitFromUnitName("CENTIMETRE")).toBe("cm");
+    expect(displayUnitFromUnitName("METRE")).toBe("m");
+    expect(displayUnitFromUnitName("INCH")).toBe("in");
+    expect(displayUnitFromUnitName("FOOT")).toBe("ft");
   });
 
   it("returns undefined for an unrecognized or missing unit name", () => {
-    expect(displayUnitFromStepName("PARSEC")).toBeUndefined();
-    expect(displayUnitFromStepName(undefined)).toBeUndefined();
+    expect(displayUnitFromUnitName("PARSEC")).toBeUndefined();
+    expect(displayUnitFromUnitName(undefined)).toBeUndefined();
   });
 });
 

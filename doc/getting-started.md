@@ -259,9 +259,11 @@ Properties and Measurement results are shown (with a unit suffix, e.g.
 mesh-size options) is ever rescaled, and FE Mesh panel size fields always show
 plain millimetres regardless of this setting, since that's Gmsh's own working
 unit. Opening a STEP file whose `DATA` section declares a length unit (e.g.
-`INCH`) seeds the dropdown to that unit automatically; opening a file with no
-declared unit, or a mesh format (which has no unit metadata at all), always
-starts from `mm`. Moments of inertia in the Mass Properties panel are
+`INCH`), or an IGES file whose Global section declares one (its own,
+differently-structured way of recording a unit), seeds the dropdown to that
+unit automatically; opening a file with no declared/recognized unit, or a
+mesh format (which has no unit metadata at all), always starts from `mm`.
+Moments of inertia in the Mass Properties panel are
 intentionally never rescaled by this setting. The selection is session-only —
 it resets on every new file open and is never written to a sidecar.
 

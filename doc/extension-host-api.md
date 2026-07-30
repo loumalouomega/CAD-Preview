@@ -14,6 +14,8 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/occtOperations.ts` | Host-side OCCT edit engine — folds the op-list over a `TopoDS_Shape` |
 | `src/massProperties.ts` | Volume/area/length/CoG/inertia for a B-rep shape via OCCT `BRepGProp` (vscode-free) |
 | `src/stepUnits.ts` | Pure text scan of a STEP file's `DATA` section for its declared length unit (vscode/OCCT-free, unit-tested) |
+| `src/igesUnits.ts` | Sibling scanner for IGES's fixed-width Global-section unit flag — same purpose, different (positional, not named-entity) format (vscode/OCCT-free, unit-tested) |
+| `src/lengthUnits.ts` | Shared `DisplayUnit` type + mm scale-factor table + `displayUnitFromUnitName` — backs both the webview's display-unit selector and unit-conversion-on-export (vscode/DOM/THREE-free) |
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
 | `src/viewerDefaults.ts` | The `cadPreview.*` settings bag + `normalizeViewerDefaults` tolerance gate (vscode-free) |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
@@ -342,7 +344,7 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
     `openFileDialog()` makes, just from an already-known `Uri.file(path)`
     rather than a fresh `showOpenDialog()` result.
 
-**`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. For a `"step"` source, also calls `detectStepLengthUnit()` (`src/stepUnits.ts`) over the raw bytes and includes the result as `"tree"`'s optional `sourceUnit` field (`undefined` for IGES/BREP or an undeclared-unit STEP file). Posts `"error"` on failure.
+**`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. For a `"step"` source, also calls `detectStepLengthUnit()` (`src/stepUnits.ts`); for `"iges"`, `detectIgesLengthUnit()` (`src/igesUnits.ts`) — over the raw bytes, including the result as `"tree"`'s optional `sourceUnit` field (`undefined` for BREP, which has no unit metadata at all, or an undeclared/unrecognized-unit STEP or IGES file). Posts `"error"` on failure.
 
 **`handleMeshio(uri, format, post)`** — Private method, `loadModel()`'s sibling branch for `route.strategy === "meshio"` (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA). Reads the raw file bytes, calls `convertToStlBoundary()` (`src/meshioService.ts`), and posts the result as `"loadMeshBytes"` (`sourceFormat` + base64 STL bytes) — no `"geometry"`/`"tree"` messages, since the webview builds its own component tree from the loaded `THREE.Object3D` hierarchy exactly like a native `.stl` open. Posts `"error"` on failure (a malformed source file, an unsupported meshio conversion, etc.).
 

@@ -28,7 +28,7 @@ import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type Expl
 import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
-import { convertLength, convertLengthBasedProperties, displayUnitFromStepName, type DisplayUnit, type LengthBasedProperties } from "./units";
+import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import { isDisplayMode } from "./displayMode";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
@@ -1485,7 +1485,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "tree":
-      setDisplayUnit(displayUnitFromStepName(msg.sourceUnit) ?? "mm");
+      setDisplayUnit(displayUnitFromUnitName(msg.sourceUnit) ?? "mm");
       showTree(msg.root);
       break;
 

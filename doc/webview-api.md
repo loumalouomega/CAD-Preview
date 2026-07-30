@@ -1287,19 +1287,19 @@ const DISPLAY_UNITS: readonly DisplayUnit[]
 
 function unitScaleFactor(unit: DisplayUnit): number   // multiply a millimetre value by this
 const UNIT_LABELS: Record<DisplayUnit, string>          // e.g. "Inches (in)" — for a unit picker
-function displayUnitFromStepName(name: string | undefined): DisplayUnit | undefined
+function displayUnitFromUnitName(name: string | undefined): DisplayUnit | undefined
 ```
 
 ## `src/webview/units.ts`
 
 Display-unit conversion for Mass Properties and Measurement — pure, DOM-free
 (mirrors `measurement.ts`'s convention), built on `../lengthUnits.ts` above
-(re-exports `DisplayUnit`/`DISPLAY_UNITS`/`displayUnitFromStepName` for
+(re-exports `DisplayUnit`/`DISPLAY_UNITS`/`displayUnitFromUnitName` for
 backward-compatible imports). Presentation-layer only: every number this
 module touches is already in the model's one internal length unit
-(millimetres — OCCT's STEP reader auto-converts every shape to its cascade
-unit at read time; see `src/stepUnits.ts`'s doc comment for the live-WASM
-verification). Nothing stored — edit-op params, sidecars, mesh-size options —
+(millimetres — OCCT's STEP/IGES readers auto-convert every shape to their
+cascade unit at read time; see `src/stepUnits.ts`'s doc comment for the
+live-WASM verification). Nothing stored — edit-op params, sidecars, mesh-size options —
 is ever rescaled; this only changes what a number *looks like*. Unit
 conversion on EXPORT (a real geometric transform) is a separate feature — see
 `meshExporters.ts`'s `exportModel` above and `occtOperations.ts`'s
@@ -1324,9 +1324,11 @@ default `"mm"`, never persisted — same tier as every other Stage-2 Appearance
 control) and a `setDisplayUnit(unit)` helper that updates it, syncs the
 `#vc-unit` `<select>`'s value, and — if a Mass Properties result is currently
 shown — re-renders it converted to the new unit via the cached raw value (see
-`massPropertiesPanel.ts` above). `displayUnitFromStepName(msg.sourceUnit)` (or
+`massPropertiesPanel.ts` above). `displayUnitFromUnitName(msg.sourceUnit)` (or
 `"mm"` if `undefined`) seeds the initial selection on every `"tree"` message
-(B-rep) and resets to `"mm"` unconditionally on every `"loadUrl"` message
+(B-rep — `sourceUnit` is populated for both STEP and IGES sources now, via
+`src/stepUnits.ts`/`src/igesUnits.ts` respectively) and resets to `"mm"`
+unconditionally on every `"loadUrl"` message
 (mesh sources carry no unit metadata) — both are per-model-load resets, same
 spirit as `explodePreviewBases = null` on a new model. Measurement results
 (`computeMeasurementResult`'s `formatMeasureLength()` helper) rescale

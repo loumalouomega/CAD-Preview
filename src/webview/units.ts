@@ -12,7 +12,7 @@
  */
 
 export type { DisplayUnit } from "../lengthUnits";
-export { DISPLAY_UNITS, displayUnitFromStepName } from "../lengthUnits";
+export { DISPLAY_UNITS, displayUnitFromUnitName } from "../lengthUnits";
 
 import { unitScaleFactor, type DisplayUnit } from "../lengthUnits";
 

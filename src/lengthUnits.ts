@@ -5,10 +5,10 @@
  * host's *export* conversion (`occtOperations.ts`'s `scaleShapeForExport` /
  * `src/webview/meshExporters.ts`'s `exportModel`, which apply a real
  * geometric scale before writing). Every number this codebase computes is
- * already in one internal length unit (millimetres — OCCT's STEP reader
- * auto-converts every shape to its cascade unit at read time, verified
- * against the live WASM; see `src/stepUnits.ts`'s doc comment), so `mm: 1` is
- * the identity/no-op case both sides default to.
+ * already in one internal length unit (millimetres — OCCT's STEP/IGES
+ * readers auto-convert every shape to their cascade unit at read time,
+ * verified against the live WASM; see `src/stepUnits.ts`'s doc comment), so
+ * `mm: 1` is the identity/no-op case both sides default to.
  */
 
 export type DisplayUnit = "mm" | "cm" | "m" | "in" | "ft";
@@ -37,10 +37,12 @@ export const UNIT_LABELS: Record<DisplayUnit, string> = {
   ft: "Feet (ft)",
 };
 
-/** Maps a detected STEP unit name (`src/stepUnits.ts`) to a `DisplayUnit`, or
+/** Maps a detected STEP (`src/stepUnits.ts`) or IGES (`src/igesUnits.ts`) unit
+ * name — both return the same canonical vocabulary (`"MILLIMETRE"`,
+ * `"INCH"`, etc.) so they can share this one mapper — to a `DisplayUnit`, or
  * `undefined` if it's not one of the five this UI offers (e.g. an exotic or
  * unrecognized unit) — the caller falls back to `"mm"` in that case. */
-export function displayUnitFromStepName(name: string | undefined): DisplayUnit | undefined {
+export function displayUnitFromUnitName(name: string | undefined): DisplayUnit | undefined {
   switch (name) {
     case "MILLIMETRE": return "mm";
     case "CENTIMETRE": return "cm";

@@ -2270,10 +2270,36 @@ internally consistent, not a unit-conversion engine.
   over a bare `SI_UNIT`) when there's no `GLOBAL_UNIT_ASSIGNED_CONTEXT` at
   all, and returns `undefined` (never throws) for files with no unit
   declaration whatsoever — confirmed genuinely absent, not a parser miss, in
-  3 of the ~53 fixtures under `examples/STP/`. IGES/BREP get no detection at
-  all in this stage (IGES's unit flag lives in a positional Global-section
-  field, a different-enough format to not be worth the same treatment for a
-  presentation-only feature; BREP has no unit metadata whatsoever).
+  3 of the ~53 fixtures under `examples/STP/`. **IGES unit detection has since
+  shipped too** (roadmap item, closed) — `src/igesUnits.ts`'s
+  `detectIgesLengthUnit()`, a sibling scanner for IGES's genuinely
+  different, positional (not named-entity) format: IGES is fixed-width
+  80-column ASCII "card image" text, and the Global section's logical
+  parameter record is split across as many physical `G`-lines as needed
+  (column 73 = `"G"`, columns 1-72 = content), reassembled by concatenating
+  each line's first 72 columns in file order — **trimming trailing
+  whitespace per line first**, confirmed necessary against a REAL OCCT-
+  written file (captured via a live `export_brep` call, embedded byte-exact
+  in `igesUnits.test.ts`): a field that finishes before column 72 gets the
+  rest of the line padded with spaces rather than packing the next field
+  onto the same line, and naively concatenating raw 72-column chunks spliced
+  that padding into the *middle* of the next Hollerith length-prefix token,
+  breaking the parse. A small hand-written tokenizer (`splitIgesParameters`)
+  then splits the reassembled record on `,`/`;`, treating Hollerith strings
+  (`nHtext`) as opaque (their content can itself contain delimiter
+  characters, which must not be treated as separators) — parameter 14
+  (1-indexed; the unit flag integer) is the target. The 5 flag values this
+  UI's 5 units cover (`1`=inch, `2`=mm, `4`=ft, `6`=m, `10`=cm) map to the
+  SAME canonical name vocabulary (`"MILLIMETRE"`, `"INCH"`, etc.)
+  `detectStepLengthUnit` already returns, so both scanners feed the one
+  shared `src/lengthUnits.ts` mapper — renamed from
+  `displayUnitFromStepName` to `displayUnitFromUnitName` since it's no
+  longer STEP-specific (all call sites updated). Flags not among those five
+  (mile, kilometre, mil, micron, microinch, or `3`/custom-named-in-param-15)
+  degrade to `undefined`, same graceful fallback an unrecognized STEP unit
+  already gets. `provider.ts`'s `handleBRep` now computes `sourceUnit` for
+  both `"step"` and `"iges"` formats (previously STEP-only); BREP still gets
+  none (genuinely no unit metadata in the format at all).
 - **The display-unit selector (`#vc-unit`, view-controls' Appearance group)
   is session-only state in `main.ts`, exactly like every other Stage-2
   Appearance control** — never written to a sidecar, reset to the detected
@@ -2942,7 +2968,12 @@ Then exercise **Units handling**: open `examples/STP/bull.stp` (declares
 `INCH`) → confirm the view-controls **Units** dropdown auto-selects **in**;
 open `examples/STP/angle1.stp` (declares `MILLIMETRE`) → confirm it
 auto-selects **mm**; open `examples/STL/cube.stl` → confirm it resets to
-**mm** (mesh sources have no unit metadata). On `bull.stp`, **Compute** Mass
+**mm** (mesh sources have no unit metadata). Export `bull.stp` to IGES (native
+mm — no unit quick-pick, see Export above) and reopen the `.iges` output →
+confirm the Units dropdown auto-selects **mm** (OCCT's IGES writer always
+declares millimetres, unit flag `2`, regardless of the source's own unit).
+If an inch-declaring IGES fixture is available, open it too and confirm **in**
+is auto-selected the same way `bull.stp` triggers for STEP. On `bull.stp`, **Compute** Mass
 Properties, then switch the Units dropdown through mm/cm/m/in/ft → confirm
 Volume/Area/Length/Center of mass rescale correctly and their labels show the
 right unit + exponent (e.g. `Volume (in³)`), **Ixx/Iyy/Izz stay raw and

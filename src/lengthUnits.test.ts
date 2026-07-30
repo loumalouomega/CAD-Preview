@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DISPLAY_UNITS, unitScaleFactor, displayUnitFromStepName, UNIT_LABELS, type DisplayUnit } from "./lengthUnits";
+import { DISPLAY_UNITS, unitScaleFactor, displayUnitFromUnitName, UNIT_LABELS, type DisplayUnit } from "./lengthUnits";
 
 describe("unitScaleFactor", () => {
   it("mm is the identity factor", () => {
@@ -21,7 +21,7 @@ describe("unitScaleFactor", () => {
   });
 });
 
-describe("displayUnitFromStepName", () => {
+describe("displayUnitFromUnitName", () => {
   it("maps every recognized STEP unit name", () => {
     const cases: Array<[string, DisplayUnit]> = [
       ["MILLIMETRE", "mm"],
@@ -30,11 +30,11 @@ describe("displayUnitFromStepName", () => {
       ["INCH", "in"],
       ["FOOT", "ft"],
     ];
-    for (const [name, unit] of cases) expect(displayUnitFromStepName(name)).toBe(unit);
+    for (const [name, unit] of cases) expect(displayUnitFromUnitName(name)).toBe(unit);
   });
 
   it("returns undefined for unknown/undefined names", () => {
-    expect(displayUnitFromStepName("PARSEC")).toBeUndefined();
-    expect(displayUnitFromStepName(undefined)).toBeUndefined();
+    expect(displayUnitFromUnitName("PARSEC")).toBeUndefined();
+    expect(displayUnitFromUnitName(undefined)).toBeUndefined();
   });
 });

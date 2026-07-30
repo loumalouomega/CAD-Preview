@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
 import { loadBRep, exportBRep } from "./occtService";
 import { detectStepLengthUnit } from "./stepUnits";
+import { detectIgesLengthUnit } from "./igesUnits";
 import { convertToStlBoundary, exportViaMeshio } from "./meshioService";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
@@ -541,7 +542,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           pointId: p.pointId,
         })),
       });
-      const sourceUnit = format === "step" ? detectStepLengthUnit(Buffer.from(bytes).toString("latin1")) : undefined;
+      const text = format === "step" || format === "iges" ? Buffer.from(bytes).toString("latin1") : undefined;
+      const sourceUnit = format === "step" ? detectStepLengthUnit(text!) : format === "iges" ? detectIgesLengthUnit(text!) : undefined;
       post({ type: "tree", root: tree, sourceUnit });
     } catch (err) {
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
