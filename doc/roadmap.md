@@ -18,11 +18,12 @@ yet, only.
 
 ## Queued
 
-Every item below is a **known, documented limitation** of something that
-already ships — each was consciously scoped out at the time, with the reason
-recorded in `CLAUDE.md`. None is a bug.
+Every item below either closes a **known, documented limitation** of
+something that already ships, or is a natural next step identified while
+building the features above — none is a bug, and the reasoning for each is
+recorded in `CLAUDE.md` (existing items) or below (new ones).
 
-### Tier 2 — extending shipped features
+### Tier 1 — extending shipped features
 
 1. **Unit conversion on export for STEP/IGES targets** (**M–L**, needs a
    working OCCT mechanism, upstream-ish). Both formats declare a length unit
@@ -56,10 +57,55 @@ recorded in `CLAUDE.md`. None is a bug.
    "misleading false match" failure mode Compare Models' own design was
    built to avoid — see CLAUDE.md's "Model comparison" section for the full
    reasoning.
+3. **Colour-by-scalar-field for meshio++ imports** (**M**). The just-shipped
+   region/data-array visibility (`readMeshioMetadata()`) only surfaces
+   *names* — `readMesh()` already returns the full `point_data`/`cell_data`
+   arrays behind those names, entirely unused today. Turning one into an
+   actual on-model colour ramp needs a value range + colour map (viridis/jet
+   or similar) → per-vertex/per-face colour buffer, a field picker + legend
+   UI, and a decision on how a `point_data` field (naturally per-vertex) vs.
+   a `cell_data` field (per-*original*-cell, needing the same
+   `surface:parent_cell` boundary correlation the region→Parts item below
+   already identified) each map onto the boundary mesh actually displayed.
+4. **Visual diff for Compare Models** (**S–M**). The existing solid-by-solid
+   diff is entirely numeric (centroid displacement, volume delta) — pairing
+   it with an actual before/after image would make a "heavily edited"
+   verdict immediately legible without reading numbers. `render_snapshot`'s
+   existing multi-view headless render (already B-rep-only, already returns
+   real PNGs) is the natural engine; needs a UI slot in the Compare Models
+   panel and/or an extra `images` field on `compare_models`'s MCP response
+   (reusing `render_snapshot`'s existing image-content-block convention),
+   plus a decision on which view(s) to capture per side — probably the same
+   `DEFAULT_VIEWS` four-view packet `render_snapshot` already defaults to.
+5. **Interference / clash detection between solids or Parts** (**M**). A
+   natural sibling to `measure`/`compare_models`: report the overlap volume
+   (if any) between two solids, using the already-verified
+   `BRepAlgoAPI_Common_3` intersect this codebase's `boolean` edit op
+   already exercises — read-only here, never mutating the model, just
+   checking `IsDone()` and reporting the resulting volume via the existing
+   `BRepGProp.VolumeProperties_1` call shape `get_mass_properties` already
+   uses. Extending from single solids to whole Parts (each potentially
+   several solids) needs the same "compound the operand's solids together
+   first" framing `occtOperations.booleanSolids` already established for
+   its own multi-solid operands.
+6. **Extend entity-id rebinding to `remove_edit_op` (and undo/redo)**
+   (**M–L**). The entity-id rebinding feature (`entityFacts.ts`'s
+   `rebindPartsAcrossOps`, `entityRebind.ts`) is deliberately append-only
+   today — a strict "`previousOps` is a prefix of `newOps`" check means
+   undo, redo, and `remove_edit_op` all leave Part assignments exactly as
+   they were, even though removing a topology-changing op from partway
+   through the stack has the same "ids may now point at something else"
+   problem an append does. Genuinely harder than the append case already
+   shipped: removing (or undoing) an op means re-deriving correct ids
+   across the WHOLE remainder of the stack, not diffing a single
+   before/after boundary, and there's no simple "previous state" to line up
+   against the way an append's `previousOps` naturally provides one. Needs
+   its own design pass, not just a bigger version of the append-only
+   mechanism already shipped.
 
-### Tier 3 — upstream-dependent
+### Tier 2 — upstream-dependent
 
-3. **Richer meshio++ import — auto-converting regions into Parts** (**M**,
+7. **Richer meshio++ import — auto-converting regions into Parts** (**M**,
    partly closed). Imported VTK/MED/CGNS/Exodus/XDMF/MDPA files still funnel
    through meshio++'s STL-boundary writer for GEOMETRY, so region names,
    scalar point/cell data, and multi-material grouping still don't become
@@ -80,7 +126,7 @@ recorded in `CLAUDE.md`. None is a bug.
 
 ### Verification debt
 
-4. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
+8. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
    reads `File.path` (a legacy Electron extension) and falls back to the Open
    dialog when it's absent, so the feature always works — but the true-path
    branch has never been exercised against a real Extension Development Host.

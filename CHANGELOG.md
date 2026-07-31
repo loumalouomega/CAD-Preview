@@ -6,6 +6,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved
 fast and bundled multiple features per bump).
 
+## [1.2.0] - 2026-07-31
+
+### Added
+- **Unit conversion on export, now everywhere it can be done correctly** —
+  BREP, STL, OBJ, PLY, and glTF exports (and, separately, the FE Mesh
+  panel's own Gmsh-format export: `.msh`, Kratos MDPA, VTK, and the rest)
+  can now be scaled to mm/cm/m/in/ft on the way out, a real geometric
+  transform applied to the exported file's coordinates, not just a display
+  change. STEP/IGES exports deliberately stay native mm — this OCCT WASM
+  build has no verified way to set those formats' own declared header unit,
+  and shipping a file whose header disagrees with its geometry would be
+  worse than not offering the option.
+- **IGES unit detection** — the view-controls Units dropdown now
+  auto-detects and selects an opened IGES file's declared unit, the same
+  way it already did for STEP.
+- **Compare Models now supports STL, OBJ, and PLY**, in addition to
+  STEP/IGES/BREP — `CAD Preview: Compare Models…` (and the `compare_models`
+  MCP tool) can diff any combination of these formats against each other,
+  via new host-side parsers (glTF remains unsupported: a correct parser
+  needs meaningfully more surface area than the others, with no realistic
+  way to validate it against real-world exporter variety).
+- **Exact-precision measurement** — a new "⟟ Exact" button next to a
+  completed Distance / Edge Length / Radius measurement recomputes it
+  against the true OCCT geometry instead of the displayed triangulation;
+  also available headless as the new `measure_exact` MCP tool.
+- **Best-effort entity-id rebinding** — a Part assigned to a face or edge
+  now usually keeps pointing at the right geometry after a Boolean, Fillet,
+  or feature-modeling edit applied elsewhere in the model, instead of
+  silently losing that reference the next time the file reloads.
+- **meshio++ import visibility** — opening a VTK/MED/CGNS/Exodus/XDMF/MDPA
+  file now shows a status line (and a `load_model` warning via MCP) naming
+  any named regions and data arrays the source file declares. Still
+  geometry-only — nothing is converted into Parts or colourable data yet —
+  but no longer silent about what's actually in the file.
+
+### Fixed
+- The MCP server (and its `render_snapshot` tool) no longer crashes outright
+  on Node.js < 20. A routine Playwright dependency update started calling
+  `process.exit()` at import time on older Node versions — not a catchable
+  exception — so the server now checks the Node version before ever
+  attempting that import, degrading gracefully instead.
+
+### Changed
+- Bumped `@meshioplusplus/wasm` to 9.9.0.
+
 ## [1.1.3] - 2026-07-30
 
 ### Added
@@ -247,6 +292,7 @@ fast and bundled multiple features per bump).
   OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and
   Three.js in the webview for rendering.
 
+[1.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.1.3...v1.2.0
 [1.1.3]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.5...v1.1.3
 [1.0.5]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.3...v1.0.4
