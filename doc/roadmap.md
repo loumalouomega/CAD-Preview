@@ -77,6 +77,7 @@ recorded in `CLAUDE.md`. None is a bug.
    to ship, plus new design work to bridge a region into the webview's
    unrelated coplanar-facet-splitting id scheme. See CLAUDE.md's "meshio++
    integration" section for the full trail.
+
 ### Verification debt
 
 4. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
