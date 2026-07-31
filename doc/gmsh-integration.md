@@ -452,14 +452,27 @@ permutation:
 | triangle | `Triangle3D3` / `SurfaceCondition3D3N` | `Triangle3D6` / `SurfaceCondition3D6N` |
 | quadrilateral | `Quadrilateral3D4` / `SurfaceCondition3D4N` | `Quadrilateral3D9` / `SurfaceCondition3D9N` |
 
-The **geometry** names are certain; the **element/condition** names for the
-newer kinds (everything but `Element3D4N`/`SurfaceCondition3D3N`) are best-effort
-transcriptions from Kratos's registered types and still want a Kratos-core-dev
-confirmation. Until then, `"elements"` mode runs a pre-flight that throws an
-actionable *"export in Geometries mode instead"* error if the generated mesh
-contains a kind whose element/condition name is unset — `"geometries"` mode is
-always safe. (In the current table every name is filled in, so the guard only
-fires if a name is later reset to `null` pending review.)
+Every name in this table — **geometry** as well as **element/condition** —
+is now confirmed against Kratos's own core C++ source (roadmap "Confirm
+Kratos MDPA block names", closed): `kratos/sources/kratos_application.cpp`
+in the `KratosMultiphysics/Kratos` GitHub repo unconditionally registers
+`KRATOS_REGISTER_ELEMENT("Element3D4N", ...)` through
+`KRATOS_REGISTER_ELEMENT("Element3D27N", ...)` and
+`KRATOS_REGISTER_CONDITION("SurfaceCondition3D3N", ...)` through
+`KRATOS_REGISTER_CONDITION("SurfaceCondition3D9N", ...)`, each wrapping
+exactly the geometry class this table lists (e.g. `mElement3D20N` wraps
+`Hexahedra3D20<NodeType>`) — found via `gh api search/code` against the real
+repo, not assumed. These are CORE registrations, run by every Kratos
+installation regardless of which physics application is loaded — not an
+application-specific naming convention (a real Kratos `.mdpa` test fixture
+in the same repo uses an application-specific name instead,
+`GeoTransientThermalElement3D20N`, confirming the bare `Element3DNN` family
+is the genuine core fallback, not a fabricated placeholder). `"elements"`
+mode still runs a pre-flight that throws an actionable *"export in
+Geometries mode instead"* error if the generated mesh contains a kind whose
+element/condition name is unset — `"geometries"` mode is always safe — kept
+in place for any FUTURE unmapped kind (e.g. the hex-dominant "trihedron"
+connector), not because today's names are in doubt.
 
 A complete order-2 **prism** (gmsh PRI18, 18 nodes) and **pyramid** (PYR14, 14)
 are **truncated** to Kratos's `Prism3D15` / `Pyramid3D13` — verified against the

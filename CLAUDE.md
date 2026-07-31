@@ -1036,11 +1036,30 @@ Non-negotiable invariants:
   localNodeCoord`, not docs): linear cells + `tri6`/`quad9` are identity, `tet10`
   is `[0,1,2,3,4,5,6,7,9,8]`, `hex20`/`hex27`/`prism15`/`pyramid13` are non-trivial.
   Complete order-2 prism18/pyramid14 **truncate** to Kratos `Prism3D15`/`Pyramid3D13`
-  (their leading nodes coincide — verified). Geometry block names are certain;
-  the newer kinds' `Element*`/`Condition*` names are best-guess transcriptions
-  pending Kratos-dev confirmation, so `"elements"` mode pre-flights an actionable
-  "use Geometries mode" throw if any produced kind's element/condition name is
-  `null` (all filled today, so the guard is dormant).
+  (their leading nodes coincide — verified). **Every currently-filled
+  `elementName`/`conditionName` (roadmap "Confirm Kratos MDPA block names",
+  closed) is now CONFIRMED against Kratos's own core C++ registration
+  source** (`kratos/sources/kratos_application.cpp` in the
+  `KratosMultiphysics/Kratos` GitHub repo, via `gh api search/code` — the
+  unconditional `KRATOS_REGISTER_ELEMENT`/`KRATOS_REGISTER_CONDITION` calls
+  in `KratosApplication`'s constructor/`Register()`, which every Kratos
+  installation runs regardless of which physics application is loaded, not
+  a guess or an application-specific naming convention): `"Element3D4N"` →
+  `mElement3D4N` → `Tetrahedra3D4<NodeType>`, ... through `"Element3D27N"` →
+  `Hexahedra3D27<NodeType>`, and `"SurfaceCondition3D3N"` → `Triangle3D3`
+  through `"SurfaceCondition3D9N"` → `Quadrilateral3D9` — every one matches
+  this file's table exactly, both the name string and the geometry class it
+  wraps. (A REAL Kratos `.mdpa` test fixture in the same repo,
+  `GeoMechanicsApplication/tests/.../test_thermal_heat_flux_3D20N.mdpa`, uses
+  an application-specific name instead, `GeoTransientThermalElement3D20N` —
+  confirming that a *specific-physics* element can be named anything, but the
+  bare `"Element3DNN"` family this codebase emits is the genuinely-registered
+  CORE fallback name, not a fabricated placeholder.) The `"elements"` mode
+  pre-flight guard (an actionable "use Geometries mode" throw if any produced
+  kind's element/condition name is `null`) remains in place for any FUTURE
+  unmapped kind (e.g. the hex-dominant "trihedron" connector already
+  documented above) — dormant today since every kind this codebase currently
+  produces has a name, and every one of those names is now verified correct.
 - **Node ordering / orientation**: `mdpaWriter.ts`'s `orientCell()` recomputes each
   cell's signed volume (divergence theorem over the kind's OUTWARD boundary faces —
   `signedVolume` in `gmshElementTypes.ts`) and, for a negative tet, applies the

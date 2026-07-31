@@ -77,15 +77,9 @@ recorded in `CLAUDE.md`. None is a bug.
    to ship, plus new design work to bridge a region into the webview's
    unrelated coplanar-facet-splitting id scheme. See CLAUDE.md's "meshio++
    integration" section for the full trail.
-4. **Confirm Kratos MDPA block names** (**S**, needs Kratos-dev input). The
-   geometry block names are certain; the newer kinds' `Element*`/`Condition*`
-   names are best-guess transcriptions. `"elements"` mode already pre-flights
-   an actionable error for any kind whose name is unknown, so the guard is in
-   place — this is a verification task, not new code.
-
 ### Verification debt
 
-5. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
+4. **Confirm drag-and-drop's true-path branch** (**S**). `setupDragAndDrop()`
    reads `File.path` (a legacy Electron extension) and falls back to the Open
    dialog when it's absent, so the feature always works — but the true-path
    branch has never been exercised against a real Extension Development Host.
