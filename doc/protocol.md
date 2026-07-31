@@ -32,9 +32,7 @@ interface EncodedMesh {
 }
 ```
 
-One encoded mesh per **face** (B-rep). Geometry is base64-encoded for safe
-`postMessage` transport. `groupId` links the face to its solid's `TreeNode.id`;
-`faceId` is the stable per-face entity id used by part assignments and picking.
+One encoded mesh per **face** (B-rep). Geometry is base64-encoded for safe `postMessage` transport. `groupId` links the face to its solid's `TreeNode.id`; `faceId` is the stable per-face entity id used by part assignments and picking.
 
 ### `EncodedEdge`
 
@@ -45,8 +43,7 @@ interface EncodedEdge {
 }
 ```
 
-One per **unique edge** (B-rep), discretized to a polyline. Shared edges are
-de-duplicated host-side; `edgeId` is stable across reopen of an unchanged file.
+One per **unique edge** (B-rep), discretized to a polyline. Shared edges are de-duplicated host-side; `edgeId` is stable across reopen of an unchanged file.
 
 ### `EncodedPoint`
 
@@ -57,11 +54,7 @@ interface EncodedPoint {
 }
 ```
 
-One per **unique vertex** (B-rep) — every vertex in the shape, including the
-model's own corners as well as any user-added standalone points. Unlike faces and
-edges, points are never resolved as operands by another op (`addLine`/`addArc`
-take typed coordinates, not point-id references), so extraction is purely for
-display/picking.
+One per **unique vertex** (B-rep) — every vertex in the shape, including the model's own corners as well as any user-added standalone points. Unlike faces and edges, points are never resolved as operands by another op (`addLine`/`addArc` take typed coordinates, not point-id references), so extraction is purely for display/picking.
 
 ### `EntityType` and `Part`
 
@@ -78,11 +71,7 @@ interface Part {
 }
 ```
 
-A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the
-stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for
-mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats
-have no assignable lines or points). Parts are persisted in the JSON sidecar — see
-[File Formats](./file-formats.md).
+A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats have no assignable lines or points). Parts are persisted in the JSON sidecar — see [File Formats](./file-formats.md).
 
 ### `EditOp`
 
@@ -136,19 +125,9 @@ type EditOp =
   | { op: 'addVolumeFromSurfaces'; faces: string[] } // >= 4 face ids, must sew into a closed shell
 ```
 
-An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the
-same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single
-tolerance gate — malformed ops are dropped, never thrown. The list is persisted in
-the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md).
+An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single tolerance gate — malformed ops are dropped, never thrown. The list is persisted in the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md).
 
-Every op may additionally carry an optional **parametric annotation**
-`exprs?: Record<string, string>` mapping a numeric field path (`length`,
-`size[1]`, `points[2][0]`) to an expression over the document's named variables
-(`ParamVariable`, below). The addressed numeric fields always hold the
-last-good evaluated numbers — a cache — so every consumer that ignores `exprs`
-still sees a fully-resolved op; only `resolveEditOps` (`src/editVariables.ts`)
-reads it. `validateEditOp` sanitizes `exprs` (bad paths / non-numeric slots /
-syntax errors dropped per entry).
+Every op may additionally carry an optional **parametric annotation** `exprs?: Record<string, string>` mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression over the document's named variables (`ParamVariable`, below). The addressed numeric fields always hold the last-good evaluated numbers — a cache — so every consumer that ignores `exprs` still sees a fully-resolved op; only `resolveEditOps` (`src/editVariables.ts`) reads it. `validateEditOp` sanitizes `exprs` (bad paths / non-numeric slots / syntax errors dropped per entry).
 
 ```typescript
 interface ParamVariable {
@@ -158,16 +137,7 @@ interface ParamVariable {
 }
 ```
 
-All op
-kinds are implemented: transforms, booleans, fillet/chamfer, feature modeling
-(extrude/revolve/sweep/loft), modify ops (shell/split-by-plane/section, B-rep
-only), assembly (explode/mate), primitive creation (box/sphere/cylinder/cone/
-torus/prism/wedge), subtractive holes (plain/counterbore/countersink — cut into
-the target volumes on both pipelines), 2D profile sketches (circle/rectangle/
-polygon/ellipse/rounded-rectangle/slot/trapezoid, B-rep only, for use as a later
-feature-modeling `profile`), curves (polyline/three-point arc/spline/bezier/
-ellipse arc/helix, B-rep only), and bottom-up wireframe modeling
-(addPoint/addLine/addArc/addSurfaceFromLines/addVolumeFromSurfaces, B-rep only).
+All op kinds are implemented: transforms, booleans, fillet/chamfer, feature modeling (extrude/revolve/sweep/loft), modify ops (shell/split-by-plane/section, B-rep only), assembly (explode/mate), primitive creation (box/sphere/cylinder/cone/ torus/prism/wedge), subtractive holes (plain/counterbore/countersink — cut into the target volumes on both pipelines), 2D profile sketches (circle/rectangle/ polygon/ellipse/rounded-rectangle/slot/trapezoid, B-rep only, for use as a later feature-modeling `profile`), curves (polyline/three-point arc/spline/bezier/ ellipse arc/helix, B-rep only), and bottom-up wireframe modeling (addPoint/addLine/addArc/addSurfaceFromLines/addVolumeFromSurfaces, B-rep only).
 
 ### `MeshOptions`
 
@@ -185,13 +155,7 @@ interface MeshOptions {
 }
 ```
 
-The flat options bag for GMSH FE-mesh generation (see
-[GMSH Integration](./gmsh-integration.md)). `validateMeshOptions` (`src/meshOptions.ts`)
-is the single tolerance gate — an individually invalid field falls back to
-`DEFAULT_MESH_OPTIONS` for that field alone, so a hand-edited or partially-corrupt
-`<model>.mesh.json` sidecar degrades gracefully rather than blocking meshing. Sent
-host → webview in `meshingOptions` (hydration) and webview → host in
-`meshingChanged`/`meshingGenerate`/`meshingExport`.
+The flat options bag for GMSH FE-mesh generation (see [GMSH Integration](./gmsh-integration.md)). `validateMeshOptions` (`src/meshOptions.ts`) is the single tolerance gate — an individually invalid field falls back to `DEFAULT_MESH_OPTIONS` for that field alone, so a hand-edited or partially-corrupt `<model>.mesh.json` sidecar degrades gracefully rather than blocking meshing. Sent host → webview in `meshingOptions` (hydration) and webview → host in `meshingChanged`/`meshingGenerate`/`meshingExport`.
 
 ### `ViewerDefaults` and `MassProperties`
 
@@ -236,13 +200,7 @@ interface ExactMeasureResult {
 }
 ```
 
-`ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) —
-cross-document defaults only; a per-document sidecar value or a runtime toggle
-(the toolbar Grid button) always wins once set. `MassProperties` is computed
-via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources
-compute the equivalent client-side and never send it over this protocol at
-all (no host round trip) — see [Extension Host API](./extension-host-api.md)
-and [Webview API](./webview-api.md).
+`ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) — cross-document defaults only; a per-document sidecar value or a runtime toggle (the toolbar Grid button) always wins once set. `MassProperties` is computed via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources compute the equivalent client-side and never send it over this protocol at all (no host round trip) — see [Extension Host API](./extension-host-api.md) and [Webview API](./webview-api.md).
 
 ---
 
@@ -280,11 +238,7 @@ type HostToWebview =
 
 ### `geometry`
 
-Sent after B-rep tessellation. Contains every face as an encoded mesh, every unique
-edge as a polyline, and every vertex as a point. The webview calls
-`buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` (one `THREE.Mesh` per
-face, one `THREE.Line` per edge, one `THREE.Sprite` per point, parented under
-per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group)`.
+Sent after B-rep tessellation. Contains every face as an encoded mesh, every unique edge as a polyline, and every vertex as a point. The webview calls `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` (one `THREE.Mesh` per face, one `THREE.Line` per edge, one `THREE.Sprite` per point, parented under per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group)`.
 
 ```json
 {
@@ -306,20 +260,7 @@ per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group
 
 Sent alongside (or shortly after) `geometry` for B-rep files. Also sent for Three.js mesh files after the model is loaded and the Object3D hierarchy is walked.
 
-`sourceUnit` is the source file's declared length unit (e.g. `"INCH"`,
-`"MILLIMETRE"`), detected by a plain-text scan: `src/stepUnits.ts`'s
-`detectStepLengthUnit` for a STEP file's `DATA` section, `src/igesUnits.ts`'s
-`detectIgesLengthUnit` for an IGES file's fixed-width Global-section unit
-flag (both return the same canonical name vocabulary) — `undefined` for BREP
-(no unit metadata in the format at all) or a STEP/IGES file with no unit
-declaration, or one whose value isn't among the five units this UI offers. It
-is purely informational: OCCT's STEP/IGES readers already auto-convert every
-shape to one internal cascade unit (millimetres) regardless of this value, so
-geometry numbers are always already consistent. The webview uses it only to
-seed the
-view-controls "Units" display-unit selector (`src/webview/units.ts`) —
-switching that selector never changes any stored value, only how Mass
-Properties/Measurement numbers are formatted.
+`sourceUnit` is the source file's declared length unit (e.g. `"INCH"`, `"MILLIMETRE"`), detected by a plain-text scan: `src/stepUnits.ts`'s `detectStepLengthUnit` for a STEP file's `DATA` section, `src/igesUnits.ts`'s `detectIgesLengthUnit` for an IGES file's fixed-width Global-section unit flag (both return the same canonical name vocabulary) — `undefined` for BREP (no unit metadata in the format at all) or a STEP/IGES file with no unit declaration, or one whose value isn't among the five units this UI offers. It is purely informational: OCCT's STEP/IGES readers already auto-convert every shape to one internal cascade unit (millimetres) regardless of this value, so geometry numbers are always already consistent. The webview uses it only to seed the view-controls "Units" display-unit selector (`src/webview/units.ts`) — switching that selector never changes any stored value, only how Mass Properties/Measurement numbers are formatted.
 
 ```json
 {
@@ -350,36 +291,9 @@ Sent for mesh-format files (STL/OBJ/PLY/glTF). The `url` is a `vscode-webview://
 
 ### `loadMeshBytes`
 
-Sent for meshio++-only source files (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA — see
-[File Formats](./file-formats.md#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa)).
-Unlike `loadUrl`, the webview has no native loader for these formats at all,
-so the host converts the file host-side first
-(`src/meshioService.ts`'s `convertToStlBoundary()`, via meshio++'s
-`convertSurface`) and sends the resulting **STL bytes** directly over
-postMessage as base64 — the same transport pattern `geometry` already uses
-for large buffers, deliberately not a `data:` URL (sidesteps any webview
-CSP/size-limit uncertainty around those). `sourceFormat` is the document's
-*actual* source format (e.g. `"vtk"`), used only for the Components tree
-root's label — the bytes themselves are always `"stl"` and are fed through
-the exact same `loadMeshFromUrl(url, "stl")` call `loadUrl` uses, via a
-`blob:` object URL (`URL.createObjectURL`) instead of a `vscode-webview://`
-fetch. From this point on, a meshio-imported document is indistinguishable
-from a native `.stl` open to every other feature.
+Sent for meshio++-only source files (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA — see [File Formats](./file-formats.md#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa)). Unlike `loadUrl`, the webview has no native loader for these formats at all, so the host converts the file host-side first (`src/meshioService.ts`'s `convertToStlBoundary()`, via meshio++'s `convertSurface`) and sends the resulting **STL bytes** directly over postMessage as base64 — the same transport pattern `geometry` already uses for large buffers, deliberately not a `data:` URL (sidesteps any webview CSP/size-limit uncertainty around those). `sourceFormat` is the document's *actual* source format (e.g. `"vtk"`), used only for the Components tree root's label — the bytes themselves are always `"stl"` and are fed through the exact same `loadMeshFromUrl(url, "stl")` call `loadUrl` uses, via a `blob:` object URL (`URL.createObjectURL`) instead of a `vscode-webview://` fetch. From this point on, a meshio-imported document is indistinguishable from a native `.stl` open to every other feature.
 
-An optional `meshioMetadata` carries **read-only visibility** into named
-regions (gmsh physical groups, Abaqus NSET/ELSET/SURFACE, Exodus
-blocks/sets, MED families, Kratos SubModelParts) and point/cell/field data
-array names the source file declares — from `meshioService.ts`'s
-`readMeshioMetadata()` (a cheap `readMetadata()` call, computed alongside
-`convertToStlBoundary()` via `Promise.all`, best-effort and never throwing).
-Omitted entirely (not an empty object) when the file declares nothing.
-**This is informational only — none of it is converted into Parts or any
-other geometry**; the webview's `case "loadMeshBytes"` handler shows it as a
-one-line `status` summary, posted AFTER the STL load completes so it can't
-race with and get clobbered by `loadMeshObjectFromUrl`'s own internal
-loading-status sequence. See CLAUDE.md's "meshio++ integration" section for
-why full auto-conversion into Parts is real, larger future work (a
-de-risked mechanism is documented there for whoever picks it up next).
+An optional `meshioMetadata` carries **read-only visibility** into named regions (gmsh physical groups, Abaqus NSET/ELSET/SURFACE, Exodus blocks/sets, MED families, Kratos SubModelParts) and point/cell/field data array names the source file declares — from `meshioService.ts`'s `readMeshioMetadata()` (a cheap `readMetadata()` call, computed alongside `convertToStlBoundary()` via `Promise.all`, best-effort and never throwing). Omitted entirely (not an empty object) when the file declares nothing. **This is informational only — none of it is converted into Parts or any other geometry**; the webview's `case "loadMeshBytes"` handler shows it as a one-line `status` summary, posted AFTER the STL load completes so it can't race with and get clobbered by `loadMeshObjectFromUrl`'s own internal loading-status sequence. See CLAUDE.md's "meshio++ integration" section for why full auto-conversion into Parts is real, larger future work (a de-risked mechanism is documented there for whoever picks it up next).
 
 ```json
 {
@@ -397,16 +311,9 @@ de-risked mechanism is documented there for whoever picks it up next).
 
 ### `parts`
 
-Sent after geometry, once the host has read the parts sidecar
-(`<model>.parts.json`). Carries the saved part definitions (empty array when no
-sidecar exists). The webview loads them into `PartsModel`, recolours the model,
-and renders the Parts panel.
+Sent after geometry, once the host has read the parts sidecar (`<model>.parts.json`). Carries the saved part definitions (empty array when no sidecar exists). The webview loads them into `PartsModel`, recolours the model, and renders the Parts panel.
 
-Also sent **unprompted, mid-session** (not just during the `ready` handshake)
-whenever a purely-appended, topology-changing edit triggers a successful
-entity-id rebind (`provider.ts`'s `rebindPartsOnAppend()` — see CLAUDE.md's
-"Entity-id drift" section) — the webview's handling is identical either way,
-since `PartsModel.load()` is a silent full replace with no `onChange` echo.
+Also sent **unprompted, mid-session** (not just during the `ready` handshake) whenever a purely-appended, topology-changing edit triggers a successful entity-id rebind (`provider.ts`'s `rebindPartsOnAppend()` — see CLAUDE.md's "Entity-id drift" section) — the webview's handling is identical either way, since `PartsModel.load()` is a silent full replace with no `onChange` echo.
 
 ```json
 {
@@ -419,17 +326,9 @@ since `PartsModel.load()` is a silent full replace with no `onChange` echo.
 
 ### `edits`
 
-Sent after geometry, once the host has read the edits sidecar
-(`<model>.edits.json`). Carries the saved, ordered edit op-list plus the named
-parametric variables (both empty arrays when no sidecar exists). The webview
-hydrates `EditsModel` + `VariablesModel` and renders the Edits panel. For B-rep
-the geometry already arrives with these ops applied (the host folds them in
-before tessellating); for mesh formats the webview replays them locally.
+Sent after geometry, once the host has read the edits sidecar (`<model>.edits.json`). Carries the saved, ordered edit op-list plus the named parametric variables (both empty arrays when no sidecar exists). The webview hydrates `EditsModel` + `VariablesModel` and renders the Edits panel. For B-rep the geometry already arrives with these ops applied (the host folds them in before tessellating); for mesh formats the webview replays them locally.
 
-An op may carry an optional `exprs` annotation (field path → expression string,
-e.g. `{ "length": "L*2" }`); its numeric fields always hold the last-good
-evaluated numbers, so consumers that ignore `exprs` still see a fully-resolved
-op. See [File Formats](./file-formats.md#edits-sidecar-modeleditsjson).
+An op may carry an optional `exprs` annotation (field path → expression string, e.g. `{ "length": "L*2" }`); its numeric fields always hold the last-good evaluated numbers, so consumers that ignore `exprs` still see a fully-resolved op. See [File Formats](./file-formats.md#edits-sidecar-modeleditsjson).
 
 ```json
 {
@@ -445,8 +344,7 @@ op. See [File Formats](./file-formats.md#edits-sidecar-modeleditsjson).
 
 ### `editError`
 
-Shown in the status overlay when applying an op fails (e.g. an OCCT operation
-throws). Distinct from `error` only by intent; both render the same way.
+Shown in the status overlay when applying an op fails (e.g. an OCCT operation throws). Distinct from `error` only by intent; both render the same way.
 
 ```json
 { "type": "editError", "message": "Boolean failed: …" }
@@ -455,6 +353,7 @@ throws). Distinct from `error` only by intent; both render the same way.
 ### `status`
 
 Progress text shown in the status overlay (`#status-text`). Sent at key points during B-rep loading:
+
 - `"Loading kernel…"` — before WASM initialization
 - `"Tessellating…"` — after kernel is ready, before tessellation completes
 
@@ -472,17 +371,7 @@ Shown in the error overlay (`#error-overlay`). Sent if tessellation throws or if
 
 ### `exportMesh`
 
-Sent when the user picks a mesh-format export target (STL/OBJ/PLY/glTF) in the
-host's quick-pick. Only mesh targets round-trip through the webview — B-rep targets
-(STEP/IGES/BREP) are written entirely in the host via OCCT, with no webview
-involvement. The webview serializes the currently displayed `THREE.Object3D` with the
-matching exporter from `three/examples/jsm/exporters/` and replies with
-`exportResult`/`exportError`. `unit` (optional, `DisplayUnit = 'mm'|'cm'|'m'|'in'|'ft'`
-from `src/lengthUnits.ts`, `undefined`/`'mm'` = no-op) is the export-unit quick-pick's
-answer — a REAL geometric scale (`meshExporters.ts`'s `exportModel` clones the model
-root, scales it, and force-updates its world matrix before serializing), distinct
-from the display-unit selector (`src/webview/units.ts`), which only ever rescales
-what a number looks like and never reaches this message at all.
+Sent when the user picks a mesh-format export target (STL/OBJ/PLY/glTF) in the host's quick-pick. Only mesh targets round-trip through the webview — B-rep targets (STEP/IGES/BREP) are written entirely in the host via OCCT, with no webview involvement. The webview serializes the currently displayed `THREE.Object3D` with the matching exporter from `three/examples/jsm/exporters/` and replies with `exportResult`/`exportError`. `unit` (optional, `DisplayUnit = 'mm'|'cm'|'m'|'in'|'ft'` from `src/lengthUnits.ts`, `undefined`/`'mm'` = no-op) is the export-unit quick-pick's answer — a REAL geometric scale (`meshExporters.ts`'s `exportModel` clones the model root, scales it, and force-updates its world matrix before serializing), distinct from the display-unit selector (`src/webview/units.ts`), which only ever rescales what a number looks like and never reaches this message at all.
 
 ```json
 { "type": "exportMesh", "requestId": "1234-0.56", "format": "stl", "unit": "in" }
@@ -490,10 +379,7 @@ what a number looks like and never reaches this message at all.
 
 ### `meshingOptions`
 
-Sent once, right after `parts`, once the host has read the mesh-options sidecar
-(`<model>.mesh.json`). Carries the saved `MeshOptions` (`DEFAULT_MESH_OPTIONS` when no
-sidecar exists). The webview calls `MeshingModel.load()` (hydration only — does not
-echo back as a `meshingChanged` write) and renders the FE Mesh panel form.
+Sent once, right after `parts`, once the host has read the mesh-options sidecar (`<model>.mesh.json`). Carries the saved `MeshOptions` (`DEFAULT_MESH_OPTIONS` when no sidecar exists). The webview calls `MeshingModel.load()` (hydration only — does not echo back as a `meshingChanged` write) and renders the FE Mesh panel form.
 
 ```json
 {
@@ -504,37 +390,9 @@ echo back as a `meshingChanged` write) and renders the FE Mesh panel form.
 
 ### `meshingResult`
 
-Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the
-target is `"msh"`) on a successful GMSH run. `positions`/`indices`/`edges` are the
-base64 `Float32Array`/`Uint32Array` boundary triangulation + true element-edge line
-buffer, encoded exactly like `EncodedMesh`'s buffers — for a 3D mesh `indices` is
-the tetrahedra's boundary faces derived host-side, not the tetrahedra themselves.
-`nodeCount`/`elementCount` are the full node/element counts (not just the displayed
-boundary triangle count), and `elapsedMs` is the wall-clock duration of the generate
-call. `elementGroups` partitions `indices` into contiguous per-part runs (`{name,
-color, indexStart, indexCount}`, with a trailing `name`/`color` = `null` run for
-triangles not claimed by any part) so the overlay can be built multi-material with
-per-part colours. The webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions,
-msg.indices, msg.edges, msg.elementGroups))` and renders the stats (counts + time) in
-the panel's status line. `quality` (optional — omitted if it couldn't be computed,
-e.g. a 1D mesh) is a `{min, mean, histogram}` summary over the mesh's top-dimension
-elements' `minSICN` quality (via Gmsh's own `getElementQualities` — see
-`src/gmshService.ts`'s `computeQualityAndWorstElements` for the verified call shape),
-rendered as a small min/mean line + bar histogram below the FE Mesh panel's
-status line.
+Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the target is `"msh"`) on a successful GMSH run. `positions`/`indices`/`edges` are the base64 `Float32Array`/`Uint32Array` boundary triangulation + true element-edge line buffer, encoded exactly like `EncodedMesh`'s buffers — for a 3D mesh `indices` is the tetrahedra's boundary faces derived host-side, not the tetrahedra themselves. `nodeCount`/`elementCount` are the full node/element counts (not just the displayed boundary triangle count), and `elapsedMs` is the wall-clock duration of the generate call. `elementGroups` partitions `indices` into contiguous per-part runs (`{name, color, indexStart, indexCount}`, with a trailing `name`/`color` = `null` run for triangles not claimed by any part) so the overlay can be built multi-material with per-part colours. The webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))` and renders the stats (counts + time) in the panel's status line. `quality` (optional — omitted if it couldn't be computed, e.g. a 1D mesh) is a `{min, mean, histogram}` summary over the mesh's top-dimension elements' `minSICN` quality (via Gmsh's own `getElementQualities` — see `src/gmshService.ts`'s `computeQualityAndWorstElements` for the verified call shape), rendered as a small min/mean line + bar histogram below the FE Mesh panel's status line.
 
-`worstElements` (optional — only ever present for a **3D** generate with at least
-one element below `threshold`) is a highlight overlay of the mesh's worst-quality
-elements: `indices` is those elements' own full boundary, ready to index into the
-SAME `positions` buffer `meshingResult.indices` uses. The webview calls
-`viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions,
-msg.worstElements.indices))`, rendered with a depth-test-disabled "ghost" material
-(mirroring the Hidden Lines display mode's ghost-line technique) so it stays visible
-through occluding geometry regardless of true 3D depth — closing the roadmap gap
-where bad tets are frequently interior and invisible in the boundary-only overlay
-above. `shownCount`/`belowThresholdCount` differ only when the highlight was capped
-(`MAX_WORST_ELEMENTS`, prioritizing the lowest-quality elements first); the panel
-reports both, e.g. "showing worst 2000 of 5300".
+`worstElements` (optional — only ever present for a **3D** generate with at least one element below `threshold`) is a highlight overlay of the mesh's worst-quality elements: `indices` is those elements' own full boundary, ready to index into the SAME `positions` buffer `meshingResult.indices` uses. The webview calls `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))`, rendered with a depth-test-disabled "ghost" material (mirroring the Hidden Lines display mode's ghost-line technique) so it stays visible through occluding geometry regardless of true 3D depth — closing the roadmap gap where bad tets are frequently interior and invisible in the boundary-only overlay above. `shownCount`/`belowThresholdCount` differ only when the highlight was capped (`MAX_WORST_ELEMENTS`, prioritizing the lowest-quality elements first); the panel reports both, e.g. "showing worst 2000 of 5300".
 
 ```json
 {
@@ -552,10 +410,7 @@ reports both, e.g. "showing worst 2000 of 5300".
 
 ### `meshingError`
 
-Sent in reply to `meshingGenerate`/`meshingExport` when GMSH throws or the
-document has no mesh geometry available yet (e.g. a mesh-format document before the
-webview has produced an STL snapshot). Rendered as an error string in the FE Mesh
-panel's status line — it does not use the general `#error-overlay` `error` message.
+Sent in reply to `meshingGenerate`/`meshingExport` when GMSH throws or the document has no mesh geometry available yet (e.g. a mesh-format document before the webview has produced an STL snapshot). Rendered as an error string in the FE Mesh panel's status line — it does not use the general `#error-overlay` `error` message.
 
 ```json
 { "type": "meshingError", "message": "No mesh geometry available: missing STL data." }
@@ -563,16 +418,7 @@ panel's status line — it does not use the general `#error-overlay` `error` mes
 
 ### `viewerDefaults`
 
-Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading
-`workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s
-`normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as
-`validateMeshOptions`). Arrives in no deterministic order relative to
-`geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler
-must tolerate either order — `background`/`showGridAndAxes` apply immediately
-(scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()`
-call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()`
-already computes. These are cross-document **defaults only** — a persisted
-per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
+Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading `workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s `normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as `validateMeshOptions`). Arrives in no deterministic order relative to `geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler must tolerate either order — `background`/`showGridAndAxes` apply immediately (scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()` call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()` already computes. These are cross-document **defaults only** — a persisted per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
 
 ```json
 { "type": "viewerDefaults", "background": "#1e1e1e", "meshSizePreset": "medium", "showGridAndAxes": true, "upAxis": "y" }
@@ -580,13 +426,7 @@ per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
 
 ### `screenshotRequest`
 
-Sent in reply to `screenshotButtonClicked` or the `cad-preview.screenshot`
-command, mirroring `exportMesh`'s request/response shape exactly (same
-`pending` map, same `requestId` correlation) — just with the format fixed to
-PNG, so there's no `format` field. The webview force-renders a fresh frame
-(`Viewer.render()`, avoiding a persistent `preserveDrawingBuffer`) then reads
-`renderer.domElement.toDataURL("image/png")`, replying with
-`screenshotResult`/`screenshotError`.
+Sent in reply to `screenshotButtonClicked` or the `cad-preview.screenshot` command, mirroring `exportMesh`'s request/response shape exactly (same `pending` map, same `requestId` correlation) — just with the format fixed to PNG, so there's no `format` field. The webview force-renders a fresh frame (`Viewer.render()`, avoiding a persistent `preserveDrawingBuffer`) then reads `renderer.domElement.toDataURL("image/png")`, replying with `screenshotResult`/`screenshotError`.
 
 ```json
 { "type": "screenshotRequest", "requestId": "1234-0.56" }
@@ -594,13 +434,7 @@ PNG, so there's no `format` field. The webview force-renders a fresh frame
 
 ### `massPropertiesResult` / `massPropertiesError`
 
-Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh
-sources compute `MassProperties` entirely client-side and never send this
-request at all (no host round trip, since there's no OCCT shape to query).
-`properties.volume` is only ever non-`null` for the whole model or a
-`solid-N`; a `face-N` gets `area` only, an `edge-N` gets `length` only. See
-[Extension Host API](./extension-host-api.md#src-massproperties-ts)'s verified
-`BRepGProp` call sequence.
+Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh sources compute `MassProperties` entirely client-side and never send this request at all (no host round trip, since there's no OCCT shape to query). `properties.volume` is only ever non-`null` for the whole model or a `solid-N`; a `face-N` gets `area` only, an `edge-N` gets `length` only. See [Extension Host API](./extension-host-api.md#src-massproperties-ts)'s verified `BRepGProp` call sequence.
 
 ```json
 { "type": "massPropertiesResult", "requestId": "1234-0.56", "properties": { "volume": 24, "area": 52, "length": null, "centerOfMass": [1, 1.5, 2], "momentsOfInertia": { "ixx": 50, "iyy": 40, "izz": 26, "ixy": 0, "ixz": 0, "iyz": 0 } } }
@@ -612,14 +446,7 @@ request at all (no host round trip, since there's no OCCT shape to query).
 
 ### `measureExactResult` / `measureExactError`
 
-Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as
-`massPropertiesResult`. A genuine host round trip via live OCCT geometry
-(`BRepExtrema_DistShapeShape` for `kind: "distance"`, `BRepGProp` for
-`"edgeLength"`, the edge's own curve for `"radius"`), distinct from both the
-interactive Measure tool's default instant triangulated-approximation result
-and `measure`'s bbox-centre-to-bbox-centre convention. See [Extension Host
-API](./extension-host-api.md#src-entityfacts-ts)'s verified call sequence for
-each `kind`.
+Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as `massPropertiesResult`. A genuine host round trip via live OCCT geometry (`BRepExtrema_DistShapeShape` for `kind: "distance"`, `BRepGProp` for `"edgeLength"`, the edge's own curve for `"radius"`), distinct from both the interactive Measure tool's default instant triangulated-approximation result and `measure`'s bbox-centre-to-bbox-centre convention. See [Extension Host API](./extension-host-api.md#src-entityfacts-ts)'s verified call sequence for each `kind`.
 
 ```json
 { "type": "measureExactResult", "requestId": "1234-0.56", "result": { "kind": "distance", "value": 83.305, "fromPoint": [0.5, 0.5, 0.5], "toPoint": [47.88, 47.88, 50] } }
@@ -657,10 +484,7 @@ type WebviewToHost =
 
 ### `partsChanged`
 
-Sent whenever the user mutates parts (create / rename / recolour / delete /
-assign / remove entity). The host debounces these (~500 ms) and writes the full
-part list to the `<model>.parts.json` sidecar via `writeParts()`. The CAD file
-itself is never written — only the sidecar.
+Sent whenever the user mutates parts (create / rename / recolour / delete / assign / remove entity). The host debounces these (~500 ms) and writes the full part list to the `<model>.parts.json` sidecar via `writeParts()`. The CAD file itself is never written — only the sidecar.
 
 ```json
 { "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [], "points": [] } ] }
@@ -668,20 +492,7 @@ itself is never written — only the sidecar.
 
 ### `editsChanged`
 
-Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear)
-**or the parametric variables** (add / rename / change expression / delete —
-which re-resolves every op's `exprs` and so changes the displayed geometry).
-Carries the full ordered op-list plus the full variables list. The ops arrive
-**already resolved** against the variables (the webview resolves on read — see
-`src/editVariables.ts` `resolveEditOps`), so the host never evaluates
-expressions at runtime; the numeric fields are the current values and `exprs`
-rides along for persistence. The host debounces these (~500 ms, on a separate
-timer from `partsChanged`) and writes both to the `<model>.edits.json` sidecar
-via `writeEdits()`. For B-rep sources the host also re-tessellates immediately
-with the new ops and pushes a fresh `geometry` + `tree`; for mesh sources the
-webview has already replayed the ops locally, so the host only persists. The
-CAD file is never written — only the sidecar. See [`EditOp`](#editop) for op
-shapes.
+Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) **or the parametric variables** (add / rename / change expression / delete — which re-resolves every op's `exprs` and so changes the displayed geometry). Carries the full ordered op-list plus the full variables list. The ops arrive **already resolved** against the variables (the webview resolves on read — see `src/editVariables.ts` `resolveEditOps`), so the host never evaluates expressions at runtime; the numeric fields are the current values and `exprs` rides along for persistence. The host debounces these (~500 ms, on a separate timer from `partsChanged`) and writes both to the `<model>.edits.json` sidecar via `writeEdits()`. For B-rep sources the host also re-tessellates immediately with the new ops and pushes a fresh `geometry` + `tree`; for mesh sources the webview has already replayed the ops locally, so the host only persists. The CAD file is never written — only the sidecar. See [`EditOp`](#editop) for op shapes.
 
 ```json
 {
@@ -693,13 +504,7 @@ shapes.
 
 ### `meshingChanged`
 
-Sent whenever the user changes a mesh-options form control in the FE Mesh panel.
-Carries the full current `MeshOptions`. The host debounces these (~500 ms, on its
-own timer separate from parts/edits) and writes **two** files on the same tick:
-`<model>.mesh.json` via `writeMeshOptions()` and the regenerated `<model>.geo`
-script via `writeGeoScript()`. Neither generating nor changing options re-runs
-GMSH by itself — that only happens on `meshingGenerate`/`meshingExport`. See
-[GMSH Integration](./gmsh-integration.md).
+Sent whenever the user changes a mesh-options form control in the FE Mesh panel. Carries the full current `MeshOptions`. The host debounces these (~500 ms, on its own timer separate from parts/edits) and writes **two** files on the same tick: `<model>.mesh.json` via `writeMeshOptions()` and the regenerated `<model>.geo` script via `writeGeoScript()`. Neither generating nor changing options re-runs GMSH by itself — that only happens on `meshingGenerate`/`meshingExport`. See [GMSH Integration](./gmsh-integration.md).
 
 ```json
 { "type": "meshingChanged", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
@@ -707,14 +512,7 @@ GMSH by itself — that only happens on `meshingGenerate`/`meshingExport`. See
 
 ### `meshingGenerate`
 
-Sent when the user clicks **▶ Generate** in the FE Mesh panel. Carries the current
-`MeshOptions` and, for a mesh-format document only, a base64 `stl` field — a
-fresh snapshot of the currently displayed `THREE.Object3D`, serialized in the
-webview via the same `exportModel(..., "stl")` helper Export already uses (the
-host has no B-rep to re-export for a mesh-sourced document, so it has no other way
-to obtain triangulated geometry for GMSH). B-rep documents omit `stl`; the host
-re-exports the live OCCT shape to STEP itself. The host replies with
-`meshingResult` or `meshingError`.
+Sent when the user clicks **▶ Generate** in the FE Mesh panel. Carries the current `MeshOptions` and, for a mesh-format document only, a base64 `stl` field — a fresh snapshot of the currently displayed `THREE.Object3D`, serialized in the webview via the same `exportModel(..., "stl")` helper Export already uses (the host has no B-rep to re-export for a mesh-sourced document, so it has no other way to obtain triangulated geometry for GMSH). B-rep documents omit `stl`; the host re-exports the live OCCT shape to STEP itself. The host replies with `meshingResult` or `meshingError`.
 
 ```json
 { "type": "meshingGenerate", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
@@ -722,35 +520,7 @@ re-exports the live OCCT shape to STEP itself. The host replies with
 
 ### `meshingExport`
 
-Sent when the user picks a format in the FE Mesh panel's export `<select>` and
-clicks **📤 Export**. `target` is a `MeshExportFormatId` (see
-`src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` registry, the single source
-of truth shared by the host and the webview's `<select>` — `"mdpaElements"` is
-listed first and is therefore the default-selected format) selecting which
-output to write: `"msh"` runs `generateMesh` and saves the raw `.msh` text;
-`"geoUnrolled"` calls `exportGeoUnrolled` and saves the `.geo_unrolled` text
-(handling its XAO companion, see below); `"mdpaElements"`/`"mdpaGeometries"`
-run `exportMdpa`, a hand-written Kratos MDPA serializer with no `gmsh.write()`
-involved at all (see `doc/gmsh-integration.md`'s "Kratos MDPA" section); every
-other id (`"msh2"`, `"vtk"`, `"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`,
-`"stl"`, `"diff"`, `"off"`) runs `exportMeshFormat`, a generic
-mesh-then-`gmsh.write()` for whatever other Gmsh output formats this WASM
-build actually supports (confirmed by probing every format Gmsh's writer table
-recognizes — see `doc/gmsh-integration.md`). Same `options`/optional `stl`
-payload as `meshingGenerate`, plus an optional `unit` (`DisplayUnit`, default
-`"mm"`) from the panel's `#meshing-export-unit` `<select>` — a REAL geometric
-scale applied to the geometry before Gmsh ever sees it (B-rep sources via
-`exportBRep`'s `scaleFactor`, mesh-format sources via the new
-`scaleStlBytes`), with `MeshOptions.sizeMin`/`sizeMax` and any per-part
-`meshSize` proportionally rescaled to match (`scaleMeshOptionsForUnit`/
-`scalePartsMeshSizeForUnit`, `src/meshOptions.ts`) — see CLAUDE.md's Meshing
-section for the full write-up. `unit` is scoped to this message only:
-`meshingGenerate` always meshes at native mm, since its overlay is
-display-only with no exported file whose numbers need to mean anything
-externally. The host prompts a save dialog (reusing the same
-`promptSaveAndWrite` helper Export uses) and writes the result directly —
-there is no `meshingResult` reply for this message; failures post the general
-`error` message instead of `meshingError`.
+Sent when the user picks a format in the FE Mesh panel's export `<select>` and clicks **📤 Export**. `target` is a `MeshExportFormatId` (see `src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` registry, the single source of truth shared by the host and the webview's `<select>` — `"mdpaElements"` is listed first and is therefore the default-selected format) selecting which output to write: `"msh"` runs `generateMesh` and saves the raw `.msh` text; `"geoUnrolled"` calls `exportGeoUnrolled` and saves the `.geo_unrolled` text (handling its XAO companion, see below); `"mdpaElements"`/`"mdpaGeometries"` run `exportMdpa`, a hand-written Kratos MDPA serializer with no `gmsh.write()` involved at all (see `doc/gmsh-integration.md`'s "Kratos MDPA" section); every other id (`"msh2"`, `"vtk"`, `"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`, `"stl"`, `"diff"`, `"off"`) runs `exportMeshFormat`, a generic mesh-then-`gmsh.write()` for whatever other Gmsh output formats this WASM build actually supports (confirmed by probing every format Gmsh's writer table recognizes — see `doc/gmsh-integration.md`). Same `options`/optional `stl` payload as `meshingGenerate`, plus an optional `unit` (`DisplayUnit`, default `"mm"`) from the panel's `#meshing-export-unit` `<select>` — a REAL geometric scale applied to the geometry before Gmsh ever sees it (B-rep sources via `exportBRep`'s `scaleFactor`, mesh-format sources via the new `scaleStlBytes`), with `MeshOptions.sizeMin`/`sizeMax` and any per-part `meshSize` proportionally rescaled to match (`scaleMeshOptionsForUnit`/ `scalePartsMeshSizeForUnit`, `src/meshOptions.ts`) — see CLAUDE.md's Meshing section for the full write-up. `unit` is scoped to this message only: `meshingGenerate` always meshes at native mm, since its overlay is display-only with no exported file whose numbers need to mean anything externally. The host prompts a save dialog (reusing the same `promptSaveAndWrite` helper Export uses) and writes the result directly — there is no `meshingResult` reply for this message; failures post the general `error` message instead of `meshingError`.
 
 ```json
 { "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 }, "unit": "in" }
@@ -774,10 +544,7 @@ Sent by the webview for diagnostic messages. The host writes them to the VS Code
 
 ### `openFile`
 
-Sent when the user picks **File ▸ Open…** in the top menu bar. The host shows an
-open dialog (filtered to the supported CAD/mesh extensions) and hands the chosen
-file to this custom editor via `vscode.openWith`. The same action backs the
-`cad-preview.open` command (Ctrl+O). Nothing is sent back to the webview.
+Sent when the user picks **File ▸ Open…** in the top menu bar. The host shows an open dialog (filtered to the supported CAD/mesh extensions) and hands the chosen file to this custom editor via `vscode.openWith`. The same action backs the `cad-preview.open` command (Ctrl+O). Nothing is sent back to the webview.
 
 ```json
 { "type": "openFile" }
@@ -785,14 +552,7 @@ file to this custom editor via `vscode.openWith`. The same action backs the
 
 ### `openPath`
 
-Sent when a file is dropped onto the viewer canvas AND the browser `File`
-object exposed a real filesystem path (`file.path` — a legacy Electron
-extension to the standard `File` object, not guaranteed present in every VS
-Code/Electron version). The host opens it the same way `openFile` does
-(`vscode.openWith`), just from an already-known path instead of a fresh
-dialog. **Fallback**: when no path is exposed on drop, the webview posts the
-plain `openFile` message instead (opens the normal dialog) — drag-and-drop
-degrades to "just opens a dialog" rather than silently failing.
+Sent when a file is dropped onto the viewer canvas AND the browser `File` object exposed a real filesystem path (`file.path` — a legacy Electron extension to the standard `File` object, not guaranteed present in every VS Code/Electron version). The host opens it the same way `openFile` does (`vscode.openWith`), just from an already-known path instead of a fresh dialog. **Fallback**: when no path is exposed on drop, the webview posts the plain `openFile` message instead (opens the normal dialog) — drag-and-drop degrades to "just opens a dialog" rather than silently failing.
 
 ```json
 { "type": "openPath", "path": "/home/user/models/bull.stp" }
@@ -800,12 +560,7 @@ degrades to "just opens a dialog" rather than silently failing.
 
 ### `saveSidecars`
 
-Sent when the user picks **File ▸ Save** in the top menu bar. The CAD file is
-read-only and never written; this forces an immediate flush of the
-`<model>.parts.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`)
-sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status`
-message (`"Saved"`) on success or `error` on failure. The same action backs the
-`cad-preview.save` command (Ctrl+S).
+Sent when the user picks **File ▸ Save** in the top menu bar. The CAD file is read-only and never written; this forces an immediate flush of the `<model>.parts.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`) sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status` message (`"Saved"`) on success or `error` on failure. The same action backs the `cad-preview.save` command (Ctrl+S).
 
 ```json
 { "type": "saveSidecars" }
@@ -813,12 +568,7 @@ message (`"Saved"`) on success or `error` on failure. The same action backs the
 
 ### `exportRequest`
 
-Sent when the user picks **File ▸ Save As… / Export…** in the top menu bar (or
-triggers the `cad-preview.saveAs` / `cad-preview.export` command / Ctrl+Shift+S /
-Ctrl+E). The host computes the compatible target formats
-for the open document (`exportTargetsFor()` in `src/exportTargets.ts`), shows a
-quick-pick and a save dialog, then either writes the file itself (B-rep targets)
-or follows up with `exportMesh` (mesh targets).
+Sent when the user picks **File ▸ Save As… / Export…** in the top menu bar (or triggers the `cad-preview.saveAs` / `cad-preview.export` command / Ctrl+Shift+S / Ctrl+E). The host computes the compatible target formats for the open document (`exportTargetsFor()` in `src/exportTargets.ts`), shows a quick-pick and a save dialog, then either writes the file itself (B-rep targets) or follows up with `exportMesh` (mesh targets).
 
 ```json
 { "type": "exportRequest" }
@@ -826,10 +576,7 @@ or follows up with `exportMesh` (mesh targets).
 
 ### `exportResult` / `exportError`
 
-Sent in reply to `exportMesh`. `data` is base64 when `binary` is `true`, plain text
-otherwise — the same convention as `EncodedMesh`'s buffers, just generalized to a
-whole file. The host correlates the reply to its pending request via `requestId` and
-writes the decoded bytes to the path chosen in the save dialog.
+Sent in reply to `exportMesh`. `data` is base64 when `binary` is `true`, plain text otherwise — the same convention as `EncodedMesh`'s buffers, just generalized to a whole file. The host correlates the reply to its pending request via `requestId` and writes the decoded bytes to the path chosen in the save dialog.
 
 ```json
 { "type": "exportResult", "requestId": "1234-0.56", "data": "AAAA...", "binary": true }
@@ -841,10 +588,7 @@ writes the decoded bytes to the path chosen in the save dialog.
 
 ### `screenshotButtonClicked`
 
-Sent when the toolbar's **📷 Screenshot** button is clicked — the webview-initiated
-trigger for the same `handleScreenshot` flow the `cad-preview.screenshot`
-command drives, so there is exactly one code path regardless of trigger
-surface. The host prompts a save dialog and follows up with `screenshotRequest`.
+Sent when the toolbar's **📷 Screenshot** button is clicked — the webview-initiated trigger for the same `handleScreenshot` flow the `cad-preview.screenshot` command drives, so there is exactly one code path regardless of trigger surface. The host prompts a save dialog and follows up with `screenshotRequest`.
 
 ```json
 { "type": "screenshotButtonClicked" }
@@ -852,9 +596,7 @@ surface. The host prompts a save dialog and follows up with `screenshotRequest`.
 
 ### `screenshotResult` / `screenshotError`
 
-Sent in reply to `screenshotRequest`. `data` is always base64 PNG bytes (no
-`binary` field — unlike `exportResult`, the format is never anything else).
-Correlated to the pending save via `requestId`, same as `exportResult`.
+Sent in reply to `screenshotRequest`. `data` is always base64 PNG bytes (no `binary` field — unlike `exportResult`, the format is never anything else). Correlated to the pending save via `requestId`, same as `exportResult`.
 
 ```json
 { "type": "screenshotResult", "requestId": "1234-0.56", "data": "iVBORw0KGgo..." }
@@ -866,12 +608,7 @@ Correlated to the pending save via `requestId`, same as `exportResult`.
 
 ### `massPropertiesRequest`
 
-Sent when the Mass Properties panel's **Compute** button is clicked, for a
-B-rep source only (mesh sources never send this — see `massPropertiesResult`
-above). `entityId` is `null` for the whole model, or the current selection's
-single entity id (`solid-N` / `face-N` / `edge-N`) — the panel refuses to
-guess when 2+ entities are selected, showing a guidance message instead of
-sending a request.
+Sent when the Mass Properties panel's **Compute** button is clicked, for a B-rep source only (mesh sources never send this — see `massPropertiesResult` above). `entityId` is `null` for the whole model, or the current selection's single entity id (`solid-N` / `face-N` / `edge-N`) — the panel refuses to guess when 2+ entities are selected, showing a guidance message instead of sending a request.
 
 ```json
 { "type": "massPropertiesRequest", "requestId": "1234-0.56", "entityId": "solid-0" }
@@ -879,12 +616,7 @@ sending a request.
 
 ### `measureExactRequest`
 
-Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep
-source only (mesh sources never send this — the button never appears; see
-`measureExactResult` above). `kind` mirrors the current measurement tool
-(`"distance"`/`"edgeLength"`/`"radius"` — never `"angle"`, which has no
-button at all); `entityIdA`/`entityIdB` are the completed measurement's
-picked entity ids (`entityIdB` only for `kind: "distance"`).
+Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep source only (mesh sources never send this — the button never appears; see `measureExactResult` above). `kind` mirrors the current measurement tool (`"distance"`/`"edgeLength"`/`"radius"` — never `"angle"`, which has no button at all); `entityIdA`/`entityIdB` are the completed measurement's picked entity ids (`entityIdB` only for `kind: "distance"`).
 
 ```json
 { "type": "measureExactRequest", "requestId": "1234-0.56", "kind": "distance", "entityIdA": "solid-0", "entityIdB": "solid-1" }
@@ -951,9 +683,7 @@ Host                                    Webview
  │  [decode + workspace.fs.writeFile]      │
 ```
 
-B-rep targets (STEP/IGES/BREP) skip the `exportMesh` round-trip entirely — the host
-re-reads the source file and writes the target format directly via
-`exportBRep()` in `src/occtService.ts`.
+B-rep targets (STEP/IGES/BREP) skip the `exportMesh` round-trip entirely — the host re-reads the source file and writes the target format directly via `exportBRep()` in `src/occtService.ts`.
 
 ---
 

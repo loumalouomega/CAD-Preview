@@ -18,7 +18,7 @@ npm install
 ## Build Commands
 
 | Command | Description |
-|---------|-------------|
+| --- | --- |
 | `npm run build` | Bundle extension host + MCP server + webview (esbuild) and type-check (tsc) |
 | `npm run watch` | Rebuild incrementally on file changes |
 | `npm test` | Run unit tests with Vitest (headless, no display server needed) |
@@ -33,8 +33,7 @@ npm install
 
 ## Regenerating Documentation Screenshots
 
-The per-feature screenshots embedded in the docs are generated automatically —
-they are **not** hand-captured — so they stay in lockstep with the real UI:
+The per-feature screenshots embedded in the docs are generated automatically — they are **not** hand-captured — so they stay in lockstep with the real UI:
 
 ```bash
 npm run docs:screenshots   # runs build → fixtures → capture
@@ -42,21 +41,10 @@ npm run docs:screenshots   # runs build → fixtures → capture
 
 The pipeline lives in `scripts/screenshots/`:
 
-1. **`make-fixtures.mjs`** runs the *real* extension-host geometry pipeline in
-   plain Node — OpenCascade tessellation + a Gmsh mesh of `examples/STP/bull.stp`
-   — and writes the exact `geometry`/`tree`/`meshingResult`/`parts`/`edits`
-   message payloads (plus the shared viewer DOM) to `scripts/screenshots/fixtures/`
-   (git-ignored).
-2. **`capture.mjs`** loads the shipped webview bundle (`media/viewer.js`) into a
-   headless Chromium via Playwright, stubs `acquireVsCodeApi`, posts those
-   fixtures so the UI shows genuine geometry (WebGL renders through SwiftShader —
-   no display server needed), drives each panel, and writes one PNG per feature
-   to `doc/public/screenshots/`. It also refreshes the two README hero images.
+1. **`make-fixtures.mjs`** runs the *real* extension-host geometry pipeline in plain Node — OpenCascade tessellation + a Gmsh mesh of `examples/STP/bull.stp` — and writes the exact `geometry`/`tree`/`meshingResult`/`parts`/`edits` message payloads (plus the shared viewer DOM) to `scripts/screenshots/fixtures/` (git-ignored).
+2. **`capture.mjs`** loads the shipped webview bundle (`media/viewer.js`) into a headless Chromium via Playwright, stubs `acquireVsCodeApi`, posts those fixtures so the UI shows genuine geometry (WebGL renders through SwiftShader — no display server needed), drives each panel, and writes one PNG per feature to `doc/public/screenshots/`. It also refreshes the two README hero images.
 
-The webview DOM is shared with the real extension via `src/viewerDom.ts`
-(`viewerBodyHtml()`), which `provider.ts` also uses, so a UI change can never
-leave the screenshots showing stale markup. First run needs the Playwright
-browser: `npx playwright install chromium`.
+The webview DOM is shared with the real extension via `src/viewerDom.ts` (`viewerBodyHtml()`), which `provider.ts` also uses, so a UI change can never leave the screenshots showing stale markup. First run needs the Playwright browser: `npx playwright install chromium`.
 
 ## Running in the Extension Development Host
 
@@ -65,7 +53,7 @@ Press **F5** in VS Code (with the `launch.json` already configured) to open the 
 ### Test fixtures
 
 | Fixture | Format | What to test |
-|---------|--------|-------------|
+| --- | --- | --- |
 | `examples/STP/bull.stp` | STEP (B-rep) | OCCT pipeline, multi-solid tree panel |
 | `examples/STL/cube.stl` | STL | Three.js pipeline, basic geometry |
 | `examples/OBJ/cube.obj` | OBJ | OBJ loader, default material |
@@ -135,6 +123,7 @@ CAD-Preview/
 `esbuild.mjs` produces two bundles:
 
 **Extension host** (`dist/extension.js`):
+
 - Format: `cjs` (Node requires CommonJS)
 - Platform: `node`
 - Target: `es2020`
@@ -142,6 +131,7 @@ CAD-Preview/
 - `opencascade.js` is **bundled** (not external) — ESM is converted to CJS
 
 **Webview** (`media/viewer.js`):
+
 - Format: `iife` (immediately-invoked, consistent with webview CSP)
 - Platform: `browser`
 - Target: `es2020`
@@ -158,7 +148,7 @@ CAD-Preview/
 Unit tests use [Vitest](https://vitest.dev/). They run headlessly — no display server or VS Code host needed.
 
 | Test file | Covers |
-|-----------|--------|
+| --- | --- |
 | `src/fileRouter.test.ts` | Extension → `FileRoute` mapping |
 | `src/exportTargets.test.ts` | Export target matrix per route, extension map |
 | `src/meshExtract.test.ts` | `extractFaceGeometry`, winding order, index conversion |
@@ -177,6 +167,7 @@ Run a specific test file: `npx vitest run src/fileRouter.test.ts`
 When using VS Code Remote or SSH, the **running extension** is the installed copy in `~/.vscode-server/extensions/`, not the `dist/` directory in the workspace. Rebuilding alone won't show your changes.
 
 To update the running extension after code changes:
+
 1. Bump the version in `package.json`.
 2. `npm run package` — produces `cad-preview-<version>.vsix`.
 3. `code --install-extension cad-preview-<version>.vsix` (or install via the Extensions view).
@@ -189,6 +180,7 @@ Also watch out for stale duplicate entries in `~/.vscode-server/extensions/` if 
 See `.github/workflows/ci.yml`. Two jobs:
 
 **`build-and-test`** (every push/PR to `master`):
+
 1. Checkout + Node 20 setup
 2. `npm ci` — clean install
 3. `npm run build` — bundle + type-check
@@ -197,6 +189,7 @@ See `.github/workflows/ci.yml`. Two jobs:
 6. Upload `.vsix` as a workflow artifact
 
 **`release`** (only on `v*` tags):
+
 1. Same steps as `build-and-test`
 2. `npx vsce package --out cad-preview-<tag>.vsix`
 3. Create a GitHub Release with auto-generated release notes
@@ -206,22 +199,13 @@ See `.github/workflows/ci.yml`. Two jobs:
 
 Two mechanisms keep dependencies current and non-malicious, configured in `.github/`:
 
-- **`dependabot.yml`** opens weekly PRs for outdated `npm` packages (dev-dependency
-  minor/patch bumps grouped into one PR) and GitHub Actions versions. It also drives
-  GitHub's native Dependabot security alerts/PRs for the `npm` ecosystem regardless of
-  the update schedule.
-- **`dependency-review.yml`** runs `actions/dependency-review-action` on every PR to
-  `master` and fails the check (`fail-on-severity: moderate`) if the diff introduces a
-  package with a known moderate-or-worse vulnerability, posting a summary comment on
-  the PR.
+- **`dependabot.yml`** opens weekly PRs for outdated `npm` packages (dev-dependency minor/patch bumps grouped into one PR) and GitHub Actions versions. It also drives GitHub's native Dependabot security alerts/PRs for the `npm` ecosystem regardless of the update schedule.
+- **`dependency-review.yml`** runs `actions/dependency-review-action` on every PR to `master` and fails the check (`fail-on-severity: moderate`) if the diff introduces a package with a known moderate-or-worse vulnerability, posting a summary comment on the PR.
 
-Before adding any new **bundled** dependency (see the License section in
-[`CLAUDE.md`](../CLAUDE.md) — anything that ends up in the packaged `.vsix`, not just a
-dev/build-time tool), check its license for GPL compatibility first regardless of what
-these two checks report, since they scan for vulnerabilities/version currency, not
-license terms.
+Before adding any new **bundled** dependency (see the License section in [`CLAUDE.md`](../CLAUDE.md) — anything that ends up in the packaged `.vsix`, not just a dev/build-time tool), check its license for GPL compatibility first regardless of what these two checks report, since they scan for vulnerabilities/version currency, not license terms.
 
 **`docs`** (see `.github/workflows/docs.yml`, every push to `master`):
+
 1. Checkout + Node 20 setup
 2. `npm ci`
 3. `npm run docs:build` — VitePress build

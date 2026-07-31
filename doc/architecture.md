@@ -5,7 +5,7 @@
 VS Code extensions run in two separate JavaScript environments:
 
 | Environment | Runtime | CAD Preview responsibilities |
-|-------------|---------|------------------------------|
+| --- | --- | --- |
 | **Extension host** | Node.js (CJS) | File I/O, OCCT tessellation, geometry encoding, message dispatch |
 | **Webview** | Chromium (browser IIFE) | Three.js scene, camera, rendering, UI |
 
@@ -49,24 +49,12 @@ file extension
 
 ## Export
 
-Export mirrors the same two-pipeline split, in reverse, driven by
-`exportTargetsFor()` in `src/exportTargets.ts`:
+Export mirrors the same two-pipeline split, in reverse, driven by `exportTargetsFor()` in `src/exportTargets.ts`:
 
-- **B-rep targets** (STEP/IGES/BREP) are written entirely in the extension host:
-  `exportBRep()` in `src/occtService.ts` re-parses the source file with the existing
-  OCCT reader and hands the live `TopoDS_Shape` to the matching OCCT writer. The
-  webview is not involved.
-- **Mesh targets** (STL/OBJ/PLY/glTF) are written in the webview, since that's where
-  the triangulated `THREE.Object3D` already lives (for *any* source format — OCCT
-  tessellation results and natively-loaded meshes are indistinguishable once they're
-  in the Three.js scene). `src/webview/meshExporters.ts` wraps Three.js's bundled
-  exporters and posts the serialized result back to the host over `postMessage`,
-  since only the extension host can show native save dialogs.
+- **B-rep targets** (STEP/IGES/BREP) are written entirely in the extension host: `exportBRep()` in `src/occtService.ts` re-parses the source file with the existing OCCT reader and hands the live `TopoDS_Shape` to the matching OCCT writer. The webview is not involved.
+- **Mesh targets** (STL/OBJ/PLY/glTF) are written in the webview, since that's where the triangulated `THREE.Object3D` already lives (for *any* source format — OCCT tessellation results and natively-loaded meshes are indistinguishable once they're in the Three.js scene). `src/webview/meshExporters.ts` wraps Three.js's bundled exporters and posts the serialized result back to the host over `postMessage`, since only the extension host can show native save dialogs.
 
-OCCT in this build only includes B-rep writers — there are no STL/OBJ/PLY/glTF
-writers, and no reverse path from a triangle mesh to a B-rep. That asymmetry is why
-export targets are pipeline-dependent rather than a flat list of every supported
-format.
+OCCT in this build only includes B-rep writers — there are no STL/OBJ/PLY/glTF writers, and no reverse path from a triangle mesh to a B-rep. That asymmetry is why export targets are pipeline-dependent rather than a flat list of every supported format.
 
 ## WASM Loading — Critical Detail
 
@@ -84,6 +72,7 @@ const oc = await openCascadeFactory({ wasmBinary })
 ```
 
 This approach:
+
 - Is deterministic — no `fetch`, no URL resolution.
 - Works on all platforms (Windows paths, Remote/SSH, dev containers).
 - Is the only approach that survives the esbuild bundle (see [Bundling](#bundling) below).
@@ -108,10 +97,10 @@ export function getOcct(extensionPath: string): Promise<any> {
 
 The project uses [esbuild](https://esbuild.github.io/) (not tsc) to produce two bundles:
 
-| Bundle | Path | Format | Target |
-|--------|------|--------|--------|
-| Extension host | `dist/extension.js` | CJS | Node 18 |
-| Webview | `media/viewer.js` | IIFE | ES2020 browser |
+| Bundle         | Path                | Format | Target         |
+| -------------- | ------------------- | ------ | -------------- |
+| Extension host | `dist/extension.js` | CJS    | Node 18        |
+| Webview        | `media/viewer.js`   | IIFE   | ES2020 browser |
 
 `tsc --noEmit` (via `npm run compile`) provides type-checking only — it emits nothing.
 
@@ -140,6 +129,7 @@ img-src {webview-csp-source} data:;
 ```
 
 This means:
+
 - No inline scripts without the nonce.
 - No `eval` / `unsafe-eval` (so no dynamic code).
 - Images are allowed only from `vscode-webview://` URIs or `data:` (used by `CanvasTexture`).
@@ -168,6 +158,7 @@ main canvas
 ```
 
 The render sequence per frame:
+
 1. Clear color + depth for the full canvas → render the main scene.
 2. Set scissor rect (top-left, 120×120 px) → clear depth only (scene colors preserved) → render the gizmo scene.
 3. Disable scissor.

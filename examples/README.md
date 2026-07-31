@@ -1,12 +1,9 @@
 # Example files
 
-Fixtures used for manual verification (see the "Verify a change" section of the root
-`CLAUDE.md`) and referenced by unit/integration tests. One small `cube.*` fixture
-covers each mesh format; the `STP/` directory holds a large batch of real-world B-rep
-models for exercising the OCCT pipeline against varied geometry.
+Fixtures used for manual verification (see the "Verify a change" section of the root `CLAUDE.md`) and referenced by unit/integration tests. One small `cube.*` fixture covers each mesh format; the `STP/` directory holds a large batch of real-world B-rep models for exercising the OCCT pipeline against varied geometry.
 
 | Directory | Format | Extension | Pipeline |
-|-----------|--------|-----------|----------|
+| --- | --- | --- | --- |
 | [`STP/`](STP/) | STEP | `.stp` | OCCT → BRepMesh (B-rep) |
 | [`STL/`](STL/) | STL | `.stl` | Three.js `STLLoader` (mesh) |
 | [`OBJ/`](OBJ/) | OBJ | `.obj` | Three.js `OBJLoader` (mesh) |
@@ -14,35 +11,22 @@ models for exercising the OCCT pipeline against varied geometry.
 | [`GLTF/`](GLTF/) | glTF | `.gltf` | Three.js `GLTFLoader` (mesh) |
 | [`MED/`](MED/) | MED | `.med` | meshio++ bridge (host-side, geometry + region/data-array-name visibility) |
 
-CAD Preview also supports IGES (`.iges`/`.igs`) and BREP (`.brep`) via the same OCCT
-pipeline as STEP, and glTF binary (`.glb`) via the same loader as `.gltf`, but no
-example fixtures are checked in for those extensions. See `doc/file-formats.md` for
-the full format reference.
+CAD Preview also supports IGES (`.iges`/`.igs`) and BREP (`.brep`) via the same OCCT pipeline as STEP, and glTF binary (`.glb`) via the same loader as `.gltf`, but no example fixtures are checked in for those extensions. See `doc/file-formats.md` for the full format reference.
 
 ## STL / OBJ / PLY / glTF
 
-Each mesh directory contains a single `cube.*` fixture — a minimal triangulated cube
-used to smoke-test the native Three.js loader path (no OCCT/WASM involved).
+Each mesh directory contains a single `cube.*` fixture — a minimal triangulated cube used to smoke-test the native Three.js loader path (no OCCT/WASM involved).
 
 ## MED
 
-`two-material-tets.med` is a synthetic (not real-world) fixture: two
-tetrahedra sharing a face, written by meshio++'s own MED writer from a
-hand-built mesh with two named cell regions (`MaterialA`/`MaterialB`) and a
-`Temperature` point-data field — used to verify (`npm run mcp:smoke`) that
-`load_model`/the viewer's meshio++ import surfaces those real names via
-`readMeshioMetadata()`. See CLAUDE.md's "meshio++ integration" section.
+`two-material-tets.med` is a synthetic (not real-world) fixture: two tetrahedra sharing a face, written by meshio++'s own MED writer from a hand-built mesh with two named cell regions (`MaterialA`/`MaterialB`) and a `Temperature` point-data field — used to verify (`npm run mcp:smoke`) that `load_model`/the viewer's meshio++ import surfaces those real names via `readMeshioMetadata()`. See CLAUDE.md's "meshio++ integration" section.
 
 ## STP
 
-Real-world STEP AP203 models, mostly drawn from the public
-[NIST/STEP Tools AP203 test file library](https://www.steptools.com/docs/stpfiles/ap203/index.html).
-`bull.stp` is the primary fixture used throughout `CLAUDE.md`'s manual verification
-steps (parts, edits, wireframe modeling); the rest exercise the tessellation and edge
-pipelines against a wide range of solids and assemblies.
+Real-world STEP AP203 models, mostly drawn from the public [NIST/STEP Tools AP203 test file library](https://www.steptools.com/docs/stpfiles/ap203/index.html). `bull.stp` is the primary fixture used throughout `CLAUDE.md`'s manual verification steps (parts, edits, wireframe modeling); the rest exercise the tessellation and edge pipelines against a wide range of solids and assemblies.
 
 | File | Size | Header name / description |
-|------|-----:|----------|
+| --- | --: | --- |
 | `1797609in.stp` | 164K | 1797609in |
 | `2827056.stp` | 384K | 2827056 |
 | `4pinplug.stp` | 60K | 4pinplug |

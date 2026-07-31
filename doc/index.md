@@ -84,22 +84,16 @@ features:
 
 ## Supported Formats
 
-| Format | Extensions | Pipeline |
-|--------|-----------|----------|
-| STEP | `.step`, `.stp` | OpenCascade.js → BRepMesh tessellation |
-| IGES | `.iges`, `.igs` | OpenCascade.js → BRepMesh tessellation |
-| BREP | `.brep` | OpenCascade.js → BRepMesh tessellation |
-| STL | `.stl` | Three.js `STLLoader` |
-| OBJ | `.obj` | Three.js `OBJLoader` |
-| PLY | `.ply` | Three.js `PLYLoader` |
-| glTF | `.gltf`, `.glb` | Three.js `GLTFLoader` |
+| Format | Extensions      | Pipeline                               |
+| ------ | --------------- | -------------------------------------- |
+| STEP   | `.step`, `.stp` | OpenCascade.js → BRepMesh tessellation |
+| IGES   | `.iges`, `.igs` | OpenCascade.js → BRepMesh tessellation |
+| BREP   | `.brep`         | OpenCascade.js → BRepMesh tessellation |
+| STL    | `.stl`          | Three.js `STLLoader`                   |
+| OBJ    | `.obj`          | Three.js `OBJLoader`                   |
+| PLY    | `.ply`          | Three.js `PLYLoader`                   |
+| glTF   | `.gltf`, `.glb` | Three.js `GLTFLoader`                  |
 
 ## Badges
 
-[![CI](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml/badge.svg)](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-online-blue)](https://loumalouomega.github.io/CAD-Preview/)
-[![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.80-blue?logo=visualstudiocode)](https://code.visualstudio.com/)
-[![Three.js](https://img.shields.io/badge/Three.js-r160-black?logo=threedotjs)](https://threejs.org/)
-[![OpenCascade.js](https://img.shields.io/badge/OpenCascade.js-1.x-orange)](https://ocjs.org/)
-[![License](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](https://github.com/loumalouomega/CAD-Preview/blob/master/LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![CI](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml/badge.svg)](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://loumalouomega.github.io/CAD-Preview/) [![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.80-blue?logo=visualstudiocode)](https://code.visualstudio.com/) [![Three.js](https://img.shields.io/badge/Three.js-r160-black?logo=threedotjs)](https://threejs.org/) [![OpenCascade.js](https://img.shields.io/badge/OpenCascade.js-1.x-orange)](https://ocjs.org/) [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](https://github.com/loumalouomega/CAD-Preview/blob/master/LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)

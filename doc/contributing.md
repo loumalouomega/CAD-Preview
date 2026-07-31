@@ -19,13 +19,13 @@ Thank you for your interest in contributing to CAD Preview!
 
 ## Branch Naming
 
-| Prefix | Use for |
-|--------|---------|
-| `feat/` | New features |
-| `fix/` | Bug fixes |
-| `docs/` | Documentation changes only |
+| Prefix      | Use for                             |
+| ----------- | ----------------------------------- |
+| `feat/`     | New features                        |
+| `fix/`      | Bug fixes                           |
+| `docs/`     | Documentation changes only          |
 | `refactor/` | Refactoring without behavior change |
-| `test/` | Adding or fixing tests |
+| `test/`     | Adding or fixing tests              |
 
 ## Development Workflow
 
@@ -43,6 +43,7 @@ npm test         # all tests must pass
 Commits in this repository use Spanish or English — either is fine. Keep commit messages short and descriptive.
 
 Examples:
+
 ```
 Agregar soporte para formato XYZ
 Fix OCCT memory leak on repeated file opens
@@ -82,12 +83,15 @@ Forgetting to `.delete()` an OCCT handle causes the WASM heap to grow unboundedl
 To support a new file format, make changes in the following places:
 
 1. **`src/fileRouter.ts`** — Add the new extension(s) to `EXTENSION_MAP`:
+
    ```typescript
    '.xyz': { strategy: 'three', format: 'xyz' },
    ```
+
    Also add `'xyz'` to the `CadFormat` union type.
 
 2. **`package.json`** — Add the extension to `contributes.customEditors[0].selector`:
+
    ```json
    { "filenamePattern": "*.xyz" }
    ```
@@ -100,17 +104,9 @@ To support a new file format, make changes in the following places:
 
 5. **Tests** — Add test cases to the relevant test file (`src/fileRouter.test.ts` at minimum to verify routing; and a loader/parser test if the new code path is non-trivial).
 
-6. **Export (optional)** — If the format should also be an export *target*, add a
-   writer: for a mesh format, a branch in `exportModel()`
-   (`src/webview/meshExporters.ts`); for a B-rep format, a branch in `writeShape()`
-   (`src/occtService.ts`). Then add it to the relevant list in `exportTargetsFor()`
-   (`src/exportTargets.ts`) and its extension/label in `EXPORT_EXTENSION`/
-   `EXPORT_LABEL`. There is no writer path from a mesh format back to a B-rep format —
-   don't add a B-rep target for a mesh source.
+6. **Export (optional)** — If the format should also be an export *target*, add a writer: for a mesh format, a branch in `exportModel()` (`src/webview/meshExporters.ts`); for a B-rep format, a branch in `writeShape()` (`src/occtService.ts`). Then add it to the relevant list in `exportTargetsFor()` (`src/exportTargets.ts`) and its extension/label in `EXPORT_EXTENSION`/ `EXPORT_LABEL`. There is no writer path from a mesh format back to a B-rep format — don't add a B-rep target for a mesh source.
 
-7. **Docs** — Update `doc/file-formats.md`, the format tables in `README.md` /
-   `doc/index.md` / `doc/getting-started.md`, and `doc/extension-host-api.md` /
-   `doc/webview-api.md` for whichever module changed. See [CLAUDE.md](https://github.com/loumalouomega/CAD-Preview/blob/master/CLAUDE.md)'s "Keep docs in sync" section.
+7. **Docs** — Update `doc/file-formats.md`, the format tables in `README.md` / `doc/index.md` / `doc/getting-started.md`, and `doc/extension-host-api.md` / `doc/webview-api.md` for whichever module changed. See [CLAUDE.md](https://github.com/loumalouomega/CAD-Preview/blob/master/CLAUDE.md)'s "Keep docs in sync" section.
 
 ## Architecture Constraints
 
@@ -132,6 +128,7 @@ The following are **non-negotiable** invariants. PRs that violate them will not 
 ## Reporting Issues
 
 Please open an issue on [GitHub Issues](https://github.com/loumalouomega/CAD-Preview/issues) with:
+
 - VS Code version and operating system.
 - The file format and approximate file size.
 - Steps to reproduce.
