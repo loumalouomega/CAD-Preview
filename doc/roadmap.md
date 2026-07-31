@@ -59,11 +59,24 @@ recorded in `CLAUDE.md`. None is a bug.
 
 ### Tier 3 — upstream-dependent
 
-3. **Richer meshio++ import** (**M**, partly upstream). Imported VTK/MED/CGNS/
-   Exodus/XDMF/MDPA files funnel through meshio++'s STL-boundary writer, so
-   region names, scalar point/cell data, and multi-material grouping are lost —
-   only geometry survives. Preserving them needs a genuinely different import
-   path, not just a flag. There is  anew version 9.9.0 with newer features particularly with HDF5 formats (MED, CGNS, exodus, etc...)
+3. **Richer meshio++ import — auto-converting regions into Parts** (**M**,
+   partly closed). Imported VTK/MED/CGNS/Exodus/XDMF/MDPA files still funnel
+   through meshio++'s STL-boundary writer for GEOMETRY, so region names,
+   scalar point/cell data, and multi-material grouping still don't become
+   Parts or colourable geometry. **Read-only visibility into what a file
+   declares is now shipped** (`readMeshioMetadata()`, surfaced as a status
+   line on open and in `load_model`'s `warnings`) — bumping
+   `@meshioplusplus/wasm` to 9.9.0 confirmed the underlying `regions`/
+   `point_data`/`cell_data` API was already available since 9.8.0, just
+   unused. The remaining, larger piece — actually turning a region into a
+   selectable/colourable Part — has a de-risked mechanism identified and
+   verified against a synthetic mesh (`extractSurface(mesh, true)`'s
+   `cell_data["surface:parent_cell"]` provenance array, correlated against
+   each region's cell entries) but needs real diverse-format fixtures
+   (higher-order/mixed cell types especially) to validate before it's safe
+   to ship, plus new design work to bridge a region into the webview's
+   unrelated coplanar-facet-splitting id scheme. See CLAUDE.md's "meshio++
+   integration" section for the full trail.
 4. **Confirm Kratos MDPA block names** (**S**, needs Kratos-dev input). The
    geometry block names are certain; the newer kinds' `Element*`/`Condition*`
    names are best-guess transcriptions. `"elements"` mode already pre-flights

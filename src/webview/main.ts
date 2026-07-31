@@ -1589,6 +1589,23 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         } finally {
           URL.revokeObjectURL(blobUrl);
         }
+        // Read-only visibility only (never auto-converted into Parts/geometry
+        // — see CLAUDE.md's "meshio++ integration" section) — set AFTER the
+        // load above so `loadMeshObjectFromUrl`'s own "Loading model…" → ""
+        // status sequence can't race with and clear this one.
+        if (msg.meshioMetadata) {
+          const parts: string[] = [];
+          if (msg.meshioMetadata.regions.length > 0) {
+            parts.push(`${msg.meshioMetadata.regions.length} region(s): ${msg.meshioMetadata.regions.map((r) => r.name).join(", ")}`);
+          }
+          const dataNames = [
+            ...msg.meshioMetadata.pointDataNames,
+            ...msg.meshioMetadata.cellDataNames,
+            ...msg.meshioMetadata.fieldDataNames,
+          ];
+          if (dataNames.length > 0) parts.push(`data: ${dataNames.join(", ")}`);
+          if (parts.length > 0) setStatus(`Source file also declares ${parts.join(" · ")} — not yet imported (geometry only).`);
+        }
       } catch (err) {
         setStatus(`Failed to load model: ${(err as Error).message}`, true);
       }

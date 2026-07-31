@@ -88,6 +88,64 @@ export async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat
   }
 }
 
+export interface MeshioRegionSummary {
+  name: string;
+  /** `"point"` | `"cell"` | `"side"` — see `@meshioplusplus/wasm`'s `Region.kind`. */
+  kind: string;
+  numEntries: number;
+}
+
+export interface MeshioMetadataSummary {
+  regions: MeshioRegionSummary[];
+  pointDataNames: string[];
+  cellDataNames: string[];
+  fieldDataNames: string[];
+}
+
+/**
+ * Cheap, read-only visibility into what a meshio-only source file ACTUALLY
+ * declares — region names (gmsh physical groups, Abaqus NSET/ELSET/SURFACE,
+ * Exodus blocks/sets, MED families, Kratos SubModelParts) and named point/
+ * cell/field data arrays — via `readMetadata()`, which `@meshioplusplus/wasm`
+ * documents as loading a file's *shape* without its heavy geometry/data
+ * arrays. **Deliberately informational only, not (yet) wired into the import
+ * pipeline**: `convertToStlBoundary()` above still funnels every meshio-only
+ * import through a plain STL boundary conversion with none of this attached
+ * — see CLAUDE.md's "meshio++ integration" section for why turning this into
+ * auto-created Parts is real, larger future work (the mechanism —
+ * `extractSurface(mesh, true)`'s `cell_data["surface:parent_cell"]`
+ * provenance array, correlated against each `kind: "cell"` region's
+ * `entries` — was verified feasible against a synthetic hand-built mesh, but
+ * needs real diverse-format fixtures to validate a full triangle-to-region
+ * correlation before it would be safe to ship). Never throws: a malformed or
+ * genuinely unreadable file degrades to every field empty, since this is
+ * pure supplementary information and must never block or fail an import
+ * `convertToStlBoundary` might otherwise handle fine.
+ */
+export async function readMeshioMetadata(sourceBytes: Uint8Array, meshioFormat: string): Promise<MeshioMetadataSummary> {
+  const empty: MeshioMetadataSummary = { regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] };
+  try {
+    const m = await getMeshio();
+    const inPath = `/meta.${meshioFormat}`;
+    m.FS.writeFile(inPath, sourceBytes);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const meta = m.readMetadata(inPath, meshioFormat) as any;
+      return {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        regions: (meta.regions ?? []).map((r: any) => ({ name: r.name, kind: r.kind, numEntries: r.numEntries })),
+        pointDataNames: meta.pointDataNames ?? [],
+        cellDataNames: meta.cellDataNames ?? [],
+        fieldDataNames: meta.fieldDataNames ?? [],
+      };
+    } finally {
+      try { m.FS.unlink(inPath); } catch { /* ignore */ }
+    }
+  } catch {
+    return empty;
+  }
+}
+
 /**
  * Re-encodes an already-generated Gmsh mesh into a format Gmsh's own writers
  * can't produce — MED and CGNS are the roadmap's explicit motivating case

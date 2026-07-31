@@ -3,7 +3,7 @@ import { routeFile } from "./fileRouter";
 import { loadBRep, exportBRep } from "./occtService";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
-import { convertToStlBoundary, exportViaMeshio } from "./meshioService";
+import { convertToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
@@ -632,8 +632,21 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()}…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
-      const stlBytes = await convertToStlBoundary(bytes, format);
-      post({ type: "loadMeshBytes", sourceFormat: format, dataBase64: Buffer.from(stlBytes).toString("base64") });
+      const [stlBytes, metadata] = await Promise.all([
+        convertToStlBoundary(bytes, format),
+        readMeshioMetadata(bytes, format),
+      ]);
+      const hasMetadata =
+        metadata.regions.length > 0 ||
+        metadata.pointDataNames.length > 0 ||
+        metadata.cellDataNames.length > 0 ||
+        metadata.fieldDataNames.length > 0;
+      post({
+        type: "loadMeshBytes",
+        sourceFormat: format,
+        dataBase64: Buffer.from(stlBytes).toString("base64"),
+        meshioMetadata: hasMetadata ? metadata : undefined,
+      });
     } catch (err) {
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
     }

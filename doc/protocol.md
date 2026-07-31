@@ -253,7 +253,13 @@ type HostToWebview =
   | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
   | { type: 'tree';     root: TreeNode; sourceUnit?: string }
   | { type: 'loadUrl';  url: string; format: CadFormat }
-  | { type: 'loadMeshBytes'; sourceFormat: CadFormat; dataBase64: string }
+  | {
+      type: 'loadMeshBytes'; sourceFormat: CadFormat; dataBase64: string
+      meshioMetadata?: {
+        regions: Array<{ name: string; kind: string; numEntries: number }>
+        pointDataNames: string[]; cellDataNames: string[]; fieldDataNames: string[]
+      }
+    }
   | { type: 'parts';    parts: Part[] }
   | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'status';   text: string }
@@ -360,11 +366,32 @@ the exact same `loadMeshFromUrl(url, "stl")` call `loadUrl` uses, via a
 fetch. From this point on, a meshio-imported document is indistinguishable
 from a native `.stl` open to every other feature.
 
+An optional `meshioMetadata` carries **read-only visibility** into named
+regions (gmsh physical groups, Abaqus NSET/ELSET/SURFACE, Exodus
+blocks/sets, MED families, Kratos SubModelParts) and point/cell/field data
+array names the source file declares — from `meshioService.ts`'s
+`readMeshioMetadata()` (a cheap `readMetadata()` call, computed alongside
+`convertToStlBoundary()` via `Promise.all`, best-effort and never throwing).
+Omitted entirely (not an empty object) when the file declares nothing.
+**This is informational only — none of it is converted into Parts or any
+other geometry**; the webview's `case "loadMeshBytes"` handler shows it as a
+one-line `status` summary, posted AFTER the STL load completes so it can't
+race with and get clobbered by `loadMeshObjectFromUrl`'s own internal
+loading-status sequence. See CLAUDE.md's "meshio++ integration" section for
+why full auto-conversion into Parts is real, larger future work (a
+de-risked mechanism is documented there for whoever picks it up next).
+
 ```json
 {
   "type": "loadMeshBytes",
   "sourceFormat": "vtk",
-  "dataBase64": "c29saWQgeA0K..."
+  "dataBase64": "c29saWQgeA0K...",
+  "meshioMetadata": {
+    "regions": [{ "name": "MaterialA", "kind": "cell", "numEntries": 1 }],
+    "pointDataNames": ["Temperature"],
+    "cellDataNames": [],
+    "fieldDataNames": []
+  }
 }
 ```
 

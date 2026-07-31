@@ -126,13 +126,21 @@ XDMF, independent of this import path).
 
 ### What's Preserved, What's Not
 
-Only geometry (points + triangle connectivity) survives this funnel. Region
-names, scalar point/cell data (temperatures, stresses, …), and
-multi-material grouping in the source file are **not** carried through — this
-is a deliberate v1 scope decision (see CLAUDE.md's "meshio++ integration"
-section), not a bug. If you need that richer data, use a dedicated FE
-post-processing tool (e.g. ParaView) for these formats; CAD-Preview's support
-here is for quick geometry previews alongside your CAD files.
+Only geometry (points + triangle connectivity) becomes actual Parts/geometry
+through this funnel — region names, scalar point/cell data (temperatures,
+stresses, …), and multi-material grouping in the source file are **not**
+converted into anything you can select, colour, or export. As of the
+"Richer meshio++ import visibility" improvement, CAD-Preview now tells you
+what's *there* even though it isn't (yet) used: if the source file declares
+named regions or data arrays, opening it shows a one-line status message
+(and, via the MCP server, a `load_model` warning) naming them — informational
+only, not a preview of that data's actual values. See CLAUDE.md's "meshio++
+integration" section for the full scope (including the mechanism identified
+for turning region names into real Parts, deliberately not shipped yet). If
+you need to actually inspect scalar field values or colour by them, use a
+dedicated FE post-processing tool (e.g. ParaView) for these formats;
+CAD-Preview's support here is for quick geometry previews alongside your CAD
+files.
 
 ### Kratos MDPA note
 

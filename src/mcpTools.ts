@@ -60,7 +60,7 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, exportViaMeshio } from "./meshioService";
+import type { convertToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -109,6 +109,7 @@ export interface Pipeline {
   compareModels: typeof compareModels;
   convertToStlBoundary: typeof convertToStlBoundary;
   exportViaMeshio: typeof exportViaMeshio;
+  readMeshioMetadata: typeof readMeshioMetadata;
 }
 
 export interface ToolContext {
@@ -323,6 +324,24 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const sidecars = await sidecarSummary(modelPath);
 
   if (route.strategy !== "occt") {
+    const warnings = [
+      `${route.format} is a mesh-format source: headless tessellation/entity inventory is B-rep-only. ` +
+        "Mesh-legal edit ops can still be applied (they replay when the file is opened in VS Code)" +
+        (route.format === "stl" || route.strategy === "meshio"
+          ? `, and the ${route.format === "stl" ? "raw STL" : "file's boundary surface (via meshio++)"} is meshable via generate_mesh.`
+          : "."),
+    ];
+    if (route.strategy === "meshio") {
+      const bytes = await readModelBytes(modelPath);
+      const meta = await ctx.pipeline.readMeshioMetadata(bytes, route.format);
+      const dataNames = [...meta.pointDataNames, ...meta.cellDataNames, ...meta.fieldDataNames];
+      if (meta.regions.length > 0 || dataNames.length > 0) {
+        const parts: string[] = [];
+        if (meta.regions.length > 0) parts.push(`${meta.regions.length} region(s): ${meta.regions.map((r) => r.name).join(", ")}`);
+        if (dataNames.length > 0) parts.push(`data: ${dataNames.join(", ")}`);
+        warnings.push(`Source file also declares ${parts.join(" · ")} — not preserved as Parts/geometry (informational only).`);
+      }
+    }
     return {
       format: route.format,
       strategy: route.strategy,
@@ -333,13 +352,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
       pointCount: null,
       bbox: null,
       sidecars,
-      warnings: [
-        `${route.format} is a mesh-format source: headless tessellation/entity inventory is B-rep-only. ` +
-          "Mesh-legal edit ops can still be applied (they replay when the file is opened in VS Code)" +
-          (route.format === "stl" || route.strategy === "meshio"
-            ? `, and the ${route.format === "stl" ? "raw STL" : "file's boundary surface (via meshio++)"} is meshable via generate_mesh.`
-            : "."),
-      ],
+      warnings,
     };
   }
 

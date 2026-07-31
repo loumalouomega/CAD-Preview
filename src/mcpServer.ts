@@ -30,7 +30,7 @@ import { getEntityFacts, measureEntities, measureExact, rebindPartsAcrossOps } f
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
-import { convertToStlBoundary, exportViaMeshio } from "./meshioService";
+import { convertToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import {
   describeCapabilities,
   loadModel,
@@ -86,6 +86,7 @@ const ctx: ToolContext = {
     compareModels,
     convertToStlBoundary,
     exportViaMeshio,
+    readMeshioMetadata,
   },
 };
 

@@ -664,7 +664,7 @@ ids and recolours — the exact mechanism the initial `ready` hydration's own
 `"parts"` message already uses, so no webview-side code changes were
 needed. Posts `"error"` on failure rather than throwing.
 
-**`handleMeshio(uri, format, post)`** — Private method, `loadModel()`'s sibling branch for `route.strategy === "meshio"` (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA). Reads the raw file bytes, calls `convertToStlBoundary()` (`src/meshioService.ts`), and posts the result as `"loadMeshBytes"` (`sourceFormat` + base64 STL bytes) — no `"geometry"`/`"tree"` messages, since the webview builds its own component tree from the loaded `THREE.Object3D` hierarchy exactly like a native `.stl` open. Posts `"error"` on failure (a malformed source file, an unsupported meshio conversion, etc.).
+**`handleMeshio(uri, format, post)`** — Private method, `loadModel()`'s sibling branch for `route.strategy === "meshio"` (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA). Reads the raw file bytes, calls `convertToStlBoundary()` AND `readMeshioMetadata()` (`src/meshioService.ts`, in parallel via `Promise.all`), and posts the result as `"loadMeshBytes"` (`sourceFormat` + base64 STL bytes + an optional `meshioMetadata` when the file declares any regions/data arrays) — no `"geometry"`/`"tree"` messages, since the webview builds its own component tree from the loaded `THREE.Object3D` hierarchy exactly like a native `.stl` open. Posts `"error"` on failure (a malformed source file, an unsupported meshio conversion, etc.).
 
 **`sendParts(uri, post)`** — Private method. Reads the parts sidecar via `readParts()` and posts a `"parts"` message (empty array when no sidecar exists).
 
@@ -825,6 +825,13 @@ async function exportViaMeshio(
   gmshMshText: string,
   outMeshioFormat: string
 ): Promise<{ bytes: Uint8Array; companion?: { name: string; bytes: Uint8Array } }>
+
+interface MeshioRegionSummary { name: string; kind: string; numEntries: number }
+interface MeshioMetadataSummary {
+  regions: MeshioRegionSummary[]
+  pointDataNames: string[]; cellDataNames: string[]; fieldDataNames: string[]
+}
+async function readMeshioMetadata(sourceBytes: Uint8Array, meshioFormat: string): Promise<MeshioMetadataSummary>
 ```
 
 `getMeshio()` always loads with `{ variant: "seq" }` — never `"auto"`, which
@@ -841,6 +848,22 @@ handler and `mcpTools.ts`'s `exportMeshTool`) — its input is
 required — see `doc/gmsh-integration.md` for the history). MED exports
 preserve parts/physical groups as **named MED groups** via the
 merge+regions path documented there.
+
+`readMeshioMetadata()` (roadmap "Richer meshio++ import", partly closed) is
+a cheap, read-only sibling to `convertToStlBoundary()` — via `readMetadata()`
+(explicitly documented as loading a file's shape without its heavy geometry/
+data arrays), it reports the region names and point/cell/field data array
+names a source file declares, WITHOUT converting any of it into Parts or
+geometry. Never throws (a malformed/unreadable file degrades to every field
+empty — this is purely supplementary information, must never block or fail
+an import `convertToStlBoundary` would otherwise handle fine). `provider.ts`'s
+`handleMeshio()` calls it alongside `convertToStlBoundary()` (`Promise.all`)
+and attaches a non-empty result to `loadMeshBytes`' new optional
+`meshioMetadata` field; `mcpTools.ts`'s `loadModel()` calls it directly for a
+meshio-strategy source and folds a non-empty result into `warnings`. See
+CLAUDE.md's "meshio++ integration" section for the full write-up, including
+the verified (but not yet shipped) mechanism for the fuller "auto-create a
+Part per region" feature this stops short of.
 
 ## `src/exportTargets.ts`
 

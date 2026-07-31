@@ -84,6 +84,19 @@ export type HostToWebview =
        * fed through the same STL loader a native `.stl` open uses. */
       sourceFormat: CadFormat;
       dataBase64: string; // base64 STL bytes
+      /** Read-only visibility into named regions / point / cell / field data
+       * arrays the source file declares (`src/meshioService.ts`'s
+       * `readMeshioMetadata` — a cheap `readMetadata()` call, best-effort,
+       * empty on any failure) — informational only, NOT auto-converted into
+       * Parts or any other geometry; see CLAUDE.md's "meshio++ integration"
+       * section for why. Omitted (not just empty) when nothing was found, so
+       * a status line only ever appears when there is something to say. */
+      meshioMetadata?: {
+        regions: Array<{ name: string; kind: string; numEntries: number }>;
+        pointDataNames: string[];
+        cellDataNames: string[];
+        fieldDataNames: string[];
+      };
     }
   | { type: "parts"; parts: Part[] }
   | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }

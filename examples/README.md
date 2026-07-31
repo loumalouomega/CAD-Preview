@@ -12,6 +12,7 @@ models for exercising the OCCT pipeline against varied geometry.
 | [`OBJ/`](OBJ/) | OBJ | `.obj` | Three.js `OBJLoader` (mesh) |
 | [`PLY/`](PLY/) | PLY | `.ply` | Three.js `PLYLoader` (mesh) |
 | [`GLTF/`](GLTF/) | glTF | `.gltf` | Three.js `GLTFLoader` (mesh) |
+| [`MED/`](MED/) | MED | `.med` | meshio++ bridge (host-side, geometry + region/data-array-name visibility) |
 
 CAD Preview also supports IGES (`.iges`/`.igs`) and BREP (`.brep`) via the same OCCT
 pipeline as STEP, and glTF binary (`.glb`) via the same loader as `.gltf`, but no
@@ -22,6 +23,15 @@ the full format reference.
 
 Each mesh directory contains a single `cube.*` fixture — a minimal triangulated cube
 used to smoke-test the native Three.js loader path (no OCCT/WASM involved).
+
+## MED
+
+`two-material-tets.med` is a synthetic (not real-world) fixture: two
+tetrahedra sharing a face, written by meshio++'s own MED writer from a
+hand-built mesh with two named cell regions (`MaterialA`/`MaterialB`) and a
+`Temperature` point-data field — used to verify (`npm run mcp:smoke`) that
+`load_model`/the viewer's meshio++ import surfaces those real names via
+`readMeshioMetadata()`. See CLAUDE.md's "meshio++ integration" section.
 
 ## STP
 

@@ -619,6 +619,28 @@ try {
   assert(xdmfResult.written.length === 2, "export_mesh xdmf (meshio bridge) writes the .xdmf + .h5 companion pair");
   const xdmfText = fs.readFileSync(xdmfOut, "utf8");
   assert(xdmfText.includes("tet.h5"), "xdmf's embedded HDF references are rewritten to the companion's real filename");
+
+  // Richer meshio++ import visibility (roadmap item, partly closed): a real
+  // MED file (examples/MED/two-material-tets.med — two tetrahedra, each its
+  // own named cell region "MaterialA"/"MaterialB", plus a "Temperature"
+  // point-data field, written by meshio++'s own MED writer from a hand-built
+  // mesh) declares metadata `readMeshioMetadata()` (readMetadata()-backed)
+  // can now see, even though it's still informational only — not yet
+  // auto-converted into Parts/geometry, see CLAUDE.md's "meshio++
+  // integration" section.
+  const medFixture = path.join(dir, "two-material-tets.med");
+  fs.copyFileSync(path.join(ROOT, "examples", "MED", "two-material-tets.med"), medFixture);
+  const medLoaded = await call("load_model", { path: medFixture });
+  assert(medLoaded.strategy === "meshio", "load_model routes .med through meshio too");
+  const metadataWarning = medLoaded.warnings.find((w) => /also declares/i.test(w));
+  assert(
+    metadataWarning && /MaterialA/.test(metadataWarning) && /MaterialB/.test(metadataWarning) && /Temperature/.test(metadataWarning),
+    `load_model surfaces the MED file's real region names + point-data field name (got: ${JSON.stringify(medLoaded.warnings)})`
+  );
+  // Still geometry-only under the hood — the region/data visibility above is
+  // additive, not a replacement for the existing STL-boundary mesh path.
+  const medMeshed = await call("generate_mesh", { path: medFixture, options: { sizeMax: 0.5 } });
+  assert(medMeshed.nodeCount > 0 && medMeshed.elementCount > 0, `generate_mesh still works on the MED source: ${medMeshed.nodeCount} nodes, ${medMeshed.elementCount} elements`);
   assert(fs.statSync(path.join(dir, "tet.h5")).size > 0, "HDF5 companion has content");
 
   await call("set_part", { path: model, name: "Bull", volumes: ["solid-0"] });

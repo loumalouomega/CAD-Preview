@@ -230,6 +230,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
+    readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
     rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts) => ({
       parts, // identity pass-through by default — matches the real "nothing to rebind" no-op contract
       stats: { considered: 0, rebound: 0, dropped: 0 },
@@ -332,6 +333,35 @@ describe("load_model", () => {
 
     const objResult = await loadModel(c, { path: objModel });
     expect(objResult.warnings[0]).not.toMatch(/meshable via generate_mesh/i);
+  });
+
+  it("surfaces discovered meshio++ regions/data array names as an informational warning", async () => {
+    const pipeline = fakePipeline({
+      readMeshioMetadata: vi.fn(async () => ({
+        regions: [{ name: "Inlet", kind: "cell", numEntries: 12 }, { name: "Wall", kind: "cell", numEntries: 40 }],
+        pointDataNames: ["Temperature"],
+        cellDataNames: [],
+        fieldDataNames: [],
+      })),
+    });
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const result = await loadModel(ctx(pipeline), { path: vtkModel });
+    expect(result.warnings.some((w) => /2 region\(s\): Inlet, Wall/.test(w) && /data: Temperature/.test(w))).toBe(true);
+  });
+
+  it("adds no metadata warning when readMeshioMetadata finds nothing (the default mock)", async () => {
+    const c = ctx();
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const result = await loadModel(c, { path: vtkModel });
+    expect(result.warnings).toHaveLength(1); // only the "meshable via generate_mesh" one
+  });
+
+  it("never calls readMeshioMetadata for a non-meshio mesh source (e.g. STL)", async () => {
+    const c = ctx();
+    await loadModel(c, { path: stlModel });
+    expect(c.pipeline.readMeshioMetadata).not.toHaveBeenCalled();
   });
 });
 

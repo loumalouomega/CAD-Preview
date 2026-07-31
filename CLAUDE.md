@@ -2765,10 +2765,85 @@ recognize as an output extension).
   pipeline for free** — facet splitting, Parts, every mesh-legal edit op,
   Export, Mass Properties, Measurement — with **zero new `Viewer`/webview
   geometry code**. The trade-off: region names, scalar point/cell data, and
-  multi-material grouping in the source file are **not** preserved, only
-  geometry. Import format list is curated to the roadmap's explicitly-named
+  multi-material grouping in the source file are **not preserved as
+  Parts/geometry** — `convertToStlBoundary()` never sees them, only the
+  boundary triangles — though their NAMES are now surfaced read-only (see
+  the "Richer meshio++ import visibility" bullet below). Import format list
+  is curated to the roadmap's explicitly-named
   formats (`src/fileRouter.ts`'s `MESHIO_FORMATS`) rather than all ~40
   meshio++ supports — the extension-map table is cheap to extend later.
+- **Richer meshio++ import visibility (roadmap item, partly closed) —
+  region/data-array NAMES are now surfaced read-only on import; full
+  auto-conversion into Parts remains further, larger future work, with a
+  concrete de-risked mechanism documented below for whoever picks it up
+  next.** `@meshioplusplus/wasm` bumped `^9.8.0` → `^9.9.0` (the
+  `point_data`/`cell_data`/`field_data`/`regions` fields on its `Mesh`
+  object, and `readMesh()`/`readMetadata()` themselves, were ALREADY present
+  in 9.8.0 — confirmed by diffing 9.8.0's vs 9.9.0's `index.d.ts` directly,
+  the diff is only new `*_data_components` width-metadata fields — so this
+  gap was always closeable at the currently-pinned version; 9.9.0 was still
+  worth taking for those refinements plus general upstream fixes).
+  - **`meshioService.ts`'s new `readMeshioMetadata(bytes, format)`** calls
+    the CHEAP `readMetadata()` (explicitly documented as loading a file's
+    *shape* without its heavy arrays) and returns `{regions:
+    {name,kind,numEntries}[], pointDataNames, cellDataNames,
+    fieldDataNames}` — never throws (a malformed/unreadable file degrades to
+    every field empty, since this is purely supplementary information that
+    must never block or fail an import `convertToStlBoundary` would
+    otherwise handle fine). Called ALONGSIDE (not instead of)
+    `convertToStlBoundary()` in `provider.ts`'s `handleMeshio()` — both run
+    in parallel via `Promise.all`.
+  - **Surfaced as a `status` line in the interactive viewer** (a new optional
+    `meshioMetadata` field on the `loadMeshBytes` protocol message, read by
+    `main.ts`'s `case "loadMeshBytes"` handler AFTER its own `await
+    loadMeshObjectFromUrl(...)` completes — deliberately not a second,
+    separately-timed `post()` call, since that would race against
+    `loadMeshObjectFromUrl`'s own internal `"Loading model…"` → `""` status
+    sequence and could get silently clobbered) and **as an extra
+    `warnings` entry from the MCP `load_model` tool** for a meshio-strategy
+    source (`mcpTools.ts`, via the same `readMeshioMetadata` through
+    `ctx.pipeline`) — e.g. `"Source file also declares 2 region(s):
+    MaterialA, MaterialB · data: Temperature, cell_tags — not preserved as
+    Parts/geometry (informational only)."`. Both are omitted entirely (no
+    empty/blank line) when a file declares nothing.
+  - **Verified end-to-end against the live WASM, not just unit-tested**
+    (`npm run mcp:smoke`, using `examples/MED/two-material-tets.med` — a
+    real MED file, written by meshio++'s own writer from a hand-built
+    two-tetrahedron mesh with cell regions `"MaterialA"`/`"MaterialB"` and a
+    `"Temperature"` point-data field, checked in as a permanent fixture):
+    `load_model` on it surfaces exactly those names in `warnings`, and
+    `generate_mesh` on the same file still succeeds unchanged (this feature
+    is purely additive, never a regression to the existing geometry-only
+    path).
+  - **The mechanism for the FULLER "auto-create a Part per region" feature
+    was probed and verified feasible, but not shipped — deliberately, for
+    the same "no real diverse fixtures to validate against" reason glTF
+    Compare Models support was scoped out above.** `extractSurface(mesh,
+    /* recordParentIds */ true)` (called directly on a JS `Mesh`, not
+    through `convertSurface`'s file-to-file path) returns a boundary mesh
+    whose `cell_data["surface:parent_cell"]` — **the exact field name,
+    empirically confirmed via a live probe script, not guessed from the
+    docs** — gives each boundary triangle's ORIGINAL parent cell index,
+    letting a caller correlate every boundary triangle back to whichever
+    `kind: "cell"` region (if any) that parent cell belonged to, entirely
+    host-side, with no geometric bbox-matching heuristic needed (unlike
+    `gmshPartsMap.ts`'s part-preservation, which has no equivalent direct
+    index correlation available to it). Confirmed empirically: `extractSurface`
+    itself warns and drops the boundary mesh's OWN `regions` array (`"N named
+    region(s) dropped — the output cells and points are newly created and
+    have no correspondence with the input's"`) — expected and irrelevant,
+    since the correlation uses the ORIGINAL (pre-extraction) mesh's regions,
+    never the boundary's own. What's still unsolved and genuinely risky to
+    ship: (1) higher-order/mixed/polyhedral cell types' boundary faces may
+    not come back triangulated/linearized the way `convertSurface` linearizes
+    them (that linearization is documented as `convertSurface`-specific, not
+    guaranteed by the lower-level `extractSurface`) — would need real fixture
+    coverage across cell types to get right; (2) bridging a region name to
+    this codebase's `Part` concept needs the resulting boundary triangles
+    correlated against the WEBVIEW's own post-load `meshFacets.ts` coplanar
+    facet-splitting (unrelated grouping criteria — a region boundary and a
+    coplanar-angle facet boundary don't line up), which has no existing
+    correlation mechanism at all and would need new design work of its own.
 - **Must load via a DYNAMIC `import()`, not gmsh-wasm's static-import
   pattern — verified against the live package, a genuine gotcha.**
   `@meshioplusplus/wasm`'s `package.json` is `"type": "module"`,
