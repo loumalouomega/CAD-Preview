@@ -19,24 +19,38 @@ export function exportTargetsFor(route: FileRoute): CadFormat[] {
 
 /**
  * Formats whose export can honestly represent a converted, correctly-labeled
- * unit. **STEP and IGES are deliberately excluded** — both declare a length
- * unit in their own header that MUST match the geometry's actual scale to
- * mean anything, and this OCCT WASM build has no verified way to set that
- * declared unit on write: `Interface_Static`'s `"write.step.unit"` parameter
- * never registers (`IsPresent`/`SetCVal` both report failure even after
- * constructing a `STEPControl_Writer`, which in desktop OCCT registers it),
- * and probing `IGESControl_Writer`'s alternate unit-aware constructor
- * produced a `Write()` call that reported success but whose output could not
- * be read back to verify — neither could be trusted. Scaling STEP/IGES
- * geometry without also fixing the header would silently mislabel the file
- * (e.g. a "converted to inches" STEP file whose header still says
- * millimetres reopens 25.4× too small in any correct reader, including this
- * extension's own) — excluded here entirely rather than shipped half-correct.
+ * unit — now every B-rep/mesh export target this codebase produces.
+ *
+ * STEP and IGES were originally excluded: both declare a length unit in
+ * their own header that MUST match the geometry's actual scale to mean
+ * anything, and scaling geometry without also fixing the header would
+ * silently mislabel the file (it reopens 25.4× too small/big in any correct
+ * reader, including this extension's own). That's still true, but each
+ * format now has a verified, working mechanism to fix the header too:
+ * - **IGES**: `IGESControl_Writer`'s alternate unit-aware constructor
+ *   (`IGESControl_Writer_2(unitName, modeCreation)`) genuinely works — it was
+ *   only ever reported "unconfirmed" because the original probe fed it an
+ *   11+ character MEMFS output path, silently hitting this OCCT WASM build's
+ *   undocumented path-length limit (see `exportBRep`'s doc comment), not a
+ *   real writer limitation. Re-probed with a correctly short path: it both
+ *   scales the geometry AND declares the header unit correctly for all five
+ *   `DisplayUnit`s, round-tripped through this codebase's own reader to
+ *   recover the source model's exact bounding box in every case.
+ * - **STEP**: still has no writer-level unit API at all in this build
+ *   (`Interface_Static`'s `"write.step.unit"` parameter never registers, even
+ *   via the full real-OCCT init sequence; no writer/actor class exposes a
+ *   unit setter either) — so `stepUnitPatch.ts`'s `patchStepUnitDeclaration`
+ *   does the labeling as a text-only rewrite of the writer's own always-mm
+ *   header, applied AFTER the geometry has already been correctly scaled (so
+ *   every raw number in the file is already correct — only the label needed
+ *   fixing). See that module's doc comment for the full mechanism and the
+ *   live-WASM round-trip verification.
+ *
  * BREP has no unit metadata at all (nothing to mismatch); the mesh formats
  * (STL/OBJ/PLY/glTF) enforce no unit metadata either, so scaling their raw
  * numbers is complete and correct on its own.
  */
-export const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat> = new Set(["brep", "stl", "obj", "ply", "gltf"]);
+export const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep", "stl", "obj", "ply", "gltf"]);
 
 /** File extension to use when saving an export of the given format. */
 export const EXPORT_EXTENSION: Record<CadFormat, string> = {

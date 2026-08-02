@@ -1311,7 +1311,8 @@ describe("generate_mesh", () => {
       "step",
       "step",
       [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }],
-      1 // generate_mesh always meshes at native mm (factor 1) — see export_mesh for the unit-converted path
+      "mm", // generate_mesh always meshes at native mm — see export_mesh for the unit-converted path
+      false // labelStepUnit: meshing-input STEP never gets a relabeled header — Gmsh reinterprets it
     );
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(genCall[1]).toEqual({ kind: "brep", stepBytes: new Uint8Array([1, 2, 3]) });
@@ -1480,18 +1481,18 @@ describe("export_mesh", () => {
     expect(onProgress.mock.calls[1][0]).toMatchObject({ progress: 1, total: 1 });
   });
 
-  it("stays at native mm (factor 1) when unit is omitted", async () => {
+  it("stays at native mm when unit is omitted", async () => {
     const c = ctx();
     const out = path.join(dir, "out.msh");
     await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], "mm", false);
   });
 
-  it("passes the unit scale factor through to exportBRep for a B-rep source, and rescales sizeMin/sizeMax to match", async () => {
+  it("passes the unit through to exportBRep for a B-rep source (never relabeling the meshing-input STEP header), and rescales sizeMin/sizeMax to match", async () => {
     const c = ctx();
     const out = path.join(dir, "out.msh");
     await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out, unit: "in", options: { sizeMin: 1, sizeMax: 10 } });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1 / 25.4);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], "in", false);
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(genCall[2].sizeMin).toBeCloseTo(1 / 25.4, 6);
     expect(genCall[2].sizeMax).toBeCloseTo(10 / 25.4, 6);
@@ -1509,7 +1510,7 @@ describe("export_mesh", () => {
     const c = ctx();
     const out = path.join(dir, "out.msh");
     const result = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out, unit: "parsec" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], "mm", false);
     expect(result.warnings.some((w) => w.includes('Unknown unit "parsec"'))).toBe(true);
   });
 
@@ -1563,20 +1564,20 @@ describe("export_brep", () => {
     );
   });
 
-  it("defaults to mm (scale factor 1, no conversion)", async () => {
+  it("defaults to mm (no conversion)", async () => {
     const c = ctx();
     const out = path.join(dir, "out-mm.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm");
     expect(result.unit).toBe("mm");
     expect(result.warnings).toEqual([]);
   });
 
-  it("passes the verified mm scale factor for a real unit", async () => {
+  it("passes the requested unit straight through for a brep target", async () => {
     const c = ctx();
     const out = path.join(dir, "out-in.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "in" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1 / 25.4);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "in");
     expect(result.unit).toBe("in");
   });
 
@@ -1584,18 +1585,18 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out-bad.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "parsec" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm");
     expect(result.unit).toBe("mm");
     expect(result.warnings[0]).toMatch(/unknown unit/i);
   });
 
-  it("falls back to mm and warns for an iges target — STEP/IGES can't honestly represent a converted unit", async () => {
+  it("passes the requested unit through for an iges target too — IGESControl_Writer_2 handles it natively", async () => {
     const c = ctx();
     const out = path.join(dir, "out.iges");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "iges", outputPath: out, unit: "in" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], 1);
-    expect(result.unit).toBe("mm");
-    expect(result.warnings[0]).toMatch(/unit conversion is only supported for a "brep"/i);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], "in");
+    expect(result.unit).toBe("in");
+    expect(result.warnings).toEqual([]);
   });
 });
 

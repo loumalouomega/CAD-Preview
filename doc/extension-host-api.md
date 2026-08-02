@@ -531,10 +531,10 @@ const EXPORT_LABEL: Record<CadFormat, string>       // e.g. gltf → "glTF Binar
 Used by `provider.ts`'s `handleExport()` to build the quick-pick items and the save dialog's default filename/filter.
 
 ```typescript
-const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat>  // {"brep", "stl", "obj", "ply", "gltf"}
+const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat>  // {"step", "iges", "brep", "stl", "obj", "ply", "gltf"}
 ```
 
-The gate for unit-conversion-on-export: `"step"`/`"iges"` are deliberately absent. Both declare a length unit in their own header that must match the geometry's actual scale — this OCCT WASM build has no verified way to set that declared unit on write (`Interface_Static`'s `"write.step.unit"` static never registers; `IGESControl_Writer`'s alternate unit-aware constructor writes successfully but its output couldn't be read back to verify), so converting their geometry without also fixing the header would silently mislabel the file. `"brep"` has no unit metadata to mismatch; the mesh formats enforce none either. `provider.ts`'s `handleExport` and `mcpTools.ts`'s `exportBRepTool` both gate on this set — see `exportBRep`'s `scaleFactor` param below for the full write-up.
+The gate for unit-conversion-on-export — now every B-rep/mesh export target. `"step"`/`"iges"` were originally excluded (both declare a length unit in their own header that must match the geometry's actual scale, and this OCCT WASM build has no writer-level API to set it directly), but each now has a verified, working fix: STEP via a text patch of the writer's output (`src/stepUnitPatch.ts`), IGES via its alternate unit-aware writer constructor (`IGESControl_Writer_2`, which turned out to genuinely work — the original "couldn't be read back to verify" finding was a false negative caused by an over-long MEMFS path, not a real limitation). `"brep"` has no unit metadata to mismatch; the mesh formats enforce none either. `provider.ts`'s `handleExport` and `mcpTools.ts`'s `exportBRepTool` both gate on this set — see `exportBRep`'s `unit` param below for the full write-up.
 
 ---
 
@@ -602,13 +602,22 @@ async function exportBRep(
   sourceFormat: "step" | "iges" | "brep",
   targetFormat: "step" | "iges" | "brep",
   ops?: EditOp[],            // replayable edit op-list (default [])
-  scaleFactor?: number       // unit-conversion-on-export scale (default 1, no-op)
+  unit?: DisplayUnit,        // unit-conversion-on-export target (default "mm", no-op)
+  labelStepUnit?: boolean    // relabel the STEP header too (default true) — see below
 ): Promise<Uint8Array>
 ```
 
 Re-parses `bytes` with `readShape()`, applies the edit op-list via `applyEditsBRep()`, and writes the resulting `TopoDS_Shape` out as `targetFormat` via the private `writeShape()` helper, returning the output file's bytes (read back from the OCCT virtual filesystem) — so **Export bakes the edits in**. Cleans up every handle — reader/writer/shape/progress-indicator — in a `finally`, plus `oc.FS.unlink()` on both the input and output virtual paths, same discipline as `loadBRep`.
 
-`scaleFactor` (default `1`) applies `occtOperations.ts`'s `scaleShapeForExport(oc, shape, factor, cleanup)` — a uniform scale about the **origin** — right after edits and before the writer, when not `1`. This is the real geometric half of unit conversion on export (`src/lengthUnits.ts`'s `unitScaleFactor(unit)`); the in-memory model and every other caller of `exportBRep` (meshing input, `compare_models`, mass properties) always pass the default and stay in the native mm cascade unit. `exportBRep()` itself doesn't gate this by `targetFormat` — it's the caller's job to only ever pass a non-default value for a `"brep"` target. `provider.ts`'s `handleExport` (the model Export/Save As command) only shows its export-unit quick-pick for `UNIT_CONVERTIBLE_FORMATS`-listed targets (`exportTargets.ts`) — BREP and the mesh formats, NOT STEP/IGES, which declare their own length unit in a file header this OCCT build has no verified way to set on write (see that constant's doc comment for the live-WASM probe trail). `mcpTools.ts`'s `exportBRepTool` mirrors the same gate defensively (an agent could pass any combination): a convertible-unit request against a STEP/IGES target degrades to `scaleFactor: 1` with a warning, never a silently mislabeled file.
+`unit` (default `"mm"`, i.e. no-op) is the SINGLE unit-conversion-on-export param (replacing an earlier raw `scaleFactor: number`) — the in-memory model and every other caller of `exportBRep` (`compare_models`, mass properties) always pass the default and stay in the native mm cascade unit. It's genuinely three different mechanisms per `targetFormat`, all dispatched inside `exportBRep`/`writeShape` rather than pushed onto the caller:
+
+- **`"brep"`**: `occtOperations.ts`'s `scaleShapeForExport(oc, shape, unitScaleFactor(unit), cleanup)` only — a uniform scale about the **origin**, right after edits and before the writer. No header to fix.
+- **`"step"`**: the same `scaleShapeForExport` scale, THEN — when `labelStepUnit` is `true` — `src/stepUnitPatch.ts`'s `patchStepUnitDeclaration(text, unit)` rewrites the writer's raw output text afterward — this OCCT WASM build has no writer-level STEP unit API at all (re-confirmed via the full real-OCCT init sequence, not just the plain default writer), so the geometry is scaled first (making every raw number in the file, including the writer's own auto-computed tolerance, already correct) and only the header LABEL needs a text-only fix.
+- **`"iges"`**: `scaleShapeForExport` is **never** applied — `writeShape` instead picks `IGESControl_Writer_2(igesUnitName(unit), 0)` (`src/lengthUnits.ts`'s `igesUnitName`) instead of the plain `_1` default whenever `unit !== "mm"`, and that writer overload scales the geometry internally itself; pre-scaling would double-convert.
+
+`provider.ts`'s `handleExport` and `mcpTools.ts`'s `exportBRepTool` both show/accept a unit for every `UNIT_CONVERTIBLE_FORMATS`-listed target (`exportTargets.ts`) — now every B-rep/mesh export target, STEP/IGES included.
+
+**`labelStepUnit` (default `true`) exists ONLY for meshing input, and defaults to the WRONG value for that one caller on purpose (opt-out, not opt-in) — a real regression caught while verifying this feature, not a preemptive design.** `provider.ts`'s `resolveMeshInput` and `mcpTools.ts`'s `resolveMeshInputHeadless` (which re-export a B-rep source to an intermediate STEP for Gmsh, never shown to the user) both explicitly pass `false`. Verified against the live WASM (`gmsh.model.occ.importShapes` + `gmsh.model.getBoundingBox` on a correctly-scaled-AND-labeled `unit:"in"` STEP file): Gmsh's own STEP importer DOES reinterpret the declared unit and silently converts the geometry back to its original (larger) size — completely undoing the scale, while `MeshOptions.sizeMin`/`sizeMax` stay at the separately-rescaled (smaller) values, producing a far-too-fine mesh. Passing `false` keeps the meshing-input STEP's header at the OCCT-native `"mm"` label while its geometry is still genuinely scaled — exactly the behavior this codebase already had before STEP header-patching existed, so callers that forget this parameter get the OLD (correct, for their purpose) behavior back, not a new failure mode.
 
 ```typescript
 function writeShape(
@@ -616,15 +625,24 @@ function writeShape(
   shape: any,
   filePath: string,
   format: "step" | "iges" | "brep",
-  cleanup: { delete(): void }[]
+  cleanup: { delete(): void }[],
+  unit?: DisplayUnit          // only affects the "iges" branch (default "mm")
 ): void
 ```
 
 Internal helper called by `exportBRep`. Per-format writer calls, verified against the live WASM build (the `_1`-suffixed overloads take a C++ `ostream`/`istream` that isn't bound in this build and throw `UnboundTypeError` — always use the path-based overload instead):
 
-- **step**: `new oc.STEPControl_Writer_1()` → `.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true)` → check `IFSelect_RetDone` → `.Write(filePath)` → check status again.
-- **iges**: `new oc.IGESControl_Writer_1()` → `.AddShape(shape)` → `.ComputeModel()` → `.Write_2(filePath, false)` (boolean return).
+- **step**: `new oc.STEPControl_Writer_1()` → `.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true)` → check `IFSelect_RetDone` → `.Write(filePath)` → check status again. Always writes bare millimetres — `exportBRep` patches the header text afterward when `unit !== "mm"`.
+- **iges**: `unit === "mm"` → `new oc.IGESControl_Writer_1()`; otherwise `new oc.IGESControl_Writer_2(igesUnitName(unit), 0)` (verified end-to-end against the live WASM: for all five `DisplayUnit`s, the written file's declared unit AND its geometry scale are both correct — round-tripped through this codebase's own `readShape` to recover the source model's exact bounding box). Either way: `.AddShape(shape)` → `.ComputeModel()` → `.Write_2(filePath, false)` (boolean return).
 - **brep**: `oc.BRepTools.Write_2(shape, filePath, new oc.Handle_Message_ProgressIndicator_1())` (boolean return).
+
+---
+
+## `src/stepUnitPatch.ts`
+
+Pure, vscode/OCCT-free text surgery — `patchStepUnitDeclaration(stepText: string, unit: DisplayUnit): string` — rewrites a freshly-OCCT-written STEP file's textual unit declaration to match geometry that `exportBRep` already scaled before the writer ran. `unit === "mm"` is a no-op (OCCT's writer already emits millimetres).
+
+Otherwise: finds every occurrence of OCCT's exact bare-mm entity text (`#N = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );`) — a single compound-shape write can emit several independent ones, one per representation context, each referenced from its own `GLOBAL_UNIT_ASSIGNED_CONTEXT` tuple AND a paired `UNCERTAINTY_MEASURE_WITH_UNIT`. For `"cm"`/`"m"`, each found entity's `SI_UNIT(...)` clause is relabeled in place (same id, e.g. `SI_UNIT($,.METRE.)` for `"m"` — the bare-`$`-no-prefix form). For `"in"`/`"ft"`, one shared `CONVERSION_BASED_UNIT` (+ its `DIMENSIONAL_EXPONENTS` and `LENGTH_MEASURE_WITH_UNIT` conversion-factor entities, at fresh ids beyond the file's existing max) is appended before the DATA section's closing `ENDSEC;`, reusing the first found mm entity as the conversion basis; every context's two references are then redirected to the new entity (the reused base entity's own definition line is left untouched). `src/stepUnitPatch.test.ts` covers all five units plus a synthetic multi-context fixture (mirroring `bull.stp`'s real 5-block output) confirming every context gets redirected and only one shared conversion entity is appended, not one per context.
 
 ---
 

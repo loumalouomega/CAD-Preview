@@ -57,6 +57,19 @@ describe("detectStepLengthUnit", () => {
     `;
     expect(detectStepLengthUnit(text)).toBeUndefined();
   });
+
+  it("detects a plain SI metre unit written with the bare `$` no-prefix token", () => {
+    // OCCT's own STEP writer emits exactly this form when patched to declare
+    // a "m" unit (`stepUnitPatch.ts`) — mirrors the `$` no-prefix convention
+    // this codebase's own PLANE_ANGLE_UNIT entities already use elsewhere
+    // (e.g. `SI_UNIT($,.RADIAN.)`), which the original regex never handled
+    // for LENGTH_UNIT specifically.
+    const text = `
+      #24=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT($,.METRE.));
+      #125=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#24))REPRESENTATION_CONTEXT('',''));
+    `;
+    expect(detectStepLengthUnit(text)).toBe("METRE");
+  });
 });
 
 describe("stepUnitLabel", () => {

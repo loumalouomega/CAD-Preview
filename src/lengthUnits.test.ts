@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DISPLAY_UNITS, unitScaleFactor, displayUnitFromUnitName, UNIT_LABELS, type DisplayUnit } from "./lengthUnits";
+import { DISPLAY_UNITS, unitScaleFactor, displayUnitFromUnitName, igesUnitName, UNIT_LABELS, type DisplayUnit } from "./lengthUnits";
 
 describe("unitScaleFactor", () => {
   it("mm is the identity factor", () => {
@@ -36,5 +36,18 @@ describe("displayUnitFromUnitName", () => {
   it("returns undefined for unknown/undefined names", () => {
     expect(displayUnitFromUnitName("PARSEC")).toBeUndefined();
     expect(displayUnitFromUnitName(undefined)).toBeUndefined();
+  });
+});
+
+describe("igesUnitName", () => {
+  it("maps every DisplayUnit to the exact string IGESControl_Writer_2 expects", () => {
+    // Verified against the live OCCT WASM: each of these strings, round-tripped
+    // through IGESControl_Writer_2 then this codebase's own detectIgesLengthUnit,
+    // recovers the matching flag (2/10/6/4/1) — see this function's doc comment.
+    expect(igesUnitName("mm")).toBe("MM");
+    expect(igesUnitName("cm")).toBe("CM");
+    expect(igesUnitName("m")).toBe("M");
+    expect(igesUnitName("in")).toBe("IN");
+    expect(igesUnitName("ft")).toBe("FT");
   });
 });

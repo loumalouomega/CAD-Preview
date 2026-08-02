@@ -776,17 +776,82 @@ try {
     `export_brep's inch scale is geometrically real: volume ratio ${(volumeIn / volumeMm).toFixed(9)} ≈ (1/25.4)^3 = ${expectedRatio.toFixed(9)}`
   );
 
-  // STEP/IGES headers declare a unit that this OCCT WASM build has no
-  // verified way to set on write (Interface_Static's "write.step.unit"
-  // never registers) — converting their geometry without fixing the header
-  // would silently mislabel the file, so it's deliberately unsupported:
-  // falls back to mm with an explicit warning, never a silent wrong file.
-  const igesOut = path.join(dir, "out-unsupported.iges");
-  const igesResult = await call("export_brep", { path: model, targetFormat: "iges", outputPath: igesOut, unit: "in" });
-  assert(igesResult.unit === "mm", "export_brep falls back to mm for an iges target (unit conversion unsupported)");
+  // STEP/IGES unit conversion — both now genuinely work, verified end-to-end
+  // against the live WASM. STEP has no writer-level unit API at all in this
+  // build (Interface_Static's "write.step.unit" never registers, even via the
+  // full real-OCCT init sequence — re-probed specifically for this feature),
+  // so the geometry is scaled via the existing scaleShapeForExport mechanism
+  // and the header is relabeled with a pure text patch afterward
+  // (stepUnitPatch.ts) — every raw number in the file (including the
+  // writer's own auto-computed tolerance) is already correct by the time the
+  // writer runs, only the label needs fixing. IGES's alternate unit-aware
+  // writer constructor (IGESControl_Writer_2) genuinely works and does both
+  // the scaling AND the labeling itself — the prior "unconfirmed, output
+  // could not be read back" finding was a false negative caused by an 11+
+  // character MEMFS output path (this build's undocumented path-length
+  // limit), not a real writer limitation.
+  // Unlike BREP (no unit metadata at all, so reopening at face value shows a
+  // genuinely SMALLER volume — the assertion above), a correctly-labeled
+  // STEP/IGES header means ANY unit-aware reader (including this codebase's
+  // own) recovers the SAME real-world size on reopen — so the expected
+  // volume ratio here is ~1, not (1/25.4)^3. Getting this backwards was a
+  // real test-design bug caught while verifying this feature (not a code
+  // bug): a first draft asserted (1/25.4)^3 for STEP/IGES too, which failed
+  // even though the export was byte-for-byte correct — the failure was the
+  // assertion misunderstanding what "correctly labeled" round-trips to.
+  // `model` is itself a .stp source, so it can't export to "step" (its own
+  // format is always excluded, matching the extension's Export menu) — use
+  // the already-written brepOut as the source for this one check instead.
+  const stepOutIn = path.join(dir, "out-in.step");
+  const stepResult = await call("export_brep", { path: brepOut, targetFormat: "step", outputPath: stepOutIn, unit: "in" });
+  assert(stepResult.unit === "in" && stepResult.warnings.length === 0, "export_brep converts to inches for a step target, no warnings");
   assert(
-    igesResult.warnings.some((w) => /unit conversion/i.test(w)),
-    "export_brep warns, rather than silently ignoring, the unsupported iges+unit combination"
+    /CONVERSION_BASED_UNIT\('INCH'/.test(fs.readFileSync(stepOutIn, "utf8")),
+    "the exported STEP file's own header text declares INCH, not just a scaled-but-mislabeled mm file"
+  );
+  const stepOutMm = path.join(dir, "out-mm.step");
+  await call("export_brep", { path: brepOut, targetFormat: "step", outputPath: stepOutMm });
+  const stepVolumeMm = (await call("get_mass_properties", { path: stepOutMm })).volume;
+  const stepVolumeIn = (await call("get_mass_properties", { path: stepOutIn })).volume;
+  assert(
+    Math.abs(stepVolumeIn / stepVolumeMm - 1) < 1e-6,
+    `export_brep's STEP inch export round-trips to the SAME real-world volume: reopening both through get_mass_properties gives ratio ${(stepVolumeIn / stepVolumeMm).toFixed(9)} ≈ 1 (mm=${stepVolumeMm.toFixed(3)}, in=${stepVolumeIn.toFixed(3)})`
+  );
+
+  const igesOutIn = path.join(dir, "out-in.iges");
+  const igesResult = await call("export_brep", { path: model, targetFormat: "iges", outputPath: igesOutIn, unit: "in" });
+  assert(igesResult.unit === "in" && igesResult.warnings.length === 0, "export_brep converts to inches for an iges target, no warnings");
+  assert(
+    /,1,4HINCH,/.test(fs.readFileSync(igesOutIn, "utf8")),
+    "the exported IGES file's own Global section declares unit flag 1 (INCH), not just a scaled-but-mislabeled mm file"
+  );
+  const igesOutMm = path.join(dir, "out-mm.iges");
+  await call("export_brep", { path: model, targetFormat: "iges", outputPath: igesOutMm });
+  const igesVolumeMm = (await call("get_mass_properties", { path: igesOutMm })).volume;
+  const igesVolumeIn = (await call("get_mass_properties", { path: igesOutIn })).volume;
+  assert(
+    Math.abs(igesVolumeIn / igesVolumeMm - 1) < 1e-6,
+    `export_brep's IGES inch export round-trips to the SAME real-world volume: reopening both through get_mass_properties gives ratio ${(igesVolumeIn / igesVolumeMm).toFixed(9)} ≈ 1 (mm=${igesVolumeMm.toFixed(3)}, in=${igesVolumeIn.toFixed(3)})`
+  );
+
+  // Regression guard: does the meshing-input STEP path (export_mesh/
+  // generate_mesh's internal re-export, NOT export_brep above) stay scale-
+  // correct now that STEP header-patching exists? Verified against the live
+  // WASM that Gmsh's own gmsh.model.occ.importShapes DOES reinterpret a
+  // correctly-labeled non-mm header and silently undoes the geometric scale
+  // — occtService.ts's exportBRep now takes a labelStepUnit=false override
+  // specifically for this internal path, keeping its header at the OCCT-
+  // native "mm" label (never shown to the user) while still genuinely
+  // scaling the geometry. If that regressed, this mesh's coordinate ratio
+  // would come back ~1 instead of ~1/25.4.
+  const meshMmOut = path.join(dir, "mesh-guard-mm.msh");
+  const meshInOut = path.join(dir, "mesh-guard-in.msh");
+  await call("export_mesh", { path: model, format: "msh", outputPath: meshMmOut, options: { sizeMax: bbox.diagonal / 8 } });
+  await call("export_mesh", { path: model, format: "msh", outputPath: meshInOut, options: { sizeMax: bbox.diagonal / 8 / 25.4 }, unit: "in" });
+  const meshRatio = maxAbsMshCoord(fs.readFileSync(meshInOut, "utf8")) / maxAbsMshCoord(fs.readFileSync(meshMmOut, "utf8"));
+  assert(
+    Math.abs(meshRatio - 1 / 25.4) < 0.01,
+    `export_mesh's unit conversion is unaffected by STEP header-patching (labelStepUnit:false held): msh coord ratio ${meshRatio.toFixed(5)} ≈ 1/25.4 = ${(1 / 25.4).toFixed(5)}`
   );
 
   // meshio++ integration: a VTK source (meshio-only format, no OCCT/gmsh-native

@@ -770,7 +770,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * **Generate** call site always passes `"mm"` explicitly, since its overlay
    * is display-only with no exported file whose numbers need to mean
    * anything externally. Only the FE Mesh panel's **Export** flow passes a
-   * real unit: B-rep sources get it via `exportBRep`'s existing `scaleFactor`
+   * real unit: B-rep sources get it via `exportBRep`'s existing `unit`
    * param (the same geometric-scale mechanism the model Export command
    * already uses — see `UNIT_CONVERTIBLE_FORMATS`), and STL sources get it
    * via the new `scaleStlBytes` (`stlParser.ts`). The caller is responsible
@@ -786,22 +786,29 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     stl: string | undefined,
     unit: DisplayUnit = "mm"
   ): Promise<MeshGenerationInput | undefined> {
-    const factor = unitScaleFactor(unit);
     if (route && route.strategy === "occt") {
       const sourceBytes = await vscode.workspace.fs.readFile(uri);
+      // labelStepUnit: false — Gmsh's own STEP importer reinterprets a
+      // correctly-labeled header and would undo this scale entirely (verified
+      // against the live WASM); this intermediate file is meshing input only,
+      // never shown to the user, so it stays at the OCCT-native "mm" label
+      // while its geometry is still genuinely scaled. See exportBRep's doc
+      // comment for the full write-up.
       const stepBytes = await exportBRep(
         this.context.extensionPath,
         sourceBytes,
         route.format as Extract<CadFormat, "step" | "iges" | "brep">,
         "step",
         ops,
-        factor
+        unit,
+        false
       );
       return { kind: "brep", stepBytes };
     }
 
     if (!stl) return undefined;
     const stlBytes = Buffer.from(stl, "base64");
+    const factor = unitScaleFactor(unit);
     return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
   }
 
@@ -858,9 +865,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     if (!picked) return;
 
     const targetFormat = picked.format;
-    // STEP/IGES can't honestly represent a converted unit in this OCCT build
-    // (see UNIT_CONVERTIBLE_FORMATS' doc comment) — skip the prompt entirely
-    // rather than offering a choice that silently falls back to mm.
+    // Every B-rep/mesh target this codebase can export to can now honestly
+    // represent a converted unit — see UNIT_CONVERTIBLE_FORMATS' doc comment.
     const unit = UNIT_CONVERTIBLE_FORMATS.has(targetFormat) ? await this.pickExportUnit() : "mm";
 
     await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async (_saveUri) => {
@@ -872,7 +878,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
           ops,
-          unitScaleFactor(unit)
+          unit
         );
       }
 

@@ -25,7 +25,7 @@ import {
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { compileParametricScript } from "./parametricScript";
 import { routeFile, type CadFormat, type FileRoute } from "./fileRouter";
-import { exportTargetsFor, EXPORT_EXTENSION, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION } from "./exportTargets";
 import {
   DEFAULT_MESH_OPTIONS,
   SIZE_MAX_SENTINEL,
@@ -1173,8 +1173,16 @@ export async function setMeshOptions(params: { path: string; options: Partial<Me
  * `resolveMeshInput` — only `export_mesh` ever passes a real one, matching
  * the extension's own scoping (`generate_mesh`/interactive Generate always
  * stay native mm; see CLAUDE.md's meshing-unit-conversion section). B-rep
- * sources get it via `exportBRep`'s existing `scaleFactor` param; `stl`/
- * meshio-derived sources get it via the new `scaleStlBytes`.
+ * sources get it via `exportBRep`'s existing `unit` param with
+ * `labelStepUnit: false` — the intermediate STEP this produces is meshing
+ * input only, never shown to the user, and MUST stay at the OCCT-native
+ * `"mm"` header label even though its geometry is genuinely scaled: verified
+ * against the live WASM that Gmsh's own `gmsh.model.occ.importShapes` DOES
+ * reinterpret a correctly-labeled non-mm header and silently undoes the
+ * scale, which would desync the geometry from the separately-rescaled
+ * `sizeMin`/`sizeMax` below (a real regression this flag exists to prevent —
+ * see `exportBRep`'s doc comment in `occtService.ts`). `stl`/meshio-derived
+ * sources get it via the new `scaleStlBytes`, unaffected by this either way.
  */
 async function resolveMeshInputHeadless(
   ctx: ToolContext,
@@ -1193,7 +1201,8 @@ async function resolveMeshInputHeadless(
       route.format as BRepFormat,
       "step",
       ops,
-      factor
+      unit,
+      false
     );
     return { kind: "brep", stepBytes };
   }
@@ -1265,9 +1274,8 @@ async function resolveMeshPartsAndOptionsHeadless(
 
 /** Validates a raw `unit` param string into a `DisplayUnit`, warning and
  * falling back to `"mm"` (no conversion) for an unrecognized value — same
- * convention as `exportBRepTool`'s unit handling, but simpler: every Gmsh
- * export format is scale-agnostic (no STEP/IGES-style declared-header-unit
- * gotcha), so unlike `exportBRepTool` there's no format-dependent fallback. */
+ * convention, and the same simple "unknown string → mm" fallback,
+ * `exportBRepTool`'s unit handling uses. */
 function resolveExportMeshUnit(rawUnit: string | undefined, warnings: string[]): DisplayUnit {
   if (rawUnit == null) return "mm";
   if (!DISPLAY_UNITS.includes(rawUnit as DisplayUnit)) {
@@ -1480,15 +1488,6 @@ export async function exportBRepTool(
   if (params.unit != null) {
     if (!DISPLAY_UNITS.includes(params.unit as DisplayUnit)) {
       warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm" (no conversion).`);
-    } else if (params.unit !== "mm" && !UNIT_CONVERTIBLE_FORMATS.has(target)) {
-      // STEP/IGES declare a unit in their own header that this OCCT WASM build
-      // has no verified way to set on write — see UNIT_CONVERTIBLE_FORMATS'
-      // doc comment. Converting geometry without fixing the header would
-      // silently mislabel the file, so this degrades to mm with a warning
-      // rather than producing one.
-      warnings.push(
-        `Unit conversion is only supported for a "brep" export target (this OCCT build can't set STEP/IGES' own declared header unit) — exporting "${target}" at native mm instead.`
-      );
     } else {
       unit = params.unit as DisplayUnit;
     }
@@ -1502,7 +1501,7 @@ export async function exportBRepTool(
     route.format as BRepFormat,
     target,
     ops,
-    unitScaleFactor(unit)
+    unit
   );
   await fs.writeFile(outputPath, bytes);
   return {
