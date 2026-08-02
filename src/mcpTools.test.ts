@@ -780,6 +780,55 @@ describe("compare_models", () => {
     await expect(compareModelsTool(ctx(), { pathA: path.join(dir, "x.txt"), pathB: stpModel2 })).rejects.toThrow(/unsupported/i);
     await expect(compareModelsTool(ctx(), { pathA: stpModel, pathB: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
   });
+
+  it("never calls renderSnapshot/isRenderAvailable when includeSnapshots is omitted (default false)", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2 });
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(c.pipeline.isRenderAvailable).not.toHaveBeenCalled();
+    expect(result.images).toBeUndefined();
+  });
+
+  it("includeSnapshots:true renders both B-rep sides, prefixing each image label with A-/B-", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2, includeSnapshots: true });
+    expect(c.pipeline.isRenderAvailable).toHaveBeenCalledTimes(1); // probed once, not per side
+    expect(c.pipeline.renderSnapshot).toHaveBeenCalledTimes(2);
+    expect(result.images?.map((i) => i.label)).toEqual(["A-ISO-A", "A-ISO-B", "A-TOP", "A-FRONT", "B-ISO-A", "B-ISO-B", "B-TOP", "B-FRONT"]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("includeSnapshots:true warns (never fails) for a mesh-format side, with no render call for it", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel, includeSnapshots: true });
+    expect(c.pipeline.renderSnapshot).toHaveBeenCalledTimes(1); // only the B-rep side
+    expect(result.supported).toBe(true);
+    expect(result.images?.map((i) => i.label)).toEqual(["A-ISO-A", "A-ISO-B", "A-TOP", "A-FRONT"]);
+    expect(result.warnings.some((w) => /model B has no visual snapshot/i.test(w))).toBe(true);
+  });
+
+  it("includeSnapshots:true degrades gracefully (no throw) when the renderer is unavailable, probed only once", async () => {
+    const c = ctx(
+      fakePipeline({ isRenderAvailable: vi.fn(async () => ({ available: false, reason: "no chromium" })) })
+    );
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2, includeSnapshots: true });
+    expect(c.pipeline.isRenderAvailable).toHaveBeenCalledTimes(1);
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result.supported).toBe(true);
+    expect(result.images).toEqual([]);
+    expect(result.warnings.some((w) => /skipped.*no chromium/i.test(w))).toBe(true);
+  });
+
+  it("does not probe isRenderAvailable at all when includeSnapshots:true but both sides are mesh formats", async () => {
+    const c = ctx();
+    const stlModel2 = path.join(dir, "model3.stl");
+    await fs.writeFile(stlModel2, "solid z\nendsolid z\n", "utf8");
+    const result = await compareModelsTool(c, { pathA: stlModel, pathB: stlModel2, includeSnapshots: true });
+    expect(c.pipeline.isRenderAvailable).not.toHaveBeenCalled();
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result.images).toEqual([]);
+    expect(result.warnings.filter((w) => /has no visual snapshot/i.test(w))).toHaveLength(2);
+  });
 });
 
 describe("apply_edit_ops", () => {

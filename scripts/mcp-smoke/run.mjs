@@ -453,6 +453,35 @@ try {
     console.log("  (Playwright/Chromium not installed in this environment — render_snapshot's supported:true path was not exercised)");
   }
 
+  // compare_models visual diff (roadmap "Visual diff for Compare Models",
+  // closed): includeSnapshots is opt-in and defaults to false — confirm the
+  // default omits images entirely (no wasted render cost), then confirm the
+  // opt-in path, tolerating the same Playwright-availability uncertainty as
+  // render_snapshot above (they share the exact same engine).
+  const diffNoSnapshots = await call("compare_models", { pathA: model, pathB: originalCopy });
+  assert(diffNoSnapshots.images === undefined, "compare_models omits images entirely when includeSnapshots is not passed");
+
+  const rawDiffWithSnapshots = await callRaw("compare_models", { pathA: model, pathB: originalCopy, includeSnapshots: true });
+  const diffWithSnapshots = JSON.parse(rawDiffWithSnapshots.content[0].text);
+  assert(diffWithSnapshots.supported === true, "compare_models with includeSnapshots:true still reports the numeric diff");
+  if (render.supported) {
+    // Both sides are the same B-rep format (model vs. originalCopy) — 2 × 4 = 8 images.
+    assert(diffWithSnapshots.images.length === 8, `compare_models includeSnapshots:true returns 8 images, 4 per side (got ${diffWithSnapshots.images.length})`);
+    assert(
+      diffWithSnapshots.images.map((i) => i.label).join(",") === "A-ISO-A,A-ISO-B,A-TOP,A-FRONT,B-ISO-A,B-ISO-B,B-TOP,B-FRONT",
+      `compare_models prefixes each side's image labels with A-/B- (got: ${diffWithSnapshots.images.map((i) => i.label).join(",")})`
+    );
+    const diffImageBlocks = rawDiffWithSnapshots.content.filter((c) => c.type === "image");
+    assert(diffImageBlocks.length === 8, "compare_models's raw tool result carries 8 image content blocks when includeSnapshots:true");
+    assert(diffWithSnapshots.warnings.length === 0, "compare_models includeSnapshots:true reports no warnings when both sides render successfully");
+  } else {
+    assert(diffWithSnapshots.images.length === 0, "compare_models includeSnapshots:true degrades to an empty image list when the renderer is unavailable");
+    assert(
+      diffWithSnapshots.warnings.some((w) => /skipped/i.test(w)),
+      `compare_models includeSnapshots:true reports the skip as a warning, not a failure (got: ${JSON.stringify(diffWithSnapshots.warnings)})`
+    );
+  }
+
   const meshed = await call("generate_mesh", { path: model, options: { sizeMax: bbox.diagonal / 15 } });
   assert(meshed.nodeCount > 0 && meshed.elementCount > 0, `generate_mesh: ${meshed.nodeCount} nodes, ${meshed.elementCount} elements in ${meshed.elapsedMs} ms`);
 

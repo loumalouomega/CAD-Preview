@@ -209,7 +209,7 @@ export function describeCapabilities() {
     verdictConventions: [
       "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
       "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
-      "render_snapshot's images are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
+      "render_snapshot's images (and compare_models' optional includeSnapshots ones) are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
     ],
     brepExportTargets: {
       description: "export_brep targets per source format (the source's own format is excluded, matching the extension's Export menu). Mesh targets (stl/obj/ply/gltf) are webview-only and not available headless.",
@@ -233,7 +233,7 @@ export function describeCapabilities() {
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
-      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; glTF and meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview.",
+      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; glTF and meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
@@ -628,11 +628,24 @@ const COMPARABLE_MESH_FORMATS = new Set(["stl", "obj", "ply"]);
  * than throwing, mirroring `get_mass_properties`'s graceful-skip convention:
  * none of those formats has host-side geometry to independently re-derive
  * centroids/volumes from without a webview.
+ *
+ * **`params.includeSnapshots` (roadmap "Visual diff for Compare Models",
+ * closed) — opt-in, default `false`.** Pairing the numeric diff above with
+ * actual before/after PNGs (via `render_snapshot`'s own engine, same
+ * `DEFAULT_VIEWS` four-view packet) makes a "heavily edited" verdict
+ * immediately legible without reading numbers — but it costs up to two full
+ * headless Chromium launches (one per B-rep side, run in parallel) and up to
+ * 8 image content blocks in the response, real token cost an agent should
+ * choose, not have imposed on every call. `isRenderAvailable()` is probed
+ * ONCE (not per side) and only when at least one side is a B-rep source;
+ * mesh (STL/OBJ/PLY) sides degrade to a `warnings` entry, same as every
+ * other `supported: false`-shaped gap in this tool — a skipped/failed
+ * snapshot never blocks or fails the numeric diff.
  */
 export async function compareModelsTool(
   ctx: ToolContext,
-  params: { pathA: string; pathB: string }
-): Promise<{ formatA: CadFormat; formatB: CadFormat; supported: boolean; warnings: string[]; diff?: ModelDiff }> {
+  params: { pathA: string; pathB: string; includeSnapshots?: boolean }
+): Promise<{ formatA: CadFormat; formatB: CadFormat; supported: boolean; warnings: string[]; diff?: ModelDiff; images?: RenderImage[] }> {
   const routeA = requireRoute(params.pathA);
   const routeB = requireRoute(params.pathB);
 
@@ -666,7 +679,33 @@ export async function compareModelsTool(
   const [sourceA, sourceB] = await Promise.all([resolveSource(params.pathA, routeA), resolveSource(params.pathB, routeB)]);
   const diff = await ctx.pipeline.compareModels(ctx.extensionPath, sourceA, sourceB);
 
-  return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff };
+  if (!params.includeSnapshots) {
+    return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff };
+  }
+
+  const needsRender = sourceA.kind === "brep" || sourceB.kind === "brep";
+  let renderAvailable = false;
+  if (needsRender) {
+    const avail = await ctx.pipeline.isRenderAvailable();
+    renderAvailable = avail.available;
+    if (!renderAvailable) warnings.push(`includeSnapshots: visual snapshots skipped — ${avail.reason ?? "renderer unavailable"}.`);
+  }
+  const renderOne = async (label: "A" | "B", source: CompareSource): Promise<RenderImage[]> => {
+    if (source.kind !== "brep") {
+      warnings.push(`includeSnapshots: model ${label} has no visual snapshot (${source.kind.toUpperCase()} sources are B-rep sources only for render_snapshot).`);
+      return [];
+    }
+    if (!renderAvailable) return [];
+    const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, source.bytes, source.format, source.ops, {});
+    if (!result.supported || !result.images) {
+      warnings.push(`includeSnapshots: model ${label} snapshot failed — ${result.reason ?? "unknown error"}.`);
+      return [];
+    }
+    return result.images.map((img) => ({ ...img, label: `${label}-${img.label}` }));
+  };
+  const [imagesA, imagesB] = await Promise.all([renderOne("A", sourceA), renderOne("B", sourceB)]);
+
+  return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff, images: [...imagesA, ...imagesB] };
 }
 
 // ---------------------------------------------------------------------------
