@@ -3,7 +3,7 @@ import { routeFile } from "./fileRouter";
 import { loadBRep, exportBRep } from "./occtService";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
-import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
@@ -589,6 +589,21 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           post({ type: "measureExactResult", requestId: msg.requestId, result });
         } catch (err) {
           post({ type: "measureExactError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "colorFieldRequest") {
+        try {
+          if (!route || route.strategy !== "meshio") {
+            throw new Error("Colour-by-field is only available for meshio++-imported sources (VTK/MED/CGNS/Exodus/XDMF/MDPA).");
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const result = await readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
+          if (!result) throw new Error(`Field "${msg.field}" not found, not a plain scalar, or the boundary isn't pure triangles.`);
+          post({ type: "colorFieldResult", requestId: msg.requestId, values: encodeBuffer(result.values), min: result.min, max: result.max });
+        } catch (err) {
+          post({ type: "colorFieldError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }

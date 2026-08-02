@@ -70,6 +70,9 @@ export class Viewer {
    * material so it paints through occluding geometry. See
    * `setWorstElementsOverlay`. */
   private worstElementsOverlay: THREE.Object3D | null = null;
+  /** The "colour by scalar field" overlay (if any, meshio++ sources only) —
+   * a scene sibling of `model`/`meshOverlay`. See `setColorFieldOverlay`. */
+  private colorFieldOverlay: THREE.Object3D | null = null;
   private wireframe = false;
   private readonly raycaster = new THREE.Raycaster();
   /** World-space half-thickness for picking thin edge lines; scaled per model. */
@@ -224,6 +227,7 @@ export class Viewer {
     // the old geometry) and must not linger either.
     this.setMeshOverlay(null);
     this.setWorstElementsOverlay(null);
+    this.setColorFieldOverlay(null);
     this.clearMeasurementOverlay();
     this.clearModel();
     this.model = object;
@@ -306,7 +310,7 @@ export class Viewer {
     // keeping edges/points visible as a feature-line reference; restore them the
     // moment the overlay is cleared. Display-only (Object3D.visible), never
     // touches geometry.
-    this.setModelFacesVisible(this.meshOverlay === null);
+    this.refreshModelFacesVisibility();
     this.rebuildClipCap(); // overlay content/visibility changed — a no-op if clipping is off
   }
 
@@ -321,8 +325,40 @@ export class Viewer {
   setMeshOverlayVisible(visible: boolean): void {
     if (!this.meshOverlay) return;
     this.meshOverlay.visible = visible;
-    this.setModelFacesVisible(!visible);
+    this.refreshModelFacesVisibility();
     this.rebuildClipCap(); // which content is capped just flipped — a no-op if clipping is off
+  }
+
+  /**
+   * Replaces the "colour by scalar field" overlay (roadmap item, closed) —
+   * disposes the previous one's geometry/material and removes it from the
+   * scene, same dispose/replace pattern as `setMeshOverlay`. Pass `null` to
+   * just clear it (e.g. picking "None" in the field selector, or a fresh
+   * model load). Composes with `setMeshOverlay`/`setMeshOverlayVisible` via
+   * `refreshModelFacesVisibility()` rather than unconditionally hiding/
+   * showing the model's faces itself — either overlay being shown hides the
+   * model's own faces, and both must independently clear before they
+   * reappear (see that method's doc comment).
+   */
+  setColorFieldOverlay(obj: THREE.Object3D | null): void {
+    if (this.colorFieldOverlay) {
+      this.scene.remove(this.colorFieldOverlay);
+      this.colorFieldOverlay.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) mat.dispose();
+      });
+      this.colorFieldOverlay = null;
+    }
+    if (obj) {
+      this.colorFieldOverlay = obj;
+      this.scene.add(obj);
+      this.applyClippingPlane();
+    }
+    this.refreshModelFacesVisibility();
+    this.rebuildClipCap();
   }
 
   /**
@@ -369,6 +405,23 @@ export class Viewer {
     this.model?.traverse((obj) => {
       if (obj.userData.entityType === "surface") obj.visible = visible;
     });
+  }
+
+  /**
+   * Recomputes whether the model's shaded faces should be visible from
+   * scratch, based on every overlay that competes for the same space
+   * (`meshOverlay`, `colorFieldOverlay`) — hidden whenever ANY of them is
+   * currently shown (exists AND `.visible`), restored only once none are.
+   * Centralizing this (rather than each overlay unconditionally calling
+   * `setModelFacesVisible` itself, which is how `meshOverlay` alone used to
+   * work before `colorFieldOverlay` existed) is what lets the two compose
+   * correctly: one overlay's own set/clear/toggle can no longer stomp on
+   * the other's "hide the faces" state.
+   */
+  private refreshModelFacesVisibility(): void {
+    const meshOverlayShown = this.meshOverlay !== null && this.meshOverlay.visible;
+    const colorFieldShown = this.colorFieldOverlay !== null && this.colorFieldOverlay.visible;
+    this.setModelFacesVisible(!meshOverlayShown && !colorFieldShown);
   }
 
   /** Frames the current model (or the scene) within the view along `direction`. */
@@ -617,12 +670,13 @@ export class Viewer {
     // before the next animate() tick) still captures accurate transforms.
     this.model.updateMatrixWorld(true);
     this.meshOverlay?.updateMatrixWorld(true);
+    this.colorFieldOverlay?.updateMatrixWorld(true);
 
     const targets: THREE.Mesh[] = [];
     this.model.traverse((obj) => {
       if (obj instanceof THREE.Mesh && obj.userData.entityType === "surface" && obj.visible) targets.push(obj);
     });
-    // The overlay's own fill mesh, only when it's actually the thing being
+    // Either overlay's own fill mesh, only when it's actually the thing being
     // shown — model faces are already hidden in that state (setModelFacesVisible),
     // so this and the branch above are naturally mutually exclusive in practice.
     if (this.meshOverlay?.visible) {
@@ -630,10 +684,16 @@ export class Viewer {
         if (obj instanceof THREE.Mesh && obj.userData.entityType === "mesh") targets.push(obj);
       });
     }
+    if (this.colorFieldOverlay?.visible) {
+      this.colorFieldOverlay.traverse((obj) => {
+        if (obj instanceof THREE.Mesh && obj.userData.entityType === "mesh") targets.push(obj);
+      });
+    }
     if (targets.length === 0) return;
 
     const box = new THREE.Box3().setFromObject(this.model);
     if (this.meshOverlay?.visible) box.union(new THREE.Box3().setFromObject(this.meshOverlay));
+    if (this.colorFieldOverlay?.visible) box.union(new THREE.Box3().setFromObject(this.colorFieldOverlay));
     if (box.isEmpty()) return;
 
     this.clipCapPlane = this.activeClippingPlane.clone();
@@ -677,6 +737,7 @@ export class Viewer {
     this.meshOverlay?.traverse(apply);
     this.worstElementsOverlay?.traverse(apply);
     this.hiddenLineGhosts?.traverse(apply);
+    this.colorFieldOverlay?.traverse(apply);
   }
 
   /**

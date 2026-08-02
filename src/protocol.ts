@@ -166,6 +166,17 @@ export type HostToWebview =
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
   | { type: "measureExactError"; requestId: string; message: string }
   | {
+      type: "colorFieldResult";
+      requestId: string;
+      /** One value per triangle CORNER (base64 `Float32Array`), same order
+       * as the currently-loaded model's own triangle soup (see
+       * `src/meshioService.ts`'s `readMeshioFieldValues`). */
+      values: string;
+      min: number;
+      max: number;
+    }
+  | { type: "colorFieldError"; requestId: string; message: string }
+  | {
       type: "renderViewRequest";
       /** Deliberately separate from `screenshotRequest`'s requestId
        * namespace/round trip (`src/renderService.ts`'s headless multi-view
@@ -229,7 +240,8 @@ export type WebviewToHost =
       entityIdB?: string;
     }
   | { type: "renderViewResult"; requestId: string; data: string }
-  | { type: "renderViewError"; requestId: string; message: string };
+  | { type: "renderViewError"; requestId: string; message: string }
+  | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {

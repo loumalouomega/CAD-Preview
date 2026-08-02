@@ -234,6 +234,19 @@ export function viewerBodyHtml(): string {
         </select>
       </div>
     </div>
+    <div class="vc-group" id="vc-colorfield-group" hidden>
+      <span class="vc-label">Colour by field</span>
+      <div class="vc-row">
+        <select id="vc-colorfield-select" title="Colour the model by a scalar field declared in the source file">
+          <option value="">None</option>
+        </select>
+      </div>
+      <div class="vc-row" id="vc-colorfield-legend" hidden>
+        <div id="vc-colorfield-gradient"></div>
+        <span id="vc-colorfield-min"></span>
+        <span id="vc-colorfield-max"></span>
+      </div>
+    </div>
     <div class="vc-group">
       <span class="vc-label">Display</span>
       <div class="vc-segments" id="display-mode-group">

@@ -235,6 +235,8 @@ type HostToWebview =
   | { type: 'massPropertiesError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
   | { type: 'measureExactError'; requestId: string; message: string }
+  | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
+  | { type: 'colorFieldError'; requestId: string; message: string }
 ```
 
 ### `geometry`
@@ -465,6 +467,18 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 { "type": "measureExactError", "requestId": "1234-0.56", "message": "This edge is not a circular arc — radius is only defined for circular edges" }
 ```
 
+### `colorFieldResult` / `colorFieldError`
+
+Sent in reply to `colorFieldRequest` (webview → host, below) — **meshio++-imported sources only** (`src/meshioService.ts`'s `readMeshioFieldValues`, called from `provider.ts`'s new `colorFieldRequest` handler). `values` is a base64 `Float32Array`, one entry per triangle CORNER in the SAME order as the currently-loaded model's own triangle soup (i.e. `pristineMesh`'s position attribute) — the webview builds a vertex-coloured overlay directly from it with no further reordering (`src/webview/geometryBuilder.ts`'s `buildColorFieldOverlay`). `min`/`max` seed the legend's gradient bar and are NOT length-dimensioned (no unit conversion/suffix — unlike `measureExactResult`, a scalar field like temperature or stress has no length unit to convert).
+
+```json
+{ "type": "colorFieldResult", "requestId": "1234-0.56", "values": "AACAPwAAAEA...", "min": 1, "max": 5 }
+```
+
+```json
+{ "type": "colorFieldError", "requestId": "1234-0.56", "message": "Field \"Pressure\" not found, not a plain scalar, or the boundary isn't pure triangles." }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -489,6 +503,7 @@ type WebviewToHost =
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
+  | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
 ```
 
 ### `partsChanged`
@@ -629,6 +644,14 @@ Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep sourc
 
 ```json
 { "type": "measureExactRequest", "requestId": "1234-0.56", "kind": "distance", "entityIdA": "solid-0", "entityIdB": "solid-1" }
+```
+
+### `colorFieldRequest`
+
+Sent when the view-controls "Colour by field" `<select>` changes to a non-"None" value, for a meshio++-imported source only (the group stays hidden for every other source — see `webview-api.md`). `field` is the raw array name the source file declares; `kind` is `"point"` or `"cell"` depending on which of `meshioMetadata`'s `pointDataNames`/`cellDataNames` it came from (encoded together as `"point:<name>"`/`"cell:<name>"` in the `<option>` value, split back apart client-side by a fixed-length prefix — not "split on the first colon", since a field name could itself contain one).
+
+```json
+{ "type": "colorFieldRequest", "requestId": "1234-0.56", "field": "Temperature", "kind": "point" }
 ```
 
 ---

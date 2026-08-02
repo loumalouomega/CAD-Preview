@@ -286,6 +286,106 @@ export async function convertToStlBoundaryWithRegions(
   }
 }
 
+export interface MeshioFieldValues {
+  /** One value per triangle CORNER, in the SAME file order as
+   * `convertToStlBoundaryWithRegions`'s STL bytes (one entry per vertex of
+   * the non-indexed triangle soup) — ready to become a `THREE.js` vertex-
+   * colour attribute with no further reordering. */
+  values: Float32Array;
+  min: number;
+  max: number;
+}
+
+/**
+ * Reads one named scalar field's VALUES (not just its name — see
+ * `readMeshioMetadata` above for that) for the "colour by scalar field"
+ * roadmap item, correlated onto the SAME boundary triangle soup
+ * `convertToStlBoundaryWithRegions` produces (verified deterministic: the
+ * same `readMesh` → `extractSurface` call sequence on the same bytes always
+ * yields byte-identical boundary geometry/order). Returns `null` (never
+ * throws) when the field doesn't exist, isn't a plain scalar (a
+ * multi-component vector/tensor field isn't colour-mappable without a
+ * component-selection UI this feature doesn't have), or the boundary isn't
+ * pure triangles — same graceful-degradation convention as every other
+ * meshio path in this codebase.
+ *
+ * **`kind: "point"` needs no correlation math at all — verified against the
+ * live WASM, a genuinely surprising simplification.** `extractSurface`
+ * already subsets AND reorders `point_data` to match its own output
+ * `points` array: probed with a deliberately-interior point (excluded from
+ * every boundary face) carrying a distinctive value, and `boundary.
+ * point_data[field]` came back with that value correctly DROPPED and the
+ * remaining values correctly re-indexed to the 4 real boundary points, not
+ * just naively truncated to the first N. So `boundary.point_data[field]`
+ * is read directly, then expanded from per-POINT to per-CORNER by indexing
+ * through each triangle's own point indices (`block.data`).
+ *
+ * **`kind: "cell"` reuses the exact `cell_data["surface:parent_cell"]`
+ * provenance array `convertToStlBoundaryWithRegions` already established**
+ * for region correlation: the ORIGINAL mesh's `cell_data[field]` (one array
+ * per original cell block) is flattened into one global, block-major array
+ * — the same indexing convention `Region.entries` (`kind: "cell"`) already
+ * uses — then each boundary triangle's parent-cell value is looked up and
+ * broadcast to its 3 corners (a cell-data field is constant across a whole
+ * original cell, hence across every boundary face descended from it).
+ */
+export async function readMeshioFieldValues(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  fieldName: string,
+  kind: "point" | "cell"
+): Promise<MeshioFieldValues | null> {
+  try {
+    const m = await getMeshio();
+    const inPath = `/field-in.${meshioFormat}`;
+    m.FS.writeFile(inPath, sourceBytes);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let mesh: any;
+    try {
+      mesh = m.readMesh(inPath, meshioFormat);
+    } finally {
+      try { m.FS.unlink(inPath); } catch { /* ignore */ }
+    }
+
+    const boundary = m.extractSurface(mesh, true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const blocks = boundary.cells as any[];
+    if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) return null;
+
+    const perCorner: number[] = [];
+    if (kind === "point") {
+      const arr: Float64Array | undefined = boundary.point_data?.[fieldName];
+      if (!arr) return null;
+      if ((boundary.point_data_components?.[fieldName] ?? 1) !== 1) return null; // not a plain scalar
+      for (const block of blocks) {
+        for (let i = 0; i < block.data.length; i++) perCorner.push(arr[block.data[i]]);
+      }
+    } else {
+      const cellArrBlocks: Float64Array[] | undefined = mesh.cell_data?.[fieldName];
+      const parentCellBlocks: Float64Array[] | undefined = boundary.cell_data?.["surface:parent_cell"];
+      if (!cellArrBlocks || !parentCellBlocks) return null;
+      if ((mesh.cell_data_components?.[fieldName] ?? 1) !== 1) return null; // not a plain scalar
+      const flat: number[] = [];
+      for (const blockArr of cellArrBlocks) for (let i = 0; i < blockArr.length; i++) flat.push(blockArr[i]);
+      for (let b = 0; b < blocks.length; b++) {
+        const n: number = blocks[b].nodesPerCell;
+        const triCount = blocks[b].data.length / n;
+        const parentIds = parentCellBlocks[b];
+        for (let t = 0; t < triCount; t++) {
+          const v = flat[parentIds[t]];
+          perCorner.push(v, v, v);
+        }
+      }
+    }
+    if (perCorner.length === 0) return null;
+    let min = Infinity, max = -Infinity;
+    for (const v of perCorner) { if (v < min) min = v; if (v > max) max = v; }
+    return { values: Float32Array.from(perCorner), min, max };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Re-encodes an already-generated Gmsh mesh into a format Gmsh's own writers
  * can't produce — MED and CGNS are the roadmap's explicit motivating case
