@@ -60,7 +60,8 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -108,6 +109,7 @@ export interface Pipeline {
   downloadStandardPart: typeof downloadStandardPart;
   compareModels: typeof compareModels;
   convertToStlBoundary: typeof convertToStlBoundary;
+  convertToStlBoundaryWithRegions: typeof convertToStlBoundaryWithRegions;
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
 }
@@ -318,10 +320,37 @@ async function sidecarSummary(modelPath: string) {
 // ---------------------------------------------------------------------------
 // load_model
 
+/**
+ * Auto-creates Parts from a meshio++ source's `kind: "cell"` regions, the
+ * same host-side mechanism `provider.ts`'s `handleMeshio` uses for the
+ * interactive extension (`src/meshioRegionParts.ts`'s `buildPartsFromMeshio
+ * Regions`, over `ctx.pipeline.convertToStlBoundaryWithRegions`'s
+ * correlation) — kept in sync per CLAUDE.md's "keep the MCP server in sync
+ * with extension features" rule, so `apply_edit_ops`/`set_part` on a fresh
+ * meshio import interoperate with a subsequent VS Code open (and vice
+ * versa) the same way every other sidecar already does. Never overwrites an
+ * existing non-empty parts sidecar (same "never clobber existing Parts"
+ * rule). Returns the count actually created (`0` for "nothing to do" —
+ * never throws, mirroring every other best-effort path in this file).
+ */
+async function maybeAutoCreateMeshioParts(ctx: ToolContext, modelPath: string, bytes: Uint8Array, format: CadFormat): Promise<number> {
+  try {
+    const existing = await readParts(modelPath);
+    if (existing.length > 0) return 0;
+    const boundary = await ctx.pipeline.convertToStlBoundaryWithRegions(bytes, format);
+    if (!boundary.regions) return 0;
+    const parts = buildPartsFromMeshioRegions(boundary.stlBytes, boundary.regions);
+    if (parts.length === 0) return 0;
+    await writeParts(modelPath, parts);
+    return parts.length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
-  const sidecars = await sidecarSummary(modelPath);
 
   if (route.strategy !== "occt") {
     const warnings = [
@@ -333,15 +362,29 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     ];
     if (route.strategy === "meshio") {
       const bytes = await readModelBytes(modelPath);
-      const meta = await ctx.pipeline.readMeshioMetadata(bytes, route.format);
+      const [meta, createdCount] = await Promise.all([
+        ctx.pipeline.readMeshioMetadata(bytes, route.format),
+        maybeAutoCreateMeshioParts(ctx, modelPath, bytes, route.format),
+      ]);
       const dataNames = [...meta.pointDataNames, ...meta.cellDataNames, ...meta.fieldDataNames];
       if (meta.regions.length > 0 || dataNames.length > 0) {
-        const parts: string[] = [];
-        if (meta.regions.length > 0) parts.push(`${meta.regions.length} region(s): ${meta.regions.map((r) => r.name).join(", ")}`);
-        if (dataNames.length > 0) parts.push(`data: ${dataNames.join(", ")}`);
-        warnings.push(`Source file also declares ${parts.join(" · ")} — not preserved as Parts/geometry (informational only).`);
+        const bits: string[] = [];
+        if (meta.regions.length > 0) {
+          const names = meta.regions.map((r) => r.name).join(", ");
+          bits.push(
+            createdCount > 0
+              ? `${meta.regions.length} region(s): ${names} (see get_state's parts)`
+              : `${meta.regions.length} region(s): ${names} — not preserved as Parts/geometry`
+          );
+        }
+        if (dataNames.length > 0) bits.push(`data: ${dataNames.join(", ")} — not preserved`);
+        warnings.push(`Source file also declares ${bits.join(" · ")} (informational only).`);
+      }
+      if (createdCount > 0) {
+        warnings.push(`Auto-created ${createdCount} Part(s) from the source file's cell region(s) — see get_state.`);
       }
     }
+    const sidecars = await sidecarSummary(modelPath); // after the auto-create above, so `parts` reflects it
     return {
       format: route.format,
       strategy: route.strategy,
@@ -356,6 +399,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     };
   }
 
+  const sidecars = await sidecarSummary(modelPath);
   const { ops } = await readEdits(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, ops);

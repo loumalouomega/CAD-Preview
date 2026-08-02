@@ -2,8 +2,10 @@ import type { Part } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { EntityColorMap } from "./viewer";
 
-/** Distinct, high-contrast colours cycled as new parts are created. */
-const PALETTE = [
+/** Distinct, high-contrast colours cycled as new parts are created. Exported
+ * so `meshioRegionParts.ts`'s host-side auto-created Parts use the same
+ * palette a manually-created part would. */
+export const PALETTE = [
   "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
   "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990",
 ];

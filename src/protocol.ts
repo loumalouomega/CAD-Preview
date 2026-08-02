@@ -97,6 +97,24 @@ export type HostToWebview =
         cellDataNames: string[];
         fieldDataNames: string[];
       };
+      /** Per-boundary-triangle region correlation (`src/meshioService.ts`'s
+       * `convertToStlBoundaryWithRegions`) — present whenever the source's
+       * `kind: "cell"` regions could be safely correlated to the STL
+       * boundary triangles above (currently: pure-triangle boundaries only,
+       * see that function's doc comment). Sent on EVERY open where
+       * correlation succeeds, not just the first import that auto-creates
+       * Parts from it (see `provider.ts`'s `handleMeshio`) — the webview
+       * needs it every time to reproduce the identical region-aware facet
+       * split those Parts' `node-0/face-K` ids were computed against, or the
+       * ids would stop resolving to anything on reopen. `regionNames[i]` is
+       * a name; `triangleRegionIndex` (base64 `Int32Array`, one entry per
+       * STL triangle in `dataBase64`, same order) is an index into
+       * `regionNames`, or `-1` if that triangle wasn't covered by any
+       * region. */
+      regionAssignment?: {
+        regionNames: string[];
+        triangleRegionIndex: string; // base64 Int32Array
+      };
     }
   | { type: "parts"; parts: Part[] }
   | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
@@ -214,6 +232,6 @@ export type WebviewToHost =
   | { type: "renderViewError"; requestId: string; message: string };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
-export function encodeBuffer(arr: Float32Array | Uint32Array): string {
-  return Buffer.from(arr.buffer).toString("base64");
+export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {
+  return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString("base64");
 }

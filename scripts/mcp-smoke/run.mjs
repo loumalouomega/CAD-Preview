@@ -620,14 +620,16 @@ try {
   const xdmfText = fs.readFileSync(xdmfOut, "utf8");
   assert(xdmfText.includes("tet.h5"), "xdmf's embedded HDF references are rewritten to the companion's real filename");
 
-  // Richer meshio++ import visibility (roadmap item, partly closed): a real
-  // MED file (examples/MED/two-material-tets.med — two tetrahedra, each its
-  // own named cell region "MaterialA"/"MaterialB", plus a "Temperature"
+  // Richer meshio++ import visibility (roadmap item, closed): a real MED
+  // file (examples/MED/two-material-tets.med — two tetrahedra, each its own
+  // named cell region "MaterialA"/"MaterialB", plus a "Temperature"
   // point-data field, written by meshio++'s own MED writer from a hand-built
   // mesh) declares metadata `readMeshioMetadata()` (readMetadata()-backed)
-  // can now see, even though it's still informational only — not yet
-  // auto-converted into Parts/geometry, see CLAUDE.md's "meshio++
-  // integration" section.
+  // can see AND — the remaining, harder half of this roadmap item —
+  // `convertToStlBoundaryWithRegions`'s `extractSurface(mesh, true)` +
+  // `cell_data["surface:parent_cell"]` correlation now turns those two cell
+  // regions into two real, selectable Parts on first import. See
+  // CLAUDE.md's "meshio++ integration" section for the full mechanism.
   const medFixture = path.join(dir, "two-material-tets.med");
   fs.copyFileSync(path.join(ROOT, "examples", "MED", "two-material-tets.med"), medFixture);
   const medLoaded = await call("load_model", { path: medFixture });
@@ -637,8 +639,41 @@ try {
     metadataWarning && /MaterialA/.test(metadataWarning) && /MaterialB/.test(metadataWarning) && /Temperature/.test(metadataWarning),
     `load_model surfaces the MED file's real region names + point-data field name (got: ${JSON.stringify(medLoaded.warnings)})`
   );
-  // Still geometry-only under the hood — the region/data visibility above is
-  // additive, not a replacement for the existing STL-boundary mesh path.
+  const autoCreatedWarning = medLoaded.warnings.find((w) => /Auto-created/i.test(w));
+  assert(
+    autoCreatedWarning && /Auto-created 2 Part\(s\)/.test(autoCreatedWarning),
+    `load_model auto-creates one Part per correlated cell region (got: ${JSON.stringify(medLoaded.warnings)})`
+  );
+  assert(
+    medLoaded.sidecars.parts.length === 2 && medLoaded.sidecars.parts.includes("MaterialA") && medLoaded.sidecars.parts.includes("MaterialB"),
+    `load_model's own sidecar summary reflects the auto-created parts (got: ${JSON.stringify(medLoaded.sidecars.parts)})`
+  );
+  const medState = await call("get_state", { path: medFixture });
+  assert(medState.parts.length === 2, `get_state shows both auto-created Parts (got ${medState.parts.length})`);
+  for (const part of medState.parts) {
+    assert(part.surfaces.length > 0, `Part "${part.name}" has ≥1 assigned surface`);
+    assert(
+      part.surfaces.every((s) => /^node-0\/face-\d+$/.test(s)),
+      `Part "${part.name}"'s surface ids look like real facet ids (got: ${JSON.stringify(part.surfaces)})`
+    );
+  }
+  const medPartSurfaces = new Set(medState.parts.flatMap((p) => p.surfaces));
+  assert(
+    medPartSurfaces.size === medState.parts.flatMap((p) => p.surfaces).length,
+    "no facet id is double-assigned across the two auto-created Parts"
+  );
+  // A second load_model call (reopen) must NOT re-create/duplicate parts —
+  // the sidecar already has content, so the existing-parts gate must hold.
+  const medReloaded = await call("load_model", { path: medFixture });
+  assert(
+    !medReloaded.warnings.some((w) => /Auto-created/i.test(w)),
+    "load_model does not re-auto-create Parts on a document that already has them"
+  );
+  assert(medReloaded.sidecars.parts.length === 2, "reopen still reports exactly the same 2 parts, not duplicated");
+
+  // Still geometry-only for anything beyond regions (point/cell/field data
+  // arrays) — the region→Parts correlation above is additive, not a
+  // replacement for the existing STL-boundary mesh path.
   const medMeshed = await call("generate_mesh", { path: medFixture, options: { sizeMax: 0.5 } });
   assert(medMeshed.nodeCount > 0 && medMeshed.elementCount > 0, `generate_mesh still works on the MED source: ${medMeshed.nodeCount} nodes, ${medMeshed.elementCount} elements`);
   assert(fs.statSync(path.join(dir, "tet.h5")).size > 0, "HDF5 companion has content");

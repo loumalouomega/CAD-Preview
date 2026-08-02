@@ -146,6 +146,146 @@ export async function readMeshioMetadata(sourceBytes: Uint8Array, meshioFormat: 
   }
 }
 
+export interface MeshioRegionAssignment {
+  /** Names of every `kind: "cell"` region that correlated to ≥1 boundary triangle. */
+  regionNames: string[];
+  /** One entry per triangle in the STL bytes returned alongside this (same
+   * order), an index into {@link regionNames}, or `-1` if that triangle's
+   * parent cell isn't covered by any `kind: "cell"` region. */
+  triangleRegion: Int32Array;
+}
+
+export interface MeshioBoundaryResult {
+  stlBytes: Uint8Array;
+  /** Present only when the source declares ≥1 `kind: "cell"` region AND the
+   * extracted boundary is pure triangles/quads (see
+   * {@link convertToStlBoundaryWithRegions}'s doc comment for the full gate). */
+  regions?: MeshioRegionAssignment;
+}
+
+/**
+ * Like {@link convertToStlBoundary}, but additionally correlates the file's
+ * declared `kind: "cell"` regions to the boundary triangles it returns — the
+ * mechanism the roadmap's "auto-converting regions into Parts" item
+ * identified but left unshipped, now verified against the live WASM (not
+ * just a synthetic mesh): `readMesh()` a full `Mesh` (not the cheap
+ * `readMetadata()`), `extractSurface(mesh, recordParentIds=true)`, and
+ * read `cell_data["surface:parent_cell"]` — confirmed via a real probe
+ * against `examples/MED/two-material-tets.med` (this repo's own permanent
+ * fixture) to give each boundary triangle the **global, block-major** index
+ * of its original parent cell, exactly matching what `Region.entries` (for
+ * `kind: "cell"`) indexes — so membership is a plain `Set.has()` test, no
+ * block-offset bookkeeping needed.
+ *
+ * **Builds the STL directly from `extractSurface`'s own boundary mesh**
+ * (its `points`/`cells`), NOT from `convertSurface`'s separate file-to-file
+ * output — even though a probe on the same fixture showed the two produce
+ * byte-identical triangle geometry/order (meshio++'s C++ core very likely
+ * shares one boundary-extraction routine under both entry points), relying
+ * on that incidental match across two independently-callable APIs is
+ * exactly the risk CLAUDE.md's "meshio++ integration" section already
+ * flagged. Building STL bytes from the SAME mesh object the correlation was
+ * computed against makes the geometry/region-index correspondence correct
+ * by construction, not by assumption.
+ *
+ * **Gated to the tetrahedral/triangular case only, by design.** If the
+ * extracted boundary contains anything other than plain `"triangle"`
+ * (3-node) cell blocks — e.g. quads from a hexahedral volume, or a
+ * higher-order block — this falls back to the plain, already-verified
+ * {@link convertToStlBoundary} with no region correlation at all (`regions`
+ * omitted), rather than risk a subtly-wrong triangulation for cell types no
+ * fixture has validated yet (see CLAUDE.md: "needs real diverse-format
+ * fixtures... before it would be safe to ship" — the triangle-only case is
+ * what got validated). Same fallback for: no `kind: "cell"` regions at all,
+ * `readMesh`/`extractSurface` throwing, or the correlation coming back
+ * empty. Never throws — errors degrade to the plain STL boundary, since a
+ * failed region correlation must never block an import `convertToStlBoundary`
+ * alone would otherwise handle fine.
+ */
+export async function convertToStlBoundaryWithRegions(
+  sourceBytes: Uint8Array,
+  meshioFormat: string
+): Promise<MeshioBoundaryResult> {
+  const fallback = async (): Promise<MeshioBoundaryResult> => ({ stlBytes: await convertToStlBoundary(sourceBytes, meshioFormat) });
+  try {
+    const m = await getMeshio();
+    const inPath = `/regions-in.${meshioFormat}`;
+    m.FS.writeFile(inPath, sourceBytes);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let mesh: any;
+    try {
+      mesh = m.readMesh(inPath, meshioFormat);
+    } finally {
+      try { m.FS.unlink(inPath); } catch { /* ignore */ }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cellRegions = ((mesh.regions ?? []) as any[]).filter((r) => r.kind === "cell");
+    if (cellRegions.length === 0) return fallback();
+
+    const boundary = m.extractSurface(mesh, true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const blocks = boundary.cells as any[];
+    if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) return fallback();
+    const parentCellBlocks: Float64Array[] | undefined = boundary.cell_data?.["surface:parent_cell"];
+    if (!parentCellBlocks) return fallback();
+
+    const regionSets = cellRegions.map((r) => ({
+      name: r.name as string,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ids: new Set<number>(Array.from(r.entries as any as Iterable<number>)),
+    }));
+    const regionNames = regionSets.map((r) => r.name);
+
+    const pts: Float64Array = boundary.points;
+    const dim: number = boundary.dim;
+    const triangleRegion: number[] = [];
+    const lines: string[] = ["solid meshio"];
+    for (let b = 0; b < blocks.length; b++) {
+      const block = blocks[b];
+      const parentIds = parentCellBlocks[b];
+      const n: number = block.nodesPerCell;
+      const triCount = block.data.length / n;
+      for (let t = 0; t < triCount; t++) {
+        const i0 = block.data[t * n], i1 = block.data[t * n + 1], i2 = block.data[t * n + 2];
+        const v0: [number, number, number] = [pts[i0 * dim], pts[i0 * dim + 1], pts[i0 * dim + 2]];
+        const v1: [number, number, number] = [pts[i1 * dim], pts[i1 * dim + 1], pts[i1 * dim + 2]];
+        const v2: [number, number, number] = [pts[i2 * dim], pts[i2 * dim + 1], pts[i2 * dim + 2]];
+        const ux = v1[0] - v0[0], uy = v1[1] - v0[1], uz = v1[2] - v0[2];
+        const wx = v2[0] - v0[0], wy = v2[1] - v0[1], wz = v2[2] - v0[2];
+        let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+        const len = Math.hypot(nx, ny, nz) || 1;
+        nx /= len; ny /= len; nz /= len;
+        lines.push(
+          `facet normal ${nx} ${ny} ${nz}`,
+          "outer loop",
+          `vertex ${v0[0]} ${v0[1]} ${v0[2]}`,
+          `vertex ${v1[0]} ${v1[1]} ${v1[2]}`,
+          `vertex ${v2[0]} ${v2[1]} ${v2[2]}`,
+          "endloop",
+          "endfacet"
+        );
+
+        const parentId = parentIds ? parentIds[t] : undefined;
+        let regionIdx = -1;
+        if (parentId !== undefined) {
+          for (let r = 0; r < regionSets.length; r++) {
+            if (regionSets[r].ids.has(parentId)) { regionIdx = r; break; }
+          }
+        }
+        triangleRegion.push(regionIdx);
+      }
+    }
+    lines.push("endsolid meshio");
+    if (!triangleRegion.some((r) => r !== -1)) return fallback(); // nothing actually resolved to a region
+    return {
+      stlBytes: Buffer.from(lines.join("\n"), "utf8"),
+      regions: { regionNames, triangleRegion: Int32Array.from(triangleRegion) },
+    };
+  } catch {
+    return fallback();
+  }
+}
+
 /**
  * Re-encodes an already-generated Gmsh mesh into a format Gmsh's own writers
  * can't produce — MED and CGNS are the roadmap's explicit motivating case

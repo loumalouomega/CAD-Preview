@@ -44,6 +44,28 @@ import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { ModelDiff } from "./modelDiff";
 
+// The exact 6-triangle boundary `convertToStlBoundaryWithRegions` produces
+// for `examples/MED/two-material-tets.med` — see `meshioRegionParts.test.ts`
+// for the full provenance/verification note.
+const TWO_TET_BOUNDARY_STL = new TextEncoder().encode(
+  [
+    "solid meshio",
+    "facet normal 0 -1 0",
+    "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 1", "endloop", "endfacet",
+    "facet normal 0.5773502691896258 0.5773502691896258 0.5773502691896258",
+    "outer loop", "vertex 1 0 0", "vertex 0 1 0", "vertex 0 0 1", "endloop", "endfacet",
+    "facet normal -1 0 0",
+    "outer loop", "vertex 0 1 0", "vertex 0 0 0", "vertex 0 0 1", "endloop", "endfacet",
+    "facet normal 0 1 0",
+    "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 -1", "endloop", "endfacet",
+    "facet normal -0.5773502691896258 -0.5773502691896258 0.5773502691896258",
+    "outer loop", "vertex 1 0 0", "vertex 0 1 0", "vertex 0 0 -1", "endloop", "endfacet",
+    "facet normal 1 0 0",
+    "outer loop", "vertex 0 1 0", "vertex 0 0 0", "vertex 0 0 -1", "endloop", "endfacet",
+    "endsolid meshio",
+  ].join("\n")
+);
+
 let dir: string;
 let stpModel: string;
 let stpModel2: string;
@@ -229,6 +251,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
+    convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
     rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts) => ({
@@ -362,6 +385,48 @@ describe("load_model", () => {
     const c = ctx();
     await loadModel(c, { path: stlModel });
     expect(c.pipeline.readMeshioMetadata).not.toHaveBeenCalled();
+  });
+
+  it("auto-creates Parts from meshio++ region correlation and reports it in warnings/get_state", async () => {
+    const pipeline = fakePipeline({
+      convertToStlBoundaryWithRegions: vi.fn(async () => ({
+        stlBytes: TWO_TET_BOUNDARY_STL,
+        regions: { regionNames: ["MaterialA", "MaterialB"], triangleRegion: Int32Array.from([0, 0, 0, 1, 1, 1]) },
+      })),
+    });
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const result = await loadModel(ctx(pipeline), { path: vtkModel });
+    expect(result.warnings.some((w) => /Auto-created 2 Part\(s\)/.test(w))).toBe(true);
+    expect(result.sidecars.parts).toEqual(["MaterialA", "MaterialB"]);
+
+    const state = await getState({ path: vtkModel });
+    expect(state.parts.map((p) => p.name)).toEqual(["MaterialA", "MaterialB"]);
+    expect(state.parts.every((p) => p.surfaces.every((s) => /^node-0\/face-\d+$/.test(s)))).toBe(true);
+  });
+
+  it("never overwrites an existing non-empty parts sidecar with auto-created ones", async () => {
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    await setPart({ path: vtkModel, name: "Manual", volumes: ["node-0"] });
+    const pipeline = fakePipeline({
+      convertToStlBoundaryWithRegions: vi.fn(async () => ({
+        stlBytes: TWO_TET_BOUNDARY_STL,
+        regions: { regionNames: ["MaterialA", "MaterialB"], triangleRegion: Int32Array.from([0, 0, 0, 1, 1, 1]) },
+      })),
+    });
+    const result = await loadModel(ctx(pipeline), { path: vtkModel });
+    expect(result.warnings.some((w) => /Auto-created/.test(w))).toBe(false);
+    expect(result.sidecars.parts).toEqual(["Manual"]);
+  });
+
+  it("degrades gracefully (no warning, no throw) when region correlation finds nothing", async () => {
+    const c = ctx(); // default fakePipeline: convertToStlBoundaryWithRegions returns no `regions`
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const result = await loadModel(c, { path: vtkModel });
+    expect(result.warnings.some((w) => /Auto-created/.test(w))).toBe(false);
+    expect(result.sidecars.parts).toEqual([]);
   });
 });
 

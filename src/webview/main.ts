@@ -41,6 +41,16 @@ declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 const vscode = acquireVsCodeApi();
 const post = (msg: WebviewToHost) => vscode.postMessage(msg);
 
+/** Mirrors `geometryBuilder.ts`'s local `decodeF32`/`decodeU32` — this
+ * module's own base64 decode for `loadMeshBytes.regionAssignment`'s
+ * `Int32Array` (see `protocol.ts`'s `encodeBuffer`). */
+function decodeI32(b64: string): Int32Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Int32Array(bytes.buffer);
+}
+
 const app = document.getElementById("app")!;
 const statusEl = document.getElementById("status")!;
 const sideEl = document.getElementById("side")!;
@@ -834,11 +844,25 @@ function renderHighlight(): void {
 // the op-list replays cleanly (B-rep replay happens in the host instead).
 let pristineMesh: THREE.Object3D | null = null;
 
+// Per-triangle region correlation for a meshio++-imported document (see
+// `protocol.ts`'s `loadMeshBytes.regionAssignment` doc comment) — set by
+// `loadMeshObjectFromUrl` on every load, `null` for a native (non-meshio)
+// open. Only ever fed into `splitMeshesIntoFacets` while the edit-op list is
+// EMPTY (see `rebuildMeshModel` below): it indexes `pristineMesh`'s ORIGINAL
+// triangle order, which a topology-changing mesh edit (boolean/hole/
+// primitive-add) invalidates — reapplying it to a since-edited geometry
+// would silently misassign regions to unrelated triangles. This mirrors
+// `provider.ts`'s `handleMeshio`, which only ever auto-creates Parts from
+// the pristine, freshly-imported geometry too, so the ids this produces stay
+// correct as long as both sides agree on "pristine, no edits yet".
+let importedRegionInfo: { triangleRegion: Int32Array } | null = null;
+
 /** Rebuilds the displayed mesh model: clone pristine → apply resolved ops → facet-split. */
 function rebuildMeshModel(): void {
   if (!pristineMesh) return;
-  const edited = applyEditsMesh(pristineMesh.clone(), currentResolvedOps().ops);
-  const model = splitMeshesIntoFacets(edited);
+  const ops = currentResolvedOps().ops;
+  const edited = applyEditsMesh(pristineMesh.clone(), ops);
+  const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model);
   explodePreviewBases = null; // stale references to the just-replaced model's objects
   refreshColors();
@@ -1228,10 +1252,16 @@ function setupViewMenu(): void {
 /**
  * Drop a CAD/mesh file onto the viewer to open it. `dragover` must call
  * `preventDefault()` or the browser never fires `drop`. Whether the dropped
- * `File` exposes a real filesystem path (`.path`, a legacy Electron
- * extension to the standard `File` object) is VS Code/Electron-version
- * dependent — when it isn't there, fall back to the plain `{type:"openFile"}`
- * message (opens the normal dialog) rather than silently doing nothing.
+ * `File` exposes a real filesystem path (`.path`, a legacy, non-standard
+ * Electron extension to the DOM `File` object) is VS Code/Electron-version
+ * dependent — **Electron 32 (Aug 2024) removed it outright** in favor of
+ * `webUtils.getPathForFile()`, which needs a preload/Node context a webview's
+ * content script never has, so `path` reads `undefined` on any VS Code build
+ * from roughly mid-2025 onward (VS Code moved to Electron 34 around its Feb
+ * 2025 insiders milestone). When it isn't there, fall back to the plain
+ * `{type:"openFile"}` message (opens the normal dialog) rather than silently
+ * doing nothing — this fallback is the realistic path on a modern install,
+ * not just a defensive edge case. See CLAUDE.md for the full trail.
  */
 function setupDragAndDrop(): void {
   app.addEventListener("dragover", (e) => {
@@ -1574,37 +1604,49 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "loadMeshBytes":
       // Host-converted bytes (meshio++-imported document — VTK/MED/CGNS/
-      // Exodus/XDMF/MDPA — funneled through `convertToStlBoundary()` into an
-      // STL boundary surface; see `src/meshioService.ts`). Fed through the
-      // exact same STL-loading path a native `.stl` open uses, via a `blob:`
-      // object URL instead of a `vscode-webview://` fetch — base64-over-
-      // postMessage rather than a `data:` URL, the same proven pattern
-      // `geometry` already uses for large buffers, sidestepping any webview
-      // CSP/size-limit uncertainty around `data:` URLs.
+      // Exodus/XDMF/MDPA — funneled into an STL boundary surface via
+      // `convertToStlBoundary`/`convertToStlBoundaryWithRegions`; see
+      // `src/meshioService.ts`). Fed through the exact same STL-loading path
+      // a native `.stl` open uses, via a `blob:` object URL instead of a
+      // `vscode-webview://` fetch — base64-over-postMessage rather than a
+      // `data:` URL, the same proven pattern `geometry` already uses for
+      // large buffers, sidestepping any webview CSP/size-limit uncertainty
+      // around `data:` URLs.
       try {
         const bytes = Uint8Array.from(atob(msg.dataBase64), (c) => c.charCodeAt(0));
         const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "model/stl" }));
+        const regionInfo = msg.regionAssignment
+          ? { triangleRegion: decodeI32(msg.regionAssignment.triangleRegionIndex) }
+          : null;
         try {
-          await loadMeshObjectFromUrl(blobUrl, "stl", msg.sourceFormat.toUpperCase());
+          await loadMeshObjectFromUrl(blobUrl, "stl", msg.sourceFormat.toUpperCase(), regionInfo);
         } finally {
           URL.revokeObjectURL(blobUrl);
         }
-        // Read-only visibility only (never auto-converted into Parts/geometry
-        // — see CLAUDE.md's "meshio++ integration" section) — set AFTER the
-        // load above so `loadMeshObjectFromUrl`'s own "Loading model…" → ""
-        // status sequence can't race with and clear this one.
+        // Region names that correlated to boundary triangles (`regionAssignment`
+        // present) became Parts host-side — see `provider.ts`'s `handleMeshio`
+        // and CLAUDE.md's "meshio++ integration" section; anything else
+        // (uncorrelated regions, point/cell/field data arrays) stays read-only
+        // visibility only. Set AFTER the load above so `loadMeshObjectFromUrl`'s
+        // own "Loading model…" → "" status sequence can't race with and clear
+        // this one.
         if (msg.meshioMetadata) {
-          const parts: string[] = [];
+          const bits: string[] = [];
           if (msg.meshioMetadata.regions.length > 0) {
-            parts.push(`${msg.meshioMetadata.regions.length} region(s): ${msg.meshioMetadata.regions.map((r) => r.name).join(", ")}`);
+            const names = msg.meshioMetadata.regions.map((r) => r.name).join(", ");
+            bits.push(
+              msg.regionAssignment
+                ? `${msg.meshioMetadata.regions.length} region(s): ${names} (see Parts)`
+                : `${msg.meshioMetadata.regions.length} region(s): ${names} — not imported as Parts/geometry`
+            );
           }
           const dataNames = [
             ...msg.meshioMetadata.pointDataNames,
             ...msg.meshioMetadata.cellDataNames,
             ...msg.meshioMetadata.fieldDataNames,
           ];
-          if (dataNames.length > 0) parts.push(`data: ${dataNames.join(", ")}`);
-          if (parts.length > 0) setStatus(`Source file also declares ${parts.join(" · ")} — not yet imported (geometry only).`);
+          if (dataNames.length > 0) bits.push(`data: ${dataNames.join(", ")} — not imported`);
+          if (bits.length > 0) setStatus(`Source file also declares ${bits.join(" · ")}.`);
         }
       } catch (err) {
         setStatus(`Failed to load model: ${(err as Error).message}`, true);
@@ -1760,14 +1802,24 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
  * format regardless of the original file's format — see the `case
  * "loadMeshBytes"` handler). `loaderFormat` picks the Three.js loader;
  * `treeLabel` is what the Components tree root shows (the *original* source
- * format for a meshio-imported document, not always `"STL"`).
+ * format for a meshio-imported document, not always `"STL"`). `regionInfo`
+ * is only ever passed by the `"loadMeshBytes"` path (see `importedRegionInfo`'s
+ * doc comment); explicitly `null` for `"loadUrl"` so a meshio import followed
+ * by opening a plain native file in the same session can't leak stale region
+ * data into unrelated geometry.
  */
-async function loadMeshObjectFromUrl(url: string, loaderFormat: CadFormat, treeLabel: string): Promise<void> {
+async function loadMeshObjectFromUrl(
+  url: string,
+  loaderFormat: CadFormat,
+  treeLabel: string,
+  regionInfo: { triangleRegion: Int32Array } | null = null
+): Promise<void> {
   try {
     setStatus("Loading model…");
     setDisplayUnit("mm"); // mesh sources carry no unit metadata
     lastRawMassProperties = null; // stale — refers to the just-replaced model
     clearMarkupOverlay?.();
+    importedRegionInfo = regionInfo;
     const object = await loadMeshFromUrl(url, loaderFormat);
     tagMeshEntities(object);
     // Build the Components tree from the original hierarchy (before the mesh
