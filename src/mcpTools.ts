@@ -805,35 +805,33 @@ export async function getState(params: { path: string }) {
 }
 
 /**
- * Shared by `apply_edit_ops` and `run_parametric_script` — both append zero
- * or more new ops to an existing op stack and, for a B-rep source, need the
- * same best-effort entity-id rebinding (`entityFacts.ts`'s
- * `rebindPartsAcrossOps`) so a topology-changing append doesn't silently
- * orphan existing Part assignments. A no-op (returns `null`) when there's
- * nothing to rebind — dry run, no ops accepted, a mesh-format source (no
- * B-rep to re-derive ids from), or the pass itself found nothing to change
- * (empty parts list / no topology-changing op in `accepted`) — so callers
- * can skip writing the sidecar and skip mentioning it in `warnings`.
+ * Shared by `apply_edit_ops`/`run_parametric_script` (which only ever
+ * append) and `remove_edit_op` (roadmap "Extend entity-id rebinding to
+ * `remove_edit_op` (and undo/redo)", closed — which removes one op from
+ * anywhere in the stack) — all three mutate the op stack and, for a B-rep
+ * source, need the same best-effort entity-id rebinding (`entityFacts.ts`'s
+ * `rebindPartsAcrossOps`, now general enough to handle ANY `oldOps ->
+ * newOps` transition, not just an append) so the mutation doesn't silently
+ * orphan existing Part assignments. `oldOps`/`newOps` are both FULL op
+ * lists (before/after) — the caller does not need to pre-compute a delta.
+ * A no-op (returns `null`) when there's nothing to rebind — the lists are
+ * identical, a mesh-format source (no B-rep to re-derive ids from), or the
+ * pass itself found nothing to change (empty parts list / no topology-
+ * changing op anywhere in the diff) — so callers can skip writing the
+ * sidecar and skip mentioning it in `warnings`.
  */
 async function maybeRebindParts(
   ctx: ToolContext,
   modelPath: string,
   route: FileRoute,
-  previousOps: EditOp[],
-  accepted: EditOp[]
+  oldOps: EditOp[],
+  newOps: EditOp[]
 ): Promise<{ reboundCount: number; droppedCount: number } | null> {
-  if (route.strategy !== "occt" || accepted.length === 0) return null;
+  if (route.strategy !== "occt" || oldOps.length === newOps.length) return null;
   const parts = await readParts(modelPath);
   if (parts.length === 0) return null;
   const bytes = await readModelBytes(modelPath);
-  const result = await ctx.pipeline.rebindPartsAcrossOps(
-    ctx.extensionPath,
-    bytes,
-    route.format as BRepFormat,
-    previousOps,
-    accepted,
-    parts
-  );
+  const result = await ctx.pipeline.rebindPartsAcrossOps(ctx.extensionPath, bytes, route.format as BRepFormat, oldOps, newOps, parts);
   if (result.parts === parts) return null; // nothing topology-changing, or nothing matched — same reference
   await writeParts(modelPath, result.parts);
   return { reboundCount: result.stats.rebound, droppedCount: result.stats.dropped };
@@ -897,7 +895,7 @@ export async function applyEditOps(
     model = entitySummary(result);
   }
 
-  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, accepted);
+  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps);
   if (rebind) {
     warnings.push(
       `Rebound ${rebind.reboundCount} part-entity id(s) after topology-changing op(s) (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
@@ -975,7 +973,7 @@ export async function runParametricScriptTool(
     model = entitySummary(result);
   }
 
-  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, accepted);
+  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps);
   if (rebind) {
     warnings.push(
       `Rebound ${rebind.reboundCount} part-entity id(s) after topology-changing op(s) (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
@@ -998,21 +996,46 @@ export async function runParametricScriptTool(
 // ---------------------------------------------------------------------------
 // remove_edit_op
 
-export async function removeEditOp(params: { path: string; index: number }) {
+/**
+ * Removes one op by 0-based index — unlike `apply_edit_ops`' pure append,
+ * this can splice out of the MIDDLE of the stack, which is exactly the case
+ * the original append-only entity-id rebinding couldn't handle (roadmap
+ * "Extend entity-id rebinding to `remove_edit_op` (and undo/redo)", closed).
+ * Now attempts the same best-effort rebind `apply_edit_ops`/
+ * `run_parametric_script` already get, via the now-general
+ * `rebindPartsAcrossOps` (see its doc comment for the unwind/rewind
+ * algorithm) — `maybeRebindParts` degrades gracefully to a no-op (no
+ * warning) when there's nothing to rebind (a mesh-format source, no Parts,
+ * or the removed op wasn't topology-changing).
+ */
+export async function removeEditOp(ctx: ToolContext, params: { path: string; index: number }) {
   const modelPath = params.path;
-  requireRoute(modelPath);
+  const route = requireRoute(modelPath);
   const current = await readEdits(modelPath);
   if (!Number.isInteger(params.index) || params.index < 0 || params.index >= current.ops.length) {
     throw new Error(`Index ${params.index} out of range — the op stack has ${current.ops.length} entries (0-based).`);
   }
-  const [removed] = current.ops.splice(params.index, 1);
-  await writeEdits(modelPath, current.ops, current.variables);
+  const oldOps = current.ops;
+  const newOps = [...oldOps.slice(0, params.index), ...oldOps.slice(params.index + 1)];
+  const removed = oldOps[params.index];
+  await writeEdits(modelPath, newOps, current.variables);
+
+  const warnings: string[] = [];
+  const rebind = await maybeRebindParts(ctx, modelPath, route, oldOps, newOps);
+  if (rebind) {
+    warnings.push(
+      `Rebound ${rebind.reboundCount} part-entity id(s) after removing a topology-changing op (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
+    );
+  } else if (TOPOLOGY_CHANGING_OPS.has(removed.op)) {
+    warnings.push(
+      "Removed a topology-changing op: face-N/edge-N ids referenced by later ops or parts may no longer resolve (they degrade gracefully — unresolved operands are skipped)."
+    );
+  }
+
   return {
     removed: describeOp(removed),
-    stackLength: current.ops.length,
-    warnings: TOPOLOGY_CHANGING_OPS.has(removed.op)
-      ? ["Removed a topology-changing op: face-N/edge-N ids referenced by later ops or parts may no longer resolve (they degrade gracefully — unresolved operands are skipped)."]
-      : [],
+    stackLength: newOps.length,
+    warnings,
   };
 }
 

@@ -373,10 +373,11 @@ server.registerTool(
 server.registerTool(
   "remove_edit_op",
   {
-    description: "Remove one op from anywhere in the stack by 0-based index (like the panel's per-row ✕).",
+    description:
+      "Remove one op from anywhere in the stack by 0-based index (like the panel's per-row ✕). For a B-rep source with Parts, attempts the same best-effort entity-id rebinding apply_edit_ops gets (a removed topology-changing op re-tessellates everything after it) — reported in warnings.",
     inputSchema: { path: modelPath, index: z.number().int().describe("0-based index into the op stack") },
   },
-  wrap((args: { path: string; index: number }) => removeEditOp(args))
+  wrap((args: { path: string; index: number }) => removeEditOp(ctx, args))
 );
 
 server.registerTool(

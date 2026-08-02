@@ -574,24 +574,70 @@ export interface RebindStats {
 }
 
 /**
- * Best-effort entity-id rebinding across one or more newly-appended ops —
- * closes the "entity-id drift" gap CLAUDE.md documents: a topology-changing
- * op re-tessellates into fresh ids, so a `Part` referencing the old ones used
- * to just lose them. For each op in `newOps` that's topology-changing
- * (`TOPOLOGY_CHANGING_OPS`), this builds the shape immediately BEFORE and
- * AFTER that one op (two independent `readShape`+`applyEditsBRep` replays —
- * no shared shape reuse across the boundary, matching this codebase's
- * standing "no shape/session cache" discipline), fingerprints every
- * solid/face/edge/point on both sides (`collectAllEntitySignatures`), and
- * geometrically matches them (`rebindEntities`) to remap `parts`' ids
- * (`remapPartEntityIds`) — iteratively, so a `parts` list already remapped by
- * op N feeds op N+1. Non-topology-changing ops (translate, rotate, boolean
- * operand-agnostic transforms, …) are skipped entirely — their ids are
- * already stable, so paying for a shape-diff would be pure waste. Returns
- * the ORIGINAL `parts` array (same reference) when nothing in `newOps` is
- * topology-changing or `parts` is empty — the common case for most
- * interactive edits — so callers can cheaply check `result.parts === parts`
- * to skip a sidecar write.
+ * Best-effort entity-id rebinding across an ARBITRARY op-list change —
+ * append, `remove_edit_op` at any index, undo, redo, or Clear — closes the
+ * "entity-id drift" gap CLAUDE.md documents: a topology-changing op
+ * re-tessellates into fresh ids, so a `Part` referencing the old ones used to
+ * just lose them. Originally append-only (roadmap "Entity-id drift", first
+ * closed); generalized here (roadmap "Extend entity-id rebinding to
+ * `remove_edit_op` (and undo/redo)", closed) to handle ANY `oldOps -> newOps`
+ * transition, not just a strict-prefix append.
+ *
+ * **Two strategies, chosen by shape of the change — NOT one uniform
+ * algorithm, after a genuine correctness bug was found the hard way against
+ * the live WASM.** `oldOps`/`newOps` share a longest common prefix
+ * (everything before the first differing op — identical content, nothing to
+ * rebind there).
+ *
+ * - **Pure append** (`oldOps` a strict prefix of `newOps`) or **pure
+ *   truncation** (`newOps` a strict prefix of `oldOps` — undo, or Clear
+ *   dropping to `[]`): incremental PER-OP stepping, one shape-diff per
+ *   topology-changing op, walking forward (append) or backward (truncate)
+ *   one op at a time from the common prefix. This is the original
+ *   append-only algorithm (and its exact mirror for truncation) — small,
+ *   precise geometric deltas at every step, since only ops genuinely being
+ *   added or removed from the END of the list are ever involved.
+ * - **General change** (anything else — most notably `remove_edit_op`
+ *   splicing out of the MIDDLE of the stack, which is neither a pure append
+ *   nor a pure truncation): ONE direct whole-shape fingerprint-and-match
+ *   between `shape(oldOps)` and `shape(newOps)`, no intermediate steps.
+ *   **This is deliberately NOT decomposed into per-op incremental steps —
+ *   verified the hard way that doing so is actively WRONG, not just less
+ *   precise.** An earlier version tried "unwind `oldOps` down to the common
+ *   prefix by popping from the end, then rewind up to `newOps`" (the natural
+ *   generalization of the two safe cases above) and it corrupted a real
+ *   scenario end-to-end (`npm run mcp:smoke`): removing an EARLIER op
+ *   (`addBox`) from `[addBox, addSphere]` while a Part was assigned to the
+ *   LATER, entirely-unrelated `addSphere`'s own face. Since `addSphere` sits
+ *   at the raw END of `oldOps`, "pop from the end" pops it FIRST — which
+ *   means, from the algorithm's narrow per-step view, the sphere doesn't
+ *   just move, it **disappears entirely** for the two intermediate steps in
+ *   between, and a geometric nearest-neighbor match correctly (from that
+ *   narrow view) finds no match for it in a shape where it genuinely isn't
+ *   present yet — dropping a Part reference that should never have been
+ *   touched at all, since the sphere is identical, unmoved geometry in both
+ *   the real `oldOps` and `newOps` shapes. A single direct match between the
+ *   two FINAL shapes has no such blind spot: every entity that's actually
+ *   unchanged (the common case for anything not near the edit) keeps an
+ *   identical fingerprint in both, so nearest-neighbor matches it correctly
+ *   regardless of where in the op list the actual change happened to be.
+ *   The trade-off accepted for this case: a larger geometric "jump" between
+ *   the two shapes than the incremental steps give the safe cases, which
+ *   could in principle produce a less confident match right at the entities
+ *   the actual change *did* affect — judged the right trade for a
+ *   correctness-first MVP over a fancier (and still not obviously complete —
+ *   a later op can depend on an earlier removed one's output) common-prefix
+ *   *and*-suffix decomposition.
+ *
+ * Both strategies reuse `collectAllEntitySignatures`/`rebindEntities`/
+ * `remapPartEntityIds`; a cheap pre-check (no WASM touched at all) skips the
+ * whole function when neither `oldOps` nor `newOps`, from the first
+ * differing op onward, contains anything in `TOPOLOGY_CHANGING_OPS` — ids
+ * are already stable in that case, so paying for even one shape-diff would
+ * be pure waste. Returns the ORIGINAL `parts` array (same reference) in
+ * that case, or when `oldOps`/`newOps` are identical or `parts` is empty —
+ * so callers can cheaply check `result.parts === parts` to skip a sidecar
+ * write.
  *
  * The match tolerance is `1e-3 * bboxDiagonal(shapeAfter)`, the same
  * tolerance-fraction convention `gmshPartsMap.ts`'s geometric bbox-centre
@@ -601,12 +647,23 @@ export async function rebindPartsAcrossOps(
   extensionPath: string,
   bytes: Uint8Array,
   format: BRepFormat,
-  opsBefore: EditOp[],
+  oldOps: EditOp[],
   newOps: EditOp[],
   parts: Part[]
 ): Promise<{ parts: Part[]; stats: RebindStats }> {
-  if (parts.length === 0 || !newOps.some((op) => TOPOLOGY_CHANGING_OPS.has(op.op))) {
+  if (parts.length === 0) {
     return { parts, stats: { considered: 0, rebound: 0, dropped: 0 } };
+  }
+
+  let prefixLen = 0;
+  const minLen = Math.min(oldOps.length, newOps.length);
+  while (prefixLen < minLen && JSON.stringify(oldOps[prefixLen]) === JSON.stringify(newOps[prefixLen])) prefixLen++;
+  if (prefixLen === oldOps.length && prefixLen === newOps.length) {
+    return { parts, stats: { considered: 0, rebound: 0, dropped: 0 } }; // identical — nothing changed
+  }
+  const hasTopologyChange = (ops: EditOp[]) => ops.some((op) => TOPOLOGY_CHANGING_OPS.has(op.op));
+  if (!hasTopologyChange(oldOps.slice(prefixLen)) && !hasTopologyChange(newOps.slice(prefixLen))) {
+    return { parts, stats: { considered: 0, rebound: 0, dropped: 0 } }; // nothing topology-relevant differs
   }
 
   const oc = await getOcct(extensionPath);
@@ -614,50 +671,78 @@ export async function rebindPartsAcrossOps(
   oc.FS.writeFile(tmpName, bytes);
 
   let currentParts = parts;
-  let cumulative: EditOp[] = [...opsBefore];
   const stats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
 
+  /** One diff-and-remap step between two shapes' full op-lists — `from`
+   * is where `currentParts` is currently valid, `to` is where they should
+   * end up. Fingerprints both fully via `collectAllEntitySignatures` and
+   * does one `rebindEntities` match; the caller decides when this is safe
+   * to call (see the strategy split in the doc comment above). */
+  const diffAndRemap = async (from: EditOp[], to: EditOp[]): Promise<void> => {
+    const cleanupFrom: Array<{ delete(): void }> = [];
+    const cleanupTo: Array<{ delete(): void }> = [];
+    try {
+      const shapeFrom = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupFrom), from, cleanupFrom);
+      const oldSigs = collectAllEntitySignatures(oc, shapeFrom, cleanupFrom);
+
+      const shapeTo = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupTo), to, cleanupTo);
+      const newSigs = collectAllEntitySignatures(oc, shapeTo, cleanupTo);
+
+      const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, shapeTo, cleanupTo), 1e-6);
+      const idMap = new Map(rebindEntities(oldSigs, newSigs, toleranceAbs).map((m) => [m.oldId, m.newId]));
+      const result = remapPartEntityIds(currentParts, idMap);
+      currentParts = result.parts;
+      stats.rebound += result.reboundCount;
+      stats.dropped += result.droppedCount;
+      stats.considered++;
+    } finally {
+      for (let i = cleanupTo.length - 1; i >= 0; i--) {
+        try {
+          cleanupTo[i].delete();
+        } catch {
+          /* ignore */
+        }
+      }
+      for (let i = cleanupFrom.length - 1; i >= 0; i--) {
+        try {
+          cleanupFrom[i].delete();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  };
+
+  /** Per-op-boundary version of `diffAndRemap`, for the incremental
+   * strategies below — skips the expensive work entirely when the ONE op
+   * that differs between `from`/`to` isn't topology-changing. */
+  const step = async (from: EditOp[], to: EditOp[]): Promise<void> => {
+    const changedOp = from.length > to.length ? from[from.length - 1] : to[to.length - 1];
+    if (!TOPOLOGY_CHANGING_OPS.has(changedOp.op)) return;
+    await diffAndRemap(from, to);
+  };
+
   try {
-    for (const op of newOps) {
-      const nextCumulative = [...cumulative, op];
-      if (!TOPOLOGY_CHANGING_OPS.has(op.op)) {
-        cumulative = nextCumulative;
-        continue;
+    if (prefixLen === oldOps.length) {
+      // Pure append: oldOps is a strict prefix of newOps.
+      let cumulative = oldOps;
+      for (let i = prefixLen; i < newOps.length; i++) {
+        const longer = newOps.slice(0, i + 1);
+        await step(cumulative, longer);
+        cumulative = longer;
       }
-
-      const cleanupBefore: Array<{ delete(): void }> = [];
-      const cleanupAfter: Array<{ delete(): void }> = [];
-      try {
-        const shapeBefore = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupBefore), cumulative, cleanupBefore);
-        const oldSigs = collectAllEntitySignatures(oc, shapeBefore, cleanupBefore);
-
-        const shapeAfter = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupAfter), nextCumulative, cleanupAfter);
-        const newSigs = collectAllEntitySignatures(oc, shapeAfter, cleanupAfter);
-
-        const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, shapeAfter, cleanupAfter), 1e-6);
-        const idMap = new Map(rebindEntities(oldSigs, newSigs, toleranceAbs).map((m) => [m.oldId, m.newId]));
-        const result = remapPartEntityIds(currentParts, idMap);
-        currentParts = result.parts;
-        stats.rebound += result.reboundCount;
-        stats.dropped += result.droppedCount;
-        stats.considered++;
-      } finally {
-        for (let i = cleanupAfter.length - 1; i >= 0; i--) {
-          try {
-            cleanupAfter[i].delete();
-          } catch {
-            /* ignore */
-          }
-        }
-        for (let i = cleanupBefore.length - 1; i >= 0; i--) {
-          try {
-            cleanupBefore[i].delete();
-          } catch {
-            /* ignore */
-          }
-        }
+    } else if (prefixLen === newOps.length) {
+      // Pure truncation (undo, or Clear): newOps is a strict prefix of oldOps.
+      let cumulative = oldOps;
+      for (let i = oldOps.length; i > prefixLen; i--) {
+        const shorter = oldOps.slice(0, i - 1);
+        await step(cumulative, shorter);
+        cumulative = shorter;
       }
-      cumulative = nextCumulative;
+    } else {
+      // General change (e.g. remove_edit_op from the middle) — see doc
+      // comment for why this is a single direct match, not incremental steps.
+      await diffAndRemap(oldOps, newOps);
     }
   } finally {
     try {

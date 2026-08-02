@@ -1170,11 +1170,57 @@ describe("remove_edit_op", () => {
         { op: "addSphere", center: [0, 0, 0], radius: 2 },
       ],
     });
-    const result = await removeEditOp({ path: stpModel, index: 0 });
+    const result = await removeEditOp(c, { path: stpModel, index: 0 });
     expect(result.stackLength).toBe(1);
     const remaining = await readEdits(stpModel);
     expect(remaining.ops[0].op).toBe("addSphere");
-    await expect(removeEditOp({ path: stpModel, index: 5 })).rejects.toThrow(/out of range/i);
+    await expect(removeEditOp(c, { path: stpModel, index: 5 })).rejects.toThrow(/out of range/i);
+  });
+
+  it("attempts entity-id rebinding when removing a topology-changing op, passing FULL before/after op lists", async () => {
+    await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
+    const pipeline = fakePipeline({
+      rebindPartsAcrossOps: vi.fn(async () => ({
+        parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-9"], lines: [], points: [] }],
+        stats: { considered: 1, rebound: 1, dropped: 0 },
+      })),
+    });
+    const c = ctx(pipeline);
+    await applyEditOps(c, {
+      path: stpModel,
+      ops: [
+        { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] },
+        { op: "addSphere", center: [5, 5, 5], radius: 2 },
+      ],
+    });
+    const result = await removeEditOp(c, { path: stpModel, index: 0 }); // addBox is topology-changing
+    const call = vi.mocked(pipeline.rebindPartsAcrossOps).mock.lastCall!;
+    expect(call[3]).toEqual([
+      { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] },
+      { op: "addSphere", center: [5, 5, 5], radius: 2 },
+    ]); // oldOps — the FULL pre-removal list
+    expect(call[4]).toEqual([{ op: "addSphere", center: [5, 5, 5], radius: 2 }]); // newOps — the FULL post-removal list
+    expect(result.warnings.some((w) => /Rebound 1.*dropped 0/.test(w))).toBe(true);
+    expect((await readParts(stpModel))[0].surfaces).toEqual(["face-9"]);
+  });
+
+  it("does not attempt rebinding (and keeps the old fallback warning) when there are no Parts", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    vi.mocked(c.pipeline.rebindPartsAcrossOps).mockClear();
+    const result = await removeEditOp(c, { path: stpModel, index: 0 });
+    expect(c.pipeline.rebindPartsAcrossOps).not.toHaveBeenCalled();
+    expect(result.warnings[0]).toMatch(/topology-changing op/i);
+  });
+
+  it("removing a non-topology-changing op produces no warnings", async () => {
+    const c = ctx();
+    await applyEditOps(c, {
+      path: stpModel,
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [1, 0, 0] }],
+    });
+    const result = await removeEditOp(c, { path: stpModel, index: 0 });
+    expect(result.warnings).toEqual([]);
   });
 });
 

@@ -11,7 +11,6 @@ import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORM
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
-import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
@@ -221,27 +220,31 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     };
 
     /**
-     * Best-effort entity-id rebinding after a purely-appended, topology-
-     * changing edit — closes the "entity-id drift" gap CLAUDE.md documents
-     * (see `entityFacts.ts`'s `rebindPartsAcrossOps` for the algorithm).
-     * `newOps` must be `previousOps` plus one or more appended ops (a strict
-     * length+prefix check) — undo/redo/`remove(index)`/reorder/Clear all
-     * naturally fail this check and are left alone, same as today (no
-     * regression, just no improvement for those cases; a correctness-first
-     * MVP scope, not an oversight). Persists the parts sidecar immediately
-     * (not debounced — this is host-initiated and correctness-critical,
-     * unlike the user-typed `partsChanged` autosave) and posts a fresh
-     * `"parts"` message so the webview's `PartsModel.load()` (silent, no
-     * `onChange` echo — same contract `"edits"`'s hydration already relies
-     * on) picks up the new ids and `refreshColors()` recolours, exactly like
-     * the initial `ready` hydration's own `"parts"` message.
+     * Best-effort entity-id rebinding after ANY op-stack change — append,
+     * `remove(index)`, undo, redo, or Clear (roadmap "Extend entity-id
+     * rebinding to `remove_edit_op` (and undo/redo)", closed; previously
+     * append-only — see `entityFacts.ts`'s `rebindPartsAcrossOps` for the
+     * general unwind/rewind algorithm this now delegates the whole
+     * `previousOps -> newOps` diff to, rather than pre-filtering to an
+     * appended suffix here). No cheap "does the diff even contain a
+     * topology-changing op" pre-check is needed here before calling in: the
+     * OCCT WASM singleton is memoized (a repeat `getOcct()` call is
+     * essentially free), and `rebindPartsAcrossOps` itself bails before any
+     * real replay work when the two op lists are identical or a given step
+     * turns out non-topology-changing — this wrapper only needs to skip the
+     * obviously-pointless cases (no route, no Parts, or truly no change at
+     * all). Persists the parts sidecar immediately (not debounced — this is
+     * host-initiated and correctness-critical, unlike the user-typed
+     * `partsChanged` autosave) and posts a fresh `"parts"` message so the
+     * webview's `PartsModel.load()` (silent, no `onChange` echo — same
+     * contract `"edits"`'s hydration already relies on) picks up the new ids
+     * and `refreshColors()` recolours, exactly like the initial `ready`
+     * hydration's own `"parts"` message.
      */
-    const rebindPartsOnAppend = async (previousOps: EditOp[], newOps: EditOp[]): Promise<void> => {
+    const rebindPartsOnChange = async (previousOps: EditOp[], newOps: EditOp[]): Promise<void> => {
       if (!route || route.strategy !== "occt") return;
-      if (newOps.length <= previousOps.length) return;
-      if (JSON.stringify(newOps.slice(0, previousOps.length)) !== JSON.stringify(previousOps)) return;
-      const appended = newOps.slice(previousOps.length);
-      if (currentParts.length === 0 || !appended.some((op) => TOPOLOGY_CHANGING_OPS.has(op.op))) return;
+      if (currentParts.length === 0) return;
+      if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
         const result = await rebindPartsAcrossOps(
@@ -249,7 +252,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           bytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           previousOps,
-          appended,
+          newOps,
           currentParts
         );
         if (result.parts === currentParts) return; // nothing topology-changing resolved, or nothing to remap
@@ -340,7 +343,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // edits are applied in the webview itself, which already updated the view.
         if (route && route.strategy === "occt") {
           loadModel();
-          void rebindPartsOnAppend(previousOps, currentEdits);
+          void rebindPartsOnChange(previousOps, currentEdits);
         }
         return;
       }

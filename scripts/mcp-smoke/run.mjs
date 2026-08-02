@@ -399,6 +399,105 @@ try {
     `apply_edit_ops surfaces a rebind summary warning (got: ${JSON.stringify(filletResult.warnings)})`
   );
 
+  // Extend entity-id rebinding to remove_edit_op (roadmap item, closed) — the
+  // original append-only mechanism above couldn't handle removing a
+  // topology-changing op from the MIDDLE of the stack (the general case
+  // undo/redo/remove_edit_op all need). Deterministic scenario: append TWO
+  // topology-changing ops (a box, then a sphere), assign a Part to the
+  // sphere's own face, then remove the (unrelated, earlier) box op — since
+  // both ops append a new solid to the same compound in order, removing the
+  // box shifts every id that comes after it, including the sphere's own. Own
+  // fixture copy, same "don't perturb the shared model" discipline as above.
+  const removeRebindModel = path.join(dir, "bull-for-remove-rebind-test.stp");
+  fs.copyFileSync(FIXTURE, removeRebindModel);
+  const removeRebindApplied = await call("apply_edit_ops", {
+    path: removeRebindModel,
+    ops: [
+      { op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] },
+      { op: "addSphere", center: [bbox.max[0] + 6 * s, 0, 0], radius: s / 2 },
+    ],
+  });
+  const sphereSolid = removeRebindApplied.model.solids[removeRebindApplied.model.solids.length - 1];
+  const sphereFace = sphereSolid.faceIds[0];
+  const sphereFaceBefore = await call("inspect", { path: removeRebindModel, entityId: sphereFace });
+  assert(sphereFaceBefore.supported === true, `inspect resolves the sphere's own face (${sphereFace}) before removal`);
+  await call("set_part", { path: removeRebindModel, name: "RemoveRebindTest", surfaces: [sphereFace] });
+
+  const removeResult = await call("remove_edit_op", { path: removeRebindModel, index: 0 }); // removes the box, NOT the sphere
+  assert(removeResult.removed.startsWith("Box") || /box/i.test(JSON.stringify(removeResult)), `remove_edit_op removed the box op (got: ${JSON.stringify(removeResult.removed)})`);
+  assert(
+    removeResult.warnings.some((w) => /Rebound/.test(w)),
+    `remove_edit_op surfaces a rebind summary warning (got: ${JSON.stringify(removeResult.warnings)})`
+  );
+
+  const removeState = await call("get_state", { path: removeRebindModel });
+  const removeRebindPart = removeState.parts.find((p) => p.name === "RemoveRebindTest");
+  assert(removeRebindPart !== undefined && removeRebindPart.surfaces.length === 1, "the RemoveRebindTest part still has exactly one surface after the removal");
+  const sphereFaceAfter = removeRebindPart.surfaces[0];
+  const sphereFaceAfterFacts = await call("inspect", { path: removeRebindModel, entityId: sphereFaceAfter });
+  assert(sphereFaceAfterFacts.supported === true, `inspect resolves the rebound sphere face id (${sphereFaceAfter}) after removal`);
+  const removeCentreDelta = Math.hypot(
+    sphereFaceAfterFacts.center[0] - sphereFaceBefore.center[0],
+    sphereFaceAfterFacts.center[1] - sphereFaceBefore.center[1],
+    sphereFaceAfterFacts.center[2] - sphereFaceBefore.center[2]
+  );
+  const removeAreaDelta = Math.abs(sphereFaceAfterFacts.area - sphereFaceBefore.area);
+  assert(
+    removeCentreDelta < 1e-6 && removeAreaDelta < 1e-6,
+    `the rebound sphere face (${sphereFace} -> ${sphereFaceAfter}) is geometrically identical to the original ` +
+      `(centre delta ${removeCentreDelta.toExponential(2)}, area delta ${removeAreaDelta.toExponential(2)})`
+  );
+  // Only 1 solid should remain (the bull + the sphere — the box is gone).
+  assert(
+    removeState.edits.length === 1 && /addSphere/.test(JSON.stringify(removeState.edits[0])),
+    `only the sphere op remains in the stack after removing the box (got: ${JSON.stringify(removeState.edits.map((e) => e.op))})`
+  );
+
+  // The pure-TRUNCATION path (remove_edit_op on the LAST index — structurally
+  // identical to what an interactive "undo" does, since there's no separate
+  // "undo" MCP tool to call directly) exercises the mirror-image of the
+  // append-only algorithm's own incremental stepping, not the general/
+  // whole-shape-match path the middle-removal case above used. Own fixture:
+  // box then sphere again, but this time the Part is on the FIRST op's
+  // (box's) own face, and the LAST op (sphere) gets removed.
+  const truncateModel = path.join(dir, "bull-for-truncate-rebind-test.stp");
+  fs.copyFileSync(FIXTURE, truncateModel);
+  const truncateApplied = await call("apply_edit_ops", {
+    path: truncateModel,
+    ops: [
+      { op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] },
+      { op: "addSphere", center: [bbox.max[0] + 6 * s, 0, 0], radius: s / 2 },
+    ],
+  });
+  const truncateBoxSolid = truncateApplied.model.solids[truncateApplied.model.solids.length - 2];
+  const truncateBoxFace = truncateBoxSolid.faceIds[0];
+  const truncateBoxFaceBefore = await call("inspect", { path: truncateModel, entityId: truncateBoxFace });
+  assert(truncateBoxFaceBefore.supported === true, `inspect resolves the box's own face (${truncateBoxFace}) before truncation`);
+  await call("set_part", { path: truncateModel, name: "TruncateRebindTest", surfaces: [truncateBoxFace] });
+
+  const truncateRemoveResult = await call("remove_edit_op", { path: truncateModel, index: 1 }); // removes the LAST op (sphere)
+  assert(
+    truncateRemoveResult.warnings.some((w) => /Rebound/.test(w)),
+    `remove_edit_op (last index — the "undo" shape) surfaces a rebind summary warning (got: ${JSON.stringify(truncateRemoveResult.warnings)})`
+  );
+  const truncateState = await call("get_state", { path: truncateModel });
+  const truncateRebindPart = truncateState.parts.find((p) => p.name === "TruncateRebindTest");
+  assert(truncateRebindPart !== undefined && truncateRebindPart.surfaces.length === 1, "the TruncateRebindTest part still has exactly one surface after truncation");
+  const truncateBoxFaceAfter = truncateRebindPart.surfaces[0];
+  const truncateBoxFaceAfterFacts = await call("inspect", { path: truncateModel, entityId: truncateBoxFaceAfter });
+  assert(truncateBoxFaceAfterFacts.supported === true, `inspect resolves the rebound box face id (${truncateBoxFaceAfter}) after truncation`);
+  const truncateCentreDelta = Math.hypot(
+    truncateBoxFaceAfterFacts.center[0] - truncateBoxFaceBefore.center[0],
+    truncateBoxFaceAfterFacts.center[1] - truncateBoxFaceBefore.center[1],
+    truncateBoxFaceAfterFacts.center[2] - truncateBoxFaceBefore.center[2]
+  );
+  const truncateAreaDelta = Math.abs(truncateBoxFaceAfterFacts.area - truncateBoxFaceBefore.area);
+  assert(
+    truncateCentreDelta < 1e-6 && truncateAreaDelta < 1e-6,
+    `the rebound box face (${truncateBoxFace} -> ${truncateBoxFaceAfter}) is geometrically identical to the original after truncation ` +
+      `(centre delta ${truncateCentreDelta.toExponential(2)}, area delta ${truncateAreaDelta.toExponential(2)})`
+  );
+
   // compare_models: the edited model (bull + added box) against a fresh,
   // unedited copy of the same fixture (just the bull) — the bull solid
   // should match itself exactly (centreDistance/volumeDeltaPct ~ 0) and the
