@@ -19,6 +19,7 @@ import {
   inspectEntity,
   measureTool,
   measureExactTool,
+  checkInterferenceTool,
   renderSnapshotTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
@@ -39,7 +40,7 @@ import { parseStl } from "./stlParser";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
 import type { MassProperties } from "./massProperties";
-import type { EntityFacts, MeasureResult, ExactMeasureResult } from "./entityFacts";
+import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult } from "./entityFacts";
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { ModelDiff } from "./modelDiff";
@@ -173,6 +174,13 @@ const FAKE_MEASURE_RESULT: MeasureResult = {
   delta: [3, 4, 0],
 };
 
+const FAKE_INTERFERENCE_RESULT: InterferenceResult = {
+  hasOverlap: true,
+  overlapVolume: 700,
+  unresolvedA: [],
+  unresolvedB: [],
+};
+
 const FAKE_EXACT_MEASURE_RESULT: ExactMeasureResult = {
   kind: "distance",
   value: 5,
@@ -245,6 +253,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
     measureExact: vi.fn(async () => FAKE_EXACT_MEASURE_RESULT),
+    checkInterference: vi.fn(async () => FAKE_INTERFERENCE_RESULT),
     renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
     isRenderAvailable: vi.fn(async () => ({ available: true })),
     searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
@@ -554,6 +563,86 @@ describe("measure_exact", () => {
       })
     );
     await expect(measureExactTool(c, { path: stpModel, kind: "distance", entityIdA: "solid-0" })).rejects.toThrow(/entityIdB/);
+  });
+});
+
+describe("check_interference", () => {
+  it("reports the pipeline's overlap result for two solid-id operands", async () => {
+    const c = ctx();
+    const result = await checkInterferenceTool(c, { path: stpModel, a: ["solid-0"], b: ["solid-1"] });
+    expect(c.pipeline.checkInterference).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], ["solid-0"], ["solid-1"]);
+    expect(result).toMatchObject({ supported: true, hasOverlap: true, overlapVolume: 700 });
+  });
+
+  it("compounds multiple ids per operand, passed straight through to the pipeline", async () => {
+    const c = ctx();
+    await checkInterferenceTool(c, { path: stpModel, a: ["solid-0", "solid-1"], b: ["solid-2"] });
+    const lastCall = vi.mocked(c.pipeline.checkInterference).mock.lastCall!;
+    expect(lastCall[4]).toEqual(["solid-0", "solid-1"]);
+    expect(lastCall[5]).toEqual(["solid-2"]);
+  });
+
+  it("resolves a Part name (partA) to its assigned volumes before calling the pipeline", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "Group", volumes: ["solid-0", "solid-2"] });
+    await checkInterferenceTool(c, { path: stpModel, partA: "Group", b: ["solid-1"] });
+    const lastCall = vi.mocked(c.pipeline.checkInterference).mock.lastCall!;
+    expect(lastCall[4]).toEqual(["solid-0", "solid-2"]);
+  });
+
+  it("resolves both partA and partB in the same call", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
+    await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
+    await checkInterferenceTool(c, { path: stpModel, partA: "A", partB: "B" });
+    const lastCall = vi.mocked(c.pipeline.checkInterference).mock.lastCall!;
+    expect(lastCall[4]).toEqual(["solid-0"]);
+    expect(lastCall[5]).toEqual(["solid-1"]);
+  });
+
+  it("warns (never throws) and skips the pipeline call for an unknown Part name", async () => {
+    const c = ctx();
+    const result = await checkInterferenceTool(c, { path: stpModel, partA: "NoSuchPart", b: ["solid-1"] });
+    expect(c.pipeline.checkInterference).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ supported: true, hasOverlap: false, overlapVolume: 0 });
+    expect(result.warnings[0]).toMatch(/not found/i);
+  });
+
+  it("warns (but still calls the pipeline, since B is fine) for a Part with no assigned volumes", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "Empty", surfaces: ["face-0"] }); // no volumes
+    const result = await checkInterferenceTool(c, { path: stpModel, partA: "Empty", b: ["solid-1"] });
+    expect(c.pipeline.checkInterference).not.toHaveBeenCalled(); // Empty resolves to [] volumes -> nothing to intersect
+    expect(result.hasOverlap).toBe(false);
+    expect(result.warnings[0]).toMatch(/no assigned solids/i);
+  });
+
+  it("surfaces the pipeline's unresolved ids in warnings", async () => {
+    const c = ctx(
+      fakePipeline({
+        checkInterference: vi.fn(async () => ({ hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: ["solid-99"] })),
+      })
+    );
+    const result = await checkInterferenceTool(c, { path: stpModel, a: ["solid-0"], b: ["solid-99"] });
+    expect(result.warnings.some((w) => /solid-99/.test(w))).toBe(true);
+  });
+
+  it("throws a clear validation error when neither a nor partA is given for operand A", async () => {
+    const c = ctx();
+    await expect(checkInterferenceTool(c, { path: stpModel, b: ["solid-1"] })).rejects.toThrow(/'a'.*'partA'/);
+  });
+
+  it("throws a clear validation error when neither b nor partB is given for operand B", async () => {
+    const c = ctx();
+    await expect(checkInterferenceTool(c, { path: stpModel, a: ["solid-0"] })).rejects.toThrow(/'b'.*'partB'/);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await checkInterferenceTool(c, { path: stlModel, a: ["node-0"], b: ["node-0"] });
+    expect(c.pipeline.checkInterference).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/headless/i);
   });
 });
 

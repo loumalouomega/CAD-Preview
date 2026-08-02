@@ -153,7 +153,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 22, `tools/list exposes 22 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 23, `tools/list exposes 23 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -252,6 +252,78 @@ try {
     nonCircular.error && /not a circular arc/.test(nonCircular.error),
     "measure_exact radius on a non-circular edge fails with a clear, actionable error rather than a meaningless best-fit number"
   );
+
+  // check_interference (roadmap "Interference / clash detection", closed):
+  // real BRepAlgoAPI_Common_3 intersections with known analytical overlap
+  // volumes, on its own copy of the fixture (same "own copy" convention as
+  // the radius test above, so these extra solids don't perturb the shared
+  // `model`'s solid/edge counts every later step assumes). Box geometry:
+  // A = center [0,0,0] size [10,10,10] → spans [-5,5]^3 (solid-1, after the
+  // bull's own solid-0). B = center [3,0,0] size [10,10,10] → spans
+  // x:[-2,8], y/z:[-5,5] (solid-2) — overlaps A in x:[-2,5] (7) × y:10 ×
+  // z:10 = 700 exactly. C = center [100,0,0] size [1,1,1] (solid-3) — far
+  // away, no overlap. D = center [10,0,0] size [10,10,10] → spans x:[5,15]
+  // (solid-4) — touches A's x=5 face exactly, zero-volume degenerate overlap.
+  const clashModel = path.join(dir, "bull-for-interference-test.stp");
+  fs.copyFileSync(FIXTURE, clashModel);
+  const clashApplied = await call("apply_edit_ops", {
+    path: clashModel,
+    ops: [
+      { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] },
+      { op: "addBox", center: [3, 0, 0], size: [10, 10, 10] },
+      { op: "addBox", center: [100, 0, 0], size: [1, 1, 1] },
+      { op: "addBox", center: [10, 0, 0], size: [10, 10, 10] },
+    ],
+  });
+  assert(clashApplied.applied === 4, `check_interference test fixture: 4 boxes applied (got ${clashApplied.applied})`);
+
+  const overlap = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-2"] });
+  assert(
+    overlap.supported === true && overlap.hasOverlap === true && Math.abs(overlap.overlapVolume - 700) < 1e-6,
+    `check_interference reports the exact analytical overlap volume for two intersecting boxes (expected 700, got ${overlap.overlapVolume})`
+  );
+
+  const noOverlap = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-3"] });
+  assert(
+    noOverlap.supported === true && noOverlap.hasOverlap === false && noOverlap.overlapVolume === 0,
+    `check_interference reports no overlap for two disjoint boxes (got hasOverlap=${noOverlap.hasOverlap}, volume=${noOverlap.overlapVolume})`
+  );
+
+  const touchingOnly = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-4"] });
+  assert(
+    touchingOnly.supported === true && touchingOnly.hasOverlap === false,
+    `check_interference reports no real overlap for two boxes that only touch at a shared face (got hasOverlap=${touchingOnly.hasOverlap}, volume=${touchingOnly.overlapVolume})`
+  );
+
+  const unresolved = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-999"] });
+  assert(
+    unresolved.supported === true && unresolved.hasOverlap === false && unresolved.unresolvedB?.includes("solid-999"),
+    `check_interference degrades gracefully (not a throw) for an unresolved id, reporting it in unresolvedB (got: ${JSON.stringify(unresolved.unresolvedB)})`
+  );
+
+  // Part-name operand resolution — set_part groups solid-1 and solid-2 (the
+  // two intersecting boxes) under one Part; check_interference's partA/partB
+  // should resolve to the same real ids `a`/`b` above already verified.
+  await call("set_part", { path: clashModel, name: "ClashGroup", volumes: ["solid-1", "solid-2"] });
+  const viaPart = await call("check_interference", { path: clashModel, partA: "ClashGroup", b: ["solid-3"] });
+  assert(
+    viaPart.supported === true && viaPart.hasOverlap === false,
+    "check_interference resolves a Part name (partA) to its assigned volumes, same result as passing solid ids directly"
+  );
+  const missingPart = await call("check_interference", { path: clashModel, partA: "NoSuchPart", b: ["solid-3"] });
+  assert(
+    missingPart.supported === true && missingPart.warnings.some((w) => /not found/i.test(w)),
+    `check_interference warns (not throws) for an unknown Part name (got: ${JSON.stringify(missingPart.warnings)})`
+  );
+
+  const neitherOperand = await callTolerant("check_interference", { path: clashModel, b: ["solid-3"] });
+  assert(
+    neitherOperand.error && /'a'.*'partA'/.test(neitherOperand.error),
+    `check_interference requires either 'a' or 'partA' for operand A (got: ${neitherOperand.error})`
+  );
+
+  const clashMesh = await call("check_interference", { path: path.join(ROOT, "examples", "STL", "cube.stl"), a: ["node-0"], b: ["node-0"] });
+  assert(clashMesh.supported === false, `check_interference reports supported:false for a mesh-format source (got: ${JSON.stringify(clashMesh)})`);
 
   // Entity-id rebinding after topology-changing ops (roadmap item, closed) —
   // a Part referencing face-N/edge-N ids used to silently lose them once a

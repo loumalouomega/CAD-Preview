@@ -337,9 +337,13 @@ function buildHoleTool(oc: any, op: Extract<EditOp, { op: "addHole" | "addCounte
   }
 }
 
-/** A single operand shape from one-or-more solids (compound when more than one). */
+/** A single operand shape from one-or-more solids (compound when more than
+ * one) — exported alongside `collectSolids` for `entityFacts.ts`'s
+ * `checkInterference`, which needs the exact same "compound the operand's
+ * solids together first" framing this file's own `booleanSolids` already
+ * established, read-only. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function combineSolids(oc: any, shapes: any[], cleanup: Array<{ delete(): void }>): any {
+export function combineSolids(oc: any, shapes: any[], cleanup: Array<{ delete(): void }>): any {
   if (shapes.length === 1) return shapes[0];
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);

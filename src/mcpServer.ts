@@ -26,7 +26,7 @@ import { z } from "zod";
 import { loadBRep, exportBRep } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
 import { computeMassProperties } from "./massProperties";
-import { getEntityFacts, measureEntities, measureExact, rebindPartsAcrossOps } from "./entityFacts";
+import { getEntityFacts, measureEntities, measureExact, checkInterference, rebindPartsAcrossOps } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
@@ -38,6 +38,7 @@ import {
   inspectEntity,
   measureTool,
   measureExactTool,
+  checkInterferenceTool,
   renderSnapshotTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
@@ -78,6 +79,7 @@ const ctx: ToolContext = {
     getEntityFacts,
     measureEntities,
     measureExact,
+    checkInterference,
     rebindPartsAcrossOps,
     renderSnapshot,
     isRenderAvailable,
@@ -247,6 +249,22 @@ server.registerTool(
   wrap((args: { path: string; kind: "distance" | "edgeLength" | "radius"; entityIdA: string; entityIdB?: string }) =>
     measureExactTool(ctx, args)
   )
+);
+
+server.registerTool(
+  "check_interference",
+  {
+    description:
+      "Interference / clash detection: reports the overlap volume (if any) between two operands via a real BRepAlgoAPI_Common_3 intersection — read-only, never mutates the model. Each operand is EITHER a list of solid-N ids (a/b, multiple ids are compounded together, same as the boolean edit op's own a/b) OR a Part name (partA/partB, resolved to that Part's own assigned volumes) — give exactly one of the two per operand. hasOverlap is true only for a genuine, non-degenerate volume overlap (two solids merely touching at a face/edge/point report hasOverlap:false). B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      a: z.array(z.string()).optional().describe("Operand A: solid-N id(s), compounded together if more than one"),
+      b: z.array(z.string()).optional().describe("Operand B: solid-N id(s), compounded together if more than one"),
+      partA: z.string().optional().describe("Operand A: a Part name, resolved to its assigned volumes (mutually exclusive with 'a')"),
+      partB: z.string().optional().describe("Operand B: a Part name, resolved to its assigned volumes (mutually exclusive with 'b')"),
+    },
+  },
+  wrap((args: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string }) => checkInterferenceTool(ctx, args))
 );
 
 server.registerTool(

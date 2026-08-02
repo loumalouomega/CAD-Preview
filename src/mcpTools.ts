@@ -45,11 +45,13 @@ import type {
   getEntityFacts,
   measureEntities,
   measureExact,
+  checkInterference,
   rebindPartsAcrossOps,
   EntityFacts,
   MeasureResult,
   ExactMeasureKind,
   ExactMeasureResult,
+  InterferenceResult,
 } from "./entityFacts";
 import type { renderSnapshot, isRenderAvailable, RenderImage } from "./renderService";
 import type {
@@ -102,6 +104,7 @@ export interface Pipeline {
   getEntityFacts: typeof getEntityFacts;
   measureEntities: typeof measureEntities;
   measureExact: typeof measureExact;
+  checkInterference: typeof checkInterference;
   rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
@@ -558,6 +561,75 @@ export async function measureExactTool(
     params.entityIdB
   );
   return { format: route.format, supported: true, ...result, warnings: [] };
+}
+
+// ---------------------------------------------------------------------------
+// check_interference
+
+/**
+ * Interference / clash detection (roadmap item, closed) — a natural sibling
+ * to `measure`/`measure_exact`/`compare_models`: reports the overlap volume
+ * (if any) between two operands, each either a raw `solid-N` id list (`a`/
+ * `b`, same shape the `boolean` edit op's own `a`/`b` already use) or a Part
+ * NAME (`partA`/`partB`, resolved here via `readParts()` to that Part's own
+ * `volumes` array — `entityFacts.ts`'s `checkInterference` itself stays
+ * ignorant of Parts entirely, id-array-in, matching every other
+ * `collectSolids`-based function in this codebase). Exactly one of
+ * `a`/`partA` must be given per operand (same for `b`/`partB`) — providing
+ * neither is a caller-input-shape error (thrown), not a graceful
+ * `supported:false`, since it's unambiguous misuse rather than a
+ * legitimately-absent id. B-rep sources only headless, same gate as every
+ * other entity-facts tool — interference detection needs exact B-rep
+ * boolean geometry, not available for a mesh source without a webview.
+ */
+export async function checkInterferenceTool(
+  ctx: ToolContext,
+  params: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<InterferenceResult>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: interference/clash detection needs exact B-rep boolean geometry, not available headless.`],
+    };
+  }
+
+  if (!params.a && !params.partA) throw new Error("Provide either 'a' (solid-N ids) or 'partA' (a Part name) for operand A.");
+  if (!params.b && !params.partB) throw new Error("Provide either 'b' (solid-N ids) or 'partB' (a Part name) for operand B.");
+
+  const warnings: string[] = [];
+  const resolveOperand = async (label: "A" | "B", ids: string[] | undefined, partName: string | undefined): Promise<string[]> => {
+    if (!partName) return ids ?? [];
+    const parts = await readParts(modelPath);
+    const part = parts.find((p) => p.name === partName);
+    if (!part) {
+      warnings.push(`Part "${partName}" (operand ${label}) not found.`);
+      return [];
+    }
+    if (part.volumes.length === 0) {
+      warnings.push(`Part "${partName}" (operand ${label}) has no assigned solids (volumes) — its surfaces/lines/points, if any, are not solids and are ignored for interference detection.`);
+    }
+    return part.volumes;
+  };
+
+  const [idsA, idsB] = await Promise.all([
+    resolveOperand("A", params.a, params.partA),
+    resolveOperand("B", params.b, params.partB),
+  ]);
+  if (idsA.length === 0 || idsB.length === 0) {
+    return { format: route.format, supported: true, hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], warnings };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.checkInterference(ctx.extensionPath, bytes, route.format as BRepFormat, ops, idsA, idsB);
+  if (result.unresolvedA.length > 0) warnings.push(`Operand A: unresolved id(s) ${result.unresolvedA.join(", ")}.`);
+  if (result.unresolvedB.length > 0) warnings.push(`Operand B: unresolved id(s) ${result.unresolvedB.join(", ")}.`);
+
+  return { format: route.format, supported: true, ...result, warnings };
 }
 
 // ---------------------------------------------------------------------------

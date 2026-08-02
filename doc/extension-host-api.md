@@ -13,7 +13,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/occtService.ts` | Lazy WASM singleton, B-rep parsing + tessellation + export (op-list aware) |
 | `src/occtOperations.ts` | Host-side OCCT edit engine — folds the op-list over a `TopoDS_Shape` |
 | `src/massProperties.ts` | Volume/area/length/CoG/inertia for a B-rep shape via OCCT `BRepGProp` (vscode-free) |
-| `src/entityFacts.ts` | Per-entity geometric facts (`inspect`), bbox-centre distance (`measure`), exact OCCT-precision distance/edge-length/radius (`measure_exact`), and bulk entity fingerprinting + orchestration for entity-id rebinding for a B-rep shape (vscode-free) |
+| `src/entityFacts.ts` | Per-entity geometric facts (`inspect`), bbox-centre distance (`measure`), exact OCCT-precision distance/edge-length/radius (`measure_exact`), interference/clash overlap volume (`check_interference`), and bulk entity fingerprinting + orchestration for entity-id rebinding for a B-rep shape (vscode-free) |
 | `src/entityRebind.ts` | Pure entity-id rebinding heuristic (bipartite nearest-neighbor matching, generalized from `modelDiff.ts`'s solid matcher to solid/face/edge/point) + `Part`-id remapping (vscode/OCCT-free, unit-tested) |
 | `src/stepUnits.ts` | Pure text scan of a STEP file's `DATA` section for its declared length unit (vscode/OCCT-free, unit-tested) |
 | `src/igesUnits.ts` | Sibling scanner for IGES's fixed-width Global-section unit flag — same purpose, different (positional, not named-entity) format (vscode/OCCT-free, unit-tested) |
@@ -260,6 +260,22 @@ async function measureExact(
 - **`kind: "radius"`** — only valid for an edge whose underlying curve is a true circle: `BRepAdaptor_Curve_2(edge).GetType()` compared **symbolically** against `oc.GeomAbs_CurveType.GeomAbs_Circle.value` (never a hardcoded numeric literal), then `.Circle().Radius()`. Verified end-to-end: a `addCylinder(radius: 3, ...)` primitive's rim edge, re-measured through `apply_edit_ops` → `measure_exact`, resolved to exactly `3`; a non-circular edge throws a clear, actionable error instead of a meaningless best-fit number. There is deliberately no `"angle"` kind — `BRepExtrema_DistShapeShape` has no exact-angle analogue, so `src/webview/main.ts`'s `exactMeasureKindFor()` maps the Measure tool's `"angle"` mode to `null` and the "⟟ Exact" button never appears for it.
 
 `provider.ts` handles `measureExactRequest` for B-rep sources only (there is no client-side/webview computation to fall back to — the button itself is hidden for mesh sources, see [Webview API](./webview-api.md)); `mcpTools.ts`'s `measure_exact` follows the identical B-rep-only gate.
+
+```typescript
+interface InterferenceResult {
+  hasOverlap: boolean; overlapVolume: number
+  unresolvedA: string[]; unresolvedB: string[]
+}
+
+async function checkInterference(
+  extensionPath: string, bytes: Uint8Array, format: BRepFormat, ops: EditOp[],
+  a: string[], b: string[]
+): Promise<InterferenceResult>
+```
+
+**`checkInterference`** (roadmap "Interference / clash detection", closed) — read-only, never mutates or persists anything: intersects two solid sets and reports the overlap volume, reusing two already-verified call shapes wholesale rather than probing anything new. `a`/`b` are `solid-N` id arrays, compounded via `occtOperations.ts`'s newly-exported `combineSolids` (the exact same "compound the operand's solids together first" helper the `boolean` edit op's own `booleanSolids` already uses internally — promoted from module-private to exported specifically for this function). The intersection itself is `new oc.BRepAlgoAPI_Common_3(shapeA, shapeB)` → `.IsDone()` → `.Shape()`, the identical `"intersect"`-kind call shape `booleanSolids` already exercises; the resulting volume uses this file's own `volumeOf` (the same `BRepGProp.VolumeProperties_1` call shape `get_mass_properties` uses). An id that doesn't resolve is dropped and reported in `unresolvedA`/`unresolvedB` rather than thrown; if that leaves either side with zero resolved solids, or the boolean doesn't complete, the result is a clean `hasOverlap: false`/`overlapVolume: 0` — the same graceful-skip convention `booleanSolids` itself already follows on replay. A degenerate (near-zero-volume) intersection — two solids that only touch at a shared face/edge/point — also reports `hasOverlap: false` (a `1e-9` volume threshold, not a bare `> 0` check, since floating-point boolean results on a touching pair rarely land at exactly zero). **Verified end-to-end against the live WASM, not just unit-tested** (`npm run mcp:smoke`): two boxes with a known analytical overlap volume of exactly 700 (a 10×10×10 box at the origin intersected with a 10×10×10 box offset 3 units along X) resolved to `699.9999999999999` — floating-point-exact — while a disjoint pair and a face-touching pair both correctly resolved to `hasOverlap: false`.
+
+`mcpTools.ts`'s `checkInterferenceTool` layers Part-name operand resolution on top — `a`/`b` (raw `solid-N` ids) or `partA`/`partB` (a Part name, resolved via `readParts()` to that Part's own `volumes` array) — `entityFacts.ts`'s `checkInterference` itself stays entirely ignorant of Parts, id-array-in, matching every other `collectSolids`-based function in this file. Exactly one of `a`/`partA` must be given per operand (thrown as a validation error otherwise, not a graceful `supported: false` — unambiguous misuse, not a legitimately-absent id); an unknown Part name or one with no assigned volumes degrades to a `warnings` entry and a clean "no overlap" result, never a throw.
 
 `provider.ts` handles `colorFieldRequest` for meshio++-imported sources only (`route.strategy === "meshio"`, else posts `colorFieldError`) — reads the source bytes fresh and calls `meshioService.ts`'s `readMeshioFieldValues()`, posting `colorFieldResult` (base64 `Float32Array` values + min/max) or `colorFieldError` (field not found/not scalar/non-triangle boundary). No MCP tool — this is a display-only feature webview-side (same "no headless equivalent" precedent as Display Modes/Markup/Measurement).
 

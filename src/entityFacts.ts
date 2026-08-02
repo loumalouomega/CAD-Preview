@@ -8,6 +8,7 @@ import {
   bboxCenter,
   bboxDiagonal,
   facePlane,
+  combineSolids,
 } from "./occtOperations";
 import { rebindEntities, remapPartEntityIds, type EntitySignature } from "./entityRebind";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
@@ -391,6 +392,101 @@ export async function measureExact(
     const circ = curve.Circle();
     cleanup.push(circ);
     return { kind, value: circ.Radius() };
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try {
+        cleanup[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export interface InterferenceResult {
+  hasOverlap: boolean;
+  /** 0 when `hasOverlap` is false (either genuinely no overlap, or one/both
+   * sides didn't resolve to any real solid — see `unresolvedA`/`unresolvedB`). */
+  overlapVolume: number;
+  /** Ids in `a`/`b` that didn't resolve to a real `solid-N` in the current
+   * (post-edit-replay) shape — same graceful "skip, don't throw" convention
+   * every other unresolved-id path in this codebase already follows. */
+  unresolvedA: string[];
+  unresolvedB: string[];
+}
+
+/**
+ * Interference / clash detection (roadmap item, closed) — reports the
+ * overlap volume (if any) between two solid sets, read-only: never mutates
+ * or persists anything, just intersects and measures. A natural sibling to
+ * `measureEntities`/`measureExact` above and to `compare_models`, reusing
+ * two already-verified call shapes wholesale rather than probing anything
+ * new — `occtOperations.ts`'s `booleanSolids`/`combineSolids` (the exact
+ * "compound the operand's solids together first" framing this function
+ * copies for its own `a`/`b` operands, verified via the live `boolean` edit
+ * op) for the intersection itself (`BRepAlgoAPI_Common_3(a, b)` →
+ * `.IsDone()` → `.Shape()`), and this file's own `volumeOf` (the same
+ * `BRepGProp.VolumeProperties_1` call shape `get_mass_properties` uses) for
+ * the resulting volume.
+ *
+ * `a`/`b` are `solid-N` id arrays — a Part with multiple volumes maps
+ * directly onto this (the MCP tool layer resolves a Part NAME to its
+ * `volumes` array before calling this function; this function itself stays
+ * ignorant of Parts entirely, id-array-in, matching every other
+ * `collectSolids`-based function in this codebase). An id that doesn't
+ * resolve is dropped (reported in `unresolvedA`/`unresolvedB`), never
+ * thrown — if that leaves either side with zero resolved solids, or the
+ * `BRepAlgoAPI_Common_3` doesn't complete, the result is a clean
+ * `hasOverlap: false` / `overlapVolume: 0`, the same "skip gracefully"
+ * convention `booleanSolids` itself already follows on replay.
+ */
+export async function checkInterference(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  a: string[],
+  b: string[]
+): Promise<InterferenceResult> {
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/ci.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+
+    const solids = collectSolids(oc, shape, cleanup);
+    const byId = new Map(solids.map((s) => [s.id, s.solid]));
+    const resolvedA = a.map((id) => byId.get(id)).filter((s): s is NonNullable<typeof s> => s != null);
+    const resolvedB = b.map((id) => byId.get(id)).filter((s): s is NonNullable<typeof s> => s != null);
+    const unresolvedA = a.filter((id) => !byId.has(id));
+    const unresolvedB = b.filter((id) => !byId.has(id));
+
+    if (resolvedA.length === 0 || resolvedB.length === 0) {
+      return { hasOverlap: false, overlapVolume: 0, unresolvedA, unresolvedB };
+    }
+
+    const shapeA = combineSolids(oc, resolvedA, cleanup);
+    const shapeB = combineSolids(oc, resolvedB, cleanup);
+    const algo = new oc.BRepAlgoAPI_Common_3(shapeA, shapeB);
+    cleanup.push(algo);
+    if (!algo.IsDone()) {
+      return { hasOverlap: false, overlapVolume: 0, unresolvedA, unresolvedB };
+    }
+    const result = algo.Shape();
+    cleanup.push(result);
+    const overlapVolume = volumeOf(oc, result, cleanup);
+
+    // A degenerate (zero-volume) intersection — e.g. two solids that only
+    // touch at a face/edge/point — is reported as no real overlap.
+    return { hasOverlap: overlapVolume > 1e-9, overlapVolume, unresolvedA, unresolvedB };
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
