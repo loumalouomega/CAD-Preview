@@ -13,6 +13,7 @@ import { AnnotationsModel } from "./annotationsModel";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
 import { EditsPanel } from "./editsPanel";
+import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
 import { evaluateVariables, resolveEditOps } from "../editVariables";
@@ -30,6 +31,7 @@ import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import { VisibilityState } from "./visibilityState";
 import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
+import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, type TransformBase } from "./gizmoTransform";
 import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
@@ -278,6 +280,156 @@ function cancelExplodePreview(): void {
   explodePreviewBases = null;
 }
 
+// ── Transform Gizmo (roadmap "Transform gizmo", closed) ──────────────────
+// Three.js's own `TransformControls` (viewer.ts's thin wrapper) drives a
+// LIVE PREVIEW of the currently-open translate/rotate/scale form — dragging
+// never itself pushes an edit op; Apply is still the only thing that does
+// (the same non-negotiable invariant `explodePreview.ts`'s slider already
+// established, and reused here on purpose rather than a second write path
+// that would bypass `EditsModel`'s push/undo/redo/remove contract).
+
+type GizmoMode = "translate" | "rotate" | "scale";
+
+/** One targeted volume's pristine transform, captured once per drag
+ * (not per frame) — every `objectChange` recomputes from THIS, never from
+ * the object's own already-dragged-this-frame state, matching
+ * `explodePreview.ts`'s never-compound-onto-the-previous-frame discipline. */
+interface GizmoTarget extends TransformBase {
+  object: THREE.Object3D;
+}
+
+/** Which transform-kind form (if any) is currently open — `null` when no
+ * form, or a non-transform form, is open. Set by `EditsPanelCallbacks.
+ * onFormChanged`. */
+let gizmoMode: GizmoMode | null = null;
+/** Non-null only WHILE a drag is in progress (set on `dragging-changed`
+ * true, cleared on Apply/cancel) — `null` between drags, even though the
+ * live-previewed positions remain displayed until Apply or a form/selection
+ * change discards them. */
+let gizmoTargets: GizmoTarget[] | null = null;
+
+function gizmoModeForForm(id: PanelOpId | null): GizmoMode | null {
+  return id === "translate" || id === "rotate" || id === "scale" ? id : null;
+}
+
+/** Resolves a `solid-N`/`node-N` id to its live top-level `Object3D` — the
+ * same single-level (not deep) traversal `explodePreview.ts`'s own
+ * `captureExplodeBase` already uses, since a volume's whole transform lives
+ * on this one top-level, `groupId`-tagged node regardless of source format. */
+function resolveVolumeObject(id: string): THREE.Object3D | null {
+  return viewer.getModel()?.children.find((c) => c.userData.groupId === id) ?? null;
+}
+
+/** Re-attaches the gizmo at the CURRENT selection's combined bbox centre, or
+ * detaches it when there's nothing (compatible) selected. Safe to call at
+ * any time EXCEPT mid-drag (a drag must never have its attach target yanked
+ * out from under it) — callers gate on `!viewer.isGizmoDragging()`.
+ * Unconditionally discards any uncommitted preview first: this is also the
+ * SELECTION-change entry point (not just the form-change one, which already
+ * cancels via `updateGizmoForForm`), so a leftover live-dragged transform on
+ * a since-deselected target must never be left stranded — same "switching
+ * away discards the preview" rule `explodePreview.ts`'s form-switch cancel
+ * already established, just also triggered by a selection change here. */
+function refreshGizmoAttachment(): void {
+  cancelGizmoPreview();
+  if (!gizmoMode || viewer.isGizmoDragging()) return;
+  const objects = selectedVolumes().map(resolveVolumeObject).filter((o): o is THREE.Object3D => o !== null);
+  if (objects.length === 0) {
+    viewer.detachTransformGizmo();
+    return;
+  }
+  const box = new THREE.Box3();
+  for (const o of objects) box.union(new THREE.Box3().setFromObject(o));
+  viewer.attachTransformGizmo(box.getCenter(new THREE.Vector3()), gizmoMode);
+}
+
+/** Restores every currently-tracked target to its pristine (pre-drag) base
+ * and clears gizmo drag state — called both when the user leaves the form
+ * without applying (via `onFormChanged`/selection change) and right before
+ * a real op-stack commit, exactly mirroring `cancelExplodePreview` above and
+ * for the identical reason: the eventual model rebuild alone isn't
+ * synchronous enough (a B-rep edit is an async host round trip) to be
+ * trusted to supersede a stale live-dragged position without a visible
+ * flash of wrong geometry in between. */
+function cancelGizmoPreview(): void {
+  if (gizmoTargets) {
+    for (const t of gizmoTargets) {
+      t.object.position.copy(t.basePosition);
+      t.object.quaternion.copy(t.baseQuaternion);
+      t.object.scale.copy(t.baseScale);
+    }
+  }
+  gizmoTargets = null;
+}
+
+/** Called whenever the Edits panel's open form changes — attaches/detaches/
+ * retargets the gizmo for translate/rotate/scale, or hides it for every
+ * other form (including no form at all). */
+function updateGizmoForForm(id: PanelOpId | null): void {
+  gizmoMode = gizmoModeForForm(id);
+  if (!gizmoMode) {
+    cancelGizmoPreview();
+    viewer.detachTransformGizmo();
+    return;
+  }
+  refreshGizmoAttachment(); // also discards any preview from the PREVIOUS form/mode
+}
+
+viewer.setGizmoHandlers(
+  () => {
+    // Fires continuously while dragging ("objectChange"). `gizmoTargets` is
+    // guaranteed non-null here (set on drag-start, just below) — Three.js
+    // never fires this event outside an active drag.
+    if (!gizmoTargets || !gizmoMode) return;
+    const d = viewer.getGizmoDelta();
+    for (const t of gizmoTargets) {
+      if (gizmoMode === "translate") {
+        t.object.position.copy(applyTranslateDelta(t, d).position);
+      } else if (gizmoMode === "rotate") {
+        const r = applyRotateDelta(t, d);
+        t.object.position.copy(r.position);
+        t.object.quaternion.copy(r.quaternion);
+      } else {
+        const s = applyScaleDelta(t, d);
+        t.object.position.copy(s.position);
+        t.object.scale.copy(s.scale);
+      }
+    }
+    // Push the live-dragged values into the open form's fields — the answer
+    // to "what happens when a drag overwrites a field the user had typed an
+    // expression into" (see `EditsPanel.setVecField`'s doc comment): the
+    // drag wins, silently, same as the user typing over it by hand.
+    if (gizmoMode === "translate") {
+      editsPanel.setVecField("vec", [d.positionDelta.x, d.positionDelta.y, d.positionDelta.z]);
+    } else if (gizmoMode === "rotate") {
+      const { axis, angleRad } = quaternionToAxisAngle(d.quaternionDelta);
+      editsPanel.setVecField("axisPoint", [d.pivot.x, d.pivot.y, d.pivot.z]);
+      editsPanel.setVecField("axisDir", [axis.x, axis.y, axis.z]);
+      editsPanel.setNumField("angleDeg", (angleRad * 180) / Math.PI);
+    } else {
+      editsPanel.setVecField("center", [d.pivot.x, d.pivot.y, d.pivot.z]);
+      editsPanel.setVecField("factors", [d.scaleDelta.x, d.scaleDelta.y, d.scaleDelta.z]);
+    }
+  },
+  (dragging) => {
+    if (dragging) {
+      // Drag start: capture a FRESH pristine base from wherever targets
+      // currently sit — usually their true pristine position, but starting
+      // a SECOND drag after a first one (without clicking Apply in between)
+      // deliberately captures from the already-previewed position, letting
+      // successive drags compose/refine before committing.
+      const objects = selectedVolumes().map(resolveVolumeObject).filter((o): o is THREE.Object3D => o !== null);
+      gizmoTargets = objects.map((object) => ({
+        object, basePosition: object.position.clone(), baseQuaternion: object.quaternion.clone(), baseScale: object.scale.clone(),
+      }));
+    }
+    // Drag end: deliberately leave the preview showing — Apply is still the
+    // only thing that pushes an op. `gizmoTargets` stays non-null so a
+    // second drag (see above) or Apply's own read of the form fields both
+    // still have something to work from.
+  }
+);
+
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onUndo: () => editsModel.undo(),
   onRedo: () => editsModel.redo(),
@@ -299,6 +451,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       case "mirror": op = { op: "mirror", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal }; break;
     }
     if (draft.exprs) op.exprs = draft.exprs;
+    cancelGizmoPreview(); // discard the live preview — the real op replay rebuilds everything
     editsModel.push(op);
     setStatus("");
   },
@@ -722,6 +875,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "addVolumeFromSurfaces", faces });
     setStatus("");
   },
+  onFormChanged: updateGizmoForForm,
 });
 
 // ── Meshing (GMSH FE-mesh generation) ────────────────────────────────────
@@ -1026,6 +1180,7 @@ function renderHighlight(): void {
   const entities: SelectedEntity[] =
     previewPartIndex !== null ? partsModel.entitiesOf(previewPartIndex) : selection.list();
   viewer.renderSelection(entities);
+  refreshGizmoAttachment(); // no-op unless a translate/rotate/scale form is open
 }
 
 // The pristine, tagged-but-unedited loaded object for mesh formats. Mesh edits
@@ -1068,6 +1223,8 @@ function rebuildMeshModel(): void {
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model);
   explodePreviewBases = null; // stale references to the just-replaced model's objects
+  gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
+  viewer.detachTransformGizmo();
   resetColorFieldSelection(); // any edit invalidates the field values' triangle correlation, same as importedRegionInfo above
   refreshColors();
   renderAnnotationsList(); // detached status may have changed
@@ -1982,6 +2139,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group);
         explodePreviewBases = null; // stale references to the just-replaced model's objects
+        gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
+        viewer.detachTransformGizmo();
         lastRawMassProperties = null; // stale — refers to the just-replaced model
         lastMeasurement = null; // stale entity ids — refer to the just-replaced model
         clearMarkupOverlay?.();

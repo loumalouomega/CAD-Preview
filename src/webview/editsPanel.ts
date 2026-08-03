@@ -148,6 +148,11 @@ export interface EditsPanelCallbacks {
   onBuildSurfaceFromLines: () => void;
   /** Build a solid by sewing the currently-selected surfaces (Surf mode, B-rep only). */
   onBuildVolumeFromSurfaces: () => void;
+  /** Fired whenever the open param form changes (a different op button
+   * clicked, or the form collapsed — `null`). Lets `main.ts` show/hide/
+   * retarget the Transform Gizmo for `"translate"`/`"rotate"`/`"scale"`
+   * without this panel needing to know the gizmo exists. */
+  onFormChanged: (id: PanelOpId | null) => void;
 }
 
 type TabId = "geometry" | "edit";
@@ -172,6 +177,14 @@ type SubtabId = "2d" | "3d";
  * or abort the apply with an inline error if any expression failed — so the
  * ~40 per-op apply closures stay untouched.
  */
+
+/** Rounds to 6 decimal places — used only for display when the Transform
+ * Gizmo pushes a live-dragged value into a field, so a float's long tail
+ * doesn't render as visual noise in the input. */
+function round6(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
+}
+
 export class EditsPanel {
   private readonly body: HTMLElement;
   private readonly compose: HTMLElement;
@@ -472,6 +485,7 @@ export class EditsPanel {
     this.activeOp = id;
     for (const [opId, btn] of this.opButtons) btn.classList.toggle("active", opId === id);
     this.renderParams();
+    this.cb.onFormChanged(id);
   }
 
   // ── Parameter forms (one per op button, rendered into #edits-params) ──────
@@ -1056,6 +1070,32 @@ export class EditsPanel {
     input.value = String(def);
     row.appendChild(input);
     return row;
+  }
+
+  /**
+   * Live-pushes a value from an external source (the Transform Gizmo drag,
+   * `main.ts`) into a currently-rendered `vecField`/`numField`'s inputs — a
+   * no-op if that field isn't in the currently-open form (e.g. the user
+   * switched op forms mid-drag). Writing a plain numeric string is what
+   * clears any expression the field previously held: `parseNumeric` only
+   * ever reads `.value` fresh at Apply time and re-evaluates it then, so a
+   * literal number here simply parses as a literal number — no separate
+   * `pendingExprs` bookkeeping needs touching. This is the answer to "what
+   * happens when a drag overwrites a field the user had typed an expression
+   * into": the drag wins, silently, same as typing over the field by hand.
+   */
+  setVecField(name: string, value: Vec3): void {
+    const inputs = this.paramsEl.querySelectorAll<HTMLInputElement>(`input[data-name="${name}"]`);
+    inputs.forEach((input) => {
+      const i = Number(input.dataset.i);
+      if (Number.isInteger(i) && i >= 0 && i < 3) input.value = String(round6(value[i]));
+    });
+  }
+
+  /** See {@link setVecField}. */
+  setNumField(name: string, value: number): void {
+    const input = this.paramsEl.querySelector<HTMLInputElement>(`input[data-name="${name}"]`);
+    if (input) input.value = String(round6(value));
   }
 
   /**
