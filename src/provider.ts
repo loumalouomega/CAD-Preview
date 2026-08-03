@@ -429,7 +429,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const session: EditorSession = {
       uri: document.uri,
       export: () => {
-        if (route) this.handleExport(document.uri, route, post, pending, currentEdits);
+        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts);
       },
       save: flushSidecars,
       savePreprocess: () => {
@@ -714,7 +714,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "exportRequest") {
-        if (route) this.handleExport(document.uri, route, post, pending, currentEdits);
+        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts);
         return;
       }
 
@@ -1083,7 +1083,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     route: FileRoute,
     post: (msg: HostToWebview) => void,
     pending: Map<string, PendingExport>,
-    ops: EditOp[] = []
+    ops: EditOp[] = [],
+    parts: Part[] = []
   ): Promise<void> {
     const targets = exportTargetsFor(route);
     if (targets.length === 0) return;
@@ -1112,7 +1113,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
           ops,
-          unit
+          unit,
+          true,
+          parts
         );
       }
 

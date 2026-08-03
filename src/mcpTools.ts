@@ -1538,13 +1538,16 @@ export async function exportBRepTool(
 
   const { ops } = await readEdits(modelPath);
   const sourceBytes = await readModelBytes(modelPath);
+  const parts = await readParts(modelPath);
   const bytes = await ctx.pipeline.exportBRep(
     ctx.extensionPath,
     sourceBytes,
     route.format as BRepFormat,
     target,
     ops,
-    unit
+    unit,
+    true,
+    parts
   );
   await fs.writeFile(outputPath, bytes);
   return {

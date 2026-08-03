@@ -1578,7 +1578,7 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out-mm.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm");
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm", true, []);
     expect(result.unit).toBe("mm");
     expect(result.warnings).toEqual([]);
   });
@@ -1587,7 +1587,7 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out-in.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "in" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "in");
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "in", true, []);
     expect(result.unit).toBe("in");
   });
 
@@ -1595,7 +1595,7 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out-bad.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "parsec" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm");
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm", true, []);
     expect(result.unit).toBe("mm");
     expect(result.warnings[0]).toMatch(/unknown unit/i);
   });
@@ -1604,7 +1604,7 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out.iges");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "iges", outputPath: out, unit: "in" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], "in");
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], "in", true, []);
     expect(result.unit).toBe("in");
     expect(result.warnings).toEqual([]);
   });

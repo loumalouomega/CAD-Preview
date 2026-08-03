@@ -834,6 +834,65 @@ try {
     `export_brep's IGES inch export round-trips to the SAME real-world volume: reopening both through get_mass_properties gives ratio ${(igesVolumeIn / igesVolumeMm).toFixed(9)} ≈ 1 (mm=${igesVolumeMm.toFixed(3)}, in=${igesVolumeIn.toFixed(3)})`
   );
 
+  // XCAF write — assembly structure + per-part names on STEP export
+  // (roadmap "XCAF write — assembly structure and per-part colors", closed
+  // as names+structure only; per-part COLOR export was investigated and
+  // confirmed non-functional in this OCCT WASM build — see xcafWrite.ts's
+  // doc comment). Own fresh copy + own parts, so this doesn't disturb
+  // `model`'s parts list (asserted to have exactly 1 part, "Bull", by the
+  // save_preprocess/load_preprocess checks near the end of this script).
+  // `xcafModel` is itself a .stp source, so it can't export to "step" (its
+  // own format is always excluded, same as the `stepResult` check above) —
+  // export through an intermediate .brep first (baking the box edit), then
+  // assign parts to THAT file (export_brep reads parts from whichever path
+  // is passed as the export source) before the real STEP export.
+  const xcafModel = path.join(dir, "bull-for-xcaf-write-test.stp");
+  fs.copyFileSync(FIXTURE, xcafModel);
+  await call("apply_edit_ops", { path: xcafModel, ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }] });
+  const xcafBrepOut = path.join(dir, "xcaf-write-test.brep");
+  await call("export_brep", { path: xcafModel, targetFormat: "brep", outputPath: xcafBrepOut });
+  await call("set_part", { path: xcafBrepOut, name: "BullBody", volumes: ["solid-0"] });
+  await call("set_part", { path: xcafBrepOut, name: "TinyBox", volumes: ["solid-1"] });
+  const xcafStepOut = path.join(dir, "out-xcaf.step");
+  const xcafExport = await call("export_brep", { path: xcafBrepOut, targetFormat: "step", outputPath: xcafStepOut });
+  assert(xcafExport.warnings.length === 0 && fs.statSync(xcafStepOut).size > 0, "export_brep with named parts writes a non-empty STEP file, no warnings");
+  const xcafStepText = fs.readFileSync(xcafStepOut, "utf8");
+  assert(
+    xcafStepText.includes("BullBody") && xcafStepText.includes("TinyBox"),
+    "the exported STEP file's own PRODUCT entities carry the part names, not generic placeholders"
+  );
+  // This build's STEPCAFControl_Writer unconditionally wraps document-
+  // structured output in AP242 "document management" bookkeeping that the
+  // PLAIN STEPControl_Reader can't unwrap (see xcafWrite.ts's doc comment)
+  // — occtService.ts's readShape falls back to a document-aware read
+  // automatically. Confirm THIS codebase's own pipeline can still reopen
+  // its own named-parts export and recover the exact original geometry.
+  const xcafReloaded = await call("load_model", { path: xcafStepOut });
+  assert(xcafReloaded.solids.length === 2, `reopening the named-parts export recovers both solids (got ${xcafReloaded.solids.length})`);
+  const xcafOriginalVolume =
+    (await call("get_mass_properties", { path: xcafBrepOut, entityId: "solid-0" })).volume +
+    (await call("get_mass_properties", { path: xcafBrepOut, entityId: "solid-1" })).volume;
+  const xcafReloadedVolume = (await call("get_mass_properties", { path: xcafStepOut })).volume;
+  // A looser tolerance than the unit-conversion checks above on purpose:
+  // those compare two independently STEP-exported files against each
+  // other (their STEP-text ASCII coordinate precision loss cancels out
+  // relatively); this compares LIVE in-memory geometry against its own
+  // post-export-and-reread STEP round trip, where that precision loss is
+  // the whole difference being measured, not something to expect at 1e-6.
+  assert(
+    Math.abs(xcafReloadedVolume / xcafOriginalVolume - 1) < 1e-4,
+    `reopened named-parts export's total volume matches the original (within STEP-text precision): ${xcafReloadedVolume.toFixed(6)} vs ${xcafOriginalVolume.toFixed(6)}`
+  );
+  // An export with NO parts (the overwhelming majority case) must stay on
+  // the plain writer, byte-for-byte unaffected by this feature existing —
+  // reuse `stepOutMm` above (exported from `brepOut`, which has no parts
+  // assigned) rather than a redundant new export.
+  const stepOutMmText = fs.readFileSync(stepOutMm, "utf8");
+  assert(
+    !stepOutMmText.includes("DOCUMENT_FILE") && !stepOutMmText.includes("APPLIED_EXTERNAL_IDENTIFICATION"),
+    "an export with no parts assigned stays on the plain writer (no XCAF document-management entities)"
+  );
+
   // Regression guard: does the meshing-input STEP path (export_mesh/
   // generate_mesh's internal re-export, NOT export_brep above) stay scale-
   // correct now that STEP header-patching exists? Verified against the live
