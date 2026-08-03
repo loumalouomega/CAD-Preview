@@ -85,10 +85,10 @@ import {
   partsSidecarPath,
   annotationsSidecarPath,
   meshOptionsSidecarPath,
-  geoScriptPath,
 } from "./mcpSidecars";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
+import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
@@ -1576,15 +1576,18 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
   assertNotSourcePath(modelPath, outputPath);
 
   const sourceName = path.basename(modelPath);
-  const [source, parts, edits, meshOptions, geo] = await Promise.all([
+  const [source, parts, annotations, edits, meshOptions] = await Promise.all([
     readModelBytes(modelPath),
     readOptionalFile(partsSidecarPath(modelPath)),
+    readOptionalFile(annotationsSidecarPath(modelPath)),
     readOptionalFile(editsSidecarPath(modelPath)),
     readOptionalFile(meshOptionsSidecarPath(modelPath)),
-    readOptionalFile(geoScriptPath(modelPath)),
   ]);
 
-  const zipBytes = buildPreprocessZip({ sourceName, source, parts, edits, meshOptions, geo });
+  // Per-entry SHA-256 checksums (roadmap "Archive integrity", closed); the
+  // generated .geo script is deliberately NOT packaged — see
+  // buildPreprocessZip's doc comment.
+  const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, edits, meshOptions });
   await fs.writeFile(outputPath, zipBytes);
   return {
     written: outputPath,
@@ -1592,9 +1595,9 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
     included: {
       source: sourceName,
       parts: parts !== undefined,
+      annotations: annotations !== undefined,
       edits: edits !== undefined,
       meshOptions: meshOptions !== undefined,
-      geo: geo !== undefined,
     },
     warnings: [],
   };
@@ -1609,11 +1612,32 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
   requireRoute(outputPath);
 
   const zipBytes = new Uint8Array(await fs.readFile(zipPath));
+  // readPreprocessZip already rejects a corrupted/tampered archive (checksum
+  // mismatch) or one requiring a newer reader (roadmap "Archive integrity",
+  // closed) before returning.
   const contents = readPreprocessZip(zipBytes);
+
+  // The destination's extension is caller-chosen and NOT constrained by any
+  // save dialog here (unlike the interactive Load Preprocess flow) — this
+  // is the one place requireRoute(outputPath) above genuinely isn't enough,
+  // since it only checks the extension is SOME supported format, not that
+  // it matches the archive's own source format (restoring a STEP archive to
+  // "restored.stl" used to succeed silently). Aliases of the same format
+  // (.stp/.step) still compare equal via routeFile()'s FileRoute.format.
+  const sourceRoute = routeFile(contents.manifest.source);
+  const destRoute = routeFile(outputPath);
+  if (!destRoute || !sourceRoute || destRoute.format !== sourceRoute.format) {
+    throw new Error(
+      `Cannot restore "${contents.manifest.source}" (${sourceRoute?.format ?? "unrecognized"}) to "${path.basename(outputPath)}" (${destRoute?.format ?? "unrecognized"}) — the destination file extension doesn't match the archive's source format.`
+    );
+  }
 
   await fs.writeFile(outputPath, contents.source);
   if (contents.parts !== undefined) {
     await writeParts(outputPath, parsePartsJson(contents.parts));
+  }
+  if (contents.annotations !== undefined) {
+    await writeAnnotations(outputPath, parseAnnotationsJson(contents.annotations));
   }
   if (contents.edits !== undefined) {
     const parsed = parseEditsJson(contents.edits);
@@ -1621,8 +1645,8 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
   }
   if (contents.meshOptions !== undefined) {
     // mcpSidecars' writeMeshOptions writes <out>.mesh.json AND regenerates the
-    // one-way <out>.geo script in one call — the archive's own raw .geo text
-    // (if any) is intentionally not restored verbatim, same rule as every
+    // one-way <out>.geo script in one call — the archive no longer even
+    // packages a raw .geo text to restore verbatim, same rule as every
     // other options write path.
     await writeMeshOptions(outputPath, parseMeshJson(contents.meshOptions));
   }
@@ -1632,6 +1656,7 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
     manifestSource: contents.manifest.source,
     restored: {
       parts: contents.parts !== undefined,
+      annotations: contents.annotations !== undefined,
       edits: contents.edits !== undefined,
       meshOptions: contents.meshOptions !== undefined,
     },

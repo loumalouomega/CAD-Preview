@@ -14,7 +14,7 @@ import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./anno
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
+import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri } from "./meshOptionsStore";
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
@@ -26,6 +26,7 @@ import { computeMassProperties } from "./massProperties";
 import { measureExact, rebindPartsAcrossOps } from "./entityFacts";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
+import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, UNIT_LABELS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
@@ -1209,13 +1210,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   }
 
   /**
-   * Packages the CAD source plus whichever of its parts/edits/mesh-options/geo
-   * sidecars exist on disk into a single `.zip` (File ▸ Save Preprocess…).
-   * Callers must flush pending debounced sidecar writes first (see the two
-   * call sites) so the archive reflects the latest in-memory state, not a
-   * stale on-disk one; which sidecars are included is otherwise purely
-   * file-existence-driven — a sidecar that was never created (e.g. no
-   * meshing options ever set) is simply omitted, never a hard error.
+   * Packages the CAD source plus whichever of its parts/annotations/edits/
+   * mesh-options sidecars exist on disk into a single `.zip` (File ▸ Save
+   * Preprocess…), with a per-entry SHA-256 checksum recorded in the manifest
+   * (roadmap "Archive integrity", closed). Callers must flush pending
+   * debounced sidecar writes first (see the two call sites) so the archive
+   * reflects the latest in-memory state, not a stale on-disk one; which
+   * sidecars are included is otherwise purely file-existence-driven — a
+   * sidecar that was never created (e.g. no meshing options ever set) is
+   * simply omitted, never a hard error. The generated `.geo` script is
+   * deliberately NOT packaged — see `buildPreprocessZip`'s doc comment.
    */
   private async handleSavePreprocess(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
     const sourceName = uri.path.slice(uri.path.lastIndexOf("/") + 1);
@@ -1236,14 +1240,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           return undefined;
         }
       };
-      const [source, parts, edits, meshOptions, geo] = await Promise.all([
+      const [source, parts, annotations, edits, meshOptions] = await Promise.all([
         vscode.workspace.fs.readFile(uri),
         readOptional(sidecarUri(uri)),
+        readOptional(annotationsSidecarUri(uri)),
         readOptional(editsSidecarUri(uri)),
         readOptional(meshOptionsSidecarUri(uri)),
-        readOptional(geoScriptUri(uri)),
       ]);
-      const zipBytes = buildPreprocessZip({ sourceName, source, parts, edits, meshOptions, geo });
+      const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, edits, meshOptions });
       await vscode.workspace.fs.writeFile(saveUri, zipBytes);
       post({ type: "status", text: `Saved preprocess archive to ${saveUri.fsPath}` });
     } catch (err) {
@@ -1258,8 +1262,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * archive), writes the source bytes and whichever sidecars the archive
    * contains, and opens the result. Host-only, like `openFileDialog` — it
    * needs no already-open editor, so errors surface via `showErrorMessage`
-   * rather than a webview `post`. The `.geo` script is deliberately NOT
-   * restored verbatim from the archive; mesh options are re-written through
+   * rather than a webview `post`. `readPreprocessZip` itself already rejects
+   * a corrupted/tampered archive (checksum mismatch) or one requiring a
+   * newer reader before this method ever runs (roadmap "Archive integrity",
+   * closed). The `.geo` script is not restored verbatim (it's no longer
+   * even packaged); mesh options are re-written through
    * `writeMeshOptions`/`writeGeoScript` so the one-way-generated script stays
    * in lockstep with the (re-validated) options, same as every other write path.
    */
@@ -1284,9 +1291,28 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       });
       if (!destUri) return;
 
+      // The save dialog's filter is advisory, not enforced by every OS — a
+      // user can still type/pick a different extension (roadmap "Archive
+      // integrity", closed: restoring a STEP archive to `restored.stl` used
+      // to succeed silently). Reject a genuine pipeline mismatch rather than
+      // writing bytes the destination's own extension can't actually open;
+      // aliases of the same format (`.stp`/`.step`) still compare equal,
+      // since routeFile() maps both to the same FileRoute.format.
+      const sourceRoute = routeFile(contents.manifest.source);
+      const destRoute = routeFile(destUri.path);
+      if (!destRoute || !sourceRoute || destRoute.format !== sourceRoute.format) {
+        void vscode.window.showErrorMessage(
+          `Cannot restore "${contents.manifest.source}" (${sourceRoute?.format ?? "unrecognized"}) to "${destUri.path.slice(destUri.path.lastIndexOf("/") + 1)}" (${destRoute?.format ?? "unrecognized"}) — the destination file extension doesn't match the archive's source format.`
+        );
+        return;
+      }
+
       await vscode.workspace.fs.writeFile(destUri, contents.source);
       if (contents.parts !== undefined) {
         await writeParts(destUri, parsePartsJson(contents.parts));
+      }
+      if (contents.annotations !== undefined) {
+        await writeAnnotations(destUri, parseAnnotationsJson(contents.annotations));
       }
       if (contents.edits !== undefined) {
         const parsed = parseEditsJson(contents.edits);
