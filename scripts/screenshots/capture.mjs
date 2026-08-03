@@ -102,6 +102,15 @@ const post = (page, msg) => page.evaluate((m) => window.__post(m), msg);
 /** Post the full set of fixtures so every panel is populated, then settle. */
 async function populate(page) {
   await post(page, fixture("geometry"));
+  // The webview only frames the camera on first load once BOTH geometry and
+  // a "viewState" message have arrived (`main.ts`'s `applyInitialViewIfNeeded`,
+  // added by the "View-state persistence" feature — real documents always get
+  // a real viewState post from provider.ts, even `{view: null}` for a
+  // document with no persisted view yet, so this harness must send the same
+  // to avoid leaving the camera at its unframed default position). Without
+  // this, every shot renders a giant, wildly misframed close-up instead of
+  // the actual model.
+  await post(page, { type: "viewState", view: null });
   await sleep(700); // OCCT geometry decode + first frame
   await post(page, fixture("tree"));
   await post(page, fixture("meshingOptions"));
