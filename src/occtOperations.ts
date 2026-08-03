@@ -1,6 +1,7 @@
 import type { EditOp, Vec3 } from "./editOps";
+import { enumerateEdges } from "./edgeEnumeration";
 
-/** Bucket capacity for `HashCode`-based shape de-dup (shared by face + edge dedup). */
+/** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
 const HASH_UPPER = 1 << 30;
 
 /**
@@ -1565,49 +1566,17 @@ function owningSolid(oc: any, shape: any, face: any, cleanup: Array<{ delete(): 
 }
 
 /**
- * Enumerates unique, discretizable edges in the SAME order `extractEdges`
- * (`src/meshExtract.ts`) assigns `edge-N` ids, so picked edge ids resolve to the
- * right live edge: de-dup by `HashCode` + `IsSame`, then keep only edges that
- * discretize to ≥2 points (matching extractEdges' `positions.length >= 6` filter).
- * Deduped handles are kept alive in `cleanup` so `IsSame` stays valid.
+ * Resolves an `edge-N` id back to its live edge — a thin wrapper around
+ * `edgeEnumeration.ts`'s shared `enumerateEdges`, which is also what
+ * `meshExtract.ts`'s `extractEdges` calls to assign `edge-N` ids in the first
+ * place. Both paths now call the SAME enumerator, so a picked edge id is
+ * guaranteed to resolve to the right live edge — see that module's doc
+ * comment for why the two used to be independent, hand-duplicated copies and
+ * why that was a latent id-corruption hazard.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function collectEdges(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {
-  const HASH_UPPER = 1 << 30;
-  const seen = new Map<number, Array<{ IsSame(o: unknown): boolean }>>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const out: any[] = [];
-  const exp = new oc.TopExp_Explorer_2(
-    shape,
-    oc.TopAbs_ShapeEnum.TopAbs_EDGE,
-    oc.TopAbs_ShapeEnum.TopAbs_SHAPE
-  );
-  cleanup.push(exp);
-  for (; exp.More(); exp.Next()) {
-    const edge = oc.TopoDS.Edge_1(exp.Current());
-    const hash = edge.HashCode(HASH_UPPER);
-    const bucket = seen.get(hash);
-    if (bucket && bucket.some((e) => e.IsSame(edge))) { edge.delete(); continue; }
-    cleanup.push(edge);
-    if (bucket) bucket.push(edge);
-    else seen.set(hash, [edge]);
-    if (edgeHasPolyline(oc, edge, cleanup)) out.push(edge);
-  }
-  return out;
-}
-
-/** True when an edge discretizes to ≥2 points (same check extractEdges applies). */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function edgeHasPolyline(oc: any, edge: any, cleanup: Array<{ delete(): void }>): boolean {
-  try {
-    const curve = new oc.BRepAdaptor_Curve_2(edge);
-    cleanup.push(curve);
-    const disc = new oc.GCPnts_UniformDeflection_2(curve, 0.1, false);
-    cleanup.push(disc);
-    return disc.IsDone() && disc.NbPoints() >= 2;
-  } catch {
-    return false;
-  }
+  return enumerateEdges(oc, shape, cleanup).map((e) => e.edge);
 }
 
 /** Enumerates solids in deterministic explorer order, tagged `solid-N`. */
