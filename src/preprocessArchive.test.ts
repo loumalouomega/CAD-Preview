@@ -98,4 +98,61 @@ describe("readPreprocessZip", () => {
     });
     expect(readPreprocessZip(zip).manifest.version).toBe(PREPROCESS_MANIFEST_VERSION);
   });
+
+  describe("hardening (roadmap 'Preprocess archive hardening', closed)", () => {
+    it.each([
+      "../../../.ssh/authorized_keys",
+      "../evil.stp",
+      "a/b.stp",
+      "a\\b.stp",
+      "..",
+      ".",
+      "",
+    ])("rejects a manifest source of %j as unsafe", (source) => {
+      const zip = zipSync({
+        "manifest.json": strToU8(JSON.stringify({ version: 1, source })),
+        "model.stp": SOURCE_BYTES,
+      });
+      expect(() => readPreprocessZip(zip)).toThrow(/valid bare filename|missing its source filename/i);
+    });
+
+    it("accepts an ordinary bare filename", () => {
+      const built = buildPreprocessZip({ sourceName: "bull.stp", source: SOURCE_BYTES });
+      expect(() => readPreprocessZip(built)).not.toThrow();
+    });
+
+    it("rejects an entry whose declared uncompressed size exceeds the per-entry cap", () => {
+      // A real >200MB payload would be slow to build/compress in a unit test —
+      // fflate's filter fires from the entry's DECLARED size in the zip's
+      // central directory, before any inflation, so a hand-crafted local
+      // zip with a tiny real payload but an inflated declared size exercises
+      // the same code path without needing 200MB of real data. Simplest way
+      // to get a mismatched declared size: zip a real large-ish buffer, then
+      // patch the local + central directory uncompressed-size fields.
+      const bigButReal = new Uint8Array(1024).fill(1); // compresses trivially (all-1s)
+      const zip = zipSync(
+        {
+          "manifest.json": strToU8(JSON.stringify({ version: 1, source: "model.stp" })),
+          "model.stp": bigButReal,
+        },
+        { level: 0 } // store (no compression) — makes the byte offsets below predictable
+      );
+      const patched = new Uint8Array(zip);
+      // Every little-endian uint32 "1024" (the real uncompressed size) becomes
+      // a value comfortably over MAX_ENTRY_UNCOMPRESSED_BYTES, in every local
+      // file header + central directory record that declares it.
+      const from = new DataView(new ArrayBuffer(4));
+      from.setUint32(0, 1024, true);
+      const fromBytes = new Uint8Array(from.buffer);
+      const to = new DataView(new ArrayBuffer(4));
+      to.setUint32(0, 300 * 1024 * 1024, true);
+      const toBytes = new Uint8Array(to.buffer);
+      for (let i = 0; i <= patched.length - 4; i++) {
+        if (fromBytes.every((b, j) => patched[i + j] === b)) {
+          patched.set(toBytes, i);
+        }
+      }
+      expect(() => readPreprocessZip(patched)).toThrow(/too large/i);
+    });
+  });
 });

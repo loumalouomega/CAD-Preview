@@ -12,6 +12,33 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from "fflate";
 
 export const PREPROCESS_MANIFEST_VERSION = 1;
 
+/** Per-entry and archive-wide caps for {@link readPreprocessZip} (roadmap
+ * "Preprocess archive hardening", closed) — bound how much memory a hostile
+ * `.zip` can force `unzipSync` to allocate. `MAX_COMPRESSION_RATIO` is the
+ * classic zip-bomb signal (a few KB of compressed data claiming to expand to
+ * gigabytes); genuine STEP/JSON text under deflate rarely exceeds ~10x, so
+ * 1000x has wide margin without ever tripping on real content. */
+const MAX_ENTRY_UNCOMPRESSED_BYTES = 200 * 1024 * 1024; // 200 MB
+const MAX_TOTAL_UNCOMPRESSED_BYTES = 500 * 1024 * 1024; // 500 MB
+const MAX_COMPRESSION_RATIO = 1000;
+
+/**
+ * A zip entry name shaped like a bare filename — no path separators, no `.`/
+ * `..` traversal segments. `manifest.source` must satisfy this: it's
+ * documented as "the CAD source's original filename, e.g. bull.stp", and
+ * both readers (`provider.ts`'s `loadPreprocessDialog`, which feeds it
+ * straight into `vscode.Uri.joinPath(zipUri, "..", source)` as a save
+ * dialog's default path) trust it completely. A manifest crafted with
+ * `source: "../../../../home/user/.ssh/authorized_keys"` would otherwise
+ * pre-populate that dialog pointing outside the archive's own directory —
+ * user confirmation is the only remaining barrier, and a benign-looking
+ * trailing filename can make the leading traversal easy to miss. Rejecting
+ * outright (never "normalizing" a hostile value) is the safer invariant.
+ */
+function isSafeEntryName(name: string): boolean {
+  return name.length > 0 && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\\");
+}
+
 export interface PreprocessManifest {
   version: number;
   /** The CAD source's original filename, e.g. "bull.stp" — also the key used
@@ -56,12 +83,44 @@ export function buildPreprocessZip(input: PreprocessArchiveInput): Uint8Array {
 
 /**
  * Parses a `.zip` built by {@link buildPreprocessZip}. Throws only when the
- * archive isn't structurally usable (missing manifest, or the manifest's own
- * source entry is absent) — a missing individual sidecar is not an error,
- * it just means that piece of state didn't exist when the archive was saved.
+ * archive isn't structurally usable (missing manifest, the manifest's own
+ * source entry is absent, an entry violates the size/ratio caps above, or
+ * `manifest.source` isn't a safe bare filename) — a missing individual
+ * sidecar is not an error, it just means that piece of state didn't exist
+ * when the archive was saved.
+ *
+ * The size/ratio filter runs BEFORE `unzipSync` inflates each entry (fflate
+ * reads an entry's declared uncompressed size from the zip's central
+ * directory and only calls `inflateSync` — the actual allocation — after the
+ * filter returns `true`), so a filter that throws on an oversized/suspicious
+ * entry stops the expensive decompression from ever happening, not just from
+ * being returned — confirmed against the installed fflate version's source,
+ * not assumed from its type declarations alone.
  */
 export function readPreprocessZip(bytes: Uint8Array): PreprocessArchiveContents {
-  const files = unzipSync(bytes);
+  let totalUncompressed = 0;
+  const files = unzipSync(bytes, {
+    filter(file) {
+      if (file.originalSize > MAX_ENTRY_UNCOMPRESSED_BYTES) {
+        throw new Error(
+          `Preprocess archive entry "${file.name}" is too large (${file.originalSize} bytes, max ${MAX_ENTRY_UNCOMPRESSED_BYTES}).`
+        );
+      }
+      const ratio = file.originalSize / Math.max(file.size, 1);
+      if (ratio > MAX_COMPRESSION_RATIO) {
+        throw new Error(
+          `Preprocess archive entry "${file.name}" has a suspicious compression ratio (${ratio.toFixed(0)}x, max ${MAX_COMPRESSION_RATIO}x) — possible zip bomb.`
+        );
+      }
+      totalUncompressed += file.originalSize;
+      if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES) {
+        throw new Error(
+          `Preprocess archive's total uncompressed size exceeds the ${MAX_TOTAL_UNCOMPRESSED_BYTES}-byte limit.`
+        );
+      }
+      return true;
+    },
+  });
   const manifestBytes = files["manifest.json"];
   if (!manifestBytes) throw new Error("Not a CAD Preview preprocess archive: missing manifest.json");
   const manifest = parseManifest(strFromU8(manifestBytes));
@@ -93,6 +152,11 @@ function parseManifest(text: string): PreprocessManifest {
   const source = (data as Partial<PreprocessManifest> | null)?.source;
   if (typeof source !== "string" || !source) {
     throw new Error("Preprocess archive manifest.json is missing its source filename");
+  }
+  if (!isSafeEntryName(source)) {
+    throw new Error(
+      `Preprocess archive manifest.json's source "${source}" is not a valid bare filename (no path separators or "." /".." segments allowed).`
+    );
   }
   const version = (data as Partial<PreprocessManifest>).version;
   return { version: typeof version === "number" ? version : PREPROCESS_MANIFEST_VERSION, source };
