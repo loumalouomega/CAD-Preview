@@ -31,7 +31,7 @@ import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import { VisibilityState } from "./visibilityState";
 import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
-import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, type TransformBase } from "./gizmoTransform";
+import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, snapTranslateDelta, nearestSnapPoint, type TransformBase } from "./gizmoTransform";
 import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
@@ -308,6 +308,32 @@ let gizmoMode: GizmoMode | null = null;
  * change discards them. */
 let gizmoTargets: GizmoTarget[] | null = null;
 
+// ── Grid/entity snapping (roadmap "Grid and entity snapping", closed) ────
+// Session-only, like every other Appearance-group control (opacity,
+// background, edge visibility) — never persisted. Wired from
+// `setupViewMenu()`/`setupAppearanceControls()`; read from the gizmo's
+// `onChange` handler below. Entity-point snap takes priority over grid
+// snap PER TARGET when both are enabled and a close point is found for
+// that specific target — grid snap still applies to any target that
+// point-snap didn't resolve.
+let snapToGridEnabled = false;
+let snapToPointsEnabled = false;
+let gridSnapSize = 1;
+
+/** Every `point-N` entity's live world position currently in the model —
+ * the entity-point snap candidate set. `point-N` sprites are the ONLY
+ * individually-tagged, always-fully-populated point entities (FE-mesh
+ * overlay vertices are display-only and excluded from picking already;
+ * edge/face-mesh vertices were never separately tagged entities at all) —
+ * see CLAUDE.md's "Bottom-up wireframe modeling" section. */
+function collectSnapPoints(): THREE.Vector3[] {
+  const points: THREE.Vector3[] = [];
+  viewer.getModel()?.traverse((o) => {
+    if (o instanceof THREE.Sprite && o.userData.entityType === "point") points.push(o.position.clone());
+  });
+  return points;
+}
+
 function gizmoModeForForm(id: PanelOpId | null): GizmoMode | null {
   return id === "translate" || id === "rotate" || id === "scale" ? id : null;
 }
@@ -382,9 +408,24 @@ viewer.setGizmoHandlers(
     // never fires this event outside an active drag.
     if (!gizmoTargets || !gizmoMode) return;
     const d = viewer.getGizmoDelta();
+    // Grid snap rounds the SHARED delta once (before the per-target loop) so
+    // a multi-target drag still moves as one rigid group — see
+    // `snapTranslateDelta`'s doc comment for why this must NOT be computed
+    // per-target. Entity-point snap is the opposite: it's inherently a
+    // per-object precision operation (aligning THIS object's resulting
+    // position onto some nearby existing point), so it's resolved inside
+    // the loop below, once per target, and — when it finds a candidate —
+    // wins over the grid-snapped position for that one target only.
+    if (gizmoMode === "translate" && snapToGridEnabled) {
+      d.positionDelta.copy(snapTranslateDelta(d.positionDelta, gridSnapSize));
+    }
+    const snapCandidates = gizmoMode === "translate" && snapToPointsEnabled ? collectSnapPoints() : null;
+    const snapTolerance = (viewer.getModelExtents()?.diagonal ?? 0) * 0.01;
     for (const t of gizmoTargets) {
       if (gizmoMode === "translate") {
-        t.object.position.copy(applyTranslateDelta(t, d).position);
+        const result = applyTranslateDelta(t, d);
+        const snapped = snapCandidates ? nearestSnapPoint(result.position, snapCandidates, snapTolerance) : null;
+        t.object.position.copy(snapped ?? result.position);
       } else if (gizmoMode === "rotate") {
         const r = applyRotateDelta(t, d);
         t.object.position.copy(r.position);
@@ -398,7 +439,11 @@ viewer.setGizmoHandlers(
     // Push the live-dragged values into the open form's fields — the answer
     // to "what happens when a drag overwrites a field the user had typed an
     // expression into" (see `EditsPanel.setVecField`'s doc comment): the
-    // drag wins, silently, same as the user typing over it by hand.
+    // drag wins, silently, same as the user typing over it by hand. Reflects
+    // the GRID-snapped delta when grid snap is active; deliberately does NOT
+    // try to reflect entity-point snap in the form (that's inherently a
+    // per-target adjustment with no single shared "delta" left to show when
+    // multiple targets each snapped to a different nearby point).
     if (gizmoMode === "translate") {
       editsPanel.setVecField("vec", [d.positionDelta.x, d.positionDelta.y, d.positionDelta.z]);
     } else if (gizmoMode === "rotate") {
@@ -1666,6 +1711,21 @@ function setupViewMenu(): void {
   });
   grid?.setAttribute("aria-checked", String(viewer.isGridVisible()));
 
+  // Grid/entity snapping (roadmap "Grid and entity snapping", closed) —
+  // session-only booleans read by the Transform Gizmo's `onChange` handler
+  // above; clicks inside this dropdown don't close it (established "flip a
+  // mode, keep the panel open" convention this menu already follows).
+  const snapGridBtn = document.getElementById("snap-grid");
+  snapGridBtn?.addEventListener("click", () => {
+    snapToGridEnabled = !snapToGridEnabled;
+    snapGridBtn.setAttribute("aria-checked", String(snapToGridEnabled));
+  });
+  const snapPointsBtn = document.getElementById("snap-points");
+  snapPointsBtn?.addEventListener("click", () => {
+    snapToPointsEnabled = !snapToPointsEnabled;
+    snapPointsBtn.setAttribute("aria-checked", String(snapToPointsEnabled));
+  });
+
   // #edges is owned by setupAppearanceControls() — it holds the visibility
   // flag; this only reflects it. Screenshot is one-shot, so it dismisses.
   document.getElementById("screenshot")?.addEventListener("click", () => menu?.close());
@@ -1763,6 +1823,16 @@ function setupAppearanceControls(): AppearanceControlsHandle {
 
   document.getElementById("vc-unit")?.addEventListener("change", (e) => {
     setDisplayUnit((e.target as HTMLSelectElement).value as DisplayUnit);
+  });
+
+  // Grid snap spacing (roadmap "Grid and entity snapping", closed) — a
+  // plain number, not a parametric-expression field like the Edits panel's
+  // op params, so a non-positive/unparsable value just falls back to
+  // `gridSnapSize`'s last-good value (same tolerant-input spirit as every
+  // other session-only Appearance control, no error toast for a bad keystroke).
+  document.getElementById("vc-grid-size")?.addEventListener("input", (e) => {
+    const n = Number((e.target as HTMLInputElement).value);
+    if (Number.isFinite(n) && n > 0) gridSnapSize = n;
   });
 
   // Display mode replaces the old standalone Wireframe toolbar toggle —

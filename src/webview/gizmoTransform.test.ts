@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, type TransformBase, type GizmoDelta } from "./gizmoTransform";
+import {
+  applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle,
+  snapTranslateDelta, nearestSnapPoint,
+  type TransformBase, type GizmoDelta,
+} from "./gizmoTransform";
 
 function round(n: number): number {
   return Math.round(n * 1e6) / 1e6;
@@ -86,6 +90,47 @@ describe("applyScaleDelta", () => {
     };
     const result = applyScaleDelta(base, delta({ scaleDelta: new THREE.Vector3(1.5, 1, 1) }));
     expect(v3(result.scale)).toEqual([3, 2, 2]);
+  });
+});
+
+describe("snapTranslateDelta", () => {
+  it("rounds each component to the nearest grid multiple", () => {
+    const d = snapTranslateDelta(new THREE.Vector3(4.2, -3.6, 10.9), 2);
+    expect(v3(d)).toEqual([4, -4, 10]);
+  });
+
+  it("leaves an already-aligned delta unchanged", () => {
+    const d = snapTranslateDelta(new THREE.Vector3(6, -4, 0), 2);
+    expect(v3(d)).toEqual([6, -4, 0]);
+  });
+
+  it("treats a non-positive grid size as disabled (no snapping)", () => {
+    const raw = new THREE.Vector3(4.2, -3.6, 10.9);
+    expect(v3(snapTranslateDelta(raw, 0))).toEqual(v3(raw));
+    expect(v3(snapTranslateDelta(raw, -1))).toEqual(v3(raw));
+  });
+});
+
+describe("nearestSnapPoint", () => {
+  it("returns the closest candidate within tolerance", () => {
+    const candidates = [new THREE.Vector3(10, 0, 0), new THREE.Vector3(0.3, 0, 0), new THREE.Vector3(5, 5, 5)];
+    const result = nearestSnapPoint(new THREE.Vector3(0, 0, 0), candidates, 1);
+    expect(result && v3(result)).toEqual([0.3, 0, 0]);
+  });
+
+  it("returns null when nothing is within tolerance", () => {
+    const candidates = [new THREE.Vector3(10, 0, 0)];
+    expect(nearestSnapPoint(new THREE.Vector3(0, 0, 0), candidates, 1)).toBeNull();
+  });
+
+  it("returns null for an empty candidate list", () => {
+    expect(nearestSnapPoint(new THREE.Vector3(0, 0, 0), [], 100)).toBeNull();
+  });
+
+  it("picks the nearest among several within tolerance, not just the first", () => {
+    const candidates = [new THREE.Vector3(0.9, 0, 0), new THREE.Vector3(0.2, 0, 0), new THREE.Vector3(0.5, 0, 0)];
+    const result = nearestSnapPoint(new THREE.Vector3(0, 0, 0), candidates, 1);
+    expect(result && v3(result)).toEqual([0.2, 0, 0]);
   });
 });
 

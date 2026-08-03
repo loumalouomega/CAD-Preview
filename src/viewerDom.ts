@@ -123,6 +123,9 @@ export function viewerBodyHtml(): string {
         <button id="edges" role="menuitemcheckbox" aria-checked="true" title="Toggle edge visibility">${icon("edges")} Edges</button>
         <button id="hide-smooth-edges" role="menuitemcheckbox" aria-checked="false" title="Hide tangent patch-seam edges (e.g. between adjacent NURBS patches of one curved surface), keeping genuine feature edges">${icon("edges")} Hide smooth edges</button>
         <div class="tb-sep"></div>
+        <button id="snap-grid" role="menuitemcheckbox" aria-checked="false" title="Snap Transform Gizmo drags to a grid spacing">${icon("grid")} Snap to grid</button>
+        <button id="snap-points" role="menuitemcheckbox" aria-checked="false" title="Snap Transform Gizmo drags to nearby existing points">${icon("point")} Snap to points</button>
+        <div class="tb-sep"></div>
         <button id="screenshot" role="menuitem" title="Save the current view as a PNG">${icon("screenshot")} Screenshot…</button>
       </div>
     </div>
@@ -247,6 +250,10 @@ export function viewerBodyHtml(): string {
           <option value="in">in</option>
           <option value="ft">ft</option>
         </select>
+      </div>
+      <div class="vc-row">
+        <label for="vc-grid-size" class="vc-label">Grid size</label>
+        <input type="text" inputmode="decimal" id="vc-grid-size" class="vc-num" value="1" title="Grid snap spacing, in the model's own units (mm unless the file declares otherwise)">
       </div>
     </div>
     <div class="vc-group" id="vc-colorfield-group" hidden>

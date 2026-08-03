@@ -75,6 +75,54 @@ export function applyScaleDelta(base: TransformBase, delta: GizmoDelta): { posit
 }
 
 /**
+ * Snaps a translate drag's raw delta to the nearest multiple of `gridSize`,
+ * component-wise (roadmap "Grid and entity snapping", closed — the grid
+ * snap half). Deliberately snaps the DELTA itself, not each target's
+ * resulting absolute position: for a multi-target drag, snapping the delta
+ * once keeps every target moving by the exact same grid-aligned amount, so
+ * the group's relative spacing is preserved exactly — snapping each
+ * target's own absolute position independently would let differently-
+ * offset targets drift apart from each other. `gridSize <= 0` is treated as
+ * "snapping disabled" (returns the delta unchanged) rather than dividing by
+ * zero.
+ */
+export function snapTranslateDelta(positionDelta: THREE.Vector3, gridSize: number): THREE.Vector3 {
+  if (!(gridSize > 0)) return positionDelta.clone();
+  return new THREE.Vector3(
+    Math.round(positionDelta.x / gridSize) * gridSize,
+    Math.round(positionDelta.y / gridSize) * gridSize,
+    Math.round(positionDelta.z / gridSize) * gridSize
+  );
+}
+
+/**
+ * Finds the closest point in `candidates` to `position`, or `null` if none
+ * is within `tolerance` — entity-point snapping's core search (roadmap
+ * "Grid and entity snapping", closed — the entity-point snap half).
+ * Deliberately per-TARGET (called once per dragged object with that
+ * object's own candidate resulting position), unlike grid snap's single
+ * shared delta: aligning one object's corner onto another existing point is
+ * inherently a per-object precision operation, not a group-rigid one — a
+ * multi-target drag with point-snap enabled may see different targets snap
+ * to different nearby points, which is the expected/useful behavior here
+ * (each object independently seeks its own nearest snap target), unlike
+ * grid-snap where independent-per-target snapping would undesirably let a
+ * dragged group's relative spacing drift.
+ */
+export function nearestSnapPoint(position: THREE.Vector3, candidates: THREE.Vector3[], tolerance: number): THREE.Vector3 | null {
+  let best: THREE.Vector3 | null = null;
+  let bestDistSq = tolerance * tolerance;
+  for (const c of candidates) {
+    const d = position.distanceToSquared(c);
+    if (d <= bestDistSq) {
+      best = c;
+      bestDistSq = d;
+    }
+  }
+  return best;
+}
+
+/**
  * Decomposes a quaternion into an axis + angle (radians) — `THREE.Quaternion`
  * has no built-in accessor for this. Degenerates to an arbitrary axis
  * (+Z) at zero rotation (`sin(angle/2) ≈ 0`, axis is genuinely undefined at

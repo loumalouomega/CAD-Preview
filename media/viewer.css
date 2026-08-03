@@ -631,6 +631,21 @@ input[type="range"]#vc-opacity.meshing-slider {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+.vc-num {
+  font: inherit;
+  font-size: 12px;
+  width: 52px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #1e1e1e);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 3px 4px;
+}
+.vc-num:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
 #vc-colorfield-select {
   font: inherit;
   font-size: 12px;
