@@ -646,11 +646,44 @@ export class Viewer {
     this.scene.background = new THREE.Color(hex);
   }
 
+  /** The two edge-visibility toggles compose here rather than each writing
+   * `.visible` directly — same "single writer, multiple inputs" discipline
+   * `highlightGroup()`'s `baseOpacity` composition already established for
+   * opacity, so `setEdgesVisible`/`setSmoothEdgesVisible` can't stomp on each
+   * other regardless of click order. Like the pre-existing "Edges" toggle
+   * this extends, neither survives a model rebuild on its own — a fresh
+   * `THREE.Object3D` from `setModel()` starts every line visible, and
+   * `main.ts`'s `refreshColors()` (called on every rebuild) does not
+   * currently re-apply either; a known, pre-existing limitation of the
+   * toggle this one mirrors, not a regression introduced here. */
+  private edgesVisible = true;
+  private smoothEdgesHidden = false;
+
+  private applyEdgeVisibility(): void {
+    this.model?.traverse((obj) => {
+      if (obj.userData.entityType !== "line") return;
+      obj.visible = this.edgesVisible && !(this.smoothEdgesHidden && obj.userData.smooth === true);
+    });
+  }
+
   /** Shows/hides every edge line, leaving faces and points untouched. */
   setEdgesVisible(visible: boolean): void {
-    this.model?.traverse((obj) => {
-      if (obj.userData.entityType === "line") obj.visible = visible;
-    });
+    this.edgesVisible = visible;
+    this.applyEdgeVisibility();
+  }
+
+  /**
+   * Hides/shows edges classified `smooth` (tangent patch-seam continuations,
+   * e.g. between adjacent NURBS patches of one conceptually-curved surface —
+   * see `edgeEnumeration.ts`'s `classifyEdgeSmoothness`, roadmap "Display-edge
+   * classification, as a flag", closed) while leaving genuine feature edges
+   * alone. `visible: false` hides them (declutters patch seams); the default
+   * is `true` (shown), matching every pre-existing document's current look —
+   * this is an opt-in decluttering aid, not a default behavior change.
+   */
+  setSmoothEdgesVisible(visible: boolean): void {
+    this.smoothEdgesHidden = !visible;
+    this.applyEdgeVisibility();
   }
 
   /**

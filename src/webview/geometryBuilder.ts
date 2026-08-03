@@ -91,6 +91,11 @@ function buildEdgeLine(ee: EncodedEdge): THREE.Line {
   const line = new THREE.Line(geometry, material);
   line.userData.entityType = "line";
   line.userData.entityId = ee.edgeId;
+  // Roadmap "Display-edge classification, as a flag", closed — a tangent
+  // patch-seam continuation, not a real feature edge. `Viewer.setSmoothEdgesVisible()`
+  // reads this to implement the "Hide smooth edges" toggle; never filtered
+  // out here or host-side (that would renumber `edge-N`).
+  line.userData.smooth = ee.smooth;
   return line;
 }
 

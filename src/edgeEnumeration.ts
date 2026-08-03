@@ -146,3 +146,150 @@ function discretizeEdge(oc: any, edge: any, cleanup: Array<{ delete(): void }>):
     return new Float32Array(0);
   }
 }
+
+/**
+ * Below this dihedral angle (degrees, between the two adjacent faces' surface
+ * normals AT the shared edge), an edge is classified `smooth` — a tangent
+ * continuation between two faces, not a real feature the user would call an
+ * "edge" (the classic case: an imported STEP whose cylindrical/curved
+ * surfaces are split into several NURBS patches draws a hard line at every
+ * patch seam even though the surface is smooth there). Close to, but not
+ * copied from, SketchForge-3D's own 0.75° threshold — chosen after finding a
+ * real STEP fixture's genuine patch seams (`bull.stp`, 9 of its 96 edges)
+ * cluster under 1° with a clean gap to the next-lowest real angle (~30°), so
+ * 1° has margin on both sides without being copied from a citation.
+ */
+const SMOOTH_DIHEDRAL_THRESHOLD_DEG = 1.0;
+
+/**
+ * Classifies each of `edges` (already enumerated by {@link enumerateEdges},
+ * in the SAME order — this function never re-derives or reorders them, only
+ * annotates) as `smooth` or not (roadmap "Display-edge classification,
+ * as a flag", closed). Returns a parallel `boolean[]`, never re-orders or
+ * drops anything — `edge-N` id assignment stays entirely `enumerateEdges`'s
+ * business, untouched by this function.
+ *
+ * Face adjacency (needed for the dihedral-angle test, but NOT needed by
+ * `enumerateEdges` itself) is built by a SEPARATE, face-driven pass — walking
+ * every face's own edges and bucketing by `HashCode`+`IsSame`, the same
+ * pattern `enumerateEdges` already uses — deliberately kept independent of
+ * `enumerateEdges`'s own shape-level `TopAbs_EDGE` explorer. The two
+ * traversals are NOT guaranteed to visit edges in the same order (a
+ * face-driven walk and a whole-shape edge walk are different algorithms), so
+ * results here are correlated back to `enumerateEdges`'s edges by `IsSame`
+ * identity, never by iteration-order assumption — the one thing that must
+ * never regress is `edge-N`'s existing order, which this function cannot
+ * influence since it takes the already-enumerated list as input.
+ *
+ * `TopTools_IndexedDataMapOfShapeListOfShape` and `TopExp.MapShapesAndAncestors`
+ * — the "proper" OCCT tools for edge→face adjacency — are both confirmed
+ * UNBOUND in this WASM build (probed directly, not assumed), hence the
+ * hand-rolled bucket map. An edge with anything other than exactly 2 adjacent
+ * faces (a free/boundary edge, or a non-manifold edge shared by 3+ faces) is
+ * never classified smooth — there is no well-defined "tangent continuation"
+ * dihedral angle for those cases, and both are genuinely real features a
+ * user would want to see regardless.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function classifyEdgeSmoothness(
+  oc: any,
+  shape: any,
+  edges: EnumeratedEdge[],
+  cleanup: Array<{ delete(): void }>
+): boolean[] {
+  const faceExp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  cleanup.push(faceExp);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const faces: any[] = [];
+  const faceSeen = new Map<number, Array<{ IsSame(o: unknown): boolean }>>();
+  for (; faceExp.More(); faceExp.Next()) {
+    const face = oc.TopoDS.Face_1(faceExp.Current());
+    const hash = face.HashCode(HASH_UPPER);
+    const bucket = faceSeen.get(hash);
+    if (bucket && bucket.some((f) => f.IsSame(face))) {
+      face.delete();
+      continue;
+    }
+    cleanup.push(face);
+    if (bucket) bucket.push(face);
+    else faceSeen.set(hash, [face]);
+    faces.push(face);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const edgeFaces = new Map<number, Array<{ edge: any; faceIdxs: number[] }>>();
+  for (let fi = 0; fi < faces.length; fi++) {
+    const edgeExp = new oc.TopExp_Explorer_2(faces[fi], oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    cleanup.push(edgeExp);
+    for (; edgeExp.More(); edgeExp.Next()) {
+      const edge = oc.TopoDS.Edge_1(edgeExp.Current());
+      const hash = edge.HashCode(HASH_UPPER);
+      let bucket = edgeFaces.get(hash);
+      if (!bucket) {
+        bucket = [];
+        edgeFaces.set(hash, bucket);
+      }
+      let entry = bucket.find((b) => b.edge.IsSame(edge));
+      if (!entry) {
+        entry = { edge, faceIdxs: [] };
+        bucket.push(entry);
+        cleanup.push(edge);
+      } else {
+        edge.delete();
+      }
+      entry.faceIdxs.push(fi);
+    }
+  }
+
+  return edges.map(({ edge }) => {
+    const bucket = edgeFaces.get(edge.HashCode(HASH_UPPER));
+    const entry = bucket?.find((b) => b.edge.IsSame(edge));
+    if (!entry || entry.faceIdxs.length !== 2) return false;
+    const angle = dihedralAngleDeg(oc, edge, faces[entry.faceIdxs[0]], faces[entry.faceIdxs[1]], cleanup);
+    return angle !== null && angle < SMOOTH_DIHEDRAL_THRESHOLD_DEG;
+  });
+}
+
+/**
+ * The surface normal of `face` at the point where `edge` meets it — evaluated
+ * via the edge's own 2D parametric curve ON that face (`BRepAdaptor_Curve2d`,
+ * verified live against the WASM), not by projecting the edge's 3D midpoint
+ * onto the face's surface: `GeomAPI_ProjectPointOnSurf`'s own UV-parameter
+ * accessors (`Parameters`/`LowerDistanceParameters`) are confirmed UNBOUND in
+ * this build ("null function or function signature mismatch"), so a 2D
+ * pcurve lookup — the standard OCCT approach for exactly this "surface
+ * property at a point on one of its edges" problem — is used instead. `null`
+ * for any construction failure or an undefined normal (`GeomLProp_SLProps`
+ * near a singular point), which the caller treats as "not smooth".
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function faceNormalAtEdge(oc: any, edge: any, face: any, cleanup: Array<{ delete(): void }>): [number, number, number] | null {
+  try {
+    const curve2d = new oc.BRepAdaptor_Curve2d_2(edge, face);
+    cleanup.push(curve2d);
+    const mid = (curve2d.FirstParameter() + curve2d.LastParameter()) / 2;
+    const uv = curve2d.Value(mid);
+    cleanup.push(uv);
+    const surface = oc.BRep_Tool.Surface_2(face);
+    const props = new oc.GeomLProp_SLProps_1(surface, uv.X(), uv.Y(), 1, 1e-6);
+    cleanup.push(props);
+    if (!props.IsNormalDefined()) return null;
+    const normal = props.Normal();
+    cleanup.push(normal);
+    return [normal.X(), normal.Y(), normal.Z()];
+  } catch {
+    return null;
+  }
+}
+
+/** The angle (degrees, 0-180) between `faceA`/`faceB`'s surface normals at
+ * their shared `edge` — `null` if either normal couldn't be evaluated. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function dihedralAngleDeg(oc: any, edge: any, faceA: any, faceB: any, cleanup: Array<{ delete(): void }>): number | null {
+  const na = faceNormalAtEdge(oc, edge, faceA, cleanup);
+  const nb = faceNormalAtEdge(oc, edge, faceB, cleanup);
+  if (!na || !nb) return null;
+  const dot = na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2];
+  const clamped = Math.max(-1, Math.min(1, dot));
+  return (Math.acos(clamped) * 180) / Math.PI;
+}

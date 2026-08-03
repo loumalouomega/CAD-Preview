@@ -889,6 +889,7 @@ interface FaceMesh {
 interface EdgeLine {
   edgeId: string            // stable per-edge entity id ("edge-N")
   positions: Float32Array   // consecutive xyz points; pairs form polyline segments
+  smooth: boolean           // tangent patch-seam continuation, not a real feature edge
 }
 
 interface PointEntity {
@@ -947,7 +948,18 @@ When solids exist, it also runs a **free-face pass** (`extractFreeFaces`): every
 function extractEdges(oc: any, shape: any): EdgeLine[]
 ```
 
-Explores every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` bucket + `IsSame` (this OCCT build does **not** bind `TopTools_IndexedMapOfShape`), then discretizes each unique edge to a polyline via `BRepAdaptor_Curve_2` + `GCPnts_UniformDeflection_2` (both verified against the live WASM). The first appearance in explorer order fixes the stable `edgeId`.
+Explores every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` bucket + `IsSame` (this OCCT build does **not** bind `TopTools_IndexedMapOfShape`), then discretizes each unique edge to a polyline via `BRepAdaptor_Curve_2` + `GCPnts_UniformDeflection_2` (both verified against the live WASM). The first appearance in explorer order fixes the stable `edgeId`. Calls `edgeEnumeration.ts`'s `enumerateEdges()` (unchanged) then `classifyEdgeSmoothness()` (below) to compute each edge's `smooth` flag, zipping the two parallel arrays together — `edge-N` assignment stays entirely `enumerateEdges`'s business.
+
+```typescript
+function classifyEdgeSmoothness(
+  oc: any,
+  shape: any,
+  edges: EnumeratedEdge[],   // already enumerated by enumerateEdges — same order, never reordered
+  cleanup: { delete(): void }[]
+): boolean[]                 // parallel to `edges`
+```
+
+`src/edgeEnumeration.ts` (roadmap "Display-edge classification, as a flag", closed). For each edge with exactly 2 adjacent faces (a free/boundary edge or a non-manifold edge shared by 3+ faces is never classified `smooth` — always a genuine feature), computes the dihedral angle between the two faces' surface normals AT the shared edge; below `1.0°` (a constant close to, but independently re-derived from, SketchForge-3D's own 0.75° — see this function's own doc comment for the real-fixture data behind the choice), the edge is a tangent patch-seam continuation, not a real feature. Face adjacency is a SEPARATE, face-driven `HashCode`+`IsSame` bucket pass (walking every face's own edges) — deliberately independent of `enumerateEdges`'s own shape-level `TopAbs_EDGE` explorer, since the two traversals are not guaranteed to visit edges in the same order; results are correlated back to `enumerateEdges`'s edges by `IsSame` identity, never by assumed ordering. **Verified live against the real WASM, not assumed:** `TopTools_IndexedDataMapOfShapeListOfShape` and `TopExp.MapShapesAndAncestors` (the "proper" OCCT adjacency tools) are both confirmed unbound in this build, hence the hand-rolled bucket map; a box's 12 edges each showed the expected 90° dihedral angle; `bull.stp` showed a real, meaningful split — 9 of 96 two-face edges under 1° (genuine patch seams), the rest ranging 30°–180° (genuine features), with a clean gap between the two clusters. The per-face-pair normal is evaluated via `BRepAdaptor_Curve2d_2(edge, face)`'s 2D pcurve → `GeomLProp_SLProps_1(surface, u, v, 1, tol)` → `.Normal()` — **not** by projecting the edge's 3D midpoint onto the face (`GeomAPI_ProjectPointOnSurf`'s own `Parameters`/`LowerDistanceParameters` UV accessors are confirmed unbound: `"null function or function signature mismatch"`).
 
 ```typescript
 function polylineFromDiscretizer(disc: OcctDiscretizer): Float32Array

@@ -110,6 +110,7 @@ export function viewerBodyHtml(): string {
       <div id="view-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="grid" role="menuitemcheckbox" aria-checked="false" title="Toggle the grid and axis helpers">${icon("grid")} Grid</button>
         <button id="edges" role="menuitemcheckbox" aria-checked="true" title="Toggle edge visibility">${icon("edges")} Edges</button>
+        <button id="hide-smooth-edges" role="menuitemcheckbox" aria-checked="false" title="Hide tangent patch-seam edges (e.g. between adjacent NURBS patches of one curved surface), keeping genuine feature edges">${icon("edges")} Hide smooth edges</button>
         <div class="tb-sep"></div>
         <button id="screenshot" role="menuitem" title="Save the current view as a PNG">${icon("screenshot")} Screenshot…</button>
       </div>

@@ -122,6 +122,7 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 | --- | --- |
 | **Grid** | Show/hide the world-space grid and axis helpers (ticked when shown) |
 | **Edges** | Show/hide edge lines independently of the shaded faces (ticked when shown) |
+| **Hide smooth edges** | Declutter tangent patch-seam edges (e.g. between adjacent NURBS patches of one conceptually-curved surface on an imported STEP file) while keeping genuine feature edges — ticked when smooth edges are hidden. Off by default, so an existing model looks unchanged until you opt in |
 | **Screenshot…** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
 
 **Select ▾**

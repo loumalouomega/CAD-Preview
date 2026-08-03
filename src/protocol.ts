@@ -34,6 +34,11 @@ export interface EncodedMesh {
 export interface EncodedEdge {
   positions: string; // base64 Float32Array — consecutive points form a polyline
   edgeId: string;    // stable per-edge entity id (e.g. "edge-12")
+  /** `true` for a tangent patch-seam continuation rather than a real feature
+   * edge (roadmap "Display-edge classification, as a flag", closed) — the
+   * webview decides what to do with this (e.g. a "Hide smooth edges" toggle),
+   * never the host: dropping an edge server-side would renumber `edge-N`. */
+  smooth: boolean;
 }
 
 /** One vertex's position encoded as base64 for JSON-safe transfer. */

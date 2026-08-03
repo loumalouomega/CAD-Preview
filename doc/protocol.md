@@ -40,10 +40,11 @@ One encoded mesh per **face** (B-rep). Geometry is base64-encoded for safe `post
 interface EncodedEdge {
   positions: string   // base64-encoded Float32Array — consecutive points form a polyline
   edgeId: string      // stable per-edge entity id (e.g. "edge-12")
+  smooth: boolean      // tangent patch-seam continuation, not a real feature edge
 }
 ```
 
-One per **unique edge** (B-rep), discretized to a polyline. Shared edges are de-duplicated host-side; `edgeId` is stable across reopen of an unchanged file.
+One per **unique edge** (B-rep), discretized to a polyline. Shared edges are de-duplicated host-side; `edgeId` is stable across reopen of an unchanged file. `smooth` (roadmap "Display-edge classification, as a flag", closed) flags a tangent continuation between two faces — e.g. a NURBS-patch seam on what's conceptually one curved surface — via a dihedral-angle test between the two adjacent faces' surface normals at the shared edge (`src/edgeEnumeration.ts`'s `classifyEdgeSmoothness`); it is pure display metadata, never a filter — dropping an edge server-side would renumber every later `edge-N` id. The webview's "Hide smooth edges" toggle (View ▾ menu) is the only consumer.
 
 ### `EncodedPoint`
 
@@ -269,7 +270,7 @@ Sent after B-rep tessellation. Contains every face as an encoded mesh, every uni
     { "positions": "BBBB...", "indices": "BBBB...", "groupId": "solid-0", "faceId": "face-1" }
   ],
   "edges": [
-    { "positions": "CCCC...", "edgeId": "edge-0" }
+    { "positions": "CCCC...", "edgeId": "edge-0", "smooth": false }
   ],
   "points": [
     { "position": "DDDD...", "pointId": "point-0" }

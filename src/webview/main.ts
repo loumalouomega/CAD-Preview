@@ -1390,6 +1390,18 @@ function setupAppearanceControls(): AppearanceControlsHandle {
     edgesBtn.setAttribute("aria-checked", String(edgesVisible));
   });
 
+  // Roadmap "Display-edge classification, as a flag", closed — declutters
+  // tangent NURBS-patch-seam edges while leaving genuine feature edges
+  // alone. Defaults to unchecked/shown (`smoothEdgesShown = true`), matching
+  // every pre-existing document's current look.
+  let smoothEdgesShown = true;
+  const hideSmoothEdgesBtn = document.getElementById("hide-smooth-edges");
+  hideSmoothEdgesBtn?.addEventListener("click", () => {
+    smoothEdgesShown = !smoothEdgesShown;
+    viewer.setSmoothEdgesVisible(smoothEdgesShown);
+    hideSmoothEdgesBtn.setAttribute("aria-checked", String(!smoothEdgesShown));
+  });
+
   document.getElementById("vc-background")?.addEventListener("input", (e) => {
     viewer.setBackground((e.target as HTMLInputElement).value);
   });

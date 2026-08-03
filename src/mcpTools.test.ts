@@ -131,7 +131,7 @@ const FAKE_BREP_RESULT: BRepResult = {
       ],
     },
   ],
-  edges: [{ edgeId: "edge-0", positions: new Float32Array([0, 0, 0, 1, 0, 0]) }],
+  edges: [{ edgeId: "edge-0", positions: new Float32Array([0, 0, 0, 1, 0, 0]), smooth: false }],
   points: [{ pointId: "point-0", position: [0, 0, 0] }],
   tree: { id: "root", label: "STEP", children: [{ id: "solid-0", label: "Solid 1", faceCount: 2 }] },
 };

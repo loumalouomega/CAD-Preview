@@ -1,4 +1,4 @@
-import { enumerateEdges, polylineFromDiscretizer } from "./edgeEnumeration";
+import { enumerateEdges, classifyEdgeSmoothness, polylineFromDiscretizer } from "./edgeEnumeration";
 import { TESSELLATION_PRESETS, type TessellationParams } from "./tessellationQuality";
 
 // Re-exported for backward compatibility — `polylineFromDiscretizer` moved to
@@ -25,6 +25,13 @@ export interface EdgeLine {
   edgeId: string;
   /** Consecutive xyz points; pairs (i, i+1) form line segments. */
   positions: Float32Array;
+  /** `true` for a tangent continuation between two faces (e.g. a NURBS patch
+   * seam on what's conceptually one curved surface) rather than a real
+   * feature edge — see `edgeEnumeration.ts`'s `classifyEdgeSmoothness`
+   * (roadmap "Display-edge classification, as a flag", closed). Display-only
+   * metadata: never affects whether an edge is kept as an entity at all, or
+   * its `edge-N` id. */
+  smooth: boolean;
 }
 
 export interface SolidGroup {
@@ -325,7 +332,9 @@ export function tessellateByGroup(oc: any, shape: any, quality: TessellationPara
 export function extractEdges(oc: any, shape: any): EdgeLine[] {
   const cleanup: Array<{ delete(): void }> = [];
   try {
-    return enumerateEdges(oc, shape, cleanup).map((e, i) => ({ edgeId: `edge-${i}`, positions: e.positions }));
+    const enumerated = enumerateEdges(oc, shape, cleanup);
+    const smooth = classifyEdgeSmoothness(oc, shape, enumerated, cleanup);
+    return enumerated.map((e, i) => ({ edgeId: `edge-${i}`, positions: e.positions, smooth: smooth[i] }));
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }
