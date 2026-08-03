@@ -148,6 +148,48 @@ const SHOTS = [
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },
   {
+    // The Standard Parts panel talks to the real step.parts network API in
+    // production — there's no WASM fixture for it, so this fakes one
+    // realistic `standardPartsSearchResult` round trip (matching the
+    // requestId the real search click generates) rather than leaving the
+    // panel in its empty pre-search state.
+    file: "standard-parts-panel.png",
+    setup: async (page) => {
+      await populate(page);
+      await page.fill("#standard-parts-query", "hex bolt");
+      await page.click("#standard-parts-search-btn");
+      const requestId = await page.waitForFunction(() => {
+        const req = (window.__sent || []).findLast((m) => m.type === "standardPartsSearchRequest");
+        return req ? req.requestId : false;
+      }).then((h) => h.jsonValue());
+      await post(page, {
+        type: "standardPartsSearchResult",
+        requestId,
+        items: [
+          {
+            id: "iso-4762-m6x20",
+            name: "ISO 4762 Hex Socket Head Cap Screw M6x20",
+            description: "Metric hex socket head cap screw, M6 thread, 20mm length, class 12.9 steel.",
+            category: "Fasteners",
+            standard: { body: "ISO", number: "4762", designation: "ISO 4762" },
+          },
+          {
+            id: "din-931-m6x25",
+            name: "DIN 931 Hex Head Bolt M6x25",
+            description: "Partially threaded hexagon head bolt, M6 thread, 25mm length.",
+            category: "Fasteners",
+            standard: { body: "DIN", number: "931", designation: "DIN 931" },
+          },
+        ],
+        page: 1,
+        totalPages: 1,
+        total: 2,
+      });
+      await sleep(200);
+    },
+    target: { sel: "#standard-parts-panel" },
+  },
+  {
     file: "parts-panel.png",
     setup: async (page) => {
       await populate(page);

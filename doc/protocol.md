@@ -272,6 +272,12 @@ type HostToWebview =
   | { type: 'meshingError'; message: string }
   | ({ type: 'viewerDefaults' } & ViewerDefaults)
   | { type: 'screenshotRequest'; requestId: string }
+  | { type: 'standardPartsSearchResult'; requestId: string; items: StandardPart[]; page: number; totalPages: number; total: number }
+  | { type: 'standardPartsSearchError'; requestId: string; message: string }
+  | { type: 'standardPartsInsertResult'; requestId: string; path: string | null }
+  | { type: 'standardPartsInsertError'; requestId: string; message: string }
+  | { type: 'importSvgResult'; text: string }
+  | { type: 'importSvgError'; message: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
@@ -550,6 +556,42 @@ Sent in reply to `colorFieldRequest` (webview → host, below) — **meshio++-im
 { "type": "colorFieldError", "requestId": "1234-0.56", "message": "Field \"Pressure\" not found, not a plain scalar, or the boundary isn't pure triangles." }
 ```
 
+### `standardPartsSearchResult` / `standardPartsSearchError`
+
+Sent in reply to `standardPartsSearchRequest` (webview → host, below). `items` is the raw `StandardPart[]` page returned by the hosted [step.parts](https://www.step.parts) REST API (`src/stepPartsService.ts`'s `searchStandardParts` — this extension's only external network dependency); `page`/`totalPages`/`total` mirror the API's own pagination fields. A network/API failure (unreachable host, non-2xx response, timeout) is reported through `standardPartsSearchError`, never a thrown exception — the same `{available: false, reason}` semantics `search_standard_parts`'s MCP tool already uses, just routed through postMessage instead of a JSON-RPC response.
+
+```json
+{ "type": "standardPartsSearchResult", "requestId": "1234-0.56", "items": [{ "id": "iso-4762-m6x20", "name": "ISO 4762 Hex Socket Head Cap Screw M6x20", "description": "...", "category": "Fasteners", "standard": { "body": "ISO", "number": "4762", "designation": "ISO 4762" }, "stepUrl": "https://media.githubusercontent.com/...", "sha256": "..." }], "page": 1, "totalPages": 3, "total": 27 }
+```
+
+```json
+{ "type": "standardPartsSearchError", "requestId": "1234-0.56", "message": "step.parts is unreachable (timed out after 10s)." }
+```
+
+### `standardPartsInsertResult` / `standardPartsInsertError`
+
+Sent in reply to `standardPartsInsertRequest` (webview → host, below), after `provider.ts` downloads the chosen part's STEP file (`downloadStandardPart`, verifying its checksum when the catalog records one), shows a Save dialog defaulting to `<part-id>.step`/`.stp` next to the currently open document, writes the bytes, and opens the result as a new tab via `vscode.openWith`. `path: null` means the user dismissed the Save dialog — a quiet no-op the webview treats as "re-enable the Insert button", not an error (this case never goes through `standardPartsInsertError`).
+
+```json
+{ "type": "standardPartsInsertResult", "requestId": "1234-0.56", "path": "/home/user/project/iso-4762-m6x20.step" }
+```
+
+```json
+{ "type": "standardPartsInsertError", "requestId": "1234-0.56", "message": "Download failed: checksum mismatch — the downloaded bytes do NOT match the catalog's recorded sha256." }
+```
+
+### `importSvgResult` / `importSvgError`
+
+Sent in reply to `importSvgRequest` (webview → host, below) — no `requestId`, unlike every other request/response pair on this page: `vscode.window.showOpenDialog` is modal, so at most one import can plausibly be in flight, leaving nothing to disambiguate. `text` is the picked `.svg` file's raw UTF-8 contents, read host-side with no parsing — parsing (`src/svgImport.ts`'s `parseSvgPaths`) happens in the webview, since the resulting `addPolyline` ops need to be pushed onto `EditsModel` there anyway. A dismissed file-picker dialog is a quiet no-op (posts neither message), mirroring every other file-picker cancellation in this codebase.
+
+```json
+{ "type": "importSvgResult", "text": "<svg><path d=\"M0 0 L10 0 L10 10 Z\"/></svg>" }
+```
+
+```json
+{ "type": "importSvgError", "message": "Could not read the selected file." }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -577,6 +619,9 @@ type WebviewToHost =
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
+  | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
+  | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
+  | { type: 'importSvgRequest' }
 ```
 
 ### `partsChanged`
@@ -741,6 +786,30 @@ Sent when the view-controls "Colour by field" `<select>` changes to a non-"None"
 
 ```json
 { "type": "colorFieldRequest", "requestId": "1234-0.56", "field": "Temperature", "kind": "point" }
+```
+
+### `standardPartsSearchRequest`
+
+Sent when the Standard Parts panel's **Search** button is clicked (or Enter is pressed in the query field). `q` is the raw search text; `page` is omitted for a fresh search (page 1).
+
+```json
+{ "type": "standardPartsSearchRequest", "requestId": "1234-0.56", "q": "M6 hex bolt" }
+```
+
+### `standardPartsInsertRequest`
+
+Sent when a search result's **Insert…** button is clicked. `id` is the part's catalog id (used to re-fetch its detail/`stepUrl` and download the STEP bytes host-side); `suggestedName` seeds the Save dialog's default filename.
+
+```json
+{ "type": "standardPartsInsertRequest", "requestId": "1234-0.56", "id": "iso-4762-m6x20", "suggestedName": "iso-4762-m6x20.step" }
+```
+
+### `importSvgRequest`
+
+Sent when **File ▾ → Import SVG…** is clicked. No parameters — the host shows its own `showOpenDialog` filtered to `.svg`; see `importSvgResult`/`importSvgError` above.
+
+```json
+{ "type": "importSvgRequest" }
 ```
 
 ---

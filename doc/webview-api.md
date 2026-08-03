@@ -8,8 +8,9 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | --- | --- |
 | `src/webview/main.ts` | Entry point, VS Code API, message routing, UI wiring |
 | `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
-| `src/webview/viewer.ts` | Three.js scene, camera, rendering, gizmo |
+| `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
 | `src/webview/cameraControls.ts` | Pure camera math utilities (unit-testable) |
+| `src/webview/gizmoTransform.ts` | Pure per-target delta math (translate/rotate-about-pivot/scale-about-pivot, axis-angle decomposition, grid/point snapping) for the Transform Gizmo (unit-tested) |
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
 | `src/webview/geometryBuilder.ts` | Decode and build per-face meshes + per-edge lines from encoded buffers |
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
@@ -26,6 +27,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
+| `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts` |
 | `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
@@ -387,6 +389,18 @@ clearMeasurementOverlay(): void
 
 `measureMode` is a **parallel interaction mode**, deliberately independent of `selectionMode`/`SelectionSet` — a click takes measurement priority over the normal Parts/Edits pick when both happen to be active (`onSelectPointerUp`). On a measure-mode hit, `buildMeasurementPick()` (private) assembles a `MeasurementPick` (`src/webview/measurementState.ts`) from the raycast intersection: the world-space hit point (available in the hit loop but normally discarded — the ordinary `onEntityPick` path only forwards the resolved `{entityType, entityId}`), a world-space direction for a `surface`/`line` hit (face normal via the intersection's local `face.normal` + normal matrix, or edge tangent from the two polyline points straddling the hit — used by the "angle" tool), and the picked edge's full world-space polyline (used by "edgeLength"/"radius"). `showMeasurementMarker`/ `showMeasurementOverlay`/`clearMeasurementOverlay` manage a `measurementOverlay` scene-sibling `THREE.Object3D` (same pattern as `meshOverlay`), built via `measurementOverlay.ts`'s `makeMeasureMarkerSprite`/`buildMeasureLine`/ `makeMeasureLabelSprite`. The overlay's label sprite is rescaled every `animate()` frame (`distance-to-camera × 0.06`) to stay a constant on-screen size while zooming — unlike the point-sprite scale in `frame()`, which only updates on fit/reset. `setModel()` clears any measurement overlay, same as it clears the FE-mesh overlay — both refer to geometry that's about to be replaced.
 
+**Transform Gizmo (live drag preview for Move/Rotate/Scale, never itself an edit op):**
+
+```typescript
+attachTransformGizmo(pivot: THREE.Vector3, mode: "translate" | "rotate" | "scale"): void
+detachTransformGizmo(): void
+isGizmoDragging(): boolean
+getGizmoDelta(): { positionDelta: THREE.Vector3; quaternionDelta: THREE.Quaternion; scaleDelta: THREE.Vector3; pivot: THREE.Vector3 }
+setGizmoHandlers(onChange: () => void, onDraggingChanged: (dragging: boolean) => void): void
+```
+
+Wraps three.js's own `TransformControls` (from `three/examples/jsm/controls/TransformControls.js`, already part of the `three` dependency — no new package), attached to a dedicated, permanently-scene-resident, geometry-free proxy `Object3D` (`gizmoProxy`) rather than directly to a real model object — a drag typically needs to move a WHOLE multi-solid selection as one rigid group about their shared bbox centroid, a capability the native single-object `attach()` doesn't have. `attachTransformGizmo(pivot, mode)` resets the proxy to `position = pivot, quaternion = identity, scale = (1,1,1)` on every (re)attach, which is what makes `getGizmoDelta()` trivial — the proxy's CURRENT transform after any drag directly IS the delta (only `positionDelta` needs the pivot subtracted back out). Per-target delta application (`applyTranslateDelta`/`applyRotateDelta`/`applyScaleDelta`/`quaternionToAxisAngle`, `gizmoTransform.ts` below) is pure, DOM-free math the caller (`main.ts`) runs once per selected object on every `onChange` callback. `setGizmoHandlers`' `onDraggingChanged` fires from the underlying `"dragging-changed"` event — genuinely dispatched despite not appearing as a literal string anywhere in the installed three.js source (`TransformControls`' generic `defineProperty` reactive-property setter constructs the event name dynamically) — and is what suspends/resumes `OrbitControls` for the duration of a drag. `onSelectPointerDown`/`onSelectPointerUp` both early-return while `isGizmoDragging()` is true, so a gizmo-handle drag never also triggers entity picking.
+
 **Internal:**
 
 ```typescript
@@ -467,6 +481,49 @@ function viewDirection(
 ```
 
 Returns the normalized vector from the target to the camera (`camera.position.clone().sub(target).normalize()`).
+
+---
+
+## `src/webview/gizmoTransform.ts`
+
+Pure math — no DOM, no THREE renderer, no `TransformControls` dependency (only `THREE.Vector3`/`THREE.Quaternion`). Unit-tested headlessly via Vitest. Backs the Transform Gizmo (`Viewer.attachTransformGizmo`/`getGizmoDelta`, above) and its grid/entity-point snapping.
+
+```typescript
+interface GizmoDelta {
+  positionDelta: THREE.Vector3
+  quaternionDelta: THREE.Quaternion
+  scaleDelta: THREE.Vector3
+  pivot: THREE.Vector3
+}
+interface TransformBase {
+  position: THREE.Vector3
+  quaternion: THREE.Quaternion
+  scale: THREE.Vector3
+}
+```
+
+`GizmoDelta` is what `Viewer.getGizmoDelta()` returns — the gizmo proxy's own transform after a drag, reinterpreted as a delta since the proxy always starts each attach at identity. `TransformBase` is one target object's transform captured fresh at drag START (`main.ts` snapshots one per selected volume when `onDraggingChanged(true)` fires).
+
+```typescript
+function applyTranslateDelta(base: TransformBase, delta: GizmoDelta): { position: THREE.Vector3 }
+function applyRotateDelta(base: TransformBase, delta: GizmoDelta): { position: THREE.Vector3; quaternion: THREE.Quaternion }
+function applyScaleDelta(base: TransformBase, delta: GizmoDelta): { position: THREE.Vector3; scale: THREE.Vector3 }
+```
+
+All three apply `delta` to `base` **about `delta.pivot`, not about the target's own position** — `applyRotateDelta`/`applyScaleDelta` move an off-centre target's position too, not just its orientation/size (verified in `gizmoTransform.test.ts` with a target exactly AT the pivot, where the position term correctly reduces to zero). `applyScaleDelta`'s formula (`pivot + scaleDelta·(basePosition − pivot)`, applied component-wise) is the identical affine transform `occtOperations.ts`'s non-uniform-scale edit op already computes server-side via `gp_GTrsf`, so the live gizmo preview and the eventual real B-rep replay agree on what "scale about a centre" means.
+
+```typescript
+function quaternionToAxisAngle(q: THREE.Quaternion): { axis: THREE.Vector3; angleRad: number }
+```
+
+Decomposes a rotation delta into the `axisDir`/`angleDeg` fields the `rotate` edit op actually needs (no THREE built-in does this) — handles both a single-axis ring drag and the free/screen-facing ring uniformly. Degenerates to the +Z axis at zero rotation (an arbitrary but stable choice, never NaN).
+
+```typescript
+function snapTranslateDelta(positionDelta: THREE.Vector3, gridSize: number): THREE.Vector3
+function nearestSnapPoint(position: THREE.Vector3, candidates: THREE.Vector3[], tolerance: number): THREE.Vector3 | null
+```
+
+Grid and entity-point snapping (`main.ts`'s wiring for **View ▾ → Snap to grid / Snap to points**), applied only during a Translate drag. `snapTranslateDelta` rounds the SHARED drag delta to the nearest multiple of `gridSize` **once**, before any per-target loop, so a multi-target drag still moves as one rigid group with relative spacing exactly preserved (`gridSize <= 0` is a no-op passthrough, i.e. disabled). `nearestSnapPoint` instead runs **per target**, against each target's own candidate resulting position, against a plain array of `point-N` sprite world positions (`main.ts`'s `collectSnapPoints()`) — returns the closest candidate within `tolerance`, or `null`. Because it's per-target rather than shared, different targets in the same multi-selection drag may legitimately snap to different nearby points; when both toggles are on, point-snap wins for whichever target found a candidate within tolerance, grid-snap still applies to any target that didn't.
 
 ---
 
@@ -780,6 +837,8 @@ function resolveMeshTargets(root: THREE.Object3D, ids: string[]): THREE.Object3D
 **Primitives** (`addBox`/`addSphere`/`addCylinder`/`addCone`/`addTorus`/`addPrism`) go through `buildPrimitiveMesh(op)`, which constructs a fresh `THREE.BufferGeometry` (`BoxGeometry`/`SphereGeometry`/`CylinderGeometry`/`TorusGeometry` — `CylinderGeometry (radius, radius, height, sides)` doubles as the N-gon prism) and attaches it under `root`. Because `applyEditsMesh` always folds over a **fresh clone** of the pristine object (primitives never pre-exist in it), this construction happens on every replay — tagged `userData.groupId = "prim-{K}"`, where `K` counts only `addX` ops seen so far in that fold pass (reset per call), so ids are deterministic by op-list position and never collide with the loaded file's `node-N` ids. `baseAlignedMatrix`/ `centerAlignedMatrix` rotate Three's canonical primitive orientation (cylinder/cone: +Y-centred; torus: XY-plane ring, +Z normal — verified from the Three.js source) onto the op's `axis` via `Quaternion.setFromUnitVectors`, then translate; get the rotate-then-translate order wrong and non-canonical-axis primitives land off-centre (regression-tested with a tilted-axis cylinder in `meshEdits.test.ts`).
 
 **Holes** (`addHole`/`addCounterboreHole`/`addCountersinkHole`) go through `applyMeshHole`, which subtracts a cylinder tool brush — plus a second wider cylinder (counterbore) or cone (countersink) as a sequential second `SUBTRACTION` — from the first mesh of the resolved targets, then replaces the target with the result (tagged with the target's node id, mirroring `applyMeshBoolean`). Tool placement reuses `baseAlignedMatrix` (mouth at `position`, drilled along `axis`). **Dispatch-order invariant:** hole op names start with `add`, so `applyEditsMesh` must handle them *before* the generic `op.op.startsWith("add")` primitive branch, and they never increment the `prim-{K}` counter (they don't create a body) — both locked by regression tests in `meshEdits.test.ts`.
+
+**Align and pattern** (`align`/`patternLinear`/`patternCircular`, neither B-rep only) go through `applyMeshAlign`/`applyMeshPattern`. `applyMeshAlign` moves each target's `THREE.Box3` extent onto the absolute `to` coordinate, independently per target — the same "no whole-shape fast path" rule `alignSolids()` follows host-side. `applyMeshPattern` clones each target (`Object3D.clone(true)` — geometry/materials shared by reference, transform independent) `count - 1` times and `applyMatrix4`s each copy into place, tagging every new object `userData.groupId = "pattern-{K}"` — a **separate** counter (`patternCount`) from primitives' `prim-{K}`, since one pattern OP can produce multiple new tagged objects where one `addX` op produces exactly one.
 
 ## `src/webview/meshingModel.ts`
 

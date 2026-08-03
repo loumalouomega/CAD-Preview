@@ -19,7 +19,7 @@ hero:
 features:
   - icon: 🏗️
     title: B-rep Tessellation via OpenCascade.js
-    details: STEP, IGES, and BREP files are parsed and tessellated by the OCCT kernel (compiled to WebAssembly). The WASM runs in the Node extension host — never in the webview — so there are no CSP issues and pure-mesh files never pay the WASM startup cost.
+    details: STEP, IGES, and BREP files are parsed and tessellated by the OCCT kernel (compiled to WebAssembly). The WASM runs in the Node extension host — never in the webview — so there are no CSP issues and pure-mesh files never pay the WASM startup cost. A cancellable progress notification appears for a cold-cache load (initial open, external reload); routine edits stay near-instant thanks to base-shape caching.
 
   - icon: 🎨
     title: Native Three.js Mesh Loading
@@ -37,9 +37,13 @@ features:
     title: Define Parts (Volumes / Surfaces / Lines / Points)
     details: Click solids, faces, edges, or vertices in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only. Per-part eye-toggles and a panel-level Isolate button (plus a matching filter/eye-toggle on the Components tree) let you focus on just the geometry you're working on, display-only and never persisted.
 
+  - icon: 🔩
+    title: Standard Parts Catalog
+    details: Search the hosted step.parts catalog (fasteners, bearings, connectors, extrusions, …) from a sidebar panel and insert a result as a new STEP document with one click — checksum-verified against the catalog's own recorded SHA-256 when present.
+
   - icon: ✏️
     title: Non-destructive Editing
-    details: Apply transforms (move / rotate / scale / mirror), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate), primitive creation (box/cube, sphere, cylinder, cone, torus, prism), 2D profile sketches (circle, rectangle, polygon) for use as extrude/revolve/sweep/loft profiles, and bottom-up wireframe modeling (points, lines, arcs → surfaces from lines → volumes from surfaces). Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
+    details: Apply transforms (move / rotate / scale / mirror — with a draggable 3D Transform Gizmo live-previewing the drag, plus optional grid/entity-point snapping), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate / align / linear & circular pattern), primitive creation (box/cube, sphere, cylinder, cone, torus, prism, wedge, holes/counterbore/countersink), 2D profile sketches and curves (circle, rectangle, polygon, ellipse, rounded rectangle, slot, trapezoid, spline, Bézier, helix, …) for use as extrude/revolve/sweep/loft profiles, modify ops (shell, split, section), SVG import (trace a `.svg`'s paths into sketch polylines), and bottom-up wireframe modeling (points, lines, arcs → surfaces from lines → volumes from surfaces). Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
 
   - icon: 🔬
     title: Display Modes & Grid Helpers
