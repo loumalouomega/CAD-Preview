@@ -181,6 +181,25 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     // closure) so both `handleBRep` and this constructor's `onDidDispose`
     // below can reach the SAME, current entry.
     const brepCache: { current: BRepCacheEntry | undefined } = { current: undefined };
+    // Progress reporting and cancellation (roadmap item, closed — see
+    // CLAUDE.md's "Progress reporting and cancellation" section for the full
+    // scoping rationale). `loadModel()` can be called again (a newer edit, an
+    // external reload) before a prior `handleBRep` call has finished — there
+    // is no `await` chain linking them, so without this counter whichever
+    // call's `loadBRepCached` happens to resolve LAST would win and could
+    // clobber a fresher, already-displayed result with a stale one. Bumped
+    // once per `handleBRep` invocation (a fresh "generation"); a captured
+    // generation that no longer matches `.current` by the time the async work
+    // resolves means either a NEWER load started (silently discard — that
+    // newer call will post its own result) or the user clicked Cancel on the
+    // progress notification (also silently discard — the cancellation
+    // handler already posted its own "Cancelled" status). Either way this is
+    // the maximally-honest cancellation this synchronous-WASM pipeline can
+    // offer without forking OCCT into a child process (roadmap item "OCCT in
+    // a forked child process", not attempted this session): the actual OCCT
+    // computation always runs to completion, "cancel" only ever suppresses
+    // applying its result.
+    const brepLoadGeneration: { current: number } = { current: 0 };
 
     // The live edit op-list + parametric variables. Loaded from the sidecar on
     // `ready`, updated on every `editsChanged`. Ops arrive from the webview
@@ -229,8 +248,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
     };
 
-    /** (Re)tessellates a B-rep source with the current edits, (re)loads a mesh, or (re)converts a meshio-only source. */
-    const loadModel = () => {
+    /**
+     * (Re)tessellates a B-rep source with the current edits, (re)loads a
+     * mesh, or (re)converts a meshio-only source.
+     *
+     * `showProgress` opts a B-rep load into a native, cancellable
+     * `vscode.window.withProgress` notification — reserved for the two call
+     * sites where a load is genuinely likely to be slow with a cold cache
+     * (the document's initial open, and a full external-file reload): a
+     * routine `editsChanged`/external-edits-sidecar-change re-tessellation
+     * almost always hits the base-shape cache (roadmap "Base-shape caching
+     * and incremental replay", closed) and completes in tens of
+     * milliseconds, so popping a notification on every keystroke-driven edit
+     * would be pure noise, not a helpful signal. The stale-result-discard
+     * safety net below (via `brepLoadGeneration`) applies to EVERY call
+     * regardless of `showProgress`, since the underlying race it closes can
+     * happen on any of the four call sites, not just the slow ones.
+     */
+    const loadModel = (showProgress = false) => {
       if (!route) return;
       if (route.strategy === "three") {
         const url = webviewPanel.webview.asWebviewUri(document.uri).toString();
@@ -244,13 +279,30 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           currentParts = parts;
         });
       } else {
-        void this.handleBRep(
-          document.uri,
-          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
-          post,
-          currentEdits,
-          brepCache
-        );
+        const format = route.format as Extract<CadFormat, "step" | "iges" | "brep">;
+        const generation = ++brepLoadGeneration.current;
+        if (showProgress) {
+          void vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `CAD Preview: Loading ${format.toUpperCase()}…`,
+              cancellable: true,
+            },
+            async (progress, token) => {
+              token.onCancellationRequested(() => {
+                // Supersede this in-flight call so its eventual result (the
+                // OCCT computation itself is NOT interrupted — see
+                // `brepLoadGeneration`'s doc comment above) is discarded
+                // rather than applied.
+                brepLoadGeneration.current++;
+                post({ type: "status", text: "Cancelled" });
+              });
+              await this.handleBRep(document.uri, format, post, currentEdits, brepCache, generation, brepLoadGeneration, progress);
+            }
+          );
+        } else {
+          void this.handleBRep(document.uri, format, post, currentEdits, brepCache, generation, brepLoadGeneration);
+        }
       }
     };
 
@@ -359,7 +411,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     watchForExternalChange(document.uri, () => {
       if (!route) return;
       post({ type: "status", text: "File changed on disk — reloading…" });
-      loadModel();
+      loadModel(true);
     });
 
     watchForExternalChange(editsSidecarUri(document.uri), () => {
@@ -459,7 +511,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const parsed = await readEdits(document.uri);
         currentEdits = parsed.ops;
         currentVariables = parsed.variables;
-        loadModel();
+        loadModel(true);
         post({ type: "edits", ops: currentEdits, variables: currentVariables });
         // The meshio route's own handleMeshio() (above) owns the parts round
         // trip for that route instead (it may need to auto-create Parts from
@@ -876,18 +928,37 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * held entry is dropped (not reused, not explicitly disposed — see
    * `loadBRepCached`'s doc comment for why a thrown call must not attempt to
    * free its own stale handles) so the NEXT call starts from a clean parse.
+   *
+   * `generation`/`genHolder` implement the stale-result-discard safety net
+   * documented on `brepLoadGeneration` in `resolveCustomEditor` — every
+   * `return`/`post` past the `loadBRepCached` await first checks
+   * `generation === genHolder.current`, and silently does nothing (no post,
+   * no cache write) when it doesn't: a newer `loadModel()` call has since
+   * started, or the user cancelled via `progress`'s notification (whose
+   * `onCancellationRequested` handler already bumped `genHolder.current` and
+   * posted its own "Cancelled" status — this method must not post a second,
+   * possibly-conflicting status/result after that). `progress` is present
+   * only for the two call sites that opt into a native progress
+   * notification (see `loadModel`'s doc comment) — every `progress.report`
+   * call is additionally guarded by `progress &&` since it's `undefined` on
+   * a routine, no-notification edit re-tessellation.
    */
   private async handleBRep(
     uri: vscode.Uri,
     format: Extract<CadFormat, "step" | "iges" | "brep">,
     post: (msg: HostToWebview) => void,
     ops: EditOp[] = [],
-    cache: { current: BRepCacheEntry | undefined }
+    cache: { current: BRepCacheEntry | undefined },
+    generation: number,
+    genHolder: { current: number },
+    progress?: vscode.Progress<{ message?: string }>
   ): Promise<void> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
+      progress?.report({ message: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
+      progress?.report({ message: `Tessellating ${format.toUpperCase()}…` });
       // Re-read fresh on every call (cheap) rather than cached at document-open
       // time — a mid-session settings change should take effect on the NEXT
       // edit without needing to reopen the tab, same as every other
@@ -903,7 +974,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         cache.current,
         tessellationParamsFor(quality)
       );
+      if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       cache.current = nextCache;
+      post({ type: "status", text: "Rendering…" });
+      progress?.report({ message: "Rendering…" });
       const { groups, edges, points, tree } = result;
       post({
         type: "geometry",
@@ -929,6 +1003,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const sourceUnit = format === "step" ? detectStepLengthUnit(text!) : format === "iges" ? detectIgesLengthUnit(text!) : undefined;
       post({ type: "tree", root: tree, sourceUnit });
     } catch (err) {
+      if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       // Drop (never reuse) whatever cache entry was held — see
       // `loadBRepCached`'s doc comment on why a thrown call doesn't already
       // dispose its own stale state; the next `handleBRep` call starts from
