@@ -49,6 +49,9 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   addHelix: { op: "addHelix", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, pitch: 3, turns: 2 },
   addSurfaceFromLines: { op: "addSurfaceFromLines", edges: ["edge-0", "edge-1", "edge-2"] },
   addVolumeFromSurfaces: { op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] },
+  align: { op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 },
+  patternLinear: { op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 4 },
+  patternCircular: { op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 6 },
 };
 
 describe("OP_CATALOG", () => {

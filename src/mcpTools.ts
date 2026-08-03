@@ -182,6 +182,9 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addHelix: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, pitch: n>0, turns: n>0}',
   addSurfaceFromLines: '{edges: edgeId[] (must connect into a closed loop)}',
   addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
+  align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
+  patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
+  patternCircular: '{targets: solidId[], axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n, count: int>=2 (total instances, incl. original)}',
 };
 
 /** All op kinds, derived from the panel catalog (which `opCatalog.test.ts`

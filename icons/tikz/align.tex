@@ -1,0 +1,11 @@
+% Op icon: align — a shape snapping up to a dashed reference line another shape already sits on.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[dashed] (-13,4) -- (13,4);
+  \draw[thick, fill=gray!25] (-11,-2) rectangle (-3,4);
+  \draw[thick, fill=gray!25] (3,-10) rectangle (11,-4);
+  \draw[->, thick] (7,-4) -- (7,-1);
+\end{tikzpicture}
+\end{document}

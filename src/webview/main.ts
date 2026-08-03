@@ -388,6 +388,46 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "mate", faceA: faces[0], faceB: faces[1] });
     setStatus("");
   },
+  onApplyAlign: (draft) => {
+    const targets = selectedVolumes();
+    if (targets.length === 0) {
+      setStatus("Select one or more volumes (Vol mode) before aligning.", true);
+      return;
+    }
+    const op: EditOp = { op: "align", targets, axis: draft.axis, extent: draft.extent, to: draft.to };
+    if (draft.exprs) op.exprs = draft.exprs;
+    editsModel.push(op);
+    setStatus("");
+  },
+  onApplyPattern: (draft) => {
+    const targets = selectedVolumes();
+    if (targets.length === 0) {
+      setStatus("Select one or more volumes (Vol mode) before patterning.", true);
+      return;
+    }
+    if (!Number.isInteger(draft.count) || draft.count < 2) {
+      setStatus("Count must be an integer ≥ 2.", true);
+      return;
+    }
+    let op: EditOp;
+    switch (draft.kind) {
+      case "patternLinear":
+        if (!draft.direction.some((v) => v !== 0)) { setStatus("Direction must be non-zero.", true); return; }
+        if (draft.spacing === 0) { setStatus("Spacing must be non-zero.", true); return; }
+        op = { op: "patternLinear", targets, direction: draft.direction, spacing: draft.spacing, count: draft.count };
+        break;
+      case "patternCircular":
+        if (!draft.axisDir.some((v) => v !== 0)) { setStatus("Axis must be non-zero.", true); return; }
+        op = {
+          op: "patternCircular", targets, axisPoint: draft.axisPoint,
+          axisDir: draft.axisDir, angleDeg: draft.angleDeg, count: draft.count,
+        };
+        break;
+    }
+    if (draft.exprs) op.exprs = draft.exprs;
+    editsModel.push(op);
+    setStatus("");
+  },
   onApplyModify: (draft) => {
     // Shell takes its opening faces from the Surf selection; split/section take
     // their target volumes from the Vol selection. B-rep only.

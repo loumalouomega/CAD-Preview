@@ -106,6 +106,12 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
       return addSurfaceFromLines(oc, shape, op, cleanup);
     case "addVolumeFromSurfaces":
       return addVolumeFromSurfaces(oc, shape, op, cleanup);
+    case "align":
+      return alignSolids(oc, shape, op, cleanup);
+    case "patternLinear":
+      return patternLinear(oc, shape, op, cleanup);
+    case "patternCircular":
+      return patternCircular(oc, shape, op, cleanup);
     default:
       return shape;
   }
@@ -219,6 +225,145 @@ function transformSolids(oc: any, shape: any, targets: string[], transform: Tran
     builder.Add(comp, want.has(id) ? transform(solid) : solid);
   }
   return comp;
+}
+
+const AXIS_INDEX: Record<"x" | "y" | "z", 0 | 1 | 2> = { x: 0, y: 1, z: 2 };
+
+/**
+ * Translates each targeted solid along `op.axis` so its OWN bbox `op.extent`
+ * (min/center/max) lands at the absolute coordinate `op.to`. Deliberately
+ * ALWAYS aligns every targeted solid independently — unlike `transformSolids`
+ * above, there is no "transform the whole shape as one unit" fast path even
+ * when every solid is targeted, since that would use the COMBINED bbox
+ * extent of all solids together rather than each solid's own extent,
+ * silently changing behavior based on how many solids happen to be
+ * selected. A solid already at the target coordinate (`|delta| < 1e-9`) is
+ * left untouched rather than producing a wasted zero-length transform.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function alignSolids(oc: any, shape: any, op: Extract<EditOp, { op: "align" }>, cleanup: Array<{ delete(): void }>): any {
+  const solids = collectSolids(oc, shape, cleanup);
+  const want = new Set(op.targets);
+  const idx = AXIS_INDEX[op.axis];
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const alignOne = (s: any): any => {
+    const ext = bboxExtent(oc, s, cleanup);
+    const current = op.extent === "min" ? ext.min[idx] : op.extent === "max" ? ext.max[idx] : (ext.min[idx] + ext.max[idx]) / 2;
+    const delta = op.to - current;
+    if (Math.abs(delta) < 1e-9) return s;
+    const v: Vec3 = [0, 0, 0];
+    v[idx] = delta;
+    const t = new oc.gp_Trsf_1();
+    cleanup.push(t);
+    t.SetTranslation_1(vec(oc, v));
+    return rigid(oc, t, cleanup)(s);
+  };
+
+  if (solids.length === 0) {
+    return want.has("solid-0") ? alignOne(shape) : shape;
+  }
+
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  for (const { id, solid } of solids) {
+    builder.Add(comp, want.has(id) ? alignOne(solid) : solid);
+  }
+  return comp;
+}
+
+/**
+ * Shared linear/circular-pattern assembly: keeps every targeted solid in
+ * place AND appends `count - 1` additional copies (`copyAt(solid, k)` for
+ * k = 1..count-1) alongside the untouched rest — a hybrid of
+ * `transformSolids`'s "resolve targets" and `addPrimitive`'s "compound
+ * (existing + new)" append, since pattern is the one op family that needs
+ * both at once (every other transform op replaces a target in place; every
+ * other append op has no pre-existing target to keep).
+ */
+function patternSolids(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  oc: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  shape: any,
+  targets: string[],
+  count: number,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  copyAt: (solid: any, k: number) => any,
+  cleanup: Array<{ delete(): void }>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
+  const solids = collectSolids(oc, shape, cleanup);
+  const want = new Set(targets);
+
+  if (solids.length === 0) {
+    if (!want.has("solid-0")) return shape;
+    const comp = new oc.TopoDS_Compound();
+    cleanup.push(comp);
+    const builder = new oc.BRep_Builder();
+    cleanup.push(builder);
+    builder.MakeCompound(comp);
+    builder.Add(comp, shape);
+    for (let k = 1; k < count; k++) builder.Add(comp, copyAt(shape, k));
+    return comp;
+  }
+
+  const targeted = solids.filter((s) => want.has(s.id));
+  if (targeted.length === 0) return shape;
+
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  for (const { id, solid } of solids) {
+    if (!want.has(id)) {
+      builder.Add(comp, solid);
+      continue;
+    }
+    builder.Add(comp, solid); // original, kept in place
+    for (let k = 1; k < count; k++) builder.Add(comp, copyAt(solid, k));
+  }
+  return comp;
+}
+
+/** Linear array: `op.count` total instances (the original plus `count - 1` new
+ * copies), each `op.spacing` further along the normalized `op.direction`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function patternLinear(oc: any, shape: any, op: Extract<EditOp, { op: "patternLinear" }>, cleanup: Array<{ delete(): void }>): any {
+  const [dx, dy, dz] = op.direction;
+  const len = Math.hypot(dx, dy, dz);
+  const unit: Vec3 = [dx / len, dy / len, dz / len];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const copyAt = (s: any, k: number): any => {
+    const v: Vec3 = [unit[0] * op.spacing * k, unit[1] * op.spacing * k, unit[2] * op.spacing * k];
+    const t = new oc.gp_Trsf_1();
+    cleanup.push(t);
+    t.SetTranslation_1(vec(oc, v));
+    return rigid(oc, t, cleanup)(s);
+  };
+  return patternSolids(oc, shape, op.targets, op.count, copyAt, cleanup);
+}
+
+/** Circular array: `op.count` total instances (the original plus `count - 1`
+ * new copies), each a further `op.angleDeg` rotated about the axis through
+ * `op.axisPoint` along `op.axisDir`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "patternCircular" }>, cleanup: Array<{ delete(): void }>): any {
+  const angleRad = (op.angleDeg * Math.PI) / 180;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const copyAt = (s: any, k: number): any => {
+    const t = new oc.gp_Trsf_1();
+    cleanup.push(t);
+    const ax = new oc.gp_Ax1_2(pnt(oc, op.axisPoint), dir(oc, op.axisDir));
+    cleanup.push(ax);
+    t.SetRotation_1(ax, angleRad * k);
+    return rigid(oc, t, cleanup)(s);
+  };
+  return patternSolids(oc, shape, op.targets, op.count, copyAt, cleanup);
 }
 
 /**
@@ -1521,6 +1666,22 @@ export function bboxCenter(oc: any, s: any, cleanup: Array<{ delete(): void }>):
   const mx = box.CornerMax();
   cleanup.push(mx);
   return [(mn.X() + mx.X()) / 2, (mn.Y() + mx.Y()) / 2, (mn.Z() + mx.Z()) / 2];
+}
+
+/** The bounding-box min/max corners of a shape (via `Bnd_Box` corners) — used
+ * by `alignSolids` to read a per-axis extent that `bboxCenter`/`bboxDiagonal`
+ * don't expose. `Bnd_Box.Get()` is NOT bound in this WASM build (see CLAUDE.md);
+ * `CornerMin`/`CornerMax` is the established workaround every bbox reader here uses. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function bboxExtent(oc: any, s: any, cleanup: Array<{ delete(): void }>): { min: Vec3; max: Vec3 } {
+  const box = new oc.Bnd_Box_1();
+  cleanup.push(box);
+  oc.BRepBndLib.Add(s, box, false);
+  const mn = box.CornerMin();
+  cleanup.push(mn);
+  const mx = box.CornerMax();
+  cleanup.push(mx);
+  return { min: [mn.X(), mn.Y(), mn.Z()], max: [mx.X(), mx.Y(), mx.Z()] };
 }
 
 /**

@@ -113,6 +113,12 @@ export interface SectionOp { op: "section"; targets: string[]; planePoint: Vec3;
 export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
 /** Build a new solid by sewing the selected faces into a closed shell. */
 export interface AddVolumeFromSurfacesOp { op: "addVolumeFromSurfaces"; faces: string[]; }
+/** Translate the targets along `axis` so their bbox `extent` (min/center/max) lands at the absolute coordinate `to`. A no-op for a target already there. */
+export interface AlignOp { op: "align"; targets: string[]; axis: "x" | "y" | "z"; extent: "min" | "center" | "max"; to: number; }
+/** Linear array: `count` total instances of the targets (the original plus `count - 1` new copies), each `spacing` apart along `direction`. */
+export interface PatternLinearOp { op: "patternLinear"; targets: string[]; direction: Vec3; spacing: number; count: number; }
+/** Circular array: `count` total instances of the targets (the original plus `count - 1` new copies), `angleDeg` apart about the axis through `axisPoint` along `axisDir`. */
+export interface PatternCircularOp { op: "patternCircular"; targets: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; count: number; }
 
 export type EditOp = (
   | TranslateOp | RotateOp | ScaleOp | MirrorOp
@@ -127,6 +133,7 @@ export type EditOp = (
   | AddPointOp | AddLineOp | AddArcOp
   | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
   | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp
+  | AlignOp | PatternLinearOp | PatternCircularOp
 ) & { exprs?: ExprMap };
 
 export type EditOpKind = EditOp["op"];
@@ -142,6 +149,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
   "addSurfaceFromLines", "addVolumeFromSurfaces",
+  "patternLinear", "patternCircular",
 ]);
 
 /** Ops only available for B-rep sources (meshes have no sketch/exact topology).
@@ -175,6 +183,11 @@ function asIdArray(v: unknown, min = 1): string[] | null {
 
 function isPositive(v: unknown): v is number {
   return isFiniteNumber(v) && v > 0;
+}
+
+/** An integer count of at least `min` — for pattern instance counts, where a fractional or sub-`min` value is meaningless (`min` is 2: "1 instance" isn't a pattern). */
+function isCountAtLeast(v: unknown, min: number): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= min;
 }
 
 /** A `Vec3` with non-zero length (for axis directions, which can't collapse to a point). */
@@ -567,6 +580,32 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "addVolumeFromSurfaces": {
       const faces = asIdArray(o.faces, 4); // a closed volume needs at least 4 faces
       return faces ? { op: "addVolumeFromSurfaces", faces } : null;
+    }
+    case "align": {
+      const targets = asIdArray(o.targets);
+      const axis = o.axis;
+      const extent = o.extent;
+      return targets &&
+        (axis === "x" || axis === "y" || axis === "z") &&
+        (extent === "min" || extent === "center" || extent === "max") &&
+        isFiniteNumber(o.to)
+        ? { op: "align", targets, axis, extent, to: o.to }
+        : null;
+    }
+    case "patternLinear": {
+      const targets = asIdArray(o.targets);
+      const direction = asNonZeroVec3(o.direction);
+      return targets && direction && isFiniteNumber(o.spacing) && o.spacing !== 0 && isCountAtLeast(o.count, 2)
+        ? { op: "patternLinear", targets, direction, spacing: o.spacing, count: o.count }
+        : null;
+    }
+    case "patternCircular": {
+      const targets = asIdArray(o.targets);
+      const axisPoint = asVec3(o.axisPoint);
+      const axisDir = asNonZeroVec3(o.axisDir);
+      return targets && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && isCountAtLeast(o.count, 2)
+        ? { op: "patternCircular", targets, axisPoint, axisDir, angleDeg: o.angleDeg, count: o.count }
+        : null;
     }
     default:
       return null;

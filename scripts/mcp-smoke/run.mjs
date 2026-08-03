@@ -212,6 +212,80 @@ try {
   // index, so this stays robust against edge-numbering shifts. Uses its OWN
   // copy of the fixture (not the shared `model`) so this extra solid doesn't
   // throw off the solid/edge counts every later step in this script assumes.
+  // Align + linear/circular pattern (roadmap "Align, distribute, and pattern
+  // UI") — own fresh copy so it doesn't disturb the shared `model`'s solid/
+  // edge counts every later step in this script assumes.
+  const alignPatternModel = path.join(dir, "bull-for-align-pattern-test.stp");
+  fs.copyFileSync(FIXTURE, alignPatternModel);
+  const boxSize = 4;
+  const boxAdded = await call("apply_edit_ops", {
+    path: alignPatternModel,
+    ops: [{ op: "addBox", center: [bbox.max[0] + 3 * s, 0, 20], size: [boxSize, boxSize, boxSize] }],
+  });
+  assert(boxAdded.applied === 1 && boxAdded.model.solids.length === 2, "align/pattern fixture: box added as solid-1");
+  const beforeAlign = await call("inspect", { path: alignPatternModel, entityId: "solid-1" });
+  assert(Math.abs(beforeAlign.bbox.min[2] - 18) < 1e-6, `box's z-min before align is 18 (got ${beforeAlign.bbox.min[2]})`);
+
+  const aligned = await call("apply_edit_ops", {
+    path: alignPatternModel,
+    ops: [{ op: "align", targets: ["solid-1"], axis: "z", extent: "min", to: 0 }],
+  });
+  assert(aligned.applied === 1 && aligned.model.solids.length === 2, "align does not change the solid count");
+  const afterAlign = await call("inspect", { path: alignPatternModel, entityId: "solid-1" });
+  assert(Math.abs(afterAlign.bbox.min[2]) < 1e-6, `align moved the box's z-min to exactly 0 (got ${afterAlign.bbox.min[2]})`);
+  assert(
+    Math.abs(afterAlign.center[0] - beforeAlign.center[0]) < 1e-6 && Math.abs(afterAlign.center[1] - beforeAlign.center[1]) < 1e-6,
+    "align only moved the box along z — x/y unchanged"
+  );
+
+  const spacing = 10;
+  const linearApplied = await call("apply_edit_ops", {
+    path: alignPatternModel,
+    ops: [{ op: "patternLinear", targets: ["solid-1"], direction: [1, 0, 0], spacing, count: 3 }],
+  });
+  assert(
+    linearApplied.applied === 1 && linearApplied.model.solids.length === 4,
+    `patternLinear count:3 appends exactly 2 new solids (got ${linearApplied.model.solids.length} total)`
+  );
+  const linearCenters = [];
+  for (const id of ["solid-1", "solid-2", "solid-3"]) {
+    linearCenters.push((await call("inspect", { path: alignPatternModel, entityId: id })).center[0]);
+  }
+  linearCenters.sort((a, b) => a - b);
+  const linearGaps = [linearCenters[1] - linearCenters[0], linearCenters[2] - linearCenters[1]];
+  assert(
+    linearGaps.every((g) => Math.abs(g - spacing) < 1e-6),
+    `patternLinear's 3 instances are evenly spaced ${spacing} apart along x (got gaps ${linearGaps.map((g) => g.toFixed(6))})`
+  );
+
+  const circularModel = path.join(dir, "bull-for-circular-pattern-test.stp");
+  fs.copyFileSync(FIXTURE, circularModel);
+  const circAdded = await call("apply_edit_ops", {
+    path: circularModel,
+    ops: [{ op: "addBox", center: [bbox.max[0] + 3 * s + 10, 0, 20], size: [2, 2, 2] }],
+  });
+  assert(circAdded.applied === 1, "circular pattern fixture: box added as solid-1");
+  const circCenterBefore = (await call("inspect", { path: circularModel, entityId: "solid-1" })).center;
+  const circApplied = await call("apply_edit_ops", {
+    path: circularModel,
+    ops: [{
+      op: "patternCircular", targets: ["solid-1"],
+      axisPoint: [bbox.max[0] + 3 * s, 0, 0], axisDir: [0, 0, 1], angleDeg: 90, count: 4,
+    }],
+  });
+  assert(
+    circApplied.applied === 1 && circApplied.model.solids.length === 5,
+    `patternCircular count:4 appends exactly 3 new solids (got ${circApplied.model.solids.length} total)`
+  );
+  const axisCenter = [bbox.max[0] + 3 * s, 0];
+  const radiusBefore = Math.hypot(circCenterBefore[0] - axisCenter[0], circCenterBefore[1] - axisCenter[1]);
+  for (const id of ["solid-1", "solid-2", "solid-3", "solid-4"]) {
+    const c = (await call("inspect", { path: circularModel, entityId: id })).center;
+    const r = Math.hypot(c[0] - axisCenter[0], c[1] - axisCenter[1]);
+    assert(Math.abs(r - radiusBefore) < 1e-6, `${id} stays the same distance from the rotation axis (got ${r} vs ${radiusBefore})`);
+    assert(Math.abs(c[2] - circCenterBefore[2]) < 1e-6, `${id} keeps the same z (rotation is about the z axis)`);
+  }
+
   const radiusTestModel = path.join(dir, "bull-for-radius-test.stp");
   fs.copyFileSync(FIXTURE, radiusTestModel);
   const knownRadius = s / 4;
