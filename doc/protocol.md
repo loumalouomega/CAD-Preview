@@ -74,6 +74,27 @@ interface Part {
 
 A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats have no assignable lines or points). Parts are persisted in the JSON sidecar — see [File Formats](./file-formats.md).
 
+### `Annotation`
+
+```typescript
+type MeasureTool = 'distance' | 'edgeLength' | 'angle' | 'radius'
+
+interface Annotation {
+  id: string
+  tool: MeasureTool
+  label?: string
+  text: string                              // frozen readout, e.g. "12.5 mm"
+  anchorPoint: [number, number, number]     // frozen world-space label position
+  linePoints: [number, number, number][]    // frozen world-space overlay line points (0 or 2)
+  volumes: string[]
+  surfaces: string[]
+  lines: string[]
+  points: string[]
+}
+```
+
+A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchored annotations", closed) — a "pinned" result from the interactive Measure tool that survives closing the file, unlike the tool's own session-only overlay. Structurally shaped like `Part` (same four `EntityType`-keyed id buckets) so it can be rebound across topology-changing edits with the identical machinery `Part` already uses — see `src/entityRebind.ts`'s `remapPartEntityIds`. `text`/`anchorPoint`/`linePoints` are a frozen snapshot of the result at pin time, never recomputed on redisplay; only "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Persisted in `<model>.annotations.json` — see [File Formats](./file-formats.md).
+
 ### `ViewState`
 
 ```typescript
@@ -238,6 +259,7 @@ type HostToWebview =
       regionAssignment?: { regionNames: string[]; triangleRegionIndex: string }
     }
   | { type: 'parts';    parts: Part[] }
+  | { type: 'annotations'; annotations: Annotation[] }
   | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
@@ -350,6 +372,28 @@ For a meshio route specifically, `handleMeshio()` sends this message itself (rig
   "type": "parts",
   "parts": [
     { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": ["face-3"], "lines": [], "points": [] }
+  ]
+}
+```
+
+### `annotations`
+
+Sent after geometry, once the host has read the annotations sidecar (`<model>.annotations.json`) — same timing/role as `parts` (roadmap "Persisted, topology-anchored annotations", closed). Carries the saved pinned measurements (empty array when no sidecar exists). The webview loads them into `AnnotationsModel` (silent `load()`, no `onChange` echo) and renders the "Saved" list in the Measure ▾ panel.
+
+Also sent **unprompted, mid-session** whenever a topology-changing edit triggers a successful entity-id rebind of an existing annotation — the same `rebindPartsOnChange()` that resends `parts` for this reason now resends `annotations` too, reusing the identical shape-diff pass (`src/entityFacts.ts`'s `rebindPartsAcrossOps`).
+
+```json
+{
+  "type": "annotations",
+  "annotations": [
+    {
+      "id": "ann-1234567890-1",
+      "tool": "distance",
+      "text": "12.5 mm",
+      "anchorPoint": [5, 0, 0],
+      "linePoints": [[0, 0, 0], [10, 0, 0]],
+      "volumes": [], "surfaces": ["face-1", "face-4"], "lines": [], "points": []
+    }
   ]
 }
 ```
@@ -515,6 +559,7 @@ type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
   | { type: 'partsChanged'; parts: Part[] }
+  | { type: 'annotationsChanged'; annotations: Annotation[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'viewChanged'; view: ViewState }
   | { type: 'openFile' }
@@ -540,6 +585,14 @@ Sent whenever the user mutates parts (create / rename / recolour / delete / assi
 
 ```json
 { "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [], "points": [] } ] }
+```
+
+### `annotationsChanged`
+
+Sent whenever the user pins a new measurement (📌) or deletes/renames one from the "Saved" list. Same debounce (~500 ms, its own timer) and same never-writes-the-CAD-file rule as `partsChanged` — the host writes the full annotation list to `<model>.annotations.json` via `writeAnnotations()`.
+
+```json
+{ "type": "annotationsChanged", "annotations": [ { "id": "ann-1234567890-1", "tool": "radius", "text": "R = 4 mm", "anchorPoint": [4, 0, 0], "linePoints": [], "volumes": [], "surfaces": [], "lines": ["edge-3"], "points": [] } ] }
 ```
 
 ### `editsChanged`

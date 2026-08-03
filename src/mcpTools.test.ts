@@ -263,9 +263,11 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
-    rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts) => ({
+    rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts, annotations = []) => ({
       parts, // identity pass-through by default — matches the real "nothing to rebind" no-op contract
+      annotations,
       stats: { considered: 0, rebound: 0, dropped: 0 },
+      annotationStats: { considered: 0, rebound: 0, dropped: 0 },
     })),
     ...overrides,
   } as Pipeline;
@@ -975,7 +977,9 @@ describe("apply_edit_ops", () => {
       const pipeline = fakePipeline({
         rebindPartsAcrossOps: vi.fn(async () => ({
           parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-2"], lines: [], points: [] }],
+          annotations: [],
           stats: { considered: 1, rebound: 1, dropped: 0 },
+          annotationStats: { considered: 0, rebound: 0, dropped: 0 },
         })),
       });
       const c = ctx(pipeline);
@@ -996,7 +1000,9 @@ describe("apply_edit_ops", () => {
       const pipeline = fakePipeline({
         rebindPartsAcrossOps: vi.fn(async () => ({
           parts: [{ name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] }],
+          annotations: [],
           stats: { considered: 1, rebound: 0, dropped: 1 },
+          annotationStats: { considered: 0, rebound: 0, dropped: 0 },
         })),
       });
       const result = await applyEditOps(ctx(pipeline), {
@@ -1136,7 +1142,9 @@ describe("run_parametric_script", () => {
     const pipeline = fakePipeline({
       rebindPartsAcrossOps: vi.fn(async () => ({
         parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-7"], lines: [], points: [] }],
+        annotations: [],
         stats: { considered: 1, rebound: 1, dropped: 0 },
+        annotationStats: { considered: 0, rebound: 0, dropped: 0 },
       })),
     });
     const result = await runParametricScriptTool(ctx(pipeline), {
@@ -1182,7 +1190,9 @@ describe("remove_edit_op", () => {
     const pipeline = fakePipeline({
       rebindPartsAcrossOps: vi.fn(async () => ({
         parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-9"], lines: [], points: [] }],
+        annotations: [],
         stats: { considered: 1, rebound: 1, dropped: 0 },
+        annotationStats: { considered: 0, rebound: 0, dropped: 0 },
       })),
     });
     const c = ctx(pipeline);

@@ -64,6 +64,49 @@ export interface Part {
   meshSize?: number;   // optional Gmsh target element size for local refinement
 }
 
+/** Which measurement is being taken — shared between the webview's
+ * `MeasurementState` and a persisted `Annotation`'s `tool` field, so the two
+ * can never drift apart. */
+export type MeasureTool = "distance" | "edgeLength" | "angle" | "radius";
+
+/**
+ * A persisted, topology-anchored measurement (roadmap "Persisted,
+ * topology-anchored annotations", closed) — a "pinned" measurement result
+ * that survives closing the file, unlike the session-only Measure tool
+ * overlay it's created from. Structurally shaped as an `EntityIdBag`
+ * (`volumes`/`surfaces`/`lines`/`points`, same as `Part`) purely so
+ * `src/entityRebind.ts`'s `remapPartEntityIds` — already generic over that
+ * shape — can rebind an annotation's anchor(s) across topology-changing edits
+ * with ZERO new matching code; almost every annotation populates only one of
+ * the four arrays with one id (occasionally two ids for "distance"/"angle",
+ * which pick two entities), never all four.
+ *
+ * `text`/`anchorPoint`/`linePoints` are a FROZEN snapshot of the measurement
+ * result at pin time, not live-recomputed on every redisplay — the same
+ * "freeze rather than silently drift" tradeoff `paramExpr.ts`'s variable
+ * evaluator and `explodePreview.ts`'s cached base already make elsewhere in
+ * this codebase. What DOES stay live is whether the annotation is
+ * "detached": `src/webview/annotationsModel.ts`'s consumer checks whether
+ * `volumes`/`surfaces`/`lines`/`points` still resolve to real entities in the
+ * currently-loaded model — an id that a topology-changing edit's rebinding
+ * pass couldn't confidently match is dropped from these arrays (the same
+ * graceful-degradation contract `Part`'s ids already have), so "detached"
+ * falls out for free as "none of this annotation's anchor ids resolve"
+ * rather than needing a separate boolean flag to keep in sync.
+ */
+export interface Annotation {
+  id: string; // stable id, client-generated at pin time (e.g. "ann-<ts>-<rand>")
+  tool: MeasureTool;
+  label?: string; // optional user note
+  text: string; // frozen readout, e.g. "12.5 mm" or "42.1°"
+  anchorPoint: [number, number, number]; // frozen world-space label position
+  linePoints: [number, number, number][]; // frozen world-space overlay line points (0 or 2)
+  volumes: string[]; // anchored solid ids
+  surfaces: string[]; // anchored face ids
+  lines: string[]; // anchored edge ids
+  points: string[]; // anchored point (vertex) ids
+}
+
 /**
  * Persisted view state (roadmap "View-state persistence", closed) — camera
  * orientation, display mode, ortho/perspective, and clip plane, so reopening
@@ -145,6 +188,7 @@ export type HostToWebview =
       };
     }
   | { type: "parts"; parts: Part[] }
+  | { type: "annotations"; annotations: Annotation[] }
   | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
@@ -244,6 +288,7 @@ export type WebviewToHost =
   | { type: "ready" }
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
+  | { type: "annotationsChanged"; annotations: Annotation[] }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "viewChanged"; view: ViewState }
   | { type: "openFile" }

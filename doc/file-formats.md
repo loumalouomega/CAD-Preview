@@ -248,9 +248,35 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
 
 **Deliberately excludes explode-preview state** — that's a session-only interaction preview by design (`src/webview/explodePreview.ts`); the *committed* `explode` edit op already persists correctly via `.edits.json`. **Deliberately excluded from the Preprocess Archive** (below) — unlike parts/edits/mesh options, view state is purely a display/session preference with no effect on computed geometry, mesh output, or anything an MCP agent would need; there is also no MCP tool surface for it at all (same "genuinely a display feature, no headless equivalent" scope this codebase already applies to Markup and interactive Measurement).
 
+## Annotations Sidecar (`<model>.annotations.json`)
+
+User-**pinned measurements** (roadmap "Persisted, topology-anchored annotations", closed) — a "📌 Pin" action on a completed Measure-tool result — are stored in a **fifth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.annotations.json`. Like the other four, this never modifies the CAD file. It is read on open (`readAnnotations()`) and autosaved, debounced (~500 ms, its own timer), on every pin/rename/delete (`writeAnnotations()`), both in `src/annotationsStore.ts`; parse/serialize live in the vscode-free `src/annotationsSidecar.ts` so they are unit-tested. The headless MCP server has a byte-compatible counterpart in `src/mcpSidecars.ts`.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "annotations": [
+    {
+      "id": "ann-1234567890-1",
+      "tool": "distance",
+      "text": "12.5 mm",
+      "anchorPoint": [5, 0, 0],
+      "linePoints": [[0, 0, 0], [10, 0, 0]],
+      "volumes": [],
+      "surfaces": ["face-1", "face-4"],
+      "lines": [],
+      "points": []
+    }
+  ]
+}
+```
+
+Entity ids in `volumes`/`surfaces`/`lines`/`points` are the same stable topological ids `Part` uses, and are rebound through the identical best-effort geometric matching a topology-changing edit already applies to Parts (`src/entityFacts.ts`'s `rebindPartsAcrossOps`, extended to also rebind annotations via the same shape-diff pass at no extra cost) — an anchor that can't be confidently re-matched is dropped from these arrays, the same graceful-degradation contract unresolved Part ids already have. `text`/`anchorPoint`/`linePoints` are a **frozen** snapshot of the measurement result at pin time; they are never recomputed on reopen or after an edit — only whether the annotation is "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Parsing is tolerant like the other four sidecars: a missing/malformed field drops that one annotation entry, not the whole file. **Deliberately excluded from the Preprocess Archive** (below), for now — that's scoped into the still-open "Archive integrity" roadmap item's own schema/versioning work rather than added ad hoc here.
+
 ## Preprocess Archive (`.zip`)
 
-**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its three sidecars — `<model>.parts.json`, `<model>.edits.json`, `<model>.mesh.json` — and the generated `<model>.geo` script currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json`/`.geo` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one.
+**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its three sidecars — `<model>.parts.json`, `<model>.edits.json`, `<model>.mesh.json` — and the generated `<model>.geo` script currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json`/`.geo` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one. **`<model>.annotations.json` is NOT currently packaged** — see the note at the end of the section above.
 
 The archive's internal layout (built by the pure, vscode-free `src/preprocessArchive.ts`, shared by the extension and the MCP server):
 

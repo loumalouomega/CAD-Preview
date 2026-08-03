@@ -86,7 +86,7 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | Item | Action | Shortcut |
 | --- | --- | --- |
 | **Open…** | Pick another CAD/mesh file and open it in CAD Preview | Ctrl+O |
-| **Save** | Immediately flush the parts/edits/mesh sidecars (`.parts.json` / `.edits.json` / `.mesh.json`). The CAD file itself is read-only and never written; the sidecars also autosave on a ~500 ms debounce, so this just forces an immediate write. | Ctrl+S |
+| **Save** | Immediately flush the parts/annotations/edits/mesh sidecars (`.parts.json` / `.annotations.json` / `.edits.json` / `.mesh.json`). The CAD file itself is read-only and never written; the sidecars also autosave on a ~500 ms debounce, so this just forces an immediate write. | Ctrl+S |
 | **Save As…** | Convert the model to a new file/format via the [Export](#exporting-a-model) flow | Ctrl+Shift+S |
 | **Export…** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) | Ctrl+E |
 | **Save Preprocess…** | Bundle the CAD file plus whichever of its `.parts.json` / `.edits.json` / `.mesh.json` / `.geo` sidecars currently exist into a single `.zip` archive, so the whole working state can be shared or archived as one file | Ctrl+Alt+S |
@@ -135,7 +135,7 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 
 ![The Measure menu: Measure mode, the four tools, and Clear measurement.](/screenshots/measure-menu.png)
 
-**Measure mode** toggles measurement picking; the tool row selects **Distance**, **Length**, **Angle**, or **Radius**, and **Clear measurement** discards the current one (see [Measuring](#measuring)). The result appears on its own line just below the toolbar, so it stays readable with the menu closed.
+**Measure mode** toggles measurement picking; the tool row selects **Distance**, **Length**, **Angle**, or **Radius**, and **Clear measurement** discards the current one (see [Measuring](#measuring)). The result appears on its own line just below the toolbar, so it stays readable with the menu closed. A **Saved** list at the bottom of the panel shows any pinned annotations (📌, see [Pinning a measurement](#pinning-a-measurement) below) — screenshot not yet regenerated for this row, see `doc/development.md`.
 
 **Markup ▾**
 
@@ -197,7 +197,7 @@ Type into the filter field above the tree to narrow the list to rows whose name 
 
 ### Measuring
 
-The **Measure ▾** toolbar menu lets you measure distances, edge lengths, angles, and circle/arc radii directly in the 3D view — display-only, never an edit operation, never saved anywhere.
+The **Measure ▾** toolbar menu lets you measure distances, edge lengths, angles, and circle/arc radii directly in the 3D view — display-only by default, and never an edit operation, but a result can optionally be **pinned** so it survives closing the file (see below).
 
 1. Open **Measure ▾** and click **Measure mode** (orbit/pan/zoom still work normally — a measurement pick is a click without a drag, same as part selection).
 2. Pick a tool from the dropdown: **Distance** and **Angle** need two picks; **Edge Length** and **Radius** resolve from a single click.
@@ -207,6 +207,12 @@ The **Measure ▾** toolbar menu lets you measure distances, edge lengths, angle
 Measurement precision follows the model's tessellation (the same 0.1 deflection tolerance used for display), not exact CAD geometry — fine for visual estimates, not for metrology-grade output. Distance, Edge Length, and Radius results are shown in whatever unit the view-controls **Units** dropdown is set to (see [Units](#units) above); Angle is always degrees.
 
 For a STEP/IGES/BREP model, a **⟟ Exact** button appears next to a completed Distance, Edge Length, or Radius result (not Angle — there's no exact counterpart for that one). Clicking it asks the extension host to recompute the same measurement against the true OCCT geometry instead of the displayed triangulation — the readout updates to `D_exact`/`L_exact`/`R_exact = …` once it comes back. This is a real (if fast) computation, not instant like the triangulated result, and only works for CAD sources — mesh formats (STL, OBJ, …) have no exact B-rep geometry to fall back to, so the button never appears for them.
+
+#### Pinning a measurement
+
+A **📌 Pin** button appears next to a completed measurement result on any source kind (unlike **⟟ Exact**, which is B-rep only). Clicking it saves the result as a persisted **annotation** — a "Saved" list at the bottom of the **Measure ▾** panel shows every pinned measurement, with a **Show** action (re-displays that overlay, no recompute) and a **✕** to delete it. Annotations survive closing the file, saved to a `<model>.annotations.json` sidecar next to the CAD source (the CAD file itself is still never touched).
+
+Unlike Markup strokes (screen-space pixels with no 3D anchoring at all), a pinned annotation stays attached to the actual entity it measured — a geometric best-effort match runs automatically whenever you apply a topology-changing edit elsewhere on the model, the same matching that already keeps Parts assigned correctly across edits. If the specific entity an annotation anchored to is later removed or fused away (a boolean, for example), the annotation degrades honestly: its row in the Saved list goes struck-through and **Show** disables, rather than silently pointing at the wrong geometry.
 
 ### Defining Parts
 
@@ -400,4 +406,4 @@ This is a display-only report (no 3D view, no merge) — to actually look at bot
 - **No Compare Models support for glTF.** STEP/IGES/BREP/STL/OBJ/PLY are all supported (any combination); glTF's format complexity (accessor/sparse-accessor decoding, scene-graph transform composition) was judged too large a surface to hand-roll and validate correctly, so it's excluded from Compare Models specifically (it still opens and previews normally everywhere else).
 - **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in-process in the Node extension host — there is no streaming.
 - **One-time WASM startup.** The first B-rep file open triggers OpenCascade.js initialization (~300 ms on a typical machine). Subsequent B-rep files open faster because the kernel is memoized.
-- **Source CAD file is never modified.** CAD Preview never writes the opened CAD file. **Export** writes a new, separate file; **part** definitions are saved to a `<model>.parts.json` sidecar; and **edit operations** are saved to a `<model>.edits.json` sidecar — the original geometry is always left untouched. Edits are non-destructive and replayable, and are baked in only when you **Export**.
+- **Source CAD file is never modified.** CAD Preview never writes the opened CAD file. **Export** writes a new, separate file; **part** definitions are saved to a `<model>.parts.json` sidecar; **pinned measurements** to a `<model>.annotations.json` sidecar; and **edit operations** are saved to a `<model>.edits.json` sidecar — the original geometry is always left untouched. Edits are non-destructive and replayable, and are baked in only when you **Export**.

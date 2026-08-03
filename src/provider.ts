@@ -6,10 +6,11 @@ import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
-import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type ViewState } from "./protocol";
+import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
+import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
@@ -166,6 +167,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const post = (msg: HostToWebview) => webviewPanel.webview.postMessage(msg);
     const pending = new Map<string, PendingExport>();
     let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    let annotationsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -189,6 +191,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     // File-menu "Save" can flush all three sidecars immediately. The webview
     // re-sends these on every change, so these copies are always current.
     let currentParts: Part[] = [];
+    // Persisted, topology-anchored measurements (roadmap "Persisted,
+    // topology-anchored annotations", closed) — same "retained for Save to
+    // flush" reason as `currentParts`.
+    let currentAnnotations: Annotation[] = [];
     let currentMeshOptions: MeshOptions | undefined;
     // The last view state received from the webview (or read from the
     // sidecar), retained for the same "Save flushes everything" reason as
@@ -201,12 +207,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     /** Immediately writes the parts/edits/mesh/view sidecars, bypassing the debounce. */
     const flushSidecars = async (): Promise<void> => {
       if (partsSaveTimer) clearTimeout(partsSaveTimer);
+      if (annotationsSaveTimer) clearTimeout(annotationsSaveTimer);
       if (editsSaveTimer) clearTimeout(editsSaveTimer);
       if (meshSaveTimer) clearTimeout(meshSaveTimer);
       if (viewSaveTimer) clearTimeout(viewSaveTimer);
       try {
         await Promise.all([
           writeParts(document.uri, currentParts),
+          writeAnnotations(document.uri, currentAnnotations),
           writeEdits(document.uri, currentEdits, currentVariables),
           ...(currentMeshOptions
             ? [writeMeshOptions(document.uri, currentMeshOptions), writeGeoScript(document.uri, currentMeshOptions)]
@@ -264,11 +272,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
      * webview's `PartsModel.load()` (silent, no `onChange` echo — same
      * contract `"edits"`'s hydration already relies on) picks up the new ids
      * and `refreshColors()` recolours, exactly like the initial `ready`
-     * hydration's own `"parts"` message.
+     * hydration's own `"parts"` message. Also rebinds `currentAnnotations`
+     * through the SAME shape-diff pass (`rebindPartsAcrossOps`'s optional 7th
+     * parameter, reusing the identical `idMap` at zero extra OCCT cost) and
+     * persists+posts `"annotations"` on the same terms — see `Annotation`'s
+     * doc comment in `protocol.ts` for why it can reuse `Part`'s exact
+     * id-remapping machinery.
      */
     const rebindPartsOnChange = async (previousOps: EditOp[], newOps: EditOp[]): Promise<void> => {
       if (!route || route.strategy !== "occt") return;
-      if (currentParts.length === 0) return;
+      if (currentParts.length === 0 && currentAnnotations.length === 0) return;
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
@@ -278,14 +291,21 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           previousOps,
           newOps,
-          currentParts
+          currentParts,
+          currentAnnotations
         );
-        if (result.parts === currentParts) return; // nothing topology-changing resolved, or nothing to remap
-        currentParts = result.parts;
-        await writeParts(document.uri, currentParts);
-        post({ type: "parts", parts: currentParts });
+        if (result.parts !== currentParts) {
+          currentParts = result.parts;
+          await writeParts(document.uri, currentParts);
+          post({ type: "parts", parts: currentParts });
+        }
+        if (result.annotations !== currentAnnotations) {
+          currentAnnotations = result.annotations;
+          await writeAnnotations(document.uri, currentAnnotations);
+          post({ type: "annotations", annotations: currentAnnotations });
+        }
       } catch (err) {
-        post({ type: "error", message: `Could not rebind part entity ids: ${(err as Error).message}` });
+        post({ type: "error", message: `Could not rebind entity ids: ${(err as Error).message}` });
       }
     };
 
@@ -368,6 +388,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       })();
     });
 
+    watchForExternalChange(annotationsSidecarUri(document.uri), () => {
+      void (async () => {
+        const annotations = await readAnnotations(document.uri);
+        if (JSON.stringify(annotations) === JSON.stringify(currentAnnotations)) return;
+        currentAnnotations = annotations;
+        post({ type: "annotations", annotations: currentAnnotations });
+        post({ type: "status", text: "Annotations updated externally" });
+      })();
+    });
+
     watchForExternalChange(meshOptionsSidecarUri(document.uri), () => {
       void (async () => {
         const options = await readMeshOptions(document.uri);
@@ -437,6 +467,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             currentParts = parts;
           });
         }
+        void readAnnotations(document.uri).then((annotations) => {
+          currentAnnotations = annotations;
+          post({ type: "annotations", annotations: currentAnnotations });
+        });
         void this.sendMeshOptions(document.uri, post).then((options) => {
           currentMeshOptions = options;
         });
@@ -457,6 +491,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           void writeParts(document.uri, parts).then(
             undefined,
             (err) => post({ type: "error", message: `Could not save parts: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      if (msg.type === "annotationsChanged") {
+        // Debounced autosave, own timer — mirrors partsChanged.
+        const annotations: Annotation[] = msg.annotations;
+        currentAnnotations = annotations;
+        if (annotationsSaveTimer) clearTimeout(annotationsSaveTimer);
+        annotationsSaveTimer = setTimeout(() => {
+          void writeAnnotations(document.uri, annotations).then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save annotations: ${(err as Error).message}` })
           );
         }, PARTS_SAVE_DEBOUNCE_MS);
         return;

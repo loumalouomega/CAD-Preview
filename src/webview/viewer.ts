@@ -1003,6 +1003,26 @@ export class Viewer {
     });
   }
 
+  /**
+   * Whether an entity currently exists in the loaded model — the "detached"
+   * check for a persisted {@link Annotation} (roadmap "Persisted,
+   * topology-anchored annotations", closed): its anchor ids are rebound
+   * best-effort across topology-changing edits, and a genuinely-unresolved
+   * one is dropped from its id arrays by the host, so a mesh-format source
+   * with no rebind engine (or a race before the next rebind pass) is exactly
+   * why the webview double-checks here rather than trusting the arrays are
+   * always current.
+   */
+  hasEntity(entityType: EntityType, entityId: string): boolean {
+    if (!this.model) return false;
+    let found = false;
+    this.model.traverse((obj) => {
+      if (found) return;
+      if (obj.userData.entityType === entityType && obj.userData.entityId === entityId) found = true;
+    });
+    return found;
+  }
+
   /** Forces an immediate render of the current frame (used right before a screenshot capture). */
   render(): void {
     this.renderer.render(this.scene, this.activeCamera);

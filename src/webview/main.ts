@@ -9,6 +9,8 @@ import { splitMeshesIntoFacets } from "./meshFacets";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
+import { AnnotationsModel } from "./annotationsModel";
+import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
 import { EditsPanel } from "./editsPanel";
 import { VariablesModel } from "./variablesModel";
@@ -35,7 +37,7 @@ import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
-import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState } from "../protocol";
+import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -127,6 +129,61 @@ const partsPanel = new PartsPanel(
   },
   visibilityState
 );
+
+// ── Persisted, topology-anchored annotations (pinned measurements) ───────
+// A small list under the Measure ▾ panel — see `Annotation`'s doc comment in
+// protocol.ts. "Detached" is computed here, not stored: an annotation whose
+// anchor entities don't currently resolve in the loaded model (removed, or a
+// mesh-format edit with no rebind engine) shows struck-through with its
+// "Show" action disabled, rather than displaying a now-meaningless overlay.
+function renderAnnotationsList(): void {
+  const container = document.getElementById("annotations-list");
+  if (!container) return;
+  container.innerHTML = "";
+  for (const a of annotationsModel.list()) {
+    const entities = AnnotationsModel.entitiesOf(a);
+    const detached = entities.length === 0 || !entities.some((e) => viewer.hasEntity(e.entityType, e.entityId));
+    const label = a.label ? `${a.label}: ${a.text}` : a.text;
+
+    const row = document.createElement("div");
+    row.className = detached ? "annotation-row detached" : "annotation-row";
+
+    const text = document.createElement("span");
+    text.className = "annotation-row-text";
+    text.textContent = label;
+    text.title = detached
+      ? "Detached — the anchored entity no longer resolves (removed, or couldn't be re-matched across an edit)."
+      : label;
+    row.appendChild(text);
+
+    const showBtn = document.createElement("button");
+    showBtn.textContent = "Show";
+    showBtn.title = "Re-display this measurement's overlay";
+    showBtn.disabled = detached;
+    showBtn.addEventListener("click", () => {
+      viewer.showMeasurementOverlay(
+        a.linePoints.map((p) => new THREE.Vector3(...p)),
+        new THREE.Vector3(...a.anchorPoint),
+        a.text
+      );
+      setMeasureReadout(label);
+    });
+    row.appendChild(showBtn);
+
+    const delBtn = document.createElement("button");
+    delBtn.innerHTML = TOOLBAR_ICONS.close;
+    delBtn.title = "Delete this annotation";
+    delBtn.addEventListener("click", () => annotationsModel.remove(a.id));
+    row.appendChild(delBtn);
+
+    container.appendChild(row);
+  }
+}
+
+const annotationsModel = new AnnotationsModel(() => {
+  post({ type: "annotationsChanged", annotations: annotationsModel.list() });
+  renderAnnotationsList();
+});
 
 // ── Edits (replayable op-stack) + parametric variables ───────────────────
 // The webview owns the op-stack; the host persists it and (for B-rep) re-applies
@@ -949,6 +1006,7 @@ function rebuildMeshModel(): void {
   explodePreviewBases = null; // stale references to the just-replaced model's objects
   resetColorFieldSelection(); // any edit invalidates the field values' triangle correlation, same as importedRegionInfo above
   refreshColors();
+  renderAnnotationsList(); // detached status may have changed
   // Edits can change the bounding box; keep the FE Mesh panel's element-count
   // estimate honest. (B-rep sources get the equivalent via the re-posted
   // `geometry` message after each edit.)
@@ -1123,12 +1181,58 @@ function exactMeasureKindFor(tool: MeasureTool): ExactMeasureKind | null {
   return tool === "angle" ? null : tool;
 }
 
-/** The most recently completed measurement's tool + resolved picks — the
- * source `#measure-exact-btn` builds a `measureExactRequest` from. `null`
- * whenever there's no current result to refine (mode just turned on, tool
- * switched, Clear pressed, or the pick set didn't resolve to entity ids). */
-let lastMeasurement: { tool: MeasureTool; picks: MeasurementPick[] } | null = null;
+/** The most recently completed measurement's tool + resolved picks + result —
+ * the source both `#measure-exact-btn` (a `measureExactRequest`, `tool`+
+ * `picks` only) and `#measure-pin-btn` (a new {@link Annotation}, needs
+ * `result` too) build from. `null` whenever there's no current result to act
+ * on (mode just turned on, tool switched, Clear pressed, or the pick set
+ * didn't resolve to entity ids). */
+let lastMeasurement: { tool: MeasureTool; picks: MeasurementPick[]; result: MeasurementResult } | null = null;
 let measureExactRequestId: string | null = null;
+
+/** Shows/hides `#measure-pin-btn` — available whenever there's a completed
+ * measurement with at least one resolved entity id, on ANY source kind
+ * (unlike `#measure-exact-btn`, which is B-rep only). */
+function refreshPinButton(): void {
+  const btn = document.getElementById("measure-pin-btn") as HTMLButtonElement | null;
+  if (!btn) return;
+  const available = !!lastMeasurement?.picks.some((p) => p.entityId);
+  btn.hidden = !available;
+  btn.disabled = !available;
+}
+
+let annotationIdCounter = 0;
+
+/** Builds a new {@link Annotation} from the most recently completed
+ * measurement — anchors are bucketed by entity kind exactly like
+ * `PartsModel.assign`, since an `Annotation` reuses the identical
+ * `EntityIdBag` shape. */
+function annotationFromLastMeasurement(): Annotation | null {
+  if (!lastMeasurement) return null;
+  const { tool, picks, result } = lastMeasurement;
+  const volumes: string[] = [];
+  const surfaces: string[] = [];
+  const lines: string[] = [];
+  const points: string[] = [];
+  for (const p of picks) {
+    if (!p.entityId || !p.entityType) continue;
+    const bucket = p.entityType === "volume" ? volumes : p.entityType === "surface" ? surfaces : p.entityType === "line" ? lines : points;
+    if (!bucket.includes(p.entityId)) bucket.push(p.entityId);
+  }
+  if (volumes.length + surfaces.length + lines.length + points.length === 0) return null;
+  annotationIdCounter++;
+  return {
+    id: `ann-${Date.now()}-${annotationIdCounter}`,
+    tool,
+    text: result.text,
+    anchorPoint: result.anchor,
+    linePoints: result.linePoints,
+    volumes,
+    surfaces,
+    lines,
+    points,
+  };
+}
 
 /** Shows/hides and enables/disables `#measure-exact-btn` based on whether
  * the current measurement could plausibly be refined: a B-rep source, a
@@ -1153,6 +1257,7 @@ function setupMeasureControls(): void {
   const toolBtns = [...document.querySelectorAll<HTMLButtonElement>(".measure-tool-btn")];
   const clearBtn = document.getElementById("measure-clear");
   const exactBtn = document.getElementById("measure-exact-btn") as HTMLButtonElement | null;
+  const pinBtn = document.getElementById("measure-pin-btn") as HTMLButtonElement | null;
   let measuring = false;
 
   const reflect = () => {
@@ -1178,6 +1283,7 @@ function setupMeasureControls(): void {
       setMeasureReadout("Couldn't compute a result for that pick — try a different entity.", true);
       lastMeasurement = null;
       refreshExactButton();
+      refreshPinButton();
       return;
     }
     viewer.showMeasurementOverlay(
@@ -1186,8 +1292,9 @@ function setupMeasureControls(): void {
       result.text
     );
     setMeasureReadout(result.text);
-    lastMeasurement = { tool, picks };
+    lastMeasurement = { tool, picks, result };
     refreshExactButton();
+    refreshPinButton();
   });
 
   toggle?.addEventListener("click", () => {
@@ -1200,6 +1307,7 @@ function setupMeasureControls(): void {
     setMeasureReadout(measuring ? "Pick a point…" : "");
     lastMeasurement = null;
     refreshExactButton();
+    refreshPinButton();
     reflect();
   });
 
@@ -1211,6 +1319,7 @@ function setupMeasureControls(): void {
       setMeasureReadout(measuring ? "Pick a point…" : "");
       lastMeasurement = null;
       refreshExactButton();
+      refreshPinButton();
       reflect();
     });
   }
@@ -1221,6 +1330,14 @@ function setupMeasureControls(): void {
     setMeasureReadout("");
     lastMeasurement = null;
     refreshExactButton();
+    refreshPinButton();
+  });
+
+  pinBtn?.addEventListener("click", () => {
+    const annotation = annotationFromLastMeasurement();
+    if (!annotation) return;
+    annotationsModel.push(annotation);
+    setStatus("Pinned measurement");
   });
 
   exactBtn?.addEventListener("click", () => {
@@ -1805,10 +1922,12 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         lastMeasurement = null; // stale entity ids — refer to the just-replaced model
         clearMarkupOverlay?.();
         refreshColors();
+        renderAnnotationsList(); // detached status may have changed for the new model
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
         sourceKind = "brep";
         refreshExactButton();
+        refreshPinButton();
         meshingPanel.setSourceKind("brep");
         meshingPanel.setModelExtents(viewer.getModelExtents());
         syncMeshSizeSeed();
@@ -1832,6 +1951,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       partsPanel.render(partsModel.list());
       meshingPanel.renderParts(partsModel.list());
       showSidebar();
+      break;
+
+    case "annotations":
+      // Silent hydration (initial load, external reconciliation, or a
+      // host-side rebind after a topology-changing edit) — does not echo
+      // back as a write, same contract as "parts"/"edits".
+      annotationsModel.load(msg.annotations);
+      renderAnnotationsList();
       break;
 
     case "edits":
@@ -2129,6 +2256,7 @@ async function loadMeshObjectFromUrl(
     sourceKind = "mesh";
     lastMeasurement = null; // stale entity ids — refer to the just-replaced model; also hides #measure-exact-btn (mesh sources can't use it)
     refreshExactButton();
+    refreshPinButton();
     meshingPanel.setSourceKind("mesh");
     meshingPanel.setModelExtents(viewer.getModelExtents());
     syncMeshSizeSeed();

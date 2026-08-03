@@ -11,8 +11,9 @@ import * as path from "path";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { parseEditsJson, serializeEditsJson, type ParsedEdits } from "./editsSidecar";
-import type { Part } from "./protocol";
+import type { Annotation, Part } from "./protocol";
 import { parsePartsJson, serializePartsJson } from "./partsSidecar";
+import { parseAnnotationsJson, serializeAnnotationsJson } from "./annotationsSidecar";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 
@@ -22,6 +23,10 @@ export function editsSidecarPath(modelPath: string): string {
 
 export function partsSidecarPath(modelPath: string): string {
   return `${modelPath}.parts.json`;
+}
+
+export function annotationsSidecarPath(modelPath: string): string {
+  return `${modelPath}.annotations.json`;
 }
 
 export function meshOptionsSidecarPath(modelPath: string): string {
@@ -62,6 +67,22 @@ export async function readParts(modelPath: string): Promise<Part[]> {
 export async function writeParts(modelPath: string, parts: Part[]): Promise<void> {
   const text = serializePartsJson(path.basename(modelPath), parts);
   await fs.writeFile(partsSidecarPath(modelPath), text, "utf8");
+}
+
+/** Reads + validates the annotations sidecar; returns `[]` when missing or unreadable. */
+export async function readAnnotations(modelPath: string): Promise<Annotation[]> {
+  try {
+    const text = await fs.readFile(annotationsSidecarPath(modelPath), "utf8");
+    return parseAnnotationsJson(text);
+  } catch {
+    return [];
+  }
+}
+
+/** Writes the annotations sidecar beside the model. The model file itself is never touched. */
+export async function writeAnnotations(modelPath: string, annotations: Annotation[]): Promise<void> {
+  const text = serializeAnnotationsJson(path.basename(modelPath), annotations);
+  await fs.writeFile(annotationsSidecarPath(modelPath), text, "utf8");
 }
 
 /** Reads + validates the mesh options sidecar; returns `DEFAULT_MESH_OPTIONS` when missing or unreadable. */

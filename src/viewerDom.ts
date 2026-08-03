@@ -139,6 +139,8 @@ export function viewerBodyHtml(): string {
         </div>
         <div class="tb-sep"></div>
         <button id="measure-clear" role="menuitem" title="Clear current measurement">${icon("clear")} Clear measurement</button>
+        <div class="tb-sep"></div>
+        <div id="annotations-list" title="Pinned measurements — persisted, and re-anchored across edits"></div>
       </div>
     </div>
     <div class="tb-menu-wrap">
@@ -166,6 +168,7 @@ export function viewerBodyHtml(): string {
   <div id="measure-readout-row">
     <span id="measure-readout"></span>
     <button id="measure-exact-btn" title="Recompute at exact B-rep precision (a host round trip, vs. the instant triangulated approximation above)" hidden>${icon("generate")} Exact</button>
+    <button id="measure-pin-btn" title="Pin this measurement as a persisted annotation — survives closing the file, re-anchored across edits" hidden>${icon("save")} Pin</button>
   </div>
   <div id="view-controls">
     <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">⌄</button>
