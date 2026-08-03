@@ -1,0 +1,18 @@
+{
+  "small": {
+    "loadMs": 103,
+    "meshMs": 303
+  },
+  "medium": {
+    "loadMs": 290,
+    "meshMs": 657
+  },
+  "large": {
+    "loadMs": 277,
+    "meshMs": 895
+  },
+  "xlarge": {
+    "loadMs": 6986,
+    "meshMs": 26863
+  }
+}

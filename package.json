@@ -233,6 +233,7 @@
     "reinstall": "bash scripts/reinstall-local.sh",
     "mcp": "node dist/mcp-server.js",
     "mcp:smoke": "npm run build && node scripts/mcp-smoke/run.mjs",
+    "perf": "npm run build && node scripts/perf/run.mjs",
     "docs:dev": "vitepress dev doc",
     "docs:build": "vitepress build doc",
     "docs:preview": "vitepress preview doc",
