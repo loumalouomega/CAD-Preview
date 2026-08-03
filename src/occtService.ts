@@ -85,6 +85,185 @@ export interface BRepResult {
 }
 
 /**
+ * A cached, still-live parse-plus-replay result for one document, held by
+ * `provider.ts` across successive `editsChanged` calls (roadmap "Base-shape
+ * caching and incremental replay", closed) — see `loadBRepCached` below for
+ * the reuse rules and `disposeBRepCache` for the required teardown.
+ * `baseShape`/`shape` are live OCCT heap handles, not JS data; every field
+ * here is opaque outside this file except for what `loadBRepCached`'s own
+ * bytes/ops comparisons need, which is why this type isn't exported as
+ * anything richer than "a token you hold and pass back".
+ */
+export interface BRepCacheEntry {
+  /** Reference to the resolved `oc` module this entry's handles belong to —
+   * an abort-triggered `resetOcct()` replaces `_ocPromise`, so a STALE
+   * entry's handles would point into a now-discarded WASM instance. Compared
+   * by identity (`===`), never touched otherwise. */
+  ocInstance: unknown;
+  bytes: Uint8Array;
+  format: Extract<CadFormat, "step" | "iges" | "brep">;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  baseShape: any;
+  baseCleanup: Array<{ delete(): void }>;
+  ops: EditOp[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  shape: any;
+  opsCleanup: Array<{ delete(): void }>;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Frees every OCCT handle a {@link BRepCacheEntry} owns, base-shape handles
+ * last (reverse of creation order, same discipline every other cleanup array
+ * in this codebase follows). Callers must call this exactly once per entry
+ * whenever it's discarded WITHOUT being replaced by a call into
+ * `loadBRepCached` that already reused/superseded it — i.e. on document
+ * close, or after `loadBRepCached` itself throws (see its doc comment for
+ * why a thrown call does NOT already dispose its own stale state). */
+export function disposeBRepCache(cache: BRepCacheEntry): void {
+  for (let i = cache.opsCleanup.length - 1; i >= 0; i--) {
+    try { cache.opsCleanup[i].delete(); } catch { /* ignore */ }
+  }
+  for (let i = cache.baseCleanup.length - 1; i >= 0; i--) {
+    try { cache.baseCleanup[i].delete(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Caching counterpart of `loadBRep` below — for the interactive extension's
+ * per-edit hot path ONLY (`provider.ts`, one entry per open document). The
+ * MCP server stays on plain `loadBRep`, deliberately stateless per call (see
+ * CLAUDE.md's MCP section) — introducing cross-call state for a long-lived
+ * headless process serving arbitrary/many paths over its lifetime is a
+ * different, harder problem this item's own scope (`editsChanged`'s
+ * per-keystroke-in-an-open-editor cost) doesn't need to solve.
+ *
+ * Reuses the parsed base shape across calls whenever the source bytes+format
+ * are unchanged from `previous` — this is the dominant win, since parsing a
+ * STEP/IGES file into OCCT's internal B-rep representation is real
+ * geometric/topological work, independent of how many edit ops exist.
+ * Additionally reuses `previous`'s fully-replayed shape as a starting point
+ * when `ops` is a pure append of `previous.ops` (by far the common case for
+ * interactive editing: apply one op, then another) — the base-shape reuse
+ * alone already skips the parse, but this ALSO skips re-replaying every op
+ * before the new one(s). Any other relationship between `ops` and
+ * `previous.ops` (undo, `remove_edit_op` at a non-last index, redo down a
+ * different branch, a parametric-variable change re-resolving every op's
+ * numeric fields) falls back to a full replay of `ops` from the (still
+ * reused, if the bytes didn't change) base shape — deliberately NOT trying
+ * to diff/patch the op list itself, which would need the same unwind/rewind
+ * reasoning `entityRebind.ts`'s id-rebinding already had to solve once and
+ * is out of scope for a caching layer.
+ *
+ * On success, returns the tessellated result AND the new cache entry the
+ * caller must retain and pass back in as `previous` on the next call. A
+ * discarded-and-superseded `previous` (bytes/format changed, or its ops
+ * turned out not to be reusable as a base for the new replay) is disposed
+ * INTERNALLY before this function returns — the caller only ever needs to
+ * dispose the entry it currently holds, never an intermediate one.
+ *
+ * **Reused fields are shared by reference, not copied** — when base and/or
+ * op-replay reuse happens, the returned entry's `baseShape`/`baseCleanup`/
+ * `shape`/`opsCleanup` are the EXACT SAME objects/arrays `previous` held
+ * (verified live, not just by type: the confirmed-working call sequence
+ * `loadBRepCached(...) → loadBRepCached(..., c1) → disposeBRepCache(c1)`
+ * crashes OCCT with "Cannot pass deleted object as a pointer" — c1 and its
+ * successor alias the SAME handles, so disposing the "old" one frees the
+ * "new" one's still-live state too). Never call `disposeBRepCache` on
+ * anything except the single, latest entry you are CURRENTLY holding — an
+ * intermediate result you've already replaced with a newer call's return
+ * value must simply be dropped (reassigned over), never disposed.
+ *
+ * On failure (including a WASM abort — `wrapOcctFault` still fires and
+ * resets the singleton exactly as `loadBRep` does), this function
+ * deliberately does NOT attempt to `.delete()` any handle it touched during
+ * this call: an abort can leave the WASM heap itself in an undefined state,
+ * so calling back into it to free handles is not obviously safe, unlike the
+ * "just discarding a stale-but-healthy cache" case above. The caller must
+ * drop its reference to whatever cache entry it was holding (never re-pass
+ * it as `previous`) on any error from this function — the orphaned OCCT
+ * module (already unreachable via `getOcct()` once `resetOcct()` ran) then
+ * becomes eligible for normal JS garbage collection once nothing, including
+ * this discarded cache entry, still references it.
+ */
+export async function loadBRepCached(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: Extract<CadFormat, "step" | "iges" | "brep">,
+  ops: EditOp[],
+  previous: BRepCacheEntry | undefined
+): Promise<{ result: BRepResult; cache: BRepCacheEntry }> {
+  const oc = await getOcct(extensionPath);
+
+  const baseReusable =
+    previous !== undefined &&
+    previous.ocInstance === oc &&
+    previous.format === format &&
+    bytesEqual(previous.bytes, bytes);
+
+  if (previous && !baseReusable) disposeBRepCache(previous);
+
+  let baseShape: unknown;
+  let baseCleanup: Array<{ delete(): void }>;
+  if (baseReusable && previous) {
+    baseShape = previous.baseShape;
+    baseCleanup = previous.baseCleanup;
+  } else {
+    baseCleanup = [];
+    const tmpName = `/in.${format}`;
+    oc.FS.writeFile(tmpName, bytes);
+    try {
+      baseShape = readShape(oc, tmpName, format, baseCleanup);
+    } catch (err) {
+      throw wrapOcctFault(err);
+    } finally {
+      try { oc.FS.unlink(tmpName); } catch { /* ignore */ }
+    }
+  }
+
+  const appendReusable =
+    baseReusable &&
+    previous !== undefined &&
+    ops.length >= previous.ops.length &&
+    previous.ops.every((op, i) => JSON.stringify(op) === JSON.stringify(ops[i]));
+
+  try {
+    let opsCleanup: Array<{ delete(): void }>;
+    let shape: unknown;
+    if (appendReusable && previous) {
+      opsCleanup = previous.opsCleanup;
+      const suffix = ops.slice(previous.ops.length);
+      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup);
+    } else {
+      // Base reused but the replay isn't (or there was no previous entry at
+      // all) — free only the now-superseded op-replay handles; the base
+      // shape/cleanup (still referenced by `baseShape`/`baseCleanup` above)
+      // is untouched either way.
+      if (baseReusable && previous) {
+        for (let i = previous.opsCleanup.length - 1; i >= 0; i--) {
+          try { previous.opsCleanup[i].delete(); } catch { /* ignore */ }
+        }
+      }
+      opsCleanup = [];
+      shape = applyEditsBRep(oc, baseShape, ops, opsCleanup);
+    }
+
+    const groups = tessellateByGroup(oc, shape);
+    const edges = extractEdges(oc, shape);
+    const points = extractVertices(oc, shape);
+    const tree = buildTree(format, groups);
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, ops, shape, opsCleanup };
+    return { result: { groups, edges, points, tree }, cache };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  }
+}
+
+/**
  * Reads `bytes`, parses with the appropriate OCCT reader, applies the replayable
  * edit op-list (if any), tessellates grouped by solid, and returns geometry
  * groups alongside the component tree. With an empty `ops` this is the original

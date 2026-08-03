@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
-import { loadBRep, exportBRep } from "./occtService";
+import { loadBRepCached, disposeBRepCache, exportBRep, type BRepCacheEntry } from "./occtService";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
@@ -168,6 +168,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    // Live OCCT parse+replay cache for THIS document (roadmap "Base-shape
+    // caching and incremental replay", closed) — see `loadBRepCached`'s doc
+    // comment in `occtService.ts` for the reuse rules. Held as a plain
+    // mutable holder (not a closure `let` `handleBRep` could reassign
+    // directly, since `handleBRep` is a class method, not itself inside this
+    // closure) so both `handleBRep` and this constructor's `onDidDispose`
+    // below can reach the SAME, current entry.
+    const brepCache: { current: BRepCacheEntry | undefined } = { current: undefined };
 
     // The live edit op-list + parametric variables. Loaded from the sidecar on
     // `ready`, updated on every `editsChanged`. Ops arrive from the webview
@@ -229,7 +237,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           document.uri,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           post,
-          currentEdits
+          currentEdits,
+          brepCache
         );
       }
     };
@@ -380,6 +389,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
     webviewPanel.onDidDispose(() => {
       for (const d of watcherDisposables) d.dispose();
+      if (brepCache.current) disposeBRepCache(brepCache.current);
     });
 
     // Track this editor as the active one while it is focused, so the
@@ -752,17 +762,36 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     webviewPanel.webview.html = this.getHtml(webviewPanel.webview);
   }
 
+  /**
+   * `cache` is a per-document holder (`brepCache` in `resolveCustomEditor`),
+   * mutated in place: `loadBRepCached` reuses `cache.current` when possible
+   * (skipping the STEP/IGES/BREP parse, and — for a pure op-list append —
+   * the full replay too), and this method always writes the fresh entry it
+   * returns back into `cache.current` for the next call. On any error, the
+   * held entry is dropped (not reused, not explicitly disposed — see
+   * `loadBRepCached`'s doc comment for why a thrown call must not attempt to
+   * free its own stale handles) so the NEXT call starts from a clean parse.
+   */
   private async handleBRep(
     uri: vscode.Uri,
     format: Extract<CadFormat, "step" | "iges" | "brep">,
     post: (msg: HostToWebview) => void,
-    ops: EditOp[] = []
+    ops: EditOp[] = [],
+    cache: { current: BRepCacheEntry | undefined }
   ): Promise<void> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
-      const { groups, edges, points, tree } = await loadBRep(this.context.extensionPath, bytes, format, ops);
+      const { result, cache: nextCache } = await loadBRepCached(
+        this.context.extensionPath,
+        bytes,
+        format,
+        ops,
+        cache.current
+      );
+      cache.current = nextCache;
+      const { groups, edges, points, tree } = result;
       post({
         type: "geometry",
         meshes: groups.flatMap((g) =>
@@ -786,6 +815,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const sourceUnit = format === "step" ? detectStepLengthUnit(text!) : format === "iges" ? detectIgesLengthUnit(text!) : undefined;
       post({ type: "tree", root: tree, sourceUnit });
     } catch (err) {
+      // Drop (never reuse) whatever cache entry was held — see
+      // `loadBRepCached`'s doc comment on why a thrown call doesn't already
+      // dispose its own stale state; the next `handleBRep` call starts from
+      // a clean parse regardless of whether this was a real WASM abort or an
+      // ordinary error (e.g. an unreadable file).
+      cache.current = undefined;
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
     }
   }
