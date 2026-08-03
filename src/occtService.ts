@@ -11,6 +11,7 @@ import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import { type DisplayUnit, unitScaleFactor, igesUnitName } from "./lengthUnits";
 import { patchStepUnitDeclaration } from "./stepUnitPatch";
+import { TESSELLATION_PRESETS, type TessellationParams } from "./tessellationQuality";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ocPromise: Promise<any> | null = null;
@@ -195,7 +196,8 @@ export async function loadBRepCached(
   bytes: Uint8Array,
   format: Extract<CadFormat, "step" | "iges" | "brep">,
   ops: EditOp[],
-  previous: BRepCacheEntry | undefined
+  previous: BRepCacheEntry | undefined,
+  quality: TessellationParams = TESSELLATION_PRESETS.standard
 ): Promise<{ result: BRepResult; cache: BRepCacheEntry }> {
   const oc = await getOcct(extensionPath);
 
@@ -252,7 +254,7 @@ export async function loadBRepCached(
       shape = applyEditsBRep(oc, baseShape, ops, opsCleanup);
     }
 
-    const groups = tessellateByGroup(oc, shape);
+    const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
     const tree = buildTree(format, groups);
@@ -273,7 +275,8 @@ export async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
   format: Extract<CadFormat, "step" | "iges" | "brep">,
-  ops: EditOp[] = []
+  ops: EditOp[] = [],
+  quality: TessellationParams = TESSELLATION_PRESETS.standard
 ): Promise<BRepResult> {
   const oc = await getOcct(extensionPath);
 
@@ -284,7 +287,7 @@ export async function loadBRep(
   try {
     const baseShape = readShape(oc, tmpName, format, cleanup);
     const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
-    const groups = tessellateByGroup(oc, shape);
+    const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
     const tree = buildTree(format, groups);

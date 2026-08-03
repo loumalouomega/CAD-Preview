@@ -23,13 +23,14 @@ code --install-extension cad-preview-<version>.vsix
 
 ## Settings
 
-CAD Preview contributes a few cross-document defaults under **CAD Preview** in VS Code's Settings UI (`Ctrl+,`, search "CAD Preview"). These only affect *newly opened* documents — a document's own saved state (a `.mesh.json` sidecar's size, the toolbar Grid toggle for the current session) always wins once set.
+CAD Preview contributes a few cross-document defaults under **CAD Preview** in VS Code's Settings UI (`Ctrl+,`, search "CAD Preview"). Most only affect *newly opened* documents — a document's own saved state (a `.mesh.json` sidecar's size, the toolbar Grid toggle for the current session) always wins once set. `tessellationQuality` is the one exception, re-read on every edit (see its own row below).
 
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `cadPreview.background` | `#1e1e1e` | 3D view background color (CSS hex) |
 | `cadPreview.defaultMeshSizePreset` | `medium` | Seeds the FE Mesh panel's target size (Coarse/Medium/Fine) for a model with no saved mesh options yet |
 | `cadPreview.showGridAndAxesOnOpen` | `true` | Show the ground grid and axes helper when a model is opened |
+| `cadPreview.tessellationQuality` | `standard` | B-rep (STEP/IGES/BREP) tessellation density — `draft`/`standard`/`fine`; `standard` is identical to every previous version's fixed behavior. Unlike the other settings here, re-read on every edit, so a change applies to the next edit without reopening the file. Face triangle density only — does not affect edge display or the FE Mesh panel's own (separate) mesh generation |
 | `cadPreview.upAxis` | `y` | Default up-axis for newly opened models — set to `z` for Z-up source conventions |
 
 ## Opening a File

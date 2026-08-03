@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
 import { loadBRepCached, disposeBRepCache, exportBRep, type BRepCacheEntry } from "./occtService";
+import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellationQuality";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
@@ -783,12 +784,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
+      // Re-read fresh on every call (cheap) rather than cached at document-open
+      // time — a mid-session settings change should take effect on the NEXT
+      // edit without needing to reopen the tab, same as every other
+      // `cadPreview.*` setting's "always re-read" convention.
+      const quality = normalizeTessellationQuality(
+        vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
+      );
       const { result, cache: nextCache } = await loadBRepCached(
         this.context.extensionPath,
         bytes,
         format,
         ops,
-        cache.current
+        cache.current,
+        tessellationParamsFor(quality)
       );
       cache.current = nextCache;
       const { groups, edges, points, tree } = result;

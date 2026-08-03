@@ -18,6 +18,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/stepUnits.ts` | Pure text scan of a STEP file's `DATA` section for its declared length unit (vscode/OCCT-free, unit-tested) |
 | `src/igesUnits.ts` | Sibling scanner for IGES's fixed-width Global-section unit flag — same purpose, different (positional, not named-entity) format (vscode/OCCT-free, unit-tested) |
 | `src/lengthUnits.ts` | Shared `DisplayUnit` type + mm scale-factor table + `displayUnitFromUnitName` — backs both the webview's display-unit selector and unit-conversion-on-export (vscode/DOM/THREE-free) |
+| `src/tessellationQuality.ts` | `draft`/`standard`/`fine` B-rep tessellation presets + `normalizeTessellationQuality` tolerance gate, backing `cadPreview.tessellationQuality` (vscode-free) |
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
 | `src/viewerDefaults.ts` | The `cadPreview.*` settings bag + `normalizeViewerDefaults` tolerance gate (vscode-free) |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
@@ -574,11 +575,12 @@ async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
   format: CadFormat,
-  ops?: EditOp[]            // replayable edit op-list (default [])
+  ops?: EditOp[],                    // replayable edit op-list (default [])
+  quality?: TessellationParams       // default: TESSELLATION_PRESETS.standard
 ): Promise<BRepResult>
 ```
 
-High-level, STATELESS entry point — always re-reads and re-parses from scratch. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, `extractVertices()` to extract every vertex in the shape, and `buildTree()` to build the component hierarchy. With an empty `ops` this is the original read-only path; the source bytes are never modified. Called by `mcpTools.ts` (deliberately kept stateless-per-call — see the MCP server section below); `provider.ts` calls `loadBRepCached` instead (below), NOT this function directly, for its `editsChanged` hot path.
+High-level, STATELESS entry point — always re-reads and re-parses from scratch. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, `extractVertices()` to extract every vertex in the shape, and `buildTree()` to build the component hierarchy. With an empty `ops` this is the original read-only path; the source bytes are never modified. `quality` (roadmap "Configurable tessellation quality", closed — `src/tessellationQuality.ts`) is threaded straight into `tessellateByGroup()`'s deflection args; every existing caller omits it (implicit `"standard"`, byte-for-byte the original hardcoded 0.1/0.5 constants), so this is a purely additive, backward-compatible parameter. Called by `mcpTools.ts` (deliberately kept stateless-per-call — see the MCP server section below) and `renderService.ts`; `provider.ts` calls `loadBRepCached` instead (below), NOT this function directly, for its `editsChanged` hot path.
 
 ```typescript
 interface BRepCacheEntry { /* opaque outside occtService.ts — pass it straight back in */ }
@@ -588,13 +590,14 @@ async function loadBRepCached(
   bytes: Uint8Array,
   format: CadFormat,
   ops: EditOp[],
-  previous: BRepCacheEntry | undefined
+  previous: BRepCacheEntry | undefined,
+  quality?: TessellationParams       // default: TESSELLATION_PRESETS.standard
 ): Promise<{ result: BRepResult; cache: BRepCacheEntry }>
 
 function disposeBRepCache(cache: BRepCacheEntry): void
 ```
 
-The caching counterpart of `loadBRep` (roadmap "Base-shape caching and incremental replay", closed) — for `provider.ts`'s per-document, per-`editsChanged` hot path only; `mcpTools.ts` never calls this. Reuses the parsed base shape across calls whenever `bytes`+`format` match `previous` (byte-for-byte comparison, not a hash), and additionally reuses `previous`'s fully-replayed shape when `ops` is a pure append of `previous.ops` — replaying only the new suffix. Any other change (undo, a non-append edit, a variable re-resolving numeric fields) falls back to a full replay of `ops` from the (still-reused, if bytes match) base shape. **Reused fields are aliased by reference** — `disposeBRepCache` must only ever be called on the single, latest entry a caller currently holds, never on an entry that's already been superseded by a later `loadBRepCached` call's return value (doing so frees the SAME live handles the newer entry still references — a real `"Cannot pass deleted object as a pointer"` OCCT crash this was verified against, not a hypothetical). On failure, no handle from the failed call is freed (an abort may leave the WASM heap in an undefined state) — the caller must drop its held reference rather than reuse or dispose it; the underlying orphaned OCCT module becomes GC-eligible once unreferenced. Cache validity across a `resetOcct()`-triggered abort recovery is checked by `===` identity against the CURRENT `getOcct()` resolution, not a separate counter. See CLAUDE.md's own section for the full reuse-rule writeup and the measured ~35× speedup on a large fixture.
+The caching counterpart of `loadBRep` (roadmap "Base-shape caching and incremental replay", closed) — for `provider.ts`'s per-document, per-`editsChanged` hot path only; `mcpTools.ts` never calls this. Reuses the parsed base shape across calls whenever `bytes`+`format` match `previous` (byte-for-byte comparison, not a hash), and additionally reuses `previous`'s fully-replayed shape when `ops` is a pure append of `previous.ops` — replaying only the new suffix. Any other change (undo, a non-append edit, a variable re-resolving numeric fields) falls back to a full replay of `ops` from the (still-reused, if bytes match) base shape. **Reused fields are aliased by reference** — `disposeBRepCache` must only ever be called on the single, latest entry a caller currently holds, never on an entry that's already been superseded by a later `loadBRepCached` call's return value (doing so frees the SAME live handles the newer entry still references — a real `"Cannot pass deleted object as a pointer"` OCCT crash this was verified against, not a hypothetical). On failure, no handle from the failed call is freed (an abort may leave the WASM heap in an undefined state) — the caller must drop its held reference rather than reuse or dispose it; the underlying orphaned OCCT module becomes GC-eligible once unreferenced. Cache validity across a `resetOcct()`-triggered abort recovery is checked by `===` identity against the CURRENT `getOcct()` resolution, not a separate counter. `quality` is entirely orthogonal to the cache's reuse decisions — tessellation is never cached (see below), so a quality change between two calls with identical `bytes`/`ops` still reuses `baseShape`/`shape` and simply re-tessellates them at the new density. See CLAUDE.md's own sections for the full reuse-rule writeup, the measured ~35× base-shape-cache speedup on a large fixture, and the tessellation-quality live-WASM probing trail (including why edge deflection stays fixed).
 
 ```typescript
 function readShape(
@@ -929,10 +932,14 @@ function extractFaceGeometry(
 Extracts vertices and triangles from a single OCCT face's triangulation. Applies the face's location transform. If `isReversed` is true, swaps triangle winding order so face normals point outward. OCCT uses 1-based indexing; this function converts to 0-based for WebGL.
 
 ```typescript
-function tessellateByGroup(oc: any, shape: any): SolidGroup[]
+function tessellateByGroup(
+  oc: any,
+  shape: any,
+  quality?: TessellationParams   // default: TESSELLATION_PRESETS.standard (linear 0.1, angular 0.5 rad)
+): SolidGroup[]
 ```
 
-Tessellates the entire `TopoDS_Shape`. Uses `BRepMesh_IncrementalMesh_2` with linear deflection `0.1`. Explores solids via `TopExp_Explorer`, then within each solid explores faces and calls `extractFaceGeometry`. Returns one `SolidGroup` per solid, each face tagged with a stable global `faceId` (deterministic explorer order).
+Tessellates the entire `TopoDS_Shape`. Uses `BRepMesh_IncrementalMesh_2(shape, quality.linearDeflection, false, quality.angularDeflectionRad, true)` — `isRelative` is always `false`, `isInParallel` is always `true` (roadmap "Configurable tessellation quality", closed — verified live against the real WASM to be both hang-free and ~2× faster on a large model, so it's unconditional, not a setting). Explores solids via `TopExp_Explorer`, then within each solid explores faces and calls `extractFaceGeometry`. Returns one `SolidGroup` per solid, each face tagged with a stable global `faceId` (deterministic explorer order).
 
 When solids exist, it also runs a **free-face pass** (`extractFreeFaces`): every face touched while processing a solid is "claimed" into a `HashCode`-bucketed map (via `extractFacesFromShape`'s optional `claim` parameter — the claimed face handles are pushed into `tessellateByGroup`'s own long-lived `cleanup`, not the per-call one, so they outlive the comparison), then the whole shape's faces are walked once more and anything not claimed (`IsSame` check) becomes an extra `"Sketches"` group. This surfaces standalone 2D profile faces added via `addCircleProfile`/`addRectangleProfile`/`addPolygonProfile` (`src/occtOperations.ts`), which would otherwise be silently dropped — without it, a bare `TopoDS_Face` mixed into the compound never gets tessellated or a `faceId`. **`occtOperations.ts`'s `collectFaces` duplicates this exact algorithm** so `face-N` ids resolve consistently between the read/display path and the edit-resolution path; see that file's docs above for why keeping the two in lockstep matters. `triangulateFace` factors out the per-face triangulation logic shared by the solid pass, the no-solids fallback, and the free-face pass.
 

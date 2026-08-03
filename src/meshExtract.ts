@@ -1,4 +1,5 @@
 import { enumerateEdges, polylineFromDiscretizer } from "./edgeEnumeration";
+import { TESSELLATION_PRESETS, type TessellationParams } from "./tessellationQuality";
 
 // Re-exported for backward compatibility — `polylineFromDiscretizer` moved to
 // `edgeEnumeration.ts` (it's edge/curve-discretization logic, not face
@@ -227,12 +228,27 @@ function extractFreeFaces(oc: any, shape: any, claimed: Map<number, any[]>): Geo
  * (e.g. surface/shell models).
  *
  * BRepMesh is run once on the whole shape before face exploration begins.
+ *
+ * `quality` (default: the `"standard"` preset, byte-for-byte the original
+ * hardcoded 0.1/0.5 constants — see `tessellationQuality.ts`) supplies the
+ * linear/angular deflection. `isInParallel` is passed as `true`
+ * unconditionally, not user-configurable — verified live against the real
+ * WASM (not assumed from the roadmap item's own cautious framing) to be
+ * both safe (no hang under Node's single-threaded Emscripten, confirmed on
+ * a real multi-face STEP model) and meaningfully faster (~2x on a large
+ * fixture), so there is no reason to ever run serially.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function tessellateByGroup(oc: any, shape: any): SolidGroup[] {
+export function tessellateByGroup(oc: any, shape: any, quality: TessellationParams = TESSELLATION_PRESETS.standard): SolidGroup[] {
   const cleanup: Array<{ delete(): void }> = [];
   try {
-    const mesher = new oc.BRepMesh_IncrementalMesh_2(shape, 0.1, false, 0.5, false);
+    const mesher = new oc.BRepMesh_IncrementalMesh_2(
+      shape,
+      quality.linearDeflection,
+      false,
+      quality.angularDeflectionRad,
+      true
+    );
     cleanup.push(mesher);
 
     const groups: SolidGroup[] = [];

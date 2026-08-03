@@ -113,6 +113,25 @@ export function enumerateEdges(oc: any, shape: any, cleanup: Array<{ delete(): v
  * `GCPnts_UniformDeflection` at `EDGE_DEFLECTION` (verified against the live
  * WASM). Never throws — returns an empty array for a degenerate edge or a
  * construction failure, which `enumerateEdges` treats as "drop this edge".
+ *
+ * **Deliberately NOT varied by the configurable tessellation-quality feature
+ * (roadmap item, closed) — investigated and rejected, not an oversight.**
+ * `enumerateEdges` is the SAME enumerator `occtOperations.ts`'s `collectEdges`
+ * uses to resolve an `edge-N` id back to a live edge, and the `positions.
+ * length >= 6` filter just below is what decides whether an edge is kept as
+ * an entity at all. If display tessellation (`extractEdges`) and op-operand
+ * resolution (`collectEdges`) ever used a DIFFERENT deflection, they could
+ * disagree on which edges pass that filter — silently repointing `edge-N`
+ * ids between the two paths, exactly the drift hazard the shared-enumerator
+ * refactor (see this file's own module doc comment) exists to prevent.
+ * Correctly threading a quality-dependent deflection through `collectEdges`
+ * would mean plumbing it through every `applyEditsBRep` call site across the
+ * codebase (`occtOperations.ts`, `entityFacts.ts`, `modelDiffHost.ts`,
+ * `massProperties.ts`, `gmshPartsMap.ts`, …) — disproportionate risk for a
+ * feature whose real value (triangle density, the dominant cost for both
+ * rendering and interactive responsiveness) is in FACE tessellation, not
+ * edge polyline resolution. `tessellateByGroup`'s `quality` param is the
+ * configurable one; this stays fixed.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function discretizeEdge(oc: any, edge: any, cleanup: Array<{ delete(): void }>): Float32Array {

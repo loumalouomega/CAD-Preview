@@ -211,6 +211,21 @@
           "default": true,
           "description": "Show the ground grid and axes helper when a model is opened."
         },
+        "cadPreview.tessellationQuality": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "standard",
+            "fine"
+          ],
+          "enumDescriptions": [
+            "Coarser, faster tessellation — larger triangles, less detail on curved surfaces.",
+            "The default: unchanged from previous versions of this extension.",
+            "Finer, slower tessellation — smaller triangles, more detail on curved surfaces."
+          ],
+          "default": "standard",
+          "description": "B-rep tessellation quality (STEP/IGES/BREP sources). Re-read on every edit, so a change takes effect on the next edit without reopening the file. Does not affect FE mesh generation (see the FE Mesh panel's own size settings)."
+        },
         "cadPreview.upAxis": {
           "type": "string",
           "enum": [
