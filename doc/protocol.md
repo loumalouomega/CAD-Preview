@@ -73,6 +73,23 @@ interface Part {
 
 A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats have no assignable lines or points). Parts are persisted in the JSON sidecar — see [File Formats](./file-formats.md).
 
+### `ViewState`
+
+```typescript
+type DisplayMode = 'shaded' | 'wireframe' | 'xray' | 'hiddenLines' | 'flat'
+type ClipAxis = 'x' | 'y' | 'z'
+
+interface ViewState {
+  viewDirection: [number, number, number]   // target → camera, normalized
+  cameraUp: [number, number, number]
+  orthographic: boolean
+  displayMode: DisplayMode
+  clip: { axis: ClipAxis; offsetFrac: number } | null   // null = clipping off; offsetFrac is a fraction of the model's bbox, not a raw plane constant
+}
+```
+
+Persisted camera orientation, display mode, ortho/perspective, and clip plane (roadmap "View-state persistence", closed) — see [File Formats](./file-formats.md) for the `<model>.view.json` sidecar. Deliberately does **not** include explode-preview state (session-only by design) or raw camera position/target/distance: `Viewer.frame(direction)` auto-derives both from the model's current bounding box, so a normalized direction + up vector is enough and survives edits that change the model's extents.
+
 ### `EditOp`
 
 ```typescript
@@ -226,6 +243,7 @@ type HostToWebview =
   | { type: 'editError'; message: string }
   | { type: 'exportMesh'; requestId: string; format: CadFormat; unit?: DisplayUnit }
   | { type: 'meshingOptions'; options: MeshOptions }
+  | { type: 'viewState'; view: ViewState | null }
   | { type: 'meshingResult'; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
   | { type: 'meshingError'; message: string }
@@ -399,6 +417,14 @@ Sent once, right after `parts`, once the host has read the mesh-options sidecar 
 }
 ```
 
+### `viewState`
+
+Sent once during the `ready` handshake, right after `meshingOptions`, once the host has read the view-state sidecar (`<model>.view.json`) — `view` is `null` when no sidecar exists yet for this document (a genuinely new document, or one never manually reoriented). Also re-sent by the external-change watcher on `.view.json` when another process (an MCP agent, a second tab on the same file) writes it. The webview applies it once BOTH this message and the model geometry (`geometry`/mesh load) have arrived — no deterministic order between the two, same non-deterministic-arrival-order discipline as `viewerDefaults`/`meshingOptions` vs. `geometry` — via `main.ts`'s `applyInitialViewIfNeeded()`, which mirrors `syncMeshSizeSeed()`'s "whichever lands last performs the actual application" idiom. `view: null` applies the default hardcoded isometric (`Viewer.resetView()`) instead. Applied only ONCE per document session: every subsequent model reload (an edit re-tessellating a B-rep source, a mesh edit rebuilding the displayed model) preserves the CURRENT camera direction (`Viewer.fitView()`) rather than re-snapping to the persisted state — camera position used to unconditionally reset on every one of those too, a bigger, more-repeated friction than "resets on reopen" alone.
+
+```json
+{ "type": "viewState", "view": { "viewDirection": [1, 0.8, 1], "cameraUp": [0, 1, 0], "orthographic": false, "displayMode": "shaded", "clip": null } }
+```
+
 ### `meshingResult`
 
 Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the target is `"msh"`) on a successful GMSH run. `positions`/`indices`/`edges` are the base64 `Float32Array`/`Uint32Array` boundary triangulation + true element-edge line buffer, encoded exactly like `EncodedMesh`'s buffers — for a 3D mesh `indices` is the tetrahedra's boundary faces derived host-side, not the tetrahedra themselves. `nodeCount`/`elementCount` are the full node/element counts (not just the displayed boundary triangle count), and `elapsedMs` is the wall-clock duration of the generate call. `elementGroups` partitions `indices` into contiguous per-part runs (`{name, color, indexStart, indexCount}`, with a trailing `name`/`color` = `null` run for triangles not claimed by any part) so the overlay can be built multi-material with per-part colours. The webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))` and renders the stats (counts + time) in the panel's status line. `quality` (optional — omitted if it couldn't be computed, e.g. a 1D mesh) is a `{min, mean, histogram}` summary over the mesh's top-dimension elements' `minSICN` quality (via Gmsh's own `getElementQualities` — see `src/gmshService.ts`'s `computeQualityAndWorstElements` for the verified call shape), rendered as a small min/mean line + bar histogram below the FE Mesh panel's status line.
@@ -489,6 +515,7 @@ type WebviewToHost =
   | { type: 'log'; message: string }
   | { type: 'partsChanged'; parts: Part[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: 'viewChanged'; view: ViewState }
   | { type: 'openFile' }
   | { type: 'openPath'; path: string }
   | { type: 'saveSidecars' }
@@ -524,6 +551,14 @@ Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) *
   "ops": [ { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0], "exprs": { "vec[0]": "L/2" } } ],
   "variables": [ { "name": "L", "expr": "20", "value": 20 } ]
 }
+```
+
+### `viewChanged`
+
+Sent whenever the user changes the view — camera orbit/pan/zoom/dolly (drag or the stepped toolbar buttons), Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, or the clip axis/offset/toggle. Carries the full current `ViewState`, gathered fresh at save time (`viewer.getViewDirection()`/`getCameraUp()`/`isOrthographic()`/`getDisplayMode()` plus the clip controls' own closure state). The host debounces these (~500 ms, on its own timer separate from parts/edits/mesh) and writes `<model>.view.json` via `writeViewState()`. **Not** sent merely from opening a document, including the initial default-isometric framing or a persisted-state restoration — `main.ts` gates on its own `hasAppliedInitialView` flag, becoming true only after that one-time initial application completes, mirroring `syncMeshSizeSeed()`'s `load()`-not-`update()` "opening ≠ a user change" convention for mesh options. The CAD file is never written — only the sidecar. See [`ViewState`](#viewstate).
+
+```json
+{ "type": "viewChanged", "view": { "viewDirection": [0, 0, 1], "cameraUp": [0, 1, 0], "orthographic": true, "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": -0.1 } } }
 ```
 
 ### `meshingChanged`

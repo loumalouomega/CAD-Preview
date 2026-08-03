@@ -62,14 +62,14 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 
 - `setupDragAndDrop()` — `dragover`/`drop` on `#app`; posts `{type:"openPath", path}` when the dropped `File` exposes a real fs path, else falls back to `{type:"openFile"}`.
 - `setupViewMenu()` — wires the toolbar's **View ▾** dropdown: `#grid` (calling `viewer.toggleGrid()` and reflecting its returned visibility into the item's `aria-checked` tick — the initial state comes from the `cadPreview.showGridAndAxesOnOpen` setting via `applyDefaults()`, so it can't be assumed on) and dismissing the menu after the one-shot `#screenshot` action.
-- `setupAppearanceControls()` — wires `#edges` (View ▾ menu), `#vc-background`/`#vc-opacity`/`#vc-ortho` (`#view-controls`' "Appearance" group) to `viewer.setEdgesVisible`/`setBackground`/`setOpacity`/`setOrthographic`, and `#vc-unit` to `setDisplayUnit()` (`src/webview/units.ts` — see below).
-- `setupClippingControls()` — wires `#view-controls`' "Clip" group (`.clip-axis` buttons, `#clip-offset` slider, `#clip-toggle`) to `viewer.setClippingPlane()`, computing a `THREE.Plane` via `clipping.ts`'s `planeForAxis()` from `viewer.getModel()`'s current bounding box on every change.
+- `setupAppearanceControls()` — wires `#edges` (View ▾ menu), `#vc-background`/`#vc-opacity`/`#vc-ortho` (`#view-controls`' "Appearance" group) to `viewer.setEdgesVisible`/`setBackground`/`setOpacity`/`setOrthographic`, and `#vc-unit` to `setDisplayUnit()` (`src/webview/units.ts` — see below); also wires the Display mode button group to `viewer.setDisplayMode()` + `refreshColors()`. Returns an `AppearanceControlsHandle { applyOrtho(enabled), applyDisplayMode(mode) }` — the SAME functions the click handlers call, reused by `applyInitialViewIfNeeded()`/`applyViewState()` (below) to restore persisted ortho/display-mode state through one code path instead of two that could drift. Ortho and display mode are persisted (`ViewState`, roadmap "View-state persistence", closed); Edges/background/opacity/units stay session-only.
+- `setupClippingControls()` — wires `#view-controls`' "Clip" group (`.clip-axis` buttons, `#clip-offset` slider, `#clip-toggle`) to `viewer.setClippingPlane()`, computing a `THREE.Plane` via `clipping.ts`'s `planeForAxis()` from `viewer.getModel()`'s current bounding box on every change. Returns a `ClippingControlsHandle { applyState(clip), getState() }` (`clip: {axis, offsetFrac} | null`) so persisted view state can restore the clip plane and the view-state save can read its current settings — `clipAxis`/`clipEnabled`/the offset slider's value are this function's own closure state, with no other way to read them from outside.
 
 **Message handler (host → webview):**
 
 | `type` | Action |
 | --- | --- |
-| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` → `viewer.setModel(group)`, recolour, enable all pick modes (`volume`/`surface`/`line`/`point`), `MeshingPanel.setSourceKind("brep")`/`setModelExtents(...)` + `syncMeshSizeSeed()` |
+| `"geometry"` | `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` → `viewer.setModel(group)`, recolour, enable all pick modes (`volume`/`surface`/`line`/`point`), `MeshingPanel.setSourceKind("brep")`/`setModelExtents(...)` + `syncMeshSizeSeed()` + `applyInitialViewIfNeeded()` (below) |
 | `"tree"` | `TreePanel.render(msg.root)` |
 | `"loadUrl"` | `loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase())` — see below |
 | `"loadMeshBytes"` | base64-decode → `Blob` → `blob:` object URL (`URL.createObjectURL`) → decode `msg.regionAssignment` (if present, base64 `Int32Array` → `regionInfo`) → `loadMeshObjectFromUrl(blobUrl, "stl", msg.sourceFormat.toUpperCase(), regionInfo)`, then `URL.revokeObjectURL(blobUrl)`. A meshio++-imported document (`doc/file-formats.md`'s "meshio++ Bridge Formats") — always loaded via the STL loader regardless of the true source format, which only picks the Components tree root's label. `regionInfo` seeds a module-level `importedRegionInfo`, fed into `splitMeshesIntoFacets` **only while the edit-op list is empty** (see `rebuildMeshModel` below) so the webview's own facet split reproduces the same `node-0/face-K` ids the host may have auto-created Parts against. `applyAvailableColorFields(msg.meshioMetadata)` populates (and shows/hides) the "Colour by field" `<select>` from `pointDataNames`/`cellDataNames`. When `msg.meshioMetadata` is present, it's also shown as a `setStatus()` line AFTER the load succeeds, deliberately outside the try/finally that owns the blob URL, so it can't race with `loadMeshObjectFromUrl`'s own status sequence — a region that correlated (has `regionAssignment`) is worded "(see Parts)", uncorrelated regions "not imported as Parts/geometry", point/cell data names `(see "Colour by field")`, and `fieldDataNames` (whole-mesh, not spatially varying — nothing to colour by) "not imported". |
@@ -80,6 +80,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"editError"` | Show `#error-overlay` with message (same rendering as `"error"`, distinct only by intent) |
 | `"exportMesh"` | `exportModel(viewer.getModel(), msg.format)` → posts back `"exportResult"` (with `data`/`binary`) or `"exportError"` on failure, correlated by `msg.requestId` |
 | `"meshingOptions"` | `MeshingModel.load(msg.options)` (hydration only) → `syncMeshSizeSeed()` → `MeshingPanel.render()` |
+| `"viewState"` | Stores `msg.view` (`ViewState \| null`) as `pendingViewState`. Applies it (or the default isometric, if `null`) once geometry has ALSO arrived, via `applyInitialViewIfNeeded()` — a no-op after the document's first load. A LATER `"viewState"` (an external `.view.json` change reconciled by the host) applies immediately instead, via the shared `applyViewState()` helper |
 | `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))`; if `msg.worstElements` is present, `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))` and auto-show it (else clear it) → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs, quality: msg.quality, worstElements: msg.worstElements })` |
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
 | `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`. Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
@@ -89,7 +90,9 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"colorFieldResult"` | `viewer.setColorFieldOverlay(buildColorFieldOverlay(pristineMeshPositions(), msg.values, msg.min, msg.max))`, then updates the legend (`#vc-colorfield-gradient`'s CSS background from `viridisCssGradientStops()`, `#vc-colorfield-min`/`-max` via the plain `formatMeasure` — no length-unit suffix, a scalar field isn't length-dimensioned) and unhides it; ignored if `msg.requestId` doesn't match the latest selection (`colorFieldRequestId`) |
 | `"colorFieldError"` | `setStatus(msg.message, true)` + resets the `<select>` to `""`, same stale-request guard |
 
-The webview also posts `{ type: "partsChanged", parts }` whenever the user edits parts, `{ type: "editsChanged", ops }` whenever the op-stack mutates, and `{ type: "meshingChanged", options }` whenever a mesh-option control changes; the host debounces each independently and writes the matching sidecar(s). See `meshingModel.ts`/`meshingPanel.ts` below for the FE-mesh wiring, including `currentStlIfMeshSource()` — the helper that snapshots the displayed model to base64 STL (via `meshExporters.ts`'s `exportModel`) for `meshingGenerate`/ `meshingExport` on mesh-format documents, since the host has no B-rep to re-export for those.
+The webview also posts `{ type: "partsChanged", parts }` whenever the user edits parts, `{ type: "editsChanged", ops }` whenever the op-stack mutates, `{ type: "meshingChanged", options }` whenever a mesh-option control changes, and `{ type: "viewChanged", view }` whenever the user changes the view (camera orbit/pan/zoom/fit/reset/gizmo, ortho toggle, display mode, or the clip controls); the host debounces each independently and writes the matching sidecar(s). See `meshingModel.ts`/`meshingPanel.ts` below for the FE-mesh wiring, including `currentStlIfMeshSource()` — the helper that snapshots the displayed model to base64 STL (via `meshExporters.ts`'s `exportModel`) for `meshingGenerate`/ `meshingExport` on mesh-format documents, since the host has no B-rep to re-export for those.
+
+**View-state persistence (roadmap "View-state persistence", closed).** `applyViewState(state: ViewState): void` is the one place that applies a full `ViewState` to the viewer + Appearance/Clip controls (`viewer.setCameraUp` → `AppearanceControlsHandle.applyOrtho`/`applyDisplayMode` → `viewer.frameFromDirection` → `ClippingControlsHandle.applyState`), shared by initial restoration and by a post-initial external-change reconciliation of `.view.json`. `applyInitialViewIfNeeded(): void` applies it (or `viewer.resetView()` if no persisted state exists) exactly once — gated on `pendingViewState !== undefined` (the `"viewState"` message has arrived) AND `viewer.getModel() !== null` (geometry has arrived) — mirroring `syncMeshSizeSeed()`'s "whichever lands last performs the actual application" idiom, since the two have no deterministic arrival order. It's called from the `"geometry"` handler, `rebuildMeshModel()` (covers both the first mesh load and every mesh edit), and the `"viewState"` handler itself; every call after the first is a no-op via a module-level `hasAppliedInitialView` flag, set only AFTER the initial framing completes — `frameFromDirection`/`resetView`/`applyOrtho`/`applyState` all end in `controls.update()`, which synchronously fires `viewer.onViewChanged()`'s callback, so setting the flag afterward (not before) is what keeps merely OPENING a file from immediately creating a `.view.json` it never had. `scheduleViewSave(): void` (debounced ~500 ms) gathers the current state (`viewer.getViewDirection()`/`getCameraUp()`/`isOrthographic()`/`getDisplayMode()` + `ClippingControlsHandle.getState()`) and posts `viewChanged`; it's wired to `viewer.onViewChanged()` plus the ortho/display-mode/clip control click handlers, and no-ops while `hasAppliedInitialView` is still `false`. Deliberately excludes explode-preview state (session-only by design; the committed `explode` op already persists via `.edits.json`).
 
 **`loadMeshObjectFromUrl(url, loaderFormat, treeLabel, regionInfo = null)`** — the shared load path both `"loadUrl"` and `"loadMeshBytes"` funnel through (extracted once `"loadMeshBytes"` needed the exact same post-load sequence from a different URL source): sets the module-level `importedRegionInfo = regionInfo` → `loadMeshFromUrl(url, loaderFormat)` → `tagMeshEntities(obj)` → `extractObjectTree(obj, treeLabel)` (builds the Components tree from the pristine hierarchy, before facet-splitting) → caches `obj` as `pristineMesh` → `rebuildMeshModel()` (applies current edits, facet-splits, `viewer.setModel`) → pick modes `volume`+`surface` → `sourceKind = "mesh"` → `MeshingPanel.setSourceKind("mesh")`/`setModelExtents(...)` + `syncMeshSizeSeed()` → `showTree(root)` if there's more than one node. Also resets the display-unit selector to `"mm"` (`setDisplayUnit("mm")`) and clears any cached raw Mass Properties result, since mesh sources (native or meshio-imported) carry no unit metadata and a stale result would refer to the just-replaced model. `loaderFormat` is always `"stl"` for a `"loadMeshBytes"` call regardless of the document's true source format — only `treeLabel` reflects that (e.g. `"VTK"` for a `.vtk` import, shown as the tree root's label, exactly as `"STL"`/`"OBJ"`/etc. already are for native mesh opens). `regionInfo` is only ever non-null from `"loadMeshBytes"`; `"loadUrl"` always passes the default `null` so a prior meshio import's region data can't leak into an unrelated native file opened later in the same session.
 
@@ -184,7 +187,7 @@ The current model's world-space bounding-box dimensions and diagonal, or `null` 
 setModel(object: THREE.Object3D): void
 ```
 
-Replaces the current model. Calls `clearModel()`, adds the new object to the scene, applies the current display mode to all meshes (`applyDisplayMode()`, see below), calls `resetView()` to reframe.
+Replaces the current model. Calls `clearModel()`, adds the new object to the scene, applies the current display mode to all meshes (`applyDisplayMode()`, see below), then frames it: `fitView()` (preserving the CURRENT view direction) on every call after the document's first, or nothing at all on the very first call — tracked via a private `hasModelEverLoaded` flag, `false` until this method's first invocation for the webview's session (a fresh webview page is created per open document tab, so this reliably distinguishes "genuine first load" from an edit-driven re-tessellation/mesh rebuild). On first load, the CALLER (`main.ts`'s `applyInitialViewIfNeeded`) is responsible for framing — either restoring a persisted `ViewState` or falling back to `resetView()`'s default isometric — once the `"viewState"` sidecar message has also arrived (roadmap "View-state persistence", closed; see CLAUDE.md). Before this feature, `setModel()` unconditionally called `resetView()` on EVERY call, resetting the camera on every single edit, not just on reopen — a bigger, more-repeated friction than the roadmap item's literal framing.
 
 ```typescript
 clearModel(): void
@@ -236,10 +239,16 @@ fitView(): void
 Computes the bounding sphere of the model and repositions the camera to frame it while keeping the current view direction. Also adjusts `OrbitControls.target` to the sphere center and updates near/far clip planes.
 
 ```typescript
+frameFromDirection(direction: THREE.Vector3): void
+```
+
+Frames the model along an arbitrary view direction — computes distance/target from the model's current bounding box, same math `fitView()`/`resetView()` use, but for a caller-supplied direction rather than the current or hardcoded-isometric one. Used by `main.ts`'s `applyInitialViewIfNeeded()` to restore a persisted `ViewState.viewDirection` on first load.
+
+```typescript
 resetView(): void
 ```
 
-Resets the view direction to the default isometric `(1, 0.8, 1)` (normalized) and then calls `fitView()`. Called by `setModel()` on every new file open.
+Resets the view direction to the default isometric `(1, 0.8, 1)` (normalized) — a thin wrapper around `frameFromDirection()`. Called by `main.ts`'s `applyInitialViewIfNeeded()` on a document's first load when no persisted `ViewState` exists (see `setModel()` above) — no longer called unconditionally by `setModel()` itself.
 
 ```typescript
 rotateView(azimuthDeg: number, polarDeg: number): void
@@ -278,6 +287,18 @@ getCameraUp(): THREE.Vector3
 Returns `camera.up` (the "up" vector used by OrbitControls).
 
 ```typescript
+isOrthographic(): boolean
+```
+
+Whether `activeCamera` is currently the orthographic camera — `this.activeCamera instanceof THREE.OrthographicCamera`. The single source of truth `main.ts`'s Persp/Ortho toggle and the view-state save/restore both read, rather than each maintaining their own boolean that could drift from the real camera in use.
+
+```typescript
+onViewChanged(callback: () => void): void
+```
+
+Registers a callback fired on every camera movement — `controls.addEventListener("change", callback)`. Covers orbit/pan/dolly (drag or the stepped toolbar buttons), `fitView`/`resetView`/`frameFromDirection`, `setViewDirection`/`setCameraUp`, and `setOrthographic`'s own re-frame, since every one of those ends in `controls.update()`, which `OrbitControls` only actually dispatches `"change"` for when the camera genuinely moved. `main.ts`'s view-state autosave (roadmap "View-state persistence", closed) is the one caller; it gates on its own `hasAppliedInitialView` flag so a document's initial framing (restored or default-isometric) doesn't itself trigger a save — see the protocol reference's [`viewChanged`](./protocol.md#viewchanged) entry.
+
+```typescript
 setOrthographic(enabled: boolean): void
 ```
 
@@ -285,7 +306,7 @@ Toggles between perspective and orthographic projection. **Not a reconstruction*
 
 **Scene state:**
 
-**Point rendering:** each `frame()` call (on `setModel`/`fitView`/`resetView`) computes `pointSpriteScale = radius * 0.01` (the model's bounding-sphere radius, same input `pickThreshold` already uses) and applies it to every `THREE.Sprite`'s `.scale` in the model — this keeps point markers a roughly constant fraction of model size regardless of scale. This is a separate mechanism from `raycaster.params.Line.threshold` (Line-only); sprites have their own hit-testing via `THREE.Sprite`'s native raycasting.
+**Point rendering:** each `frame()` call (via `fitView`/`resetView`/`frameFromDirection`/`setOrthographic`) computes `pointSpriteScale = radius * 0.01` (the model's bounding-sphere radius, same input `pickThreshold` already uses) and applies it to every `THREE.Sprite`'s `.scale` in the model — this keeps point markers a roughly constant fraction of model size regardless of scale. This is a separate mechanism from `raycaster.params.Line.threshold` (Line-only); sprites have their own hit-testing via `THREE.Sprite`'s native raycasting.
 
 ```typescript
 highlightGroup(groupId: string | null): void

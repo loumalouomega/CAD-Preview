@@ -226,6 +226,28 @@ A `sizeMax` of `1e22` is Gmsh's "unbounded" sentinel: it means "no explicit targ
 
 **Exported mesh artifacts:** the FE Mesh panel's export `<select>` + **📤 Export** write further output files via a native Save dialog, in whichever format is picked — hand-written Kratos `.mdpa` (the default; either an Elements + Conditions or a Geometries layout, see [GMSH Integration § Kratos MDPA](gmsh-integration.md#kratos-mdpa-hand-written-not-a-gmshwrite-format)), GMSH's native `.msh` mesh format (nodes + elements), the legacy `.msh2` (v2.2) variant, Gmsh's fully-expanded `.geo_unrolled` script, or any of VTK/I-DEAS Universal (`.unv`)/Abaqus (`.inp`)/Nastran (`.bdf`)/SU2 (`.su2`)/INRIA Medit (`.mesh`)/STL/Diffpack (`.diff`)/OFF — see [GMSH Integration § Export formats](gmsh-integration.md#export-formats) for the full registry and which formats this WASM build actually supports. Like every other Export target in this codebase, these are save-as artifacts the user places wherever they choose; they are not sidecars and are not read back by CAD-Preview.
 
+## View State Sidecar (`<model>.view.json`)
+
+The persisted **camera orientation, display mode, ortho/perspective toggle, and clip plane** (roadmap "View-state persistence", closed) are stored in a **fourth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.view.json`. Like the other three, this never modifies the CAD file. It is read on open (`readViewState()`) and autosaved, debounced (~500 ms, its own timer), on every user-facing view change — camera orbit/pan/zoom/dolly, Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, or the clip axis/offset/toggle — both in `src/viewStateStore.ts`; parse/serialize live in the vscode-free `src/viewStateSidecar.ts` so they are unit-tested.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "view": {
+    "viewDirection": [1, 0.8, 1],
+    "cameraUp": [0, 1, 0],
+    "orthographic": false,
+    "displayMode": "shaded",
+    "clip": null
+  }
+}
+```
+
+`viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox (`planeForAxis`'s own convention), not a raw plane constant. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`).
+
+**Deliberately excludes explode-preview state** — that's a session-only interaction preview by design (`src/webview/explodePreview.ts`); the *committed* `explode` edit op already persists correctly via `.edits.json`. **Deliberately excluded from the Preprocess Archive** (below) — unlike parts/edits/mesh options, view state is purely a display/session preference with no effect on computed geometry, mesh output, or anything an MCP agent would need; there is also no MCP tool surface for it at all (same "genuinely a display feature, no headless equivalent" scope this codebase already applies to Markup and interactive Measurement).
+
 ## Preprocess Archive (`.zip`)
 
 **File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its three sidecars — `<model>.parts.json`, `<model>.edits.json`, `<model>.mesh.json` — and the generated `<model>.geo` script currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json`/`.geo` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one.

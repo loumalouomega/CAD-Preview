@@ -34,6 +34,8 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/meshOptions.ts` | The `MeshOptions` bag + `validateMeshOptions` tolerance gate + `gmshShapeOptions` (vscode-free) |
 | `src/meshOptionsStore.ts` | Read/write the `<model>.mesh.json` sidecar + generated `<model>.geo` (vscode fs) |
 | `src/meshOptionsSidecar.ts` | Pure parse/serialize for the mesh-options sidecar + `.geo` script generation (vscode-free, unit-tested) |
+| `src/viewStateStore.ts` | Read/write the `<model>.view.json` sidecar (vscode fs) |
+| `src/viewStateSidecar.ts` | Pure parse/serialize for the view-state sidecar (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 | `src/toolbarIcons.ts` | **Generated** — monochrome, `currentColor`-based toolbar/panel icons (vscode-free) |
 | `src/nonce.ts` | Shared CSP script-nonce generator, used by every webview HTML builder |
@@ -1008,6 +1010,31 @@ async function writeGeoScript(modelUri, options): Promise<void>
 ```
 
 `provider.ts` calls `readMeshOptions()` on `ready` (posts a `meshingOptions` message) and, on each debounced `meshingChanged` message (~500 ms, its own timer separate from parts/edits), calls **both** `writeMeshOptions()` and `writeGeoScript()` — the sidecar and the generated script are always kept in sync with each other. Neither the CAD file nor any other sidecar is touched.
+
+---
+
+## `src/viewStateStore.ts`, `src/viewStateSidecar.ts`
+
+A fourth parts/edits/mesh-options-style sidecar pair for the persisted camera/display/clip state (roadmap "View-state persistence", closed — see the [View State Sidecar](./file-formats.md#view-state-sidecar-modelviewjson) format reference and CLAUDE.md's writeup for the full mechanism).
+
+`src/viewStateSidecar.ts` is **vscode-free** (unit-tested):
+
+```typescript
+function parseViewStateJson(text: string): ViewState | null   // null = no sidecar / malformed / no persisted view
+function serializeViewStateJson(sourceName: string, view: ViewState): string
+```
+
+Tolerant like the other three sidecars, with one stricter rule: `viewDirection`/`cameraUp` reject the WHOLE record (not just that field) when missing or degenerate (all-zero) — a camera can't be oriented by either, unlike every other field, which individually falls back to a safe default (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`).
+
+`src/viewStateStore.ts` wraps it with VS Code filesystem access, mirroring `partsStore.ts` exactly:
+
+```typescript
+function viewStateSidecarUri(modelUri: vscode.Uri): vscode.Uri     // <model>.view.json
+async function readViewState(modelUri): Promise<ViewState | null>  // null if missing/unreadable/malformed
+async function writeViewState(modelUri, view): Promise<void>
+```
+
+`provider.ts` calls `readViewState()` on `ready` (posts a `viewState` message, right after `meshingOptions`) and, on each debounced `viewChanged` message (~500 ms, its own timer separate from parts/edits/mesh), calls `writeViewState()`. It also participates in the same `watchForExternalChange` mechanism the other three sidecars use, so an external write to `<model>.view.json` (another tab on the same document, a hand edit) is reconciled live — see `provider.ts`'s `watchForExternalChange` and CLAUDE.md's "Sidecar and source external-change reconciliation" writeup.
 
 ---
 

@@ -31,11 +31,11 @@ import { MeasurementState, type MeasureTool, type MeasurementPick } from "./meas
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { ExactMeasureKind } from "../entityFacts";
-import { isDisplayMode } from "./displayMode";
+import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
-import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp } from "../protocol";
+import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState } from "../protocol";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -953,6 +953,7 @@ function rebuildMeshModel(): void {
   // estimate honest. (B-rep sources get the equivalent via the re-posted
   // `geometry` message after each edit.)
   meshingPanel.setModelExtents(viewer.getModelExtents());
+  applyInitialViewIfNeeded(); // no-op after the document's first load; see its doc comment
 }
 
 function showSidebar(): void {
@@ -1359,13 +1360,27 @@ function setupDragAndDrop(): void {
   });
 }
 
+/** Handle returned by {@link setupAppearanceControls} so persisted view state
+ * (roadmap "View-state persistence", closed) can restore ortho/display-mode
+ * through the SAME code the user's own toolbar clicks use — one place that
+ * drives the viewer call, the button state, and (via `scheduleViewSave()`
+ * inside the click handlers themselves) the autosave, instead of restore and
+ * click duplicating that logic and risking drift. */
+interface AppearanceControlsHandle {
+  applyOrtho(enabled: boolean): void;
+  applyDisplayMode(mode: DisplayMode): void;
+}
+
 /**
  * Appearance controls: Edges toolbar toggle (discrete on/off, like Wireframe/
  * Grid), background swatch + opacity slider (continuous, `#view-controls`'
- * "Appearance" group). All session-only — never persisted, mirroring
- * `setWireframe`/`toggleGrid`'s "always wins once set" precedent.
+ * "Appearance" group). Edges/background/opacity stay session-only — never
+ * persisted, mirroring `setWireframe`/`toggleGrid`'s "always wins once set"
+ * precedent. Ortho and Display mode ARE persisted (see `ViewState`); their
+ * `apply*` methods are shared between the user's own click and
+ * `applyInitialViewIfNeeded`'s restoration.
  */
-function setupAppearanceControls(): void {
+function setupAppearanceControls(): AppearanceControlsHandle {
   let edgesVisible = true;
   const edgesBtn = document.getElementById("edges");
   edgesBtn?.addEventListener("click", () => {
@@ -1383,13 +1398,17 @@ function setupAppearanceControls(): void {
     viewer.setOpacity(Number((e.target as HTMLInputElement).value) / 100);
   });
 
-  let ortho = false;
   const orthoBtn = document.getElementById("vc-ortho");
+  const applyOrtho = (enabled: boolean) => {
+    viewer.setOrthographic(enabled);
+    if (orthoBtn) {
+      orthoBtn.textContent = enabled ? "Ortho" : "Persp";
+      orthoBtn.classList.toggle("active", enabled);
+    }
+  };
   orthoBtn?.addEventListener("click", () => {
-    ortho = !ortho;
-    viewer.setOrthographic(ortho);
-    orthoBtn.textContent = ortho ? "Ortho" : "Persp";
-    orthoBtn.classList.toggle("active", ortho);
+    applyOrtho(!viewer.isOrthographic());
+    scheduleViewSave();
   });
 
   document.getElementById("vc-unit")?.addEventListener("change", (e) => {
@@ -1402,23 +1421,46 @@ function setupAppearanceControls(): void {
   // active material instance) needs colours/selection re-applied afterward —
   // refreshColors() already does both, the same contract setModel() relies on.
   const modeBtns = [...document.querySelectorAll<HTMLButtonElement>(".display-mode-btn")];
+  const applyDisplayMode = (mode: DisplayMode) => {
+    viewer.setDisplayMode(mode);
+    refreshColors();
+    for (const b of modeBtns) b.classList.toggle("active", b.dataset.mode === mode);
+  };
   for (const btn of modeBtns) {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode ?? "";
       if (!isDisplayMode(mode)) return;
-      viewer.setDisplayMode(mode);
-      refreshColors();
-      for (const b of modeBtns) b.classList.toggle("active", b === btn);
+      applyDisplayMode(mode);
+      scheduleViewSave();
     });
   }
+
+  return { applyOrtho, applyDisplayMode };
+}
+
+/** `null` clip state means clipping is off (mirrors `ViewState.clip`). */
+type ClipState = { axis: ClipAxis; offsetFrac: number } | null;
+
+/** Handle returned by {@link setupClippingControls}, letting persisted view
+ * state restore the clip plane through the same code the toolbar uses, and
+ * letting the view-state save gather the clip plane's current settings
+ * (`clipAxis`/`clipEnabled`/`offsetSlider.value` are this function's own
+ * closure state, with no other way to read them from outside). */
+interface ClippingControlsHandle {
+  applyState(state: ClipState): void;
+  getState(): ClipState;
 }
 
 /**
  * Live clipping/section plane — display-only, distinct from the `section`
  * edit op. Every slider `input` applies immediately (no commit-gating, unlike
- * the meshing size slider — there's nothing to persist here).
+ * the meshing size slider). Persisted (roadmap "View-state persistence",
+ * closed) as `{axis, offsetFrac}` — the offset is a FRACTION of the model's
+ * current bbox (`planeForAxis`'s own convention), which is what makes it
+ * meaningful to restore against a possibly-different-sized model on reopen,
+ * unlike a raw plane constant.
  */
-function setupClippingControls(): void {
+function setupClippingControls(): ClippingControlsHandle {
   let clipAxis: ClipAxis = "x";
   let clipEnabled = false;
   const axisBtns = [...document.querySelectorAll<HTMLButtonElement>(".clip-axis")];
@@ -1444,15 +1486,34 @@ function setupClippingControls(): void {
       clipAxis = btn.dataset.axis as ClipAxis;
       axisBtns.forEach((b) => b.classList.toggle("active", b === btn));
       applyClip();
+      scheduleViewSave();
     });
   }
+  offsetSlider?.addEventListener("change", scheduleViewSave); // commit on release, not every drag tick
   offsetSlider?.addEventListener("input", applyClip);
   toggleBtn?.addEventListener("click", () => {
     clipEnabled = !clipEnabled;
     toggleBtn.classList.toggle("active", clipEnabled);
     toggleBtn.textContent = clipEnabled ? "On" : "Off";
     applyClip();
+    scheduleViewSave();
   });
+
+  const applyState = (state: ClipState) => {
+    clipEnabled = state !== null;
+    clipAxis = state?.axis ?? clipAxis;
+    axisBtns.forEach((b) => b.classList.toggle("active", b.dataset.axis === clipAxis));
+    if (offsetSlider && state) offsetSlider.value = String(Math.round(state.offsetFrac * 100));
+    if (toggleBtn) {
+      toggleBtn.classList.toggle("active", clipEnabled);
+      toggleBtn.textContent = clipEnabled ? "On" : "Off";
+    }
+    applyClip();
+  };
+  const getState = (): ClipState =>
+    clipEnabled && offsetSlider ? { axis: clipAxis, offsetFrac: Number(offsetSlider.value) / 100 } : null;
+
+  return { applyState, getState };
 }
 
 /**
@@ -1569,6 +1630,14 @@ function setupMarkupControls(): void {
   viewer.setMarkupCanvas(canvas);
 }
 
+// Hoisted out of the try block below (mirroring `meshingToggle`/`worstToggle`
+// further down) so `applyInitialViewIfNeeded`/`scheduleViewSave` — called
+// from the top-level `message` handler, not from inside the try — can reach
+// them. `null` if `setupAppearanceControls`/`setupClippingControls` threw;
+// both call sites below already tolerate that (`?.`).
+let appearanceControls: AppearanceControlsHandle | null = null;
+let clippingControls: ClippingControlsHandle | null = null;
+
 try {
   setupViewControls();
   setupViewMenu();
@@ -1576,12 +1645,93 @@ try {
   setupMeasureControls();
   setupFileMenu();
   setupDragAndDrop();
-  setupAppearanceControls();
-  setupClippingControls();
+  appearanceControls = setupAppearanceControls();
+  clippingControls = setupClippingControls();
   setupMarkupControls();
   setupColorFieldControls();
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
+  console.error(message, err);
+  post({ type: "log", message });
+}
+
+// ── View-state persistence (roadmap "View-state persistence", closed) ──────
+// Camera direction/up, ortho/perspective, display mode, and clip plane
+// restored on first load instead of always resetting to the hardcoded
+// isometric — `explode` state is deliberately NOT included here (it's a
+// session-only interaction preview by design, see `explodePreview.ts`; the
+// COMMITTED `explode` edit op already persists correctly via `.edits.json`).
+//
+// `pendingViewState` starts `undefined` ("the `viewState` sidecar message
+// hasn't arrived yet") and becomes `ViewState | null` once it has (`null` =
+// no sidecar exists for this document yet). `applyInitialViewIfNeeded` is
+// called from every handler that could complete the "both geometry AND
+// viewState have arrived" condition — the `geometry`/`viewState` cases below
+// and `rebuildMeshModel()` — mirroring `syncMeshSizeSeed()`'s "whichever
+// lands last performs the actual application" idiom, since the two messages
+// have no deterministic arrival order (both roundtrip through the same
+// `ready` handler in `provider.ts` but via independent async reads).
+let pendingViewState: ViewState | null | undefined;
+let hasAppliedInitialView = false;
+
+/** Applies a full `ViewState` to the viewer + Appearance/Clip controls — the
+ * one place that does so, shared by the initial restoration below and by a
+ * post-initial external-change reconciliation of `.view.json` (`case
+ * "viewState":`, when `hasAppliedInitialView` is already true). */
+function applyViewState(state: ViewState): void {
+  viewer.setCameraUp(new THREE.Vector3(...state.cameraUp));
+  if (state.orthographic !== viewer.isOrthographic()) appearanceControls?.applyOrtho(state.orthographic);
+  appearanceControls?.applyDisplayMode(state.displayMode);
+  viewer.frameFromDirection(new THREE.Vector3(...state.viewDirection));
+  clippingControls?.applyState(state.clip);
+}
+
+function applyInitialViewIfNeeded(): void {
+  if (hasAppliedInitialView) return;
+  if (pendingViewState === undefined) return;
+  if (!viewer.getModel()) return;
+  if (pendingViewState) applyViewState(pendingViewState);
+  else viewer.resetView();
+  // Set AFTER applying: `applyViewState`/`resetView` above both end in
+  // `controls.update()`, which synchronously fires `onViewChanged` below —
+  // gating on this flag being true (not yet, during this call) is what keeps
+  // merely OPENING a file from immediately creating a `.view.json` it never
+  // had, the same "opening ≠ a user change" rule `syncMeshSizeSeed()`'s
+  // `load()`-not-`update()` choice already establishes for mesh options.
+  hasAppliedInitialView = true;
+}
+
+const VIEW_SAVE_DEBOUNCE_MS = 500;
+let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Debounced autosave, called from every user-facing view change (camera
+ * orbit/pan/zoom/fit/reset, the orientation gizmo, ortho/display-mode
+ * buttons, and the clip controls). */
+function scheduleViewSave(): void {
+  if (!hasAppliedInitialView) return;
+  if (viewSaveTimer) clearTimeout(viewSaveTimer);
+  viewSaveTimer = setTimeout(() => {
+    const dir = viewer.getViewDirection();
+    const up = viewer.getCameraUp();
+    const view: ViewState = {
+      viewDirection: [dir.x, dir.y, dir.z],
+      cameraUp: [up.x, up.y, up.z],
+      orthographic: viewer.isOrthographic(),
+      displayMode: viewer.getDisplayMode(),
+      clip: clippingControls?.getState() ?? null,
+    };
+    post({ type: "viewChanged", view });
+  }, VIEW_SAVE_DEBOUNCE_MS);
+}
+
+try {
+  // Covers orbit/pan/zoom drags, the stepped rotate/pan/zoom toolbar buttons,
+  // Fit/Reset, and the orientation gizmo — every one of them funnels through
+  // `Viewer`'s internal `controls.update()`, so this single hook is enough;
+  // see `onViewChanged`'s doc comment in `viewer.ts`.
+  viewer.onViewChanged(scheduleViewSave);
+} catch (err) {
+  const message = `View-state autosave failed to initialize: ${(err as Error).message}`;
   console.error(message, err);
   post({ type: "log", message });
 }
@@ -1650,6 +1800,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         meshingPanel.setSourceKind("brep");
         meshingPanel.setModelExtents(viewer.getModelExtents());
         syncMeshSizeSeed();
+        applyInitialViewIfNeeded();
         showSidebar();
         setStatus("");
       } catch (err) {
@@ -1764,6 +1915,21 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshingModel.load(msg.options);
       syncMeshSizeSeed();
       meshingPanel.render(meshingModel.get());
+      break;
+
+    case "viewState":
+      // Initial hydration (or a reconciled external change to `.view.json`) —
+      // `null` means no sidecar exists yet for this document. Applied once
+      // geometry has also arrived; see `applyInitialViewIfNeeded`. A reload
+      // AFTER the initial apply (external-change reconciliation) re-applies
+      // it directly instead — going back through `applyInitialViewIfNeeded`
+      // would no-op on its `hasAppliedInitialView` guard.
+      pendingViewState = msg.view;
+      if (hasAppliedInitialView) {
+        if (msg.view) applyViewState(msg.view);
+      } else {
+        applyInitialViewIfNeeded();
+      }
       break;
 
     case "viewerDefaults":

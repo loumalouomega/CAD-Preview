@@ -5,7 +5,7 @@ import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
-import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
+import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type ViewState } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
@@ -13,6 +13,7 @@ import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
+import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
@@ -166,6 +167,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
     // The live edit op-list + parametric variables. Loaded from the sidecar on
     // `ready`, updated on every `editsChanged`. Ops arrive from the webview
@@ -179,12 +181,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     // re-sends these on every change, so these copies are always current.
     let currentParts: Part[] = [];
     let currentMeshOptions: MeshOptions | undefined;
+    // The last view state received from the webview (or read from the
+    // sidecar), retained for the same "Save flushes everything" reason as
+    // `currentMeshOptions` — `undefined` until the webview's first
+    // `viewChanged` post (camera move, display-mode/ortho/clip change), so a
+    // Save before any of those simply has nothing new to write for this one
+    // sidecar, matching `currentMeshOptions`'s own convention.
+    let currentViewState: ViewState | undefined;
 
-    /** Immediately writes the parts/edits/mesh sidecars, bypassing the debounce. */
+    /** Immediately writes the parts/edits/mesh/view sidecars, bypassing the debounce. */
     const flushSidecars = async (): Promise<void> => {
       if (partsSaveTimer) clearTimeout(partsSaveTimer);
       if (editsSaveTimer) clearTimeout(editsSaveTimer);
       if (meshSaveTimer) clearTimeout(meshSaveTimer);
+      if (viewSaveTimer) clearTimeout(viewSaveTimer);
       try {
         await Promise.all([
           writeParts(document.uri, currentParts),
@@ -192,6 +202,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           ...(currentMeshOptions
             ? [writeMeshOptions(document.uri, currentMeshOptions), writeGeoScript(document.uri, currentMeshOptions)]
             : []),
+          ...(currentViewState ? [writeViewState(document.uri, currentViewState)] : []),
         ]);
         post({ type: "status", text: "Saved" });
       } catch (err) {
@@ -357,6 +368,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       })();
     });
 
+    watchForExternalChange(viewStateSidecarUri(document.uri), () => {
+      void (async () => {
+        const view = await readViewState(document.uri);
+        if (JSON.stringify(view) === JSON.stringify(currentViewState ?? null)) return;
+        currentViewState = view ?? undefined;
+        post({ type: "viewState", view });
+        post({ type: "status", text: "View updated externally" });
+      })();
+    });
+
     webviewPanel.onDidDispose(() => {
       for (const d of watcherDisposables) d.dispose();
     });
@@ -408,6 +429,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         void this.sendMeshOptions(document.uri, post).then((options) => {
           currentMeshOptions = options;
         });
+        void readViewState(document.uri).then((view) => {
+          currentViewState = view ?? undefined;
+          post({ type: "viewState", view });
+        });
         this.sendViewerDefaults(post);
         return;
       }
@@ -444,6 +469,19 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           loadModel();
           void rebindPartsOnChange(previousOps, currentEdits);
         }
+        return;
+      }
+
+      if (msg.type === "viewChanged") {
+        currentViewState = msg.view;
+        // Debounced sidecar autosave (separate timer/file from parts/edits/mesh).
+        if (viewSaveTimer) clearTimeout(viewSaveTimer);
+        viewSaveTimer = setTimeout(() => {
+          void writeViewState(document.uri, msg.view).then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save view state: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
         return;
       }
 

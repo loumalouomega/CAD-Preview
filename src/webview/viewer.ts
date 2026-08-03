@@ -133,6 +133,19 @@ export class Viewer {
    * fresh material on `setModel()`, same "materials carry no baseline state
    * on rebuild" rule as opacity/clipping. See `setDisplayMode()`. */
   private displayMode: DisplayMode = "shaded";
+  /**
+   * `false` until the very first `setModel()` call for this document session
+   * (a fresh webview page is created per open document tab, so this is a
+   * reliable "has anything ever been displayed yet" signal). Distinguishes
+   * the document's genuine first load from every subsequent `setModel()`
+   * call, which also fires on every edit-driven re-tessellation (`case
+   * "geometry":`) or mesh rebuild (`rebuildMeshModel`) in `main.ts` — camera
+   * position used to unconditionally reset on EVERY one of those too, a
+   * bigger, more-repeated friction than the roadmap item's literal "resets
+   * on reopen" framing (roadmap "View-state persistence", closed). See its
+   * use in `setModel()` below.
+   */
+  private hasModelEverLoaded = false;
   /** Hidden-lines-visible mode's dimmed, depth-test-disabled copies of every
    * edge line — a scene sibling of `model` (never a child, same pattern as
    * `meshOverlay`/`measurementOverlay`), built on demand and torn down the
@@ -240,7 +253,16 @@ export class Viewer {
     this.scene.add(object);
     this.applyClippingPlane(); // fresh model materials carry no clipping state yet
     this.rebuildClipCap(); // fresh geometry — a no-op if clipping is currently off
-    this.resetView();
+    if (this.hasModelEverLoaded) {
+      this.fitView(); // an edit-driven rebuild: preserve the current view direction
+    } else {
+      this.hasModelEverLoaded = true;
+      // Genuine first load: the caller (`main.ts`'s `applyInitialViewIfNeeded`)
+      // applies either the persisted view state or the default isometric,
+      // once the "viewState" sidecar message has arrived — no
+      // resetView()/fitView() call here, so a persisted direction is never
+      // framed-then-immediately-reframed.
+    }
   }
 
   /**
@@ -483,9 +505,20 @@ export class Viewer {
     this.frame(dir);
   }
 
+  /**
+   * Frames the model along an arbitrary view direction — the general form
+   * `resetView()`'s hardcoded isometric now delegates to. Used to restore a
+   * persisted `ViewState.viewDirection` on first load (`main.ts`'s
+   * `applyInitialViewIfNeeded`), where — unlike `fitView()` — the desired
+   * direction isn't the camera's current one.
+   */
+  frameFromDirection(direction: THREE.Vector3): void {
+    this.frame(direction);
+  }
+
   /** Resets to the default isometric orientation and frames the model. */
   resetView(): void {
-    this.frame(new THREE.Vector3(1, 0.8, 1));
+    this.frameFromDirection(new THREE.Vector3(1, 0.8, 1));
   }
 
   /** Orbits the camera around the target by the given degrees (azimuth, polar). */
@@ -522,6 +555,14 @@ export class Viewer {
     return this.activeCamera.up.clone();
   }
 
+  /** Whether `activeCamera` is currently the orthographic camera — the
+   * single source of truth `main.ts`'s Persp/Ortho toggle and view-state
+   * save/restore both read, rather than each maintaining their own boolean
+   * that could drift from the real camera in use. */
+  isOrthographic(): boolean {
+    return this.activeCamera instanceof THREE.OrthographicCamera;
+  }
+
   /** Sets the camera's up vector directly — needed by the headless
    * multi-view render service (`src/renderService.ts`) so a near-vertical
    * `setViewDirection` (e.g. a top view) doesn't produce a gimbal-lock-like
@@ -530,6 +571,21 @@ export class Viewer {
   setCameraUp(up: THREE.Vector3): void {
     this.activeCamera.up.copy(up);
     this.controls.update();
+  }
+
+  /**
+   * Registers a callback for every camera movement — orbit/pan/dolly (drag or
+   * the stepped toolbar buttons), `fitView`/`resetView`/`frameFromDirection`,
+   * `setViewDirection`/`setCameraUp`, and `setOrthographic`'s own re-frame —
+   * since every one of those ends in `this.controls.update()`, which
+   * `OrbitControls` only actually dispatches `"change"` for when the camera
+   * genuinely moved. `main.ts`'s view-state autosave (roadmap "View-state
+   * persistence", closed) is the one caller; it gates on its own
+   * `hasAppliedInitialView` flag so a document's initial framing (restored or
+   * default-isometric) doesn't itself trigger a save.
+   */
+  onViewChanged(callback: () => void): void {
+    this.controls.addEventListener("change", callback);
   }
 
   /**

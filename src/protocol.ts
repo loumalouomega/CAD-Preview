@@ -8,6 +8,8 @@ import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
 import type { ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
+import type { DisplayMode } from "./webview/displayMode";
+import type { ClipAxis } from "./webview/clipping";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -55,6 +57,27 @@ export interface Part {
   lines: string[];     // edge ids
   points: string[];    // point (vertex) ids
   meshSize?: number;   // optional Gmsh target element size for local refinement
+}
+
+/**
+ * Persisted view state (roadmap "View-state persistence", closed) — camera
+ * orientation, display mode, ortho/perspective, and clip plane, so reopening
+ * a document restores the last view instead of always resetting to the
+ * hardcoded isometric. Deliberately does NOT include explode preview state
+ * (session/interaction-only by design — see `src/webview/explodePreview.ts`)
+ * nor raw camera position/target/distance: `Viewer.frame(direction)` already
+ * auto-derives both from the model's current bounding box, so persisting just
+ * a normalized direction + up vector is sufficient and survives edits that
+ * change the model's extents.
+ */
+export interface ViewState {
+  /** Camera direction (target → camera), as consumed by `Viewer.frame`/`setViewDirection`. */
+  viewDirection: [number, number, number];
+  cameraUp: [number, number, number];
+  orthographic: boolean;
+  displayMode: DisplayMode;
+  /** `null` when clipping is off. */
+  clip: { axis: ClipAxis; offsetFrac: number } | null;
 }
 
 /** Messages sent from the extension host to the webview. */
@@ -131,6 +154,7 @@ export type HostToWebview =
       unit?: DisplayUnit;
     }
   | { type: "meshingOptions"; options: MeshOptions }
+  | { type: "viewState"; view: ViewState | null }
   | {
       type: "meshingResult";
       positions: string;
@@ -216,6 +240,7 @@ export type WebviewToHost =
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: "viewChanged"; view: ViewState }
   | { type: "openFile" }
   | { type: "openPath"; path: string }
   | { type: "saveSidecars" }
