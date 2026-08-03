@@ -96,6 +96,17 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="mass-body"></div>
       </div>
+      <div id="standard-parts-panel">
+        <div id="standard-parts-header">
+          <span id="standard-parts-title">Standard Parts</span>
+        </div>
+        <div id="standard-parts-search-row">
+          <input id="standard-parts-query" type="search" placeholder="Search step.parts…" title="Search the step.parts catalog (e.g. &quot;M6 hex bolt&quot;)">
+          <button id="standard-parts-search-btn" title="Search">Search</button>
+        </div>
+        <div id="standard-parts-body"></div>
+        <div id="standard-parts-status"></div>
+      </div>
     </div>
     <div id="app">
       <canvas id="markup-canvas"></canvas>

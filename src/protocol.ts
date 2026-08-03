@@ -10,6 +10,7 @@ import type { DisplayUnit } from "./lengthUnits";
 import type { ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipAxis } from "./webview/clipping";
+import type { StandardPart } from "./stepPartsService";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -234,6 +235,19 @@ export type HostToWebview =
   | { type: "meshingError"; message: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)
   | { type: "screenshotRequest"; requestId: string }
+  | {
+      type: "standardPartsSearchResult";
+      requestId: string;
+      items: StandardPart[];
+      page: number;
+      totalPages: number;
+      total: number;
+    }
+  | { type: "standardPartsSearchError"; requestId: string; message: string }
+  /** `path: null` means the user dismissed the save dialog — a quiet no-op,
+   * not an error (never posted through `standardPartsInsertError`). */
+  | { type: "standardPartsInsertResult"; requestId: string; path: string | null }
+  | { type: "standardPartsInsertError"; requestId: string; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
@@ -306,6 +320,8 @@ export type WebviewToHost =
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
+  | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
+  | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
   | {
       type: "measureExactRequest";
       requestId: string;

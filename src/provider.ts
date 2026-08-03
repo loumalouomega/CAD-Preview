@@ -34,6 +34,7 @@ import { scaleStlBytes } from "./stlParser";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
+import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -767,6 +768,43 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           post({ type: "massPropertiesResult", requestId: msg.requestId, properties });
         } catch (err) {
           post({ type: "massPropertiesError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "standardPartsSearchRequest") {
+        try {
+          const result = await searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });
+          if (!result.available) throw new Error(result.reason);
+          post({
+            type: "standardPartsSearchResult",
+            requestId: msg.requestId,
+            items: result.value.items,
+            page: result.value.page,
+            totalPages: result.value.totalPages,
+            total: result.value.total,
+          });
+        } catch (err) {
+          post({ type: "standardPartsSearchError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "standardPartsInsertRequest") {
+        try {
+          const downloaded = await downloadStandardPart(msg.id);
+          if (!downloaded.available) throw new Error(downloaded.reason);
+          const defaultUri = vscode.Uri.joinPath(document.uri, "..", msg.suggestedName);
+          const saveUri = await vscode.window.showSaveDialog({ defaultUri, filters: { "STEP files": ["step", "stp"] } });
+          if (!saveUri) {
+            post({ type: "standardPartsInsertResult", requestId: msg.requestId, path: null });
+            return;
+          }
+          await vscode.workspace.fs.writeFile(saveUri, downloaded.value.bytes);
+          post({ type: "standardPartsInsertResult", requestId: msg.requestId, path: saveUri.fsPath });
+          await this.openPathInEditor(saveUri.fsPath);
+        } catch (err) {
+          post({ type: "standardPartsInsertError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }

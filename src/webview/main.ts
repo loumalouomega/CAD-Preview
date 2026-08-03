@@ -20,6 +20,8 @@ import { extractIdentifiers } from "../paramExpr";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
+import { StandardPartsPanel } from "./standardPartsPanel";
+import type { StandardPart } from "../stepPartsService";
 import { computeMeshMassProperties } from "./meshMassProperties";
 import { targetSizeForPreset } from "./meshSizeHeuristics";
 import { SIZE_MAX_SENTINEL } from "../meshOptions";
@@ -735,6 +737,14 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
 let sourceKind: "brep" | "mesh" | null = null;
 let massPropertiesRequestId: string | null = null;
 
+// ── Standard parts (step.parts search/insert) ────────────────────────────
+// Search requestId is stale-guarded like every other request/response round
+// trip here; insert requestId maps to the part id so the settling response
+// can re-enable the right row's Insert button (searches/inserts are
+// otherwise independent — a fresh search never cancels an in-flight insert).
+let standardPartsSearchRequestId: string | null = null;
+const standardPartsInsertRequests = new Map<string, string>(); // requestId -> part id
+
 // ── Colour by scalar field (meshio++ sources only) ──────────────────────────
 // Region NAMES arrive unconditionally in `meshioMetadata`; the field's actual
 // VALUES are fetched on demand (`colorFieldRequest`/`colorFieldResult`) only
@@ -844,6 +854,20 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
     massPropertiesRequestId = requestId;
     massPropertiesPanel.renderMessage("Computing…");
     post({ type: "massPropertiesRequest", requestId, entityId: target ? target.entityId : null });
+  },
+});
+
+const standardPartsPanel = new StandardPartsPanel(document.getElementById("standard-parts-panel")!, {
+  onSearch: (q: string) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    standardPartsSearchRequestId = requestId;
+    post({ type: "standardPartsSearchRequest", requestId, q });
+  },
+  onInsert: (part: StandardPart) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    standardPartsInsertRequests.set(requestId, part.id);
+    const ext = part.stepUrl.toLowerCase().endsWith(".stp") ? "stp" : "step";
+    post({ type: "standardPartsInsertRequest", requestId, id: part.id, suggestedName: `${part.id}.${ext}` });
   },
 });
 
@@ -2122,6 +2146,33 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== massPropertiesRequestId) break;
       massPropertiesPanel.renderMessage(msg.message, true);
       break;
+
+    case "standardPartsSearchResult":
+      if (msg.requestId !== standardPartsSearchRequestId) break; // stale — a newer search superseded it
+      standardPartsPanel.renderResults(msg.items, msg.total);
+      break;
+
+    case "standardPartsSearchError":
+      if (msg.requestId !== standardPartsSearchRequestId) break;
+      standardPartsPanel.renderError(msg.message);
+      break;
+
+    case "standardPartsInsertResult": {
+      const id = standardPartsInsertRequests.get(msg.requestId);
+      standardPartsInsertRequests.delete(msg.requestId);
+      if (!id) break;
+      standardPartsPanel.onInsertSettled(id);
+      if (msg.path) standardPartsPanel.setStatus(`Inserted → ${msg.path}`);
+      break;
+    }
+
+    case "standardPartsInsertError": {
+      const id = standardPartsInsertRequests.get(msg.requestId);
+      standardPartsInsertRequests.delete(msg.requestId);
+      if (id) standardPartsPanel.onInsertSettled(id);
+      standardPartsPanel.setStatus(msg.message, true);
+      break;
+    }
 
     case "measureExactResult": {
       if (msg.requestId !== measureExactRequestId) break; // stale — a newer request/Clear superseded it
