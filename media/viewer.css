@@ -1735,7 +1735,8 @@ input[type="range"].meshing-slider:focus {
   color: var(--vscode-errorForeground, #f48771);
 }
 
-#measure-exact-btn {
+#measure-exact-btn,
+#measure-pin-btn {
   flex-shrink: 0;
   font: inherit;
   font-size: 11px;
@@ -1748,11 +1749,51 @@ input[type="range"].meshing-slider:focus {
   cursor: pointer;
   opacity: 0.9;
 }
-#measure-exact-btn:hover:not(:disabled) {
+#measure-exact-btn:hover:not(:disabled),
+#measure-pin-btn:hover:not(:disabled) {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
 }
-#measure-exact-btn:disabled {
+#measure-exact-btn:disabled,
+#measure-pin-btn:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/* ── Saved annotations (roadmap "Persisted, topology-anchored annotations",
+ * closed) — the pinned-measurement list under the Measure ▾ panel. ─────── */
+
+#annotations-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 160px;
+  overflow-y: auto;
+}
+#annotations-list:empty::before {
+  content: "No pinned measurements yet.";
+  padding: 4px 12px 6px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+.annotation-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.annotation-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.annotation-row.detached .annotation-row-text {
+  color: var(--vscode-errorForeground, #f48771);
+  text-decoration: line-through;
+}
+.annotation-row button {
+  flex: 0 0 auto;
+  padding: 2px 6px !important;
 }

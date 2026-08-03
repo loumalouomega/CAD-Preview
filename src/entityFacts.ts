@@ -1,4 +1,4 @@
-import { getOcct, readShape } from "./occtService";
+import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import {
   applyEditsBRep,
   collectSolids,
@@ -14,7 +14,7 @@ import { rebindEntities, remapPartEntityIds, type EntitySignature } from "./enti
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp, Vec3 } from "./editOps";
-import type { Part } from "./protocol";
+import type { Annotation, Part } from "./protocol";
 
 export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
 
@@ -214,6 +214,8 @@ export async function getEntityFacts(
     }
 
     return { entityId, kind, bbox, center, area, length, normal, surfaceType };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
@@ -269,6 +271,8 @@ export async function measureEntities(
       result.axisComponent = delta[0] * unit[0] + delta[1] * unit[1] + delta[2] * unit[2];
     }
     return result;
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
@@ -392,6 +396,8 @@ export async function measureExact(
     const circ = curve.Circle();
     cleanup.push(circ);
     return { kind, value: circ.Radius() };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
@@ -487,6 +493,8 @@ export async function checkInterference(
     // A degenerate (zero-volume) intersection — e.g. two solids that only
     // touch at a face/edge/point — is reported as no real overlap.
     return { hasOverlap: overlapVolume > 1e-9, overlapVolume, unresolvedA, unresolvedB };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
@@ -634,14 +642,25 @@ export interface RebindStats {
  * whole function when neither `oldOps` nor `newOps`, from the first
  * differing op onward, contains anything in `TOPOLOGY_CHANGING_OPS` — ids
  * are already stable in that case, so paying for even one shape-diff would
- * be pure waste. Returns the ORIGINAL `parts` array (same reference) in
- * that case, or when `oldOps`/`newOps` are identical or `parts` is empty —
- * so callers can cheaply check `result.parts === parts` to skip a sidecar
- * write.
+ * be pure waste. Returns the ORIGINAL `parts`/`annotations` arrays (same
+ * references) in that case, or when `oldOps`/`newOps` are identical or both
+ * `parts` and `annotations` are empty — so callers can cheaply check
+ * `result.parts === parts` (and `result.annotations === annotations`) to
+ * skip a sidecar write.
  *
  * The match tolerance is `1e-3 * bboxDiagonal(shapeAfter)`, the same
  * tolerance-fraction convention `gmshPartsMap.ts`'s geometric bbox-centre
  * matching and `modelDiff.ts`'s solid matching already established.
+ *
+ * `annotations` (roadmap "Persisted, topology-anchored annotations", closed)
+ * is an OPTIONAL 7th parameter, defaulting to `[]` — it rebinds a persisted
+ * `Annotation[]` list through the EXACT SAME shape-diff pass already run for
+ * `parts`, reusing the same computed `idMap` at zero extra OCCT cost (an
+ * `Annotation` is structurally an `EntityIdBag` too, see its doc comment in
+ * `protocol.ts`), rather than requiring a second, independent
+ * `readShape`+`applyEditsBRep`+`collectAllEntitySignatures` round trip. Every
+ * pre-existing call site is unaffected: omitting the parameter defaults it to
+ * `[]`, and `remapPartEntityIds([], idMap)` is a no-op.
  */
 export async function rebindPartsAcrossOps(
   extensionPath: string,
@@ -649,21 +668,23 @@ export async function rebindPartsAcrossOps(
   format: BRepFormat,
   oldOps: EditOp[],
   newOps: EditOp[],
-  parts: Part[]
-): Promise<{ parts: Part[]; stats: RebindStats }> {
-  if (parts.length === 0) {
-    return { parts, stats: { considered: 0, rebound: 0, dropped: 0 } };
+  parts: Part[],
+  annotations: Annotation[] = []
+): Promise<{ parts: Part[]; annotations: Annotation[]; stats: RebindStats; annotationStats: RebindStats }> {
+  const EMPTY_STATS: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
+  if (parts.length === 0 && annotations.length === 0) {
+    return { parts, annotations, stats: EMPTY_STATS, annotationStats: EMPTY_STATS };
   }
 
   let prefixLen = 0;
   const minLen = Math.min(oldOps.length, newOps.length);
   while (prefixLen < minLen && JSON.stringify(oldOps[prefixLen]) === JSON.stringify(newOps[prefixLen])) prefixLen++;
   if (prefixLen === oldOps.length && prefixLen === newOps.length) {
-    return { parts, stats: { considered: 0, rebound: 0, dropped: 0 } }; // identical — nothing changed
+    return { parts, annotations, stats: EMPTY_STATS, annotationStats: EMPTY_STATS }; // identical — nothing changed
   }
   const hasTopologyChange = (ops: EditOp[]) => ops.some((op) => TOPOLOGY_CHANGING_OPS.has(op.op));
   if (!hasTopologyChange(oldOps.slice(prefixLen)) && !hasTopologyChange(newOps.slice(prefixLen))) {
-    return { parts, stats: { considered: 0, rebound: 0, dropped: 0 } }; // nothing topology-relevant differs
+    return { parts, annotations, stats: EMPTY_STATS, annotationStats: EMPTY_STATS }; // nothing topology-relevant differs
   }
 
   const oc = await getOcct(extensionPath);
@@ -671,7 +692,9 @@ export async function rebindPartsAcrossOps(
   oc.FS.writeFile(tmpName, bytes);
 
   let currentParts = parts;
+  let currentAnnotations = annotations;
   const stats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
+  const annotationStats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
 
   /** One diff-and-remap step between two shapes' full op-lists — `from`
    * is where `currentParts` is currently valid, `to` is where they should
@@ -690,11 +713,27 @@ export async function rebindPartsAcrossOps(
 
       const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, shapeTo, cleanupTo), 1e-6);
       const idMap = new Map(rebindEntities(oldSigs, newSigs, toleranceAbs).map((m) => [m.oldId, m.newId]));
-      const result = remapPartEntityIds(currentParts, idMap);
-      currentParts = result.parts;
-      stats.rebound += result.reboundCount;
-      stats.dropped += result.droppedCount;
+
+      // Skip an empty list entirely rather than calling remapPartEntityIds([],
+      // idMap) — `[].map()` always returns a NEW array, which would flip the
+      // caller-visible reference-equality check (`result.parts === parts`)
+      // to "changed" even though there was truly nothing to remap, causing a
+      // spurious empty-sidecar write.
+      if (currentParts.length > 0) {
+        const result = remapPartEntityIds(currentParts, idMap);
+        currentParts = result.parts;
+        stats.rebound += result.reboundCount;
+        stats.dropped += result.droppedCount;
+      }
       stats.considered++;
+
+      if (currentAnnotations.length > 0) {
+        const annResult = remapPartEntityIds(currentAnnotations, idMap);
+        currentAnnotations = annResult.parts;
+        annotationStats.rebound += annResult.reboundCount;
+        annotationStats.dropped += annResult.droppedCount;
+      }
+      annotationStats.considered++;
     } finally {
       for (let i = cleanupTo.length - 1; i >= 0; i--) {
         try {
@@ -744,6 +783,8 @@ export async function rebindPartsAcrossOps(
       // comment for why this is a single direct match, not incremental steps.
       await diffAndRemap(oldOps, newOps);
     }
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     try {
       oc.FS.unlink(tmpName);
@@ -752,5 +793,5 @@ export async function rebindPartsAcrossOps(
     }
   }
 
-  return { parts: currentParts, stats };
+  return { parts: currentParts, annotations: currentAnnotations, stats, annotationStats };
 }

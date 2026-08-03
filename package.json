@@ -2,7 +2,7 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview, non-destructive editing, and FE mesh generation for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF, VTK, MED, CGNS, and more) inside VS Code, with an MCP server for AI agents.",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "publisher": "kratos-multiphysics",
   "license": "GPL-2.0-or-later",
   "icon": "images/icon.png",
@@ -211,6 +211,21 @@
           "default": true,
           "description": "Show the ground grid and axes helper when a model is opened."
         },
+        "cadPreview.tessellationQuality": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "standard",
+            "fine"
+          ],
+          "enumDescriptions": [
+            "Coarser, faster tessellation — larger triangles, less detail on curved surfaces.",
+            "The default: unchanged from previous versions of this extension.",
+            "Finer, slower tessellation — smaller triangles, more detail on curved surfaces."
+          ],
+          "default": "standard",
+          "description": "B-rep tessellation quality (STEP/IGES/BREP sources). Re-read on every edit, so a change takes effect on the next edit without reopening the file. Does not affect FE mesh generation (see the FE Mesh panel's own size settings)."
+        },
         "cadPreview.upAxis": {
           "type": "string",
           "enum": [
@@ -233,6 +248,7 @@
     "reinstall": "bash scripts/reinstall-local.sh",
     "mcp": "node dist/mcp-server.js",
     "mcp:smoke": "npm run build && node scripts/mcp-smoke/run.mjs",
+    "perf": "npm run build && node scripts/perf/run.mjs",
     "docs:dev": "vitepress dev doc",
     "docs:build": "vitepress build doc",
     "docs:preview": "vitepress preview doc",

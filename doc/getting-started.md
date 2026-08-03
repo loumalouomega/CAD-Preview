@@ -23,13 +23,14 @@ code --install-extension cad-preview-<version>.vsix
 
 ## Settings
 
-CAD Preview contributes a few cross-document defaults under **CAD Preview** in VS Code's Settings UI (`Ctrl+,`, search "CAD Preview"). These only affect *newly opened* documents — a document's own saved state (a `.mesh.json` sidecar's size, the toolbar Grid toggle for the current session) always wins once set.
+CAD Preview contributes a few cross-document defaults under **CAD Preview** in VS Code's Settings UI (`Ctrl+,`, search "CAD Preview"). Most only affect *newly opened* documents — a document's own saved state (a `.mesh.json` sidecar's size, the toolbar Grid toggle for the current session) always wins once set. `tessellationQuality` is the one exception, re-read on every edit (see its own row below).
 
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `cadPreview.background` | `#1e1e1e` | 3D view background color (CSS hex) |
 | `cadPreview.defaultMeshSizePreset` | `medium` | Seeds the FE Mesh panel's target size (Coarse/Medium/Fine) for a model with no saved mesh options yet |
 | `cadPreview.showGridAndAxesOnOpen` | `true` | Show the ground grid and axes helper when a model is opened |
+| `cadPreview.tessellationQuality` | `standard` | B-rep (STEP/IGES/BREP) tessellation density — `draft`/`standard`/`fine`; `standard` is identical to every previous version's fixed behavior. Unlike the other settings here, re-read on every edit, so a change applies to the next edit without reopening the file. Face triangle density only — does not affect edge display or the FE Mesh panel's own (separate) mesh generation |
 | `cadPreview.upAxis` | `y` | Default up-axis for newly opened models — set to `z` for Z-up source conventions |
 
 ## Opening a File
@@ -85,11 +86,11 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | Item | Action | Shortcut |
 | --- | --- | --- |
 | **Open…** | Pick another CAD/mesh file and open it in CAD Preview | Ctrl+O |
-| **Save** | Immediately flush the parts/edits/mesh sidecars (`.parts.json` / `.edits.json` / `.mesh.json`). The CAD file itself is read-only and never written; the sidecars also autosave on a ~500 ms debounce, so this just forces an immediate write. | Ctrl+S |
+| **Save** | Immediately flush the parts/annotations/edits/mesh sidecars (`.parts.json` / `.annotations.json` / `.edits.json` / `.mesh.json`). The CAD file itself is read-only and never written; the sidecars also autosave on a ~500 ms debounce, so this just forces an immediate write. | Ctrl+S |
 | **Save As…** | Convert the model to a new file/format via the [Export](#exporting-a-model) flow | Ctrl+Shift+S |
 | **Export…** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) | Ctrl+E |
-| **Save Preprocess…** | Bundle the CAD file plus whichever of its `.parts.json` / `.edits.json` / `.mesh.json` / `.geo` sidecars currently exist into a single `.zip` archive, so the whole working state can be shared or archived as one file | Ctrl+Alt+S |
-| **Load Preprocess…** | Restore a `.zip` built by Save Preprocess: pick a destination for the CAD file, write back whichever sidecars it contains, and open the result | Ctrl+Alt+O |
+| **Save Preprocess…** | Bundle the CAD file plus whichever of its `.parts.json` / `.annotations.json` / `.edits.json` / `.mesh.json` sidecars currently exist into a single `.zip` archive (with a per-entry SHA-256 checksum recorded in its manifest), so the whole working state can be shared or archived as one file | Ctrl+Alt+S |
+| **Load Preprocess…** | Restore a `.zip` built by Save Preprocess: pick a destination for the CAD file, write back whichever sidecars it contains, and open the result — rejects a corrupted/tampered archive or a destination whose file extension doesn't match the archive's own format | Ctrl+Alt+O |
 
 ![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, and Load Preprocess.](/screenshots/file-menu.png)
 
@@ -121,6 +122,7 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 | --- | --- |
 | **Grid** | Show/hide the world-space grid and axis helpers (ticked when shown) |
 | **Edges** | Show/hide edge lines independently of the shaded faces (ticked when shown) |
+| **Hide smooth edges** | Declutter tangent patch-seam edges (e.g. between adjacent NURBS patches of one conceptually-curved surface on an imported STEP file) while keeping genuine feature edges — ticked when smooth edges are hidden. Off by default, so an existing model looks unchanged until you opt in |
 | **Screenshot…** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
 
 **Select ▾**
@@ -133,7 +135,7 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 
 ![The Measure menu: Measure mode, the four tools, and Clear measurement.](/screenshots/measure-menu.png)
 
-**Measure mode** toggles measurement picking; the tool row selects **Distance**, **Length**, **Angle**, or **Radius**, and **Clear measurement** discards the current one (see [Measuring](#measuring)). The result appears on its own line just below the toolbar, so it stays readable with the menu closed.
+**Measure mode** toggles measurement picking; the tool row selects **Distance**, **Length**, **Angle**, or **Radius**, and **Clear measurement** discards the current one (see [Measuring](#measuring)). The result appears on its own line just below the toolbar, so it stays readable with the menu closed. A **Saved** list at the bottom of the panel shows any pinned annotations (📌, see [Pinning a measurement](#pinning-a-measurement) below) — screenshot not yet regenerated for this row, see `doc/development.md`.
 
 **Markup ▾**
 
@@ -159,11 +161,13 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Zoom buttons** — Dolly in or out by a fixed factor.
 - **Fit** — Same as the toolbar Fit button (reframe in current orientation).
 - **Ctr** — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
-- **Clip group** — Enable a live section/clipping plane along **X**, **Y**, or **Z**, then drag the offset slider to sweep it across the model's bounding box (`-1` = min face, `0` = centre, `1` = max face). The cross-section is solid-filled, not see-through, and also applies to the FE Mesh overlay when shown. Nothing is written anywhere — turning it off (or reloading) instantly restores the full model.
-- **Appearance group** — A background-colour swatch (live preview only — the session-only override always wins over the [`cadPreview.background` setting](#settings) until you reload), an opacity slider for the whole model, a **Persp / Ortho** button toggling between perspective and orthographic projection (orbit/pan/zoom, picking, and the orientation cube all keep working under either projection), and a **Units** dropdown (mm/cm/m/in/ft, see [Units](#units) below). For a meshio++-imported source that declares point or cell scalar data (temperatures, stresses, …), a **Colour by field** dropdown also appears here — picking a field paints the model as a viridis colour ramp with a min/max legend; picking "None" reverts. Session-only (never exported/persisted), and reset whenever an edit is applied, since a field's values only stay meaningful for the model's original, unedited geometry.
-- **Display group** — Five mutually exclusive rendering modes, replacing the old standalone Wireframe toolbar toggle: **Shaded** (the default, lit faces), **Wire** (faces rendered as a mesh of lines), **X-Ray** (translucent faces so edges show through), **Hidden** (edges of occluded geometry shown faintly through solid faces, full-strength where actually visible), and **Flat** (unlit, constant-colour faces — no lighting gradient, useful for reading true part colours without shading artifacts). Session-only, like every other Appearance control.
+- **Clip group** — Enable a live section/clipping plane along **X**, **Y**, or **Z**, then drag the offset slider to sweep it across the model's bounding box (`-1` = min face, `0` = centre, `1` = max face). The cross-section is solid-filled, not see-through, and also applies to the FE Mesh overlay when shown. Turning it off instantly restores the full model.
+- **Appearance group** — A background-colour swatch (live preview only — the session-only override always wins over the [`cadPreview.background` setting](#settings) until you reload), an opacity slider for the whole model, a **Persp / Ortho** button toggling between perspective and orthographic projection (orbit/pan/zoom, picking, and the orientation cube all keep working under either projection), and a **Units** dropdown (mm/cm/m/in/ft, see [Units](#units) below). For a meshio++-imported source that declares point or cell scalar data (temperatures, stresses, …), a **Colour by field** dropdown also appears here — picking a field paints the model as a viridis colour ramp with a min/max legend; picking "None" reverts. Background/opacity/units/colour-by-field stay session-only (never exported/persisted); colour-by-field additionally resets whenever an edit is applied, since a field's values only stay meaningful for the model's original, unedited geometry.
+- **Display group** — Five mutually exclusive rendering modes, replacing the old standalone Wireframe toolbar toggle: **Shaded** (the default, lit faces), **Wire** (faces rendered as a mesh of lines), **X-Ray** (translucent faces so edges show through), **Hidden** (edges of occluded geometry shown faintly through solid faces, full-strength where actually visible), and **Flat** (unlit, constant-colour faces — no lighting gradient, useful for reading true part colours without shading artifacts).
 
 ![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, Appearance, and Display.](/screenshots/view-controls.png)
+
+**The camera direction/up vector, Persp/Ortho, Display mode, and the Clip plane are all saved automatically** to a `<model>.view.json` sidecar and restored the next time you open the same file, so reopening a large assembly picks up right where you left off instead of always resetting to the default isometric — see [View State Sidecar](./file-formats.md#view-state-sidecar-modelviewjson) for the format. Applying an edit reframes in your CURRENT direction rather than snapping back to the saved (or default) one. Background colour, opacity, the Units dropdown, and Colour by field remain purely session-only, as does explode-preview state (the *committed* `explode` op itself is saved in `.edits.json` like any other edit).
 
 ### Units
 
@@ -187,13 +191,15 @@ Click any face of the cube to snap the camera to that standard view:
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
 
-Type into the filter field above the tree to narrow the list to rows whose name matches (case-insensitive substring) — matching rows and their ancestors stay visible so a match is never hidden inside a collapsed-looking branch; clear the field to show everything again. Each row also has an eye-toggle to hide/show that solid/mesh (and its edges/points) in the 3D view — a display-only toggle, same as the Parts panel's (see below), never saved to a sidecar.
+For STEP sources specifically, the tree reflects the file's own **real assembly structure** when it has one — nested "Assembly"/"Component" groups matching how the file's author organized it, instead of always flattening every solid into one list (product/component *names* aren't shown — they're unreadable in this build's OCCT WASM — and an assembly wrapper with no real internal structure, or a source with none at all, falls back to the flat list exactly as before). A group-header row (an "Assembly N" line) is informational only — clicking it or its eye-toggle has no effect; only a leaf ("Solid N") row highlights/hides, exactly like every row always has.
+
+Type into the filter field above the tree to narrow the list to rows whose name matches (case-insensitive substring) — matching rows and their ancestors stay visible so a match is never hidden inside a collapsed-looking branch; clear the field to show everything again. Each leaf row also has an eye-toggle to hide/show that solid/mesh (and its edges/points) in the 3D view — a display-only toggle, same as the Parts panel's (see below), never saved to a sidecar.
 
 ![The Components tree, showing the STEP root and its solid with a face-count badge.](/screenshots/components-tree.png)
 
 ### Measuring
 
-The **Measure ▾** toolbar menu lets you measure distances, edge lengths, angles, and circle/arc radii directly in the 3D view — display-only, never an edit operation, never saved anywhere.
+The **Measure ▾** toolbar menu lets you measure distances, edge lengths, angles, and circle/arc radii directly in the 3D view — display-only by default, and never an edit operation, but a result can optionally be **pinned** so it survives closing the file (see below).
 
 1. Open **Measure ▾** and click **Measure mode** (orbit/pan/zoom still work normally — a measurement pick is a click without a drag, same as part selection).
 2. Pick a tool from the dropdown: **Distance** and **Angle** need two picks; **Edge Length** and **Radius** resolve from a single click.
@@ -203,6 +209,12 @@ The **Measure ▾** toolbar menu lets you measure distances, edge lengths, angle
 Measurement precision follows the model's tessellation (the same 0.1 deflection tolerance used for display), not exact CAD geometry — fine for visual estimates, not for metrology-grade output. Distance, Edge Length, and Radius results are shown in whatever unit the view-controls **Units** dropdown is set to (see [Units](#units) above); Angle is always degrees.
 
 For a STEP/IGES/BREP model, a **⟟ Exact** button appears next to a completed Distance, Edge Length, or Radius result (not Angle — there's no exact counterpart for that one). Clicking it asks the extension host to recompute the same measurement against the true OCCT geometry instead of the displayed triangulation — the readout updates to `D_exact`/`L_exact`/`R_exact = …` once it comes back. This is a real (if fast) computation, not instant like the triangulated result, and only works for CAD sources — mesh formats (STL, OBJ, …) have no exact B-rep geometry to fall back to, so the button never appears for them.
+
+#### Pinning a measurement
+
+A **📌 Pin** button appears next to a completed measurement result on any source kind (unlike **⟟ Exact**, which is B-rep only). Clicking it saves the result as a persisted **annotation** — a "Saved" list at the bottom of the **Measure ▾** panel shows every pinned measurement, with a **Show** action (re-displays that overlay, no recompute) and a **✕** to delete it. Annotations survive closing the file, saved to a `<model>.annotations.json` sidecar next to the CAD source (the CAD file itself is still never touched).
+
+Unlike Markup strokes (screen-space pixels with no 3D anchoring at all), a pinned annotation stays attached to the actual entity it measured — a geometric best-effort match runs automatically whenever you apply a topology-changing edit elsewhere on the model, the same matching that already keeps Parts assigned correctly across edits. If the specific entity an annotation anchored to is later removed or fused away (a boolean, for example), the annotation degrades honestly: its row in the Saved list goes struck-through and **Show** disables, rather than silently pointing at the wrong geometry.
 
 ### Defining Parts
 
@@ -396,4 +408,4 @@ This is a display-only report (no 3D view, no merge) — to actually look at bot
 - **No Compare Models support for glTF.** STEP/IGES/BREP/STL/OBJ/PLY are all supported (any combination); glTF's format complexity (accessor/sparse-accessor decoding, scene-graph transform composition) was judged too large a surface to hand-roll and validate correctly, so it's excluded from Compare Models specifically (it still opens and previews normally everywhere else).
 - **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in-process in the Node extension host — there is no streaming.
 - **One-time WASM startup.** The first B-rep file open triggers OpenCascade.js initialization (~300 ms on a typical machine). Subsequent B-rep files open faster because the kernel is memoized.
-- **Source CAD file is never modified.** CAD Preview never writes the opened CAD file. **Export** writes a new, separate file; **part** definitions are saved to a `<model>.parts.json` sidecar; and **edit operations** are saved to a `<model>.edits.json` sidecar — the original geometry is always left untouched. Edits are non-destructive and replayable, and are baked in only when you **Export**.
+- **Source CAD file is never modified.** CAD Preview never writes the opened CAD file. **Export** writes a new, separate file; **part** definitions are saved to a `<model>.parts.json` sidecar; **pinned measurements** to a `<model>.annotations.json` sidecar; and **edit operations** are saved to a `<model>.edits.json` sidecar — the original geometry is always left untouched. Edits are non-destructive and replayable, and are baked in only when you **Export**.

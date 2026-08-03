@@ -226,22 +226,73 @@ A `sizeMax` of `1e22` is Gmsh's "unbounded" sentinel: it means "no explicit targ
 
 **Exported mesh artifacts:** the FE Mesh panel's export `<select>` + **📤 Export** write further output files via a native Save dialog, in whichever format is picked — hand-written Kratos `.mdpa` (the default; either an Elements + Conditions or a Geometries layout, see [GMSH Integration § Kratos MDPA](gmsh-integration.md#kratos-mdpa-hand-written-not-a-gmshwrite-format)), GMSH's native `.msh` mesh format (nodes + elements), the legacy `.msh2` (v2.2) variant, Gmsh's fully-expanded `.geo_unrolled` script, or any of VTK/I-DEAS Universal (`.unv`)/Abaqus (`.inp`)/Nastran (`.bdf`)/SU2 (`.su2`)/INRIA Medit (`.mesh`)/STL/Diffpack (`.diff`)/OFF — see [GMSH Integration § Export formats](gmsh-integration.md#export-formats) for the full registry and which formats this WASM build actually supports. Like every other Export target in this codebase, these are save-as artifacts the user places wherever they choose; they are not sidecars and are not read back by CAD-Preview.
 
+## View State Sidecar (`<model>.view.json`)
+
+The persisted **camera orientation, display mode, ortho/perspective toggle, and clip plane** (roadmap "View-state persistence", closed) are stored in a **fourth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.view.json`. Like the other three, this never modifies the CAD file. It is read on open (`readViewState()`) and autosaved, debounced (~500 ms, its own timer), on every user-facing view change — camera orbit/pan/zoom/dolly, Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, or the clip axis/offset/toggle — both in `src/viewStateStore.ts`; parse/serialize live in the vscode-free `src/viewStateSidecar.ts` so they are unit-tested.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "view": {
+    "viewDirection": [1, 0.8, 1],
+    "cameraUp": [0, 1, 0],
+    "orthographic": false,
+    "displayMode": "shaded",
+    "clip": null
+  }
+}
+```
+
+`viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox (`planeForAxis`'s own convention), not a raw plane constant. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`).
+
+**Deliberately excludes explode-preview state** — that's a session-only interaction preview by design (`src/webview/explodePreview.ts`); the *committed* `explode` edit op already persists correctly via `.edits.json`. **Deliberately excluded from the Preprocess Archive** (below) — unlike parts/edits/mesh options, view state is purely a display/session preference with no effect on computed geometry, mesh output, or anything an MCP agent would need; there is also no MCP tool surface for it at all (same "genuinely a display feature, no headless equivalent" scope this codebase already applies to Markup and interactive Measurement).
+
+## Annotations Sidecar (`<model>.annotations.json`)
+
+User-**pinned measurements** (roadmap "Persisted, topology-anchored annotations", closed) — a "📌 Pin" action on a completed Measure-tool result — are stored in a **fifth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.annotations.json`. Like the other four, this never modifies the CAD file. It is read on open (`readAnnotations()`) and autosaved, debounced (~500 ms, its own timer), on every pin/rename/delete (`writeAnnotations()`), both in `src/annotationsStore.ts`; parse/serialize live in the vscode-free `src/annotationsSidecar.ts` so they are unit-tested. The headless MCP server has a byte-compatible counterpart in `src/mcpSidecars.ts`.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "annotations": [
+    {
+      "id": "ann-1234567890-1",
+      "tool": "distance",
+      "text": "12.5 mm",
+      "anchorPoint": [5, 0, 0],
+      "linePoints": [[0, 0, 0], [10, 0, 0]],
+      "volumes": [],
+      "surfaces": ["face-1", "face-4"],
+      "lines": [],
+      "points": []
+    }
+  ]
+}
+```
+
+Entity ids in `volumes`/`surfaces`/`lines`/`points` are the same stable topological ids `Part` uses, and are rebound through the identical best-effort geometric matching a topology-changing edit already applies to Parts (`src/entityFacts.ts`'s `rebindPartsAcrossOps`, extended to also rebind annotations via the same shape-diff pass at no extra cost) — an anchor that can't be confidently re-matched is dropped from these arrays, the same graceful-degradation contract unresolved Part ids already have. `text`/`anchorPoint`/`linePoints` are a **frozen** snapshot of the measurement result at pin time; they are never recomputed on reopen or after an edit — only whether the annotation is "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Parsing is tolerant like the other four sidecars: a missing/malformed field drops that one annotation entry, not the whole file. **Included in the Preprocess Archive** (below), alongside parts/edits/mesh options (roadmap "Archive integrity", closed).
+
 ## Preprocess Archive (`.zip`)
 
-**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its three sidecars — `<model>.parts.json`, `<model>.edits.json`, `<model>.mesh.json` — and the generated `<model>.geo` script currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json`/`.geo` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one.
+**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its four sidecars — `<model>.parts.json`, `<model>.annotations.json`, `<model>.edits.json`, `<model>.mesh.json` — currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one. The generated `.geo` script is deliberately **not** packaged (see below).
 
-The archive's internal layout (built by the pure, vscode-free `src/preprocessArchive.ts`, shared by the extension and the MCP server):
+The archive's internal layout (built by the pure, vscode-free — but Node-only, never imported by the webview — `src/preprocessArchive.ts`, shared by the extension and the MCP server):
 
 ```
-manifest.json         { "version": 1, "source": "bull.stp" }
-bull.stp              (the CAD source, byte-identical)
-bull.stp.parts.json   (only if it exists)
-bull.stp.edits.json   (only if it exists)
-bull.stp.mesh.json    (only if it exists)
-bull.stp.geo          (only if it exists)
+manifest.json               { "version": 2, "minimumReaderVersion": 1, "source": "bull.stp",
+                               "checksums": { "bull.stp": "<sha256 hex>", "bull.stp.parts.json": "<sha256 hex>", ... } }
+bull.stp                    (the CAD source, byte-identical)
+bull.stp.parts.json         (only if it exists)
+bull.stp.annotations.json   (only if it exists)
+bull.stp.edits.json         (only if it exists)
+bull.stp.mesh.json          (only if it exists)
 ```
 
-**File ▸ Load Preprocess…** (Ctrl+Alt+O) is the inverse: pick a `.zip`, then pick a destination path for the restored CAD file (defaulting to the manifest's `source` filename, beside the archive), and CAD-Preview writes the source bytes plus every sidecar the archive contains — named to match the chosen destination, not the archive's original filename — then opens the result. The archive's `.geo` text is **not** restored verbatim: if a `.mesh.json` is present, its options are re-written through the normal `writeMeshOptions`/`writeGeoScript` path instead, so the one-way-generated script stays in lockstep with the (re-validated) options, same rule every other options write follows. Loading an archive never touches the CAD file it was originally saved from — it always creates a separate file at the chosen destination.
+**Archive integrity (roadmap "Archive integrity", closed).** `manifest.checksums` records a SHA-256 hex digest for every entry the writer included — cryptographic tamper-evidence on top of zip's own CRC32, which only catches accidental corruption, not deliberate tampering. `readPreprocessZip()` recomputes and compares every present entry's checksum before returning anything, throwing a clear "failed its checksum" error on a mismatch. `manifest.minimumReaderVersion` is a **forward**-compatibility gate, not a backward one: it names the oldest reader version required to correctly interpret this archive, and a reader whose own capability is older refuses to open it (rather than silently misinterpreting fields it doesn't recognize) with a clear "requires a newer version of CAD Preview" error. Both fields are new in manifest version 2; a **legacy v1 archive** (written before this feature — no `checksums`, no `minimumReaderVersion` field at all) still opens exactly as before, with checksum verification simply skipped — reading tolerantly defaults a missing `version`/`minimumReaderVersion` to `1`, never inventing the current version the way an earlier build's `parseManifest` used to (a real, if minor, gap this closed: nothing ever compared the invented value against anything, so a hypothetical future format bump would have loaded silently misinterpreted).
+
+**File ▸ Load Preprocess…** (Ctrl+Alt+O) is the inverse: pick a `.zip`, then pick a destination path for the restored CAD file (defaulting to the manifest's `source` filename, beside the archive), and CAD-Preview writes the source bytes plus every sidecar the archive contains — named to match the chosen destination, not the archive's original filename — then opens the result. Mesh options (if present) are re-written through the normal `writeMeshOptions`/`writeGeoScript` path, which regenerates `.geo` fresh from them — the archive never packages a raw `.geo` text to restore verbatim in the first place, since neither reader ever did anything with one when it was still packaged (pure dead weight, closed alongside the integrity work above). **The destination's file extension is checked against the archive's own source format** (roadmap "Archive integrity", closed) — restoring a STEP archive to `restored.stl` now fails with a clear error instead of silently succeeding; a same-format alias (`.stp`/`.step`) still compares equal, since both route to the same `FileRoute.format`. Loading an archive never touches the CAD file it was originally saved from — it always creates a separate file at the chosen destination.
 
 The headless MCP server exposes the same behavior as `save_preprocess`/ `load_preprocess` (see [MCP Server](mcp-server.md)), sharing the identical `preprocessArchive.ts` build/read logic — an archive saved from the extension loads via the MCP tool and vice versa.
 

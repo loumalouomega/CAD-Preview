@@ -40,10 +40,11 @@ One encoded mesh per **face** (B-rep). Geometry is base64-encoded for safe `post
 interface EncodedEdge {
   positions: string   // base64-encoded Float32Array — consecutive points form a polyline
   edgeId: string      // stable per-edge entity id (e.g. "edge-12")
+  smooth: boolean      // tangent patch-seam continuation, not a real feature edge
 }
 ```
 
-One per **unique edge** (B-rep), discretized to a polyline. Shared edges are de-duplicated host-side; `edgeId` is stable across reopen of an unchanged file.
+One per **unique edge** (B-rep), discretized to a polyline. Shared edges are de-duplicated host-side; `edgeId` is stable across reopen of an unchanged file. `smooth` (roadmap "Display-edge classification, as a flag", closed) flags a tangent continuation between two faces — e.g. a NURBS-patch seam on what's conceptually one curved surface — via a dihedral-angle test between the two adjacent faces' surface normals at the shared edge (`src/edgeEnumeration.ts`'s `classifyEdgeSmoothness`); it is pure display metadata, never a filter — dropping an edge server-side would renumber every later `edge-N` id. The webview's "Hide smooth edges" toggle (View ▾ menu) is the only consumer.
 
 ### `EncodedPoint`
 
@@ -72,6 +73,44 @@ interface Part {
 ```
 
 A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats have no assignable lines or points). Parts are persisted in the JSON sidecar — see [File Formats](./file-formats.md).
+
+### `Annotation`
+
+```typescript
+type MeasureTool = 'distance' | 'edgeLength' | 'angle' | 'radius'
+
+interface Annotation {
+  id: string
+  tool: MeasureTool
+  label?: string
+  text: string                              // frozen readout, e.g. "12.5 mm"
+  anchorPoint: [number, number, number]     // frozen world-space label position
+  linePoints: [number, number, number][]    // frozen world-space overlay line points (0 or 2)
+  volumes: string[]
+  surfaces: string[]
+  lines: string[]
+  points: string[]
+}
+```
+
+A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchored annotations", closed) — a "pinned" result from the interactive Measure tool that survives closing the file, unlike the tool's own session-only overlay. Structurally shaped like `Part` (same four `EntityType`-keyed id buckets) so it can be rebound across topology-changing edits with the identical machinery `Part` already uses — see `src/entityRebind.ts`'s `remapPartEntityIds`. `text`/`anchorPoint`/`linePoints` are a frozen snapshot of the result at pin time, never recomputed on redisplay; only "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Persisted in `<model>.annotations.json` — see [File Formats](./file-formats.md).
+
+### `ViewState`
+
+```typescript
+type DisplayMode = 'shaded' | 'wireframe' | 'xray' | 'hiddenLines' | 'flat'
+type ClipAxis = 'x' | 'y' | 'z'
+
+interface ViewState {
+  viewDirection: [number, number, number]   // target → camera, normalized
+  cameraUp: [number, number, number]
+  orthographic: boolean
+  displayMode: DisplayMode
+  clip: { axis: ClipAxis; offsetFrac: number } | null   // null = clipping off; offsetFrac is a fraction of the model's bbox, not a raw plane constant
+}
+```
+
+Persisted camera orientation, display mode, ortho/perspective, and clip plane (roadmap "View-state persistence", closed) — see [File Formats](./file-formats.md) for the `<model>.view.json` sidecar. Deliberately does **not** include explode-preview state (session-only by design) or raw camera position/target/distance: `Viewer.frame(direction)` auto-derives both from the model's current bounding box, so a normalized direction + up vector is enough and survives edits that change the model's extents.
 
 ### `EditOp`
 
@@ -220,12 +259,14 @@ type HostToWebview =
       regionAssignment?: { regionNames: string[]; triangleRegionIndex: string }
     }
   | { type: 'parts';    parts: Part[] }
+  | { type: 'annotations'; annotations: Annotation[] }
   | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
   | { type: 'editError'; message: string }
   | { type: 'exportMesh'; requestId: string; format: CadFormat; unit?: DisplayUnit }
   | { type: 'meshingOptions'; options: MeshOptions }
+  | { type: 'viewState'; view: ViewState | null }
   | { type: 'meshingResult'; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
   | { type: 'meshingError'; message: string }
@@ -251,7 +292,7 @@ Sent after B-rep tessellation. Contains every face as an encoded mesh, every uni
     { "positions": "BBBB...", "indices": "BBBB...", "groupId": "solid-0", "faceId": "face-1" }
   ],
   "edges": [
-    { "positions": "CCCC...", "edgeId": "edge-0" }
+    { "positions": "CCCC...", "edgeId": "edge-0", "smooth": false }
   ],
   "points": [
     { "position": "DDDD...", "pointId": "point-0" }
@@ -335,6 +376,28 @@ For a meshio route specifically, `handleMeshio()` sends this message itself (rig
 }
 ```
 
+### `annotations`
+
+Sent after geometry, once the host has read the annotations sidecar (`<model>.annotations.json`) — same timing/role as `parts` (roadmap "Persisted, topology-anchored annotations", closed). Carries the saved pinned measurements (empty array when no sidecar exists). The webview loads them into `AnnotationsModel` (silent `load()`, no `onChange` echo) and renders the "Saved" list in the Measure ▾ panel.
+
+Also sent **unprompted, mid-session** whenever a topology-changing edit triggers a successful entity-id rebind of an existing annotation — the same `rebindPartsOnChange()` that resends `parts` for this reason now resends `annotations` too, reusing the identical shape-diff pass (`src/entityFacts.ts`'s `rebindPartsAcrossOps`).
+
+```json
+{
+  "type": "annotations",
+  "annotations": [
+    {
+      "id": "ann-1234567890-1",
+      "tool": "distance",
+      "text": "12.5 mm",
+      "anchorPoint": [5, 0, 0],
+      "linePoints": [[0, 0, 0], [10, 0, 0]],
+      "volumes": [], "surfaces": ["face-1", "face-4"], "lines": [], "points": []
+    }
+  ]
+}
+```
+
 ### `edits`
 
 Sent after geometry, once the host has read the edits sidecar (`<model>.edits.json`). Carries the saved, ordered edit op-list plus the named parametric variables (both empty arrays when no sidecar exists). The webview hydrates `EditsModel` + `VariablesModel` and renders the Edits panel. For B-rep the geometry already arrives with these ops applied (the host folds them in before tessellating); for mesh formats the webview replays them locally.
@@ -397,6 +460,14 @@ Sent once, right after `parts`, once the host has read the mesh-options sidecar 
   "type": "meshingOptions",
   "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "elementShape": "simplex", "optimize": true, "stlAngle": 40 }
 }
+```
+
+### `viewState`
+
+Sent once during the `ready` handshake, right after `meshingOptions`, once the host has read the view-state sidecar (`<model>.view.json`) — `view` is `null` when no sidecar exists yet for this document (a genuinely new document, or one never manually reoriented). Also re-sent by the external-change watcher on `.view.json` when another process (an MCP agent, a second tab on the same file) writes it. The webview applies it once BOTH this message and the model geometry (`geometry`/mesh load) have arrived — no deterministic order between the two, same non-deterministic-arrival-order discipline as `viewerDefaults`/`meshingOptions` vs. `geometry` — via `main.ts`'s `applyInitialViewIfNeeded()`, which mirrors `syncMeshSizeSeed()`'s "whichever lands last performs the actual application" idiom. `view: null` applies the default hardcoded isometric (`Viewer.resetView()`) instead. Applied only ONCE per document session: every subsequent model reload (an edit re-tessellating a B-rep source, a mesh edit rebuilding the displayed model) preserves the CURRENT camera direction (`Viewer.fitView()`) rather than re-snapping to the persisted state — camera position used to unconditionally reset on every one of those too, a bigger, more-repeated friction than "resets on reopen" alone.
+
+```json
+{ "type": "viewState", "view": { "viewDirection": [1, 0.8, 1], "cameraUp": [0, 1, 0], "orthographic": false, "displayMode": "shaded", "clip": null } }
 ```
 
 ### `meshingResult`
@@ -488,7 +559,9 @@ type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
   | { type: 'partsChanged'; parts: Part[] }
+  | { type: 'annotationsChanged'; annotations: Annotation[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: 'viewChanged'; view: ViewState }
   | { type: 'openFile' }
   | { type: 'openPath'; path: string }
   | { type: 'saveSidecars' }
@@ -514,6 +587,14 @@ Sent whenever the user mutates parts (create / rename / recolour / delete / assi
 { "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [], "points": [] } ] }
 ```
 
+### `annotationsChanged`
+
+Sent whenever the user pins a new measurement (📌) or deletes/renames one from the "Saved" list. Same debounce (~500 ms, its own timer) and same never-writes-the-CAD-file rule as `partsChanged` — the host writes the full annotation list to `<model>.annotations.json` via `writeAnnotations()`.
+
+```json
+{ "type": "annotationsChanged", "annotations": [ { "id": "ann-1234567890-1", "tool": "radius", "text": "R = 4 mm", "anchorPoint": [4, 0, 0], "linePoints": [], "volumes": [], "surfaces": [], "lines": ["edge-3"], "points": [] } ] }
+```
+
 ### `editsChanged`
 
 Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) **or the parametric variables** (add / rename / change expression / delete — which re-resolves every op's `exprs` and so changes the displayed geometry). Carries the full ordered op-list plus the full variables list. The ops arrive **already resolved** against the variables (the webview resolves on read — see `src/editVariables.ts` `resolveEditOps`), so the host never evaluates expressions at runtime; the numeric fields are the current values and `exprs` rides along for persistence. The host debounces these (~500 ms, on a separate timer from `partsChanged`) and writes both to the `<model>.edits.json` sidecar via `writeEdits()`. For B-rep sources the host also re-tessellates immediately with the new ops and pushes a fresh `geometry` + `tree`; for mesh sources the webview has already replayed the ops locally, so the host only persists. The CAD file is never written — only the sidecar. See [`EditOp`](#editop) for op shapes.
@@ -524,6 +605,14 @@ Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) *
   "ops": [ { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0], "exprs": { "vec[0]": "L/2" } } ],
   "variables": [ { "name": "L", "expr": "20", "value": 20 } ]
 }
+```
+
+### `viewChanged`
+
+Sent whenever the user changes the view — camera orbit/pan/zoom/dolly (drag or the stepped toolbar buttons), Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, or the clip axis/offset/toggle. Carries the full current `ViewState`, gathered fresh at save time (`viewer.getViewDirection()`/`getCameraUp()`/`isOrthographic()`/`getDisplayMode()` plus the clip controls' own closure state). The host debounces these (~500 ms, on its own timer separate from parts/edits/mesh) and writes `<model>.view.json` via `writeViewState()`. **Not** sent merely from opening a document, including the initial default-isometric framing or a persisted-state restoration — `main.ts` gates on its own `hasAppliedInitialView` flag, becoming true only after that one-time initial application completes, mirroring `syncMeshSizeSeed()`'s `load()`-not-`update()` "opening ≠ a user change" convention for mesh options. The CAD file is never written — only the sidecar. See [`ViewState`](#viewstate).
+
+```json
+{ "type": "viewChanged", "view": { "viewDirection": [0, 0, 1], "cameraUp": [0, 1, 0], "orthographic": true, "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": -0.1 } } }
 ```
 
 ### `meshingChanged`
@@ -584,7 +673,7 @@ Sent when a file is dropped onto the viewer canvas AND the browser `File` object
 
 ### `saveSidecars`
 
-Sent when the user picks **File ▸ Save** in the top menu bar. The CAD file is read-only and never written; this forces an immediate flush of the `<model>.parts.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`) sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status` message (`"Saved"`) on success or `error` on failure. The same action backs the `cad-preview.save` command (Ctrl+S).
+Sent when the user picks **File ▸ Save** in the top menu bar. The CAD file is read-only and never written; this forces an immediate flush of the `<model>.parts.json` / `<model>.annotations.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`) sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status` message (`"Saved"`) on success or `error` on failure. The same action backs the `cad-preview.save` command (Ctrl+S).
 
 ```json
 { "type": "saveSidecars" }

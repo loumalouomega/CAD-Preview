@@ -154,7 +154,7 @@ function wrap<A>(
 
 const modelPath = z.string().describe("Absolute path to the CAD model file");
 // Deliberately loose op/options schemas: validateEditOp / validateMeshOptions
-// are the real (tolerant, always-current) gates — duplicating the 43-kind op
+// are the real (tolerant, always-current) gates — duplicating the 44-kind op
 // union in zod would drift against src/editOps.ts.
 const rawOps = z
   .array(z.looseObject({ op: z.string() }))

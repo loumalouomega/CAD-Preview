@@ -218,7 +218,7 @@ export async function renderSnapshot(
         faceId: f.faceId,
       }))
     ),
-    edges: edges.map((e) => ({ positions: encodeBuffer(e.positions), edgeId: e.edgeId })),
+    edges: edges.map((e) => ({ positions: encodeBuffer(e.positions), edgeId: e.edgeId, smooth: e.smooth })),
     points: points.map((p) => ({ position: encodeBuffer(new Float32Array(p.position)), pointId: p.pointId })),
   };
   const treeMsg: HostToWebview = { type: "tree", root: tree };

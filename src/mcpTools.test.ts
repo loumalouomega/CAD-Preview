@@ -32,7 +32,7 @@ import {
   type Pipeline,
   type ToolContext,
 } from "./mcpTools";
-import { readEdits, readParts, editsSidecarPath, geoScriptPath, partsSidecarPath } from "./mcpSidecars";
+import { readEdits, readParts, readAnnotations, writeAnnotations, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath } from "./mcpSidecars";
 import { MESH_EXPORT_FORMATS } from "./meshExportFormats";
 import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
@@ -131,7 +131,7 @@ const FAKE_BREP_RESULT: BRepResult = {
       ],
     },
   ],
-  edges: [{ edgeId: "edge-0", positions: new Float32Array([0, 0, 0, 1, 0, 0]) }],
+  edges: [{ edgeId: "edge-0", positions: new Float32Array([0, 0, 0, 1, 0, 0]), smooth: false }],
   points: [{ pointId: "point-0", position: [0, 0, 0] }],
   tree: { id: "root", label: "STEP", children: [{ id: "solid-0", label: "Solid 1", faceCount: 2 }] },
 };
@@ -263,9 +263,11 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
-    rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts) => ({
+    rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts, annotations = []) => ({
       parts, // identity pass-through by default — matches the real "nothing to rebind" no-op contract
+      annotations,
       stats: { considered: 0, rebound: 0, dropped: 0 },
+      annotationStats: { considered: 0, rebound: 0, dropped: 0 },
     })),
     ...overrides,
   } as Pipeline;
@@ -975,7 +977,9 @@ describe("apply_edit_ops", () => {
       const pipeline = fakePipeline({
         rebindPartsAcrossOps: vi.fn(async () => ({
           parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-2"], lines: [], points: [] }],
+          annotations: [],
           stats: { considered: 1, rebound: 1, dropped: 0 },
+          annotationStats: { considered: 0, rebound: 0, dropped: 0 },
         })),
       });
       const c = ctx(pipeline);
@@ -996,7 +1000,9 @@ describe("apply_edit_ops", () => {
       const pipeline = fakePipeline({
         rebindPartsAcrossOps: vi.fn(async () => ({
           parts: [{ name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] }],
+          annotations: [],
           stats: { considered: 1, rebound: 0, dropped: 1 },
+          annotationStats: { considered: 0, rebound: 0, dropped: 0 },
         })),
       });
       const result = await applyEditOps(ctx(pipeline), {
@@ -1136,7 +1142,9 @@ describe("run_parametric_script", () => {
     const pipeline = fakePipeline({
       rebindPartsAcrossOps: vi.fn(async () => ({
         parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-7"], lines: [], points: [] }],
+        annotations: [],
         stats: { considered: 1, rebound: 1, dropped: 0 },
+        annotationStats: { considered: 0, rebound: 0, dropped: 0 },
       })),
     });
     const result = await runParametricScriptTool(ctx(pipeline), {
@@ -1182,7 +1190,9 @@ describe("remove_edit_op", () => {
     const pipeline = fakePipeline({
       rebindPartsAcrossOps: vi.fn(async () => ({
         parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-9"], lines: [], points: [] }],
+        annotations: [],
         stats: { considered: 1, rebound: 1, dropped: 0 },
+        annotationStats: { considered: 0, rebound: 0, dropped: 0 },
       })),
     });
     const c = ctx(pipeline);
@@ -1630,12 +1640,31 @@ describe("save_preprocess", () => {
     const zipOut = path.join(dir, "model.preprocess.zip");
     const result = await savePreprocessTool({ path: stpModel, outputPath: zipOut });
 
-    expect(result.included).toEqual({ source: "model.stp", parts: true, edits: true, meshOptions: false, geo: false });
+    expect(result.included).toEqual({ source: "model.stp", parts: true, annotations: false, edits: true, meshOptions: false });
     expect((await fs.stat(zipOut)).size).toBeGreaterThan(0);
   });
 
   it("refuses to write the archive over the CAD source file", async () => {
     await expect(savePreprocessTool({ path: stpModel, outputPath: stpModel })).rejects.toThrow(/source/i);
+  });
+
+  it("includes the annotations sidecar when one exists", async () => {
+    await writeAnnotations(stpModel, [
+      {
+        id: "ann-1",
+        tool: "distance",
+        text: "10 mm",
+        anchorPoint: [0, 0, 0],
+        linePoints: [],
+        volumes: [],
+        surfaces: ["face-1"],
+        lines: [],
+        points: [],
+      },
+    ]);
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    const result = await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+    expect(result.included.annotations).toBe(true);
   });
 });
 
@@ -1650,7 +1679,7 @@ describe("load_preprocess", () => {
     const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
 
     expect(result.manifestSource).toBe("model.stp");
-    expect(result.restored).toEqual({ parts: true, edits: true, meshOptions: false });
+    expect(result.restored).toEqual({ parts: true, annotations: false, edits: true, meshOptions: false });
     expect(await fs.readFile(restored, "utf8")).toBe(await fs.readFile(stpModel, "utf8"));
 
     const restoredEdits = await readEdits(restored);
@@ -1673,5 +1702,97 @@ describe("load_preprocess", () => {
     await expect(
       loadPreprocessTool({ zipPath: zipOut, outputPath: path.join(dir, "restored.txt") })
     ).rejects.toThrow(/unsupported/i);
+  });
+
+  it("rejects a destination whose extension's format doesn't match the archive's source (roadmap 'Archive integrity', closed)", async () => {
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+    // .stl IS a supported extension in general, just the wrong pipeline family for a STEP archive.
+    await expect(
+      loadPreprocessTool({ zipPath: zipOut, outputPath: path.join(dir, "restored.stl") })
+    ).rejects.toThrow(/destination file extension doesn't match/i);
+  });
+
+  it("accepts a same-format alias extension (.step for a .stp archive)", async () => {
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+    const restored = path.join(dir, "restored.step");
+    await expect(loadPreprocessTool({ zipPath: zipOut, outputPath: restored })).resolves.toMatchObject({
+      written: restored,
+    });
+  });
+
+  it("round-trips the annotations sidecar", async () => {
+    await writeAnnotations(stpModel, [
+      {
+        id: "ann-1",
+        tool: "radius",
+        label: "rim",
+        text: "R = 4 mm",
+        anchorPoint: [4, 0, 0],
+        linePoints: [],
+        volumes: [],
+        surfaces: [],
+        lines: ["edge-3"],
+        points: [],
+      },
+    ]);
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+
+    const restored = path.join(dir, "restored.stp");
+    const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
+    expect(result.restored.annotations).toBe(true);
+    const restoredAnnotations = await readAnnotations(restored);
+    expect(restoredAnnotations).toEqual(await readAnnotations(stpModel));
+    await expect(fs.access(annotationsSidecarPath(restored))).resolves.toBeUndefined();
+  });
+
+  it("rejects a tampered archive (checksum mismatch)", async () => {
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+
+    const { unzipSync, zipSync } = await import("fflate");
+    const zipBytes = await fs.readFile(zipOut);
+    const files = unzipSync(new Uint8Array(zipBytes));
+    // Corrupt the packaged source bytes without touching the manifest's
+    // recorded checksum for it.
+    files["model.stp"] = new Uint8Array([...files["model.stp"], 0xff]);
+    await fs.writeFile(zipOut, zipSync(files));
+
+    const restored = path.join(dir, "restored.stp");
+    await expect(loadPreprocessTool({ zipPath: zipOut, outputPath: restored })).rejects.toThrow(/checksum/i);
+  });
+
+  it("rejects an archive declaring a minimumReaderVersion newer than this build supports", async () => {
+    const zipOut = path.join(dir, "model.preprocess.zip");
+    await savePreprocessTool({ path: stpModel, outputPath: zipOut });
+
+    const { unzipSync, zipSync, strToU8, strFromU8 } = await import("fflate");
+    const zipBytes = await fs.readFile(zipOut);
+    const files = unzipSync(new Uint8Array(zipBytes));
+    const manifest = JSON.parse(strFromU8(files["manifest.json"]));
+    manifest.minimumReaderVersion = 999;
+    files["manifest.json"] = strToU8(JSON.stringify(manifest));
+    await fs.writeFile(zipOut, zipSync(files));
+
+    const restored = path.join(dir, "restored.stp");
+    await expect(loadPreprocessTool({ zipPath: zipOut, outputPath: restored })).rejects.toThrow(/newer version/i);
+  });
+
+  it("still opens a legacy v1 archive with no checksums/minimumReaderVersion fields at all", async () => {
+    const { zipSync, strToU8 } = await import("fflate");
+    const sourceBytes = await fs.readFile(stpModel);
+    const legacyZip = zipSync({
+      "manifest.json": strToU8(JSON.stringify({ version: 1, source: "model.stp" })),
+      "model.stp": new Uint8Array(sourceBytes),
+    });
+    const zipOut = path.join(dir, "legacy.zip");
+    await fs.writeFile(zipOut, legacyZip);
+
+    const restored = path.join(dir, "restored.stp");
+    const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
+    expect(result.manifestSource).toBe("model.stp");
+    expect(await fs.readFile(restored)).toEqual(sourceBytes);
   });
 });

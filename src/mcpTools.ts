@@ -38,7 +38,7 @@ import {
 import { scaleStlBytes } from "./stlParser";
 import { MESH_EXPORT_FORMATS, meshExportFormat } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
-import type { Part } from "./protocol";
+import type { Part, Annotation } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, MassProperties } from "./massProperties";
 import type {
@@ -76,16 +76,19 @@ import {
   writeEdits,
   readParts,
   writeParts,
+  readAnnotations,
+  writeAnnotations,
   readMeshOptions,
   writeMeshOptions,
   assertNotSourcePath,
   editsSidecarPath,
   partsSidecarPath,
+  annotationsSidecarPath,
   meshOptionsSidecarPath,
-  geoScriptPath,
 } from "./mcpSidecars";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
+import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
@@ -241,7 +244,8 @@ export function describeCapabilities() {
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
-      "The CAD source file is never written; edits/parts/mesh options persist to <model>.edits.json / .parts.json / .mesh.json sidecars the extension reads on open.",
+      "The CAD source file is never written; edits/parts/annotations/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .mesh.json sidecars the extension reads on open.",
+      "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
     ],
   };
 }
@@ -788,6 +792,7 @@ export async function getState(params: { path: string }) {
   requireRoute(modelPath);
   const { ops, variables } = await readEdits(modelPath);
   const parts = await readParts(modelPath);
+  const annotations = await readAnnotations(modelPath);
   const meshOptions = await readMeshOptions(modelPath);
   const { errors } = evaluateVariables(variables);
   return {
@@ -799,6 +804,12 @@ export async function getState(params: { path: string }) {
       error: errors.get(v.name) ?? null,
     })),
     parts,
+    // Read-only: annotations are pinned interactively from the Measure tool
+    // (roadmap "Persisted, topology-anchored annotations", closed) — there's
+    // no MCP tool to create/delete one, only to see what a human pinned and
+    // have it rebound correctly across the agent's own topology-changing ops
+    // (see `maybeRebindParts`).
+    annotations,
     meshOptions,
     warnings: [],
   };
@@ -816,9 +827,12 @@ export async function getState(params: { path: string }) {
  * lists (before/after) — the caller does not need to pre-compute a delta.
  * A no-op (returns `null`) when there's nothing to rebind — the lists are
  * identical, a mesh-format source (no B-rep to re-derive ids from), or the
- * pass itself found nothing to change (empty parts list / no topology-
- * changing op anywhere in the diff) — so callers can skip writing the
- * sidecar and skip mentioning it in `warnings`.
+ * pass itself found nothing to change (empty parts AND annotations lists /
+ * no topology-changing op anywhere in the diff) — so callers can skip
+ * writing sidecars and skip mentioning it in `warnings`. Also rebinds any
+ * persisted `Annotation[]` (roadmap "Persisted, topology-anchored
+ * annotations", closed) through the same shape-diff pass, at no extra OCCT
+ * cost — see `rebindPartsAcrossOps`'s doc comment.
  */
 async function maybeRebindParts(
   ctx: ToolContext,
@@ -826,15 +840,50 @@ async function maybeRebindParts(
   route: FileRoute,
   oldOps: EditOp[],
   newOps: EditOp[]
-): Promise<{ reboundCount: number; droppedCount: number } | null> {
+): Promise<{
+  reboundCount: number;
+  droppedCount: number;
+  annotationReboundCount: number;
+  annotationDroppedCount: number;
+} | null> {
   if (route.strategy !== "occt" || oldOps.length === newOps.length) return null;
-  const parts = await readParts(modelPath);
-  if (parts.length === 0) return null;
+  const [parts, annotations] = await Promise.all([readParts(modelPath), readAnnotations(modelPath)]);
+  if (parts.length === 0 && annotations.length === 0) return null;
   const bytes = await readModelBytes(modelPath);
-  const result = await ctx.pipeline.rebindPartsAcrossOps(ctx.extensionPath, bytes, route.format as BRepFormat, oldOps, newOps, parts);
-  if (result.parts === parts) return null; // nothing topology-changing, or nothing matched — same reference
-  await writeParts(modelPath, result.parts);
-  return { reboundCount: result.stats.rebound, droppedCount: result.stats.dropped };
+  const result = await ctx.pipeline.rebindPartsAcrossOps(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    oldOps,
+    newOps,
+    parts,
+    annotations
+  );
+  const partsChanged = result.parts !== parts;
+  const annotationsChanged = result.annotations !== annotations;
+  if (!partsChanged && !annotationsChanged) return null; // nothing topology-changing, or nothing matched
+  if (partsChanged) await writeParts(modelPath, result.parts);
+  if (annotationsChanged) await writeAnnotations(modelPath, result.annotations);
+  return {
+    reboundCount: result.stats.rebound,
+    droppedCount: result.stats.dropped,
+    annotationReboundCount: result.annotationStats.rebound,
+    annotationDroppedCount: result.annotationStats.dropped,
+  };
+}
+
+/** Formats `maybeRebindParts`' result into a `warnings` sentence, appending
+ * the annotation clause only when there was actually an annotation to
+ * mention (most documents have none). */
+function rebindWarningText(
+  rebind: NonNullable<Awaited<ReturnType<typeof maybeRebindParts>>>,
+  cause: string
+): string {
+  let text = `Rebound ${rebind.reboundCount} part-entity id(s) ${cause} (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`;
+  if (rebind.annotationReboundCount > 0 || rebind.annotationDroppedCount > 0) {
+    text += ` Also rebound ${rebind.annotationReboundCount} annotation anchor id(s); dropped ${rebind.annotationDroppedCount}.`;
+  }
+  return text;
 }
 
 // ---------------------------------------------------------------------------
@@ -897,9 +946,7 @@ export async function applyEditOps(
 
   const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps);
   if (rebind) {
-    warnings.push(
-      `Rebound ${rebind.reboundCount} part-entity id(s) after topology-changing op(s) (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
-    );
+    warnings.push(rebindWarningText(rebind, "after topology-changing op(s)"));
   }
 
   return {
@@ -975,9 +1022,7 @@ export async function runParametricScriptTool(
 
   const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps);
   if (rebind) {
-    warnings.push(
-      `Rebound ${rebind.reboundCount} part-entity id(s) after topology-changing op(s) (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
-    );
+    warnings.push(rebindWarningText(rebind, "after topology-changing op(s)"));
   }
 
   return {
@@ -1023,9 +1068,7 @@ export async function removeEditOp(ctx: ToolContext, params: { path: string; ind
   const warnings: string[] = [];
   const rebind = await maybeRebindParts(ctx, modelPath, route, oldOps, newOps);
   if (rebind) {
-    warnings.push(
-      `Rebound ${rebind.reboundCount} part-entity id(s) after removing a topology-changing op (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
-    );
+    warnings.push(rebindWarningText(rebind, "after removing a topology-changing op"));
   } else if (TOPOLOGY_CHANGING_OPS.has(removed.op)) {
     warnings.push(
       "Removed a topology-changing op: face-N/edge-N ids referenced by later ops or parts may no longer resolve (they degrade gracefully — unresolved operands are skipped)."
@@ -1533,15 +1576,18 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
   assertNotSourcePath(modelPath, outputPath);
 
   const sourceName = path.basename(modelPath);
-  const [source, parts, edits, meshOptions, geo] = await Promise.all([
+  const [source, parts, annotations, edits, meshOptions] = await Promise.all([
     readModelBytes(modelPath),
     readOptionalFile(partsSidecarPath(modelPath)),
+    readOptionalFile(annotationsSidecarPath(modelPath)),
     readOptionalFile(editsSidecarPath(modelPath)),
     readOptionalFile(meshOptionsSidecarPath(modelPath)),
-    readOptionalFile(geoScriptPath(modelPath)),
   ]);
 
-  const zipBytes = buildPreprocessZip({ sourceName, source, parts, edits, meshOptions, geo });
+  // Per-entry SHA-256 checksums (roadmap "Archive integrity", closed); the
+  // generated .geo script is deliberately NOT packaged — see
+  // buildPreprocessZip's doc comment.
+  const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, edits, meshOptions });
   await fs.writeFile(outputPath, zipBytes);
   return {
     written: outputPath,
@@ -1549,9 +1595,9 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
     included: {
       source: sourceName,
       parts: parts !== undefined,
+      annotations: annotations !== undefined,
       edits: edits !== undefined,
       meshOptions: meshOptions !== undefined,
-      geo: geo !== undefined,
     },
     warnings: [],
   };
@@ -1566,11 +1612,32 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
   requireRoute(outputPath);
 
   const zipBytes = new Uint8Array(await fs.readFile(zipPath));
+  // readPreprocessZip already rejects a corrupted/tampered archive (checksum
+  // mismatch) or one requiring a newer reader (roadmap "Archive integrity",
+  // closed) before returning.
   const contents = readPreprocessZip(zipBytes);
+
+  // The destination's extension is caller-chosen and NOT constrained by any
+  // save dialog here (unlike the interactive Load Preprocess flow) — this
+  // is the one place requireRoute(outputPath) above genuinely isn't enough,
+  // since it only checks the extension is SOME supported format, not that
+  // it matches the archive's own source format (restoring a STEP archive to
+  // "restored.stl" used to succeed silently). Aliases of the same format
+  // (.stp/.step) still compare equal via routeFile()'s FileRoute.format.
+  const sourceRoute = routeFile(contents.manifest.source);
+  const destRoute = routeFile(outputPath);
+  if (!destRoute || !sourceRoute || destRoute.format !== sourceRoute.format) {
+    throw new Error(
+      `Cannot restore "${contents.manifest.source}" (${sourceRoute?.format ?? "unrecognized"}) to "${path.basename(outputPath)}" (${destRoute?.format ?? "unrecognized"}) — the destination file extension doesn't match the archive's source format.`
+    );
+  }
 
   await fs.writeFile(outputPath, contents.source);
   if (contents.parts !== undefined) {
     await writeParts(outputPath, parsePartsJson(contents.parts));
+  }
+  if (contents.annotations !== undefined) {
+    await writeAnnotations(outputPath, parseAnnotationsJson(contents.annotations));
   }
   if (contents.edits !== undefined) {
     const parsed = parseEditsJson(contents.edits);
@@ -1578,8 +1645,8 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
   }
   if (contents.meshOptions !== undefined) {
     // mcpSidecars' writeMeshOptions writes <out>.mesh.json AND regenerates the
-    // one-way <out>.geo script in one call — the archive's own raw .geo text
-    // (if any) is intentionally not restored verbatim, same rule as every
+    // one-way <out>.geo script in one call — the archive no longer even
+    // packages a raw .geo text to restore verbatim, same rule as every
     // other options write path.
     await writeMeshOptions(outputPath, parseMeshJson(contents.meshOptions));
   }
@@ -1589,6 +1656,7 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
     manifestSource: contents.manifest.source,
     restored: {
       parts: contents.parts !== undefined,
+      annotations: contents.annotations !== undefined,
       edits: contents.edits !== undefined,
       meshOptions: contents.meshOptions !== undefined,
     },

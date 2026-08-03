@@ -1,6 +1,6 @@
-import type { EntityType } from "../protocol";
+import type { EntityType, MeasureTool } from "../protocol";
 
-export type MeasureTool = "distance" | "edgeLength" | "angle" | "radius";
+export type { MeasureTool };
 
 /** How many picks each tool needs before it has enough data to compute a result. */
 const REQUIRED_PICKS: Record<MeasureTool, number> = {

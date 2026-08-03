@@ -1,6 +1,7 @@
 import type { Vec3 } from "./editOps";
 import type { Part } from "./protocol";
-import { getOcct, readShape } from "./occtService";
+import { getOcct, readShape, wrapOcctFault } from "./occtService";
+import { resetGmsh } from "./gmshService";
 import { collectFaces, collectEdges, collectSolids, collectVertices, bboxCenter } from "./occtOperations";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -173,6 +174,15 @@ export async function applyPartsToGmshModel(
     }
 
     return maps;
+  } catch (err) {
+    // This function touches both kernels (OCCT via `oc`, Gmsh via `gmsh.model.*`
+    // above), so a WASM abort here could equally be either's fault with no
+    // cheap way to attribute it — reset both conservatively. `wrapOcctFault`
+    // only ever produces this specific message on a genuine detected abort
+    // (see its doc comment); anything else passes through unchanged.
+    const wrapped = wrapOcctFault(err);
+    if (wrapped.message.startsWith("OCCT crashed")) resetGmsh();
+    throw wrapped;
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {

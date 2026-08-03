@@ -15,13 +15,17 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/massProperties.ts` | Volume/area/length/CoG/inertia for a B-rep shape via OCCT `BRepGProp` (vscode-free) |
 | `src/entityFacts.ts` | Per-entity geometric facts (`inspect`), bbox-centre distance (`measure`), exact OCCT-precision distance/edge-length/radius (`measure_exact`), interference/clash overlap volume (`check_interference`), and bulk entity fingerprinting + orchestration for entity-id rebinding for a B-rep shape (vscode-free) |
 | `src/entityRebind.ts` | Pure entity-id rebinding heuristic (bipartite nearest-neighbor matching, generalized from `modelDiff.ts`'s solid matcher to solid/face/edge/point) + `Part`-id remapping (vscode/OCCT-free, unit-tested) |
+| `src/xcafTree.ts` | XCAF assembly-hierarchy read (`readXcafAssembly`, OCCT-touching) + pure correlation against the real `solid-N` list (`correlateAssemblyTree`, unit-tested) |
 | `src/stepUnits.ts` | Pure text scan of a STEP file's `DATA` section for its declared length unit (vscode/OCCT-free, unit-tested) |
 | `src/igesUnits.ts` | Sibling scanner for IGES's fixed-width Global-section unit flag — same purpose, different (positional, not named-entity) format (vscode/OCCT-free, unit-tested) |
 | `src/lengthUnits.ts` | Shared `DisplayUnit` type + mm scale-factor table + `displayUnitFromUnitName` — backs both the webview's display-unit selector and unit-conversion-on-export (vscode/DOM/THREE-free) |
+| `src/tessellationQuality.ts` | `draft`/`standard`/`fine` B-rep tessellation presets + `normalizeTessellationQuality` tolerance gate, backing `cadPreview.tessellationQuality` (vscode-free) |
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
 | `src/viewerDefaults.ts` | The `cadPreview.*` settings bag + `normalizeViewerDefaults` tolerance gate (vscode-free) |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
 | `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
+| `src/annotationsStore.ts` | Read/write the `<model>.annotations.json` sidecar (vscode fs) — pinned measurements |
+| `src/annotationsSidecar.ts` | Pure parse/serialize for the annotations sidecar (vscode-free, unit-tested) |
 | `src/editOps.ts` | The `EditOp` union + `validateEditOp` tolerance gate (vscode-free) |
 | `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
 | `src/editsSidecar.ts` | Pure parse/serialize for the edits sidecar (vscode-free, unit-tested) |
@@ -34,6 +38,8 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/meshOptions.ts` | The `MeshOptions` bag + `validateMeshOptions` tolerance gate + `gmshShapeOptions` (vscode-free) |
 | `src/meshOptionsStore.ts` | Read/write the `<model>.mesh.json` sidecar + generated `<model>.geo` (vscode fs) |
 | `src/meshOptionsSidecar.ts` | Pure parse/serialize for the mesh-options sidecar + `.geo` script generation (vscode-free, unit-tested) |
+| `src/viewStateStore.ts` | Read/write the `<model>.view.json` sidecar (vscode fs) |
+| `src/viewStateSidecar.ts` | Pure parse/serialize for the view-state sidecar (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
 | `src/toolbarIcons.ts` | **Generated** — monochrome, `currentColor`-based toolbar/panel icons (vscode-free) |
 | `src/nonce.ts` | Shared CSP script-nonce generator, used by every webview HTML builder |
@@ -288,8 +294,8 @@ interface RebindStats { considered: number; rebound: number; dropped: number }
 
 async function rebindPartsAcrossOps(
   extensionPath: string, bytes: Uint8Array, format: BRepFormat,
-  oldOps: EditOp[], newOps: EditOp[], parts: Part[]
-): Promise<{ parts: Part[]; stats: RebindStats }>
+  oldOps: EditOp[], newOps: EditOp[], parts: Part[], annotations?: Annotation[]
+): Promise<{ parts: Part[]; annotations: Annotation[]; stats: RebindStats; annotationStats: RebindStats }>
 ```
 
 `collectAllEntitySignatures` is the bulk sibling of `resolveEntity` (this file's private single-id resolver): instead of resolving ONE caller-given id, it enumerates EVERY solid/face/edge/point in `shape` via the already-shared `collectSolids`/`collectFaces`/`collectEdges`/ `collectVertices` (`occtOperations.ts`) — in the SAME deterministic order that assigns `solid-N`/`face-N`/`edge-N`/`point-N` ids elsewhere, so an array index here IS the id — and fingerprints each (`bboxCenter` + area via `BRepGProp.SurfaceProperties_1`, length via `LinearProperties`, volume via `VolumeProperties_1`, all the exact call shapes `massProperties.ts` already verified; a point's `measure` is always `0`, read via `oc.BRep_Tool.Pnt`).
@@ -299,7 +305,9 @@ async function rebindPartsAcrossOps(
 - **Pure append** (`oldOps` is a prefix of `newOps`) or **pure trailing truncation** (`newOps` is a prefix of `oldOps` — covers undo, Clear, and `remove_edit_op` on the LAST index): steps **incrementally**, one changed op at a time. For each topology-changing op (`TOPOLOGY_CHANGING_OPS`, `editOps.ts`) at the boundary, it builds the shape immediately BEFORE and AFTER that one op — two fully independent `readShape`+`applyEditsBRep` replays with their own `cleanup` arrays, no shared shape reuse across the boundary (matching this codebase's standing "no shape/session cache" discipline) — fingerprints both sides, matches them via `entityRebind.ts`'s `rebindEntities()` (tolerance `1e-3 * bboxDiagonal(shapeAfter)`, the same tolerance-fraction convention `gmshPartsMap.ts`/`modelDiff.ts` established), and remaps `parts` via `remapPartEntityIds()` — iteratively, so a list already remapped by op N feeds op N+1.
 - **Any other change shape** (most notably `remove_edit_op` at a non-last index): does **one direct fingerprint-and-match** between `shape(oldOps)` and `shape(newOps)` as replayed wholesale, with no intermediate per-op stepping at all. This path exists because the naive "always step incrementally" approach has a real blind spot for a middle removal: unwinding from the raw end of `oldOps` toward the common prefix can pop an op that sits AFTER the one actually being removed, making an entity that's identical in both the real before- and after-shapes briefly and artificially "not exist" in an intermediate replay — which the matcher then (correctly, given what it's shown) treats as a genuine deletion. Diffing the two real shapes directly has no such artificial gap. Caught live via `npm run mcp:smoke` before this path existed (see CLAUDE.md for the exact repro) and fixed by adding this dispatch, not by making the incremental matcher itself smarter.
 
-Non-topology-changing ops are skipped entirely in both paths (their ids are already stable, so a shape-diff would be pure waste). Short-circuits to the ORIGINAL `parts` reference when `parts` is empty or `oldOps`/`newOps` are unchanged or contain no topology-changing difference, letting callers cheaply detect "nothing to do" — but a genuinely-run pass that finds zero actual changes still returns a fresh array (`remapPartEntityIds` always `.map()`s), a deliberate correctness-first tradeoff, not a bug.
+Non-topology-changing ops are skipped entirely in both paths (their ids are already stable, so a shape-diff would be pure waste). Short-circuits to the ORIGINAL `parts`/`annotations` references when both are empty or `oldOps`/`newOps` are unchanged or contain no topology-changing difference, letting callers cheaply detect "nothing to do" — but a genuinely-run pass that finds zero actual changes for a NON-empty list still returns a fresh array (`remapPartEntityIds` always `.map()`s), a deliberate correctness-first tradeoff, not a bug.
+
+**`annotations` (roadmap "Persisted, topology-anchored annotations", closed) is an optional 7th parameter, defaulting to `[]`.** An `Annotation` (`src/protocol.ts`) is structurally an `EntityIdBag` too (same `volumes`/`surfaces`/`lines`/`points: string[]` shape as `Part`), so it's rebound through the SAME `remapPartEntityIds` call and the SAME computed `idMap` inside each step — no second shape-diff, no new matching code. Every pre-existing call site (all 4, across `provider.ts` and `mcpTools.ts`) compiles and behaves unchanged, since the new parameter defaults and the two new return fields are simply unused by old callers. One subtlety fixed during this work: `diffAndRemap` now skips calling `remapPartEntityIds` at all when the respective list (`currentParts`/`currentAnnotations`) is already empty — `[].map(...)` always returns a NEW array, which would otherwise flip the caller-visible `result.parts === parts` reference-equality check to "changed" for no real reason whenever only one of the two lists was non-empty.
 
 ---
 
@@ -327,6 +335,25 @@ function remapPartEntityIds<T extends EntityIdBag>(parts: T[], idMap: Map<string
 
 ---
 
+## `src/xcafTree.ts`
+
+XCAF (Extended CAF) assembly-structure reading for STEP sources (roadmap "XCAF read — assembly structure", closed) — see CLAUDE.md's own section for the full write-up, including a real transform-composition bug caught and fixed via live-WASM verification. Split into an OCCT-touching read half and a pure correlation half, mirroring `entityFacts.ts`/`entityRebind.ts`'s own split just above.
+
+```typescript
+interface XcafLeafSignature { id: string; centre: Vec3; volume: number }
+interface XcafAssemblyInfo { tree: TreeNode; sigs: XcafLeafSignature[] }
+
+function readXcafAssembly(oc: any, filePath: string): XcafAssemblyInfo | null
+
+function correlateAssemblyTree(info: XcafAssemblyInfo, currentSolids: XcafLeafSignature[]): TreeNode | null
+```
+
+**`readXcafAssembly`** does an entirely independent `STEPCAFControl_Reader` parse of `filePath` (which must still be on MEMFS — callers own writing/unlinking it, same convention as `readShape`'s `tmpName`). Walks the document's `ShapesLabel` via `TDF_ChildIterator`, recursing through assembly-type component/reference labels (resolved via `XCAFDoc_ShapeTool.GetReferredShape`) down to simple-shape leaves, accumulating each level's own `TopLoc_Location` (`.Multiplied()`) to pass DOWN to children — but applying only that ANCESTOR-accumulated location (not the leaf's own, which `GetShape_2` already baked in) via `.Moved()` when computing a leaf's final world-space fingerprint, since `.Moved()` COMPOSES with a shape's existing location rather than replacing it (the exact bug this item's verification caught and fixed — see CLAUDE.md). Returns a `TreeNode` tree with SYNTHETIC leaf ids (`xcaf-leaf-N`) plus a parallel `XcafLeafSignature[]` (bbox centre + volume per leaf, in the same synthetic-id space) — never the real `solid-N` ids, which this function has no way to know (that's `TopExp_Explorer` order over the UNRELATED plain-reader shape). Returns `null` on ANY failure (no XCAF structure, a parse error, an unbound API) — always a best-effort enhancement, never required.
+
+**`correlateAssemblyTree`** is pure (no OCCT calls) — matches `info.sigs` against the REAL, current `solid-N` fingerprints via `src/entityRebind.ts`'s existing `rebindEntities` (reused as-is, `kind: "solid"` on both sides), then relabels every tree leaf from its synthetic id to the matched real id. Requires a **clean 1:1 bijection** (every synthetic leaf matched, every real solid claimed, nothing left over) or returns `null` — a topology-changing edit since `readXcafAssembly` was cached changes the real solid count/positions in ways this function has no way to reconcile, and a partially-correlated tree would be worse than the flat fallback. Cheap enough to re-run on every `loadBRep`/`loadBRepCached` call even though `readXcafAssembly` itself is cached (see `occtService.ts`'s `BRepCacheEntry.assemblyTreeCache` above).
+
+---
+
 ## `src/provider.ts`
 
 ### `CadPreviewProvider`
@@ -350,22 +377,23 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 
 1. Sets the webview options (`enableScripts: true`, `localResourceRoots`).
 2. Sets `webviewPanel.webview.html` to the result of `getHtml()`.
-3. Registers a `webviewPanel.webview.onDidReceiveMessage` listener (a per-panel `pending: Map<string, { resolve; reject }>` correlates export/screenshot round-trips, and **three separate** per-panel debounce timers batch parts/edits/mesh-options sidecar writes) that handles `"ready"`, `"partsChanged"`, `"editsChanged"`, `"meshingChanged"`, `"meshingGenerate"`, `"meshingExport"`, `"exportRequest"`, `"exportResult"`, `"exportError"`, `"screenshotButtonClicked"`, `"screenshotResult"`, `"screenshotError"`, `"massPropertiesRequest"`, `"measureExactRequest"`, `"colorFieldRequest"`, `"openFile"`, and `"openPath"`.
-4. On `"ready"`: reads the edits sidecar, calls `routeFile()`, dispatches to `handleBRep()` (which applies the loaded edits) or posts `"loadUrl"`, then posts `"edits"` and calls `sendParts()`/`sendMeshOptions()`/`sendViewerDefaults()`.
+3. Registers a `webviewPanel.webview.onDidReceiveMessage` listener (a per-panel `pending: Map<string, { resolve; reject }>` correlates export/screenshot round-trips, and separate per-panel debounce timers batch parts/annotations/edits/mesh-options sidecar writes) that handles `"ready"`, `"partsChanged"`, `"annotationsChanged"`, `"editsChanged"`, `"meshingChanged"`, `"meshingGenerate"`, `"meshingExport"`, `"exportRequest"`, `"exportResult"`, `"exportError"`, `"screenshotButtonClicked"`, `"screenshotResult"`, `"screenshotError"`, `"massPropertiesRequest"`, `"measureExactRequest"`, `"colorFieldRequest"`, `"openFile"`, and `"openPath"`.
+4. On `"ready"`: reads the edits sidecar, calls `routeFile()`, dispatches to `handleBRep()` (which applies the loaded edits) or posts `"loadUrl"`, then posts `"edits"` and calls `sendParts()`/`sendMeshOptions()`/`sendViewerDefaults()`, plus an inline `readAnnotations(document.uri).then(...)` that posts `"annotations"` (no dedicated `sendAnnotations()` method — the meshio route has no equivalent "may need to auto-create" complication `sendParts()`/`handleMeshio()` have, so a plain read-and-post inline is sufficient).
 5. On `"partsChanged"`: debounces (~500 ms) then `writeParts()` to the sidecar. The CAD file is never written.
-6. On `"editsChanged"`: debounces (~500 ms, its own timer) then `writeEdits()`; for B-rep sources also re-tessellates immediately with the new op-list AND calls `rebindPartsOnChange()` (see below) to best-effort geometrically rebind any Parts affected by a topology-changing op-list change (append, undo/redo, or a middle removal — see below).
-7. On `"meshingChanged"`: debounces (~500 ms, its own timer) then writes **both** `writeMeshOptions()` and `writeGeoScript()`.
-8. On `"meshingGenerate"`/`"meshingExport"`: resolves the mesh input via `resolveMeshInput()` (re-exports STEP for B-rep sources; uses the message's `stl` field for mesh sources; `"meshingExport"`'s optional `unit` field — a real geometric scale, `"mm"`-default — threads through to it and to `resolveMeshPartsAndOptions()`'s matching `MeshOptions`/`Part[]` rescale) and calls `generateMesh()`/`exportGeoUnrolled()`, posting `"meshingResult"`/`"meshingError"` (Generate) or writing the file via `promptSaveAndWrite()` (Export).
-9. On `"exportRequest"`: dispatches to `handleExport()`.
-10. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
-11. On `"screenshotButtonClicked"`: dispatches to `handleScreenshot()` — the same method the `cad-preview.screenshot` command drives via `EditorSession.screenshot()`, so there's exactly one code path regardless of trigger surface.
-12. On `"screenshotResult"`/`"screenshotError"`: resolves/rejects the matching `pending` entry, same as `exportResult`/`exportError`.
-13. On `"massPropertiesRequest"`: B-rep sources only (`route.strategy === "occt"`, else posts `"massPropertiesError"` with an explanatory message); calls `computeMassProperties()` (`src/massProperties.ts`) and posts `"massPropertiesResult"`/`"massPropertiesError"`. No caching — re-reads and re-parses the source on every call, consistent with the rest of this file.
-14. On `"openPath"` (a file dropped onto the viewer canvas, with a real filesystem path exposed): calls `openPathInEditor(msg.path)` — the exact same `vscode.commands.executeCommand("vscode.openWith", ...)` call `openFileDialog()` makes, just from an already-known `Uri.file(path)` rather than a fresh `showOpenDialog()` result.
+6. On `"annotationsChanged"` (roadmap "Persisted, topology-anchored annotations", closed): debounces (~500 ms, its own timer separate from parts/edits/mesh) then `writeAnnotations()` to the `<model>.annotations.json` sidecar. The CAD file is never written.
+7. On `"editsChanged"`: debounces (~500 ms, its own timer) then `writeEdits()`; for B-rep sources also re-tessellates immediately with the new op-list AND calls `rebindPartsOnChange()` (see below) to best-effort geometrically rebind any Parts AND annotations affected by a topology-changing op-list change (append, undo/redo, or a middle removal — see below).
+8. On `"meshingChanged"`: debounces (~500 ms, its own timer) then writes **both** `writeMeshOptions()` and `writeGeoScript()`.
+9. On `"meshingGenerate"`/`"meshingExport"`: resolves the mesh input via `resolveMeshInput()` (re-exports STEP for B-rep sources; uses the message's `stl` field for mesh sources; `"meshingExport"`'s optional `unit` field — a real geometric scale, `"mm"`-default — threads through to it and to `resolveMeshPartsAndOptions()`'s matching `MeshOptions`/`Part[]` rescale) and calls `generateMesh()`/`exportGeoUnrolled()`, posting `"meshingResult"`/`"meshingError"` (Generate) or writing the file via `promptSaveAndWrite()` (Export).
+10. On `"exportRequest"`: dispatches to `handleExport()`.
+11. On `"exportResult"`/`"exportError"`: resolves/rejects the matching entry in `pending` by `requestId`.
+12. On `"screenshotButtonClicked"`: dispatches to `handleScreenshot()` — the same method the `cad-preview.screenshot` command drives via `EditorSession.screenshot()`, so there's exactly one code path regardless of trigger surface.
+13. On `"screenshotResult"`/`"screenshotError"`: resolves/rejects the matching `pending` entry, same as `exportResult`/`exportError`.
+14. On `"massPropertiesRequest"`: B-rep sources only (`route.strategy === "occt"`, else posts `"massPropertiesError"` with an explanatory message); calls `computeMassProperties()` (`src/massProperties.ts`) and posts `"massPropertiesResult"`/`"massPropertiesError"`. No caching — re-reads and re-parses the source on every call, consistent with the rest of this file.
+15. On `"openPath"` (a file dropped onto the viewer canvas, with a real filesystem path exposed): calls `openPathInEditor(msg.path)` — the exact same `vscode.commands.executeCommand("vscode.openWith", ...)` call `openFileDialog()` makes, just from an already-known `Uri.file(path)` rather than a fresh `showOpenDialog()` result.
 
-**`handleBRep(extensionPath, bytes, format, webview, ops)`** — Private method. Calls `loadBRep()` with the current edit op-list, posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. For a `"step"` source, also calls `detectStepLengthUnit()` (`src/stepUnits.ts`); for `"iges"`, `detectIgesLengthUnit()` (`src/igesUnits.ts`) — over the raw bytes, including the result as `"tree"`'s optional `sourceUnit` field (`undefined` for BREP, which has no unit metadata at all, or an undeclared/unrecognized-unit STEP or IGES file). Posts `"error"` on failure.
+**`handleBRep(uri, format, post, ops, cache)`** — Private method, called once per `loadModel()` invocation (i.e. on `ready` and on every `editsChanged`). Calls `loadBRepCached()` (roadmap "Base-shape caching and incremental replay", closed — see `occtService.ts`'s section below) with the current edit op-list AND the per-document `cache` holder (`resolveCustomEditor`'s `brepCache`, `{current: BRepCacheEntry | undefined}`), writing the returned entry back into `cache.current` on success so the NEXT call can reuse it; posts `"status"` progress messages, then posts `"geometry"` (faces + edges + points) + `"tree"` messages. For a `"step"` source, also calls `detectStepLengthUnit()` (`src/stepUnits.ts`); for `"iges"`, `detectIgesLengthUnit()` (`src/igesUnits.ts`) — over the raw bytes, including the result as `"tree"`'s optional `sourceUnit` field (`undefined` for BREP, which has no unit metadata at all, or an undeclared/unrecognized-unit STEP or IGES file). On failure, posts `"error"` AND sets `cache.current = undefined` (never reused after an error — see `loadBRepCached`'s doc comment for why). `resolveCustomEditor`'s `onDidDispose` disposes `brepCache.current` (via `disposeBRepCache()`) alongside the file-watcher cleanup already registered there.
 
-**`rebindPartsOnChange(previousOps, newOps)`** (renamed from `rebindPartsOnAppend`, roadmap item closed — generalized beyond append-only) — A `const` closure inside `resolveCustomEditor` (per-document, like `flushSidecars`/`loadModel` above), not a class method. Called from the `"editsChanged"` handler with the op list as of the PREVIOUS message and the just-received one. Gates only on the document having Parts and `previousOps`/`newOps` actually differing (`JSON.stringify` inequality) — no longer requires a strict append-prefix match, since `entityFacts.ts`'s `rebindPartsAcrossOps()` now handles append, undo/redo/Clear (pure truncation), and a middle removal (e.g. `remove_edit_op` from the webview's own op-list ✕ button) all correctly on its own (see that function's doc above for the incremental-vs-direct-match dispatch). Calls `rebindPartsAcrossOps()` with the full `previousOps`/`newOps` lists, and on a real change (`result.parts !== currentParts`) updates `currentParts`, writes the parts sidecar **immediately** (not the debounced `partsChanged` timer — host-initiated and correctness-critical), and posts a fresh `"parts"` message so the webview's `PartsModel.load()` (silent, no `onChange` echo) picks up the new ids and recolours — the exact mechanism the initial `ready` hydration's own `"parts"` message already uses, so no webview-side code changes were needed. Posts `"error"` on failure rather than throwing.
+**`rebindPartsOnChange(previousOps, newOps)`** (renamed from `rebindPartsOnAppend`, roadmap item closed — generalized beyond append-only) — A `const` closure inside `resolveCustomEditor` (per-document, like `flushSidecars`/`loadModel` above), not a class method. Called from the `"editsChanged"` handler with the op list as of the PREVIOUS message and the just-received one. Gates only on the document having Parts OR annotations and `previousOps`/`newOps` actually differing (`JSON.stringify` inequality) — no longer requires a strict append-prefix match, since `entityFacts.ts`'s `rebindPartsAcrossOps()` now handles append, undo/redo/Clear (pure truncation), and a middle removal (e.g. `remove_edit_op` from the webview's own op-list ✕ button) all correctly on its own (see that function's doc above for the incremental-vs-direct-match dispatch). Calls `rebindPartsAcrossOps()` with the full `previousOps`/`newOps` lists AND `currentAnnotations`; independently, on a real change to `result.parts` (`!== currentParts`) updates `currentParts` + writes + posts `"parts"`, and on a real change to `result.annotations` (`!== currentAnnotations`, roadmap "Persisted, topology-anchored annotations", closed) updates `currentAnnotations` + writes `<model>.annotations.json` + posts `"annotations"` — both immediately (not the debounced `partsChanged`/`annotationsChanged` timers — host-initiated and correctness-critical), so the webview's `PartsModel.load()`/`AnnotationsModel.load()` (both silent, no `onChange` echo) pick up the new ids — the exact mechanism the initial `ready` hydration's own `"parts"`/`"annotations"` messages already use, so no webview-side code changes were needed beyond the new model itself. Posts `"error"` on failure rather than throwing.
 
 **`handleMeshio(uri, format, post)`** — Private method, `loadModel()`'s sibling branch for `route.strategy === "meshio"` (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA). Reads the raw file bytes, then in parallel: `convertToStlBoundaryWithRegions()` (region-correlated STL, falling back to the plain boundary when correlation isn't possible), `readMeshioMetadata()`, and `readParts()` (the existing sidecar). When the source's regions correlated AND the sidecar is still empty, calls `src/meshioRegionParts.ts`'s `buildPartsFromMeshioRegions()` and, if it found any, persists them via `writeParts()` immediately. Posts `"loadMeshBytes"` (`sourceFormat` + base64 STL bytes + an optional `meshioMetadata` + an optional `regionAssignment`, sent whenever correlation succeeded regardless of whether Parts were freshly created — the webview needs it every open to reproduce matching facet ids) — no `"geometry"`/`"tree"` messages, since the webview builds its own component tree from the loaded `THREE.Object3D` hierarchy exactly like a native `.stl` open. Then posts `"parts"` itself (the parts actually in effect — auto-created or the pre-existing sidecar), returning that same array so the `"ready"` handler's caller can keep the closure's `currentParts` in sync (see `sendParts` below — this route deliberately does NOT also call the generic one, to avoid double-posting `"parts"`). Posts `"error"` on failure (a malformed source file, an unsupported meshio conversion, etc.).
 
@@ -572,11 +600,31 @@ async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
   format: CadFormat,
-  ops?: EditOp[]            // replayable edit op-list (default [])
+  ops?: EditOp[],                    // replayable edit op-list (default [])
+  quality?: TessellationParams       // default: TESSELLATION_PRESETS.standard
 ): Promise<BRepResult>
 ```
 
-High-level entry point called from `provider.ts`. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, `extractVertices()` to extract every vertex in the shape, and `buildTree()` to build the component hierarchy. With an empty `ops` this is the original read-only path; the source bytes are never modified.
+High-level, STATELESS entry point — always re-reads and re-parses from scratch. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, calls `readXcafAssembly()` (`src/xcafTree.ts`, STEP only — roadmap "XCAF read — assembly structure", closed) against the SAME still-on-MEMFS file while `readShape`'s `finally` hasn't unlinked it yet, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, `extractVertices()` to extract every vertex in the shape, and `buildTree()` to build the component hierarchy (nested assembly structure when `readXcafAssembly()` succeeded AND cleanly correlates, else the original flat per-solid list — see `buildTree` below). With an empty `ops` this is the original read-only path; the source bytes are never modified. `quality` (roadmap "Configurable tessellation quality", closed — `src/tessellationQuality.ts`) is threaded straight into `tessellateByGroup()`'s deflection args; every existing caller omits it (implicit `"standard"`, byte-for-byte the original hardcoded 0.1/0.5 constants), so this is a purely additive, backward-compatible parameter. Called by `mcpTools.ts` (deliberately kept stateless-per-call — see the MCP server section below) and `renderService.ts`; `provider.ts` calls `loadBRepCached` instead (below), NOT this function directly, for its `editsChanged` hot path.
+
+```typescript
+interface BRepCacheEntry { /* opaque outside occtService.ts — pass it straight back in */ }
+
+async function loadBRepCached(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: CadFormat,
+  ops: EditOp[],
+  previous: BRepCacheEntry | undefined,
+  quality?: TessellationParams       // default: TESSELLATION_PRESETS.standard
+): Promise<{ result: BRepResult; cache: BRepCacheEntry }>
+
+function disposeBRepCache(cache: BRepCacheEntry): void
+```
+
+The caching counterpart of `loadBRep` (roadmap "Base-shape caching and incremental replay", closed) — for `provider.ts`'s per-document, per-`editsChanged` hot path only; `mcpTools.ts` never calls this. Reuses the parsed base shape across calls whenever `bytes`+`format` match `previous` (byte-for-byte comparison, not a hash), and additionally reuses `previous`'s fully-replayed shape when `ops` is a pure append of `previous.ops` — replaying only the new suffix. Any other change (undo, a non-append edit, a variable re-resolving numeric fields) falls back to a full replay of `ops` from the (still-reused, if bytes match) base shape. **Reused fields are aliased by reference** — `disposeBRepCache` must only ever be called on the single, latest entry a caller currently holds, never on an entry that's already been superseded by a later `loadBRepCached` call's return value (doing so frees the SAME live handles the newer entry still references — a real `"Cannot pass deleted object as a pointer"` OCCT crash this was verified against, not a hypothetical). On failure, no handle from the failed call is freed (an abort may leave the WASM heap in an undefined state) — the caller must drop its held reference rather than reuse or dispose it; the underlying orphaned OCCT module becomes GC-eligible once unreferenced. Cache validity across a `resetOcct()`-triggered abort recovery is checked by `===` identity against the CURRENT `getOcct()` resolution, not a separate counter. `quality` is entirely orthogonal to the cache's reuse decisions — tessellation is never cached (see below), so a quality change between two calls with identical `bytes`/`ops` still reuses `baseShape`/`shape` and simply re-tessellates them at the new density. See CLAUDE.md's own sections for the full reuse-rule writeup, the measured ~35× base-shape-cache speedup on a large fixture, and the tessellation-quality live-WASM probing trail (including why edge deflection stays fixed).
+
+`BRepCacheEntry` also carries `assemblyTreeCache: XcafAssemblyInfo | null` (roadmap "XCAF read — assembly structure", closed) — computed alongside `baseShape` under the exact same `baseReusable` gate (a `readXcafAssembly()` call is a genuinely expensive second full-file parse, so an interactive edit that reuses the base shape never re-pays it), then passed into `buildTree()` on every call regardless of whether IT was recomputed this call.
 
 ```typescript
 function readShape(
@@ -590,10 +638,16 @@ function readShape(
 Exported (used by both `loadBRep` and `exportBRep`). Selects the appropriate OCCT reader class and calls it. Pushes every handle it creates onto `cleanup` so they're deleted in the caller's `finally` block. The BREP branch's 4th `BRepTools.Read_2` arg is a `Handle_Message_ProgressIndicator` — *not* `Message_ProgressRange`, which isn't a real constructor in this OCCT build and throws immediately.
 
 ```typescript
-function buildTree(format: CadFormat, groups: SolidGroup[]): TreeNode
+function buildTree(
+  oc: any,
+  format: CadFormat,
+  groups: SolidGroup[],
+  shape: unknown,
+  assemblyTreeCache: XcafAssemblyInfo | null
+): TreeNode
 ```
 
-Builds a `TreeNode` tree from the solid groups. The root label is derived from the format (e.g. `"STEP Assembly"`). Each `SolidGroup` becomes a child node with `id`, `label`, and `faceCount`.
+Builds a `TreeNode` tree — the flat per-solid list this function always returned before the closed "XCAF read — assembly structure" roadmap item, UNLESS `assemblyTreeCache` is non-null AND `src/xcafTree.ts`'s `correlateAssemblyTree()` can cleanly match its cached, synthetic-id leaves against the CURRENT `shape`'s actual `solid-N` list (via `collectSolids()` + per-solid bbox-centre/volume fingerprints, `occtOperations.ts`) — in which case it returns the real nested assembly hierarchy instead, with each leaf's `faceCount`/label copied over from `groups` (`attachFaceCounts()`, a private helper) so every leaf row is indistinguishable from the flat tree's own row for that same solid. Falls through to the flat tree on ANY correlation failure — non-STEP source, no genuine assembly structure, a topology-changing edit that changed the solid count/positions since `assemblyTreeCache` was computed, or any thrown exception — always degrading gracefully, never blocking model load. See `src/xcafTree.ts` below and CLAUDE.md's "XCAF read — assembly structure" section for the full write-up (including a real transform-composition bug caught and fixed via live-WASM verification).
 
 ```typescript
 async function exportBRep(
@@ -868,6 +922,7 @@ interface FaceMesh {
 interface EdgeLine {
   edgeId: string            // stable per-edge entity id ("edge-N")
   positions: Float32Array   // consecutive xyz points; pairs form polyline segments
+  smooth: boolean           // tangent patch-seam continuation, not a real feature edge
 }
 
 interface PointEntity {
@@ -911,10 +966,14 @@ function extractFaceGeometry(
 Extracts vertices and triangles from a single OCCT face's triangulation. Applies the face's location transform. If `isReversed` is true, swaps triangle winding order so face normals point outward. OCCT uses 1-based indexing; this function converts to 0-based for WebGL.
 
 ```typescript
-function tessellateByGroup(oc: any, shape: any): SolidGroup[]
+function tessellateByGroup(
+  oc: any,
+  shape: any,
+  quality?: TessellationParams   // default: TESSELLATION_PRESETS.standard (linear 0.1, angular 0.5 rad)
+): SolidGroup[]
 ```
 
-Tessellates the entire `TopoDS_Shape`. Uses `BRepMesh_IncrementalMesh_2` with linear deflection `0.1`. Explores solids via `TopExp_Explorer`, then within each solid explores faces and calls `extractFaceGeometry`. Returns one `SolidGroup` per solid, each face tagged with a stable global `faceId` (deterministic explorer order).
+Tessellates the entire `TopoDS_Shape`. Uses `BRepMesh_IncrementalMesh_2(shape, quality.linearDeflection, false, quality.angularDeflectionRad, true)` — `isRelative` is always `false`, `isInParallel` is always `true` (roadmap "Configurable tessellation quality", closed — verified live against the real WASM to be both hang-free and ~2× faster on a large model, so it's unconditional, not a setting). Explores solids via `TopExp_Explorer`, then within each solid explores faces and calls `extractFaceGeometry`. Returns one `SolidGroup` per solid, each face tagged with a stable global `faceId` (deterministic explorer order).
 
 When solids exist, it also runs a **free-face pass** (`extractFreeFaces`): every face touched while processing a solid is "claimed" into a `HashCode`-bucketed map (via `extractFacesFromShape`'s optional `claim` parameter — the claimed face handles are pushed into `tessellateByGroup`'s own long-lived `cleanup`, not the per-call one, so they outlive the comparison), then the whole shape's faces are walked once more and anything not claimed (`IsSame` check) becomes an extra `"Sketches"` group. This surfaces standalone 2D profile faces added via `addCircleProfile`/`addRectangleProfile`/`addPolygonProfile` (`src/occtOperations.ts`), which would otherwise be silently dropped — without it, a bare `TopoDS_Face` mixed into the compound never gets tessellated or a `faceId`. **`occtOperations.ts`'s `collectFaces` duplicates this exact algorithm** so `face-N` ids resolve consistently between the read/display path and the edit-resolution path; see that file's docs above for why keeping the two in lockstep matters. `triangulateFace` factors out the per-face triangulation logic shared by the solid pass, the no-solids fallback, and the free-face pass.
 
@@ -922,7 +981,18 @@ When solids exist, it also runs a **free-face pass** (`extractFreeFaces`): every
 function extractEdges(oc: any, shape: any): EdgeLine[]
 ```
 
-Explores every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` bucket + `IsSame` (this OCCT build does **not** bind `TopTools_IndexedMapOfShape`), then discretizes each unique edge to a polyline via `BRepAdaptor_Curve_2` + `GCPnts_UniformDeflection_2` (both verified against the live WASM). The first appearance in explorer order fixes the stable `edgeId`.
+Explores every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` bucket + `IsSame` (this OCCT build does **not** bind `TopTools_IndexedMapOfShape`), then discretizes each unique edge to a polyline via `BRepAdaptor_Curve_2` + `GCPnts_UniformDeflection_2` (both verified against the live WASM). The first appearance in explorer order fixes the stable `edgeId`. Calls `edgeEnumeration.ts`'s `enumerateEdges()` (unchanged) then `classifyEdgeSmoothness()` (below) to compute each edge's `smooth` flag, zipping the two parallel arrays together — `edge-N` assignment stays entirely `enumerateEdges`'s business.
+
+```typescript
+function classifyEdgeSmoothness(
+  oc: any,
+  shape: any,
+  edges: EnumeratedEdge[],   // already enumerated by enumerateEdges — same order, never reordered
+  cleanup: { delete(): void }[]
+): boolean[]                 // parallel to `edges`
+```
+
+`src/edgeEnumeration.ts` (roadmap "Display-edge classification, as a flag", closed). For each edge with exactly 2 adjacent faces (a free/boundary edge or a non-manifold edge shared by 3+ faces is never classified `smooth` — always a genuine feature), computes the dihedral angle between the two faces' surface normals AT the shared edge; below `1.0°` (a constant close to, but independently re-derived from, SketchForge-3D's own 0.75° — see this function's own doc comment for the real-fixture data behind the choice), the edge is a tangent patch-seam continuation, not a real feature. Face adjacency is a SEPARATE, face-driven `HashCode`+`IsSame` bucket pass (walking every face's own edges) — deliberately independent of `enumerateEdges`'s own shape-level `TopAbs_EDGE` explorer, since the two traversals are not guaranteed to visit edges in the same order; results are correlated back to `enumerateEdges`'s edges by `IsSame` identity, never by assumed ordering. **Verified live against the real WASM, not assumed:** `TopTools_IndexedDataMapOfShapeListOfShape` and `TopExp.MapShapesAndAncestors` (the "proper" OCCT adjacency tools) are both confirmed unbound in this build, hence the hand-rolled bucket map; a box's 12 edges each showed the expected 90° dihedral angle; `bull.stp` showed a real, meaningful split — 9 of 96 two-face edges under 1° (genuine patch seams), the rest ranging 30°–180° (genuine features), with a clean gap between the two clusters. The per-face-pair normal is evaluated via `BRepAdaptor_Curve2d_2(edge, face)`'s 2D pcurve → `GeomLProp_SLProps_1(surface, u, v, 1, tol)` → `.Normal()` — **not** by projecting the edge's 3D midpoint onto the face (`GeomAPI_ProjectPointOnSurf`'s own `Parameters`/`LowerDistanceParameters` UV accessors are confirmed unbound: `"null function or function signature mismatch"`).
 
 ```typescript
 function polylineFromDiscretizer(disc: OcctDiscretizer): Float32Array
@@ -966,6 +1036,23 @@ async function writeParts(modelUri, parts): Promise<void>
 ```
 
 `provider.ts` calls `readParts()` on open (posts a `parts` message) and, on each debounced `partsChanged` message (~500 ms), `writeParts()`.
+
+## `src/annotationsStore.ts` and `src/annotationsSidecar.ts`
+
+The sibling pair for persisted, topology-anchored measurements (roadmap "Persisted, topology-anchored annotations", closed) — structurally identical to `partsStore.ts`/`partsSidecar.ts` above, right down to the tolerant-parse-drops-malformed-entries convention.
+
+```typescript
+// annotationsSidecar.ts (vscode-free)
+function parseAnnotationsJson(text: string): Annotation[]          // tolerant: returns [] on bad input
+function serializeAnnotationsJson(sourceName: string, annotations: Annotation[]): string
+
+// annotationsStore.ts (VS Code fs)
+function annotationsSidecarUri(modelUri: vscode.Uri): vscode.Uri  // <model>.annotations.json
+async function readAnnotations(modelUri): Promise<Annotation[]>    // [] if missing/unreadable
+async function writeAnnotations(modelUri, annotations): Promise<void>
+```
+
+`provider.ts` calls `readAnnotations()` on open (posts an `annotations` message) and, on each debounced `annotationsChanged` message (~500 ms, its own timer), `writeAnnotations()`. Also rebound (alongside Parts) by `rebindPartsOnChange()` on any topology-changing edit — see `entityFacts.ts`'s `rebindPartsAcrossOps` above.
 
 ---
 
@@ -1011,6 +1098,31 @@ async function writeGeoScript(modelUri, options): Promise<void>
 
 ---
 
+## `src/viewStateStore.ts`, `src/viewStateSidecar.ts`
+
+A fourth parts/edits/mesh-options-style sidecar pair for the persisted camera/display/clip state (roadmap "View-state persistence", closed — see the [View State Sidecar](./file-formats.md#view-state-sidecar-modelviewjson) format reference and CLAUDE.md's writeup for the full mechanism).
+
+`src/viewStateSidecar.ts` is **vscode-free** (unit-tested):
+
+```typescript
+function parseViewStateJson(text: string): ViewState | null   // null = no sidecar / malformed / no persisted view
+function serializeViewStateJson(sourceName: string, view: ViewState): string
+```
+
+Tolerant like the other three sidecars, with one stricter rule: `viewDirection`/`cameraUp` reject the WHOLE record (not just that field) when missing or degenerate (all-zero) — a camera can't be oriented by either, unlike every other field, which individually falls back to a safe default (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`).
+
+`src/viewStateStore.ts` wraps it with VS Code filesystem access, mirroring `partsStore.ts` exactly:
+
+```typescript
+function viewStateSidecarUri(modelUri: vscode.Uri): vscode.Uri     // <model>.view.json
+async function readViewState(modelUri): Promise<ViewState | null>  // null if missing/unreadable/malformed
+async function writeViewState(modelUri, view): Promise<void>
+```
+
+`provider.ts` calls `readViewState()` on `ready` (posts a `viewState` message, right after `meshingOptions`) and, on each debounced `viewChanged` message (~500 ms, its own timer separate from parts/edits/mesh), calls `writeViewState()`. It also participates in the same `watchForExternalChange` mechanism the other sidecars use, so an external write to `<model>.view.json` (another tab on the same document, a hand edit) is reconciled live — see `provider.ts`'s `watchForExternalChange` and CLAUDE.md's "Sidecar and source external-change reconciliation" writeup. `<model>.annotations.json` (roadmap "Persisted, topology-anchored annotations", closed) gets a sibling watcher, right after the parts one — same content-comparison-then-post pattern (`readAnnotations()`, compare via `JSON.stringify`, reassign `currentAnnotations`, post `"annotations"` + a `"status"` line) — bringing the total to six watchers: the CAD source file itself (unconditional reload, no comparison) plus five sidecars (edits, parts, annotations, mesh options, view state).
+
+---
+
 ## `src/protocol.ts`
 
 Defines the host ↔ webview message contract. See [Host ↔ Webview Protocol](./protocol.md) for the full reference.
@@ -1033,6 +1145,6 @@ The standalone MCP server — a third esbuild bundle (`dist/mcp-server.js`) that
 
 - **`mcpServer.ts`** is the entry: it rebinds `console.log/info/warn/debug` to stderr *before anything else* (the Emscripten WASM modules print through `console.log`, and stdout is the JSON-RPC channel), resolves `extensionPath` (`CAD_PREVIEW_ROOT` env var or the bundle dir's parent), and registers the fourteen tools with the `@modelcontextprotocol/sdk` `McpServer` + `StdioServerTransport`.
 - **`mcpTools.ts`** holds the tool handlers as plain async functions over an injected `Pipeline` object (defaulting to the real OCCT/Gmsh functions in the server, faked in `mcpTools.test.ts` — the `.wasm` imports only resolve under esbuild's plugin, never vitest). Ops arrive as raw JSON gated by `validateEditOp`; results are stats/summaries, never geometry buffers.
-- **`mcpSidecars.ts`** is the node-fs counterpart of `editsStore.ts`/ `partsStore.ts`/`meshOptionsStore.ts` over the same pure `*Sidecar.ts` parsers — byte-compatible with what `provider.ts` reads on reopen — plus the `assertNotSourcePath` guard enforcing the CAD-file-is-never-written invariant.
+- **`mcpSidecars.ts`** is the node-fs counterpart of `editsStore.ts`/ `partsStore.ts`/`annotationsStore.ts`/`meshOptionsStore.ts` over the same pure `*Sidecar.ts` parsers — byte-compatible with what `provider.ts` reads on reopen — plus the `assertNotSourcePath` guard enforcing the CAD-file-is-never-written invariant. `readAnnotations`/`writeAnnotations` are plain sidecar I/O (not part of the `Pipeline` interface — that interface holds only WASM/OCCT/Gmsh/network-touching functions vitest must fake; `rebindPartsAcrossOps` IS in `Pipeline` since it re-derives ids from live geometry).
 
 See [MCP Server](./mcp-server.md) for registration, the tool reference, and the headless capability matrix.

@@ -1,18 +1,21 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
-import { loadBRep, exportBRep } from "./occtService";
+import { loadBRepCached, disposeBRepCache, exportBRep, type BRepCacheEntry } from "./occtService";
+import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellationQuality";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
-import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
+import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
+import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
+import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri } from "./meshOptionsStore";
+import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
@@ -23,6 +26,7 @@ import { computeMassProperties } from "./massProperties";
 import { measureExact, rebindPartsAcrossOps } from "./entityFacts";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
+import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, UNIT_LABELS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
@@ -33,6 +37,10 @@ import { runCompareModelsCommand } from "./modelComparePanel";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
+/** Settle window for the external-change file watchers below — short enough
+ * to reconcile promptly, long enough to avoid reading a file mid-write by
+ * another process. */
+const EXTERNAL_CHANGE_DEBOUNCE_MS = 300;
 
 const BREP_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
 
@@ -160,8 +168,18 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const post = (msg: HostToWebview) => webviewPanel.webview.postMessage(msg);
     const pending = new Map<string, PendingExport>();
     let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    let annotationsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    // Live OCCT parse+replay cache for THIS document (roadmap "Base-shape
+    // caching and incremental replay", closed) — see `loadBRepCached`'s doc
+    // comment in `occtService.ts` for the reuse rules. Held as a plain
+    // mutable holder (not a closure `let` `handleBRep` could reassign
+    // directly, since `handleBRep` is a class method, not itself inside this
+    // closure) so both `handleBRep` and this constructor's `onDidDispose`
+    // below can reach the SAME, current entry.
+    const brepCache: { current: BRepCacheEntry | undefined } = { current: undefined };
 
     // The live edit op-list + parametric variables. Loaded from the sidecar on
     // `ready`, updated on every `editsChanged`. Ops arrive from the webview
@@ -174,20 +192,35 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     // File-menu "Save" can flush all three sidecars immediately. The webview
     // re-sends these on every change, so these copies are always current.
     let currentParts: Part[] = [];
+    // Persisted, topology-anchored measurements (roadmap "Persisted,
+    // topology-anchored annotations", closed) — same "retained for Save to
+    // flush" reason as `currentParts`.
+    let currentAnnotations: Annotation[] = [];
     let currentMeshOptions: MeshOptions | undefined;
+    // The last view state received from the webview (or read from the
+    // sidecar), retained for the same "Save flushes everything" reason as
+    // `currentMeshOptions` — `undefined` until the webview's first
+    // `viewChanged` post (camera move, display-mode/ortho/clip change), so a
+    // Save before any of those simply has nothing new to write for this one
+    // sidecar, matching `currentMeshOptions`'s own convention.
+    let currentViewState: ViewState | undefined;
 
-    /** Immediately writes the parts/edits/mesh sidecars, bypassing the debounce. */
+    /** Immediately writes the parts/edits/mesh/view sidecars, bypassing the debounce. */
     const flushSidecars = async (): Promise<void> => {
       if (partsSaveTimer) clearTimeout(partsSaveTimer);
+      if (annotationsSaveTimer) clearTimeout(annotationsSaveTimer);
       if (editsSaveTimer) clearTimeout(editsSaveTimer);
       if (meshSaveTimer) clearTimeout(meshSaveTimer);
+      if (viewSaveTimer) clearTimeout(viewSaveTimer);
       try {
         await Promise.all([
           writeParts(document.uri, currentParts),
+          writeAnnotations(document.uri, currentAnnotations),
           writeEdits(document.uri, currentEdits, currentVariables),
           ...(currentMeshOptions
             ? [writeMeshOptions(document.uri, currentMeshOptions), writeGeoScript(document.uri, currentMeshOptions)]
             : []),
+          ...(currentViewState ? [writeViewState(document.uri, currentViewState)] : []),
         ]);
         post({ type: "status", text: "Saved" });
       } catch (err) {
@@ -214,7 +247,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           document.uri,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           post,
-          currentEdits
+          currentEdits,
+          brepCache
         );
       }
     };
@@ -239,11 +273,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
      * webview's `PartsModel.load()` (silent, no `onChange` echo — same
      * contract `"edits"`'s hydration already relies on) picks up the new ids
      * and `refreshColors()` recolours, exactly like the initial `ready`
-     * hydration's own `"parts"` message.
+     * hydration's own `"parts"` message. Also rebinds `currentAnnotations`
+     * through the SAME shape-diff pass (`rebindPartsAcrossOps`'s optional 7th
+     * parameter, reusing the identical `idMap` at zero extra OCCT cost) and
+     * persists+posts `"annotations"` on the same terms — see `Annotation`'s
+     * doc comment in `protocol.ts` for why it can reuse `Part`'s exact
+     * id-remapping machinery.
      */
     const rebindPartsOnChange = async (previousOps: EditOp[], newOps: EditOp[]): Promise<void> => {
       if (!route || route.strategy !== "occt") return;
-      if (currentParts.length === 0) return;
+      if (currentParts.length === 0 && currentAnnotations.length === 0) return;
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
@@ -253,16 +292,137 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           previousOps,
           newOps,
-          currentParts
+          currentParts,
+          currentAnnotations
         );
-        if (result.parts === currentParts) return; // nothing topology-changing resolved, or nothing to remap
-        currentParts = result.parts;
-        await writeParts(document.uri, currentParts);
-        post({ type: "parts", parts: currentParts });
+        if (result.parts !== currentParts) {
+          currentParts = result.parts;
+          await writeParts(document.uri, currentParts);
+          post({ type: "parts", parts: currentParts });
+        }
+        if (result.annotations !== currentAnnotations) {
+          currentAnnotations = result.annotations;
+          await writeAnnotations(document.uri, currentAnnotations);
+          post({ type: "annotations", annotations: currentAnnotations });
+        }
       } catch (err) {
-        post({ type: "error", message: `Could not rebind part entity ids: ${(err as Error).message}` });
+        post({ type: "error", message: `Could not rebind entity ids: ${(err as Error).message}` });
       }
     };
+
+    /**
+     * External-change reconciliation (roadmap "Sidecar and source
+     * external-change reconciliation", closed). Without this, an MCP agent's
+     * `apply_edit_ops`/`set_part`/`set_mesh_options` write to a sidecar while
+     * this SAME document is ALSO open interactively is silently overwritten
+     * by the next debounced webview autosave — there are no file watchers
+     * anywhere else in this codebase, and `.edits.json`/`.parts.json`/
+     * `.mesh.json` are otherwise only ever read once, in the `ready` handler
+     * above. Same gap for the source CAD file itself (a
+     * `download_standard_part` overwrite, a `git checkout`, an external
+     * editor save).
+     *
+     * Content-comparison, not raw-event suppression: this extension's own
+     * debounced writes ALSO fire these watchers, but by the time a write
+     * lands on disk the in-memory `current*` state already equals what was
+     * written, so the comparison below finds no difference and no-ops — this
+     * is what makes the design safe against feedback loops with no "was this
+     * my own write" flag/timestamp bookkeeping (and, transitively, safe
+     * against `handleMeshio`'s and `rebindPartsOnChange`'s own occasional
+     * `.parts.json` writes triggering a redundant-but-harmless reaction here
+     * too). The CAD source file is the one exception: this extension NEVER
+     * writes it (the read-only invariant), so any change to it is
+     * unconditionally external — no comparison needed, just reload.
+     *
+     * A short debounce per watched file (not the longer autosave one) avoids
+     * reacting to a file mid-write by another process; `readEdits`/
+     * `readParts`/`readMeshOptions` already tolerate a transiently-malformed
+     * file by degrading to their existing defaults, same as on any other
+     * read, so a read that races an in-progress write is never worse than
+     * "reconcile again once the write finishes and the watcher fires again".
+     */
+    const watcherDisposables: vscode.Disposable[] = [];
+    const watchForExternalChange = (uri: vscode.Uri, onSettled: () => void): void => {
+      const basename = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(fileDir, basename));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const debounced = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(onSettled, EXTERNAL_CHANGE_DEBOUNCE_MS);
+      };
+      watcher.onDidChange(debounced);
+      watcher.onDidCreate(debounced);
+      watcherDisposables.push(watcher, { dispose: () => { if (timer) clearTimeout(timer); } });
+    };
+
+    watchForExternalChange(document.uri, () => {
+      if (!route) return;
+      post({ type: "status", text: "File changed on disk — reloading…" });
+      loadModel();
+    });
+
+    watchForExternalChange(editsSidecarUri(document.uri), () => {
+      void (async () => {
+        const parsed = await readEdits(document.uri);
+        if (JSON.stringify(parsed.ops) === JSON.stringify(currentEdits) && JSON.stringify(parsed.variables) === JSON.stringify(currentVariables)) {
+          return;
+        }
+        const previousOps = currentEdits;
+        currentEdits = parsed.ops;
+        currentVariables = parsed.variables;
+        if (route && route.strategy === "occt") {
+          loadModel();
+          void rebindPartsOnChange(previousOps, currentEdits);
+        }
+        post({ type: "edits", ops: currentEdits, variables: currentVariables });
+        post({ type: "status", text: "Edits updated externally" });
+      })();
+    });
+
+    watchForExternalChange(sidecarUri(document.uri), () => {
+      void (async () => {
+        const parts = await readParts(document.uri);
+        if (JSON.stringify(parts) === JSON.stringify(currentParts)) return;
+        currentParts = parts;
+        post({ type: "parts", parts: currentParts });
+        post({ type: "status", text: "Parts updated externally" });
+      })();
+    });
+
+    watchForExternalChange(annotationsSidecarUri(document.uri), () => {
+      void (async () => {
+        const annotations = await readAnnotations(document.uri);
+        if (JSON.stringify(annotations) === JSON.stringify(currentAnnotations)) return;
+        currentAnnotations = annotations;
+        post({ type: "annotations", annotations: currentAnnotations });
+        post({ type: "status", text: "Annotations updated externally" });
+      })();
+    });
+
+    watchForExternalChange(meshOptionsSidecarUri(document.uri), () => {
+      void (async () => {
+        const options = await readMeshOptions(document.uri);
+        if (JSON.stringify(options) === JSON.stringify(currentMeshOptions)) return;
+        currentMeshOptions = options;
+        post({ type: "meshingOptions", options });
+        post({ type: "status", text: "Mesh options updated externally" });
+      })();
+    });
+
+    watchForExternalChange(viewStateSidecarUri(document.uri), () => {
+      void (async () => {
+        const view = await readViewState(document.uri);
+        if (JSON.stringify(view) === JSON.stringify(currentViewState ?? null)) return;
+        currentViewState = view ?? undefined;
+        post({ type: "viewState", view });
+        post({ type: "status", text: "View updated externally" });
+      })();
+    });
+
+    webviewPanel.onDidDispose(() => {
+      for (const d of watcherDisposables) d.dispose();
+      if (brepCache.current) disposeBRepCache(brepCache.current);
+    });
 
     // Track this editor as the active one while it is focused, so the
     // File-menu commands/keybindings can reach it.
@@ -308,7 +468,17 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             currentParts = parts;
           });
         }
-        void this.sendMeshOptions(document.uri, post);
+        void readAnnotations(document.uri).then((annotations) => {
+          currentAnnotations = annotations;
+          post({ type: "annotations", annotations: currentAnnotations });
+        });
+        void this.sendMeshOptions(document.uri, post).then((options) => {
+          currentMeshOptions = options;
+        });
+        void readViewState(document.uri).then((view) => {
+          currentViewState = view ?? undefined;
+          post({ type: "viewState", view });
+        });
         this.sendViewerDefaults(post);
         return;
       }
@@ -322,6 +492,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           void writeParts(document.uri, parts).then(
             undefined,
             (err) => post({ type: "error", message: `Could not save parts: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      if (msg.type === "annotationsChanged") {
+        // Debounced autosave, own timer — mirrors partsChanged.
+        const annotations: Annotation[] = msg.annotations;
+        currentAnnotations = annotations;
+        if (annotationsSaveTimer) clearTimeout(annotationsSaveTimer);
+        annotationsSaveTimer = setTimeout(() => {
+          void writeAnnotations(document.uri, annotations).then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save annotations: ${(err as Error).message}` })
           );
         }, PARTS_SAVE_DEBOUNCE_MS);
         return;
@@ -345,6 +529,19 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           loadModel();
           void rebindPartsOnChange(previousOps, currentEdits);
         }
+        return;
+      }
+
+      if (msg.type === "viewChanged") {
+        currentViewState = msg.view;
+        // Debounced sidecar autosave (separate timer/file from parts/edits/mesh).
+        if (viewSaveTimer) clearTimeout(viewSaveTimer);
+        viewSaveTimer = setTimeout(() => {
+          void writeViewState(document.uri, msg.view).then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save view state: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
         return;
       }
 
@@ -615,17 +812,44 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     webviewPanel.webview.html = this.getHtml(webviewPanel.webview);
   }
 
+  /**
+   * `cache` is a per-document holder (`brepCache` in `resolveCustomEditor`),
+   * mutated in place: `loadBRepCached` reuses `cache.current` when possible
+   * (skipping the STEP/IGES/BREP parse, and — for a pure op-list append —
+   * the full replay too), and this method always writes the fresh entry it
+   * returns back into `cache.current` for the next call. On any error, the
+   * held entry is dropped (not reused, not explicitly disposed — see
+   * `loadBRepCached`'s doc comment for why a thrown call must not attempt to
+   * free its own stale handles) so the NEXT call starts from a clean parse.
+   */
   private async handleBRep(
     uri: vscode.Uri,
     format: Extract<CadFormat, "step" | "iges" | "brep">,
     post: (msg: HostToWebview) => void,
-    ops: EditOp[] = []
+    ops: EditOp[] = [],
+    cache: { current: BRepCacheEntry | undefined }
   ): Promise<void> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
-      const { groups, edges, points, tree } = await loadBRep(this.context.extensionPath, bytes, format, ops);
+      // Re-read fresh on every call (cheap) rather than cached at document-open
+      // time — a mid-session settings change should take effect on the NEXT
+      // edit without needing to reopen the tab, same as every other
+      // `cadPreview.*` setting's "always re-read" convention.
+      const quality = normalizeTessellationQuality(
+        vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
+      );
+      const { result, cache: nextCache } = await loadBRepCached(
+        this.context.extensionPath,
+        bytes,
+        format,
+        ops,
+        cache.current,
+        tessellationParamsFor(quality)
+      );
+      cache.current = nextCache;
+      const { groups, edges, points, tree } = result;
       post({
         type: "geometry",
         meshes: groups.flatMap((g) =>
@@ -639,6 +863,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         edges: edges.map((e) => ({
           positions: encodeBuffer(e.positions),
           edgeId: e.edgeId,
+          smooth: e.smooth,
         })),
         points: points.map((p) => ({
           position: encodeBuffer(new Float32Array(p.position)),
@@ -649,6 +874,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const sourceUnit = format === "step" ? detectStepLengthUnit(text!) : format === "iges" ? detectIgesLengthUnit(text!) : undefined;
       post({ type: "tree", root: tree, sourceUnit });
     } catch (err) {
+      // Drop (never reuse) whatever cache entry was held — see
+      // `loadBRepCached`'s doc comment on why a thrown call doesn't already
+      // dispose its own stale state; the next `handleBRep` call starts from
+      // a clean parse regardless of whether this was a real WASM abort or an
+      // ordinary error (e.g. an unreadable file).
+      cache.current = undefined;
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
     }
   }
@@ -734,10 +965,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     }
   }
 
-  /** Loads the mesh-options sidecar (if any) and sends it to the webview. */
-  private async sendMeshOptions(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
+  /** Loads the mesh-options sidecar (if any), sends it to the webview, and
+   * returns it so the caller can keep `currentMeshOptions` in sync — same
+   * pattern as `sendParts` above. */
+  private async sendMeshOptions(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<MeshOptions> {
     const options = await readMeshOptions(uri);
     post({ type: "meshingOptions", options });
+    return options;
   }
 
   /**
@@ -976,13 +1210,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   }
 
   /**
-   * Packages the CAD source plus whichever of its parts/edits/mesh-options/geo
-   * sidecars exist on disk into a single `.zip` (File ▸ Save Preprocess…).
-   * Callers must flush pending debounced sidecar writes first (see the two
-   * call sites) so the archive reflects the latest in-memory state, not a
-   * stale on-disk one; which sidecars are included is otherwise purely
-   * file-existence-driven — a sidecar that was never created (e.g. no
-   * meshing options ever set) is simply omitted, never a hard error.
+   * Packages the CAD source plus whichever of its parts/annotations/edits/
+   * mesh-options sidecars exist on disk into a single `.zip` (File ▸ Save
+   * Preprocess…), with a per-entry SHA-256 checksum recorded in the manifest
+   * (roadmap "Archive integrity", closed). Callers must flush pending
+   * debounced sidecar writes first (see the two call sites) so the archive
+   * reflects the latest in-memory state, not a stale on-disk one; which
+   * sidecars are included is otherwise purely file-existence-driven — a
+   * sidecar that was never created (e.g. no meshing options ever set) is
+   * simply omitted, never a hard error. The generated `.geo` script is
+   * deliberately NOT packaged — see `buildPreprocessZip`'s doc comment.
    */
   private async handleSavePreprocess(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
     const sourceName = uri.path.slice(uri.path.lastIndexOf("/") + 1);
@@ -1003,14 +1240,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           return undefined;
         }
       };
-      const [source, parts, edits, meshOptions, geo] = await Promise.all([
+      const [source, parts, annotations, edits, meshOptions] = await Promise.all([
         vscode.workspace.fs.readFile(uri),
         readOptional(sidecarUri(uri)),
+        readOptional(annotationsSidecarUri(uri)),
         readOptional(editsSidecarUri(uri)),
         readOptional(meshOptionsSidecarUri(uri)),
-        readOptional(geoScriptUri(uri)),
       ]);
-      const zipBytes = buildPreprocessZip({ sourceName, source, parts, edits, meshOptions, geo });
+      const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, edits, meshOptions });
       await vscode.workspace.fs.writeFile(saveUri, zipBytes);
       post({ type: "status", text: `Saved preprocess archive to ${saveUri.fsPath}` });
     } catch (err) {
@@ -1025,8 +1262,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * archive), writes the source bytes and whichever sidecars the archive
    * contains, and opens the result. Host-only, like `openFileDialog` — it
    * needs no already-open editor, so errors surface via `showErrorMessage`
-   * rather than a webview `post`. The `.geo` script is deliberately NOT
-   * restored verbatim from the archive; mesh options are re-written through
+   * rather than a webview `post`. `readPreprocessZip` itself already rejects
+   * a corrupted/tampered archive (checksum mismatch) or one requiring a
+   * newer reader before this method ever runs (roadmap "Archive integrity",
+   * closed). The `.geo` script is not restored verbatim (it's no longer
+   * even packaged); mesh options are re-written through
    * `writeMeshOptions`/`writeGeoScript` so the one-way-generated script stays
    * in lockstep with the (re-validated) options, same as every other write path.
    */
@@ -1051,9 +1291,28 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       });
       if (!destUri) return;
 
+      // The save dialog's filter is advisory, not enforced by every OS — a
+      // user can still type/pick a different extension (roadmap "Archive
+      // integrity", closed: restoring a STEP archive to `restored.stl` used
+      // to succeed silently). Reject a genuine pipeline mismatch rather than
+      // writing bytes the destination's own extension can't actually open;
+      // aliases of the same format (`.stp`/`.step`) still compare equal,
+      // since routeFile() maps both to the same FileRoute.format.
+      const sourceRoute = routeFile(contents.manifest.source);
+      const destRoute = routeFile(destUri.path);
+      if (!destRoute || !sourceRoute || destRoute.format !== sourceRoute.format) {
+        void vscode.window.showErrorMessage(
+          `Cannot restore "${contents.manifest.source}" (${sourceRoute?.format ?? "unrecognized"}) to "${destUri.path.slice(destUri.path.lastIndexOf("/") + 1)}" (${destRoute?.format ?? "unrecognized"}) — the destination file extension doesn't match the archive's source format.`
+        );
+        return;
+      }
+
       await vscode.workspace.fs.writeFile(destUri, contents.source);
       if (contents.parts !== undefined) {
         await writeParts(destUri, parsePartsJson(contents.parts));
+      }
+      if (contents.annotations !== undefined) {
+        await writeAnnotations(destUri, parseAnnotationsJson(contents.annotations));
       }
       if (contents.edits !== undefined) {
         const parsed = parseEditsJson(contents.edits);

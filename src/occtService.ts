@@ -5,30 +5,78 @@ import * as path from "path";
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, extractVertices, type SolidGroup, type EdgeLine, type PointEntity } from "./meshExtract";
-import { applyEditsBRep, scaleShapeForExport } from "./occtOperations";
+import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter } from "./occtOperations";
+import { readXcafAssembly, correlateAssemblyTree, type XcafAssemblyInfo } from "./xcafTree";
 import type { TreeNode } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import { type DisplayUnit, unitScaleFactor, igesUnitName } from "./lengthUnits";
 import { patchStepUnitDeclaration } from "./stepUnitPatch";
+import { TESSELLATION_PRESETS, type TessellationParams } from "./tessellationQuality";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ocPromise: Promise<any> | null = null;
 
-/** Returns the OpenCascade.js module, initializing it lazily on first call. */
+/**
+ * Returns the OpenCascade.js module, initializing it lazily on first call and
+ * memoizing the resolved promise as a module singleton. A REJECTED init is
+ * deliberately NOT memoized (the `.catch` below un-caches it before
+ * rethrowing) — without this, a single transient init failure (e.g. a
+ * momentary FS/allocation error) would poison every later `getOcct()` call
+ * in the same extension-host process forever, since `_ocPromise` would keep
+ * resolving to the same rejection. `fs.readFileSync` itself already fails
+ * this way "for free" (it throws synchronously before the assignment), so
+ * this only closes the gap for a rejection from `openCascadeFactory` itself.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getOcct(extensionPath: string): Promise<any> {
   if (!_ocPromise) {
     const wasmPath = path.join(extensionPath, "dist", "opencascade.wasm.wasm");
     const wasmBinary = fs.readFileSync(wasmPath);
-    _ocPromise = openCascadeFactory({ wasmBinary });
+    _ocPromise = openCascadeFactory({ wasmBinary }).catch((err) => {
+      _ocPromise = null;
+      throw err;
+    });
   }
   return _ocPromise;
 }
 
-/** Resets the singleton — used by tests and for future hot-reload support. */
+/** Resets the singleton — called by `wrapOcctFault` after a WASM abort, and
+ * from tests. */
 export function resetOcct(): void {
   _ocPromise = null;
+}
+
+/**
+ * Emscripten aborts (out-of-bounds access, unreachable, null function
+ * pointer, heap exhaustion) surface as opaque `RuntimeError`s — same
+ * vocabulary `gmshService.ts`'s `isWasmAbort` recognizes for the identical
+ * reason, kept as its own local copy here rather than shared, matching this
+ * codebase's convention of each kernel's fault handling staying self-
+ * contained in its own service file.
+ */
+function isOcctWasmAbort(message: string): boolean {
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+}
+
+/**
+ * Every OCCT-touching entry point in this codebase (this file's `loadBRep`/
+ * `exportBRep`, plus `massProperties.ts`, `modelDiffHost.ts`,
+ * `gmshPartsMap.ts`, and `entityFacts.ts`'s five functions) wraps its body's
+ * `catch` with this. A WASM abort mid-operation leaves the Emscripten
+ * instance permanently corrupt — every later call would keep throwing the
+ * same opaque "memory access out of bounds" — so this resets the singleton
+ * (`resetOcct()`) to force a fresh module on the next attempt, mirroring
+ * `gmshService.ts`'s `runMeshGenerate` exactly. A non-abort error (e.g. an
+ * "Unknown entity id" thrown deliberately inside a `try`) passes through
+ * unchanged — `isOcctWasmAbort`'s vocabulary never matches ordinary
+ * application errors.
+ */
+export function wrapOcctFault(err: unknown): Error {
+  const raw = ((err as Error)?.message ?? String(err)).trim();
+  if (!isOcctWasmAbort(raw)) return err instanceof Error ? err : new Error(raw);
+  resetOcct();
+  return new Error(`OCCT crashed (${raw || "WASM abort"}) — the kernel has been reset; try the operation again.`);
 }
 
 export interface BRepResult {
@@ -36,6 +84,202 @@ export interface BRepResult {
   edges: EdgeLine[];
   points: PointEntity[];
   tree: TreeNode;
+}
+
+/**
+ * A cached, still-live parse-plus-replay result for one document, held by
+ * `provider.ts` across successive `editsChanged` calls (roadmap "Base-shape
+ * caching and incremental replay", closed) — see `loadBRepCached` below for
+ * the reuse rules and `disposeBRepCache` for the required teardown.
+ * `baseShape`/`shape` are live OCCT heap handles, not JS data; every field
+ * here is opaque outside this file except for what `loadBRepCached`'s own
+ * bytes/ops comparisons need, which is why this type isn't exported as
+ * anything richer than "a token you hold and pass back".
+ */
+export interface BRepCacheEntry {
+  /** Reference to the resolved `oc` module this entry's handles belong to —
+   * an abort-triggered `resetOcct()` replaces `_ocPromise`, so a STALE
+   * entry's handles would point into a now-discarded WASM instance. Compared
+   * by identity (`===`), never touched otherwise. */
+  ocInstance: unknown;
+  bytes: Uint8Array;
+  format: Extract<CadFormat, "step" | "iges" | "brep">;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  baseShape: any;
+  baseCleanup: Array<{ delete(): void }>;
+  /** The XCAF assembly hierarchy read from the BASE shape's own file bytes
+   * (roadmap "XCAF read — assembly structure", closed) — `null` when
+   * unavailable (non-STEP source, no genuine assembly structure, or any
+   * parse failure). Cached alongside `baseShape` since it comes from an
+   * entirely separate, relatively expensive `STEPCAFControl_Reader` parse
+   * that doesn't need repeating on every edit — only re-CORRELATING it
+   * against the current (possibly edited) solid list is cheap enough to
+   * redo every call. See `src/xcafTree.ts`. */
+  assemblyTreeCache: XcafAssemblyInfo | null;
+  ops: EditOp[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  shape: any;
+  opsCleanup: Array<{ delete(): void }>;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** Frees every OCCT handle a {@link BRepCacheEntry} owns, base-shape handles
+ * last (reverse of creation order, same discipline every other cleanup array
+ * in this codebase follows). Callers must call this exactly once per entry
+ * whenever it's discarded WITHOUT being replaced by a call into
+ * `loadBRepCached` that already reused/superseded it — i.e. on document
+ * close, or after `loadBRepCached` itself throws (see its doc comment for
+ * why a thrown call does NOT already dispose its own stale state). */
+export function disposeBRepCache(cache: BRepCacheEntry): void {
+  for (let i = cache.opsCleanup.length - 1; i >= 0; i--) {
+    try { cache.opsCleanup[i].delete(); } catch { /* ignore */ }
+  }
+  for (let i = cache.baseCleanup.length - 1; i >= 0; i--) {
+    try { cache.baseCleanup[i].delete(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Caching counterpart of `loadBRep` below — for the interactive extension's
+ * per-edit hot path ONLY (`provider.ts`, one entry per open document). The
+ * MCP server stays on plain `loadBRep`, deliberately stateless per call (see
+ * CLAUDE.md's MCP section) — introducing cross-call state for a long-lived
+ * headless process serving arbitrary/many paths over its lifetime is a
+ * different, harder problem this item's own scope (`editsChanged`'s
+ * per-keystroke-in-an-open-editor cost) doesn't need to solve.
+ *
+ * Reuses the parsed base shape across calls whenever the source bytes+format
+ * are unchanged from `previous` — this is the dominant win, since parsing a
+ * STEP/IGES file into OCCT's internal B-rep representation is real
+ * geometric/topological work, independent of how many edit ops exist.
+ * Additionally reuses `previous`'s fully-replayed shape as a starting point
+ * when `ops` is a pure append of `previous.ops` (by far the common case for
+ * interactive editing: apply one op, then another) — the base-shape reuse
+ * alone already skips the parse, but this ALSO skips re-replaying every op
+ * before the new one(s). Any other relationship between `ops` and
+ * `previous.ops` (undo, `remove_edit_op` at a non-last index, redo down a
+ * different branch, a parametric-variable change re-resolving every op's
+ * numeric fields) falls back to a full replay of `ops` from the (still
+ * reused, if the bytes didn't change) base shape — deliberately NOT trying
+ * to diff/patch the op list itself, which would need the same unwind/rewind
+ * reasoning `entityRebind.ts`'s id-rebinding already had to solve once and
+ * is out of scope for a caching layer.
+ *
+ * On success, returns the tessellated result AND the new cache entry the
+ * caller must retain and pass back in as `previous` on the next call. A
+ * discarded-and-superseded `previous` (bytes/format changed, or its ops
+ * turned out not to be reusable as a base for the new replay) is disposed
+ * INTERNALLY before this function returns — the caller only ever needs to
+ * dispose the entry it currently holds, never an intermediate one.
+ *
+ * **Reused fields are shared by reference, not copied** — when base and/or
+ * op-replay reuse happens, the returned entry's `baseShape`/`baseCleanup`/
+ * `shape`/`opsCleanup` are the EXACT SAME objects/arrays `previous` held
+ * (verified live, not just by type: the confirmed-working call sequence
+ * `loadBRepCached(...) → loadBRepCached(..., c1) → disposeBRepCache(c1)`
+ * crashes OCCT with "Cannot pass deleted object as a pointer" — c1 and its
+ * successor alias the SAME handles, so disposing the "old" one frees the
+ * "new" one's still-live state too). Never call `disposeBRepCache` on
+ * anything except the single, latest entry you are CURRENTLY holding — an
+ * intermediate result you've already replaced with a newer call's return
+ * value must simply be dropped (reassigned over), never disposed.
+ *
+ * On failure (including a WASM abort — `wrapOcctFault` still fires and
+ * resets the singleton exactly as `loadBRep` does), this function
+ * deliberately does NOT attempt to `.delete()` any handle it touched during
+ * this call: an abort can leave the WASM heap itself in an undefined state,
+ * so calling back into it to free handles is not obviously safe, unlike the
+ * "just discarding a stale-but-healthy cache" case above. The caller must
+ * drop its reference to whatever cache entry it was holding (never re-pass
+ * it as `previous`) on any error from this function — the orphaned OCCT
+ * module (already unreachable via `getOcct()` once `resetOcct()` ran) then
+ * becomes eligible for normal JS garbage collection once nothing, including
+ * this discarded cache entry, still references it.
+ */
+export async function loadBRepCached(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: Extract<CadFormat, "step" | "iges" | "brep">,
+  ops: EditOp[],
+  previous: BRepCacheEntry | undefined,
+  quality: TessellationParams = TESSELLATION_PRESETS.standard
+): Promise<{ result: BRepResult; cache: BRepCacheEntry }> {
+  const oc = await getOcct(extensionPath);
+
+  const baseReusable =
+    previous !== undefined &&
+    previous.ocInstance === oc &&
+    previous.format === format &&
+    bytesEqual(previous.bytes, bytes);
+
+  if (previous && !baseReusable) disposeBRepCache(previous);
+
+  let baseShape: unknown;
+  let baseCleanup: Array<{ delete(): void }>;
+  let assemblyTreeCache: XcafAssemblyInfo | null;
+  if (baseReusable && previous) {
+    baseShape = previous.baseShape;
+    baseCleanup = previous.baseCleanup;
+    assemblyTreeCache = previous.assemblyTreeCache;
+  } else {
+    baseCleanup = [];
+    const tmpName = `/in.${format}`;
+    oc.FS.writeFile(tmpName, bytes);
+    try {
+      baseShape = readShape(oc, tmpName, format, baseCleanup);
+      // Independent second parse, only for STEP — see xcafTree.ts's doc
+      // comment for why this can't reuse `baseShape`/the plain reader's
+      // shape. Best-effort: any failure degrades to `null` (flat tree),
+      // never blocks the primary read.
+      assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
+    } catch (err) {
+      throw wrapOcctFault(err);
+    } finally {
+      try { oc.FS.unlink(tmpName); } catch { /* ignore */ }
+    }
+  }
+
+  const appendReusable =
+    baseReusable &&
+    previous !== undefined &&
+    ops.length >= previous.ops.length &&
+    previous.ops.every((op, i) => JSON.stringify(op) === JSON.stringify(ops[i]));
+
+  try {
+    let opsCleanup: Array<{ delete(): void }>;
+    let shape: unknown;
+    if (appendReusable && previous) {
+      opsCleanup = previous.opsCleanup;
+      const suffix = ops.slice(previous.ops.length);
+      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup);
+    } else {
+      // Base reused but the replay isn't (or there was no previous entry at
+      // all) — free only the now-superseded op-replay handles; the base
+      // shape/cleanup (still referenced by `baseShape`/`baseCleanup` above)
+      // is untouched either way.
+      if (baseReusable && previous) {
+        for (let i = previous.opsCleanup.length - 1; i >= 0; i--) {
+          try { previous.opsCleanup[i].delete(); } catch { /* ignore */ }
+        }
+      }
+      opsCleanup = [];
+      shape = applyEditsBRep(oc, baseShape, ops, opsCleanup);
+    }
+
+    const groups = tessellateByGroup(oc, shape, quality);
+    const edges = extractEdges(oc, shape);
+    const points = extractVertices(oc, shape);
+    const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops, shape, opsCleanup };
+    return { result: { groups, edges, points, tree }, cache };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  }
 }
 
 /**
@@ -48,7 +292,8 @@ export async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
   format: Extract<CadFormat, "step" | "iges" | "brep">,
-  ops: EditOp[] = []
+  ops: EditOp[] = [],
+  quality: TessellationParams = TESSELLATION_PRESETS.standard
 ): Promise<BRepResult> {
   const oc = await getOcct(extensionPath);
 
@@ -58,12 +303,15 @@ export async function loadBRep(
   const cleanup: Array<{ delete(): void }> = [];
   try {
     const baseShape = readShape(oc, tmpName, format, cleanup);
+    const assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
     const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
-    const groups = tessellateByGroup(oc, shape);
+    const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
-    const tree = buildTree(format, groups);
+    const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
     return { groups, edges, points, tree };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }
@@ -72,7 +320,45 @@ export async function loadBRep(
   }
 }
 
-function buildTree(format: string, groups: SolidGroup[]): TreeNode {
+/**
+ * Builds the Components tree — a genuine nested assembly hierarchy when
+ * `assemblyTreeCache` is available AND cleanly correlates against the
+ * CURRENT (possibly edited) solid list (roadmap "XCAF read — assembly
+ * structure", closed), falling back to the original flat per-solid list
+ * otherwise. The flat fallback is deliberately the SAME shape this function
+ * always returned before this feature — a document with no XCAF structure,
+ * a non-STEP source, or a topology-changing edit the cached XCAF read can't
+ * reflect all degrade to it with no visible regression.
+ *
+ * Known, accepted limitation: a synthetic group-node id (`xcaf-asm-N`, an
+ * "Assembly N"/"Component N" header row) doesn't correspond to any real
+ * `groupId` in the scene, so clicking it or its eye-toggle is inert (no
+ * highlight, no hide) — only LEAF rows, which always carry a real `solid-N`
+ * id, behave identically to the flat tree's rows.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildTree(oc: any, format: string, groups: SolidGroup[], shape: unknown, assemblyTreeCache: XcafAssemblyInfo | null): TreeNode {
+  if (assemblyTreeCache) {
+    try {
+      const cleanup: Array<{ delete(): void }> = [];
+      const currentSolids = collectSolids(oc, shape, cleanup).map(({ id, solid }) => {
+        const props = new oc.GProp_GProps_1();
+        cleanup.push(props);
+        oc.BRepGProp.VolumeProperties_1(solid, props, false, false, false);
+        return { id, centre: bboxCenter(oc, solid, cleanup), volume: props.Mass() };
+      });
+      const correlated = correlateAssemblyTree(assemblyTreeCache, currentSolids);
+      for (let i = cleanup.length - 1; i >= 0; i--) {
+        try { cleanup[i].delete(); } catch { /* ignore */ }
+      }
+      if (correlated?.children) {
+        const withFaceCounts = correlated.children.map(attachFaceCounts.bind(null, groups));
+        return { id: "root", label: format.toUpperCase(), children: withFaceCounts };
+      }
+    } catch {
+      /* falls through to the flat tree below */
+    }
+  }
   return {
     id: "root",
     label: format.toUpperCase(),
@@ -82,6 +368,20 @@ function buildTree(format: string, groups: SolidGroup[]): TreeNode {
       faceCount: g.faceCount,
     })),
   };
+}
+
+/** Copies a matched leaf's `faceCount` (and its original flat label, e.g.
+ * `"Solid 3"` — reused as-is rather than the synthetic "Component N"
+ * assembly-tree placeholder, since it's already the ONLY per-solid label
+ * this codebase has ever had, and stays more informative than a meaningless
+ * renumbering) from the flat `groups` list onto an assembly-tree node,
+ * recursing into group (`children`) nodes unchanged. */
+function attachFaceCounts(groups: SolidGroup[], node: TreeNode): TreeNode {
+  if (node.children) {
+    return { ...node, children: node.children.map(attachFaceCounts.bind(null, groups)) };
+  }
+  const match = groups.find((g) => g.id === node.id);
+  return match ? { ...node, label: match.label, faceCount: match.faceCount } : node;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -211,6 +511,8 @@ export async function exportBRep(
       return new TextEncoder().encode(patchStepUnitDeclaration(text, unit));
     }
     return outBytes;
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }

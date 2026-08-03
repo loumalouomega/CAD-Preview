@@ -38,6 +38,7 @@ doc/**
 icons/**
 scripts/screenshots/**
 scripts/mcp-smoke/**
+scripts/perf/**
 **/*.ts
 **/*.map
 esbuild.mjs
