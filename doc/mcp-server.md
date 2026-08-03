@@ -25,6 +25,14 @@ This works in a repo checkout, CI, or an agent sandbox that can run the command 
 
 These two tools call the hosted [step.parts](https://www.step.parts) REST API (`api.step.parts`) — the **only** external network dependency anywhere in this extension/server; every other tool is fully offline. No API key is required. Both tools are opt-in by construction (nothing calls this API except an agent explicitly invoking one of these two tools) and degrade gracefully: a network/DNS failure or non-2xx response returns `{supported: false, warnings: [...]}` rather than throwing, and per step.parts' own error semantics, that failure is **inconclusive** — never report a part as "unavailable" unless the API was reachable and genuinely returned no candidates.
 
+## Fault isolation: OCCT/Gmsh/meshio++ run in a forked child process
+
+Every WASM-touching tool call routes through a child process (`dist/kernel-worker.js`, spawned lazily on first use and reused across calls) rather than running inside `dist/mcp-server.js` itself. This is transparent to a normal client — same tools, same responses, same `dist/mcp-server.js` entry point to register — but changes what happens when something goes wrong:
+
+- **A hung or crashed WASM call no longer wedges the whole server.** If the kernel-worker process dies (killed, crashed, or a future watchdog timeout) while a tool call is in flight, that call fails with a clear error (`"kernel worker exited unexpectedly..."`) instead of hanging forever, and the **next** tool call transparently spawns a fresh child and succeeds normally — the server process itself is never affected.
+- **Nothing about the tool surface changed.** All 18 tools, their schemas, and their response shapes are identical to before this existed.
+- If you ever need to diagnose kernel-worker behavior directly, its stderr output is forwarded through the MCP server's own stderr, prefixed `[kernel-worker]`.
+
 ## Registering with an MCP client
 
 With Claude Code:
@@ -167,10 +175,10 @@ Every tool reports facts, not verdicts — rendering pass/fail/need-more-info is
 ## Troubleshooting
 
 - **The client reports protocol/parse errors** — something wrote to stdout. stdout is the JSON-RPC channel; the server rebinds `console.log/info/warn` to stderr before any WASM init, so a regression here means new code printed to `process.stdout` directly. `npm run mcp:smoke` catches this.
-- **`ENOENT … opencascade.wasm.wasm`** — `dist/` isn't populated; run `npm run build`, or point `CAD_PREVIEW_ROOT` at a directory whose `dist/` contains both WASM binaries.
-- **First tool call is slow** — the WASM kernels (~110 MB combined) initialize lazily on first use and are then memoized for the life of the process.
+- **`ENOENT … opencascade.wasm.wasm`** — `dist/` isn't populated; run `npm run build`, or point `CAD_PREVIEW_ROOT` at a directory whose `dist/` also contains `kernel-worker.js` (built alongside `mcp-server.js`) and both WASM binaries.
+- **First tool call is slow** — the WASM kernels (~110 MB combined) initialize lazily on first use, inside the kernel-worker child process, and are then memoized for the life of THAT process; the first call after a crash/kill pays this cost again (a fresh child starts cold).
 
 ## Testing
 
-- `npm test` covers the tool handlers and sidecar store with an injected fake pipeline (no WASM).
+- `npm test` covers the tool handlers and sidecar store with an injected fake pipeline (no WASM), plus the kernel-worker IPC plumbing itself (`kernelIpc.test.ts`'s marshal/unmarshal round trips, `kernelClient.test.ts`'s queue/cancel/respawn logic against a mocked `child_process.fork()` — no real child process or WASM needed for either).
 - `npm run mcp:smoke` runs the real end-to-end scenario over actual stdio JSON-RPC against `examples/STP/bull.stp` (build → load → edit → inspect/ measure/measure_exact → check_interference (a hand-built fixture of 4 boxes with known analytical overlap volumes, plus Part-name operand resolution) → compare_models (numeric diff, then `includeSnapshots`) → mesh → a hex-dominant generate/export (msh succeeds, Kratos MDPA rejects with a specific error) → export `.msh` + `.geo_unrolled`/`.xao` + `.brep` → render_snapshot → search_standard_parts/download_standard_part against the real step.parts API → `run_parametric_script` (a real bolt-circle, trig exprs over the loop index, verified against live OCCT geometry) → `save_preprocess` → `load_preprocess`), asserting the source file stays byte-identical and that the preprocess archive round-trips the source + edits sidecar into a fresh copy. `render_snapshot`'s assertions tolerate Chromium being absent in the smoke environment (see "Prerequisites for render_snapshot" above) — when it's installed, the test also checks the 4 returned images are real PNGs and that the raw JSON-RPC response carries 4 image content blocks. `compare_models`' `includeSnapshots` assertions share that same tolerance (same underlying engine): when Chromium is available, it checks a 2-B-rep-side comparison returns exactly 8 labelled (`A-`/`B-`-prefixed), non-empty images and 8 raw image content blocks; when it isn't, it checks the call still succeeds with the numeric diff intact and a "skipped" warning instead. Similarly, search_standard_parts/download_standard_part tolerate the step.parts API being unreachable — when it is reachable, the test verifies a real sha256 checksum match on the downloaded file.

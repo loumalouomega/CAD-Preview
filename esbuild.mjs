@@ -107,6 +107,32 @@ const mcpConfig = {
   logLevel: "info",
 };
 
+/** Kernel-worker bundle: the child-process entry for the OCCT/Gmsh/meshio++
+ *  fault-isolation work (roadmap "OCCT in a forked child process", Phase
+ *  0+1 — see CLAUDE.md). Same Node/CJS recipe as mcpConfig (it bundles the
+ *  identical pipeline modules), forked by `kernelClient.ts` rather than
+ *  invoked as its own top-level process. Ships to `dist/` so `copyWasm()`'s
+ *  binaries sit beside it too. */
+const kernelConfig = {
+  entryPoints: ["src/kernelWorker.ts"],
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  target: "node18",
+  outfile: "dist/kernel-worker.js",
+  // See the matching comment in extensionConfig/mcpConfig above.
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "playwright"],
+  plugins: [wasmPathPlugin],
+  banner: {
+    js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
+  },
+  define: {
+    "import.meta.url": "import_meta_url",
+  },
+  sourcemap: true,
+  logLevel: "info",
+};
+
 /** Webview bundle: browser/IIFE, Three.js bundled in.  No OCCT here. */
 const webviewConfig = {
   entryPoints: ["src/webview/main.ts"],
@@ -137,14 +163,16 @@ function copyWasm() {
 if (watch) {
   const ctxExt = await esbuild.context(extensionConfig);
   const ctxMcp = await esbuild.context(mcpConfig);
+  const ctxKernel = await esbuild.context(kernelConfig);
   const ctxWv = await esbuild.context(webviewConfig);
-  await Promise.all([ctxExt.watch(), ctxMcp.watch(), ctxWv.watch()]);
+  await Promise.all([ctxExt.watch(), ctxMcp.watch(), ctxKernel.watch(), ctxWv.watch()]);
   copyWasm();
   console.log("esbuild: watching…");
 } else {
   await Promise.all([
     esbuild.build(extensionConfig),
     esbuild.build(mcpConfig),
+    esbuild.build(kernelConfig),
     esbuild.build(webviewConfig),
   ]);
   copyWasm();

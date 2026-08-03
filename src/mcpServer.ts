@@ -23,14 +23,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { loadBRep, exportBRep } from "./occtService";
-import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
-import { computeMassProperties } from "./massProperties";
-import { getEntityFacts, measureEntities, measureExact, checkInterference, rebindPartsAcrossOps } from "./entityFacts";
-import { renderSnapshot, isRenderAvailable } from "./renderService";
-import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
-import { compareModels } from "./modelDiffHost";
-import { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import { createKernelClient } from "./kernelClient";
 import {
   describeCapabilities,
   loadModel,
@@ -66,31 +59,20 @@ import type { MeshOptions } from "./meshOptions";
 // layouts.
 const extensionPath = process.env.CAD_PREVIEW_ROOT ?? path.join(__dirname, "..");
 
+// Every WASM-touching pipeline call now routes through a forked child
+// process (roadmap "OCCT in a forked child process", Phase 0+1 — see
+// CLAUDE.md) rather than calling occtService.ts/gmshService.ts/etc.
+// directly: `createKernelClient` returns an object satisfying the exact same
+// `Pipeline` shape `mcpTools.ts` already consumes, so `mcpTools.ts` itself
+// needed zero changes. This gives the server two things it never had
+// in-process — a hung/crashed WASM call can be killed without wedging the
+// whole server, and a genuinely corrupted WASM heap (not just a cleanly
+// thrown, regex-detected abort) can no longer poison a later, unrelated
+// call, since the next call after a dead child transparently respawns a
+// fresh one.
 const ctx: ToolContext = {
   extensionPath,
-  pipeline: {
-    loadBRep,
-    exportBRep,
-    generateMesh,
-    exportMeshFormat,
-    exportMdpa,
-    exportGeoUnrolled,
-    computeMassProperties,
-    getEntityFacts,
-    measureEntities,
-    measureExact,
-    checkInterference,
-    rebindPartsAcrossOps,
-    renderSnapshot,
-    isRenderAvailable,
-    searchStandardParts,
-    downloadStandardPart,
-    compareModels,
-    convertToStlBoundary,
-    convertToStlBoundaryWithRegions,
-    exportViaMeshio,
-    readMeshioMetadata,
-  },
+  pipeline: createKernelClient(extensionPath),
 };
 
 const server = new McpServer({ name: "cad-preview", version: "1.0.0" });
