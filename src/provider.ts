@@ -3,14 +3,14 @@ import { routeFile } from "./fileRouter";
 import { loadBRep, exportBRep } from "./occtService";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
-import { convertToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
+import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
-import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
 import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
@@ -202,7 +202,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const url = webviewPanel.webview.asWebviewUri(document.uri).toString();
         post({ type: "loadUrl", url, format: route.format });
       } else if (route.strategy === "meshio") {
-        void this.handleMeshio(document.uri, route.format, post);
+        // handleMeshio owns the parts round trip for this route (it may
+        // auto-create Parts from region data) — keep currentParts in sync so
+        // an immediate Save (before any user edit) doesn't flush a stale `[]`
+        // over what was just written; see its doc comment.
+        void this.handleMeshio(document.uri, route.format, post).then((parts) => {
+          currentParts = parts;
+        });
       } else {
         void this.handleBRep(
           document.uri,
@@ -214,27 +220,31 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     };
 
     /**
-     * Best-effort entity-id rebinding after a purely-appended, topology-
-     * changing edit — closes the "entity-id drift" gap CLAUDE.md documents
-     * (see `entityFacts.ts`'s `rebindPartsAcrossOps` for the algorithm).
-     * `newOps` must be `previousOps` plus one or more appended ops (a strict
-     * length+prefix check) — undo/redo/`remove(index)`/reorder/Clear all
-     * naturally fail this check and are left alone, same as today (no
-     * regression, just no improvement for those cases; a correctness-first
-     * MVP scope, not an oversight). Persists the parts sidecar immediately
-     * (not debounced — this is host-initiated and correctness-critical,
-     * unlike the user-typed `partsChanged` autosave) and posts a fresh
-     * `"parts"` message so the webview's `PartsModel.load()` (silent, no
-     * `onChange` echo — same contract `"edits"`'s hydration already relies
-     * on) picks up the new ids and `refreshColors()` recolours, exactly like
-     * the initial `ready` hydration's own `"parts"` message.
+     * Best-effort entity-id rebinding after ANY op-stack change — append,
+     * `remove(index)`, undo, redo, or Clear (roadmap "Extend entity-id
+     * rebinding to `remove_edit_op` (and undo/redo)", closed; previously
+     * append-only — see `entityFacts.ts`'s `rebindPartsAcrossOps` for the
+     * general unwind/rewind algorithm this now delegates the whole
+     * `previousOps -> newOps` diff to, rather than pre-filtering to an
+     * appended suffix here). No cheap "does the diff even contain a
+     * topology-changing op" pre-check is needed here before calling in: the
+     * OCCT WASM singleton is memoized (a repeat `getOcct()` call is
+     * essentially free), and `rebindPartsAcrossOps` itself bails before any
+     * real replay work when the two op lists are identical or a given step
+     * turns out non-topology-changing — this wrapper only needs to skip the
+     * obviously-pointless cases (no route, no Parts, or truly no change at
+     * all). Persists the parts sidecar immediately (not debounced — this is
+     * host-initiated and correctness-critical, unlike the user-typed
+     * `partsChanged` autosave) and posts a fresh `"parts"` message so the
+     * webview's `PartsModel.load()` (silent, no `onChange` echo — same
+     * contract `"edits"`'s hydration already relies on) picks up the new ids
+     * and `refreshColors()` recolours, exactly like the initial `ready`
+     * hydration's own `"parts"` message.
      */
-    const rebindPartsOnAppend = async (previousOps: EditOp[], newOps: EditOp[]): Promise<void> => {
+    const rebindPartsOnChange = async (previousOps: EditOp[], newOps: EditOp[]): Promise<void> => {
       if (!route || route.strategy !== "occt") return;
-      if (newOps.length <= previousOps.length) return;
-      if (JSON.stringify(newOps.slice(0, previousOps.length)) !== JSON.stringify(previousOps)) return;
-      const appended = newOps.slice(previousOps.length);
-      if (currentParts.length === 0 || !appended.some((op) => TOPOLOGY_CHANGING_OPS.has(op.op))) return;
+      if (currentParts.length === 0) return;
+      if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
         const result = await rebindPartsAcrossOps(
@@ -242,7 +252,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           bytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           previousOps,
-          appended,
+          newOps,
           currentParts
         );
         if (result.parts === currentParts) return; // nothing topology-changing resolved, or nothing to remap
@@ -290,7 +300,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         currentVariables = parsed.variables;
         loadModel();
         post({ type: "edits", ops: currentEdits, variables: currentVariables });
-        void this.sendParts(document.uri, post);
+        // The meshio route's own handleMeshio() (above) owns the parts round
+        // trip for that route instead (it may need to auto-create Parts from
+        // region data first) — calling both would double-post "parts".
+        if (!route || route.strategy !== "meshio") {
+          void this.sendParts(document.uri, post).then((parts) => {
+            currentParts = parts;
+          });
+        }
         void this.sendMeshOptions(document.uri, post);
         this.sendViewerDefaults(post);
         return;
@@ -326,7 +343,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // edits are applied in the webview itself, which already updated the view.
         if (route && route.strategy === "occt") {
           loadModel();
-          void rebindPartsOnAppend(previousOps, currentEdits);
+          void rebindPartsOnChange(previousOps, currentEdits);
         }
         return;
       }
@@ -578,6 +595,21 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         }
         return;
       }
+
+      if (msg.type === "colorFieldRequest") {
+        try {
+          if (!route || route.strategy !== "meshio") {
+            throw new Error("Colour-by-field is only available for meshio++-imported sources (VTK/MED/CGNS/Exodus/XDMF/MDPA).");
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const result = await readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
+          if (!result) throw new Error(`Field "${msg.field}" not found, not a plain scalar, or the boundary isn't pure triangles.`);
+          post({ type: "colorFieldResult", requestId: msg.requestId, values: encodeBuffer(result.values), min: result.min, max: result.max });
+        } catch (err) {
+          post({ type: "colorFieldError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
     });
 
     webviewPanel.webview.html = this.getHtml(webviewPanel.webview);
@@ -623,19 +655,50 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
   /**
    * meshio++-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA) — converts the raw
-   * file to an STL boundary surface (`convertToStlBoundary`) and posts it as
-   * `loadMeshBytes`, letting the webview treat it exactly like a native
-   * `.stl` open. See `src/meshioService.ts` for why this funnel-through-STL
-   * design was chosen over host-side tessellation into `EncodedMesh` groups.
+   * file to an STL boundary surface and posts it as `loadMeshBytes`, letting
+   * the webview treat it exactly like a native `.stl` open. See
+   * `src/meshioService.ts` for why this funnel-through-STL design was chosen
+   * over host-side tessellation into `EncodedMesh` groups.
+   *
+   * Also owns the parts round trip for this route (unlike every other route,
+   * which gets it from the generic `sendParts` call in the `"ready"`
+   * handler — see that call site): `convertToStlBoundaryWithRegions` may
+   * correlate the file's own regions to the boundary triangles, and when the
+   * parts sidecar is still empty (a fresh import, never one that already has
+   * user-authored Parts — same "never clobber existing Parts" rule the
+   * B-rep entity-rebinding feature already established), auto-creates one
+   * Part per region via `buildPartsFromMeshioRegions` and persists it
+   * immediately, so a reopen doesn't need to recompute the correlation. The
+   * per-triangle `regionAssignment` is sent on EVERY open where correlation
+   * succeeds (not just the one that auto-created Parts) — the webview needs
+   * it every time to reproduce the identical region-aware facet split those
+   * `node-0/face-K` ids were computed against, see `protocol.ts`'s doc
+   * comment. Returns the parts actually in effect so the caller can keep
+   * `currentParts` in sync.
    */
-  private async handleMeshio(uri: vscode.Uri, format: CadFormat, post: (msg: HostToWebview) => void): Promise<void> {
+  private async handleMeshio(uri: vscode.Uri, format: CadFormat, post: (msg: HostToWebview) => void): Promise<Part[]> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()}…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
-      const [stlBytes, metadata] = await Promise.all([
-        convertToStlBoundary(bytes, format),
+      const [boundary, metadata, existingParts] = await Promise.all([
+        convertToStlBoundaryWithRegions(bytes, format),
         readMeshioMetadata(bytes, format),
+        readParts(uri),
       ]);
+      let parts = existingParts;
+      if (boundary.regions && existingParts.length === 0) {
+        const built = buildPartsFromMeshioRegions(boundary.stlBytes, boundary.regions);
+        if (built.length > 0) {
+          parts = built;
+          try {
+            await writeParts(uri, parts);
+          } catch {
+            // Best-effort persist — the webview still gets these Parts for
+            // this session even if the sidecar write failed; a later user
+            // edit's own autosave will retry.
+          }
+        }
+      }
       const hasMetadata =
         metadata.regions.length > 0 ||
         metadata.pointDataNames.length > 0 ||
@@ -644,21 +707,30 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({
         type: "loadMeshBytes",
         sourceFormat: format,
-        dataBase64: Buffer.from(stlBytes).toString("base64"),
+        dataBase64: Buffer.from(boundary.stlBytes).toString("base64"),
         meshioMetadata: hasMetadata ? metadata : undefined,
+        regionAssignment: boundary.regions
+          ? { regionNames: boundary.regions.regionNames, triangleRegionIndex: encodeBuffer(boundary.regions.triangleRegion) }
+          : undefined,
       });
+      post({ type: "parts", parts });
+      return parts;
     } catch (err) {
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
+      return [];
     }
   }
 
-  /** Loads the parts sidecar (if any) and sends it to the webview. */
-  private async sendParts(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
+  /** Loads the parts sidecar (if any), sends it to the webview, and returns
+   * it so the caller can keep `currentParts` in sync (see its call site). */
+  private async sendParts(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<Part[]> {
     try {
       const parts = await readParts(uri);
       post({ type: "parts", parts });
+      return parts;
     } catch {
       post({ type: "parts", parts: [] });
+      return [];
     }
   }
 
@@ -698,7 +770,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * **Generate** call site always passes `"mm"` explicitly, since its overlay
    * is display-only with no exported file whose numbers need to mean
    * anything externally. Only the FE Mesh panel's **Export** flow passes a
-   * real unit: B-rep sources get it via `exportBRep`'s existing `scaleFactor`
+   * real unit: B-rep sources get it via `exportBRep`'s existing `unit`
    * param (the same geometric-scale mechanism the model Export command
    * already uses — see `UNIT_CONVERTIBLE_FORMATS`), and STL sources get it
    * via the new `scaleStlBytes` (`stlParser.ts`). The caller is responsible
@@ -714,22 +786,29 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     stl: string | undefined,
     unit: DisplayUnit = "mm"
   ): Promise<MeshGenerationInput | undefined> {
-    const factor = unitScaleFactor(unit);
     if (route && route.strategy === "occt") {
       const sourceBytes = await vscode.workspace.fs.readFile(uri);
+      // labelStepUnit: false — Gmsh's own STEP importer reinterprets a
+      // correctly-labeled header and would undo this scale entirely (verified
+      // against the live WASM); this intermediate file is meshing input only,
+      // never shown to the user, so it stays at the OCCT-native "mm" label
+      // while its geometry is still genuinely scaled. See exportBRep's doc
+      // comment for the full write-up.
       const stepBytes = await exportBRep(
         this.context.extensionPath,
         sourceBytes,
         route.format as Extract<CadFormat, "step" | "iges" | "brep">,
         "step",
         ops,
-        factor
+        unit,
+        false
       );
       return { kind: "brep", stepBytes };
     }
 
     if (!stl) return undefined;
     const stlBytes = Buffer.from(stl, "base64");
+    const factor = unitScaleFactor(unit);
     return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
   }
 
@@ -786,9 +865,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     if (!picked) return;
 
     const targetFormat = picked.format;
-    // STEP/IGES can't honestly represent a converted unit in this OCCT build
-    // (see UNIT_CONVERTIBLE_FORMATS' doc comment) — skip the prompt entirely
-    // rather than offering a choice that silently falls back to mm.
+    // Every B-rep/mesh target this codebase can export to can now honestly
+    // represent a converted unit — see UNIT_CONVERTIBLE_FORMATS' doc comment.
     const unit = UNIT_CONVERTIBLE_FORMATS.has(targetFormat) ? await this.pickExportUnit() : "mm";
 
     await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async (_saveUri) => {
@@ -800,7 +878,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
           ops,
-          unitScaleFactor(unit)
+          unit
         );
       }
 

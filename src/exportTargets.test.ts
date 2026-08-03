@@ -44,9 +44,9 @@ describe("exportTargetsFor", () => {
 });
 
 describe("UNIT_CONVERTIBLE_FORMATS", () => {
-  it("excludes STEP and IGES — their header unit can't be honestly set on write", () => {
-    expect(UNIT_CONVERTIBLE_FORMATS.has("step")).toBe(false);
-    expect(UNIT_CONVERTIBLE_FORMATS.has("iges")).toBe(false);
+  it("includes STEP and IGES — both now have a verified way to set their header unit on write", () => {
+    expect(UNIT_CONVERTIBLE_FORMATS.has("step")).toBe(true);
+    expect(UNIT_CONVERTIBLE_FORMATS.has("iges")).toBe(true);
   });
 
   it("includes brep and every mesh export target", () => {

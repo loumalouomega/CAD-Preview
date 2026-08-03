@@ -57,7 +57,16 @@ const extensionConfig = {
   // if ever bundled. `meshioService.ts` forces the sequential variant, so
   // that risk is avoided regardless, but staying external is still required
   // for the ESM/CJS reason alone.
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm"],
+  // "playwright" joined this list once modelComparePanel.ts's visual-diff
+  // feature (roadmap item, closed) started importing src/renderService.ts
+  // directly — previously only mcpServer.ts (a separate bundle, see
+  // mcpConfig below) ever reached it. Same reason as mcpConfig's own
+  // "playwright" entry: it's a devDependency, dynamically `import()`ed by
+  // renderService.ts, and must resolve via real node_modules at runtime (or
+  // fail gracefully, caught there) rather than getting inlined — inlining it
+  // is what broke the build in the first place (playwright-core's own
+  // optional chromium-bidi sub-dependency isn't resolvable by esbuild).
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "playwright"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,

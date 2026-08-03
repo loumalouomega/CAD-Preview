@@ -52,3 +52,29 @@ export function displayUnitFromUnitName(name: string | undefined): DisplayUnit |
     default: return undefined;
   }
 }
+
+/**
+ * The unit-name string `IGESControl_Writer`'s alternate, unit-aware
+ * constructor (`IGESControl_Writer_2(unitName, modeCreation)`) expects —
+ * verified against the live OCCT WASM (unlike the CLAUDE.md-documented
+ * original probe, which hit a false negative caused by this codebase's own
+ * MEMFS path-length limit, not a real writer limitation): passing each of
+ * these five strings and reading the result back through this codebase's own
+ * `detectIgesLengthUnit` recovers the exact matching flag (`"MM"`→2,
+ * `"CM"`→10, `"M"`→6, `"FT"`→4, `"IN"`→1, i.e. `IGES_UNIT_FLAG_NAMES` in
+ * `igesUnits.ts`), and re-reading the written file through `readShape`
+ * recovers the original model's bounding box exactly — this writer overload
+ * scales the shape's geometry internally to match the requested unit, so the
+ * shape passed to it must stay at the native cascade (mm) scale, unlike
+ * `exportBRep`'s STEP path (which pre-scales via `scaleShapeForExport`
+ * before writing, since the STEP writer has no equivalent unit awareness).
+ */
+export function igesUnitName(unit: DisplayUnit): string {
+  switch (unit) {
+    case "mm": return "MM";
+    case "cm": return "CM";
+    case "m": return "M";
+    case "in": return "IN";
+    case "ft": return "FT";
+  }
+}

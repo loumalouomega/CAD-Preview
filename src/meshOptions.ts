@@ -171,7 +171,7 @@ export function applyStlPartSizeOverride(options: MeshOptions, parts: Part[]): M
  * CLAUDE.md's meshing-unit-conversion section). `factor` is
  * `unitScaleFactor(unit)` from `lengthUnits.ts` (mm → target-unit); it must
  * be the SAME factor used to scale the geometry the caller feeds Gmsh
- * (`exportBRep`'s `scaleFactor` param for B-rep sources, `scaleStlBytes` for
+ * (`exportBRep`'s `unit` param for B-rep sources, `scaleStlBytes` for
  * STL ones) — a size target left in raw mm while the geometry is now
  * inch-scaled would apply as a wildly wrong relative density (the exact bug
  * this feature closes). Never persisted — the caller must not write the

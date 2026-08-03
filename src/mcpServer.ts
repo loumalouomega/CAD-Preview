@@ -26,11 +26,11 @@ import { z } from "zod";
 import { loadBRep, exportBRep } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
 import { computeMassProperties } from "./massProperties";
-import { getEntityFacts, measureEntities, measureExact, rebindPartsAcrossOps } from "./entityFacts";
+import { getEntityFacts, measureEntities, measureExact, checkInterference, rebindPartsAcrossOps } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
-import { convertToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import {
   describeCapabilities,
   loadModel,
@@ -38,6 +38,7 @@ import {
   inspectEntity,
   measureTool,
   measureExactTool,
+  checkInterferenceTool,
   renderSnapshotTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
@@ -78,6 +79,7 @@ const ctx: ToolContext = {
     getEntityFacts,
     measureEntities,
     measureExact,
+    checkInterference,
     rebindPartsAcrossOps,
     renderSnapshot,
     isRenderAvailable,
@@ -85,6 +87,7 @@ const ctx: ToolContext = {
     downloadStandardPart,
     compareModels,
     convertToStlBoundary,
+    convertToStlBoundaryWithRegions,
     exportViaMeshio,
     readMeshioMetadata,
   },
@@ -249,6 +252,22 @@ server.registerTool(
 );
 
 server.registerTool(
+  "check_interference",
+  {
+    description:
+      "Interference / clash detection: reports the overlap volume (if any) between two operands via a real BRepAlgoAPI_Common_3 intersection — read-only, never mutates the model. Each operand is EITHER a list of solid-N ids (a/b, multiple ids are compounded together, same as the boolean edit op's own a/b) OR a Part name (partA/partB, resolved to that Part's own assigned volumes) — give exactly one of the two per operand. hasOverlap is true only for a genuine, non-degenerate volume overlap (two solids merely touching at a face/edge/point report hasOverlap:false). B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      a: z.array(z.string()).optional().describe("Operand A: solid-N id(s), compounded together if more than one"),
+      b: z.array(z.string()).optional().describe("Operand B: solid-N id(s), compounded together if more than one"),
+      partA: z.string().optional().describe("Operand A: a Part name, resolved to its assigned volumes (mutually exclusive with 'a')"),
+      partB: z.string().optional().describe("Operand B: a Part name, resolved to its assigned volumes (mutually exclusive with 'b')"),
+    },
+  },
+  wrap((args: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string }) => checkInterferenceTool(ctx, args))
+);
+
+server.registerTool(
   "render_snapshot",
   {
     description:
@@ -311,10 +330,10 @@ server.registerTool(
   "compare_models",
   {
     description:
-      "Diff two B-rep models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. B-rep sources only headless (mesh formats return supported: false).",
-    inputSchema: { pathA: modelPath, pathB: modelPath },
+      "Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY (raw file bytes, edits NOT baked in) are supported headless, in any combination; glTF and meshio-only formats return supported: false. Optional includeSnapshots (default false) additionally renders each B-rep side's whole-model before/after PNGs (render_snapshot's own DEFAULT_VIEWS engine) as image content blocks — costs up to two headless browser launches and up to 8 images, opt in only when you actually want to look at the geometry.",
+    inputSchema: { pathA: modelPath, pathB: modelPath, includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)") },
   },
-  wrap((args: { pathA: string; pathB: string }) => compareModelsTool(ctx, args))
+  wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean }) => compareModelsTool(ctx, args))
 );
 
 server.registerTool(
@@ -354,10 +373,11 @@ server.registerTool(
 server.registerTool(
   "remove_edit_op",
   {
-    description: "Remove one op from anywhere in the stack by 0-based index (like the panel's per-row ✕).",
+    description:
+      "Remove one op from anywhere in the stack by 0-based index (like the panel's per-row ✕). For a B-rep source with Parts, attempts the same best-effort entity-id rebinding apply_edit_ops gets (a removed topology-changing op re-tessellates everything after it) — reported in warnings.",
     inputSchema: { path: modelPath, index: z.number().int().describe("0-based index into the op stack") },
   },
-  wrap((args: { path: string; index: number }) => removeEditOp(args))
+  wrap((args: { path: string; index: number }) => removeEditOp(ctx, args))
 );
 
 server.registerTool(
@@ -454,7 +474,7 @@ server.registerTool(
   "export_brep",
   {
     description:
-      "Export a B-rep source to another B-rep format (step/iges/brep, excluding the source's own format) with all sidecar edits baked in, written to outputPath. Mesh-format targets (STL/OBJ/PLY/glTF) are webview-only and unavailable headless. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the exported file's coordinates — this is unit CONVERSION, not the source's own declared unit; the live model and every other tool always stay in mm regardless of this parameter. Only supported for targetFormat=brep (BREP has no unit metadata to mismatch) — step/iges targets fall back to mm with a warning rather than producing a file whose header unit doesn't match its scaled geometry, since this OCCT build has no verified way to set STEP/IGES's own declared unit on write.",
+      "Export a B-rep source to another B-rep format (step/iges/brep, excluding the source's own format) with all sidecar edits baked in, written to outputPath. Mesh-format targets (STL/OBJ/PLY/glTF) are webview-only and unavailable headless. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the exported file's coordinates and, for step/iges targets, correctly relabels the file's own declared header unit to match — this is unit CONVERSION, not the source's own declared unit; the live model and every other tool always stay in mm regardless of this parameter.",
     inputSchema: {
       path: modelPath,
       targetFormat: z.string().describe("step | iges | brep"),

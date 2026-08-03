@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { EncodedMesh, EncodedEdge, EncodedPoint, MeshElementGroup } from "../protocol";
+import { valueToColor } from "./colorMap";
 
 function decodeF32(b64: string): Float32Array {
   const bin = atob(b64);
@@ -248,6 +249,56 @@ export function buildWorstElementsHighlight(positionsB64: string, indicesB64: st
 
   const group = new THREE.Group();
   group.name = "feMeshWorstElements";
+  group.add(mesh);
+  return group;
+}
+
+/**
+ * Builds the "colour by scalar field" overlay (roadmap item, closed) — a
+ * scene sibling of `model`, same "never mutate the original geometry"
+ * pattern as `buildFEMesh`/`buildWorstElementsHighlight` above, rather than
+ * recolouring the model's own per-facet split sub-meshes in place. That's a
+ * deliberate choice, not the obvious one: `splitMeshesIntoFacets` regroups
+ * triangles by coplanarity into NEW per-facet geometries whose vertex order
+ * bears no relation to the original file's triangle order the host's
+ * `readMeshioFieldValues` correlates against, so painting the field onto
+ * those sub-meshes directly would need re-deriving the same triangle→facet
+ * mapping this overlay sidesteps entirely by building straight from
+ * `basePositions` — the caller's UNSPLIT `pristineMesh` geometry, i.e. the
+ * exact same triangle-soup order the host's per-CORNER `values` already
+ * line up with (see `protocol.ts`'s `colorFieldResult` doc comment).
+ *
+ * `basePositions` is passed as a live `Float32Array` (not base64) since it's
+ * already sitting in the browser from the original STL load — only the
+ * (much smaller, one-per-corner) scalar `values` need to travel over
+ * postMessage. Unlit (`MeshBasicMaterial({vertexColors: true})`), matching
+ * `buildFEMesh`'s reasoning for the same triangle-soup-shading-artifact
+ * avoidance; `polygonOffset` is unnecessary here since this overlay always
+ * replaces the model's own faces (`Viewer` hides them while it's shown),
+ * unlike `buildFEMesh`'s coincident wireframe.
+ */
+export function buildColorFieldOverlay(basePositions: Float32Array, valuesB64: string, min: number, max: number): THREE.Object3D {
+  const values = decodeF32(valuesB64);
+  const colors = new Float32Array(basePositions.length);
+  const count = Math.min(values.length, basePositions.length / 3);
+  for (let i = 0; i < count; i++) {
+    const [r, g, b] = valueToColor(values[i], min, max);
+    colors[i * 3] = r;
+    colors[i * 3 + 1] = g;
+    colors[i * 3 + 2] = b;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(basePositions.slice(), 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.userData.entityType = "mesh"; // excluded from picking/parts-colouring, same as buildFEMesh's shaded mesh
+
+  const group = new THREE.Group();
+  group.name = "colorFieldOverlay";
   group.add(mesh);
   return group;
 }

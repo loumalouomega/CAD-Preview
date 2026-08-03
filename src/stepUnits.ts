@@ -39,7 +39,13 @@ function parseUnitBody(body: string): string | undefined {
   if (!/LENGTH_UNIT\s*\(\s*\)/i.test(body)) return undefined;
   const conv = /CONVERSION_BASED_UNIT\s*\(\s*'([^']+)'/i.exec(body);
   if (conv) return conv[1].toUpperCase();
-  const si = /SI_UNIT\s*\(\s*\.?([A-Z]*)\.?\s*,\s*\.([A-Z]+)\.\s*\)/i.exec(body);
+  // The prefix param is either `.PREFIX.` (e.g. `.MILLI.`) or the bare `$`
+  // "unset" token for no prefix (a plain metre/radian/etc.) — both are valid
+  // STEP, and this codebase's own STEP writer emits the `$` form for a
+  // no-conversion "m" unit export (verified against the live WASM: OCCT's
+  // angle units already use it, e.g. `SI_UNIT($,.RADIAN.)` in every file
+  // this codebase reads).
+  const si = /SI_UNIT\s*\(\s*(?:\.([A-Z]+)\.|\$)?\s*,\s*\.([A-Z]+)\.\s*\)/i.exec(body);
   if (si) {
     const prefix = si[1] ?? "";
     const base = si[2].toUpperCase();

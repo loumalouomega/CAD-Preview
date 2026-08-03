@@ -631,6 +631,42 @@ input[type="range"]#vc-opacity.meshing-slider {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+#vc-colorfield-select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #1e1e1e);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 3px 4px;
+  max-width: 160px;
+}
+#vc-colorfield-select:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+#vc-colorfield-legend {
+  align-items: center;
+  gap: 6px;
+}
+
+#vc-colorfield-gradient {
+  width: 60px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  /* Colour stops are set inline (`background`) from `viridisCssGradientStops()`
+   * — kept in sync with the model's actual colour ramp, never hardcoded here. */
+}
+
+#vc-colorfield-min,
+#vc-colorfield-max {
+  font-size: 10px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
 /* ── Status bar ─────────────────────────────────────────────────────── */
 
 #status {

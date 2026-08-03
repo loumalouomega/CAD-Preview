@@ -4,6 +4,7 @@ import { readEdits } from "./editsStore";
 import { compareModels, type CompareSource } from "./modelDiffHost";
 import type { ModelDiff, SolidSignature } from "./modelDiff";
 import type { BRepFormat } from "./massProperties";
+import { renderSnapshot, isRenderAvailable, DEFAULT_VIEWS, type RenderImage } from "./renderService";
 
 const COMPARABLE_MESH_FORMATS = new Set(["stl", "obj", "ply"]);
 
@@ -74,10 +75,61 @@ export async function runCompareModelsCommand(context: vscode.ExtensionContext, 
     const diff = await compareModels(context.extensionPath, resolvedA.source, resolvedB.source);
     const warnings = [resolvedA.warning, resolvedB.warning].filter((w): w is string => !!w);
 
-    showModelDiffPanel(uriA, uriB, diff, warnings);
+    const { imagesA, imagesB, warnings: snapshotWarnings } = await renderCompareSnapshots(
+      context.extensionPath,
+      resolvedA.source,
+      resolvedB.source
+    );
+    warnings.push(...snapshotWarnings);
+
+    showModelDiffPanel(uriA, uriB, diff, warnings, imagesA, imagesB);
   } catch (err) {
     void vscode.window.showErrorMessage(`Compare Models failed: ${(err as Error).message}`);
   }
+}
+
+/**
+ * Visual diff (roadmap item, closed): renders each side's whole-model
+ * snapshot via the same headless `render_snapshot` engine `mcpTools.ts`'s
+ * `compare_models` tool uses (`renderService.ts`) — B-rep sources only, same
+ * gate as that tool; mesh (STL/OBJ/PLY) sides degrade to a warning, never a
+ * blocked comparison. Probes `isRenderAvailable()` ONCE (not per side) only
+ * when at least one side actually needs it, then renders both B-rep sides in
+ * parallel (`Promise.all` — each gets its own independent, disposable
+ * Chromium instance, verified safe to run concurrently; see `renderService.
+ * ts`'s doc comment). Never throws: a skipped/failed snapshot is reported as
+ * a warning and must never block the numeric diff this feature already
+ * produces (same "additive, not required" convention as every other
+ * `supported: false` path in this codebase).
+ */
+async function renderCompareSnapshots(
+  extensionPath: string,
+  sourceA: CompareSource,
+  sourceB: CompareSource
+): Promise<{ imagesA: RenderImage[]; imagesB: RenderImage[]; warnings: string[] }> {
+  const warnings: string[] = [];
+  const needsRender = sourceA.kind === "brep" || sourceB.kind === "brep";
+  let available = false;
+  if (needsRender) {
+    const avail = await isRenderAvailable();
+    available = avail.available;
+    if (!available) warnings.push(`Visual snapshots skipped — ${avail.reason ?? "renderer unavailable"}.`);
+  }
+  const renderOne = async (label: "A" | "B", source: CompareSource): Promise<RenderImage[]> => {
+    if (source.kind !== "brep") {
+      warnings.push(`Model ${label}: visual snapshot not available for ${source.kind.toUpperCase()} sources (render_snapshot is B-rep sources only).`);
+      return [];
+    }
+    if (!available) return [];
+    const result = await renderSnapshot(extensionPath, source.bytes, source.format, source.ops, { views: DEFAULT_VIEWS });
+    if (!result.supported || !result.images) {
+      warnings.push(`Model ${label}: visual snapshot failed — ${result.reason ?? "unknown error"}.`);
+      return [];
+    }
+    return result.images;
+  };
+  const [imagesA, imagesB] = await Promise.all([renderOne("A", sourceA), renderOne("B", sourceB)]);
+  return { imagesA, imagesB, warnings };
 }
 
 function fmt(n: number): string {
@@ -93,7 +145,40 @@ function matchRow(m: ModelDiff["matched"][number]): string {
   return `<tr><td>${m.a.id}</td><td>${m.b.id}</td><td>${fmt(m.centreDistance)}</td><td>${fmt(m.volumeDeltaPct)}%</td><td>${confidence}</td></tr>`;
 }
 
-function showModelDiffPanel(uriA: vscode.Uri, uriB: vscode.Uri, diff: ModelDiff, warnings: string[] = []): void {
+/** Builds the "Before / After" snapshot grid — one row per view direction
+ * (`DEFAULT_VIEWS` order), one column per side — by matching each side's
+ * `RenderImage[]` up by `label` (`renderSnapshot` always returns them in
+ * `DEFAULT_VIEWS` order, but matching by label rather than trusting index
+ * order is cheap insurance against that ever changing). Returns `""` (no
+ * section at all) when NEITHER side produced any images, so a fully
+ * unavailable/unsupported comparison doesn't leave a dangling empty heading.
+ */
+function snapshotSection(imagesA: RenderImage[], imagesB: RenderImage[]): string {
+  if (imagesA.length === 0 && imagesB.length === 0) return "";
+  const byLabel = (images: RenderImage[], label: string) => images.find((i) => i.label === label);
+  const labels = DEFAULT_VIEWS.map((v) => v.label);
+  const cell = (img: RenderImage | undefined) =>
+    img ? `<img src="data:${img.mimeType};base64,${img.dataBase64}" alt="${img.label}" />` : `<span class="md-empty">—</span>`;
+  const rows = labels
+    .map((label) => `<tr><td>${label}</td><td>${cell(byLabel(imagesA, label))}</td><td>${cell(byLabel(imagesB, label))}</td></tr>`)
+    .join("\n");
+  return `
+  <h2>Visual diff</h2>
+  <table class="md-snapshots">
+    <thead><tr><th>View</th><th>A</th><th>B</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+`;
+}
+
+function showModelDiffPanel(
+  uriA: vscode.Uri,
+  uriB: vscode.Uri,
+  diff: ModelDiff,
+  warnings: string[] = [],
+  imagesA: RenderImage[] = [],
+  imagesB: RenderImage[] = []
+): void {
   const panel = vscode.window.createWebviewPanel(
     "cadPreviewModelDiff",
     "Compare Models — CAD Preview",
@@ -101,7 +186,11 @@ function showModelDiffPanel(uriA: vscode.Uri, uriB: vscode.Uri, diff: ModelDiff,
     { enableScripts: false, localResourceRoots: [] }
   );
 
-  const csp = [`default-src 'none'`, `style-src 'unsafe-inline'`].join("; ");
+  // `img-src data:` added for the visual-diff snapshots below — inline
+  // base64 PNGs only (no `localResourceRoots`/webview.asWebviewUri involved,
+  // consistent with `enableScripts: false` ruling out any script-driven
+  // resource loading anyway).
+  const csp = [`default-src 'none'`, `style-src 'unsafe-inline'`, `img-src data:`].join("; ");
   const nameA = vscode.workspace.asRelativePath(uriA);
   const nameB = vscode.workspace.asRelativePath(uriB);
 
@@ -153,6 +242,8 @@ function showModelDiffPanel(uriA: vscode.Uri, uriB: vscode.Uri, diff: ModelDiff,
       border-left: 3px solid var(--vscode-inputValidation-warningBorder, #b89500);
       font-size: 0.85em;
     }
+    .md-snapshots td { vertical-align: top; }
+    .md-snapshots img { max-width: 260px; width: 100%; height: auto; border: 1px solid var(--vscode-widget-border, #3c3c3c); border-radius: 3px; background: #1e1e1e; }
   </style>
 </head>
 <body>
@@ -164,7 +255,7 @@ function showModelDiffPanel(uriA: vscode.Uri, uriB: vscode.Uri, diff: ModelDiff,
     <div class="md-stat"><b>${diff.removed.length}</b>Removed</div>
     <div class="md-stat"><b>${diff.matched.length}</b>Matched</div>
   </div>
-
+  ${snapshotSection(imagesA, imagesB)}
   <h2>Matched solids</h2>
   <table>
     <thead><tr><th>A</th><th>B</th><th>Centre displacement</th><th>Volume Δ</th><th>Confidence</th></tr></thead>

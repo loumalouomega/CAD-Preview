@@ -9,6 +9,8 @@ import { applyEditsBRep, scaleShapeForExport } from "./occtOperations";
 import type { TreeNode } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
+import { type DisplayUnit, unitScaleFactor, igesUnitName } from "./lengthUnits";
+import { patchStepUnitDeclaration } from "./stepUnitPatch";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ocPromise: Promise<any> | null = null;
@@ -133,14 +135,44 @@ type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
  * Export bakes in the same edits the view shows. Writer calls are verified against
  * the live OCCT build — see `writeShape` below for the per-format quirks.
  *
- * `scaleFactor` (default `1`, i.e. no-op) applies a real geometric unit-
- * conversion scale — via `occtOperations.ts`'s `scaleShapeForExport` — right
- * after edits and before the writer, so the *exported file's* coordinates are
- * in the chosen unit while the live, in-memory model (and every other caller
- * of this function — meshing input, `compare_models`, mass properties, etc.)
- * stays untouched at the cascade unit (mm). Only `provider.ts`'s `handleExport`
- * (the model Export/Save As command) and `mcpTools.ts`'s `exportBRepTool` ever
- * pass a non-default value.
+ * `unit` (default `"mm"`, i.e. no-op) applies a real geometric unit-conversion
+ * scale right after edits and before the writer, so the *exported file's*
+ * coordinates are in the chosen unit while the live, in-memory model (and
+ * every other caller of this function — meshing input, `compare_models`, mass
+ * properties, etc.) stays untouched at the cascade unit (mm). Only
+ * `provider.ts`'s `handleExport`/`resolveMeshInput` and `mcpTools.ts`'s
+ * `exportBRepTool`/`resolveMeshInputHeadless` ever pass a non-default value.
+ *
+ * Per target format, this is genuinely three different mechanisms, not one
+ * scale applied uniformly — see `writeShape`'s doc comment for the two
+ * writer-level quirks this dispatches around:
+ * - `"brep"`: `scaleShapeForExport` only (BREP has no unit metadata at all).
+ * - `"step"`: `scaleShapeForExport`, THEN — when `labelStepUnit` is `true`
+ *   (the default) — a text-only header patch (`stepUnitPatch.ts`'s
+ *   `patchStepUnitDeclaration`) after writing, since this OCCT WASM build's
+ *   STEP writer has no unit-aware API at all (see that module's doc comment
+ *   for the full probing trail) — the geometry is already correctly scaled by
+ *   the time the writer runs, so every raw number in the file (including the
+ *   writer's own auto-computed tolerance) is already correct; only the
+ *   *label* needs fixing.
+ * - `"iges"`: NEVER `scaleShapeForExport` — `IGESControl_Writer_2`'s
+ *   unit-aware overload scales the geometry internally when given a
+ *   non-native unit name, so pre-scaling would double-convert.
+ *
+ * `labelStepUnit` (default `true`) exists SOLELY for `resolveMeshInput`/
+ * `resolveMeshInputHeadless`'s meshing-input STEP, which must pass `false`.
+ * Verified against the live WASM: Gmsh's own `gmsh.model.occ.importShapes`
+ * (unlike this codebase's own OCCT reader, confirmed by comparison) DOES
+ * reinterpret a STEP file's declared unit — feeding it a correctly-scaled AND
+ * correctly-labeled `"in"` file makes Gmsh silently convert the geometry BACK
+ * to its original (larger) real-world size, undoing the scale entirely, while
+ * `MeshOptions.sizeMin`/`sizeMax` stay at the (smaller, already-rescaled)
+ * requested values — a real, confirmed regression (mesh density mismatch,
+ * `mm`-vs-`in`-scale disagreement) this flag exists to prevent. The
+ * meshing-input STEP is never shown to the user (discarded immediately after
+ * Gmsh reads it), so keeping its header at the OCCT-native `"mm"` label while
+ * still scaling its geometry — the exact behavior this codebase already had
+ * before STEP-header-patching existed — has zero externally-visible effect.
  */
 export async function exportBRep(
   extensionPath: string,
@@ -148,7 +180,8 @@ export async function exportBRep(
   sourceFormat: BRepFormat,
   targetFormat: BRepFormat,
   ops: EditOp[] = [],
-  scaleFactor = 1
+  unit: DisplayUnit = "mm",
+  labelStepUnit = true
 ): Promise<Uint8Array> {
   const oc = await getOcct(extensionPath);
 
@@ -169,9 +202,15 @@ export async function exportBRep(
   try {
     const baseShape = readShape(oc, inPath, sourceFormat, cleanup);
     let shape = applyEditsBRep(oc, baseShape, ops, cleanup);
-    if (scaleFactor !== 1) shape = scaleShapeForExport(oc, shape, scaleFactor, cleanup);
-    writeShape(oc, shape, outPath, targetFormat, cleanup);
-    return oc.FS.readFile(outPath);
+    const factor = unitScaleFactor(unit);
+    if (factor !== 1 && targetFormat !== "iges") shape = scaleShapeForExport(oc, shape, factor, cleanup);
+    writeShape(oc, shape, outPath, targetFormat, cleanup, unit);
+    const outBytes: Uint8Array = oc.FS.readFile(outPath);
+    if (targetFormat === "step" && unit !== "mm" && labelStepUnit) {
+      const text = Buffer.from(outBytes).toString("utf8");
+      return new TextEncoder().encode(patchStepUnitDeclaration(text, unit));
+    }
+    return outBytes;
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }
@@ -181,8 +220,21 @@ export async function exportBRep(
   }
 }
 
+/**
+ * `unit` only matters for `"iges"` — picks between the plain `_1` writer
+ * (native mm) and the unit-aware `_2` overload (`IGESControl_Writer_2(name,
+ * modeCreation)`), verified against the live WASM to both correctly declare
+ * AND correctly scale the output for all five `DisplayUnit`s (round-tripped
+ * through this codebase's own reader, recovering the source model's exact
+ * bounding box in every case — see `igesUnitName`'s doc comment in
+ * `lengthUnits.ts` for the full trail). The original CLAUDE.md write-up
+ * calling this overload's output "unconfirmed" was a false negative caused
+ * by feeding it an 11+ character MEMFS path (this build's undocumented
+ * path-length limit, documented above in `exportBRep`), not a real limitation
+ * of the writer itself.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function writeShape(oc: any, shape: any, filePath: string, format: BRepFormat, cleanup: Array<{ delete(): void }>): void {
+function writeShape(oc: any, shape: any, filePath: string, format: BRepFormat, cleanup: Array<{ delete(): void }>, unit: DisplayUnit = "mm"): void {
   const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
 
   if (format === "step") {
@@ -196,7 +248,7 @@ function writeShape(oc: any, shape: any, filePath: string, format: BRepFormat, c
   }
 
   if (format === "iges") {
-    const writer = new oc.IGESControl_Writer_1();
+    const writer = unit === "mm" ? new oc.IGESControl_Writer_1() : new oc.IGESControl_Writer_2(igesUnitName(unit), 0);
     cleanup.push(writer);
     writer.AddShape(shape);
     writer.ComputeModel();

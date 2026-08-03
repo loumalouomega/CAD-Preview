@@ -153,7 +153,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 22, `tools/list exposes 22 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 23, `tools/list exposes 23 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -253,6 +253,78 @@ try {
     "measure_exact radius on a non-circular edge fails with a clear, actionable error rather than a meaningless best-fit number"
   );
 
+  // check_interference (roadmap "Interference / clash detection", closed):
+  // real BRepAlgoAPI_Common_3 intersections with known analytical overlap
+  // volumes, on its own copy of the fixture (same "own copy" convention as
+  // the radius test above, so these extra solids don't perturb the shared
+  // `model`'s solid/edge counts every later step assumes). Box geometry:
+  // A = center [0,0,0] size [10,10,10] → spans [-5,5]^3 (solid-1, after the
+  // bull's own solid-0). B = center [3,0,0] size [10,10,10] → spans
+  // x:[-2,8], y/z:[-5,5] (solid-2) — overlaps A in x:[-2,5] (7) × y:10 ×
+  // z:10 = 700 exactly. C = center [100,0,0] size [1,1,1] (solid-3) — far
+  // away, no overlap. D = center [10,0,0] size [10,10,10] → spans x:[5,15]
+  // (solid-4) — touches A's x=5 face exactly, zero-volume degenerate overlap.
+  const clashModel = path.join(dir, "bull-for-interference-test.stp");
+  fs.copyFileSync(FIXTURE, clashModel);
+  const clashApplied = await call("apply_edit_ops", {
+    path: clashModel,
+    ops: [
+      { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] },
+      { op: "addBox", center: [3, 0, 0], size: [10, 10, 10] },
+      { op: "addBox", center: [100, 0, 0], size: [1, 1, 1] },
+      { op: "addBox", center: [10, 0, 0], size: [10, 10, 10] },
+    ],
+  });
+  assert(clashApplied.applied === 4, `check_interference test fixture: 4 boxes applied (got ${clashApplied.applied})`);
+
+  const overlap = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-2"] });
+  assert(
+    overlap.supported === true && overlap.hasOverlap === true && Math.abs(overlap.overlapVolume - 700) < 1e-6,
+    `check_interference reports the exact analytical overlap volume for two intersecting boxes (expected 700, got ${overlap.overlapVolume})`
+  );
+
+  const noOverlap = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-3"] });
+  assert(
+    noOverlap.supported === true && noOverlap.hasOverlap === false && noOverlap.overlapVolume === 0,
+    `check_interference reports no overlap for two disjoint boxes (got hasOverlap=${noOverlap.hasOverlap}, volume=${noOverlap.overlapVolume})`
+  );
+
+  const touchingOnly = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-4"] });
+  assert(
+    touchingOnly.supported === true && touchingOnly.hasOverlap === false,
+    `check_interference reports no real overlap for two boxes that only touch at a shared face (got hasOverlap=${touchingOnly.hasOverlap}, volume=${touchingOnly.overlapVolume})`
+  );
+
+  const unresolved = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-999"] });
+  assert(
+    unresolved.supported === true && unresolved.hasOverlap === false && unresolved.unresolvedB?.includes("solid-999"),
+    `check_interference degrades gracefully (not a throw) for an unresolved id, reporting it in unresolvedB (got: ${JSON.stringify(unresolved.unresolvedB)})`
+  );
+
+  // Part-name operand resolution — set_part groups solid-1 and solid-2 (the
+  // two intersecting boxes) under one Part; check_interference's partA/partB
+  // should resolve to the same real ids `a`/`b` above already verified.
+  await call("set_part", { path: clashModel, name: "ClashGroup", volumes: ["solid-1", "solid-2"] });
+  const viaPart = await call("check_interference", { path: clashModel, partA: "ClashGroup", b: ["solid-3"] });
+  assert(
+    viaPart.supported === true && viaPart.hasOverlap === false,
+    "check_interference resolves a Part name (partA) to its assigned volumes, same result as passing solid ids directly"
+  );
+  const missingPart = await call("check_interference", { path: clashModel, partA: "NoSuchPart", b: ["solid-3"] });
+  assert(
+    missingPart.supported === true && missingPart.warnings.some((w) => /not found/i.test(w)),
+    `check_interference warns (not throws) for an unknown Part name (got: ${JSON.stringify(missingPart.warnings)})`
+  );
+
+  const neitherOperand = await callTolerant("check_interference", { path: clashModel, b: ["solid-3"] });
+  assert(
+    neitherOperand.error && /'a'.*'partA'/.test(neitherOperand.error),
+    `check_interference requires either 'a' or 'partA' for operand A (got: ${neitherOperand.error})`
+  );
+
+  const clashMesh = await call("check_interference", { path: path.join(ROOT, "examples", "STL", "cube.stl"), a: ["node-0"], b: ["node-0"] });
+  assert(clashMesh.supported === false, `check_interference reports supported:false for a mesh-format source (got: ${JSON.stringify(clashMesh)})`);
+
   // Entity-id rebinding after topology-changing ops (roadmap item, closed) —
   // a Part referencing face-N/edge-N ids used to silently lose them once a
   // later topology-changing op renumbered the tessellation. Verified against
@@ -325,6 +397,105 @@ try {
   assert(
     filletResult.warnings.some((w) => /Rebound/.test(w)),
     `apply_edit_ops surfaces a rebind summary warning (got: ${JSON.stringify(filletResult.warnings)})`
+  );
+
+  // Extend entity-id rebinding to remove_edit_op (roadmap item, closed) — the
+  // original append-only mechanism above couldn't handle removing a
+  // topology-changing op from the MIDDLE of the stack (the general case
+  // undo/redo/remove_edit_op all need). Deterministic scenario: append TWO
+  // topology-changing ops (a box, then a sphere), assign a Part to the
+  // sphere's own face, then remove the (unrelated, earlier) box op — since
+  // both ops append a new solid to the same compound in order, removing the
+  // box shifts every id that comes after it, including the sphere's own. Own
+  // fixture copy, same "don't perturb the shared model" discipline as above.
+  const removeRebindModel = path.join(dir, "bull-for-remove-rebind-test.stp");
+  fs.copyFileSync(FIXTURE, removeRebindModel);
+  const removeRebindApplied = await call("apply_edit_ops", {
+    path: removeRebindModel,
+    ops: [
+      { op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] },
+      { op: "addSphere", center: [bbox.max[0] + 6 * s, 0, 0], radius: s / 2 },
+    ],
+  });
+  const sphereSolid = removeRebindApplied.model.solids[removeRebindApplied.model.solids.length - 1];
+  const sphereFace = sphereSolid.faceIds[0];
+  const sphereFaceBefore = await call("inspect", { path: removeRebindModel, entityId: sphereFace });
+  assert(sphereFaceBefore.supported === true, `inspect resolves the sphere's own face (${sphereFace}) before removal`);
+  await call("set_part", { path: removeRebindModel, name: "RemoveRebindTest", surfaces: [sphereFace] });
+
+  const removeResult = await call("remove_edit_op", { path: removeRebindModel, index: 0 }); // removes the box, NOT the sphere
+  assert(removeResult.removed.startsWith("Box") || /box/i.test(JSON.stringify(removeResult)), `remove_edit_op removed the box op (got: ${JSON.stringify(removeResult.removed)})`);
+  assert(
+    removeResult.warnings.some((w) => /Rebound/.test(w)),
+    `remove_edit_op surfaces a rebind summary warning (got: ${JSON.stringify(removeResult.warnings)})`
+  );
+
+  const removeState = await call("get_state", { path: removeRebindModel });
+  const removeRebindPart = removeState.parts.find((p) => p.name === "RemoveRebindTest");
+  assert(removeRebindPart !== undefined && removeRebindPart.surfaces.length === 1, "the RemoveRebindTest part still has exactly one surface after the removal");
+  const sphereFaceAfter = removeRebindPart.surfaces[0];
+  const sphereFaceAfterFacts = await call("inspect", { path: removeRebindModel, entityId: sphereFaceAfter });
+  assert(sphereFaceAfterFacts.supported === true, `inspect resolves the rebound sphere face id (${sphereFaceAfter}) after removal`);
+  const removeCentreDelta = Math.hypot(
+    sphereFaceAfterFacts.center[0] - sphereFaceBefore.center[0],
+    sphereFaceAfterFacts.center[1] - sphereFaceBefore.center[1],
+    sphereFaceAfterFacts.center[2] - sphereFaceBefore.center[2]
+  );
+  const removeAreaDelta = Math.abs(sphereFaceAfterFacts.area - sphereFaceBefore.area);
+  assert(
+    removeCentreDelta < 1e-6 && removeAreaDelta < 1e-6,
+    `the rebound sphere face (${sphereFace} -> ${sphereFaceAfter}) is geometrically identical to the original ` +
+      `(centre delta ${removeCentreDelta.toExponential(2)}, area delta ${removeAreaDelta.toExponential(2)})`
+  );
+  // Only 1 solid should remain (the bull + the sphere — the box is gone).
+  assert(
+    removeState.edits.length === 1 && /addSphere/.test(JSON.stringify(removeState.edits[0])),
+    `only the sphere op remains in the stack after removing the box (got: ${JSON.stringify(removeState.edits.map((e) => e.op))})`
+  );
+
+  // The pure-TRUNCATION path (remove_edit_op on the LAST index — structurally
+  // identical to what an interactive "undo" does, since there's no separate
+  // "undo" MCP tool to call directly) exercises the mirror-image of the
+  // append-only algorithm's own incremental stepping, not the general/
+  // whole-shape-match path the middle-removal case above used. Own fixture:
+  // box then sphere again, but this time the Part is on the FIRST op's
+  // (box's) own face, and the LAST op (sphere) gets removed.
+  const truncateModel = path.join(dir, "bull-for-truncate-rebind-test.stp");
+  fs.copyFileSync(FIXTURE, truncateModel);
+  const truncateApplied = await call("apply_edit_ops", {
+    path: truncateModel,
+    ops: [
+      { op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] },
+      { op: "addSphere", center: [bbox.max[0] + 6 * s, 0, 0], radius: s / 2 },
+    ],
+  });
+  const truncateBoxSolid = truncateApplied.model.solids[truncateApplied.model.solids.length - 2];
+  const truncateBoxFace = truncateBoxSolid.faceIds[0];
+  const truncateBoxFaceBefore = await call("inspect", { path: truncateModel, entityId: truncateBoxFace });
+  assert(truncateBoxFaceBefore.supported === true, `inspect resolves the box's own face (${truncateBoxFace}) before truncation`);
+  await call("set_part", { path: truncateModel, name: "TruncateRebindTest", surfaces: [truncateBoxFace] });
+
+  const truncateRemoveResult = await call("remove_edit_op", { path: truncateModel, index: 1 }); // removes the LAST op (sphere)
+  assert(
+    truncateRemoveResult.warnings.some((w) => /Rebound/.test(w)),
+    `remove_edit_op (last index — the "undo" shape) surfaces a rebind summary warning (got: ${JSON.stringify(truncateRemoveResult.warnings)})`
+  );
+  const truncateState = await call("get_state", { path: truncateModel });
+  const truncateRebindPart = truncateState.parts.find((p) => p.name === "TruncateRebindTest");
+  assert(truncateRebindPart !== undefined && truncateRebindPart.surfaces.length === 1, "the TruncateRebindTest part still has exactly one surface after truncation");
+  const truncateBoxFaceAfter = truncateRebindPart.surfaces[0];
+  const truncateBoxFaceAfterFacts = await call("inspect", { path: truncateModel, entityId: truncateBoxFaceAfter });
+  assert(truncateBoxFaceAfterFacts.supported === true, `inspect resolves the rebound box face id (${truncateBoxFaceAfter}) after truncation`);
+  const truncateCentreDelta = Math.hypot(
+    truncateBoxFaceAfterFacts.center[0] - truncateBoxFaceBefore.center[0],
+    truncateBoxFaceAfterFacts.center[1] - truncateBoxFaceBefore.center[1],
+    truncateBoxFaceAfterFacts.center[2] - truncateBoxFaceBefore.center[2]
+  );
+  const truncateAreaDelta = Math.abs(truncateBoxFaceAfterFacts.area - truncateBoxFaceBefore.area);
+  assert(
+    truncateCentreDelta < 1e-6 && truncateAreaDelta < 1e-6,
+    `the rebound box face (${truncateBoxFace} -> ${truncateBoxFaceAfter}) is geometrically identical to the original after truncation ` +
+      `(centre delta ${truncateCentreDelta.toExponential(2)}, area delta ${truncateAreaDelta.toExponential(2)})`
   );
 
   // compare_models: the edited model (bull + added box) against a fresh,
@@ -453,6 +624,35 @@ try {
     console.log("  (Playwright/Chromium not installed in this environment — render_snapshot's supported:true path was not exercised)");
   }
 
+  // compare_models visual diff (roadmap "Visual diff for Compare Models",
+  // closed): includeSnapshots is opt-in and defaults to false — confirm the
+  // default omits images entirely (no wasted render cost), then confirm the
+  // opt-in path, tolerating the same Playwright-availability uncertainty as
+  // render_snapshot above (they share the exact same engine).
+  const diffNoSnapshots = await call("compare_models", { pathA: model, pathB: originalCopy });
+  assert(diffNoSnapshots.images === undefined, "compare_models omits images entirely when includeSnapshots is not passed");
+
+  const rawDiffWithSnapshots = await callRaw("compare_models", { pathA: model, pathB: originalCopy, includeSnapshots: true });
+  const diffWithSnapshots = JSON.parse(rawDiffWithSnapshots.content[0].text);
+  assert(diffWithSnapshots.supported === true, "compare_models with includeSnapshots:true still reports the numeric diff");
+  if (render.supported) {
+    // Both sides are the same B-rep format (model vs. originalCopy) — 2 × 4 = 8 images.
+    assert(diffWithSnapshots.images.length === 8, `compare_models includeSnapshots:true returns 8 images, 4 per side (got ${diffWithSnapshots.images.length})`);
+    assert(
+      diffWithSnapshots.images.map((i) => i.label).join(",") === "A-ISO-A,A-ISO-B,A-TOP,A-FRONT,B-ISO-A,B-ISO-B,B-TOP,B-FRONT",
+      `compare_models prefixes each side's image labels with A-/B- (got: ${diffWithSnapshots.images.map((i) => i.label).join(",")})`
+    );
+    const diffImageBlocks = rawDiffWithSnapshots.content.filter((c) => c.type === "image");
+    assert(diffImageBlocks.length === 8, "compare_models's raw tool result carries 8 image content blocks when includeSnapshots:true");
+    assert(diffWithSnapshots.warnings.length === 0, "compare_models includeSnapshots:true reports no warnings when both sides render successfully");
+  } else {
+    assert(diffWithSnapshots.images.length === 0, "compare_models includeSnapshots:true degrades to an empty image list when the renderer is unavailable");
+    assert(
+      diffWithSnapshots.warnings.some((w) => /skipped/i.test(w)),
+      `compare_models includeSnapshots:true reports the skip as a warning, not a failure (got: ${JSON.stringify(diffWithSnapshots.warnings)})`
+    );
+  }
+
   const meshed = await call("generate_mesh", { path: model, options: { sizeMax: bbox.diagonal / 15 } });
   assert(meshed.nodeCount > 0 && meshed.elementCount > 0, `generate_mesh: ${meshed.nodeCount} nodes, ${meshed.elementCount} elements in ${meshed.elapsedMs} ms`);
 
@@ -576,17 +776,82 @@ try {
     `export_brep's inch scale is geometrically real: volume ratio ${(volumeIn / volumeMm).toFixed(9)} ≈ (1/25.4)^3 = ${expectedRatio.toFixed(9)}`
   );
 
-  // STEP/IGES headers declare a unit that this OCCT WASM build has no
-  // verified way to set on write (Interface_Static's "write.step.unit"
-  // never registers) — converting their geometry without fixing the header
-  // would silently mislabel the file, so it's deliberately unsupported:
-  // falls back to mm with an explicit warning, never a silent wrong file.
-  const igesOut = path.join(dir, "out-unsupported.iges");
-  const igesResult = await call("export_brep", { path: model, targetFormat: "iges", outputPath: igesOut, unit: "in" });
-  assert(igesResult.unit === "mm", "export_brep falls back to mm for an iges target (unit conversion unsupported)");
+  // STEP/IGES unit conversion — both now genuinely work, verified end-to-end
+  // against the live WASM. STEP has no writer-level unit API at all in this
+  // build (Interface_Static's "write.step.unit" never registers, even via the
+  // full real-OCCT init sequence — re-probed specifically for this feature),
+  // so the geometry is scaled via the existing scaleShapeForExport mechanism
+  // and the header is relabeled with a pure text patch afterward
+  // (stepUnitPatch.ts) — every raw number in the file (including the
+  // writer's own auto-computed tolerance) is already correct by the time the
+  // writer runs, only the label needs fixing. IGES's alternate unit-aware
+  // writer constructor (IGESControl_Writer_2) genuinely works and does both
+  // the scaling AND the labeling itself — the prior "unconfirmed, output
+  // could not be read back" finding was a false negative caused by an 11+
+  // character MEMFS output path (this build's undocumented path-length
+  // limit), not a real writer limitation.
+  // Unlike BREP (no unit metadata at all, so reopening at face value shows a
+  // genuinely SMALLER volume — the assertion above), a correctly-labeled
+  // STEP/IGES header means ANY unit-aware reader (including this codebase's
+  // own) recovers the SAME real-world size on reopen — so the expected
+  // volume ratio here is ~1, not (1/25.4)^3. Getting this backwards was a
+  // real test-design bug caught while verifying this feature (not a code
+  // bug): a first draft asserted (1/25.4)^3 for STEP/IGES too, which failed
+  // even though the export was byte-for-byte correct — the failure was the
+  // assertion misunderstanding what "correctly labeled" round-trips to.
+  // `model` is itself a .stp source, so it can't export to "step" (its own
+  // format is always excluded, matching the extension's Export menu) — use
+  // the already-written brepOut as the source for this one check instead.
+  const stepOutIn = path.join(dir, "out-in.step");
+  const stepResult = await call("export_brep", { path: brepOut, targetFormat: "step", outputPath: stepOutIn, unit: "in" });
+  assert(stepResult.unit === "in" && stepResult.warnings.length === 0, "export_brep converts to inches for a step target, no warnings");
   assert(
-    igesResult.warnings.some((w) => /unit conversion/i.test(w)),
-    "export_brep warns, rather than silently ignoring, the unsupported iges+unit combination"
+    /CONVERSION_BASED_UNIT\('INCH'/.test(fs.readFileSync(stepOutIn, "utf8")),
+    "the exported STEP file's own header text declares INCH, not just a scaled-but-mislabeled mm file"
+  );
+  const stepOutMm = path.join(dir, "out-mm.step");
+  await call("export_brep", { path: brepOut, targetFormat: "step", outputPath: stepOutMm });
+  const stepVolumeMm = (await call("get_mass_properties", { path: stepOutMm })).volume;
+  const stepVolumeIn = (await call("get_mass_properties", { path: stepOutIn })).volume;
+  assert(
+    Math.abs(stepVolumeIn / stepVolumeMm - 1) < 1e-6,
+    `export_brep's STEP inch export round-trips to the SAME real-world volume: reopening both through get_mass_properties gives ratio ${(stepVolumeIn / stepVolumeMm).toFixed(9)} ≈ 1 (mm=${stepVolumeMm.toFixed(3)}, in=${stepVolumeIn.toFixed(3)})`
+  );
+
+  const igesOutIn = path.join(dir, "out-in.iges");
+  const igesResult = await call("export_brep", { path: model, targetFormat: "iges", outputPath: igesOutIn, unit: "in" });
+  assert(igesResult.unit === "in" && igesResult.warnings.length === 0, "export_brep converts to inches for an iges target, no warnings");
+  assert(
+    /,1,4HINCH,/.test(fs.readFileSync(igesOutIn, "utf8")),
+    "the exported IGES file's own Global section declares unit flag 1 (INCH), not just a scaled-but-mislabeled mm file"
+  );
+  const igesOutMm = path.join(dir, "out-mm.iges");
+  await call("export_brep", { path: model, targetFormat: "iges", outputPath: igesOutMm });
+  const igesVolumeMm = (await call("get_mass_properties", { path: igesOutMm })).volume;
+  const igesVolumeIn = (await call("get_mass_properties", { path: igesOutIn })).volume;
+  assert(
+    Math.abs(igesVolumeIn / igesVolumeMm - 1) < 1e-6,
+    `export_brep's IGES inch export round-trips to the SAME real-world volume: reopening both through get_mass_properties gives ratio ${(igesVolumeIn / igesVolumeMm).toFixed(9)} ≈ 1 (mm=${igesVolumeMm.toFixed(3)}, in=${igesVolumeIn.toFixed(3)})`
+  );
+
+  // Regression guard: does the meshing-input STEP path (export_mesh/
+  // generate_mesh's internal re-export, NOT export_brep above) stay scale-
+  // correct now that STEP header-patching exists? Verified against the live
+  // WASM that Gmsh's own gmsh.model.occ.importShapes DOES reinterpret a
+  // correctly-labeled non-mm header and silently undoes the geometric scale
+  // — occtService.ts's exportBRep now takes a labelStepUnit=false override
+  // specifically for this internal path, keeping its header at the OCCT-
+  // native "mm" label (never shown to the user) while still genuinely
+  // scaling the geometry. If that regressed, this mesh's coordinate ratio
+  // would come back ~1 instead of ~1/25.4.
+  const meshMmOut = path.join(dir, "mesh-guard-mm.msh");
+  const meshInOut = path.join(dir, "mesh-guard-in.msh");
+  await call("export_mesh", { path: model, format: "msh", outputPath: meshMmOut, options: { sizeMax: bbox.diagonal / 8 } });
+  await call("export_mesh", { path: model, format: "msh", outputPath: meshInOut, options: { sizeMax: bbox.diagonal / 8 / 25.4 }, unit: "in" });
+  const meshRatio = maxAbsMshCoord(fs.readFileSync(meshInOut, "utf8")) / maxAbsMshCoord(fs.readFileSync(meshMmOut, "utf8"));
+  assert(
+    Math.abs(meshRatio - 1 / 25.4) < 0.01,
+    `export_mesh's unit conversion is unaffected by STEP header-patching (labelStepUnit:false held): msh coord ratio ${meshRatio.toFixed(5)} ≈ 1/25.4 = ${(1 / 25.4).toFixed(5)}`
   );
 
   // meshio++ integration: a VTK source (meshio-only format, no OCCT/gmsh-native
@@ -620,14 +885,16 @@ try {
   const xdmfText = fs.readFileSync(xdmfOut, "utf8");
   assert(xdmfText.includes("tet.h5"), "xdmf's embedded HDF references are rewritten to the companion's real filename");
 
-  // Richer meshio++ import visibility (roadmap item, partly closed): a real
-  // MED file (examples/MED/two-material-tets.med — two tetrahedra, each its
-  // own named cell region "MaterialA"/"MaterialB", plus a "Temperature"
+  // Richer meshio++ import visibility (roadmap item, closed): a real MED
+  // file (examples/MED/two-material-tets.med — two tetrahedra, each its own
+  // named cell region "MaterialA"/"MaterialB", plus a "Temperature"
   // point-data field, written by meshio++'s own MED writer from a hand-built
   // mesh) declares metadata `readMeshioMetadata()` (readMetadata()-backed)
-  // can now see, even though it's still informational only — not yet
-  // auto-converted into Parts/geometry, see CLAUDE.md's "meshio++
-  // integration" section.
+  // can see AND — the remaining, harder half of this roadmap item —
+  // `convertToStlBoundaryWithRegions`'s `extractSurface(mesh, true)` +
+  // `cell_data["surface:parent_cell"]` correlation now turns those two cell
+  // regions into two real, selectable Parts on first import. See
+  // CLAUDE.md's "meshio++ integration" section for the full mechanism.
   const medFixture = path.join(dir, "two-material-tets.med");
   fs.copyFileSync(path.join(ROOT, "examples", "MED", "two-material-tets.med"), medFixture);
   const medLoaded = await call("load_model", { path: medFixture });
@@ -637,8 +904,41 @@ try {
     metadataWarning && /MaterialA/.test(metadataWarning) && /MaterialB/.test(metadataWarning) && /Temperature/.test(metadataWarning),
     `load_model surfaces the MED file's real region names + point-data field name (got: ${JSON.stringify(medLoaded.warnings)})`
   );
-  // Still geometry-only under the hood — the region/data visibility above is
-  // additive, not a replacement for the existing STL-boundary mesh path.
+  const autoCreatedWarning = medLoaded.warnings.find((w) => /Auto-created/i.test(w));
+  assert(
+    autoCreatedWarning && /Auto-created 2 Part\(s\)/.test(autoCreatedWarning),
+    `load_model auto-creates one Part per correlated cell region (got: ${JSON.stringify(medLoaded.warnings)})`
+  );
+  assert(
+    medLoaded.sidecars.parts.length === 2 && medLoaded.sidecars.parts.includes("MaterialA") && medLoaded.sidecars.parts.includes("MaterialB"),
+    `load_model's own sidecar summary reflects the auto-created parts (got: ${JSON.stringify(medLoaded.sidecars.parts)})`
+  );
+  const medState = await call("get_state", { path: medFixture });
+  assert(medState.parts.length === 2, `get_state shows both auto-created Parts (got ${medState.parts.length})`);
+  for (const part of medState.parts) {
+    assert(part.surfaces.length > 0, `Part "${part.name}" has ≥1 assigned surface`);
+    assert(
+      part.surfaces.every((s) => /^node-0\/face-\d+$/.test(s)),
+      `Part "${part.name}"'s surface ids look like real facet ids (got: ${JSON.stringify(part.surfaces)})`
+    );
+  }
+  const medPartSurfaces = new Set(medState.parts.flatMap((p) => p.surfaces));
+  assert(
+    medPartSurfaces.size === medState.parts.flatMap((p) => p.surfaces).length,
+    "no facet id is double-assigned across the two auto-created Parts"
+  );
+  // A second load_model call (reopen) must NOT re-create/duplicate parts —
+  // the sidecar already has content, so the existing-parts gate must hold.
+  const medReloaded = await call("load_model", { path: medFixture });
+  assert(
+    !medReloaded.warnings.some((w) => /Auto-created/i.test(w)),
+    "load_model does not re-auto-create Parts on a document that already has them"
+  );
+  assert(medReloaded.sidecars.parts.length === 2, "reopen still reports exactly the same 2 parts, not duplicated");
+
+  // Still geometry-only for anything beyond regions (point/cell/field data
+  // arrays) — the region→Parts correlation above is additive, not a
+  // replacement for the existing STL-boundary mesh path.
   const medMeshed = await call("generate_mesh", { path: medFixture, options: { sizeMax: 0.5 } });
   assert(medMeshed.nodeCount > 0 && medMeshed.elementCount > 0, `generate_mesh still works on the MED source: ${medMeshed.nodeCount} nodes, ${medMeshed.elementCount} elements`);
   assert(fs.statSync(path.join(dir, "tet.h5")).size > 0, "HDF5 companion has content");

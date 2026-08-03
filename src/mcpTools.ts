@@ -25,7 +25,7 @@ import {
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { compileParametricScript } from "./parametricScript";
 import { routeFile, type CadFormat, type FileRoute } from "./fileRouter";
-import { exportTargetsFor, EXPORT_EXTENSION, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION } from "./exportTargets";
 import {
   DEFAULT_MESH_OPTIONS,
   SIZE_MAX_SENTINEL,
@@ -45,11 +45,13 @@ import type {
   getEntityFacts,
   measureEntities,
   measureExact,
+  checkInterference,
   rebindPartsAcrossOps,
   EntityFacts,
   MeasureResult,
   ExactMeasureKind,
   ExactMeasureResult,
+  InterferenceResult,
 } from "./entityFacts";
 import type { renderSnapshot, isRenderAvailable, RenderImage } from "./renderService";
 import type {
@@ -60,7 +62,8 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -101,6 +104,7 @@ export interface Pipeline {
   getEntityFacts: typeof getEntityFacts;
   measureEntities: typeof measureEntities;
   measureExact: typeof measureExact;
+  checkInterference: typeof checkInterference;
   rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
@@ -108,6 +112,7 @@ export interface Pipeline {
   downloadStandardPart: typeof downloadStandardPart;
   compareModels: typeof compareModels;
   convertToStlBoundary: typeof convertToStlBoundary;
+  convertToStlBoundaryWithRegions: typeof convertToStlBoundaryWithRegions;
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
 }
@@ -207,7 +212,7 @@ export function describeCapabilities() {
     verdictConventions: [
       "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
       "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
-      "render_snapshot's images are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
+      "render_snapshot's images (and compare_models' optional includeSnapshots ones) are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
     ],
     brepExportTargets: {
       description: "export_brep targets per source format (the source's own format is excluded, matching the extension's Export menu). Mesh targets (stl/obj/ply/gltf) are webview-only and not available headless.",
@@ -231,7 +236,7 @@ export function describeCapabilities() {
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
-      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; glTF and meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview.",
+      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; glTF and meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
@@ -318,10 +323,37 @@ async function sidecarSummary(modelPath: string) {
 // ---------------------------------------------------------------------------
 // load_model
 
+/**
+ * Auto-creates Parts from a meshio++ source's `kind: "cell"` regions, the
+ * same host-side mechanism `provider.ts`'s `handleMeshio` uses for the
+ * interactive extension (`src/meshioRegionParts.ts`'s `buildPartsFromMeshio
+ * Regions`, over `ctx.pipeline.convertToStlBoundaryWithRegions`'s
+ * correlation) — kept in sync per CLAUDE.md's "keep the MCP server in sync
+ * with extension features" rule, so `apply_edit_ops`/`set_part` on a fresh
+ * meshio import interoperate with a subsequent VS Code open (and vice
+ * versa) the same way every other sidecar already does. Never overwrites an
+ * existing non-empty parts sidecar (same "never clobber existing Parts"
+ * rule). Returns the count actually created (`0` for "nothing to do" —
+ * never throws, mirroring every other best-effort path in this file).
+ */
+async function maybeAutoCreateMeshioParts(ctx: ToolContext, modelPath: string, bytes: Uint8Array, format: CadFormat): Promise<number> {
+  try {
+    const existing = await readParts(modelPath);
+    if (existing.length > 0) return 0;
+    const boundary = await ctx.pipeline.convertToStlBoundaryWithRegions(bytes, format);
+    if (!boundary.regions) return 0;
+    const parts = buildPartsFromMeshioRegions(boundary.stlBytes, boundary.regions);
+    if (parts.length === 0) return 0;
+    await writeParts(modelPath, parts);
+    return parts.length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
-  const sidecars = await sidecarSummary(modelPath);
 
   if (route.strategy !== "occt") {
     const warnings = [
@@ -333,15 +365,29 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     ];
     if (route.strategy === "meshio") {
       const bytes = await readModelBytes(modelPath);
-      const meta = await ctx.pipeline.readMeshioMetadata(bytes, route.format);
+      const [meta, createdCount] = await Promise.all([
+        ctx.pipeline.readMeshioMetadata(bytes, route.format),
+        maybeAutoCreateMeshioParts(ctx, modelPath, bytes, route.format),
+      ]);
       const dataNames = [...meta.pointDataNames, ...meta.cellDataNames, ...meta.fieldDataNames];
       if (meta.regions.length > 0 || dataNames.length > 0) {
-        const parts: string[] = [];
-        if (meta.regions.length > 0) parts.push(`${meta.regions.length} region(s): ${meta.regions.map((r) => r.name).join(", ")}`);
-        if (dataNames.length > 0) parts.push(`data: ${dataNames.join(", ")}`);
-        warnings.push(`Source file also declares ${parts.join(" · ")} — not preserved as Parts/geometry (informational only).`);
+        const bits: string[] = [];
+        if (meta.regions.length > 0) {
+          const names = meta.regions.map((r) => r.name).join(", ");
+          bits.push(
+            createdCount > 0
+              ? `${meta.regions.length} region(s): ${names} (see get_state's parts)`
+              : `${meta.regions.length} region(s): ${names} — not preserved as Parts/geometry`
+          );
+        }
+        if (dataNames.length > 0) bits.push(`data: ${dataNames.join(", ")} — not preserved`);
+        warnings.push(`Source file also declares ${bits.join(" · ")} (informational only).`);
+      }
+      if (createdCount > 0) {
+        warnings.push(`Auto-created ${createdCount} Part(s) from the source file's cell region(s) — see get_state.`);
       }
     }
+    const sidecars = await sidecarSummary(modelPath); // after the auto-create above, so `parts` reflects it
     return {
       format: route.format,
       strategy: route.strategy,
@@ -356,6 +402,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     };
   }
 
+  const sidecars = await sidecarSummary(modelPath);
   const { ops } = await readEdits(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, ops);
@@ -517,6 +564,75 @@ export async function measureExactTool(
 }
 
 // ---------------------------------------------------------------------------
+// check_interference
+
+/**
+ * Interference / clash detection (roadmap item, closed) — a natural sibling
+ * to `measure`/`measure_exact`/`compare_models`: reports the overlap volume
+ * (if any) between two operands, each either a raw `solid-N` id list (`a`/
+ * `b`, same shape the `boolean` edit op's own `a`/`b` already use) or a Part
+ * NAME (`partA`/`partB`, resolved here via `readParts()` to that Part's own
+ * `volumes` array — `entityFacts.ts`'s `checkInterference` itself stays
+ * ignorant of Parts entirely, id-array-in, matching every other
+ * `collectSolids`-based function in this codebase). Exactly one of
+ * `a`/`partA` must be given per operand (same for `b`/`partB`) — providing
+ * neither is a caller-input-shape error (thrown), not a graceful
+ * `supported:false`, since it's unambiguous misuse rather than a
+ * legitimately-absent id. B-rep sources only headless, same gate as every
+ * other entity-facts tool — interference detection needs exact B-rep
+ * boolean geometry, not available for a mesh source without a webview.
+ */
+export async function checkInterferenceTool(
+  ctx: ToolContext,
+  params: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<InterferenceResult>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: interference/clash detection needs exact B-rep boolean geometry, not available headless.`],
+    };
+  }
+
+  if (!params.a && !params.partA) throw new Error("Provide either 'a' (solid-N ids) or 'partA' (a Part name) for operand A.");
+  if (!params.b && !params.partB) throw new Error("Provide either 'b' (solid-N ids) or 'partB' (a Part name) for operand B.");
+
+  const warnings: string[] = [];
+  const resolveOperand = async (label: "A" | "B", ids: string[] | undefined, partName: string | undefined): Promise<string[]> => {
+    if (!partName) return ids ?? [];
+    const parts = await readParts(modelPath);
+    const part = parts.find((p) => p.name === partName);
+    if (!part) {
+      warnings.push(`Part "${partName}" (operand ${label}) not found.`);
+      return [];
+    }
+    if (part.volumes.length === 0) {
+      warnings.push(`Part "${partName}" (operand ${label}) has no assigned solids (volumes) — its surfaces/lines/points, if any, are not solids and are ignored for interference detection.`);
+    }
+    return part.volumes;
+  };
+
+  const [idsA, idsB] = await Promise.all([
+    resolveOperand("A", params.a, params.partA),
+    resolveOperand("B", params.b, params.partB),
+  ]);
+  if (idsA.length === 0 || idsB.length === 0) {
+    return { format: route.format, supported: true, hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], warnings };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.checkInterference(ctx.extensionPath, bytes, route.format as BRepFormat, ops, idsA, idsB);
+  if (result.unresolvedA.length > 0) warnings.push(`Operand A: unresolved id(s) ${result.unresolvedA.join(", ")}.`);
+  if (result.unresolvedB.length > 0) warnings.push(`Operand B: unresolved id(s) ${result.unresolvedB.join(", ")}.`);
+
+  return { format: route.format, supported: true, ...result, warnings };
+}
+
+// ---------------------------------------------------------------------------
 // render_snapshot
 
 /**
@@ -584,11 +700,24 @@ const COMPARABLE_MESH_FORMATS = new Set(["stl", "obj", "ply"]);
  * than throwing, mirroring `get_mass_properties`'s graceful-skip convention:
  * none of those formats has host-side geometry to independently re-derive
  * centroids/volumes from without a webview.
+ *
+ * **`params.includeSnapshots` (roadmap "Visual diff for Compare Models",
+ * closed) — opt-in, default `false`.** Pairing the numeric diff above with
+ * actual before/after PNGs (via `render_snapshot`'s own engine, same
+ * `DEFAULT_VIEWS` four-view packet) makes a "heavily edited" verdict
+ * immediately legible without reading numbers — but it costs up to two full
+ * headless Chromium launches (one per B-rep side, run in parallel) and up to
+ * 8 image content blocks in the response, real token cost an agent should
+ * choose, not have imposed on every call. `isRenderAvailable()` is probed
+ * ONCE (not per side) and only when at least one side is a B-rep source;
+ * mesh (STL/OBJ/PLY) sides degrade to a `warnings` entry, same as every
+ * other `supported: false`-shaped gap in this tool — a skipped/failed
+ * snapshot never blocks or fails the numeric diff.
  */
 export async function compareModelsTool(
   ctx: ToolContext,
-  params: { pathA: string; pathB: string }
-): Promise<{ formatA: CadFormat; formatB: CadFormat; supported: boolean; warnings: string[]; diff?: ModelDiff }> {
+  params: { pathA: string; pathB: string; includeSnapshots?: boolean }
+): Promise<{ formatA: CadFormat; formatB: CadFormat; supported: boolean; warnings: string[]; diff?: ModelDiff; images?: RenderImage[] }> {
   const routeA = requireRoute(params.pathA);
   const routeB = requireRoute(params.pathB);
 
@@ -622,7 +751,33 @@ export async function compareModelsTool(
   const [sourceA, sourceB] = await Promise.all([resolveSource(params.pathA, routeA), resolveSource(params.pathB, routeB)]);
   const diff = await ctx.pipeline.compareModels(ctx.extensionPath, sourceA, sourceB);
 
-  return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff };
+  if (!params.includeSnapshots) {
+    return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff };
+  }
+
+  const needsRender = sourceA.kind === "brep" || sourceB.kind === "brep";
+  let renderAvailable = false;
+  if (needsRender) {
+    const avail = await ctx.pipeline.isRenderAvailable();
+    renderAvailable = avail.available;
+    if (!renderAvailable) warnings.push(`includeSnapshots: visual snapshots skipped — ${avail.reason ?? "renderer unavailable"}.`);
+  }
+  const renderOne = async (label: "A" | "B", source: CompareSource): Promise<RenderImage[]> => {
+    if (source.kind !== "brep") {
+      warnings.push(`includeSnapshots: model ${label} has no visual snapshot (${source.kind.toUpperCase()} sources are B-rep sources only for render_snapshot).`);
+      return [];
+    }
+    if (!renderAvailable) return [];
+    const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, source.bytes, source.format, source.ops, {});
+    if (!result.supported || !result.images) {
+      warnings.push(`includeSnapshots: model ${label} snapshot failed — ${result.reason ?? "unknown error"}.`);
+      return [];
+    }
+    return result.images.map((img) => ({ ...img, label: `${label}-${img.label}` }));
+  };
+  const [imagesA, imagesB] = await Promise.all([renderOne("A", sourceA), renderOne("B", sourceB)]);
+
+  return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff, images: [...imagesA, ...imagesB] };
 }
 
 // ---------------------------------------------------------------------------
@@ -650,35 +805,33 @@ export async function getState(params: { path: string }) {
 }
 
 /**
- * Shared by `apply_edit_ops` and `run_parametric_script` — both append zero
- * or more new ops to an existing op stack and, for a B-rep source, need the
- * same best-effort entity-id rebinding (`entityFacts.ts`'s
- * `rebindPartsAcrossOps`) so a topology-changing append doesn't silently
- * orphan existing Part assignments. A no-op (returns `null`) when there's
- * nothing to rebind — dry run, no ops accepted, a mesh-format source (no
- * B-rep to re-derive ids from), or the pass itself found nothing to change
- * (empty parts list / no topology-changing op in `accepted`) — so callers
- * can skip writing the sidecar and skip mentioning it in `warnings`.
+ * Shared by `apply_edit_ops`/`run_parametric_script` (which only ever
+ * append) and `remove_edit_op` (roadmap "Extend entity-id rebinding to
+ * `remove_edit_op` (and undo/redo)", closed — which removes one op from
+ * anywhere in the stack) — all three mutate the op stack and, for a B-rep
+ * source, need the same best-effort entity-id rebinding (`entityFacts.ts`'s
+ * `rebindPartsAcrossOps`, now general enough to handle ANY `oldOps ->
+ * newOps` transition, not just an append) so the mutation doesn't silently
+ * orphan existing Part assignments. `oldOps`/`newOps` are both FULL op
+ * lists (before/after) — the caller does not need to pre-compute a delta.
+ * A no-op (returns `null`) when there's nothing to rebind — the lists are
+ * identical, a mesh-format source (no B-rep to re-derive ids from), or the
+ * pass itself found nothing to change (empty parts list / no topology-
+ * changing op anywhere in the diff) — so callers can skip writing the
+ * sidecar and skip mentioning it in `warnings`.
  */
 async function maybeRebindParts(
   ctx: ToolContext,
   modelPath: string,
   route: FileRoute,
-  previousOps: EditOp[],
-  accepted: EditOp[]
+  oldOps: EditOp[],
+  newOps: EditOp[]
 ): Promise<{ reboundCount: number; droppedCount: number } | null> {
-  if (route.strategy !== "occt" || accepted.length === 0) return null;
+  if (route.strategy !== "occt" || oldOps.length === newOps.length) return null;
   const parts = await readParts(modelPath);
   if (parts.length === 0) return null;
   const bytes = await readModelBytes(modelPath);
-  const result = await ctx.pipeline.rebindPartsAcrossOps(
-    ctx.extensionPath,
-    bytes,
-    route.format as BRepFormat,
-    previousOps,
-    accepted,
-    parts
-  );
+  const result = await ctx.pipeline.rebindPartsAcrossOps(ctx.extensionPath, bytes, route.format as BRepFormat, oldOps, newOps, parts);
   if (result.parts === parts) return null; // nothing topology-changing, or nothing matched — same reference
   await writeParts(modelPath, result.parts);
   return { reboundCount: result.stats.rebound, droppedCount: result.stats.dropped };
@@ -742,7 +895,7 @@ export async function applyEditOps(
     model = entitySummary(result);
   }
 
-  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, accepted);
+  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps);
   if (rebind) {
     warnings.push(
       `Rebound ${rebind.reboundCount} part-entity id(s) after topology-changing op(s) (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
@@ -820,7 +973,7 @@ export async function runParametricScriptTool(
     model = entitySummary(result);
   }
 
-  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, accepted);
+  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps);
   if (rebind) {
     warnings.push(
       `Rebound ${rebind.reboundCount} part-entity id(s) after topology-changing op(s) (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
@@ -843,21 +996,46 @@ export async function runParametricScriptTool(
 // ---------------------------------------------------------------------------
 // remove_edit_op
 
-export async function removeEditOp(params: { path: string; index: number }) {
+/**
+ * Removes one op by 0-based index — unlike `apply_edit_ops`' pure append,
+ * this can splice out of the MIDDLE of the stack, which is exactly the case
+ * the original append-only entity-id rebinding couldn't handle (roadmap
+ * "Extend entity-id rebinding to `remove_edit_op` (and undo/redo)", closed).
+ * Now attempts the same best-effort rebind `apply_edit_ops`/
+ * `run_parametric_script` already get, via the now-general
+ * `rebindPartsAcrossOps` (see its doc comment for the unwind/rewind
+ * algorithm) — `maybeRebindParts` degrades gracefully to a no-op (no
+ * warning) when there's nothing to rebind (a mesh-format source, no Parts,
+ * or the removed op wasn't topology-changing).
+ */
+export async function removeEditOp(ctx: ToolContext, params: { path: string; index: number }) {
   const modelPath = params.path;
-  requireRoute(modelPath);
+  const route = requireRoute(modelPath);
   const current = await readEdits(modelPath);
   if (!Number.isInteger(params.index) || params.index < 0 || params.index >= current.ops.length) {
     throw new Error(`Index ${params.index} out of range — the op stack has ${current.ops.length} entries (0-based).`);
   }
-  const [removed] = current.ops.splice(params.index, 1);
-  await writeEdits(modelPath, current.ops, current.variables);
+  const oldOps = current.ops;
+  const newOps = [...oldOps.slice(0, params.index), ...oldOps.slice(params.index + 1)];
+  const removed = oldOps[params.index];
+  await writeEdits(modelPath, newOps, current.variables);
+
+  const warnings: string[] = [];
+  const rebind = await maybeRebindParts(ctx, modelPath, route, oldOps, newOps);
+  if (rebind) {
+    warnings.push(
+      `Rebound ${rebind.reboundCount} part-entity id(s) after removing a topology-changing op (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`
+    );
+  } else if (TOPOLOGY_CHANGING_OPS.has(removed.op)) {
+    warnings.push(
+      "Removed a topology-changing op: face-N/edge-N ids referenced by later ops or parts may no longer resolve (they degrade gracefully — unresolved operands are skipped)."
+    );
+  }
+
   return {
     removed: describeOp(removed),
-    stackLength: current.ops.length,
-    warnings: TOPOLOGY_CHANGING_OPS.has(removed.op)
-      ? ["Removed a topology-changing op: face-N/edge-N ids referenced by later ops or parts may no longer resolve (they degrade gracefully — unresolved operands are skipped)."]
-      : [],
+    stackLength: newOps.length,
+    warnings,
   };
 }
 
@@ -995,8 +1173,16 @@ export async function setMeshOptions(params: { path: string; options: Partial<Me
  * `resolveMeshInput` — only `export_mesh` ever passes a real one, matching
  * the extension's own scoping (`generate_mesh`/interactive Generate always
  * stay native mm; see CLAUDE.md's meshing-unit-conversion section). B-rep
- * sources get it via `exportBRep`'s existing `scaleFactor` param; `stl`/
- * meshio-derived sources get it via the new `scaleStlBytes`.
+ * sources get it via `exportBRep`'s existing `unit` param with
+ * `labelStepUnit: false` — the intermediate STEP this produces is meshing
+ * input only, never shown to the user, and MUST stay at the OCCT-native
+ * `"mm"` header label even though its geometry is genuinely scaled: verified
+ * against the live WASM that Gmsh's own `gmsh.model.occ.importShapes` DOES
+ * reinterpret a correctly-labeled non-mm header and silently undoes the
+ * scale, which would desync the geometry from the separately-rescaled
+ * `sizeMin`/`sizeMax` below (a real regression this flag exists to prevent —
+ * see `exportBRep`'s doc comment in `occtService.ts`). `stl`/meshio-derived
+ * sources get it via the new `scaleStlBytes`, unaffected by this either way.
  */
 async function resolveMeshInputHeadless(
   ctx: ToolContext,
@@ -1015,7 +1201,8 @@ async function resolveMeshInputHeadless(
       route.format as BRepFormat,
       "step",
       ops,
-      factor
+      unit,
+      false
     );
     return { kind: "brep", stepBytes };
   }
@@ -1087,9 +1274,8 @@ async function resolveMeshPartsAndOptionsHeadless(
 
 /** Validates a raw `unit` param string into a `DisplayUnit`, warning and
  * falling back to `"mm"` (no conversion) for an unrecognized value — same
- * convention as `exportBRepTool`'s unit handling, but simpler: every Gmsh
- * export format is scale-agnostic (no STEP/IGES-style declared-header-unit
- * gotcha), so unlike `exportBRepTool` there's no format-dependent fallback. */
+ * convention, and the same simple "unknown string → mm" fallback,
+ * `exportBRepTool`'s unit handling uses. */
 function resolveExportMeshUnit(rawUnit: string | undefined, warnings: string[]): DisplayUnit {
   if (rawUnit == null) return "mm";
   if (!DISPLAY_UNITS.includes(rawUnit as DisplayUnit)) {
@@ -1302,15 +1488,6 @@ export async function exportBRepTool(
   if (params.unit != null) {
     if (!DISPLAY_UNITS.includes(params.unit as DisplayUnit)) {
       warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm" (no conversion).`);
-    } else if (params.unit !== "mm" && !UNIT_CONVERTIBLE_FORMATS.has(target)) {
-      // STEP/IGES declare a unit in their own header that this OCCT WASM build
-      // has no verified way to set on write — see UNIT_CONVERTIBLE_FORMATS'
-      // doc comment. Converting geometry without fixing the header would
-      // silently mislabel the file, so this degrades to mm with a warning
-      // rather than producing one.
-      warnings.push(
-        `Unit conversion is only supported for a "brep" export target (this OCCT build can't set STEP/IGES' own declared header unit) — exporting "${target}" at native mm instead.`
-      );
     } else {
       unit = params.unit as DisplayUnit;
     }
@@ -1324,7 +1501,7 @@ export async function exportBRepTool(
     route.format as BRepFormat,
     target,
     ops,
-    unitScaleFactor(unit)
+    unit
   );
   await fs.writeFile(outputPath, bytes);
   return {

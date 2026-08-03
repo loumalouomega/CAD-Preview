@@ -15,10 +15,22 @@ export const MAX_FACETS = 512;
  *
  * Works on indexed and non-indexed geometry: STL/OBJ meshes duplicate coincident
  * vertices, so adjacency is computed on position-welded ("canonical") vertices.
+ *
+ * `triangleRegion`, when given, is an additional per-triangle constraint
+ * (one entry per triangle, any comparable value — typically a region index
+ * or `-1` for "none"): two triangles never merge across a boundary where
+ * this value differs, even if they're coplanar within tolerance. Purely
+ * restrictive — every existing call site (which omits it) behaves
+ * identically to before; this can only ever produce the same or MORE
+ * facets, never fewer. Used to keep a meshio++-imported document's
+ * region-derived Parts referencing the same facet ids the model actually
+ * displays — see `src/meshioService.ts`'s `convertToStlBoundaryWithRegions`
+ * and CLAUDE.md's "meshio++ integration" section.
  */
 export function segmentCoplanarFacets(
   geometry: THREE.BufferGeometry,
-  angleToleranceDeg = FACET_ANGLE_TOLERANCE
+  angleToleranceDeg = FACET_ANGLE_TOLERANCE,
+  triangleRegion?: ArrayLike<number>
 ): number[] {
   const pos = geometry.getAttribute("position") as THREE.BufferAttribute;
   const index = geometry.getIndex();
@@ -84,6 +96,7 @@ export function segmentCoplanarFacets(
       for (const [p, q] of [[a, b], [b, c], [c, a]] as const) {
         for (const nt of edgeMap.get(ekey(p, q)) ?? []) {
           if (nt === t || facetOf[nt] !== -1) continue;
+          if (triangleRegion && triangleRegion[t] !== triangleRegion[nt]) continue;
           if (normals[t].dot(normals[nt]) >= cosTol) {
             facetOf[nt] = facetId;
             stack.push(nt);
@@ -105,10 +118,13 @@ export function segmentCoplanarFacets(
  * If the mesh yields no facets, or more than {@link MAX_FACETS} (e.g. an organic
  * curved mesh), it is kept whole as a single surface to avoid a draw-call
  * explosion. Returns the object that should stand in for `mesh`.
+ *
+ * `triangleRegion`, when given, is forwarded to {@link segmentCoplanarFacets}
+ * (see its doc comment) — used only for meshio++-imported documents.
  */
-export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string): THREE.Object3D {
+export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string, triangleRegion?: ArrayLike<number>): THREE.Object3D {
   const geometry = mesh.geometry as THREE.BufferGeometry;
-  const facetOf = segmentCoplanarFacets(geometry);
+  const facetOf = segmentCoplanarFacets(geometry, FACET_ANGLE_TOLERANCE, triangleRegion);
   const facetCount = facetOf.length ? Math.max(...facetOf) + 1 : 0;
 
   if (facetCount <= 1 || facetCount > MAX_FACETS) {
@@ -173,12 +189,17 @@ function disposeMesh(mesh: THREE.Mesh): void {
  * `node-N` id) becomes its volume id, so the Components tree highlight keeps
  * working. Returns the (possibly new) root — when the loaded object IS a mesh
  * (e.g. a single-mesh STL), it has no parent and is replaced by its facet group.
+ *
+ * `triangleRegion`, when given, is applied to whichever single mesh is found
+ * (a meshio++ import always yields exactly one root mesh — the STL boundary
+ * — so there is never an ambiguity about which mesh it applies to); see
+ * {@link segmentCoplanarFacets}'s doc comment.
  */
-export function splitMeshesIntoFacets(object: THREE.Object3D): THREE.Object3D {
+export function splitMeshesIntoFacets(object: THREE.Object3D, triangleRegion?: ArrayLike<number>): THREE.Object3D {
   // Root-is-mesh: nothing to splice into, so return the replacement directly.
   if (object instanceof THREE.Mesh) {
     const volumeId = (object.userData.groupId as string) ?? object.uuid;
-    const replacement = buildMeshFacetGroup(object, volumeId);
+    const replacement = buildMeshFacetGroup(object, volumeId, triangleRegion);
     if (replacement !== object) disposeMesh(object);
     return replacement;
   }
@@ -187,7 +208,7 @@ export function splitMeshesIntoFacets(object: THREE.Object3D): THREE.Object3D {
   object.traverse((o) => { if (o instanceof THREE.Mesh) meshes.push(o); });
   for (const mesh of meshes) {
     const volumeId = (mesh.userData.groupId as string) ?? mesh.uuid;
-    const replacement = buildMeshFacetGroup(mesh, volumeId);
+    const replacement = buildMeshFacetGroup(mesh, volumeId, triangleRegion);
     if (replacement !== mesh && mesh.parent) {
       mesh.parent.add(replacement);
       mesh.parent.remove(mesh);

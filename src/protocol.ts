@@ -97,6 +97,24 @@ export type HostToWebview =
         cellDataNames: string[];
         fieldDataNames: string[];
       };
+      /** Per-boundary-triangle region correlation (`src/meshioService.ts`'s
+       * `convertToStlBoundaryWithRegions`) — present whenever the source's
+       * `kind: "cell"` regions could be safely correlated to the STL
+       * boundary triangles above (currently: pure-triangle boundaries only,
+       * see that function's doc comment). Sent on EVERY open where
+       * correlation succeeds, not just the first import that auto-creates
+       * Parts from it (see `provider.ts`'s `handleMeshio`) — the webview
+       * needs it every time to reproduce the identical region-aware facet
+       * split those Parts' `node-0/face-K` ids were computed against, or the
+       * ids would stop resolving to anything on reopen. `regionNames[i]` is
+       * a name; `triangleRegionIndex` (base64 `Int32Array`, one entry per
+       * STL triangle in `dataBase64`, same order) is an index into
+       * `regionNames`, or `-1` if that triangle wasn't covered by any
+       * region. */
+      regionAssignment?: {
+        regionNames: string[];
+        triangleRegionIndex: string; // base64 Int32Array
+      };
     }
   | { type: "parts"; parts: Part[] }
   | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
@@ -147,6 +165,17 @@ export type HostToWebview =
   | { type: "massPropertiesError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
   | { type: "measureExactError"; requestId: string; message: string }
+  | {
+      type: "colorFieldResult";
+      requestId: string;
+      /** One value per triangle CORNER (base64 `Float32Array`), same order
+       * as the currently-loaded model's own triangle soup (see
+       * `src/meshioService.ts`'s `readMeshioFieldValues`). */
+      values: string;
+      min: number;
+      max: number;
+    }
+  | { type: "colorFieldError"; requestId: string; message: string }
   | {
       type: "renderViewRequest";
       /** Deliberately separate from `screenshotRequest`'s requestId
@@ -211,9 +240,10 @@ export type WebviewToHost =
       entityIdB?: string;
     }
   | { type: "renderViewResult"; requestId: string; data: string }
-  | { type: "renderViewError"; requestId: string; message: string };
+  | { type: "renderViewError"; requestId: string; message: string }
+  | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
-export function encodeBuffer(arr: Float32Array | Uint32Array): string {
-  return Buffer.from(arr.buffer).toString("base64");
+export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {
+  return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString("base64");
 }

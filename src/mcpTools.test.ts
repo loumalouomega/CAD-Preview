@@ -19,6 +19,7 @@ import {
   inspectEntity,
   measureTool,
   measureExactTool,
+  checkInterferenceTool,
   renderSnapshotTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
@@ -39,10 +40,32 @@ import { parseStl } from "./stlParser";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
 import type { MassProperties } from "./massProperties";
-import type { EntityFacts, MeasureResult, ExactMeasureResult } from "./entityFacts";
+import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult } from "./entityFacts";
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { ModelDiff } from "./modelDiff";
+
+// The exact 6-triangle boundary `convertToStlBoundaryWithRegions` produces
+// for `examples/MED/two-material-tets.med` — see `meshioRegionParts.test.ts`
+// for the full provenance/verification note.
+const TWO_TET_BOUNDARY_STL = new TextEncoder().encode(
+  [
+    "solid meshio",
+    "facet normal 0 -1 0",
+    "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 1", "endloop", "endfacet",
+    "facet normal 0.5773502691896258 0.5773502691896258 0.5773502691896258",
+    "outer loop", "vertex 1 0 0", "vertex 0 1 0", "vertex 0 0 1", "endloop", "endfacet",
+    "facet normal -1 0 0",
+    "outer loop", "vertex 0 1 0", "vertex 0 0 0", "vertex 0 0 1", "endloop", "endfacet",
+    "facet normal 0 1 0",
+    "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 -1", "endloop", "endfacet",
+    "facet normal -0.5773502691896258 -0.5773502691896258 0.5773502691896258",
+    "outer loop", "vertex 1 0 0", "vertex 0 1 0", "vertex 0 0 -1", "endloop", "endfacet",
+    "facet normal 1 0 0",
+    "outer loop", "vertex 0 1 0", "vertex 0 0 0", "vertex 0 0 -1", "endloop", "endfacet",
+    "endsolid meshio",
+  ].join("\n")
+);
 
 let dir: string;
 let stpModel: string;
@@ -151,6 +174,13 @@ const FAKE_MEASURE_RESULT: MeasureResult = {
   delta: [3, 4, 0],
 };
 
+const FAKE_INTERFERENCE_RESULT: InterferenceResult = {
+  hasOverlap: true,
+  overlapVolume: 700,
+  unresolvedA: [],
+  unresolvedB: [],
+};
+
 const FAKE_EXACT_MEASURE_RESULT: ExactMeasureResult = {
   kind: "distance",
   value: 5,
@@ -223,12 +253,14 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
     measureExact: vi.fn(async () => FAKE_EXACT_MEASURE_RESULT),
+    checkInterference: vi.fn(async () => FAKE_INTERFERENCE_RESULT),
     renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
     isRenderAvailable: vi.fn(async () => ({ available: true })),
     searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
     downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
+    convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
     rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts) => ({
@@ -363,6 +395,48 @@ describe("load_model", () => {
     await loadModel(c, { path: stlModel });
     expect(c.pipeline.readMeshioMetadata).not.toHaveBeenCalled();
   });
+
+  it("auto-creates Parts from meshio++ region correlation and reports it in warnings/get_state", async () => {
+    const pipeline = fakePipeline({
+      convertToStlBoundaryWithRegions: vi.fn(async () => ({
+        stlBytes: TWO_TET_BOUNDARY_STL,
+        regions: { regionNames: ["MaterialA", "MaterialB"], triangleRegion: Int32Array.from([0, 0, 0, 1, 1, 1]) },
+      })),
+    });
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const result = await loadModel(ctx(pipeline), { path: vtkModel });
+    expect(result.warnings.some((w) => /Auto-created 2 Part\(s\)/.test(w))).toBe(true);
+    expect(result.sidecars.parts).toEqual(["MaterialA", "MaterialB"]);
+
+    const state = await getState({ path: vtkModel });
+    expect(state.parts.map((p) => p.name)).toEqual(["MaterialA", "MaterialB"]);
+    expect(state.parts.every((p) => p.surfaces.every((s) => /^node-0\/face-\d+$/.test(s)))).toBe(true);
+  });
+
+  it("never overwrites an existing non-empty parts sidecar with auto-created ones", async () => {
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    await setPart({ path: vtkModel, name: "Manual", volumes: ["node-0"] });
+    const pipeline = fakePipeline({
+      convertToStlBoundaryWithRegions: vi.fn(async () => ({
+        stlBytes: TWO_TET_BOUNDARY_STL,
+        regions: { regionNames: ["MaterialA", "MaterialB"], triangleRegion: Int32Array.from([0, 0, 0, 1, 1, 1]) },
+      })),
+    });
+    const result = await loadModel(ctx(pipeline), { path: vtkModel });
+    expect(result.warnings.some((w) => /Auto-created/.test(w))).toBe(false);
+    expect(result.sidecars.parts).toEqual(["Manual"]);
+  });
+
+  it("degrades gracefully (no warning, no throw) when region correlation finds nothing", async () => {
+    const c = ctx(); // default fakePipeline: convertToStlBoundaryWithRegions returns no `regions`
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const result = await loadModel(c, { path: vtkModel });
+    expect(result.warnings.some((w) => /Auto-created/.test(w))).toBe(false);
+    expect(result.sidecars.parts).toEqual([]);
+  });
 });
 
 describe("get_mass_properties", () => {
@@ -489,6 +563,86 @@ describe("measure_exact", () => {
       })
     );
     await expect(measureExactTool(c, { path: stpModel, kind: "distance", entityIdA: "solid-0" })).rejects.toThrow(/entityIdB/);
+  });
+});
+
+describe("check_interference", () => {
+  it("reports the pipeline's overlap result for two solid-id operands", async () => {
+    const c = ctx();
+    const result = await checkInterferenceTool(c, { path: stpModel, a: ["solid-0"], b: ["solid-1"] });
+    expect(c.pipeline.checkInterference).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], ["solid-0"], ["solid-1"]);
+    expect(result).toMatchObject({ supported: true, hasOverlap: true, overlapVolume: 700 });
+  });
+
+  it("compounds multiple ids per operand, passed straight through to the pipeline", async () => {
+    const c = ctx();
+    await checkInterferenceTool(c, { path: stpModel, a: ["solid-0", "solid-1"], b: ["solid-2"] });
+    const lastCall = vi.mocked(c.pipeline.checkInterference).mock.lastCall!;
+    expect(lastCall[4]).toEqual(["solid-0", "solid-1"]);
+    expect(lastCall[5]).toEqual(["solid-2"]);
+  });
+
+  it("resolves a Part name (partA) to its assigned volumes before calling the pipeline", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "Group", volumes: ["solid-0", "solid-2"] });
+    await checkInterferenceTool(c, { path: stpModel, partA: "Group", b: ["solid-1"] });
+    const lastCall = vi.mocked(c.pipeline.checkInterference).mock.lastCall!;
+    expect(lastCall[4]).toEqual(["solid-0", "solid-2"]);
+  });
+
+  it("resolves both partA and partB in the same call", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
+    await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
+    await checkInterferenceTool(c, { path: stpModel, partA: "A", partB: "B" });
+    const lastCall = vi.mocked(c.pipeline.checkInterference).mock.lastCall!;
+    expect(lastCall[4]).toEqual(["solid-0"]);
+    expect(lastCall[5]).toEqual(["solid-1"]);
+  });
+
+  it("warns (never throws) and skips the pipeline call for an unknown Part name", async () => {
+    const c = ctx();
+    const result = await checkInterferenceTool(c, { path: stpModel, partA: "NoSuchPart", b: ["solid-1"] });
+    expect(c.pipeline.checkInterference).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ supported: true, hasOverlap: false, overlapVolume: 0 });
+    expect(result.warnings[0]).toMatch(/not found/i);
+  });
+
+  it("warns (but still calls the pipeline, since B is fine) for a Part with no assigned volumes", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "Empty", surfaces: ["face-0"] }); // no volumes
+    const result = await checkInterferenceTool(c, { path: stpModel, partA: "Empty", b: ["solid-1"] });
+    expect(c.pipeline.checkInterference).not.toHaveBeenCalled(); // Empty resolves to [] volumes -> nothing to intersect
+    expect(result.hasOverlap).toBe(false);
+    expect(result.warnings[0]).toMatch(/no assigned solids/i);
+  });
+
+  it("surfaces the pipeline's unresolved ids in warnings", async () => {
+    const c = ctx(
+      fakePipeline({
+        checkInterference: vi.fn(async () => ({ hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: ["solid-99"] })),
+      })
+    );
+    const result = await checkInterferenceTool(c, { path: stpModel, a: ["solid-0"], b: ["solid-99"] });
+    expect(result.warnings.some((w) => /solid-99/.test(w))).toBe(true);
+  });
+
+  it("throws a clear validation error when neither a nor partA is given for operand A", async () => {
+    const c = ctx();
+    await expect(checkInterferenceTool(c, { path: stpModel, b: ["solid-1"] })).rejects.toThrow(/'a'.*'partA'/);
+  });
+
+  it("throws a clear validation error when neither b nor partB is given for operand B", async () => {
+    const c = ctx();
+    await expect(checkInterferenceTool(c, { path: stpModel, a: ["solid-0"] })).rejects.toThrow(/'b'.*'partB'/);
+  });
+
+  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+    const c = ctx();
+    const result = await checkInterferenceTool(c, { path: stlModel, a: ["node-0"], b: ["node-0"] });
+    expect(c.pipeline.checkInterference).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/headless/i);
   });
 });
 
@@ -714,6 +868,55 @@ describe("compare_models", () => {
   it("rejects unsupported extensions on either path", async () => {
     await expect(compareModelsTool(ctx(), { pathA: path.join(dir, "x.txt"), pathB: stpModel2 })).rejects.toThrow(/unsupported/i);
     await expect(compareModelsTool(ctx(), { pathA: stpModel, pathB: path.join(dir, "x.txt") })).rejects.toThrow(/unsupported/i);
+  });
+
+  it("never calls renderSnapshot/isRenderAvailable when includeSnapshots is omitted (default false)", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2 });
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(c.pipeline.isRenderAvailable).not.toHaveBeenCalled();
+    expect(result.images).toBeUndefined();
+  });
+
+  it("includeSnapshots:true renders both B-rep sides, prefixing each image label with A-/B-", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2, includeSnapshots: true });
+    expect(c.pipeline.isRenderAvailable).toHaveBeenCalledTimes(1); // probed once, not per side
+    expect(c.pipeline.renderSnapshot).toHaveBeenCalledTimes(2);
+    expect(result.images?.map((i) => i.label)).toEqual(["A-ISO-A", "A-ISO-B", "A-TOP", "A-FRONT", "B-ISO-A", "B-ISO-B", "B-TOP", "B-FRONT"]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("includeSnapshots:true warns (never fails) for a mesh-format side, with no render call for it", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel, includeSnapshots: true });
+    expect(c.pipeline.renderSnapshot).toHaveBeenCalledTimes(1); // only the B-rep side
+    expect(result.supported).toBe(true);
+    expect(result.images?.map((i) => i.label)).toEqual(["A-ISO-A", "A-ISO-B", "A-TOP", "A-FRONT"]);
+    expect(result.warnings.some((w) => /model B has no visual snapshot/i.test(w))).toBe(true);
+  });
+
+  it("includeSnapshots:true degrades gracefully (no throw) when the renderer is unavailable, probed only once", async () => {
+    const c = ctx(
+      fakePipeline({ isRenderAvailable: vi.fn(async () => ({ available: false, reason: "no chromium" })) })
+    );
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2, includeSnapshots: true });
+    expect(c.pipeline.isRenderAvailable).toHaveBeenCalledTimes(1);
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result.supported).toBe(true);
+    expect(result.images).toEqual([]);
+    expect(result.warnings.some((w) => /skipped.*no chromium/i.test(w))).toBe(true);
+  });
+
+  it("does not probe isRenderAvailable at all when includeSnapshots:true but both sides are mesh formats", async () => {
+    const c = ctx();
+    const stlModel2 = path.join(dir, "model3.stl");
+    await fs.writeFile(stlModel2, "solid z\nendsolid z\n", "utf8");
+    const result = await compareModelsTool(c, { pathA: stlModel, pathB: stlModel2, includeSnapshots: true });
+    expect(c.pipeline.isRenderAvailable).not.toHaveBeenCalled();
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result.images).toEqual([]);
+    expect(result.warnings.filter((w) => /has no visual snapshot/i.test(w))).toHaveLength(2);
   });
 });
 
@@ -967,11 +1170,57 @@ describe("remove_edit_op", () => {
         { op: "addSphere", center: [0, 0, 0], radius: 2 },
       ],
     });
-    const result = await removeEditOp({ path: stpModel, index: 0 });
+    const result = await removeEditOp(c, { path: stpModel, index: 0 });
     expect(result.stackLength).toBe(1);
     const remaining = await readEdits(stpModel);
     expect(remaining.ops[0].op).toBe("addSphere");
-    await expect(removeEditOp({ path: stpModel, index: 5 })).rejects.toThrow(/out of range/i);
+    await expect(removeEditOp(c, { path: stpModel, index: 5 })).rejects.toThrow(/out of range/i);
+  });
+
+  it("attempts entity-id rebinding when removing a topology-changing op, passing FULL before/after op lists", async () => {
+    await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
+    const pipeline = fakePipeline({
+      rebindPartsAcrossOps: vi.fn(async () => ({
+        parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-9"], lines: [], points: [] }],
+        stats: { considered: 1, rebound: 1, dropped: 0 },
+      })),
+    });
+    const c = ctx(pipeline);
+    await applyEditOps(c, {
+      path: stpModel,
+      ops: [
+        { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] },
+        { op: "addSphere", center: [5, 5, 5], radius: 2 },
+      ],
+    });
+    const result = await removeEditOp(c, { path: stpModel, index: 0 }); // addBox is topology-changing
+    const call = vi.mocked(pipeline.rebindPartsAcrossOps).mock.lastCall!;
+    expect(call[3]).toEqual([
+      { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] },
+      { op: "addSphere", center: [5, 5, 5], radius: 2 },
+    ]); // oldOps — the FULL pre-removal list
+    expect(call[4]).toEqual([{ op: "addSphere", center: [5, 5, 5], radius: 2 }]); // newOps — the FULL post-removal list
+    expect(result.warnings.some((w) => /Rebound 1.*dropped 0/.test(w))).toBe(true);
+    expect((await readParts(stpModel))[0].surfaces).toEqual(["face-9"]);
+  });
+
+  it("does not attempt rebinding (and keeps the old fallback warning) when there are no Parts", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    vi.mocked(c.pipeline.rebindPartsAcrossOps).mockClear();
+    const result = await removeEditOp(c, { path: stpModel, index: 0 });
+    expect(c.pipeline.rebindPartsAcrossOps).not.toHaveBeenCalled();
+    expect(result.warnings[0]).toMatch(/topology-changing op/i);
+  });
+
+  it("removing a non-topology-changing op produces no warnings", async () => {
+    const c = ctx();
+    await applyEditOps(c, {
+      path: stpModel,
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [1, 0, 0] }],
+    });
+    const result = await removeEditOp(c, { path: stpModel, index: 0 });
+    expect(result.warnings).toEqual([]);
   });
 });
 
@@ -1062,7 +1311,8 @@ describe("generate_mesh", () => {
       "step",
       "step",
       [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }],
-      1 // generate_mesh always meshes at native mm (factor 1) — see export_mesh for the unit-converted path
+      "mm", // generate_mesh always meshes at native mm — see export_mesh for the unit-converted path
+      false // labelStepUnit: meshing-input STEP never gets a relabeled header — Gmsh reinterprets it
     );
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(genCall[1]).toEqual({ kind: "brep", stepBytes: new Uint8Array([1, 2, 3]) });
@@ -1231,18 +1481,18 @@ describe("export_mesh", () => {
     expect(onProgress.mock.calls[1][0]).toMatchObject({ progress: 1, total: 1 });
   });
 
-  it("stays at native mm (factor 1) when unit is omitted", async () => {
+  it("stays at native mm when unit is omitted", async () => {
     const c = ctx();
     const out = path.join(dir, "out.msh");
     await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], "mm", false);
   });
 
-  it("passes the unit scale factor through to exportBRep for a B-rep source, and rescales sizeMin/sizeMax to match", async () => {
+  it("passes the unit through to exportBRep for a B-rep source (never relabeling the meshing-input STEP header), and rescales sizeMin/sizeMax to match", async () => {
     const c = ctx();
     const out = path.join(dir, "out.msh");
     await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out, unit: "in", options: { sizeMin: 1, sizeMax: 10 } });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1 / 25.4);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], "in", false);
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(genCall[2].sizeMin).toBeCloseTo(1 / 25.4, 6);
     expect(genCall[2].sizeMax).toBeCloseTo(10 / 25.4, 6);
@@ -1260,7 +1510,7 @@ describe("export_mesh", () => {
     const c = ctx();
     const out = path.join(dir, "out.msh");
     const result = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out, unit: "parsec" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], 1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", "step", [], "mm", false);
     expect(result.warnings.some((w) => w.includes('Unknown unit "parsec"'))).toBe(true);
   });
 
@@ -1314,20 +1564,20 @@ describe("export_brep", () => {
     );
   });
 
-  it("defaults to mm (scale factor 1, no conversion)", async () => {
+  it("defaults to mm (no conversion)", async () => {
     const c = ctx();
     const out = path.join(dir, "out-mm.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm");
     expect(result.unit).toBe("mm");
     expect(result.warnings).toEqual([]);
   });
 
-  it("passes the verified mm scale factor for a real unit", async () => {
+  it("passes the requested unit straight through for a brep target", async () => {
     const c = ctx();
     const out = path.join(dir, "out-in.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "in" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1 / 25.4);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "in");
     expect(result.unit).toBe("in");
   });
 
@@ -1335,18 +1585,18 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out-bad.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "parsec" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], 1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm");
     expect(result.unit).toBe("mm");
     expect(result.warnings[0]).toMatch(/unknown unit/i);
   });
 
-  it("falls back to mm and warns for an iges target — STEP/IGES can't honestly represent a converted unit", async () => {
+  it("passes the requested unit through for an iges target too — IGESControl_Writer_2 handles it natively", async () => {
     const c = ctx();
     const out = path.join(dir, "out.iges");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "iges", outputPath: out, unit: "in" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], 1);
-    expect(result.unit).toBe("mm");
-    expect(result.warnings[0]).toMatch(/unit conversion is only supported for a "brep"/i);
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], "in");
+    expect(result.unit).toBe("in");
+    expect(result.warnings).toEqual([]);
   });
 });
 

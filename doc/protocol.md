@@ -217,6 +217,7 @@ type HostToWebview =
         regions: Array<{ name: string; kind: string; numEntries: number }>
         pointDataNames: string[]; cellDataNames: string[]; fieldDataNames: string[]
       }
+      regionAssignment?: { regionNames: string[]; triangleRegionIndex: string }
     }
   | { type: 'parts';    parts: Part[] }
   | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
@@ -234,6 +235,8 @@ type HostToWebview =
   | { type: 'massPropertiesError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
   | { type: 'measureExactError'; requestId: string; message: string }
+  | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
+  | { type: 'colorFieldError'; requestId: string; message: string }
 ```
 
 ### `geometry`
@@ -293,7 +296,9 @@ Sent for mesh-format files (STL/OBJ/PLY/glTF). The `url` is a `vscode-webview://
 
 Sent for meshio++-only source files (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA — see [File Formats](./file-formats.md#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa)). Unlike `loadUrl`, the webview has no native loader for these formats at all, so the host converts the file host-side first (`src/meshioService.ts`'s `convertToStlBoundary()`, via meshio++'s `convertSurface`) and sends the resulting **STL bytes** directly over postMessage as base64 — the same transport pattern `geometry` already uses for large buffers, deliberately not a `data:` URL (sidesteps any webview CSP/size-limit uncertainty around those). `sourceFormat` is the document's *actual* source format (e.g. `"vtk"`), used only for the Components tree root's label — the bytes themselves are always `"stl"` and are fed through the exact same `loadMeshFromUrl(url, "stl")` call `loadUrl` uses, via a `blob:` object URL (`URL.createObjectURL`) instead of a `vscode-webview://` fetch. From this point on, a meshio-imported document is indistinguishable from a native `.stl` open to every other feature.
 
-An optional `meshioMetadata` carries **read-only visibility** into named regions (gmsh physical groups, Abaqus NSET/ELSET/SURFACE, Exodus blocks/sets, MED families, Kratos SubModelParts) and point/cell/field data array names the source file declares — from `meshioService.ts`'s `readMeshioMetadata()` (a cheap `readMetadata()` call, computed alongside `convertToStlBoundary()` via `Promise.all`, best-effort and never throwing). Omitted entirely (not an empty object) when the file declares nothing. **This is informational only — none of it is converted into Parts or any other geometry**; the webview's `case "loadMeshBytes"` handler shows it as a one-line `status` summary, posted AFTER the STL load completes so it can't race with and get clobbered by `loadMeshObjectFromUrl`'s own internal loading-status sequence. See CLAUDE.md's "meshio++ integration" section for why full auto-conversion into Parts is real, larger future work (a de-risked mechanism is documented there for whoever picks it up next).
+An optional `meshioMetadata` carries **read-only visibility** into named regions (gmsh physical groups, Abaqus NSET/ELSET/SURFACE, Exodus blocks/sets, MED families, Kratos SubModelParts) and point/cell/field data array names the source file declares — from `meshioService.ts`'s `readMeshioMetadata()` (a cheap `readMetadata()` call, best-effort and never throwing). Omitted entirely (not an empty object) when the file declares nothing. Point/cell/field *data arrays* are always informational only — none of their values are converted into anything. Region *names*, though, may now be more than informational: see `regionAssignment` below.
+
+An optional `regionAssignment` (`regionNames: string[]` + a base64 `Int32Array` `triangleRegionIndex`, one entry per triangle in `dataBase64`) is present whenever `src/meshioService.ts`'s `convertToStlBoundaryWithRegions()` could correlate the source's `kind: "cell"` regions to the STL boundary triangles above (currently: pure-triangle boundaries only, e.g. a tetrahedral volume mesh — see CLAUDE.md's "meshio++ integration" section for the full gate and mechanism). Sent on **every** open where correlation succeeds, not only the one that first creates Parts from it: the webview's `splitMeshesIntoFacets` needs it every time to reproduce the identical region-aware facet split those `node-0/face-K` ids were computed against (`triangleRegionIndex[t]` is an index into `regionNames`, or `-1` for a triangle not covered by any region), or a reopen's Parts would stop resolving to real facets. `provider.ts`'s `handleMeshio()` also owns the whole `parts` round trip for this route (see the `parts` message below) — when the parts sidecar is still empty on a fresh import, it auto-creates one Part per correlated region (`src/meshioRegionParts.ts`'s `buildPartsFromMeshioRegions`) and persists it immediately, before ever posting anything to the webview.
 
 ```json
 {
@@ -305,6 +310,10 @@ An optional `meshioMetadata` carries **read-only visibility** into named regions
     "pointDataNames": ["Temperature"],
     "cellDataNames": [],
     "fieldDataNames": []
+  },
+  "regionAssignment": {
+    "regionNames": ["MaterialA", "MaterialB"],
+    "triangleRegionIndex": "AAAAAA=="
   }
 }
 ```
@@ -314,6 +323,8 @@ An optional `meshioMetadata` carries **read-only visibility** into named regions
 Sent after geometry, once the host has read the parts sidecar (`<model>.parts.json`). Carries the saved part definitions (empty array when no sidecar exists). The webview loads them into `PartsModel`, recolours the model, and renders the Parts panel.
 
 Also sent **unprompted, mid-session** (not just during the `ready` handshake) whenever a purely-appended, topology-changing edit triggers a successful entity-id rebind (`provider.ts`'s `rebindPartsOnAppend()` — see CLAUDE.md's "Entity-id drift" section) — the webview's handling is identical either way, since `PartsModel.load()` is a silent full replace with no `onChange` echo.
+
+For a meshio route specifically, `handleMeshio()` sends this message itself (right after `loadMeshBytes`, same synchronous function, so ordering relative to it is guaranteed) instead of the generic sidecar-read path every other route uses — because it may first need to auto-create Parts from `regionAssignment`'s correlation (see `loadMeshBytes` above) before there's anything to send.
 
 ```json
 {
@@ -456,6 +467,18 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 { "type": "measureExactError", "requestId": "1234-0.56", "message": "This edge is not a circular arc — radius is only defined for circular edges" }
 ```
 
+### `colorFieldResult` / `colorFieldError`
+
+Sent in reply to `colorFieldRequest` (webview → host, below) — **meshio++-imported sources only** (`src/meshioService.ts`'s `readMeshioFieldValues`, called from `provider.ts`'s new `colorFieldRequest` handler). `values` is a base64 `Float32Array`, one entry per triangle CORNER in the SAME order as the currently-loaded model's own triangle soup (i.e. `pristineMesh`'s position attribute) — the webview builds a vertex-coloured overlay directly from it with no further reordering (`src/webview/geometryBuilder.ts`'s `buildColorFieldOverlay`). `min`/`max` seed the legend's gradient bar and are NOT length-dimensioned (no unit conversion/suffix — unlike `measureExactResult`, a scalar field like temperature or stress has no length unit to convert).
+
+```json
+{ "type": "colorFieldResult", "requestId": "1234-0.56", "values": "AACAPwAAAEA...", "min": 1, "max": 5 }
+```
+
+```json
+{ "type": "colorFieldError", "requestId": "1234-0.56", "message": "Field \"Pressure\" not found, not a plain scalar, or the boundary isn't pure triangles." }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
@@ -480,6 +503,7 @@ type WebviewToHost =
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
+  | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
 ```
 
 ### `partsChanged`
@@ -620,6 +644,14 @@ Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep sourc
 
 ```json
 { "type": "measureExactRequest", "requestId": "1234-0.56", "kind": "distance", "entityIdA": "solid-0", "entityIdB": "solid-1" }
+```
+
+### `colorFieldRequest`
+
+Sent when the view-controls "Colour by field" `<select>` changes to a non-"None" value, for a meshio++-imported source only (the group stays hidden for every other source — see `webview-api.md`). `field` is the raw array name the source file declares; `kind` is `"point"` or `"cell"` depending on which of `meshioMetadata`'s `pointDataNames`/`cellDataNames` it came from (encoded together as `"point:<name>"`/`"cell:<name>"` in the `<option>` value, split back apart client-side by a fixed-length prefix — not "split on the first colon", since a field name could itself contain one).
+
+```json
+{ "type": "colorFieldRequest", "requestId": "1234-0.56", "field": "Temperature", "kind": "point" }
 ```
 
 ---

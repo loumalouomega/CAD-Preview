@@ -29,7 +29,7 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 | XDMF        | `.xdmf`         | meshio++ → STL boundary surface → Three.js |
 | Kratos MDPA | `.mdpa`         | meshio++ → STL boundary surface → Three.js |
 
-> The last six formats are imported as a triangulated **boundary surface** (meshio++'s `convertSurface`, host-side) — same capabilities as an STL open (Parts, Edits, Export, Mass Properties, Measurement all work identically), but region/scalar-field/multi-material data in the source file is not preserved. This is separate from the FE Meshing feature's own MDPA/MED/CGNS *export* path below, which writes a newly generated mesh, not the source file.
+> The last six formats are imported as a triangulated **boundary surface** (meshio++, host-side) — same capabilities as an STL open (Parts, Edits, Export, Mass Properties, Measurement all work identically). Named cell regions in the source file now auto-become real, selectable/colourable Parts on first import (for a tetrahedral/triangular boundary); scalar-field and multi-material data beyond that still isn't preserved. This is separate from the FE Meshing feature's own MDPA/MED/CGNS *export* path below, which writes a newly generated mesh, not the source file.
 
 ## Features
 
