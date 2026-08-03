@@ -28,6 +28,8 @@ export function viewerBodyHtml(): string {
         <button id="menu-export" role="menuitem" title="Export the model to a new file/format">${icon("export")} Export…</button>
         <button id="menu-save-preprocess" role="menuitem" title="Bundle the CAD file + edits/parts/mesh sidecars into a single .zip">${icon("save")} Save Preprocess…</button>
         <button id="menu-load-preprocess" role="menuitem" title="Restore a CAD file + its sidecars from a .zip and open it">${icon("open")} Load Preprocess…</button>
+        <div class="tb-sep"></div>
+        <button id="menu-import-svg" role="menuitem" title="Import an SVG file's paths as standalone sketch polylines (Vol/Surf mode → Extrude to build a solid)">${icon("open")} Import SVG…</button>
       </div>
     </div>
   </div>

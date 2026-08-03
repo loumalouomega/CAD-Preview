@@ -809,6 +809,23 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "importSvgRequest") {
+        try {
+          const svgUris = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            openLabel: "Import SVG",
+            filters: { "SVG files": ["svg"] },
+          });
+          const svgUri = svgUris?.[0];
+          if (!svgUri) return; // dialog dismissed — a quiet no-op, not an error
+          const bytes = await vscode.workspace.fs.readFile(svgUri);
+          post({ type: "importSvgResult", text: Buffer.from(bytes).toString("utf8") });
+        } catch (err) {
+          post({ type: "importSvgError", message: (err as Error).message });
+        }
+        return;
+      }
+
       if (msg.type === "measureExactRequest") {
         try {
           if (!route || route.strategy !== "occt") {

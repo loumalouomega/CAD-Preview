@@ -248,6 +248,11 @@ export type HostToWebview =
    * not an error (never posted through `standardPartsInsertError`). */
   | { type: "standardPartsInsertResult"; requestId: string; path: string | null }
   | { type: "standardPartsInsertError"; requestId: string; message: string }
+  /** No `requestId` — unlike the request/response pairs above, only one SVG
+   * import can plausibly be in flight at a time (a modal file-open dialog
+   * blocks further requests), so there's nothing to disambiguate. */
+  | { type: "importSvgResult"; text: string }
+  | { type: "importSvgError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
@@ -322,6 +327,7 @@ export type WebviewToHost =
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
+  | { type: "importSvgRequest" }
   | {
       type: "measureExactRequest";
       requestId: string;

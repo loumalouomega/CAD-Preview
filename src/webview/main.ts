@@ -6,6 +6,7 @@ import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay } from "./geometryBuilder";
 import { viridisCssGradientStops } from "./colorMap";
 import { splitMeshesIntoFacets } from "./meshFacets";
+import { parseSvgPaths } from "../svgImport";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
@@ -1676,6 +1677,61 @@ function setupViewControls(): void {
 // sidecars (the CAD file is read-only); Save As and Export both reuse the
 // existing export flow. Wired inside the same guard as the view controls so a
 // failure here can never block the `ready` handshake below.
+/**
+ * Converts an imported SVG's `<path>` elements into standalone `addPolyline`
+ * ops (roadmap "SVG import → profile ops", closed) — genuinely no new
+ * kernel surface, since `addPolyline` already exists exactly for "straight
+ * edges through points in order." One op per subpath (a single `<path
+ * d="...">` with a hole, e.g. a letter "O", parses into TWO subpaths and
+ * becomes two separate `addPolyline` ops — matching how `Build → Surface`
+ * already treats each closed loop as its own entity to select later).
+ *
+ * Placement: SVG's Y axis points DOWN; every other coordinate this codebase
+ * ever shows the user (view axes, typed op fields, …) is Y-up, so Y is
+ * negated on the way in — an unflipped import would look correct in a flat
+ * top-down view but mirrored in every other orientation. Imports flat into
+ * the XY plane at z=0, 1 SVG user unit = 1mm (this codebase's cascade
+ * unit) — a deliberate, simple default matching how Inkscape/Illustrator
+ * "trace outline" exports are typically already sized for downstream CAD
+ * use; a poorly-scaled source can be fixed afterward with the EXISTING
+ * `scale` op, same as any other placement adjustment.
+ *
+ * Degenerate subpaths (fewer than 2 points; fewer than 3 for a closed one,
+ * or a closed one whose first/last point are exactly equal after the Y
+ * flip) are silently skipped rather than pushing an op `validateEditOp`
+ * would reject anyway — same graceful-degradation rule as every other
+ * import path in this codebase.
+ */
+function importSvgPaths(svgText: string): void {
+  if (sourceKind === "mesh") {
+    // addPolyline is BREP_ONLY_OPS (meshes have no sketch/exact topology) —
+    // same scope as every other wireframe/2D-profile op in this codebase.
+    // Caught here, before pushing anything, rather than letting the ops
+    // silently no-op in `applyEditsMesh`'s BREP_ONLY_OPS skip — a user
+    // importing an SVG deserves to know why nothing appeared.
+    setStatus("SVG import builds sketch polylines, which are B-rep only — open a STEP/IGES/BREP file to use it.", true);
+    return;
+  }
+  const subpaths = parseSvgPaths(svgText);
+  let imported = 0;
+  for (const sub of subpaths) {
+    const points: [number, number, number][] = sub.points.map(([x, y]) => [x, -y, 0]);
+    if (points.length < 2) continue;
+    if (sub.closed && (points.length < 3 || pointsEqual(points[0], points[points.length - 1]))) continue;
+    editsModel.push({ op: "addPolyline", points, closed: sub.closed });
+    imported++;
+  }
+  if (imported === 0) {
+    setStatus("No usable paths found in that SVG (no <path> elements, or every one was degenerate).", true);
+    return;
+  }
+  setStatus(`Imported ${imported} path${imported === 1 ? "" : "s"} from SVG as sketch polylines.`);
+}
+
+function pointsEqual(a: [number, number, number], b: [number, number, number]): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
 function setupFileMenu(): void {
   const menu = setupDropdown("file-menu", "file-dropdown");
   if (!menu) return;
@@ -1692,6 +1748,7 @@ function setupFileMenu(): void {
   item("menu-export", () => post({ type: "exportRequest" }));
   item("menu-save-preprocess", () => post({ type: "savePreprocessRequest" }));
   item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
+  item("menu-import-svg", () => post({ type: "importSvgRequest" }));
 }
 
 /**
@@ -2442,6 +2499,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       standardPartsPanel.setStatus(msg.message, true);
       break;
     }
+
+    case "importSvgResult":
+      importSvgPaths(msg.text);
+      break;
+
+    case "importSvgError":
+      setStatus(`SVG import failed: ${msg.message}`, true);
+      break;
 
     case "measureExactResult": {
       if (msg.requestId !== measureExactRequestId) break; // stale — a newer request/Clear superseded it
