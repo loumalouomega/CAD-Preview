@@ -1,4 +1,4 @@
-import { getOcct, readShape } from "./occtService";
+import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { applyEditsBRep, collectSolids, collectFaces, collectEdges } from "./occtOperations";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
@@ -108,6 +108,8 @@ export async function computeMassProperties(
       throw new Error("Points have no mass properties.");
     }
     throw new Error(`Unsupported entity id for mass properties: ${entityId}`);
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {

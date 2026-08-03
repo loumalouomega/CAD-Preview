@@ -15,20 +15,66 @@ import { patchStepUnitDeclaration } from "./stepUnitPatch";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ocPromise: Promise<any> | null = null;
 
-/** Returns the OpenCascade.js module, initializing it lazily on first call. */
+/**
+ * Returns the OpenCascade.js module, initializing it lazily on first call and
+ * memoizing the resolved promise as a module singleton. A REJECTED init is
+ * deliberately NOT memoized (the `.catch` below un-caches it before
+ * rethrowing) — without this, a single transient init failure (e.g. a
+ * momentary FS/allocation error) would poison every later `getOcct()` call
+ * in the same extension-host process forever, since `_ocPromise` would keep
+ * resolving to the same rejection. `fs.readFileSync` itself already fails
+ * this way "for free" (it throws synchronously before the assignment), so
+ * this only closes the gap for a rejection from `openCascadeFactory` itself.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getOcct(extensionPath: string): Promise<any> {
   if (!_ocPromise) {
     const wasmPath = path.join(extensionPath, "dist", "opencascade.wasm.wasm");
     const wasmBinary = fs.readFileSync(wasmPath);
-    _ocPromise = openCascadeFactory({ wasmBinary });
+    _ocPromise = openCascadeFactory({ wasmBinary }).catch((err) => {
+      _ocPromise = null;
+      throw err;
+    });
   }
   return _ocPromise;
 }
 
-/** Resets the singleton — used by tests and for future hot-reload support. */
+/** Resets the singleton — called by `wrapOcctFault` after a WASM abort, and
+ * from tests. */
 export function resetOcct(): void {
   _ocPromise = null;
+}
+
+/**
+ * Emscripten aborts (out-of-bounds access, unreachable, null function
+ * pointer, heap exhaustion) surface as opaque `RuntimeError`s — same
+ * vocabulary `gmshService.ts`'s `isWasmAbort` recognizes for the identical
+ * reason, kept as its own local copy here rather than shared, matching this
+ * codebase's convention of each kernel's fault handling staying self-
+ * contained in its own service file.
+ */
+function isOcctWasmAbort(message: string): boolean {
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+}
+
+/**
+ * Every OCCT-touching entry point in this codebase (this file's `loadBRep`/
+ * `exportBRep`, plus `massProperties.ts`, `modelDiffHost.ts`,
+ * `gmshPartsMap.ts`, and `entityFacts.ts`'s five functions) wraps its body's
+ * `catch` with this. A WASM abort mid-operation leaves the Emscripten
+ * instance permanently corrupt — every later call would keep throwing the
+ * same opaque "memory access out of bounds" — so this resets the singleton
+ * (`resetOcct()`) to force a fresh module on the next attempt, mirroring
+ * `gmshService.ts`'s `runMeshGenerate` exactly. A non-abort error (e.g. an
+ * "Unknown entity id" thrown deliberately inside a `try`) passes through
+ * unchanged — `isOcctWasmAbort`'s vocabulary never matches ordinary
+ * application errors.
+ */
+export function wrapOcctFault(err: unknown): Error {
+  const raw = ((err as Error)?.message ?? String(err)).trim();
+  if (!isOcctWasmAbort(raw)) return err instanceof Error ? err : new Error(raw);
+  resetOcct();
+  return new Error(`OCCT crashed (${raw || "WASM abort"}) — the kernel has been reset; try the operation again.`);
 }
 
 export interface BRepResult {
@@ -64,6 +110,8 @@ export async function loadBRep(
     const points = extractVertices(oc, shape);
     const tree = buildTree(format, groups);
     return { groups, edges, points, tree };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }
@@ -211,6 +259,8 @@ export async function exportBRep(
       return new TextEncoder().encode(patchStepUnitDeclaration(text, unit));
     }
     return outBytes;
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }

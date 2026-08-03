@@ -1,4 +1,4 @@
-import { getOcct, readShape } from "./occtService";
+import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { applyEditsBRep, collectSolids, bboxCenter, bboxDiagonal } from "./occtOperations";
 import type { BRepFormat } from "./massProperties";
 import type { EditOp } from "./editOps";
@@ -52,6 +52,8 @@ async function extractBrepSolidSignatures(
       return { id, centre, diagonal: bboxDiagonal(oc, solid, cleanup), volume: props.Mass() };
     });
     return { signatures, diagonal };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try { cleanup[i].delete(); } catch { /* ignore */ }

@@ -43,20 +43,74 @@ type MeshioApi = any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _meshioPromise: Promise<MeshioApi> | null = null;
 
-/** Returns the meshio++ WASM module, initializing it lazily on first call. */
+/**
+ * Returns the meshio++ WASM module, initializing it lazily on first call.
+ *
+ * A REJECTED init is deliberately NOT memoized — the whole async IIFE is
+ * wrapped in a `.catch` that un-caches `_meshioPromise` before rethrowing,
+ * same fix `getOcct`/`getGmsh` need. Without it, even a transient failure
+ * (e.g. a momentary dynamic-`import()` resolution error) would poison every
+ * later `getMeshio()` call in this process forever.
+ */
 export function getMeshio(): Promise<MeshioApi> {
   if (!_meshioPromise) {
     _meshioPromise = (async () => {
       const { loadMeshioPlusPlus } = await import("@meshioplusplus/wasm");
       return loadMeshioPlusPlus({}, { variant: "seq" });
-    })();
+    })().catch((err) => {
+      _meshioPromise = null;
+      throw err;
+    });
   }
   return _meshioPromise;
 }
 
-/** Resets the singleton — used by tests and for future hot-reload support. */
+/** Resets the singleton — called by `wrapMeshioFault` after a WASM abort, and
+ * from tests. */
 export function resetMeshio(): void {
   _meshioPromise = null;
+}
+
+/**
+ * Emscripten aborts surface as opaque `RuntimeError`s — same vocabulary
+ * `gmshService.ts`'s `isWasmAbort` / `occtService.ts`'s `isOcctWasmAbort`
+ * recognize, kept as its own local copy per this codebase's convention of
+ * each kernel's fault handling staying self-contained in its own service file.
+ */
+function isMeshioWasmAbort(message: string): boolean {
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+}
+
+/**
+ * Resets the singleton if `err` looks like a WASM abort, and reports whether
+ * it did — used both by `wrapMeshioFault` (functions that rethrow) and
+ * directly by the three functions in this file that are documented to
+ * degrade gracefully instead of throwing (`readMeshioMetadata`,
+ * `convertToStlBoundaryWithRegions`, `readMeshioFieldValues`). Those
+ * functions' own "never throws" contract must NOT change — but silently
+ * swallowing an abort with no reset would be worse than a thrown error: the
+ * singleton stays corrupt, and every later call in the same window would
+ * ALSO silently degrade, with no user-visible sign anything is wrong.
+ */
+function resetMeshioIfAbort(err: unknown): boolean {
+  const raw = ((err as Error)?.message ?? String(err)).trim();
+  if (!isMeshioWasmAbort(raw)) return false;
+  resetMeshio();
+  return true;
+}
+
+/**
+ * Every meshio++-touching entry point that rethrows wraps its body's `catch`
+ * with this — same pattern as `occtService.ts`'s `wrapOcctFault`. A WASM
+ * abort mid-operation leaves the module instance permanently corrupt, so this
+ * resets the singleton to force a fresh one on the next call instead of
+ * leaving every later meshio++ call in the same window failing with the same
+ * opaque message. A non-abort error passes through unchanged.
+ */
+function wrapMeshioFault(err: unknown): Error {
+  if (!resetMeshioIfAbort(err)) return err instanceof Error ? err : new Error(String(err));
+  const raw = ((err as Error)?.message ?? String(err)).trim();
+  return new Error(`meshio++ crashed (${raw || "WASM abort"}) — the kernel has been reset; try the operation again.`);
 }
 
 /**
@@ -82,6 +136,8 @@ export async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat
   try {
     m.convertSurface(inPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
     return m.FS.readFile(outPath);
+  } catch (err) {
+    throw wrapMeshioFault(err);
   } finally {
     try { m.FS.unlink(inPath); } catch { /* ignore */ }
     try { m.FS.unlink(outPath); } catch { /* ignore */ }
@@ -141,7 +197,8 @@ export async function readMeshioMetadata(sourceBytes: Uint8Array, meshioFormat: 
     } finally {
       try { m.FS.unlink(inPath); } catch { /* ignore */ }
     }
-  } catch {
+  } catch (err) {
+    resetMeshioIfAbort(err);
     return empty;
   }
 }
@@ -281,7 +338,8 @@ export async function convertToStlBoundaryWithRegions(
       stlBytes: Buffer.from(lines.join("\n"), "utf8"),
       regions: { regionNames, triangleRegion: Int32Array.from(triangleRegion) },
     };
-  } catch {
+  } catch (err) {
+    resetMeshioIfAbort(err);
     return fallback();
   }
 }
@@ -381,7 +439,8 @@ export async function readMeshioFieldValues(
     let min = Infinity, max = -Infinity;
     for (const v of perCorner) { if (v < min) min = v; if (v > max) max = v; }
     return { values: Float32Array.from(perCorner), min, max };
-  } catch {
+  } catch (err) {
+    resetMeshioIfAbort(err);
     return null;
   }
 }
@@ -456,6 +515,8 @@ export async function exportViaMeshio(
     } catch {
       return { bytes }; // the "Binary"/"XML" data formats have no HDF companion — only "HDF" does
     }
+  } catch (err) {
+    throw wrapMeshioFault(err);
   } finally {
     try { m.FS.unlink(inPath); } catch { /* ignore */ }
     try { m.FS.unlink(outPath); } catch { /* ignore */ }

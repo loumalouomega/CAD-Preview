@@ -67,6 +67,12 @@ let _modelCounter = 0;
  * from the module factory above) is started here too, exactly once per process
  * lifetime; subsequent `generateMesh`/`exportGeoUnrolled` calls reset state via
  * `gmsh.clear()` + `gmsh.model.add(...)` instead of re-initializing.
+ *
+ * A REJECTED init is deliberately NOT memoized (the `.catch` below un-caches
+ * it before rethrowing) — the same fix `getOcct` needed: without it, a single
+ * transient init failure would poison every later `getGmsh()` call in this
+ * process forever, since `_gmshPromise` would keep resolving to the same
+ * rejection.
  */
 export function getGmsh(extensionPath: string): Promise<GmshApi> {
   if (!_gmshPromise) {
@@ -84,10 +90,15 @@ export function getGmsh(extensionPath: string): Promise<GmshApi> {
       wasmBinary,
       print: (...args: unknown[]) => console.error(...args),
       printErr: (...args: unknown[]) => console.error(...args),
-    }).then((gmsh) => {
-      gmsh.initialize();
-      return gmsh;
-    });
+    })
+      .then((gmsh) => {
+        gmsh.initialize();
+        return gmsh;
+      })
+      .catch((err) => {
+        _gmshPromise = null;
+        throw err;
+      });
   }
   return _gmshPromise;
 }

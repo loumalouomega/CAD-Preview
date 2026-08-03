@@ -1,4 +1,4 @@
-import { getOcct, readShape } from "./occtService";
+import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import {
   applyEditsBRep,
   collectSolids,
@@ -214,6 +214,8 @@ export async function getEntityFacts(
     }
 
     return { entityId, kind, bbox, center, area, length, normal, surfaceType };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
@@ -269,6 +271,8 @@ export async function measureEntities(
       result.axisComponent = delta[0] * unit[0] + delta[1] * unit[1] + delta[2] * unit[2];
     }
     return result;
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
@@ -392,6 +396,8 @@ export async function measureExact(
     const circ = curve.Circle();
     cleanup.push(circ);
     return { kind, value: circ.Radius() };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
@@ -487,6 +493,8 @@ export async function checkInterference(
     // A degenerate (zero-volume) intersection — e.g. two solids that only
     // touch at a face/edge/point — is reported as no real overlap.
     return { hasOverlap: overlapVolume > 1e-9, overlapVolume, unresolvedA, unresolvedB };
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     for (let i = cleanup.length - 1; i >= 0; i--) {
       try {
@@ -744,6 +752,8 @@ export async function rebindPartsAcrossOps(
       // comment for why this is a single direct match, not incremental steps.
       await diffAndRemap(oldOps, newOps);
     }
+  } catch (err) {
+    throw wrapOcctFault(err);
   } finally {
     try {
       oc.FS.unlink(tmpName);
