@@ -33,6 +33,10 @@ import { runCompareModelsCommand } from "./modelComparePanel";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
+/** Settle window for the external-change file watchers below — short enough
+ * to reconcile promptly, long enough to avoid reading a file mid-write by
+ * another process. */
+const EXTERNAL_CHANGE_DEBOUNCE_MS = 300;
 
 const BREP_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
 
@@ -264,6 +268,99 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
     };
 
+    /**
+     * External-change reconciliation (roadmap "Sidecar and source
+     * external-change reconciliation", closed). Without this, an MCP agent's
+     * `apply_edit_ops`/`set_part`/`set_mesh_options` write to a sidecar while
+     * this SAME document is ALSO open interactively is silently overwritten
+     * by the next debounced webview autosave — there are no file watchers
+     * anywhere else in this codebase, and `.edits.json`/`.parts.json`/
+     * `.mesh.json` are otherwise only ever read once, in the `ready` handler
+     * above. Same gap for the source CAD file itself (a
+     * `download_standard_part` overwrite, a `git checkout`, an external
+     * editor save).
+     *
+     * Content-comparison, not raw-event suppression: this extension's own
+     * debounced writes ALSO fire these watchers, but by the time a write
+     * lands on disk the in-memory `current*` state already equals what was
+     * written, so the comparison below finds no difference and no-ops — this
+     * is what makes the design safe against feedback loops with no "was this
+     * my own write" flag/timestamp bookkeeping (and, transitively, safe
+     * against `handleMeshio`'s and `rebindPartsOnChange`'s own occasional
+     * `.parts.json` writes triggering a redundant-but-harmless reaction here
+     * too). The CAD source file is the one exception: this extension NEVER
+     * writes it (the read-only invariant), so any change to it is
+     * unconditionally external — no comparison needed, just reload.
+     *
+     * A short debounce per watched file (not the longer autosave one) avoids
+     * reacting to a file mid-write by another process; `readEdits`/
+     * `readParts`/`readMeshOptions` already tolerate a transiently-malformed
+     * file by degrading to their existing defaults, same as on any other
+     * read, so a read that races an in-progress write is never worse than
+     * "reconcile again once the write finishes and the watcher fires again".
+     */
+    const watcherDisposables: vscode.Disposable[] = [];
+    const watchForExternalChange = (uri: vscode.Uri, onSettled: () => void): void => {
+      const basename = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(fileDir, basename));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const debounced = () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(onSettled, EXTERNAL_CHANGE_DEBOUNCE_MS);
+      };
+      watcher.onDidChange(debounced);
+      watcher.onDidCreate(debounced);
+      watcherDisposables.push(watcher, { dispose: () => { if (timer) clearTimeout(timer); } });
+    };
+
+    watchForExternalChange(document.uri, () => {
+      if (!route) return;
+      post({ type: "status", text: "File changed on disk — reloading…" });
+      loadModel();
+    });
+
+    watchForExternalChange(editsSidecarUri(document.uri), () => {
+      void (async () => {
+        const parsed = await readEdits(document.uri);
+        if (JSON.stringify(parsed.ops) === JSON.stringify(currentEdits) && JSON.stringify(parsed.variables) === JSON.stringify(currentVariables)) {
+          return;
+        }
+        const previousOps = currentEdits;
+        currentEdits = parsed.ops;
+        currentVariables = parsed.variables;
+        if (route && route.strategy === "occt") {
+          loadModel();
+          void rebindPartsOnChange(previousOps, currentEdits);
+        }
+        post({ type: "edits", ops: currentEdits, variables: currentVariables });
+        post({ type: "status", text: "Edits updated externally" });
+      })();
+    });
+
+    watchForExternalChange(sidecarUri(document.uri), () => {
+      void (async () => {
+        const parts = await readParts(document.uri);
+        if (JSON.stringify(parts) === JSON.stringify(currentParts)) return;
+        currentParts = parts;
+        post({ type: "parts", parts: currentParts });
+        post({ type: "status", text: "Parts updated externally" });
+      })();
+    });
+
+    watchForExternalChange(meshOptionsSidecarUri(document.uri), () => {
+      void (async () => {
+        const options = await readMeshOptions(document.uri);
+        if (JSON.stringify(options) === JSON.stringify(currentMeshOptions)) return;
+        currentMeshOptions = options;
+        post({ type: "meshingOptions", options });
+        post({ type: "status", text: "Mesh options updated externally" });
+      })();
+    });
+
+    webviewPanel.onDidDispose(() => {
+      for (const d of watcherDisposables) d.dispose();
+    });
+
     // Track this editor as the active one while it is focused, so the
     // File-menu commands/keybindings can reach it.
     const session: EditorSession = {
@@ -308,7 +405,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             currentParts = parts;
           });
         }
-        void this.sendMeshOptions(document.uri, post);
+        void this.sendMeshOptions(document.uri, post).then((options) => {
+          currentMeshOptions = options;
+        });
         this.sendViewerDefaults(post);
         return;
       }
@@ -734,10 +833,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     }
   }
 
-  /** Loads the mesh-options sidecar (if any) and sends it to the webview. */
-  private async sendMeshOptions(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
+  /** Loads the mesh-options sidecar (if any), sends it to the webview, and
+   * returns it so the caller can keep `currentMeshOptions` in sync — same
+   * pattern as `sendParts` above. */
+  private async sendMeshOptions(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<MeshOptions> {
     const options = await readMeshOptions(uri);
     post({ type: "meshingOptions", options });
+    return options;
   }
 
   /**
