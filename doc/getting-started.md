@@ -191,7 +191,9 @@ Click any face of the cube to snap the camera to that standard view:
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
 
-Type into the filter field above the tree to narrow the list to rows whose name matches (case-insensitive substring) — matching rows and their ancestors stay visible so a match is never hidden inside a collapsed-looking branch; clear the field to show everything again. Each row also has an eye-toggle to hide/show that solid/mesh (and its edges/points) in the 3D view — a display-only toggle, same as the Parts panel's (see below), never saved to a sidecar.
+For STEP sources specifically, the tree reflects the file's own **real assembly structure** when it has one — nested "Assembly"/"Component" groups matching how the file's author organized it, instead of always flattening every solid into one list (product/component *names* aren't shown — they're unreadable in this build's OCCT WASM — and an assembly wrapper with no real internal structure, or a source with none at all, falls back to the flat list exactly as before). A group-header row (an "Assembly N" line) is informational only — clicking it or its eye-toggle has no effect; only a leaf ("Solid N") row highlights/hides, exactly like every row always has.
+
+Type into the filter field above the tree to narrow the list to rows whose name matches (case-insensitive substring) — matching rows and their ancestors stay visible so a match is never hidden inside a collapsed-looking branch; clear the field to show everything again. Each leaf row also has an eye-toggle to hide/show that solid/mesh (and its edges/points) in the 3D view — a display-only toggle, same as the Parts panel's (see below), never saved to a sidecar.
 
 ![The Components tree, showing the STEP root and its solid with a face-count badge.](/screenshots/components-tree.png)
 

@@ -15,6 +15,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/massProperties.ts` | Volume/area/length/CoG/inertia for a B-rep shape via OCCT `BRepGProp` (vscode-free) |
 | `src/entityFacts.ts` | Per-entity geometric facts (`inspect`), bbox-centre distance (`measure`), exact OCCT-precision distance/edge-length/radius (`measure_exact`), interference/clash overlap volume (`check_interference`), and bulk entity fingerprinting + orchestration for entity-id rebinding for a B-rep shape (vscode-free) |
 | `src/entityRebind.ts` | Pure entity-id rebinding heuristic (bipartite nearest-neighbor matching, generalized from `modelDiff.ts`'s solid matcher to solid/face/edge/point) + `Part`-id remapping (vscode/OCCT-free, unit-tested) |
+| `src/xcafTree.ts` | XCAF assembly-hierarchy read (`readXcafAssembly`, OCCT-touching) + pure correlation against the real `solid-N` list (`correlateAssemblyTree`, unit-tested) |
 | `src/stepUnits.ts` | Pure text scan of a STEP file's `DATA` section for its declared length unit (vscode/OCCT-free, unit-tested) |
 | `src/igesUnits.ts` | Sibling scanner for IGES's fixed-width Global-section unit flag — same purpose, different (positional, not named-entity) format (vscode/OCCT-free, unit-tested) |
 | `src/lengthUnits.ts` | Shared `DisplayUnit` type + mm scale-factor table + `displayUnitFromUnitName` — backs both the webview's display-unit selector and unit-conversion-on-export (vscode/DOM/THREE-free) |
@@ -334,6 +335,25 @@ function remapPartEntityIds<T extends EntityIdBag>(parts: T[], idMap: Map<string
 
 ---
 
+## `src/xcafTree.ts`
+
+XCAF (Extended CAF) assembly-structure reading for STEP sources (roadmap "XCAF read — assembly structure", closed) — see CLAUDE.md's own section for the full write-up, including a real transform-composition bug caught and fixed via live-WASM verification. Split into an OCCT-touching read half and a pure correlation half, mirroring `entityFacts.ts`/`entityRebind.ts`'s own split just above.
+
+```typescript
+interface XcafLeafSignature { id: string; centre: Vec3; volume: number }
+interface XcafAssemblyInfo { tree: TreeNode; sigs: XcafLeafSignature[] }
+
+function readXcafAssembly(oc: any, filePath: string): XcafAssemblyInfo | null
+
+function correlateAssemblyTree(info: XcafAssemblyInfo, currentSolids: XcafLeafSignature[]): TreeNode | null
+```
+
+**`readXcafAssembly`** does an entirely independent `STEPCAFControl_Reader` parse of `filePath` (which must still be on MEMFS — callers own writing/unlinking it, same convention as `readShape`'s `tmpName`). Walks the document's `ShapesLabel` via `TDF_ChildIterator`, recursing through assembly-type component/reference labels (resolved via `XCAFDoc_ShapeTool.GetReferredShape`) down to simple-shape leaves, accumulating each level's own `TopLoc_Location` (`.Multiplied()`) to pass DOWN to children — but applying only that ANCESTOR-accumulated location (not the leaf's own, which `GetShape_2` already baked in) via `.Moved()` when computing a leaf's final world-space fingerprint, since `.Moved()` COMPOSES with a shape's existing location rather than replacing it (the exact bug this item's verification caught and fixed — see CLAUDE.md). Returns a `TreeNode` tree with SYNTHETIC leaf ids (`xcaf-leaf-N`) plus a parallel `XcafLeafSignature[]` (bbox centre + volume per leaf, in the same synthetic-id space) — never the real `solid-N` ids, which this function has no way to know (that's `TopExp_Explorer` order over the UNRELATED plain-reader shape). Returns `null` on ANY failure (no XCAF structure, a parse error, an unbound API) — always a best-effort enhancement, never required.
+
+**`correlateAssemblyTree`** is pure (no OCCT calls) — matches `info.sigs` against the REAL, current `solid-N` fingerprints via `src/entityRebind.ts`'s existing `rebindEntities` (reused as-is, `kind: "solid"` on both sides), then relabels every tree leaf from its synthetic id to the matched real id. Requires a **clean 1:1 bijection** (every synthetic leaf matched, every real solid claimed, nothing left over) or returns `null` — a topology-changing edit since `readXcafAssembly` was cached changes the real solid count/positions in ways this function has no way to reconcile, and a partially-correlated tree would be worse than the flat fallback. Cheap enough to re-run on every `loadBRep`/`loadBRepCached` call even though `readXcafAssembly` itself is cached (see `occtService.ts`'s `BRepCacheEntry.assemblyTreeCache` above).
+
+---
+
 ## `src/provider.ts`
 
 ### `CadPreviewProvider`
@@ -585,7 +605,7 @@ async function loadBRep(
 ): Promise<BRepResult>
 ```
 
-High-level, STATELESS entry point — always re-reads and re-parses from scratch. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, `extractVertices()` to extract every vertex in the shape, and `buildTree()` to build the component hierarchy. With an empty `ops` this is the original read-only path; the source bytes are never modified. `quality` (roadmap "Configurable tessellation quality", closed — `src/tessellationQuality.ts`) is threaded straight into `tessellateByGroup()`'s deflection args; every existing caller omits it (implicit `"standard"`, byte-for-byte the original hardcoded 0.1/0.5 constants), so this is a purely additive, backward-compatible parameter. Called by `mcpTools.ts` (deliberately kept stateless-per-call — see the MCP server section below) and `renderService.ts`; `provider.ts` calls `loadBRepCached` instead (below), NOT this function directly, for its `editsChanged` hot path.
+High-level, STATELESS entry point — always re-reads and re-parses from scratch. Calls `getOcct()`, writes the file bytes to the OCCT virtual filesystem, calls `readShape()` to parse, calls `readXcafAssembly()` (`src/xcafTree.ts`, STEP only — roadmap "XCAF read — assembly structure", closed) against the SAME still-on-MEMFS file while `readShape`'s `finally` hasn't unlinked it yet, applies the edit op-list via `applyEditsBRep()` (`src/occtOperations.ts`), then calls `tessellateByGroup()` to extract faces, `extractEdges()` to extract deduped edge polylines, `extractVertices()` to extract every vertex in the shape, and `buildTree()` to build the component hierarchy (nested assembly structure when `readXcafAssembly()` succeeded AND cleanly correlates, else the original flat per-solid list — see `buildTree` below). With an empty `ops` this is the original read-only path; the source bytes are never modified. `quality` (roadmap "Configurable tessellation quality", closed — `src/tessellationQuality.ts`) is threaded straight into `tessellateByGroup()`'s deflection args; every existing caller omits it (implicit `"standard"`, byte-for-byte the original hardcoded 0.1/0.5 constants), so this is a purely additive, backward-compatible parameter. Called by `mcpTools.ts` (deliberately kept stateless-per-call — see the MCP server section below) and `renderService.ts`; `provider.ts` calls `loadBRepCached` instead (below), NOT this function directly, for its `editsChanged` hot path.
 
 ```typescript
 interface BRepCacheEntry { /* opaque outside occtService.ts — pass it straight back in */ }
@@ -604,6 +624,8 @@ function disposeBRepCache(cache: BRepCacheEntry): void
 
 The caching counterpart of `loadBRep` (roadmap "Base-shape caching and incremental replay", closed) — for `provider.ts`'s per-document, per-`editsChanged` hot path only; `mcpTools.ts` never calls this. Reuses the parsed base shape across calls whenever `bytes`+`format` match `previous` (byte-for-byte comparison, not a hash), and additionally reuses `previous`'s fully-replayed shape when `ops` is a pure append of `previous.ops` — replaying only the new suffix. Any other change (undo, a non-append edit, a variable re-resolving numeric fields) falls back to a full replay of `ops` from the (still-reused, if bytes match) base shape. **Reused fields are aliased by reference** — `disposeBRepCache` must only ever be called on the single, latest entry a caller currently holds, never on an entry that's already been superseded by a later `loadBRepCached` call's return value (doing so frees the SAME live handles the newer entry still references — a real `"Cannot pass deleted object as a pointer"` OCCT crash this was verified against, not a hypothetical). On failure, no handle from the failed call is freed (an abort may leave the WASM heap in an undefined state) — the caller must drop its held reference rather than reuse or dispose it; the underlying orphaned OCCT module becomes GC-eligible once unreferenced. Cache validity across a `resetOcct()`-triggered abort recovery is checked by `===` identity against the CURRENT `getOcct()` resolution, not a separate counter. `quality` is entirely orthogonal to the cache's reuse decisions — tessellation is never cached (see below), so a quality change between two calls with identical `bytes`/`ops` still reuses `baseShape`/`shape` and simply re-tessellates them at the new density. See CLAUDE.md's own sections for the full reuse-rule writeup, the measured ~35× base-shape-cache speedup on a large fixture, and the tessellation-quality live-WASM probing trail (including why edge deflection stays fixed).
 
+`BRepCacheEntry` also carries `assemblyTreeCache: XcafAssemblyInfo | null` (roadmap "XCAF read — assembly structure", closed) — computed alongside `baseShape` under the exact same `baseReusable` gate (a `readXcafAssembly()` call is a genuinely expensive second full-file parse, so an interactive edit that reuses the base shape never re-pays it), then passed into `buildTree()` on every call regardless of whether IT was recomputed this call.
+
 ```typescript
 function readShape(
   oc: any,
@@ -616,10 +638,16 @@ function readShape(
 Exported (used by both `loadBRep` and `exportBRep`). Selects the appropriate OCCT reader class and calls it. Pushes every handle it creates onto `cleanup` so they're deleted in the caller's `finally` block. The BREP branch's 4th `BRepTools.Read_2` arg is a `Handle_Message_ProgressIndicator` — *not* `Message_ProgressRange`, which isn't a real constructor in this OCCT build and throws immediately.
 
 ```typescript
-function buildTree(format: CadFormat, groups: SolidGroup[]): TreeNode
+function buildTree(
+  oc: any,
+  format: CadFormat,
+  groups: SolidGroup[],
+  shape: unknown,
+  assemblyTreeCache: XcafAssemblyInfo | null
+): TreeNode
 ```
 
-Builds a `TreeNode` tree from the solid groups. The root label is derived from the format (e.g. `"STEP Assembly"`). Each `SolidGroup` becomes a child node with `id`, `label`, and `faceCount`.
+Builds a `TreeNode` tree — the flat per-solid list this function always returned before the closed "XCAF read — assembly structure" roadmap item, UNLESS `assemblyTreeCache` is non-null AND `src/xcafTree.ts`'s `correlateAssemblyTree()` can cleanly match its cached, synthetic-id leaves against the CURRENT `shape`'s actual `solid-N` list (via `collectSolids()` + per-solid bbox-centre/volume fingerprints, `occtOperations.ts`) — in which case it returns the real nested assembly hierarchy instead, with each leaf's `faceCount`/label copied over from `groups` (`attachFaceCounts()`, a private helper) so every leaf row is indistinguishable from the flat tree's own row for that same solid. Falls through to the flat tree on ANY correlation failure — non-STEP source, no genuine assembly structure, a topology-changing edit that changed the solid count/positions since `assemblyTreeCache` was computed, or any thrown exception — always degrading gracefully, never blocking model load. See `src/xcafTree.ts` below and CLAUDE.md's "XCAF read — assembly structure" section for the full write-up (including a real transform-composition bug caught and fixed via live-WASM verification).
 
 ```typescript
 async function exportBRep(

@@ -5,7 +5,8 @@ import * as path from "path";
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, extractVertices, type SolidGroup, type EdgeLine, type PointEntity } from "./meshExtract";
-import { applyEditsBRep, scaleShapeForExport } from "./occtOperations";
+import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter } from "./occtOperations";
+import { readXcafAssembly, correlateAssemblyTree, type XcafAssemblyInfo } from "./xcafTree";
 import type { TreeNode } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
@@ -106,6 +107,15 @@ export interface BRepCacheEntry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   baseShape: any;
   baseCleanup: Array<{ delete(): void }>;
+  /** The XCAF assembly hierarchy read from the BASE shape's own file bytes
+   * (roadmap "XCAF read — assembly structure", closed) — `null` when
+   * unavailable (non-STEP source, no genuine assembly structure, or any
+   * parse failure). Cached alongside `baseShape` since it comes from an
+   * entirely separate, relatively expensive `STEPCAFControl_Reader` parse
+   * that doesn't need repeating on every edit — only re-CORRELATING it
+   * against the current (possibly edited) solid list is cheap enough to
+   * redo every call. See `src/xcafTree.ts`. */
+  assemblyTreeCache: XcafAssemblyInfo | null;
   ops: EditOp[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   shape: any;
@@ -211,15 +221,22 @@ export async function loadBRepCached(
 
   let baseShape: unknown;
   let baseCleanup: Array<{ delete(): void }>;
+  let assemblyTreeCache: XcafAssemblyInfo | null;
   if (baseReusable && previous) {
     baseShape = previous.baseShape;
     baseCleanup = previous.baseCleanup;
+    assemblyTreeCache = previous.assemblyTreeCache;
   } else {
     baseCleanup = [];
     const tmpName = `/in.${format}`;
     oc.FS.writeFile(tmpName, bytes);
     try {
       baseShape = readShape(oc, tmpName, format, baseCleanup);
+      // Independent second parse, only for STEP — see xcafTree.ts's doc
+      // comment for why this can't reuse `baseShape`/the plain reader's
+      // shape. Best-effort: any failure degrades to `null` (flat tree),
+      // never blocks the primary read.
+      assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
     } catch (err) {
       throw wrapOcctFault(err);
     } finally {
@@ -257,8 +274,8 @@ export async function loadBRepCached(
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
-    const tree = buildTree(format, groups);
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, ops, shape, opsCleanup };
+    const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops, shape, opsCleanup };
     return { result: { groups, edges, points, tree }, cache };
   } catch (err) {
     throw wrapOcctFault(err);
@@ -286,11 +303,12 @@ export async function loadBRep(
   const cleanup: Array<{ delete(): void }> = [];
   try {
     const baseShape = readShape(oc, tmpName, format, cleanup);
+    const assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
     const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
-    const tree = buildTree(format, groups);
+    const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
     return { groups, edges, points, tree };
   } catch (err) {
     throw wrapOcctFault(err);
@@ -302,7 +320,45 @@ export async function loadBRep(
   }
 }
 
-function buildTree(format: string, groups: SolidGroup[]): TreeNode {
+/**
+ * Builds the Components tree — a genuine nested assembly hierarchy when
+ * `assemblyTreeCache` is available AND cleanly correlates against the
+ * CURRENT (possibly edited) solid list (roadmap "XCAF read — assembly
+ * structure", closed), falling back to the original flat per-solid list
+ * otherwise. The flat fallback is deliberately the SAME shape this function
+ * always returned before this feature — a document with no XCAF structure,
+ * a non-STEP source, or a topology-changing edit the cached XCAF read can't
+ * reflect all degrade to it with no visible regression.
+ *
+ * Known, accepted limitation: a synthetic group-node id (`xcaf-asm-N`, an
+ * "Assembly N"/"Component N" header row) doesn't correspond to any real
+ * `groupId` in the scene, so clicking it or its eye-toggle is inert (no
+ * highlight, no hide) — only LEAF rows, which always carry a real `solid-N`
+ * id, behave identically to the flat tree's rows.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildTree(oc: any, format: string, groups: SolidGroup[], shape: unknown, assemblyTreeCache: XcafAssemblyInfo | null): TreeNode {
+  if (assemblyTreeCache) {
+    try {
+      const cleanup: Array<{ delete(): void }> = [];
+      const currentSolids = collectSolids(oc, shape, cleanup).map(({ id, solid }) => {
+        const props = new oc.GProp_GProps_1();
+        cleanup.push(props);
+        oc.BRepGProp.VolumeProperties_1(solid, props, false, false, false);
+        return { id, centre: bboxCenter(oc, solid, cleanup), volume: props.Mass() };
+      });
+      const correlated = correlateAssemblyTree(assemblyTreeCache, currentSolids);
+      for (let i = cleanup.length - 1; i >= 0; i--) {
+        try { cleanup[i].delete(); } catch { /* ignore */ }
+      }
+      if (correlated?.children) {
+        const withFaceCounts = correlated.children.map(attachFaceCounts.bind(null, groups));
+        return { id: "root", label: format.toUpperCase(), children: withFaceCounts };
+      }
+    } catch {
+      /* falls through to the flat tree below */
+    }
+  }
   return {
     id: "root",
     label: format.toUpperCase(),
@@ -312,6 +368,20 @@ function buildTree(format: string, groups: SolidGroup[]): TreeNode {
       faceCount: g.faceCount,
     })),
   };
+}
+
+/** Copies a matched leaf's `faceCount` (and its original flat label, e.g.
+ * `"Solid 3"` — reused as-is rather than the synthetic "Component N"
+ * assembly-tree placeholder, since it's already the ONLY per-solid label
+ * this codebase has ever had, and stays more informative than a meaningless
+ * renumbering) from the flat `groups` list onto an assembly-tree node,
+ * recursing into group (`children`) nodes unchanged. */
+function attachFaceCounts(groups: SolidGroup[], node: TreeNode): TreeNode {
+  if (node.children) {
+    return { ...node, children: node.children.map(attachFaceCounts.bind(null, groups)) };
+  }
+  const match = groups.find((g) => g.id === node.id);
+  return match ? { ...node, label: match.label, faceCount: match.faceCount } : node;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
