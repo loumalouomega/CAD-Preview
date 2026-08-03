@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
 import { readEdits } from "./editsStore";
-import { compareModels, type CompareSource } from "./modelDiffHost";
+import type { CompareSource } from "./modelDiffHost";
 import type { ModelDiff, SolidSignature } from "./modelDiff";
 import type { BRepFormat } from "./massProperties";
-import { renderSnapshot, isRenderAvailable, DEFAULT_VIEWS, type RenderImage } from "./renderService";
+import { DEFAULT_VIEWS, type RenderImage } from "./renderService";
+import type { KernelClient } from "./kernelClient";
 
 const COMPARABLE_MESH_FORMATS = new Set(["stl", "obj", "ply"]);
 
@@ -58,7 +59,11 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
  * feature's original B-rep-only graceful-skip convention (see CLAUDE.md's
  * "Compare Models" section for why those remain out of reach headlessly).
  */
-export async function runCompareModelsCommand(context: vscode.ExtensionContext, defaultUri?: vscode.Uri): Promise<void> {
+export async function runCompareModelsCommand(
+  context: vscode.ExtensionContext,
+  pipeline: KernelClient,
+  defaultUri?: vscode.Uri
+): Promise<void> {
   try {
     const uriA = defaultUri ?? (await pickCompareFile("Select model A"));
     if (!uriA) return;
@@ -72,10 +77,11 @@ export async function runCompareModelsCommand(context: vscode.ExtensionContext, 
       return;
     }
 
-    const diff = await compareModels(context.extensionPath, resolvedA.source, resolvedB.source);
+    const diff = await pipeline.compareModels(context.extensionPath, resolvedA.source, resolvedB.source);
     const warnings = [resolvedA.warning, resolvedB.warning].filter((w): w is string => !!w);
 
     const { imagesA, imagesB, warnings: snapshotWarnings } = await renderCompareSnapshots(
+      pipeline,
       context.extensionPath,
       resolvedA.source,
       resolvedB.source
@@ -103,6 +109,7 @@ export async function runCompareModelsCommand(context: vscode.ExtensionContext, 
  * `supported: false` path in this codebase).
  */
 async function renderCompareSnapshots(
+  pipeline: KernelClient,
   extensionPath: string,
   sourceA: CompareSource,
   sourceB: CompareSource
@@ -111,7 +118,7 @@ async function renderCompareSnapshots(
   const needsRender = sourceA.kind === "brep" || sourceB.kind === "brep";
   let available = false;
   if (needsRender) {
-    const avail = await isRenderAvailable();
+    const avail = await pipeline.isRenderAvailable();
     available = avail.available;
     if (!available) warnings.push(`Visual snapshots skipped — ${avail.reason ?? "renderer unavailable"}.`);
   }
@@ -121,7 +128,7 @@ async function renderCompareSnapshots(
       return [];
     }
     if (!available) return [];
-    const result = await renderSnapshot(extensionPath, source.bytes, source.format, source.ops, { views: DEFAULT_VIEWS });
+    const result = await pipeline.renderSnapshot(extensionPath, source.bytes, source.format, source.ops, { views: DEFAULT_VIEWS });
     if (!result.supported || !result.images) {
       warnings.push(`Model ${label}: visual snapshot failed — ${result.reason ?? "unknown error"}.`);
       return [];

@@ -178,4 +178,86 @@ describe("createKernelClient", () => {
     await expect(pA).resolves.toEqual({ available: true });
     await expect(pB).resolves.toEqual({ available: false });
   });
+
+  describe("the 3 document-cache-aware DocumentPipeline methods (Phase 2)", () => {
+    it("loadBRepCachedForDocument sends the documentKey as the first arg and resolves with the result", async () => {
+      const client = createKernelClient("/ext");
+      const promise = client.loadBRepCachedForDocument("file:///a.stp", "/ext", new Uint8Array([1, 2, 3]), "step", []);
+      await Promise.resolve();
+      const child = fakeChildren[0];
+      const req = lastRequest(child);
+      expect(req.fn).toBe("loadBRepCachedForDocument");
+      expect(req.args[0]).toBe("file:///a.stp"); // the documentKey, plain string, no marshaling needed
+      reply(child, req.id, { groups: [], edges: [], points: [], tree: { id: "root", label: "root" } });
+      await expect(promise).resolves.toEqual({ groups: [], edges: [], points: [], tree: { id: "root", label: "root" } });
+    });
+
+    it("disposeBRepCacheForDocument sends the documentKey and resolves", async () => {
+      const client = createKernelClient("/ext");
+      const promise = client.disposeBRepCacheForDocument("file:///a.stp");
+      await Promise.resolve();
+      const child = fakeChildren[0];
+      const req = lastRequest(child);
+      expect(req.fn).toBe("disposeBRepCacheForDocument");
+      expect(req.args[0]).toBe("file:///a.stp");
+      reply(child, req.id, undefined);
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it("readMeshioFieldValues round-trips like any other Pipeline call", async () => {
+      const client = createKernelClient("/ext");
+      const promise = client.readMeshioFieldValues(new Uint8Array([9]), "vtk", "Temperature", "point");
+      await Promise.resolve();
+      const child = fakeChildren[0];
+      const req = lastRequest(child);
+      expect(req.fn).toBe("readMeshioFieldValues");
+      reply(child, req.id, null);
+      await expect(promise).resolves.toBeNull();
+    });
+  });
+
+  // Real (tiny) timeouts rather than vi.useFakeTimers() — simpler and avoids
+  // fake-timer/microtask-ordering interactions with the queue's own
+  // Promise-chain sequencing; a few tens of real milliseconds per test is
+  // negligible for this suite's overall runtime.
+  describe("the per-call watchdog timeout (Phase 3)", () => {
+    it("rejects and kills the child when it never responds within timeoutMs", async () => {
+      const client = createKernelClient("/ext", { timeoutMs: 20 });
+      const promise = client.isRenderAvailable();
+      await expect(promise).rejects.toThrow(/did not respond within 20ms/);
+      const child = fakeChildren[0];
+      expect(child.sent).toHaveLength(1);
+      expect(child.killed).toEqual(["SIGKILL"]);
+    });
+
+    it("a late response after the timeout already fired is ignored, not a double-settle", async () => {
+      const client = createKernelClient("/ext", { timeoutMs: 20 });
+      const promise = client.isRenderAvailable();
+      await expect(promise).rejects.toThrow(/did not respond/);
+      const child = fakeChildren[0];
+      const req = lastRequest(child);
+      // The (now-irrelevant) real child eventually "replies" after all — must not throw.
+      expect(() => reply(child, req.id, { available: true })).not.toThrow();
+    });
+
+    it("does not fire the watchdog for a call that responds well within timeoutMs", async () => {
+      const client = createKernelClient("/ext", { timeoutMs: 5000 });
+      const promise = client.isRenderAvailable();
+      await Promise.resolve();
+      const child = fakeChildren[0];
+      reply(child, lastRequest(child).id, { available: true });
+      await expect(promise).resolves.toEqual({ available: true });
+      expect(child.killed).toEqual([]);
+    });
+
+    it("defaults to a generous timeout when none is configured", async () => {
+      const client = createKernelClient("/ext");
+      const promise = client.isRenderAvailable();
+      await Promise.resolve();
+      const child = fakeChildren[0];
+      reply(child, lastRequest(child).id, { available: true });
+      await expect(promise).resolves.toEqual({ available: true });
+      expect(child.killed).toEqual([]);
+    });
+  });
 });

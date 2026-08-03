@@ -1,10 +1,9 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
-import { loadBRepCached, disposeBRepCache, exportBRep, type BRepCacheEntry } from "./occtService";
+import { createKernelClient, type KernelClient } from "./kernelClient";
 import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellationQuality";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
-import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
 import type { CadFormat, FileRoute } from "./fileRouter";
@@ -16,14 +15,12 @@ import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri } from "./meshOptionsStore";
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
-import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
+import type { MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
 import { normalizeViewerDefaults } from "./viewerDefaults";
-import { computeMassProperties } from "./massProperties";
-import { measureExact, rebindPartsAcrossOps } from "./entityFacts";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
@@ -34,7 +31,6 @@ import { scaleStlBytes } from "./stlParser";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
-import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -88,7 +84,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   /** The focused editor, tracked so commands/keybindings can reach it. */
   private activeSession?: EditorSession;
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  /**
+   * The one kernel-worker child process (+ its request queue) for this whole
+   * extension-host instance (roadmap "OCCT in a forked child process",
+   * Phase 2+3 — see CLAUDE.md) — created once here, NOT per-document, since
+   * the underlying child is itself shared across every open document (same
+   * "one child per parent process" design Phase 0+1 already established for
+   * the MCP server). Every kernel call in this file goes through it instead
+   * of importing `occtService.ts`/`gmshService.ts`/etc. directly.
+   */
+  private readonly pipeline: KernelClient;
+
+  constructor(private readonly context: vscode.ExtensionContext) {
+    // Assigned in the constructor body, not a field initializer, so there is
+    // no ambiguity about running after the `context` parameter property is
+    // set (field initializers and parameter-property assignment ordering is
+    // a real TS subtlety not worth relying on here).
+    this.pipeline = createKernelClient(this.context.extensionPath);
+  }
 
   public static register(context: vscode.ExtensionContext): vscode.Disposable {
     const provider = new CadPreviewProvider(context);
@@ -123,7 +136,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
-        void runCompareModelsCommand(this.context, this.activeSession?.uri)
+        void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
     ];
   }
@@ -173,14 +186,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
-    // Live OCCT parse+replay cache for THIS document (roadmap "Base-shape
-    // caching and incremental replay", closed) — see `loadBRepCached`'s doc
-    // comment in `occtService.ts` for the reuse rules. Held as a plain
-    // mutable holder (not a closure `let` `handleBRep` could reassign
-    // directly, since `handleBRep` is a class method, not itself inside this
-    // closure) so both `handleBRep` and this constructor's `onDidDispose`
-    // below can reach the SAME, current entry.
-    const brepCache: { current: BRepCacheEntry | undefined } = { current: undefined };
+    // The document's OCCT parse+replay cache (roadmap "Base-shape caching
+    // and incremental replay", closed) now lives INSIDE the kernel-worker
+    // child (`loadBRepCachedForDocument`'s own doc comment in
+    // `kernelClient.ts`/`kernelWorker.ts` has the reuse rules — Phase 2 of
+    // "OCCT in a forked child process" moved it there, since a live OCCT
+    // handle can never cross the IPC boundary). All this closure needs is a
+    // stable key identifying the document to the child — the URI string —
+    // used by both `handleBRep` and this method's `onDidDispose` below.
+    const documentKey = document.uri.toString();
     // Progress reporting and cancellation (roadmap item, closed — see
     // CLAUDE.md's "Progress reporting and cancellation" section for the full
     // scoping rationale). `loadModel()` can be called again (a newer edit, an
@@ -290,18 +304,32 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             },
             async (progress, token) => {
               token.onCancellationRequested(() => {
-                // Supersede this in-flight call so its eventual result (the
-                // OCCT computation itself is NOT interrupted — see
-                // `brepLoadGeneration`'s doc comment above) is discarded
-                // rather than applied.
+                // Supersede this in-flight call (the discard-the-result half
+                // of cancellation — still needed regardless of the line
+                // below, since the kernel-worker child is shared across
+                // every open document: killing it can only ever interrupt
+                // whichever ONE call is truly executing right now, so a
+                // request that was merely QUEUED behind another document's
+                // in-flight call needs this generation bump to still be
+                // discarded once it eventually DOES run against the
+                // respawned child).
                 brepLoadGeneration.current++;
                 post({ type: "status", text: "Cancelled" });
+                // Roadmap "OCCT in a forked child process", Phase 3: genuine
+                // interruption, not just a discarded result — kills the
+                // shared kernel-worker child. See this.pipeline's own doc
+                // comment on the one sharp edge this has: if some OTHER
+                // document's call happens to be the one truly executing at
+                // this exact moment (this document's own call was merely
+                // queued behind it), that other call is interrupted too, not
+                // just this one — an accepted trade-off of one shared child.
+                this.pipeline.cancelCurrent();
               });
-              await this.handleBRep(document.uri, format, post, currentEdits, brepCache, generation, brepLoadGeneration, progress);
+              await this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration, progress);
             }
           );
         } else {
-          void this.handleBRep(document.uri, format, post, currentEdits, brepCache, generation, brepLoadGeneration);
+          void this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration);
         }
       }
     };
@@ -339,7 +367,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
-        const result = await rebindPartsAcrossOps(
+        const result = await this.pipeline.rebindPartsAcrossOps(
           this.context.extensionPath,
           bytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
@@ -474,7 +502,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
     webviewPanel.onDidDispose(() => {
       for (const d of watcherDisposables) d.dispose();
-      if (brepCache.current) disposeBRepCache(brepCache.current);
+      // Fire-and-forget — nothing depends on this settling before the tab
+      // finishes closing (matches every other fire-and-forget cleanup in
+      // this method); frees this document's cached OCCT handles inside the
+      // shared kernel-worker child.
+      void this.pipeline.disposeBRepCacheForDocument(documentKey);
     });
 
     // Track this editor as the active one while it is focused, so the
@@ -621,7 +653,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           }
           const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
           const startedAt = Date.now();
-          const result = await generateMesh(this.context.extensionPath, input, options, parts);
+          const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
           post({
             type: "meshingResult",
             positions: encodeBuffer(result.positions),
@@ -655,7 +687,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           }
           const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options, unit);
           if (msg.target === "msh") {
-            const result = await generateMesh(this.context.extensionPath, input, options, parts);
+            const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
               document.uri,
               "msh",
@@ -664,7 +696,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
               post
             );
           } else if (msg.target === "geoUnrolled") {
-            const geo = await exportGeoUnrolled(this.context.extensionPath, input, options, parts);
+            const geo = await this.pipeline.exportGeoUnrolled(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
               document.uri,
               "geo_unrolled",
@@ -688,7 +720,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
             // exportMdpa's doc comment), unlike every other format below.
             const format = meshExportFormat(msg.target)!;
-            const text = await exportMdpa(
+            const text = await this.pipeline.exportMdpa(
               this.context.extensionPath,
               input,
               options,
@@ -711,8 +743,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // comment; before 9.7.0 this needed a legacy MSH 2.2 detour).
             // See `meshExportFormats.ts`'s doc comment for the MED/CGNS caveats.
             const format = meshExportFormat(msg.target)!;
-            const meshed = await generateMesh(this.context.extensionPath, input, options, parts);
-            const { bytes, companion } = await exportViaMeshio(meshed.mshText, msg.target);
+            const meshed = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
+            const { bytes, companion } = await this.pipeline.exportViaMeshio(meshed.mshText, msg.target);
             await this.promptSaveAndWrite(
               document.uri,
               format.extension,
@@ -736,7 +768,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // plain generate-then-write with no companion file, see `exportMeshFormat`.
             const format = meshExportFormat(msg.target);
             if (!format) throw new Error(`Unknown mesh export format: ${msg.target}`);
-            const text = await exportMeshFormat(this.context.extensionPath, input, options, parts, msg.target);
+            const text = await this.pipeline.exportMeshFormat(this.context.extensionPath, input, options, parts, msg.target);
             await this.promptSaveAndWrite(
               document.uri,
               format.extension,
@@ -810,7 +842,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             throw new Error("Mass properties are computed for B-rep sources on the host; mesh sources compute this client-side.");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const properties = await computeMassProperties(
+          const properties = await this.pipeline.computeMassProperties(
             this.context.extensionPath,
             bytes,
             route.format as Extract<CadFormat, "step" | "iges" | "brep">,
@@ -826,7 +858,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "standardPartsSearchRequest") {
         try {
-          const result = await searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });
+          const result = await this.pipeline.searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });
           if (!result.available) throw new Error(result.reason);
           post({
             type: "standardPartsSearchResult",
@@ -844,7 +876,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "standardPartsInsertRequest") {
         try {
-          const downloaded = await downloadStandardPart(msg.id);
+          const downloaded = await this.pipeline.downloadStandardPart(msg.id);
           if (!downloaded.available) throw new Error(downloaded.reason);
           const defaultUri = vscode.Uri.joinPath(document.uri, "..", msg.suggestedName);
           const saveUri = await vscode.window.showSaveDialog({ defaultUri, filters: { "STEP files": ["step", "stp"] } });
@@ -884,7 +916,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             throw new Error("Exact measurement requires a B-rep source; mesh sources have no host-side geometry to re-derive it from.");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const result = await measureExact(
+          const result = await this.pipeline.measureExact(
             this.context.extensionPath,
             bytes,
             route.format as Extract<CadFormat, "step" | "iges" | "brep">,
@@ -906,7 +938,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             throw new Error("Colour-by-field is only available for meshio++-imported sources (VTK/MED/CGNS/Exodus/XDMF/MDPA).");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const result = await readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
+          const result = await this.pipeline.readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
           if (!result) throw new Error(`Field "${msg.field}" not found, not a plain scalar, or the boundary isn't pure triangles.`);
           post({ type: "colorFieldResult", requestId: msg.requestId, values: encodeBuffer(result.values), min: result.min, max: result.max });
         } catch (err) {
@@ -920,35 +952,35 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   }
 
   /**
-   * `cache` is a per-document holder (`brepCache` in `resolveCustomEditor`),
-   * mutated in place: `loadBRepCached` reuses `cache.current` when possible
-   * (skipping the STEP/IGES/BREP parse, and — for a pure op-list append —
-   * the full replay too), and this method always writes the fresh entry it
-   * returns back into `cache.current` for the next call. On any error, the
-   * held entry is dropped (not reused, not explicitly disposed — see
-   * `loadBRepCached`'s doc comment for why a thrown call must not attempt to
-   * free its own stale handles) so the NEXT call starts from a clean parse.
+   * `documentKey` identifies this document to the kernel-worker child's own
+   * cache (roadmap "Base-shape caching and incremental replay", closed, now
+   * living entirely inside the child as of "OCCT in a forked child process"
+   * Phase 2 — see `kernelClient.ts`'s `DocumentPipeline.
+   * loadBRepCachedForDocument` doc comment for the reuse rules; this method
+   * no longer sees or manages a `BRepCacheEntry` at all, since live OCCT
+   * handles can never cross the IPC boundary).
    *
    * `generation`/`genHolder` implement the stale-result-discard safety net
    * documented on `brepLoadGeneration` in `resolveCustomEditor` — every
-   * `return`/`post` past the `loadBRepCached` await first checks
-   * `generation === genHolder.current`, and silently does nothing (no post,
-   * no cache write) when it doesn't: a newer `loadModel()` call has since
-   * started, or the user cancelled via `progress`'s notification (whose
-   * `onCancellationRequested` handler already bumped `genHolder.current` and
-   * posted its own "Cancelled" status — this method must not post a second,
-   * possibly-conflicting status/result after that). `progress` is present
-   * only for the two call sites that opt into a native progress
-   * notification (see `loadModel`'s doc comment) — every `progress.report`
-   * call is additionally guarded by `progress &&` since it's `undefined` on
-   * a routine, no-notification edit re-tessellation.
+   * `return`/`post` past the `loadBRepCachedForDocument` await first checks
+   * `generation === genHolder.current`, and silently does nothing (no post)
+   * when it doesn't: a newer `loadModel()` call has since started, or the
+   * user cancelled via `progress`'s notification (whose
+   * `onCancellationRequested` handler already bumped `genHolder.current`,
+   * posted its own "Cancelled" status, and killed the shared kernel-worker
+   * child — this method must not post a second, possibly-conflicting
+   * status/result after that). `progress` is present only for the two call
+   * sites that opt into a native progress notification (see `loadModel`'s
+   * doc comment) — every `progress.report` call is additionally guarded by
+   * `progress &&` since it's `undefined` on a routine, no-notification edit
+   * re-tessellation.
    */
   private async handleBRep(
     uri: vscode.Uri,
     format: Extract<CadFormat, "step" | "iges" | "brep">,
     post: (msg: HostToWebview) => void,
     ops: EditOp[] = [],
-    cache: { current: BRepCacheEntry | undefined },
+    documentKey: string,
     generation: number,
     genHolder: { current: number },
     progress?: vscode.Progress<{ message?: string }>
@@ -966,16 +998,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const quality = normalizeTessellationQuality(
         vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
       );
-      const { result, cache: nextCache } = await loadBRepCached(
+      const result = await this.pipeline.loadBRepCachedForDocument(
+        documentKey,
         this.context.extensionPath,
         bytes,
         format,
         ops,
-        cache.current,
         tessellationParamsFor(quality)
       );
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
-      cache.current = nextCache;
       post({ type: "status", text: "Rendering…" });
       progress?.report({ message: "Rendering…" });
       const { groups, edges, points, tree } = result;
@@ -1004,12 +1035,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({ type: "tree", root: tree, sourceUnit });
     } catch (err) {
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
-      // Drop (never reuse) whatever cache entry was held — see
-      // `loadBRepCached`'s doc comment on why a thrown call doesn't already
-      // dispose its own stale state; the next `handleBRep` call starts from
-      // a clean parse regardless of whether this was a real WASM abort or an
-      // ordinary error (e.g. an unreadable file).
-      cache.current = undefined;
+      // No cache to drop here anymore — the kernel-worker child owns its own
+      // cache entry for `documentKey` entirely internally
+      // (`loadBRepCachedForDocument`'s doc comment covers what happens to it
+      // on a thrown error there), so this method has nothing left to clean
+      // up on failure beyond reporting it.
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
     }
   }
@@ -1042,8 +1072,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({ type: "status", text: `Loading ${format.toUpperCase()}…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       const [boundary, metadata, existingParts] = await Promise.all([
-        convertToStlBoundaryWithRegions(bytes, format),
-        readMeshioMetadata(bytes, format),
+        this.pipeline.convertToStlBoundaryWithRegions(bytes, format),
+        this.pipeline.readMeshioMetadata(bytes, format),
         readParts(uri),
       ]);
       let parts = existingParts;
@@ -1158,7 +1188,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       // never shown to the user, so it stays at the OCCT-native "mm" label
       // while its geometry is still genuinely scaled. See exportBRep's doc
       // comment for the full write-up.
-      const stepBytes = await exportBRep(
+      const stepBytes = await this.pipeline.exportBRep(
         this.context.extensionPath,
         sourceBytes,
         route.format as Extract<CadFormat, "step" | "iges" | "brep">,
@@ -1237,7 +1267,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async (_saveUri) => {
       if (BREP_FORMATS.has(targetFormat)) {
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
-        return exportBRep(
+        return this.pipeline.exportBRep(
           this.context.extensionPath,
           sourceBytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
