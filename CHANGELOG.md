@@ -4,6 +4,18 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.3.0] - 2026-08-03
+
+### Added
+
+- **STEP assembly structure.** The Components tree now shows a STEP file's real nested assembly/component hierarchy — matching how the file's author organized it — instead of always flattening every solid into one list; a source with no real assembly structure still falls back to the flat list as before. STEP export now also carries per-part names into the exported file's `PRODUCT` entities (per-label colors remain unsupported — confirmed non-functional in both directions in this OCCT build).
+- **Standard Parts panel.** Search the hosted [step.parts](https://www.step.parts) catalog (fasteners, bearings, connectors, extrusions, …) and insert a result as a new STEP document with one click, from a new sidebar section — previously only available to AI agents via the `search_standard_parts`/`download_standard_part` MCP tools.
+- **Align and Linear/Circular Pattern** edit ops, in the Edits panel's Assembly category.
+- **Transform Gizmo.** Move/Rotate/Scale now show a draggable 3D handle that live-previews the edit before you click Apply, with optional **Snap to grid** / **Snap to points** (View ▾).
+- **Import SVG…** (File ▾) traces a `.svg` file's paths into B-rep sketch polylines, ready to build into a surface or extrude.
+- **A cancellable progress notification** for slow STEP/IGES/BREP loads (first open, or reopening after an external change) — clicking Cancel stops the result from being applied. Routine edits stay on the lightweight toolbar status line, since they're normally near-instant.
+- **OCCT, Gmsh, and meshio++ now run in a forked child process**, both in the extension and in the standalone MCP server. A hung or crashed kernel operation no longer wedges the whole extension/server — it's killed and a fresh one takes over automatically for the next operation — and Cancel now genuinely interrupts a slow load instead of only discarding its result once it eventually finishes.
+
 ## [1.2.0] - 2026-07-31
 
 ### Added
@@ -201,6 +213,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.2.6...v1.3.0
 [1.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.1.3...v1.2.0
 [1.1.3]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.5...v1.1.3
 [1.0.5]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.4...v1.0.5
