@@ -10,6 +10,7 @@ import {
   getMassProperties,
   compareModelsTool,
   checkMeshHealthTool,
+  promoteMeshToBrepTool,
   getState,
   applyEditOps,
   runParametricScriptTool,
@@ -45,7 +46,7 @@ import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { ModelDiff } from "./modelDiff";
-import type { MeshHealthReport } from "./meshHeal";
+import type { MeshHealthReport, PromoteMeshResult } from "./meshHeal";
 
 // The exact 6-triangle boundary `convertToStlBoundaryWithRegions` produces
 // for `examples/MED/two-material-tets.med` — see `meshioRegionParts.test.ts`
@@ -263,6 +264,13 @@ const FAKE_MESH_HEALTH_REPORT: MeshHealthReport = {
   ],
 };
 
+const FAKE_PROMOTE_RESULT: PromoteMeshResult = {
+  bytes: new TextEncoder().encode("ISO-10303-21;PROMOTED"),
+  promotedComponents: [0],
+  skippedComponents: [],
+  warnings: [],
+};
+
 function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   return {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
@@ -282,6 +290,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     checkMeshHealth: vi.fn(async () => FAKE_MESH_HEALTH_REPORT),
+    promoteMeshToBrep: vi.fn(async () => FAKE_PROMOTE_RESULT),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
     convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
@@ -988,6 +997,98 @@ describe("check_mesh_health", () => {
     await checkMeshHealthTool(c, { path: stlModel });
     await expect(fs.access(`${stlModel}.edits.json`)).rejects.toThrow();
     await expect(fs.access(`${stlModel}.parts.json`)).rejects.toThrow();
+  });
+});
+
+describe("promote_mesh_to_brep", () => {
+  it("promotes an STL source to STEP (the default target) and writes the pipeline's bytes", async () => {
+    const c = ctx();
+    const outputPath = path.join(dir, "promoted.step");
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm");
+    expect(result).toMatchObject({ written: outputPath, promotedComponents: [0], skippedComponents: [], warnings: [] });
+    expect(await fs.readFile(outputPath)).toEqual(Buffer.from(FAKE_PROMOTE_RESULT.bytes));
+  });
+
+  it("promotes OBJ/PLY sources too", async () => {
+    const c = ctx();
+    const objOut = path.join(dir, "promoted-obj.step");
+    await promoteMeshToBrepTool(c, { path: objModel, outputPath: objOut });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", "step", "mm");
+
+    const plyOut = path.join(dir, "promoted-ply.step");
+    await promoteMeshToBrepTool(c, { path: plyModel, outputPath: plyOut });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", "step", "mm");
+  });
+
+  it("respects an explicit targetFormat and unit", async () => {
+    const c = ctx();
+    const outputPath = path.join(dir, "promoted.iges");
+    await promoteMeshToBrepTool(c, { path: stlModel, outputPath, targetFormat: "iges", unit: "in" });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "iges", "in");
+  });
+
+  it("falls back to mm with a warning for an unrecognized unit, never throwing", async () => {
+    const c = ctx();
+    const outputPath = path.join(dir, "promoted.step");
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath, unit: "furlongs" });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm");
+    expect(result.warnings.some((w) => /unknown unit/i.test(w))).toBe(true);
+  });
+
+  it("rejects an invalid targetFormat with a clear error, without touching the pipeline", async () => {
+    const c = ctx();
+    await expect(
+      promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "x.step"), targetFormat: "stl" })
+    ).rejects.toThrow(/invalid targetformat/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+  });
+
+  it("throws for a B-rep source (nothing to promote), without touching WASM", async () => {
+    const c = ctx();
+    await expect(
+      promoteMeshToBrepTool(c, { path: stpModel, outputPath: path.join(dir, "x.step") })
+    ).rejects.toThrow(/already a B-rep source/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+  });
+
+  it("throws for glTF (no host-side triangle-soup parser)", async () => {
+    const c = ctx();
+    await expect(
+      promoteMeshToBrepTool(c, { path: gltfModel, outputPath: path.join(dir, "x.step") })
+    ).rejects.toThrow(/no host-side triangle-soup parser/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+  });
+
+  it("warns (but still promotes the raw file) when the mesh source has pending edits that can't be baked in", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "x.step") });
+    expect(result.warnings.some((w) => /not baked in/i.test(w))).toBe(true);
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalled();
+  });
+
+  it("surfaces the pipeline's own skippedComponents/warnings (e.g. a component that never closed)", async () => {
+    const c = ctx(
+      fakePipeline({
+        promoteMeshToBrep: vi.fn(async () => ({
+          bytes: new TextEncoder().encode("partial"),
+          promotedComponents: [0],
+          skippedComponents: [1],
+          warnings: ["Component 1 (4 triangles) did not close into a valid solid..."],
+        })),
+      })
+    );
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "x.step") });
+    expect(result.promotedComponents).toEqual([0]);
+    expect(result.skippedComponents).toEqual([1]);
+    expect(result.warnings.some((w) => /did not close/i.test(w))).toBe(true);
+  });
+
+  it("rejects writing to the source path itself", async () => {
+    const c = ctx();
+    await expect(promoteMeshToBrepTool(c, { path: stlModel, outputPath: stlModel })).rejects.toThrow();
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
   });
 });
 

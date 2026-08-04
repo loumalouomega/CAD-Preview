@@ -1098,12 +1098,12 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
   },
 });
 
-// ── Mesh Health (roadmap "Mesh -> B-rep promotion, diagnostic-first",
-// Phase 1: read-only report only, no promotion) ────────────────────────────
+// ── Mesh Health (roadmap "Mesh -> B-rep promotion", both phases closed) ────
 // Eligible only for a NATIVE stl/obj/ply file on disk — the same
-// COMPARABLE_MESH_FORMATS gate `check_mesh_health`'s MCP tool applies. A
-// meshio-converted document (`loadMeshBytes`, already-triangulated but not
-// itself an stl/obj/ply FILE) and glTF both stay ineligible.
+// COMPARABLE_MESH_FORMATS gate check_mesh_health/promote_mesh_to_brep's MCP
+// tools apply. A meshio-converted document (`loadMeshBytes`, already-
+// triangulated but not itself an stl/obj/ply FILE) and glTF both stay
+// ineligible.
 let meshHealthEligibleFormat: "stl" | "obj" | "ply" | null = null;
 let meshHealRequestId: string | null = null;
 
@@ -1114,6 +1114,10 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
     meshHealRequestId = requestId;
     meshHealthPanel.renderMessage("Checking…");
     post({ type: "meshHealRequest", requestId });
+  },
+  onPromote: () => {
+    if (!meshHealthEligibleFormat) return;
+    post({ type: "promoteToBrepButtonClicked" });
   },
 });
 

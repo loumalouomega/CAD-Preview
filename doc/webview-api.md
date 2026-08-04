@@ -957,7 +957,7 @@ Both call sites go through `main.ts`'s `renderMassProperties(raw)` wrapper, neve
 
 ## `src/webview/meshHealthPanel.ts`
 
-"Mesh → B-rep promotion, diagnostic-first" (roadmap item, Phase 1 only — a read-only report, no promotion). Same bespoke-DOM-class shape as `massPropertiesPanel.ts` above, no unit test (this codebase's established convention for DOM panel classes).
+"Mesh → B-rep promotion" (roadmap item, closed — both phases). Same bespoke-DOM-class shape as `massPropertiesPanel.ts` above, no unit test (this codebase's established convention for DOM panel classes).
 
 ```typescript
 interface ComponentHealthDisplay {
@@ -976,14 +976,16 @@ interface MeshHealthDisplay {
 }
 
 class MeshHealthPanel {
-  constructor(panel: HTMLElement, cb: { onCheck: () => void })
-  setEligible(eligible: boolean): void   // shows/hides the whole panel
+  constructor(panel: HTMLElement, cb: { onCheck: () => void; onPromote: () => void })
+  setEligible(eligible: boolean): void   // shows/hides the whole panel, disables Promote
   renderMessage(text: string, isError?: boolean): void
   render(report: MeshHealthDisplay): void
 }
 ```
 
-`setEligible()` toggles `panel.hidden` and, when turning eligible, resets the body to a neutral "Click Check Healability…" prompt — the panel is visible ONLY for a genuinely native `.stl`/`.obj`/`.ply` file on disk, the same `COMPARABLE_MESH_FORMATS` gate the MCP tool's `check_mesh_health` applies to a real file path. `main.ts` tracks this via a module-level `meshHealthEligibleFormat: "stl" | "obj" | "ply" | null`, set from `case "loadUrl"`'s `msg.format` (a native mesh open) and reset to `null` on `case "geometry"` (B-rep — nothing to heal) and `case "loadMeshBytes"` (a meshio-converted document is not itself a real stl/obj/ply file, even though its bytes happen to be STL-shaped). `render()` renders one row-group per component — free/non-manifold edge counts, degenerate face count, the required sewing tolerance (or "did not close" for `null`), and area/volume delta percentages (blank when the component never closed) — deliberately with NO promote/apply action, since Phase 2 (an actual promotion `EditOpKind`) doesn't exist.
+`setEligible()` toggles `panel.hidden` and, when turning eligible, resets the body to a neutral "Click Check Healability…" prompt — the panel is visible ONLY for a genuinely native `.stl`/`.obj`/`.ply` file on disk, the same `COMPARABLE_MESH_FORMATS` gate the MCP tools' `check_mesh_health`/`promote_mesh_to_brep` apply to a real file path. `main.ts` tracks this via a module-level `meshHealthEligibleFormat: "stl" | "obj" | "ply" | null`, set from `case "loadUrl"`'s `msg.format` (a native mesh open) and reset to `null` on `case "geometry"` (B-rep — nothing to heal) and `case "loadMeshBytes"` (a meshio-converted document is not itself a real stl/obj/ply file, even though its bytes happen to be STL-shaped). `render()` renders one row-group per component — free/non-manifold edge counts, degenerate face count, the required sewing tolerance (or "did not close" for `null`), and area/volume delta percentages (blank when the component never closed).
+
+**Promote to B-rep… (Phase 2)** — the `#mesh-health-promote` button, enabled only when `render()`'s report shows at least one component with `requiredTolerance !== null` (both `render()` and `renderMessage()` otherwise force it back to `disabled`). Clicking it fires `cb.onPromote()`, which posts a single parameter-free `{type: "promoteToBrepButtonClicked"}` message — deliberately NOT a request/response round trip (mirrors `screenshotButtonClicked`'s precedent): the host owns the entire format/unit-quick-pick + save-dialog + write flow (`provider.ts`'s `handlePromoteToBrep`, mirroring `handleExport`'s structure) and reports outcome via the plain `"status"`/`"error"` messages, so the panel needs no new message-handler case at all, just the button wiring. Promoting does NOT change anything about the currently-open document — it writes an independent new file the user opens separately (see CLAUDE.md's "Mesh → B-rep promotion" section for why this is a one-shot export, not an in-place reclassification).
 
 `onCheck` posts a `meshHealRequest` (guarded by a `meshHealRequestId`, the same stale-response-guard idiom `massPropertiesRequestId`/`measureExactRequestId` already use) and awaits `meshHealResult`/`meshHealError` — a genuine host round trip through `checkMeshHealth` (extension-host-api.md), since the sewing-tolerance-ladder check needs live OCCT, unlike Mass Properties' mesh-source path which computes entirely client-side.
 

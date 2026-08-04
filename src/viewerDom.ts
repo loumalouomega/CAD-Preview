@@ -101,7 +101,10 @@ export function viewerBodyHtml(): string {
       <div id="mesh-health-panel" hidden>
         <div id="mesh-health-header">
           <span id="mesh-health-title">Mesh Health</span>
-          <button id="mesh-health-check" title="Read-only diagnostic: checks whether this mesh could be closed into a valid B-rep solid, and at what tolerance/cost — does not promote or change anything">${icon("generate")} Check Healability</button>
+          <div id="mesh-health-actions">
+            <button id="mesh-health-check" title="Read-only diagnostic: checks whether this mesh could be closed into a valid B-rep solid, and at what tolerance/cost — does not promote or change anything">${icon("generate")} Check Healability</button>
+            <button id="mesh-health-promote" title="Sew this mesh into a solid and save it as a brand-new STEP/IGES/BREP file — the original mesh file is left untouched" disabled>${icon("export")} Promote to B-rep…</button>
+          </div>
         </div>
         <div id="mesh-health-body"></div>
       </div>

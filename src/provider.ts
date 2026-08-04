@@ -827,6 +827,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "promoteToBrepButtonClicked") {
+        if (route) void this.handlePromoteToBrep(document.uri, route, post);
+        return;
+      }
+
       if (msg.type === "screenshotResult" || msg.type === "screenshotError") {
         const p = pending.get(msg.requestId);
         if (!p) return;
@@ -1322,6 +1327,57 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       { placeHolder: "Export unit…" }
     );
     return picked?.unit ?? "mm";
+  }
+
+  /**
+   * "Mesh → B-rep promotion" (roadmap item, closed), Phase 2 — the Mesh
+   * Health panel's "Promote to B-rep…" button. Deliberately a ONE-SHOT
+   * EXPORT (sew the mesh into a solid, write it as a brand-new STEP/IGES/
+   * BREP file the user opens separately), not an in-place reclassification
+   * of THIS document — see CLAUDE.md's "Mesh → B-rep promotion" section for
+   * why. Mirrors `handleExport`'s exact structure (format quick-pick over
+   * the same `BREP_FORMATS`, the existing `pickExportUnit()`, the shared
+   * `promptSaveAndWrite()` for the save dialog + write + status/error
+   * posting) with a new `getBytes` callback calling
+   * `this.pipeline.promoteMeshToBrep` instead of `exportBRep`. Known,
+   * accepted simplification: `promptSaveAndWrite`'s own generic "Exported
+   * to …" status message is reused as-is — a component that was skipped
+   * (never closed) is NOT separately called out here in the interactive
+   * flow, since the user already saw that in the Mesh Health panel's report
+   * before clicking Promote; the MCP tool's `skippedComponents`/`warnings`
+   * fields remain the authoritative, always-surfaced signal for headless
+   * callers.
+   */
+  private async handlePromoteToBrep(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void): Promise<void> {
+    if (route.strategy !== "three" || route.format === "gltf") {
+      post({ type: "error", message: "Promote to B-rep requires an STL/OBJ/PLY source." });
+      return;
+    }
+    const meshFormat = route.format as "stl" | "obj" | "ply";
+
+    const picked = await vscode.window.showQuickPick(
+      [...BREP_FORMATS].map((format) => ({
+        label: EXPORT_LABEL[format],
+        description: `.${EXPORT_EXTENSION[format]}`,
+        format: format as Extract<CadFormat, "step" | "iges" | "brep">,
+      })),
+      { placeHolder: "Promote to B-rep as…" }
+    );
+    if (!picked) return;
+
+    const unit = await this.pickExportUnit();
+
+    await this.promptSaveAndWrite(
+      uri,
+      EXPORT_EXTENSION[picked.format],
+      EXPORT_LABEL[picked.format],
+      async (_saveUri) => {
+        const sourceBytes = await vscode.workspace.fs.readFile(uri);
+        const result = await this.pipeline.promoteMeshToBrep(this.context.extensionPath, sourceBytes, meshFormat, picked.format, unit);
+        return result.bytes;
+      },
+      post
+    );
   }
 
   /**

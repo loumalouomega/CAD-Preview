@@ -1,16 +1,22 @@
 /**
- * "Mesh → B-rep promotion, diagnostic-first" — Phase 1 of the roadmap item
- * of the same name: a READ-ONLY heal-quality report for an STL/OBJ/PLY
- * triangle mesh, answering "could this be closed into a valid B-rep solid,
- * and at what cost" — WITHOUT actually promoting anything. `src/
- * exportTargets.ts` states "no path from a triangle mesh back to a B-rep" as
- * policy, not a kernel limitation; this module is deliberately the first
- * half only. Phase 2 (an actual `EditOpKind` that promotes a healed shell to
- * a real solid, unlocking `BREP_ONLY_OPS` for mesh sources) is explicitly
- * NOT built here — the roadmap item is explicit that shipping promotion
- * before a trustworthy diagnostic would risk feeding `get_mass_properties`/
- * `measure_exact` a confidently-wrong number from a shell that only closed
- * because a tolerance ladder reached its loosest, least-trustworthy rung.
+ * "Mesh → B-rep promotion" — both phases of the roadmap item of the same
+ * name now live in this module. Phase 1 (`checkMeshHealth`) is a READ-ONLY
+ * heal-quality report for an STL/OBJ/PLY triangle mesh, answering "could
+ * this be closed into a valid B-rep solid, and at what cost" — without
+ * promoting anything. Phase 2 (`promoteMeshToBrep`) actually does it, but
+ * DELIBERATELY as a one-shot EXPORT (write a brand-new `.step`/`.iges`/
+ * `.brep` file) rather than reclassifying the currently-open mesh document
+ * in place — see the "Mesh → B-rep promotion" section of CLAUDE.md for the
+ * full reasoning: in-place reclassification would need two genuinely new
+ * patterns this codebase has never needed before (a sidecar that persists
+ * actual geometry, and a runtime override of `fileRouter.ts`'s otherwise
+ * pure/static per-extension routing decision), while the export model
+ * reuses `occtService.ts`'s existing B-rep writer pipeline wholesale and
+ * needs neither. The promoted file is an ORDINARY B-rep document from the
+ * moment it exists — `src/exportTargets.ts`'s "no path from a triangle mesh
+ * back to a B-rep" policy line is now stale for the export-a-new-file sense,
+ * though the ORIGINAL mesh document itself still can't use fillet/chamfer/
+ * `measure_exact`/etc. directly, by design (a promoted copy, not a mutation).
  *
  * Every field in `ComponentHealthReport` is a FACT, never a computed
  * pass/fail verdict — matching `checkInterference`'s `hasOverlap: boolean`-
@@ -18,7 +24,11 @@
  * report facts... you render the verdict, not the tool"). A component that
  * never closes reports `requiredTolerance/healedArea/healedVolume/
  * areaDeltaPct/volumeDeltaPct` as `null` — never a fabricated number for
- * geometry that isn't actually closed.
+ * geometry that isn't actually closed. `promoteMeshToBrep` mirrors this:
+ * a component that never closes is SKIPPED (reported in `skippedComponents`/
+ * `warnings`), never silently dropped or forced into an invalid solid; if
+ * NO component closes, the function throws rather than writing an empty or
+ * meaningless file.
  *
  * Live-WASM findings this module relies on (probed this session, see
  * CLAUDE.md for the full write-up):
@@ -42,12 +52,16 @@
  *     exact).
  */
 
-import { getOcct, wrapOcctFault } from "./occtService";
+import { getOcct, wrapOcctFault, writeShape } from "./occtService";
+import { scaleShapeForExport, combineSolids } from "./occtOperations";
 import { parseStl } from "./stlParser";
 import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
 import { weldTriangleSoup, connectedComponents, areaOfTriangles, volumeOfTriangles, type WeldedMesh } from "./meshComponents";
 import { analyzeMeshTopology } from "./meshTopology";
+import { patchStepUnitDeclaration } from "./stepUnitPatch";
+import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
+import type { BRepFormat } from "./massProperties";
 
 /** Tolerance-ladder rungs tried in order, loosest reported as
  * `requiredTolerance` — the SAME ladder rung count/spacing this session's
@@ -149,14 +163,15 @@ function sewComponent(oc: any, faces: unknown[], cleanup: Array<{ delete(): void
 }
 
 /**
- * Pulls the (first) `TopAbs_SHELL` out of a sewed shape, builds a solid from
- * it, and computes its area/volume via `BRepGProp` — the same 4/5-arg call
- * shapes `massProperties.ts`/`entityFacts.ts` already use elsewhere in this
- * codebase. Returns `null` if no shell is found (shouldn't happen once
+ * Pulls the (first) `TopAbs_SHELL` out of a sewed shape and builds a solid
+ * from it — shared by `solidPropertiesFromSewedShape` (Phase 1's report,
+ * which only needs the resulting area/volume) and `promoteMeshToBrep`
+ * (Phase 2, which needs the solid itself to survive and be written to a
+ * file). Returns `null` if no shell is found (shouldn't happen once
  * `NbFreeEdges() === 0`, but degrades gracefully rather than throwing).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function solidPropertiesFromSewedShape(oc: any, sewedShape: unknown, cleanup: Array<{ delete(): void }>): { area: number; volume: number } | null {
+function buildSolidFromSewedShape(oc: any, sewedShape: unknown, cleanup: Array<{ delete(): void }>): unknown | null {
   const shellExp = new oc.TopExp_Explorer_2(sewedShape, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
   cleanup.push(shellExp);
   if (!shellExp.More()) return null;
@@ -165,6 +180,19 @@ function solidPropertiesFromSewedShape(oc: any, sewedShape: unknown, cleanup: Ar
 
   const solid = new oc.BRepBuilderAPI_MakeSolid_3(shell).Solid();
   cleanup.push(solid);
+  return solid;
+}
+
+/**
+ * Computes a sewn+solidified shape's area/volume via `BRepGProp` — the same
+ * 4/5-arg call shapes `massProperties.ts`/`entityFacts.ts` already use
+ * elsewhere in this codebase. Returns `null` if `buildSolidFromSewedShape`
+ * found no shell.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function solidPropertiesFromSewedShape(oc: any, sewedShape: unknown, cleanup: Array<{ delete(): void }>): { area: number; volume: number } | null {
+  const solid = buildSolidFromSewedShape(oc, sewedShape, cleanup);
+  if (!solid) return null;
 
   const volumeProps = new oc.GProp_GProps_1();
   cleanup.push(volumeProps);
@@ -232,6 +260,118 @@ export async function checkMeshHealth(extensionPath: string, bytes: Uint8Array, 
       } catch {
         /* ignore */
       }
+    }
+  }
+}
+
+export interface PromoteMeshResult {
+  bytes: Uint8Array;
+  /** Connected-component indices that closed and were carried into the
+   * output file. */
+  promotedComponents: number[];
+  /** Connected-component indices that never closed, even at the loosest
+   * sewing-tolerance-ladder rung, and were therefore left out of the output
+   * file entirely — never silently dropped without explanation. */
+  skippedComponents: number[];
+  warnings: string[];
+}
+
+/**
+ * Phase 2: promotes a healed STL/OBJ/PLY mesh into a NEW B-rep file
+ * (STEP/IGES/BREP bytes) — see this module's own top doc comment for why
+ * this is a one-shot EXPORT rather than an in-place reclassification of the
+ * source document. Reuses `checkMeshHealth`'s exact per-component
+ * parse/weld/sew pipeline, but keeps the resulting solids (instead of just
+ * reporting facts about them) and writes them out via `occtService.ts`'s
+ * `writeShape` — the SAME writer paths (`STEPControl_Writer_1`/
+ * `IGESControl_Writer_1|2`/`BRepTools.Write_2`, unit scaling via
+ * `scaleShapeForExport`, STEP-unit relabeling via
+ * `patchStepUnitDeclaration`) `exportBRep` already uses for a B-rep source,
+ * so the output is byte-for-byte as trustworthy as any other export this
+ * codebase produces.
+ *
+ * A component that never closes is skipped (`skippedComponents`/
+ * `warnings`), never silently dropped or forced into an invalid solid. If
+ * NO component closes, throws rather than writing an empty/meaningless
+ * file — run `check_mesh_health` first to see why. `parts` is deliberately
+ * never threaded through to `writeShape` here (unlike `exportBRep`) — a
+ * mesh source's `node-N` Part assignments have no meaningful mapping onto
+ * the newly-promoted `solid-N` ids, so no Part-name carryover is attempted.
+ */
+export async function promoteMeshToBrep(
+  extensionPath: string,
+  bytes: Uint8Array,
+  sourceFormat: "stl" | "obj" | "ply",
+  targetFormat: BRepFormat,
+  unit: DisplayUnit = "mm"
+): Promise<PromoteMeshResult> {
+  const oc = await getOcct(extensionPath);
+  const { positions, indices } = parseToWeldedMesh(bytes, sourceFormat);
+  const componentTriangles = connectedComponents(indices);
+  // Short path — this OCCT WASM build has an undocumented MEMFS path-length
+  // cliff (roughly 11+ characters starts failing, per this codebase's own
+  // prior findings for STEP/IGES export elsewhere); a live-WASM integration
+  // test caught this the hard way: `/promoted.${targetFormat}` (14 chars for
+  // "step") wrote successfully (writeShape's own STEP writer completed with
+  // no error) but the immediately-following `oc.FS.readFile(outPath)`
+  // consistently failed with an opaque low-level FS error. Mirrors
+  // `exportBRep`'s own short `/o.${format}` convention.
+  const outPath = `/p.${targetFormat}`;
+
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    const promotedSolids: unknown[] = [];
+    const promotedComponents: number[] = [];
+    const skippedComponents: number[] = [];
+    const warnings: string[] = [];
+
+    componentTriangles.forEach((triangles, index) => {
+      const faces = triangles.map((t) => buildFaceFromTriangle(oc, positions, indices, t, cleanup));
+      for (const f of faces) cleanup.push(f as { delete(): void });
+
+      const sewn = sewComponent(oc, faces, cleanup);
+      const solid = sewn ? buildSolidFromSewedShape(oc, sewn.shape, cleanup) : null;
+      if (!solid) {
+        skippedComponents.push(index);
+        warnings.push(
+          `Component ${index} (${triangles.length} triangles) did not close into a valid solid even at the loosest sewing tolerance (${SEWING_TOLERANCE_LADDER[SEWING_TOLERANCE_LADDER.length - 1]}) and was skipped — run check_mesh_health first to see why.`
+        );
+        return;
+      }
+      promotedSolids.push(solid);
+      promotedComponents.push(index);
+    });
+
+    if (promotedSolids.length === 0) {
+      throw new Error("No component of this mesh could be closed into a valid solid — run check_mesh_health first to see why.");
+    }
+
+    let shape = combineSolids(oc, promotedSolids, cleanup);
+    const factor = unitScaleFactor(unit);
+    if (factor !== 1 && targetFormat !== "iges") shape = scaleShapeForExport(oc, shape, factor, cleanup);
+
+    writeShape(oc, shape, outPath, targetFormat, cleanup, unit, []);
+    let outBytes: Uint8Array = oc.FS.readFile(outPath);
+    if (targetFormat === "step" && unit !== "mm") {
+      const text = Buffer.from(outBytes).toString("utf8");
+      outBytes = new TextEncoder().encode(patchStepUnitDeclaration(text, unit));
+    }
+
+    return { bytes: outBytes, promotedComponents, skippedComponents, warnings };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try {
+        cleanup[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(outPath);
+    } catch {
+      /* ignore */
     }
   }
 }

@@ -22,6 +22,7 @@ export interface MeshHealthDisplay {
 
 export interface MeshHealthPanelCallbacks {
   onCheck: () => void;
+  onPromote: () => void;
 }
 
 function formatPct(n: number): string {
@@ -34,20 +35,31 @@ function formatTolerance(t: number): string {
 }
 
 /**
- * "Mesh → B-rep promotion, diagnostic-first" — Phase 1 read-only heal-
- * quality report panel. Deliberately has NO promote/apply action — there is
- * nothing to apply yet (Phase 2, an actual promotion `EditOpKind`, is not
- * built). Mirrors `MassPropertiesPanel`'s "compute button + label/value
- * readout" shape, one row-group per connected component.
+ * "Mesh → B-rep promotion" report + one-shot-export panel. `render()` shows
+ * Phase 1's read-only heal-quality report (free/non-manifold edges,
+ * degenerate faces, required sewing tolerance, area/volume delta), one
+ * row-group per connected component, mirroring `MassPropertiesPanel`'s
+ * "compute button + label/value readout" shape. The **Promote to B-rep…**
+ * button (Phase 2) is enabled only once a report shows at least one
+ * component that actually closed (`requiredTolerance !== null`) — a cheap,
+ * UI-only safety net against a doomed click; clicking it does NOT apply
+ * anything to the currently-open document (see `meshHeal.ts`'s own doc
+ * comment for why promotion is a one-shot export, never an in-place
+ * reclassification) — the host owns the whole format/unit/save-dialog flow
+ * from there via a single parameter-free `promoteToBrepButtonClicked`
+ * message.
  */
 export class MeshHealthPanel {
   private readonly panel: HTMLElement;
   private readonly body: HTMLElement;
+  private readonly promoteButton: HTMLButtonElement | null;
 
   constructor(panel: HTMLElement, cb: MeshHealthPanelCallbacks) {
     this.panel = panel;
     this.body = panel.querySelector("#mesh-health-body")!;
+    this.promoteButton = panel.querySelector("#mesh-health-promote");
     panel.querySelector("#mesh-health-check")?.addEventListener("click", () => cb.onCheck());
+    this.promoteButton?.addEventListener("click", () => cb.onPromote());
   }
 
   /** Shows or hides the whole panel — only a native STL/OBJ/PLY source has a
@@ -56,11 +68,13 @@ export class MeshHealthPanel {
    * heal, and a meshio-converted or glTF source has no matching parser. */
   setEligible(eligible: boolean): void {
     this.panel.hidden = !eligible;
+    if (this.promoteButton) this.promoteButton.disabled = true; // no report yet (or a new document) — nothing to promote
     if (eligible) this.renderMessage("Click Check Healability to run the diagnostic.");
   }
 
   renderMessage(text: string, isError = false): void {
     this.body.innerHTML = "";
+    if (this.promoteButton) this.promoteButton.disabled = true;
     const p = document.createElement("div");
     p.className = isError ? "mesh-health-message mesh-health-message-error" : "mesh-health-message";
     p.textContent = text;
@@ -69,6 +83,7 @@ export class MeshHealthPanel {
 
   render(report: MeshHealthDisplay): void {
     this.body.innerHTML = "";
+    if (this.promoteButton) this.promoteButton.disabled = !report.components.some((c) => c.requiredTolerance != null);
     if (report.components.length === 0) {
       this.renderMessage("No triangles found.");
       return;

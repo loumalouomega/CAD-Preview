@@ -561,9 +561,14 @@ export async function exportBRep(
  * — a `null` result (no parts, no named solids, or a structural surprise
  * `buildXcafDocumentForExport` isn't confident about) falls through to the
  * exact same plain `STEPControl_Writer_1` path this function always used.
+ *
+ * Exported (was module-private) so `meshHeal.ts`'s `promoteMeshToBrep` can
+ * write an in-memory promoted shape (built from a sewn/solidified mesh, not
+ * read from a source file) through the exact same writer paths `exportBRep`
+ * uses — no behavior change to this function itself.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function writeShape(oc: any, shape: any, filePath: string, format: BRepFormat, cleanup: Array<{ delete(): void }>, unit: DisplayUnit = "mm", parts: Part[] = []): void {
+export function writeShape(oc: any, shape: any, filePath: string, format: BRepFormat, cleanup: Array<{ delete(): void }>, unit: DisplayUnit = "mm", parts: Part[] = []): void {
   const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
 
   if (format === "step") {

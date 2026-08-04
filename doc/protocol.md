@@ -648,6 +648,7 @@ type WebviewToHost =
   | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
   | { type: 'meshingExport'; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: 'screenshotButtonClicked' }
+  | { type: 'promoteToBrepButtonClicked' }
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
@@ -790,6 +791,14 @@ Sent when the toolbar's **📷 Screenshot** button is clicked — the webview-in
 ### `screenshotResult` / `screenshotError`
 
 Sent in reply to `screenshotRequest`. `data` is always base64 PNG bytes (no `binary` field — unlike `exportResult`, the format is never anything else). Correlated to the pending save via `requestId`, same as `exportResult`.
+
+### `promoteToBrepButtonClicked`
+
+Sent when the Mesh Health panel's **Promote to B-rep…** button is clicked ("Mesh → B-rep promotion" Phase 2) — only reachable once a report shows at least one component that closed. Unlike `screenshotButtonClicked`, there is no follow-up request message: the host runs the ENTIRE flow itself (a format quick-pick over STEP/IGES/BREP, the existing export-unit quick-pick, a save dialog, then `promoteMeshToBrep`) and reports success/failure through the plain, already-existing generic `"status"`/`"error"` messages — no new result type was needed.
+
+```json
+{ "type": "promoteToBrepButtonClicked" }
+```
 
 ```json
 { "type": "screenshotResult", "requestId": "1234-0.56", "data": "iVBORw0KGgo..." }

@@ -37,6 +37,7 @@ import {
   downloadStandardPartTool,
   compareModelsTool,
   checkMeshHealthTool,
+  promoteMeshToBrepTool,
   getState,
   applyEditOps,
   runParametricScriptTool,
@@ -327,6 +328,21 @@ server.registerTool(
     inputSchema: { path: modelPath },
   },
   wrap((args: { path: string }) => checkMeshHealthTool(ctx, args))
+);
+
+server.registerTool(
+  "promote_mesh_to_brep",
+  {
+    description:
+      "Mesh -> B-rep promotion, Phase 2: sews a healed STL/OBJ/PLY mesh into a brand-new STEP/IGES/BREP file at outputPath (default targetFormat 'step') via the same writer pipeline export_brep uses. This is a ONE-SHOT EXPORT, not an in-place reclassification -- the original mesh source is left completely untouched; the written file is an ordinary, fully-editable B-rep document from the moment it exists (fillet/chamfer/measure_exact/get_mass_properties/further export_brep all just work on it -- open it with load_model to confirm). A component that never closes (even at the loosest sewing tolerance) is skipped and reported in skippedComponents/warnings, never silently dropped or forced into an invalid solid; if NO component closes, the call fails -- run check_mesh_health first to see why. Never requires a prior check_mesh_health call (fully standalone), but running one first is recommended. Optional unit (mm/cm/m/in/ft, default mm) applies the same real geometric scale export_brep's unit param does. B-rep sources return an error (nothing to promote); glTF/meshio-only formats return an error (no host-side triangle-soup parser).",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write the new B-rep file to (must not be the source path)"),
+      targetFormat: z.enum(["step", "iges", "brep"]).optional().describe("Output format (default: step)"),
+      unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
+    },
+  },
+  wrap((args: { path: string; outputPath: string; targetFormat?: string; unit?: string }) => promoteMeshToBrepTool(ctx, args))
 );
 
 server.registerTool(

@@ -26,8 +26,35 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 const SERVER = path.join(ROOT, "dist", "mcp-server.js");
 const FIXTURE = path.join(ROOT, "examples", "STP", "bull.stp");
 
+/**
+ * A real, live-discovered bug this fixes, not a hypothetical: `process.exit()`
+ * terminates the process immediately, WITHOUT running any pending `finally`
+ * block (including the one at the bottom of this file that kills `child` and
+ * removes the temp dir) — so a failing `assert()` mid-script used to leave
+ * the spawned `dist/mcp-server.js` (and ITS OWN forked `dist/kernel-worker.js`
+ * child) permanently orphaned and running, never reaped, silently consuming
+ * memory/CPU forever. Caught live: a rare genuine OCCT WASM abort ("table
+ * index is out of bounds") during `apply_edit_ops` failed an assertion, and
+ * the orphaned kernel-worker process was still alive — having done almost no
+ * further work — HOURS later. `fail()` now kills `child` and clears the temp
+ * dir itself, mirroring the success-path `finally` block, before exiting —
+ * safe to call from any `fail()` call site, including ones that run before
+ * the try/finally below even starts (`shuttingDown`/`child` are both already
+ * initialized by the time any assertion can fail).
+ */
 function fail(message) {
   console.error(`✗ ${message}`);
+  shuttingDown = true;
+  try {
+    child.kill();
+  } catch {
+    /* ignore */
+  }
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   process.exit(1);
 }
 
@@ -153,7 +180,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 24, `tools/list exposes 24 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 25, `tools/list exposes 25 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -728,6 +755,105 @@ try {
   assert(
     gltfHealthRejected.supported === false && /no host-side triangle-soup parser/i.test(gltfHealthRejected.warnings?.[0] ?? ""),
     `check_mesh_health still rejects glTF with a clear message, not a crash (got: ${JSON.stringify(gltfHealthRejected)})`
+  );
+
+  // promote_mesh_to_brep (roadmap "Mesh -> B-rep promotion", Phase 2 — a
+  // one-shot EXPORT to a NEW file, never an in-place reclassification).
+  // A clean cube.stl promotes to STEP/IGES/BREP, and — critically — the
+  // WRITTEN file is verified by a genuinely separate load_model +
+  // get_mass_properties call, proving the output is an ordinary,
+  // fully-capable B-rep document, not just "didn't throw".
+  const promotedStep = path.join(dir, "promoted.step");
+  const promoteStepResult = await call("promote_mesh_to_brep", { path: cubeStl, outputPath: promotedStep });
+  assert(
+    promoteStepResult.promotedComponents.length === 1 && promoteStepResult.skippedComponents.length === 0,
+    `promote_mesh_to_brep(cube.stl -> step): 1 promoted, 0 skipped (got: ${JSON.stringify(promoteStepResult)})`
+  );
+  assert(fs.existsSync(promotedStep) && fs.statSync(promotedStep).size > 0, "promote_mesh_to_brep wrote a non-empty STEP file");
+
+  const promotedLoad = await call("load_model", { path: promotedStep });
+  assert(promotedLoad.tree, "the promoted STEP file loads as an ordinary B-rep document via load_model");
+  const promotedMass = await call("get_mass_properties", { path: promotedStep });
+  assert(
+    promotedMass.supported === true && Math.abs(promotedMass.volume - 1000) < 1e-3,
+    `the promoted STEP file's own get_mass_properties reports the correct volume (expected 1000, got: ${JSON.stringify(promotedMass)})`
+  );
+
+  const promotedIges = path.join(dir, "promoted.iges");
+  const promoteIgesResult = await call("promote_mesh_to_brep", { path: cubeStl, outputPath: promotedIges, targetFormat: "iges" });
+  assert(promoteIgesResult.promotedComponents.length === 1, "promote_mesh_to_brep supports targetFormat iges");
+  assert(fs.existsSync(promotedIges) && fs.statSync(promotedIges).size > 0, "promote_mesh_to_brep wrote a non-empty IGES file");
+
+  const promotedBrep = path.join(dir, "promoted.brep");
+  const promoteBrepResult = await call("promote_mesh_to_brep", { path: cubeStl, outputPath: promotedBrep, targetFormat: "brep" });
+  assert(promoteBrepResult.promotedComponents.length === 1, "promote_mesh_to_brep supports targetFormat brep");
+  assert(fs.existsSync(promotedBrep) && fs.statSync(promotedBrep).size > 0, "promote_mesh_to_brep wrote a non-empty BREP file");
+
+  // Multi-solid: two disjoint boxes in one STL both get promoted into the
+  // SAME compound — confirms combineSolids' reuse and that skippedComponents
+  // correctly stays empty when everything closes.
+  const twoBoxesStl = path.join(dir, "two-boxes.stl");
+  fs.writeFileSync(
+    twoBoxesStl,
+    [
+      "solid a",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 0 10 0", "vertex 10 10 0", "endloop", "endfacet",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 10 10 0", "vertex 10 0 0", "endloop", "endfacet",
+      "facet normal 0 0 1", "outer loop", "vertex 0 0 10", "vertex 10 10 10", "vertex 0 10 10", "endloop", "endfacet",
+      "facet normal 0 0 1", "outer loop", "vertex 0 0 10", "vertex 10 0 10", "vertex 10 10 10", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 10 0 0", "vertex 10 0 10", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 10 0 10", "vertex 0 0 10", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 0 10 0", "vertex 0 10 10", "vertex 10 10 10", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 0 10 0", "vertex 10 10 10", "vertex 10 10 0", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 0 10", "vertex 0 10 10", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 10 10", "vertex 0 10 0", "endloop", "endfacet",
+      "facet normal 1 0 0", "outer loop", "vertex 10 0 0", "vertex 10 10 0", "vertex 10 10 10", "endloop", "endfacet",
+      "facet normal 1 0 0", "outer loop", "vertex 10 0 0", "vertex 10 10 10", "vertex 10 0 10", "endloop", "endfacet",
+      "endsolid a",
+      "solid b",
+      "facet normal 0 0 -1", "outer loop", "vertex 50 0 0", "vertex 50 5 0", "vertex 55 5 0", "endloop", "endfacet",
+      "facet normal 0 0 -1", "outer loop", "vertex 50 0 0", "vertex 55 5 0", "vertex 55 0 0", "endloop", "endfacet",
+      "facet normal 0 0 1", "outer loop", "vertex 50 0 5", "vertex 55 5 5", "vertex 50 5 5", "endloop", "endfacet",
+      "facet normal 0 0 1", "outer loop", "vertex 50 0 5", "vertex 55 0 5", "vertex 55 5 5", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 50 0 0", "vertex 55 0 0", "vertex 55 0 5", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 50 0 0", "vertex 55 0 5", "vertex 50 0 5", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 50 5 0", "vertex 50 5 5", "vertex 55 5 5", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 50 5 0", "vertex 55 5 5", "vertex 55 5 0", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 50 0 0", "vertex 50 0 5", "vertex 50 5 5", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 50 0 0", "vertex 50 5 5", "vertex 50 5 0", "endloop", "endfacet",
+      "facet normal 1 0 0", "outer loop", "vertex 55 0 0", "vertex 55 5 0", "vertex 55 5 5", "endloop", "endfacet",
+      "facet normal 1 0 0", "outer loop", "vertex 55 0 0", "vertex 55 5 5", "vertex 55 0 5", "endloop", "endfacet",
+      "endsolid b",
+    ].join("\n")
+  );
+  const promotedMulti = path.join(dir, "promoted-multi.step");
+  const promoteMultiResult = await call("promote_mesh_to_brep", { path: twoBoxesStl, outputPath: promotedMulti });
+  assert(
+    promoteMultiResult.promotedComponents.length === 2 && promoteMultiResult.skippedComponents.length === 0,
+    `promote_mesh_to_brep(two disjoint boxes): both components promoted, none skipped (got: ${JSON.stringify(promoteMultiResult)})`
+  );
+  const promotedMultiMass = await call("get_mass_properties", { path: promotedMulti });
+  assert(
+    Math.abs(promotedMultiMass.volume - 1125) < 1e-3,
+    `the promoted multi-solid file's combined volume is 1000 + 125 = 1125 (got ${promotedMultiMass.volume})`
+  );
+
+  // B-rep sources / glTF: same rejection convention as check_mesh_health,
+  // via a thrown tool error rather than a supported:false response (this
+  // tool has no destination to route a graceful "nothing to promote" reply
+  // through the way a plain report tool does).
+  const promoteBrepSourceRejected = await callTolerant("promote_mesh_to_brep", { path: model, outputPath: path.join(dir, "x.step") });
+  assert(
+    /already a B-rep source/i.test(promoteBrepSourceRejected.error ?? ""),
+    `promote_mesh_to_brep rejects a B-rep source with a clear error (got: ${JSON.stringify(promoteBrepSourceRejected)})`
+  );
+  const promoteGltfRejected = await callTolerant("promote_mesh_to_brep", {
+    path: path.join(ROOT, "examples", "GLTF", "cube.gltf"),
+    outputPath: path.join(dir, "y.step"),
+  });
+  assert(
+    /no host-side triangle-soup parser/i.test(promoteGltfRejected.error ?? ""),
+    `promote_mesh_to_brep rejects glTF with a clear error (got: ${JSON.stringify(promoteGltfRejected)})`
   );
 
   // render_snapshot: Playwright/Chromium is a devDependency this environment

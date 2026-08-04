@@ -64,7 +64,7 @@ import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
-import type { checkMeshHealth, MeshHealthReport } from "./meshHeal";
+import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -120,6 +120,7 @@ export interface Pipeline {
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
   checkMeshHealth: typeof checkMeshHealth;
+  promoteMeshToBrep: typeof promoteMeshToBrep;
 }
 
 export interface ToolContext {
@@ -246,6 +247,7 @@ export function describeCapabilities() {
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
       "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; glTF and meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
       "check_mesh_health (STL/OBJ/PLY sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
+      "promote_mesh_to_brep (STL/OBJ/PLY sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
@@ -837,6 +839,73 @@ export async function checkMeshHealthTool(
   const bytes = await readModelBytes(modelPath);
   const report = await ctx.pipeline.checkMeshHealth(ctx.extensionPath, bytes, route.format as "stl" | "obj" | "ply");
   return { format: route.format, supported: true, warnings: [], ...report };
+}
+
+// ---------------------------------------------------------------------------
+// promote_mesh_to_brep
+
+/**
+ * "Mesh → B-rep promotion", Phase 2 — sews a healed STL/OBJ/PLY mesh into a
+ * brand-new STEP/IGES/BREP file at `outputPath` and writes it (`meshHeal.ts`'s
+ * `promoteMeshToBrep`, reusing `exportBRep`'s own writer pipeline). The
+ * ORIGINAL mesh source is untouched — this is a one-shot export, not an
+ * in-place reclassification of the document (see CLAUDE.md's "Mesh → B-rep
+ * promotion" section for why). The written file is an ordinary B-rep
+ * document from the moment it exists — open it with `load_model` to confirm,
+ * or feed it straight into `get_mass_properties`/`measure_exact`/further
+ * `export_brep` calls. Never requires a prior `check_mesh_health` call (this
+ * tool is fully standalone/stateless, matching every other MCP tool in this
+ * server), but running one first is recommended to see whether promotion is
+ * likely to succeed and at what cost before attempting it.
+ */
+export async function promoteMeshToBrepTool(
+  ctx: ToolContext,
+  params: { path: string; outputPath: string; targetFormat?: string; unit?: string }
+): Promise<{ written: string; bytes: number; promotedComponents: number[]; skippedComponents: number[]; warnings: string[] }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy === "occt") {
+    throw new Error(`${route.format} is already a B-rep source — nothing to promote.`);
+  }
+  if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+    throw new Error(`${route.format} has no host-side triangle-soup parser (only stl/obj/ply are supported) — cannot promote headless.`);
+  }
+
+  const targetFormat = (params.targetFormat as BRepFormat | undefined) ?? "step";
+  if (targetFormat !== "step" && targetFormat !== "iges" && targetFormat !== "brep") {
+    throw new Error(`Invalid targetFormat "${params.targetFormat}" — valid: step, iges, brep.`);
+  }
+
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(modelPath, outputPath);
+  const warnings: string[] = [];
+
+  let unit: DisplayUnit = "mm";
+  if (params.unit != null) {
+    if (!DISPLAY_UNITS.includes(params.unit as DisplayUnit)) {
+      warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm" (no conversion).`);
+    } else {
+      unit = params.unit as DisplayUnit;
+    }
+  }
+
+  const { ops } = await readEdits(modelPath);
+  if (ops.length > 0) {
+    warnings.push(`${modelPath}: pending edits are NOT baked in — ${route.format.toUpperCase()} sources have no host-side edit engine; promoting the raw file only.`);
+  }
+
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, route.format as "stl" | "obj" | "ply", targetFormat, unit);
+  await fs.writeFile(outputPath, result.bytes);
+
+  return {
+    written: outputPath,
+    bytes: result.bytes.byteLength,
+    promotedComponents: result.promotedComponents,
+    skippedComponents: result.skippedComponents,
+    warnings: [...warnings, ...result.warnings],
+  };
 }
 
 // ---------------------------------------------------------------------------

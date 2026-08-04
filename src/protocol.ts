@@ -325,6 +325,7 @@ export type WebviewToHost =
   | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
   | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: "screenshotButtonClicked" }
+  | { type: "promoteToBrepButtonClicked" }
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }

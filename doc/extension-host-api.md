@@ -669,7 +669,7 @@ async function exportBRep(
 ): Promise<Uint8Array>
 ```
 
-Re-parses `bytes` with `readShape()`, applies the edit op-list via `applyEditsBRep()`, and writes the resulting `TopoDS_Shape` out as `targetFormat` via the private `writeShape()` helper, returning the output file's bytes (read back from the OCCT virtual filesystem) — so **Export bakes the edits in**. Cleans up every handle — reader/writer/shape/progress-indicator — in a `finally`, plus `oc.FS.unlink()` on both the input and output virtual paths, same discipline as `loadBRep`.
+Re-parses `bytes` with `readShape()`, applies the edit op-list via `applyEditsBRep()`, and writes the resulting `TopoDS_Shape` out as `targetFormat` via the `writeShape()` helper, returning the output file's bytes (read back from the OCCT virtual filesystem) — so **Export bakes the edits in**. Cleans up every handle — reader/writer/shape/progress-indicator — in a `finally`, plus `oc.FS.unlink()` on both the input and output virtual paths, same discipline as `loadBRep`.
 
 `unit` (default `"mm"`, i.e. no-op) is the SINGLE unit-conversion-on-export param (replacing an earlier raw `scaleFactor: number`) — the in-memory model and every other caller of `exportBRep` (`compare_models`, mass properties) always pass the default and stay in the native mm cascade unit. It's genuinely three different mechanisms per `targetFormat`, all dispatched inside `exportBRep`/`writeShape` rather than pushed onto the caller:
 
@@ -682,15 +682,18 @@ Re-parses `bytes` with `readShape()`, applies the edit op-list via `applyEditsBR
 **`labelStepUnit` (default `true`) exists ONLY for meshing input, and defaults to the WRONG value for that one caller on purpose (opt-out, not opt-in) — a real regression caught while verifying this feature, not a preemptive design.** `provider.ts`'s `resolveMeshInput` and `mcpTools.ts`'s `resolveMeshInputHeadless` (which re-export a B-rep source to an intermediate STEP for Gmsh, never shown to the user) both explicitly pass `false`. Verified against the live WASM (`gmsh.model.occ.importShapes` + `gmsh.model.getBoundingBox` on a correctly-scaled-AND-labeled `unit:"in"` STEP file): Gmsh's own STEP importer DOES reinterpret the declared unit and silently converts the geometry back to its original (larger) size — completely undoing the scale, while `MeshOptions.sizeMin`/`sizeMax` stay at the separately-rescaled (smaller) values, producing a far-too-fine mesh. Passing `false` keeps the meshing-input STEP's header at the OCCT-native `"mm"` label while its geometry is still genuinely scaled — exactly the behavior this codebase already had before STEP header-patching existed, so callers that forget this parameter get the OLD (correct, for their purpose) behavior back, not a new failure mode.
 
 ```typescript
-function writeShape(
+export function writeShape(
   oc: any,
   shape: any,
   filePath: string,
   format: "step" | "iges" | "brep",
   cleanup: { delete(): void }[],
-  unit?: DisplayUnit          // only affects the "iges" branch (default "mm")
+  unit?: DisplayUnit,         // only affects the "iges" branch (default "mm")
+  parts?: Part[]              // STEP only — named-solid XCAF export
 ): void
 ```
+
+Exported (was module-private) so `src/meshHeal.ts`'s `promoteMeshToBrep` — "Mesh → B-rep promotion" Phase 2 — can write an in-memory promoted shape (sewn from a healed mesh, never read from a source file) through the exact same writer paths, with no behavior change to the function itself. See CLAUDE.md's "Mesh → B-rep promotion" section for the full write-up, including a live-WASM-caught MEMFS path-length bug this reuse surfaced (a >11-character output path silently corrupted the write despite the writer reporting success — fixed by using a short path, mirroring `exportBRep`'s own `/o.${format}` convention).
 
 Internal helper called by `exportBRep`. Per-format writer calls, verified against the live WASM build (the `_1`-suffixed overloads take a C++ `ostream`/`istream` that isn't bound in this build and throw `UnboundTypeError` — always use the path-based overload instead):
 

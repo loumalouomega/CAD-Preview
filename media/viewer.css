@@ -977,7 +977,8 @@ input[type="range"]#vc-opacity.meshing-slider {
 }
 
 #edits-actions,
-#meshing-actions {
+#meshing-actions,
+#mesh-health-actions {
   display: flex;
   gap: 2px;
   flex-wrap: wrap;
@@ -985,8 +986,8 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 #edits-actions button,
 #meshing-actions button,
-#mass-refresh,
-#mesh-health-check {
+#mesh-health-actions button,
+#mass-refresh {
   font: inherit;
   font-size: 11px;
   line-height: 1;
@@ -1000,13 +1001,14 @@ input[type="range"]#vc-opacity.meshing-slider {
 }
 #edits-actions button:hover:not(:disabled),
 #meshing-actions button:hover:not(:disabled),
-#mass-refresh:hover:not(:disabled),
-#mesh-health-check:hover:not(:disabled) {
+#mesh-health-actions button:hover:not(:disabled),
+#mass-refresh:hover:not(:disabled) {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
 }
 #edits-actions button:disabled,
-#meshing-actions button:disabled { opacity: 0.35; cursor: default; }
+#meshing-actions button:disabled,
+#mesh-health-actions button:disabled { opacity: 0.35; cursor: default; }
 
 #meshing-worst-toggle.active {
   opacity: 1;
