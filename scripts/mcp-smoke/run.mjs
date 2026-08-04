@@ -218,7 +218,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 25, `tools/list exposes 25 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 26, `tools/list exposes 26 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -719,14 +719,55 @@ try {
   const bullVsObj = await call("compare_models", { pathA: model, pathB: cubeObj });
   assert(bullVsObj.supported === true, "compare_models diffs a B-rep source against an OBJ source");
 
-  // glTF remains unsupported headless (no host-side parser, by design — see
-  // CLAUDE.md) — confirms it still degrades to a clear message, not a crash
-  // (a normal supported:false response, not a tool error), now that OBJ/PLY
-  // are supported alongside it in the same format family.
-  const gltfRejected = await call("compare_models", { pathA: model, pathB: path.join(ROOT, "examples", "GLTF", "cube.gltf") });
+  // glTF/GLB (roadmap "glTF support for compare_models", closed) — a real
+  // host-side parser now, cross-validated against three's own GLTFLoader in
+  // the unit tests. cube.gltf and cube.glb are the SAME unit cube in the two
+  // different containers, so they must self-match AND match each other.
+  const cubeGltf = path.join(ROOT, "examples", "GLTF", "cube.gltf");
+  const cubeGlb = path.join(ROOT, "examples", "GLTF", "cube.glb");
+  const twoBoxes = path.join(ROOT, "examples", "GLTF", "two-boxes.gltf");
+
+  const gltfSelf = await call("compare_models", { pathA: cubeGltf, pathB: cubeGltf });
+  assert(gltfSelf.supported === true, `compare_models supports a glTF source (got: ${JSON.stringify(gltfSelf).slice(0, 200)})`);
   assert(
-    gltfRejected.supported === false && /STEP\/IGES\/BREP\/STL\/OBJ\/PLY/i.test(gltfRejected.warnings?.[0] ?? ""),
-    `compare_models still rejects glTF with a clear message, not a crash (got: ${JSON.stringify(gltfRejected)})`
+    gltfSelf.diff.matched.length === 1 && gltfSelf.diff.added.length === 0 && gltfSelf.diff.removed.length === 0,
+    `compare_models(cube.gltf vs itself): exactly 1 matched solid (got: ${JSON.stringify(gltfSelf.diff)})`
+  );
+
+  // The GLB container end-to-end — a binary chunk layout the .gltf path never
+  // exercises. Comparing it against the .gltf proves both decode identically.
+  const glbVsGltf = await call("compare_models", { pathA: cubeGlb, pathB: cubeGltf });
+  assert(
+    glbVsGltf.supported === true && glbVsGltf.diff.matched.length === 1 && glbVsGltf.diff.added.length === 0 && glbVsGltf.diff.removed.length === 0,
+    `compare_models diffs a binary .glb against the equivalent .gltf as an exact match (got: ${JSON.stringify(glbVsGltf.diff)})`
+  );
+  assert(
+    Math.abs(glbVsGltf.diff.matched[0].volumeDeltaPct) < 1e-6 && glbVsGltf.diff.matched[0].centreDistance < 1e-6,
+    `compare_models(.glb vs .gltf) is an exact geometric match (got: ${JSON.stringify(glbVsGltf.diff.matched[0])})`
+  );
+
+  // Node transform composition — the single likeliest way a hand-rolled glTF
+  // parser goes subtly wrong. two-boxes.gltf instances ONE mesh from two nodes
+  // at x=-5 and x=+5, so ignoring transforms would collapse it to 1 solid.
+  const twoBoxesSelf = await call("compare_models", { pathA: twoBoxes, pathB: twoBoxes });
+  assert(
+    twoBoxesSelf.diff.matched.length === 2,
+    `compare_models(two-boxes.gltf): node transforms resolve to 2 separate solids (got ${twoBoxesSelf.diff.matched.length})`
+  );
+
+  const gltfVsPly = await call("compare_models", { pathA: cubeGltf, pathB: cubePly });
+  assert(gltfVsPly.supported === true, "compare_models diffs a glTF source against a PLY source directly");
+  const bullVsGltf = await call("compare_models", { pathA: model, pathB: cubeGltf });
+  assert(bullVsGltf.supported === true, "compare_models diffs a B-rep source against a glTF source");
+
+  // meshio-only formats are now the ONLY unsupported family — confirm that
+  // path still degrades to a clear supported:false, not a tool error.
+  const vtkForCompare = path.join(dir, "compare.vtk");
+  fs.writeFileSync(vtkForCompare, "# vtk DataFile Version 3.0\ncompare\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 0 float\n");
+  const vtkRejected = await call("compare_models", { pathA: model, pathB: vtkForCompare });
+  assert(
+    vtkRejected.supported === false && /STEP\/IGES\/BREP\/STL\/OBJ\/PLY\/glTF/i.test(vtkRejected.warnings?.[0] ?? ""),
+    `compare_models rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkRejected)})`
   );
 
   // check_mesh_health (roadmap "Mesh -> B-rep promotion, diagnostic-first",
@@ -787,12 +828,28 @@ try {
     `check_mesh_health reports supported:false for a B-rep source (got: ${JSON.stringify(brepHealth)})`
   );
 
-  // glTF: no host-side triangle-soup parser — same graceful degradation as
-  // compare_models' own glTF rejection above, not a crash.
-  const gltfHealthRejected = await call("check_mesh_health", { path: path.join(ROOT, "examples", "GLTF", "cube.gltf") });
+  // glTF/GLB now have a host-side parser too — the unit cube must close at
+  // the tightest ladder rung with volume 1, in BOTH containers.
+  for (const [label, gltfPath] of [["cube.gltf", cubeGltf], ["cube.glb", cubeGlb]]) {
+    const health = await call("check_mesh_health", { path: gltfPath });
+    assert(health.supported === true, `check_mesh_health supports ${label} (got: ${JSON.stringify(health).slice(0, 200)})`);
+    assert(health.componentCount === 1, `check_mesh_health(${label}): 1 component expected (got ${health.componentCount})`);
+    const component = health.components[0];
+    assert(
+      component.freeEdgeCount === 0 && component.requiredTolerance === 1e-6,
+      `check_mesh_health(${label}): closed, watertight at the tightest rung (got: ${JSON.stringify(component)})`
+    );
+    assert(
+      Math.abs(component.healedVolume - 1) < 1e-6,
+      `check_mesh_health(${label}): healed volume is the analytic unit cube's 1 (got ${component.healedVolume})`
+    );
+  }
+
+  // meshio-only formats are now the only rejection path here.
+  const vtkHealthRejected = await call("check_mesh_health", { path: vtkForCompare });
   assert(
-    gltfHealthRejected.supported === false && /no host-side triangle-soup parser/i.test(gltfHealthRejected.warnings?.[0] ?? ""),
-    `check_mesh_health still rejects glTF with a clear message, not a crash (got: ${JSON.stringify(gltfHealthRejected)})`
+    vtkHealthRejected.supported === false && /no host-side triangle-soup parser/i.test(vtkHealthRejected.warnings?.[0] ?? ""),
+    `check_mesh_health rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkHealthRejected)})`
   );
 
   // promote_mesh_to_brep (roadmap "Mesh -> B-rep promotion", Phase 2 — a
@@ -885,13 +942,99 @@ try {
     /already a B-rep source/i.test(promoteBrepSourceRejected.error ?? ""),
     `promote_mesh_to_brep rejects a B-rep source with a clear error (got: ${JSON.stringify(promoteBrepSourceRejected)})`
   );
-  const promoteGltfRejected = await callTolerant("promote_mesh_to_brep", {
-    path: path.join(ROOT, "examples", "GLTF", "cube.gltf"),
+  const promoteMeshioRejected = await callTolerant("promote_mesh_to_brep", {
+    path: vtkForCompare,
     outputPath: path.join(dir, "y.step"),
   });
   assert(
-    /no host-side triangle-soup parser/i.test(promoteGltfRejected.error ?? ""),
-    `promote_mesh_to_brep rejects glTF with a clear error (got: ${JSON.stringify(promoteGltfRejected)})`
+    /no host-side triangle-soup parser/i.test(promoteMeshioRejected.error ?? ""),
+    `promote_mesh_to_brep rejects a meshio-only source with a clear error (got: ${JSON.stringify(promoteMeshioRejected)})`
+  );
+
+  // glTF promotion, verified through a SEPARATE load_model + get_mass_properties
+  // pair — proving the written file is an ordinary B-rep document, not just
+  // that the promote call didn't throw. cube.glb also exercises the binary
+  // container all the way through the promotion pipeline.
+  const promotedGlb = path.join(dir, "promoted-glb.step");
+  const promoteGlbResult = await call("promote_mesh_to_brep", { path: cubeGlb, outputPath: promotedGlb });
+  assert(
+    promoteGlbResult.promotedComponents.length === 1 && promoteGlbResult.skippedComponents.length === 0,
+    `promote_mesh_to_brep(cube.glb -> step): 1 promoted, 0 skipped (got: ${JSON.stringify(promoteGlbResult)})`
+  );
+  const promotedGlbLoaded = await call("load_model", { path: promotedGlb });
+  assert(
+    promotedGlbLoaded.solids.length === 1 && promotedGlbLoaded.tree,
+    `the glTF-promoted STEP reopens as an ordinary 1-solid B-rep document (got ${promotedGlbLoaded.solids?.length} solids)`
+  );
+  const promotedGlbMass = await call("get_mass_properties", { path: promotedGlb });
+  assert(
+    Math.abs(promotedGlbMass.volume - 1) < 1e-6,
+    `the glTF-promoted STEP has the analytic unit cube's volume of 1 (got ${promotedGlbMass.volume})`
+  );
+
+  // export_svg_silhouette (roadmap "SVG silhouette export", closed) — an
+  // OUTLINE, not a hidden-line drawing. cube.stl is a real 10x10x10 cube, so
+  // its FRONT view has an analytically-known answer: exactly 4 segments and a
+  // ~10x10 viewBox (plus the default 2% margin each side => 10.4).
+  const svgCube = path.join(dir, "cube-front.svg");
+  const svgCubeResult = await call("export_svg_silhouette", { path: cubeStl, outputPath: svgCube, view: "FRONT" });
+  assert(
+    svgCubeResult.segmentCount === 4,
+    `export_svg_silhouette(cube.stl, FRONT): exactly 4 outline segments (got ${svgCubeResult.segmentCount})`
+  );
+  const svgCubeText = fs.readFileSync(svgCube, "utf8");
+  assert(svgCubeText.startsWith("<svg"), "export_svg_silhouette wrote a document starting with <svg");
+  assert(/viewBox="[-\d. ]+"/.test(svgCubeText), "export_svg_silhouette's output carries a viewBox");
+  assert(svgCubeText.includes("<path"), "export_svg_silhouette's output carries a <path>");
+  const cubeViewBox = /viewBox="([^"]+)"/.exec(svgCubeText)[1].split(" ").map(Number);
+  assert(
+    Math.abs(cubeViewBox[2] - 10.4) < 1e-6 && Math.abs(cubeViewBox[3] - 10.4) < 1e-6,
+    `export_svg_silhouette(cube.stl): viewBox is the cube's 10 units + a 2% margin (got ${cubeViewBox.join(" ")})`
+  );
+  assert(!/NaN|Infinity/.test(svgCubeText), "export_svg_silhouette never emits NaN/Infinity coordinates");
+
+  // A B-rep source goes through the tessellation instead, and must produce a
+  // real drawing (bull.stp has curved features, so far more than 4 segments).
+  const svgBull = path.join(dir, "bull-front.svg");
+  const svgBullResult = await call("export_svg_silhouette", { path: model, outputPath: svgBull, view: "FRONT" });
+  assert(svgBullResult.segmentCount > 0 && svgBullResult.triangleCount > 0, `export_svg_silhouette works for a B-rep source (got: ${JSON.stringify(svgBullResult)})`);
+  assert(fs.readFileSync(svgBull, "utf8").startsWith("<svg"), "export_svg_silhouette wrote a valid SVG for a B-rep source");
+
+  // A different view must genuinely differ, not silently reuse one direction.
+  const svgBullIso = path.join(dir, "bull-iso.svg");
+  const svgBullIsoResult = await call("export_svg_silhouette", { path: model, outputPath: svgBullIso, view: "ISO" });
+  assert(
+    svgBullIsoResult.segmentCount !== svgBullResult.segmentCount,
+    `export_svg_silhouette's ISO view differs from its FRONT view (both got ${svgBullResult.segmentCount} segments)`
+  );
+
+  // glTF/GLB sources work too (they never touch OCCT at all).
+  const svgGlb = path.join(dir, "cube-glb.svg");
+  const svgGlbResult = await call("export_svg_silhouette", { path: cubeGlb, outputPath: svgGlb, view: "FRONT" });
+  assert(svgGlbResult.segmentCount === 4, `export_svg_silhouette(cube.glb, FRONT): 4 outline segments (got ${svgGlbResult.segmentCount})`);
+
+  // Unit conversion is a real coordinate scale, exactly like every other export.
+  const svgCubeIn = path.join(dir, "cube-front-in.svg");
+  await call("export_svg_silhouette", { path: cubeStl, outputPath: svgCubeIn, view: "FRONT", unit: "in" });
+  const inViewBox = /viewBox="([^"]+)"/.exec(fs.readFileSync(svgCubeIn, "utf8"))[1].split(" ").map(Number);
+  assert(
+    Math.abs(cubeViewBox[2] / inViewBox[2] - 25.4) < 1e-3,
+    `export_svg_silhouette(unit:"in") scales the drawing by exactly 1/25.4 (got ratio ${cubeViewBox[2] / inViewBox[2]})`
+  );
+
+  // An unknown view name falls back with a warning rather than throwing —
+  // the same never-fail-on-ambiguous-input convention `unit` uses.
+  const svgBadView = await call("export_svg_silhouette", { path: cubeStl, outputPath: path.join(dir, "bad-view.svg"), view: "SIDEWAYS" });
+  assert(
+    svgBadView.view === "FRONT" && svgBadView.warnings.some((w) => /unknown view/i.test(w)),
+    `export_svg_silhouette falls back to FRONT with a warning for an unknown view (got: ${JSON.stringify(svgBadView)})`
+  );
+
+  // meshio-only sources have no host-side triangles to outline.
+  const svgMeshioRejected = await callTolerant("export_svg_silhouette", { path: vtkForCompare, outputPath: path.join(dir, "z.svg") });
+  assert(
+    /no host-side geometry/i.test(svgMeshioRejected.error ?? ""),
+    `export_svg_silhouette rejects a meshio-only source with a clear error (got: ${JSON.stringify(svgMeshioRejected)})`
   );
 
   // render_snapshot: Playwright/Chromium is a devDependency this environment

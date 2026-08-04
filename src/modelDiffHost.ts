@@ -6,18 +6,27 @@ import { diffSolids, type ModelDiff, type SolidSignature } from "./modelDiff";
 import { extractStlSolidSignatures } from "./stlSolidSignatures";
 import { extractObjSolidSignatures } from "./objSolidSignatures";
 import { extractPlySolidSignatures } from "./plySolidSignatures";
+import { extractGltfSolidSignatures } from "./gltfSolidSignatures";
+import type { GltfExternalBuffers } from "./gltfParser";
 
 /** One side of a `compareModels()` call — B-rep (baked through the live
- * OCCT shape, edits included) or raw mesh bytes (STL/OBJ/PLY; edits NOT
+ * OCCT shape, edits included) or raw mesh bytes (STL/OBJ/PLY/glTF; edits NOT
  * baked — mesh documents have no host-side edit engine, same accepted
- * limitation `generate_mesh`'s STL path already documents; glTF remains
- * webview-only — see `stlParser.ts`'s sibling parsers' doc comments for
- * why STL/OBJ/PLY were tractable to hand-roll and glTF wasn't). */
+ * limitation `generate_mesh`'s STL path already documents). Only the
+ * meshio-only formats remain unsupported here: they never expose a triangle
+ * array to JS, so there is nothing to derive centroids/volumes from.
+ *
+ * `externalBuffers` is glTF-only: a `.gltf` may reference sibling `.bin`
+ * files, which `gltfParser.ts` deliberately cannot read itself (it stays
+ * fs/vscode-free), so the caller resolves them first via
+ * `resolveExternalBuffers`. A `.glb`, or a `.gltf` with embedded `data:`
+ * buffers, needs none. */
 export type CompareSource =
   | { kind: "brep"; bytes: Uint8Array; format: BRepFormat; ops: EditOp[] }
   | { kind: "stl"; bytes: Uint8Array }
   | { kind: "obj"; bytes: Uint8Array }
-  | { kind: "ply"; bytes: Uint8Array };
+  | { kind: "ply"; bytes: Uint8Array }
+  | { kind: "gltf"; bytes: Uint8Array; externalBuffers?: GltfExternalBuffers };
 
 /**
  * OCCT-side half of "Compare Models" — resolves each solid's `bboxCenter`/
@@ -64,8 +73,8 @@ async function extractBrepSolidSignatures(
 
 /** Dispatches a `CompareSource` to its matching signature extractor — the
  * mesh paths (`stlSolidSignatures.ts`/`objSolidSignatures.ts`/
- * `plySolidSignatures.ts`) are all pure/synchronous with no WASM handles to
- * clean up, unlike the B-rep path. */
+ * `plySolidSignatures.ts`/`gltfSolidSignatures.ts`) are all pure/synchronous
+ * with no WASM handles to clean up, unlike the B-rep path. */
 async function extractSignatures(
   extensionPath: string,
   source: CompareSource
@@ -73,13 +82,14 @@ async function extractSignatures(
   if (source.kind === "stl") return extractStlSolidSignatures(source.bytes);
   if (source.kind === "obj") return extractObjSolidSignatures(source.bytes);
   if (source.kind === "ply") return extractPlySolidSignatures(source.bytes);
+  if (source.kind === "gltf") return extractGltfSolidSignatures(source.bytes, source.externalBuffers);
   return extractBrepSolidSignatures(extensionPath, source.bytes, source.format, source.ops);
 }
 
 /**
  * Compares two models solid-by-solid — B-rep (STEP/IGES/BREP, edits baked
- * in) or a mesh format (STL/OBJ/PLY, raw file bytes, edits NOT baked in) on
- * either side, in any combination. `toleranceFrac` (default `1e-3`, matching
+ * in) or a mesh format (STL/OBJ/PLY/glTF, raw file bytes, edits NOT baked in)
+ * on either side, in any combination. `toleranceFrac` (default `1e-3`, matching
  * `gmshPartsMap.ts`'s existing tolerance-fraction convention) is multiplied
  * by the LARGER of the two models' whole-shape bounding-box diagonals to get
  * the absolute centroid-distance tolerance `diffSolids` matches within.

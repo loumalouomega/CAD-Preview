@@ -56,6 +56,8 @@ Export mirrors the same two-pipeline split, in reverse, driven by `exportTargets
 
 OCCT in this build only includes B-rep writers — there are no STL/OBJ/PLY/glTF writers, and no reverse path from a triangle mesh to a B-rep. That asymmetry is why export targets are pipeline-dependent rather than a flat list of every supported format.
 
+**Silhouette SVG is a third case, outside that split entirely.** **File ▸ Export Silhouette SVG…** writes a 2D outline drawing rather than a 3D model, so it is neither a B-rep target nor a mesh target and never appears in `exportTargetsFor()`'s list — deliberately, since an `"svg"` member of `CadFormat` would ripple all the way into `package.json`'s `customEditors.selector` and make VS Code try to open `.svg` files in the 3D viewer. It is written **in the host** like a B-rep target (via `src/svgSilhouetteHost.ts` in the kernel worker), but it is **not a CAD format** and it is derived from *either* source family: a B-rep source's outline comes from its tessellation with edits baked in, a mesh source's from the raw file bytes through the same pure host-side parsers Compare Models uses. The outline itself is computed with no kernel involvement at all — `src/silhouetteEdges.ts` keeps the edges whose two adjacent triangles disagree about facing the viewer — which is precisely why one implementation covers both families. There is no hidden-line removal; see [File Formats → Silhouette SVG Export](./file-formats.md#silhouette-svg-export).
+
 ## WASM Loading — Critical Detail
 
 **Do not use `initOpenCascade` from `opencascade.js/index.js`.** That wrapper takes zero arguments and ignores any options passed to it. In Node 18 the fallback code calls `fetch(wasmPath)`, which fails for filesystem paths (`TypeError: Failed to parse URL`).
@@ -95,12 +97,14 @@ export function getOcct(extensionPath: string): Promise<any> {
 
 ## Bundling
 
-The project uses [esbuild](https://esbuild.github.io/) (not tsc) to produce two bundles:
+The project uses [esbuild](https://esbuild.github.io/) (not tsc) to produce four bundles:
 
-| Bundle         | Path                | Format | Target         |
-| -------------- | ------------------- | ------ | -------------- |
-| Extension host | `dist/extension.js` | CJS    | Node 18        |
-| Webview        | `media/viewer.js`   | IIFE   | ES2020 browser |
+| Bundle         | Path                     | Format | Target         |
+| -------------- | ------------------------ | ------ | -------------- |
+| Extension host | `dist/extension.js`      | CJS    | Node 18        |
+| MCP server     | `dist/mcp-server.js`     | CJS    | Node 18        |
+| Kernel worker  | `dist/kernel-worker.js`  | CJS    | Node 18        |
+| Webview        | `media/viewer.js`        | IIFE   | ES2020 browser |
 
 `tsc --noEmit` (via `npm run compile`) provides type-checking only — it emits nothing.
 

@@ -40,6 +40,7 @@ import {
   readMeshioFieldValues,
 } from "./meshioService";
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
+import { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
 
@@ -122,6 +123,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   readMeshioFieldValues: readMeshioFieldValues as Handler,
   checkMeshHealth: checkMeshHealth as Handler,
   promoteMeshToBrep: promoteMeshToBrep as Handler,
+  exportSvgSilhouette: exportSvgSilhouette as Handler,
 };
 
 process.on("message", (msg: KernelRequest) => {

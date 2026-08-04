@@ -332,6 +332,11 @@ export type WebviewToHost =
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
   | { type: "importSvgRequest" }
+  /** File ▸ Export Silhouette SVG… — like `exportRequest`, the host owns the
+   * whole flow from here (view quick-pick → unit quick-pick → save dialog), so
+   * there is nothing to correlate and no result message: success/failure come
+   * back through the generic `status`/`error` messages. */
+  | { type: "exportSvgRequest" }
   | {
       type: "measureExactRequest";
       requestId: string;

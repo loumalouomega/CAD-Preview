@@ -94,8 +94,9 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | **Save Preprocess…** | Bundle the CAD file plus whichever of its `.parts.json` / `.annotations.json` / `.edits.json` / `.mesh.json` sidecars currently exist into a single `.zip` archive (with a per-entry SHA-256 checksum recorded in its manifest), so the whole working state can be shared or archived as one file | Ctrl+Alt+S |
 | **Load Preprocess…** | Restore a `.zip` built by Save Preprocess: pick a destination for the CAD file, write back whichever sidecars it contains, and open the result — rejects a corrupted/tampered archive or a destination whose file extension doesn't match the archive's own format | Ctrl+Alt+O |
 | **Import SVG…** | Pick a `.svg` file and import every `<path>` in it as sketch **Polyline** edit ops — one per closed/open subpath (a shape with a hole, e.g. a traced letter "O", becomes two separate polylines) — ready to select (**Line** mode) and feed into Build → Surface / Extrude. B-rep only; only plain `<path>` elements are read (no `<rect>`/`<circle>`/other shape elements, and any `transform` attribute on the path is ignored) | — |
+| **Export Silhouette SVG…** | Write a 2D **outline** of the model as an `.svg` file — pick a view (**Current view**, or Front/Back/Top/Bottom/Left/Right/Iso), then an export unit, then a destination. An outline, **not** a dimensioned technical drawing (see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg)) | — |
 
-![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, Load Preprocess, and Import SVG.](/screenshots/file-menu.png)
+![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, and Export Silhouette SVG.](/screenshots/file-menu.png)
 
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette). The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't override VS Code's global Open/Save elsewhere.
 
@@ -412,9 +413,23 @@ The format you opened is never offered as an export target. Picking any target f
 
 B-rep targets are converted by OpenCascade.js's own writers, so STEP ↔ IGES ↔ BREP round-trips preserve true CAD geometry, not just a tessellated approximation. Mesh targets are generated from the triangulated geometry already shown in the viewer — there is no way to turn a mesh file (or a tessellated B-rep) back into precise CAD surfaces, which is why mesh sources can't export to STEP/IGES/BREP.
 
+### Exporting a Silhouette SVG
+
+Pick **File ▸ Export Silhouette SVG…** (or run `CAD Preview: Export Silhouette SVG…` from the Command Palette with a CAD Preview tab focused) to write a 2D **outline drawing** of the model as an `.svg` file. This is separate from the Export… flow above — an SVG is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
+
+1. **Pick a view.** The first entry is **Current view** — the angle you are currently looking at — followed by Front, Back, Top, Bottom, Left, Right, and Iso. Pressing Escape here cancels the export.
+2. **Pick an export unit.** The same quick-pick every other export shows, defaulting to native mm; Escape here still exports (at mm), it doesn't cancel.
+3. **Choose a destination** in the native Save dialog.
+
+> **It's an outline, not a dimensioned 2D technical drawing — there is no hidden-line removal.** Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette (a hole seen face-on draws as a circle; the same hole seen edge-on draws nothing). OpenCascade's hidden-line machinery is entirely unavailable in the bundled WASM build, so the outline is derived from triangle adjacency instead — which is also why this works for mesh files, not just B-rep. Use it for review notes, documentation figures, and laser/plotter outlines; use the [Measurement](#measuring) tools for any dimension you need to be sure of.
+
+Works for STEP/IGES/BREP (with your edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (from the raw file — edits are **not** baked in, since mesh edits can't be replayed outside the viewer). VTK/MED/CGNS/Exodus/XDMF/MDPA sources are rejected.
+
+The output is a single self-contained `<path>` with no external references, at **1 SVG user unit = 1 model unit** and a physical size in millimetres — so a drawing exported from a native (mm) model prints 1:1 in any vector tool. One caveat: the outline depends on consistent triangle winding, so a mesh with mixed winding (as some exporters and hand-edited files produce) draws spurious interior lines.
+
 ### Comparing Models
 
-Run **CAD Preview: Compare Models…** from the Command Palette to diff two STEP/IGES/BREP, STL, OBJ, or PLY files (any combination) solid-by-solid — useful for checking what actually changed between two versions of a model. If a CAD Preview tab is focused when you run the command, its file is used as model **A** automatically and you're only prompted for **B**; otherwise you're prompted for both.
+Run **CAD Preview: Compare Models…** from the Command Palette to diff two STEP/IGES/BREP, STL, OBJ, PLY, or glTF/GLB files (any combination) solid-by-solid — useful for checking what actually changed between two versions of a model. If a CAD Preview tab is focused when you run the command, its file is used as model **A** automatically and you're only prompted for **B**; otherwise you're prompted for both.
 
 A results tab opens beside the editor showing:
 
@@ -422,14 +437,17 @@ A results tab opens beside the editor showing:
 - **Removed** solids — present only in A.
 - **Added** solids — present only in B.
 
-This is a display-only report (no 3D view, no merge) — to actually look at both models side by side, open each in its own tab and use VS Code's split editor layout. STEP/IGES/BREP, STL, OBJ, and PLY are all supported, in any combination (glTF still isn't — it has no host-side geometry to match without opening it in the viewer first; see the "Known Limitations" section below). For a STEP/IGES/BREP file, the comparison reflects its currently-applied edits (its `.edits.json` sidecar, if any); for an STL/OBJ/PLY file, edits are **not** baked in (there's no way to replay a mesh edit outside the viewer) — a warning banner says so if the file has pending edits, and the comparison runs against the raw file as-is.
+This is a display-only report (no 3D view, no merge) — to actually look at both models side by side, open each in its own tab and use VS Code's split editor layout. STEP/IGES/BREP, STL, OBJ, PLY, and glTF/GLB are all supported, in any combination; the meshio-only formats (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA) are the one remaining exception, since they never expose a triangle array outside their own WASM module. For a STEP/IGES/BREP file, the comparison reflects its currently-applied edits (its `.edits.json` sidecar, if any); for an STL/OBJ/PLY/glTF file, edits are **not** baked in (there's no way to replay a mesh edit outside the viewer) — a warning banner says so if the file has pending edits, and the comparison runs against the raw file as-is.
 
 ## Known Limitations
 
 - **No texture support for OBJ.** MTL material files are not loaded; a default grey material is applied.
 - **No glTF animations.** Animation playback is not implemented — only the first frame (bind pose) is shown.
 - **No BRep-embedded geometry in glTF.** Only triangulated `mesh` primitives inside glTF are rendered.
-- **No Compare Models support for glTF.** STEP/IGES/BREP/STL/OBJ/PLY are all supported (any combination); glTF's format complexity (accessor/sparse-accessor decoding, scene-graph transform composition) was judged too large a surface to hand-roll and validate correctly, so it's excluded from Compare Models specifically (it still opens and previews normally everywhere else).
+- **No Compare Models / Mesh Health support for the meshio-only formats.** STEP/IGES/BREP/STL/OBJ/PLY/glTF are all supported (any combination) — glTF included since a dedicated host-side parser shipped, cross-validated against three.js's own `GLTFLoader`. VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA remain excluded: meshio++'s WASM module converts them to a boundary surface for display but never hands a triangle array back to JS, so there's nothing for the host to match on (they still open and preview normally).
+- **Compressed glTF isn't parsed host-side.** A `.gltf`/`.glb` requiring `KHR_draco_mesh_compression` or `EXT_meshopt_compression` is rejected with a clear error by Compare Models / Mesh Health / Promote to B-rep / Silhouette SVG — the host-side parser can't decode compressed buffers. Viewing such a file in the 3D view is unaffected.
+- **Mesh Health and Promote to B-rep cap out at 50,000 triangles.** Both build one OCCT face per triangle and sew them, so a larger mesh is refused with an actionable error rather than exhausting the WASM heap. Most likely to come up with glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY — decimate first if you hit it.
+- **Silhouette SVG has no hidden-line removal.** It draws an outline, not a dimensioned 2D technical drawing — see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg).
 - **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in-process in the Node extension host — there is no streaming.
 - **One-time WASM startup.** The first B-rep file open triggers OpenCascade.js initialization (~300 ms on a typical machine). Subsequent B-rep files open faster because the kernel is memoized.
 - **Source CAD file is never modified.** CAD Preview never writes the opened CAD file. **Export** writes a new, separate file; **part** definitions are saved to a `<model>.parts.json` sidecar; **pinned measurements** to a `<model>.annotations.json` sidecar; and **edit operations** are saved to a `<model>.edits.json` sidecar — the original geometry is always left untouched. Edits are non-destructive and replayable, and are baked in only when you **Export**.

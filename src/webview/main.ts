@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
-import type { CadFormat } from "../fileRouter";
+import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay } from "./geometryBuilder";
 import { viridisCssGradientStops } from "./colorMap";
@@ -1099,12 +1099,11 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
 });
 
 // ── Mesh Health (roadmap "Mesh -> B-rep promotion", both phases closed) ────
-// Eligible only for a NATIVE stl/obj/ply file on disk — the same
+// Eligible only for a NATIVE stl/obj/ply/gltf file on disk — the same
 // COMPARABLE_MESH_FORMATS gate check_mesh_health/promote_mesh_to_brep's MCP
 // tools apply. A meshio-converted document (`loadMeshBytes`, already-
-// triangulated but not itself an stl/obj/ply FILE) and glTF both stay
-// ineligible.
-let meshHealthEligibleFormat: "stl" | "obj" | "ply" | null = null;
+// triangulated but not itself one of those FILES) stays ineligible.
+let meshHealthEligibleFormat: MeshParseFormat | null = null;
 let meshHealRequestId: string | null = null;
 
 const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health-panel")!, {
@@ -1121,7 +1120,7 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
   },
 });
 
-function setMeshHealthEligibility(format: "stl" | "obj" | "ply" | null): void {
+function setMeshHealthEligibility(format: MeshParseFormat | null): void {
   meshHealthEligibleFormat = format;
   meshHealthPanel.setEligible(format !== null);
 }
@@ -1778,6 +1777,7 @@ function setupFileMenu(): void {
   item("menu-save-preprocess", () => post({ type: "savePreprocessRequest" }));
   item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
   item("menu-import-svg", () => post({ type: "importSvgRequest" }));
+  item("menu-export-svg", () => post({ type: "exportSvgRequest" }));
 }
 
 /**
@@ -2353,7 +2353,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadUrl":
-      setMeshHealthEligibility(msg.format === "stl" || msg.format === "obj" || msg.format === "ply" ? msg.format : null);
+      setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
       await loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase());
       break;
 

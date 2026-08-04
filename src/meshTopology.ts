@@ -18,6 +18,8 @@
  * OCCT-side ladder.
  */
 
+import { edgeKey } from "./meshComponents";
+
 /** Same near-zero-area epsilon convention as elsewhere in this codebase's
  * mesh tooling (e.g. `weldTriangleSoup`'s default position epsilon) — a
  * triangle below this area is considered degenerate (collinear or
@@ -35,12 +37,6 @@ export interface MeshTopologyStats {
   /** Triangles whose area is at or below `DEGENERATE_AREA_EPSILON`
    * (collinear or duplicated vertices). */
   degenerateFaceCount: number;
-}
-
-/** Undirected edge key, order-independent — same convention as
- * `meshComponents.ts`'s private `edgeKey`. */
-function edgeKey(a: number, b: number): string {
-  return a < b ? `${a}_${b}` : `${b}_${a}`;
 }
 
 /**

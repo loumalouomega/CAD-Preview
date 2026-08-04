@@ -568,7 +568,7 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 
 ### `meshHealResult` / `meshHealError`
 
-Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY sources only** — a B-rep source has nothing to heal and a meshio-converted/glTF source has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`).
+Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF.
 
 ```json
 { "type": "meshHealResult", "requestId": "1234-0.56", "report": { "componentCount": 1, "components": [{ "index": 0, "triangleCount": 12, "freeEdgeCount": 0, "nonManifoldEdgeCount": 0, "degenerateFaceCount": 0, "rawArea": 600, "rawVolume": 1000, "requiredTolerance": 0.000001, "healedArea": 600, "healedVolume": 1000, "areaDeltaPct": 0, "volumeDeltaPct": 0 }] } }
@@ -642,6 +642,7 @@ type WebviewToHost =
   | { type: 'openPath'; path: string }
   | { type: 'saveSidecars' }
   | { type: 'exportRequest' }
+  | { type: 'exportSvgRequest' }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
   | { type: 'meshingChanged'; options: MeshOptions }
@@ -768,6 +769,18 @@ Sent when the user picks **File ▸ Save As… / Export…** in the top menu bar
 { "type": "exportRequest" }
 ```
 
+### `exportSvgRequest`
+
+Sent when the user picks **File ▸ Export Silhouette SVG…** in the top menu bar (or triggers the `cad-preview.exportSvg` command — no keybinding). **No `requestId`, and no result message**, like `promoteToBrepButtonClicked` and unlike `exportRequest`: the host owns the entire flow from here — a view quick-pick (**Current view**, taken from the `viewChanged`-tracked `ViewState` the host already holds for the `.view.json` sidecar, then FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO), the existing export-unit quick-pick, a save dialog, and finally `exportSvgSilhouette` in the kernel worker — so there is nothing to correlate and nothing for the webview to compute. Success, failure, and any per-export warnings all come back through the plain, already-existing generic `status` / `error` messages.
+
+Escape on the *view* pick cancels the export outright (it's the primary choice); Escape on the *unit* pick still exports at native mm, matching `exportRequest`'s own convention. A source that is neither B-rep nor STL/OBJ/PLY/glTF (i.e. a meshio-only format) is rejected with an `error` message before any dialog appears.
+
+Deliberately **not** folded into `exportRequest`: an `"svg"` member of `CadFormat` would ripple through `EXPORT_EXTENSION`/`EXPORT_LABEL`/`exportTargetsFor()`/`fileRouter.ts` and, worst, into `package.json`'s `customEditors.selector` — which would make VS Code try to open `.svg` files in the 3D viewer, colliding head-on with **Import SVG…**.
+
+```json
+{ "type": "exportSvgRequest" }
+```
+
 ### `exportResult` / `exportError`
 
 Sent in reply to `exportMesh`. `data` is base64 when `binary` is `true`, plain text otherwise — the same convention as `EncodedMesh`'s buffers, just generalized to a whole file. The host correlates the reply to its pending request via `requestId` and writes the decoded bytes to the path chosen in the save dialog.
@@ -826,7 +839,7 @@ Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep sourc
 
 ### `meshHealRequest`
 
-Sent when the Mesh Health panel's **Check Healability** button is clicked — only reachable for a native `.stl`/`.obj`/`.ply` file on disk (a meshio-converted document or glTF hides the panel entirely, mirroring `check_mesh_health`'s own MCP-tool gate; see `meshHealResult`/`meshHealError` above). No parameters beyond `requestId` — the host re-reads the currently-open document's own bytes.
+Sent when the Mesh Health panel's **Check Healability** button is clicked — only reachable for a native `.stl`/`.obj`/`.ply`/`.gltf`/`.glb` file on disk (a meshio-converted document hides the panel entirely, mirroring `check_mesh_health`'s own MCP-tool gate; see `meshHealResult`/`meshHealError` above). No parameters beyond `requestId` — the host re-reads the currently-open document's own bytes.
 
 ```json
 { "type": "meshHealRequest", "requestId": "1234-0.56" }

@@ -91,6 +91,15 @@ Binary and ASCII STL are both supported via `STLLoader`. The result is a single 
 - Animation playback is not supported. Only the bind pose (frame 0) is rendered.
 - The component tree is built from the `Object3D` name hierarchy, not from glTF extras.
 
+**Host-side parsing.** Display goes through Three.js's `GLTFLoader` as described above, but a *second*, independent path exists for the features that need triangle geometry outside the webview: `src/gltfParser.ts` is a pure, hand-rolled glTF 2.0 / GLB parser (the fourth member of the `stlParser.ts` / `objParser.ts` / `plyParser.ts` family) that reads every mesh primitive's `POSITION` attribute and indices, transforms them by each node's world matrix, and welds the result into one shared index space. It is **geometry-only** — materials, textures, cameras, skins, animations, and morph targets are ignored entirely — and its unit tests cross-check every fixture against three.js's own `GLTFLoader` (`src/gltfParser.crossvalidation.test.ts`), which is what makes hand-rolling it defensible: a subtly-wrong parser producing plausible-but-wrong centroids and volumes would be worse than not supporting the format at all. This is what makes **Compare Models**, **check_mesh_health**, **promote_mesh_to_brep**, and **silhouette SVG export** work for `.gltf`/`.glb` sources.
+
+Two host-side-parsing caveats, both surfaced as clear errors rather than silently-wrong geometry:
+
+- **Compressed geometry is rejected.** A file whose `extensionsRequired` names `KHR_draco_mesh_compression` or `EXT_meshopt_compression` fails with an error naming the extension — this parser cannot decode compressed buffers. (Geometry-irrelevant extensions — `KHR_materials_*`, `KHR_texture_transform`, `KHR_lights_punctual`, … — are handled perfectly by ignoring them, and `KHR_mesh_quantization` is genuinely supported.)
+- **External `.bin` buffers are read from beside the model.** A `.gltf` whose `buffers[].uri` points at a sibling file works normally; a sibling that can't be read is a clear error, not a silently-empty mesh. A self-contained `.glb`, or a `.gltf` with base64 data URIs, needs no sibling at all.
+
+Fixtures: `examples/GLTF/cube.gltf`, `examples/GLTF/cube.glb`, and `examples/GLTF/two-boxes.gltf`.
+
 ---
 
 ## meshio++ Bridge Formats (VTK, MED, CGNS, Exodus, XDMF, Kratos MDPA)
@@ -313,6 +322,24 @@ The source format is never offered as its own export target (moot for the meshio
 **Mesh targets** are written in the webview, reusing Three.js's bundled exporters (`three/examples/jsm/exporters/`) on the `THREE.Object3D` already displayed — regardless of whether it arrived via a native loader or OCCT tessellation. The serialized result is sent back to the host over the protocol described in [Host ↔ Webview Protocol](./protocol.md) and written to disk there, since only the host can show file dialogs.
 
 glTF export always produces a binary `.glb` file (not a text `.gltf` with embedded base64 buffers) — a single portable file, no separate buffer references to manage.
+
+### Silhouette SVG Export
+
+**File ▸ Export Silhouette SVG…** (or the `CAD Preview: Export Silhouette SVG…` command) is a **third** export case, deliberately outside the Export… quick-pick above: it writes a 2D **outline drawing** rather than a 3D model, so it is neither a B-rep target nor a mesh target and never appears in `exportTargetsFor()`'s list. Flow: a view quick-pick (**Current view** — the angle you are currently looking at — then Front/Back/Top/Bottom/Left/Right/Iso), then the same export-unit quick-pick every other export shows, then a save dialog. Pressing Escape on the *view* pick cancels the export (it is the primary choice); Escape on the *unit* pick still exports at native mm, matching the existing convention.
+
+> **It is an outline, not a dimensioned 2D technical drawing. There is no hidden-line removal.** Back-facing geometry is not drawn, but neither are interior feature edges that do not lie on a silhouette. OCCT's `HLRBRep_*` hidden-line machinery is entirely unavailable in this WASM build, and `HLRAppli_ReflectLines` — the one surviving green alternative — was probed against the live kernel and produced a strictly *worse* drawing (missing the part's holes and interior cutout), so the outline is derived from **triangle adjacency** instead: an edge is kept where its two adjacent triangles disagree about facing the viewer. That choice is also why this works for mesh sources and not just B-rep. Treat the result as a review/illustration artifact; use the Measurement tools for any dimension you need to be sure of.
+
+| Source | Geometry the outline is derived from |
+| --- | --- |
+| STEP / IGES / BREP | the tessellation of the current model, **edits baked in** |
+| STL / OBJ / PLY / glTF | the raw file bytes, **edits not baked in** (there is no host-side mesh edit engine — same limitation Compare Models has) |
+| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA) | rejected — those formats never expose a triangle array back to JS |
+
+The output is a single self-contained `<path>` — no `<style>`, no script, no external references — so it embeds anywhere. **1 SVG user unit = 1 model unit**, with the document's physical `width`/`height` given in millimetres, so a drawing exported from a native (mm) model prints 1:1 in any vector tool. Choosing a non-mm unit applies the same real coordinate scale every other export in this codebase uses, before projection.
+
+**Limitation — triangle winding.** The facing test depends on consistent triangle winding across the mesh. A mesh with mixed winding (some triangles clockwise, some counter-clockwise, as some exporters and hand-edited files produce) yields spurious interior lines, because the test flips with the winding. There is no cheap, reliable way to repair winding for an arbitrary open mesh, so this is documented rather than worked around.
+
+The same capability is available headlessly as the MCP server's `export_svg_silhouette` tool — see [MCP Server](./mcp-server.md).
 
 ## File Size Guidance
 

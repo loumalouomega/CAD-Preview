@@ -57,6 +57,8 @@ import { scaleShapeForExport, combineSolids } from "./occtOperations";
 import { parseStl } from "./stlParser";
 import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
+import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
+import type { MeshParseFormat } from "./fileRouter";
 import { weldTriangleSoup, connectedComponents, areaOfTriangles, volumeOfTriangles, type WeldedMesh } from "./meshComponents";
 import { analyzeMeshTopology } from "./meshTopology";
 import { patchStepUnitDeclaration } from "./stepUnitPatch";
@@ -96,10 +98,38 @@ export interface MeshHealthReport {
   components: ComponentHealthReport[];
 }
 
-function parseToWeldedMesh(bytes: Uint8Array, format: "stl" | "obj" | "ply"): WeldedMesh {
+/**
+ * Ceiling on the triangle count this module will attempt to sew.
+ *
+ * Both entry points build ONE tiny `BRepBuilderAPI_MakeFace` per triangle and
+ * hand the lot to `BRepBuilderAPI_Sewing`, so cost scales directly with
+ * triangle count — and every OCCT face is an Emscripten heap handle. The
+ * hand-authored STL/OBJ/PLY meshes this pipeline was built against are tiny
+ * (this repo's own fixtures are 12 triangles), but glTF is a *rendering*
+ * interchange format whose real-world files routinely carry 100k–1M
+ * triangles; handing one of those to the sewing pipeline would spend minutes
+ * allocating faces before exhausting the WASM heap. Reporting an honest,
+ * actionable "too large" up front beats an opaque out-of-memory abort — and
+ * the same protection applies to a large STL, where the risk was always
+ * present but far less likely to be hit.
+ */
+export const MAX_HEALABLE_TRIANGLES = 50_000;
+
+function parseToWeldedMesh(bytes: Uint8Array, format: MeshParseFormat, external?: GltfExternalBuffers): WeldedMesh {
   if (format === "stl") return weldTriangleSoup(parseStl(bytes));
   if (format === "obj") return parseObj(bytes);
+  if (format === "gltf") return parseGltf(bytes, external); // already welded internally
   return parsePly(bytes);
+}
+
+/** Throws the shared, actionable over-budget error both entry points use. */
+function assertHealableSize(indices: Uint32Array): void {
+  const triangleCount = Math.floor(indices.length / 3);
+  if (triangleCount > MAX_HEALABLE_TRIANGLES) {
+    throw new Error(
+      `Mesh has ${triangleCount} triangles, above the ${MAX_HEALABLE_TRIANGLES}-triangle ceiling for the per-triangle sewing pipeline (it builds one OCCT face per triangle). Decimate the mesh before healing or promoting it.`
+    );
+  }
 }
 
 /** Builds one tiny planar `TopoDS_Face` from a single triangle's 3 corner
@@ -208,17 +238,25 @@ function solidPropertiesFromSewedShape(oc: any, sewedShape: unknown, cleanup: Ar
 }
 
 /**
- * Computes the read-only heal-quality report for a raw STL/OBJ/PLY mesh —
- * per connected component (mirroring `stlSolidSignatures.ts`'s existing
+ * Computes the read-only heal-quality report for a raw STL/OBJ/PLY/glTF mesh
+ * — per connected component (mirroring `stlSolidSignatures.ts`'s existing
  * per-component convention, since a hypothetical future promotion would
  * naturally build one solid per component too): pure edge/degenerate-face
  * topology stats (`analyzeMeshTopology`, no WASM needed) plus the OCCT
  * sewing-tolerance-ladder closure check and, if closed, the healed
  * area/volume delta against the raw mesh's own (pure-JS) area/volume.
+ *
+ * Throws for a mesh above `MAX_HEALABLE_TRIANGLES` — see that constant.
  */
-export async function checkMeshHealth(extensionPath: string, bytes: Uint8Array, format: "stl" | "obj" | "ply"): Promise<MeshHealthReport> {
+export async function checkMeshHealth(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: MeshParseFormat,
+  external?: GltfExternalBuffers
+): Promise<MeshHealthReport> {
   const oc = await getOcct(extensionPath);
-  const { positions, indices } = parseToWeldedMesh(bytes, format);
+  const { positions, indices } = parseToWeldedMesh(bytes, format, external);
+  assertHealableSize(indices);
   const componentTriangles = connectedComponents(indices);
 
   const cleanup: Array<{ delete(): void }> = [];
@@ -277,7 +315,7 @@ export interface PromoteMeshResult {
 }
 
 /**
- * Phase 2: promotes a healed STL/OBJ/PLY mesh into a NEW B-rep file
+ * Phase 2: promotes a healed STL/OBJ/PLY/glTF mesh into a NEW B-rep file
  * (STEP/IGES/BREP bytes) — see this module's own top doc comment for why
  * this is a one-shot EXPORT rather than an in-place reclassification of the
  * source document. Reuses `checkMeshHealth`'s exact per-component
@@ -297,16 +335,20 @@ export interface PromoteMeshResult {
  * never threaded through to `writeShape` here (unlike `exportBRep`) — a
  * mesh source's `node-N` Part assignments have no meaningful mapping onto
  * the newly-promoted `solid-N` ids, so no Part-name carryover is attempted.
+ *
+ * Throws for a mesh above `MAX_HEALABLE_TRIANGLES` — see that constant.
  */
 export async function promoteMeshToBrep(
   extensionPath: string,
   bytes: Uint8Array,
-  sourceFormat: "stl" | "obj" | "ply",
+  sourceFormat: MeshParseFormat,
   targetFormat: BRepFormat,
-  unit: DisplayUnit = "mm"
+  unit: DisplayUnit = "mm",
+  external?: GltfExternalBuffers
 ): Promise<PromoteMeshResult> {
   const oc = await getOcct(extensionPath);
-  const { positions, indices } = parseToWeldedMesh(bytes, sourceFormat);
+  const { positions, indices } = parseToWeldedMesh(bytes, sourceFormat, external);
+  assertHealableSize(indices);
   const componentTriangles = connectedComponents(indices);
   // Short path — this OCCT WASM build has an undocumented MEMFS path-length
   // cliff (roughly 11+ characters starts failing, per this codebase's own

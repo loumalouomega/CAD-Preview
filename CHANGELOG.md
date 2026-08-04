@@ -4,6 +4,17 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.4.0] - 2026-08-04
+
+### Added
+
+- **SVG silhouette export.** A new **File ▾ ▸ Export Silhouette SVG…** (and the `CAD Preview: Export Silhouette SVG…` command, and the `export_svg_silhouette` MCP tool) writes a 2D outline of the model as a vector drawing — from the view you're currently looking at, or from a named view (Front/Back/Top/Bottom/Left/Right/Iso). Works for every source with host-side geometry: STEP/IGES/BREP with edits baked in, plus STL/OBJ/PLY/glTF. 1 SVG unit = 1 model unit, so it prints 1:1, and the same mm/cm/m/in/ft conversion every other export offers applies here too. **It is an outline, not a dimensioned technical drawing** — there is no hidden-line removal, so interior feature edges that don't lie on a silhouette aren't drawn. (OCCT's hidden-line machinery is entirely unavailable in this WebAssembly build; the one remaining alternative was probed against the live kernel and produced a visibly worse drawing, missing holes and cutouts the shipped approach draws correctly.)
+- **Compare Models, mesh health, and Mesh → B-rep promotion now support glTF/GLB**, the last format that was still excluded. `CAD Preview: Compare Models…` (and `compare_models`) can now diff `.gltf`/`.glb` against any other supported format, `check_mesh_health` reports on them, and `promote_mesh_to_brep` turns one into a real STEP/IGES/BREP solid. This is a new host-side glTF parser, cross-validated in the test suite against three.js's own loader — the same loader the 3D view already uses to display these files — which is what made hand-rolling it defensible after it was previously ruled out for lack of a way to validate it.
+
+### Changed
+
+- **Mesh health and promotion now refuse a mesh above 50 000 triangles** with a clear message instead of grinding to a halt. Both build one CAD face per triangle, which was always a risk for a large mesh and becomes a likely one now that glTF — a rendering format whose files are routinely far larger than hand-authored STL/OBJ/PLY — is accepted.
+
 ## [1.3.0] - 2026-08-03
 
 ### Added
@@ -213,6 +224,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.2.6...v1.3.0
 [1.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.1.3...v1.2.0
 [1.1.3]: https://github.com/loumalouomega/CAD-Preview/compare/v1.0.5...v1.1.3

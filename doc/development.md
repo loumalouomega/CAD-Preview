@@ -120,7 +120,7 @@ CAD-Preview/
 
 ### esbuild
 
-`esbuild.mjs` produces two bundles:
+`esbuild.mjs` produces four bundles — three Node/CJS entry points plus the browser webview:
 
 **Extension host** (`dist/extension.js`):
 
@@ -129,6 +129,18 @@ CAD-Preview/
 - Target: `es2020`
 - `vscode` is marked external (provided by VS Code at runtime)
 - `opencascade.js` is **bundled** (not external) — ESM is converted to CJS
+
+**MCP server** (`dist/mcp-server.js`):
+
+- Same Node/CJS recipe as the extension host, but its own standalone entry (`src/mcpServer.ts`) — it is not part of the extension bundle and is run directly by an MCP client (`node dist/mcp-server.js`)
+- Additionally bundles `@modelcontextprotocol/sdk` and `zod`, which never reach `dist/extension.js`
+- See [MCP Server](./mcp-server.md)
+
+**Kernel worker** (`dist/kernel-worker.js`):
+
+- Same Node/CJS recipe again, entry `src/kernelWorker.ts`
+- The forked child process both the extension host and the MCP server route every OCCT/Gmsh/meshio++ call through, so a hung or crashed WASM call can be killed and respawned without taking the parent process down
+- Leaner than `mcp-server.js` — it needs the raw pipeline functions, none of the MCP SDK or tool-registration logic
 
 **Webview** (`media/viewer.js`):
 

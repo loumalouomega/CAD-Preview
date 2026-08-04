@@ -77,6 +77,7 @@ let stlModel: string;
 let objModel: string;
 let plyModel: string;
 let gltfModel: string;
+let vtkModel: string;
 
 /** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
 const UNIT_CUBE_OBJ = `
@@ -121,6 +122,21 @@ end_header
 4 2 3 7 6
 4 3 0 4 7
 `;
+
+/** A minimal but genuinely parseable glTF (one triangle, embedded `data:`
+ * buffer). It must really parse: since glTF gained a host-side parser, the
+ * tools resolve its external buffers before calling the pipeline, which means
+ * reading the JSON for real rather than treating the file as opaque bytes. */
+const MINIMAL_GLTF = JSON.stringify({
+  asset: { version: "2.0" },
+  scene: 0,
+  scenes: [{ nodes: [0] }],
+  nodes: [{ mesh: 0 }],
+  meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+  accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3" }],
+  bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }],
+  buffers: [{ byteLength: 36, uri: "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA" }],
+});
 
 const FAKE_BREP_RESULT: BRepResult = {
   groups: [
@@ -317,12 +333,18 @@ beforeEach(async () => {
   objModel = path.join(dir, "model.obj");
   plyModel = path.join(dir, "model.ply");
   gltfModel = path.join(dir, "model.gltf");
+  vtkModel = path.join(dir, "model.vtk");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
   await fs.writeFile(objModel, UNIT_CUBE_OBJ, "utf8");
   await fs.writeFile(plyModel, UNIT_CUBE_PLY, "utf8");
-  await fs.writeFile(gltfModel, "{}", "utf8");
+  // A minimal but genuinely parseable glTF: the tools now resolve external
+  // buffers before calling the pipeline, which reads the JSON for real.
+  await fs.writeFile(gltfModel, MINIMAL_GLTF, "utf8");
+  // meshio-only source — the remaining "no host-side geometry" rejection path,
+  // which glTF used to cover before it gained a parser.
+  await fs.writeFile(vtkModel, "# vtk DataFile Version 3.0\n", "utf8");
 });
 
 afterEach(async () => {
@@ -890,13 +912,24 @@ describe("compare_models", () => {
     expect(result.warnings[0]).toMatch(/OBJ/);
   });
 
-  it("returns supported: false with a warning when either side is an unsupported format (glTF), without touching WASM", async () => {
+  it("diffs a B-rep source against a glTF source, resolving its external buffers first", async () => {
     const c = ctx();
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: gltfModel });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
+      { kind: "gltf", bytes: expect.any(Uint8Array), externalBuffers: {} }
+    );
+    expect(result.supported).toBe(true);
+  });
+
+  it("returns supported: false with a warning for a meshio-only format (.vtk), without touching WASM", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: vtkModel });
     expect(c.pipeline.compareModels).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
     expect(result.diff).toBeUndefined();
-    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/STL\/OBJ\/PLY/i);
+    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/STL\/OBJ\/PLY\/glTF/i);
   });
 
   it("rejects unsupported extensions on either path", async () => {
@@ -958,21 +991,21 @@ describe("check_mesh_health", () => {
   it("reports the pipeline's heal-quality report for an STL source", async () => {
     const c = ctx();
     const result = await checkMeshHealthTool(c, { path: stlModel });
-    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl");
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", undefined);
     expect(result).toEqual({ format: "stl", supported: true, warnings: [], ...FAKE_MESH_HEALTH_REPORT });
   });
 
   it("reports the pipeline's heal-quality report for an OBJ source", async () => {
     const c = ctx();
     const result = await checkMeshHealthTool(c, { path: objModel });
-    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "obj");
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "obj", undefined);
     expect(result.supported).toBe(true);
   });
 
   it("reports the pipeline's heal-quality report for a PLY source", async () => {
     const c = ctx();
     const result = await checkMeshHealthTool(c, { path: plyModel });
-    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "ply");
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "ply", undefined);
     expect(result.supported).toBe(true);
   });
 
@@ -984,9 +1017,16 @@ describe("check_mesh_health", () => {
     expect(result.warnings[0]).toMatch(/already a B-rep source/i);
   });
 
-  it("returns supported: false with a warning for glTF (no host-side triangle-soup parser)", async () => {
+  it("reports the heal-quality report for a glTF source, passing its resolved external buffers", async () => {
     const c = ctx();
     const result = await checkMeshHealthTool(c, { path: gltfModel });
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "gltf", {});
+    expect(result.supported).toBe(true);
+  });
+
+  it("returns supported: false with a warning for a meshio-only format (.vtk)", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: vtkModel });
     expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
     expect(result.warnings[0]).toMatch(/no host-side triangle-soup parser/i);
@@ -1005,7 +1045,7 @@ describe("promote_mesh_to_brep", () => {
     const c = ctx();
     const outputPath = path.join(dir, "promoted.step");
     const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath });
-    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm");
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm", undefined);
     expect(result).toMatchObject({ written: outputPath, promotedComponents: [0], skippedComponents: [], warnings: [] });
     expect(await fs.readFile(outputPath)).toEqual(Buffer.from(FAKE_PROMOTE_RESULT.bytes));
   });
@@ -1014,25 +1054,25 @@ describe("promote_mesh_to_brep", () => {
     const c = ctx();
     const objOut = path.join(dir, "promoted-obj.step");
     await promoteMeshToBrepTool(c, { path: objModel, outputPath: objOut });
-    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", "step", "mm");
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", "step", "mm", undefined);
 
     const plyOut = path.join(dir, "promoted-ply.step");
     await promoteMeshToBrepTool(c, { path: plyModel, outputPath: plyOut });
-    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", "step", "mm");
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", "step", "mm", undefined);
   });
 
   it("respects an explicit targetFormat and unit", async () => {
     const c = ctx();
     const outputPath = path.join(dir, "promoted.iges");
     await promoteMeshToBrepTool(c, { path: stlModel, outputPath, targetFormat: "iges", unit: "in" });
-    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "iges", "in");
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "iges", "in", undefined);
   });
 
   it("falls back to mm with a warning for an unrecognized unit, never throwing", async () => {
     const c = ctx();
     const outputPath = path.join(dir, "promoted.step");
     const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath, unit: "furlongs" });
-    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm");
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm", undefined);
     expect(result.warnings.some((w) => /unknown unit/i.test(w))).toBe(true);
   });
 
@@ -1052,10 +1092,16 @@ describe("promote_mesh_to_brep", () => {
     expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
   });
 
-  it("throws for glTF (no host-side triangle-soup parser)", async () => {
+  it("promotes a glTF source, passing its resolved external buffers", async () => {
+    const c = ctx();
+    await promoteMeshToBrepTool(c, { path: gltfModel, outputPath: path.join(dir, "promoted-gltf.step") });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "gltf", "step", "mm", {});
+  });
+
+  it("throws for a meshio-only format (.vtk, no host-side triangle-soup parser)", async () => {
     const c = ctx();
     await expect(
-      promoteMeshToBrepTool(c, { path: gltfModel, outputPath: path.join(dir, "x.step") })
+      promoteMeshToBrepTool(c, { path: vtkModel, outputPath: path.join(dir, "x.step") })
     ).rejects.toThrow(/no host-side triangle-soup parser/i);
     expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
   });

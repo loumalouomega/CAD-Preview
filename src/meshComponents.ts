@@ -63,8 +63,17 @@ export function weldTriangleSoup(soup: Float32Array, epsilon = 1e-5): WeldedMesh
   return { positions: new Float32Array(positions), indices };
 }
 
-/** Undirected edge key, order-independent (`a_b` with the smaller index first). */
-function edgeKey(a: number, b: number): string {
+/**
+ * Undirected edge key, order-independent (`a_b` with the smaller index first).
+ *
+ * Exported because three separate modules were maintaining a byte-identical
+ * private copy (`meshTopology.ts`, and now `silhouetteEdges.ts`), all keying
+ * the same welded-vertex-index space — the same drift hazard the shared
+ * `enumerateEdges`/`EDGE_DEFLECTION` consolidation already removed on the
+ * B-rep side. Any change to the key format has to stay consistent across
+ * every consumer, so there is exactly one.
+ */
+export function edgeKey(a: number, b: number): string {
   return a < b ? `${a}_${b}` : `${b}_${a}`;
 }
 

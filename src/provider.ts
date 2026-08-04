@@ -6,7 +6,11 @@ import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
-import type { CadFormat, FileRoute } from "./fileRouter";
+import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
+import { COMPARABLE_MESH_FORMATS } from "./fileRouter";
+import { SVG_VIEWS } from "./svgSilhouette";
+import type { CompareSource } from "./modelDiffHost";
+import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
@@ -41,6 +45,27 @@ const EXTERNAL_CHANGE_DEBOUNCE_MS = 300;
 
 const BREP_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
 
+/**
+ * Reads a `.gltf`'s sibling `.bin` buffers, when the source is glTF at all.
+ *
+ * `gltfParser.ts` deliberately has no I/O capability (it stays pure so it
+ * unit-tests and runs unchanged in the kernel worker), so whichever caller
+ * has one resolves the buffers and passes them in; `resolveExternalBuffers`
+ * itself refuses anything that isn't a plain relative path beside the model.
+ * Returns `undefined` for every other format, and for a `.glb` or a `.gltf`
+ * with embedded `data:` buffers there is simply nothing to read.
+ */
+async function resolveGltfBuffersFor(uri: vscode.Uri, format: CadFormat, bytes: Uint8Array): Promise<GltfExternalBuffers | undefined> {
+  if (format !== "gltf") return undefined;
+  return resolveExternalBuffers(bytes, async (relative) => {
+    try {
+      return await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, "..", relative));
+    } catch {
+      return undefined;
+    }
+  });
+}
+
 interface PendingExport {
   resolve: (result: { data: string; binary: boolean }) => void;
   reject: (err: Error) => void;
@@ -61,6 +86,8 @@ interface EditorSession {
   savePreprocess(): void;
   /** Save the current 3D view as a PNG (save dialog). */
   screenshot(): void;
+  /** Export a 2D outline (silhouette) of the model as an SVG drawing. */
+  exportSvg(): void;
 }
 
 /** Read-only custom document: previews hold no editable state beyond their URI. */
@@ -135,6 +162,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.loadPreprocess", () => void this.loadPreprocessDialog()),
       vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
+      vscode.commands.registerCommand("cad-preview.exportSvg", withSession((s) => s.exportSvg())),
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
@@ -522,6 +550,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       },
       screenshot: () => {
         void this.handleScreenshot(document.uri, post, pending);
+      },
+      exportSvg: () => {
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState);
       },
     };
     const track = () => {
@@ -915,6 +946,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "exportSvgRequest") {
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState);
+        return;
+      }
+
       if (msg.type === "measureExactRequest") {
         try {
           if (!route || route.strategy !== "occt") {
@@ -954,11 +990,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "meshHealRequest") {
         try {
-          if (!route || route.strategy !== "three" || route.format === "gltf") {
-            throw new Error("Mesh healability check requires an STL/OBJ/PLY source.");
+          if (!route || route.strategy !== "three") {
+            throw new Error("Mesh healability check requires an STL/OBJ/PLY/glTF source.");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const report = await this.pipeline.checkMeshHealth(this.context.extensionPath, bytes, route.format as "stl" | "obj" | "ply");
+          const report = await this.pipeline.checkMeshHealth(
+            this.context.extensionPath,
+            bytes,
+            route.format as MeshParseFormat,
+            await resolveGltfBuffersFor(document.uri, route.format, bytes)
+          );
           post({ type: "meshHealResult", requestId: msg.requestId, report });
         } catch (err) {
           post({ type: "meshHealError", requestId: msg.requestId, message: (err as Error).message });
@@ -1349,11 +1390,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * callers.
    */
   private async handlePromoteToBrep(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void): Promise<void> {
-    if (route.strategy !== "three" || route.format === "gltf") {
-      post({ type: "error", message: "Promote to B-rep requires an STL/OBJ/PLY source." });
+    if (route.strategy !== "three") {
+      post({ type: "error", message: "Promote to B-rep requires an STL/OBJ/PLY/glTF source." });
       return;
     }
-    const meshFormat = route.format as "stl" | "obj" | "ply";
+    const meshFormat = route.format as MeshParseFormat;
 
     const picked = await vscode.window.showQuickPick(
       [...BREP_FORMATS].map((format) => ({
@@ -1373,8 +1414,92 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       EXPORT_LABEL[picked.format],
       async (_saveUri) => {
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
-        const result = await this.pipeline.promoteMeshToBrep(this.context.extensionPath, sourceBytes, meshFormat, picked.format, unit);
+        const result = await this.pipeline.promoteMeshToBrep(
+          this.context.extensionPath,
+          sourceBytes,
+          meshFormat,
+          picked.format,
+          unit,
+          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes)
+        );
         return result.bytes;
+      },
+      post
+    );
+  }
+
+  /**
+   * "SVG silhouette export" (roadmap item, closed) — File ▸ Export Silhouette
+   * SVG… and the `cad-preview.exportSvg` command.
+   *
+   * Mirrors `handlePromoteToBrep`'s structure (quick-picks, then the shared
+   * `promptSaveAndWrite`), with one addition: a view quick-pick whose first
+   * entry is **Current view**, taken from `currentViewState` — the same
+   * `viewChanged`-tracked state the `.view.json` sidecar already persists, so
+   * "draw it the way I'm looking at it" needs no new protocol message at all.
+   *
+   * Escape on the VIEW pick cancels the export (it's the primary choice),
+   * unlike `pickExportUnit`'s Escape, which deliberately falls through to mm
+   * rather than cancelling.
+   *
+   * Deliberately NOT folded into `handleExport`/`CadFormat`: an `"svg"` format
+   * member would ripple through `EXPORT_EXTENSION`/`EXPORT_LABEL`/
+   * `exportTargetsFor`/`fileRouter.ts` and — worst — into `package.json`'s
+   * `customEditors.selector`, which would make VS Code try to OPEN `.svg`
+   * files in the 3D viewer, colliding head-on with Import SVG…. `handleScreenshot`
+   * is the established precedent for an output format that isn't a `CadFormat`.
+   */
+  private async handleExportSvg(
+    uri: vscode.Uri,
+    route: FileRoute,
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[],
+    viewState: ViewState | undefined
+  ): Promise<void> {
+    if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
+      post({ type: "error", message: "Silhouette SVG export requires a STEP/IGES/BREP or STL/OBJ/PLY/glTF source." });
+      return;
+    }
+
+    type ViewChoice = { label: string; description?: string; direction: [number, number, number]; up?: [number, number, number] };
+    const choices: ViewChoice[] = [];
+    if (viewState) {
+      choices.push({
+        label: "Current view",
+        description: "as shown in the 3D view",
+        direction: viewState.viewDirection,
+        up: viewState.cameraUp,
+      });
+    }
+    for (const [name, view] of Object.entries(SVG_VIEWS)) {
+      choices.push({ label: name.charAt(0) + name.slice(1).toLowerCase(), description: `[${view.direction.join(", ")}]`, ...view });
+    }
+
+    const picked = await vscode.window.showQuickPick(choices, { placeHolder: "Silhouette view…" });
+    if (!picked) return; // the primary choice — Escape cancels the export
+
+    const unit = await this.pickExportUnit();
+
+    await this.promptSaveAndWrite(
+      uri,
+      "svg",
+      "SVG Drawing",
+      async () => {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const source: CompareSource =
+          route.strategy === "occt"
+            ? { kind: "brep", bytes, format: route.format as Extract<CadFormat, "step" | "iges" | "brep">, ops }
+            : route.format === "gltf"
+              ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes) }
+              : { kind: route.format as "stl" | "obj" | "ply", bytes };
+        const result = await this.pipeline.exportSvgSilhouette(this.context.extensionPath, source, {
+          direction: picked.direction,
+          up: picked.up,
+          unit,
+          title: `${uri.path.slice(uri.path.lastIndexOf("/") + 1)} — ${picked.label}`,
+        });
+        for (const warning of result.warnings) post({ type: "status", text: warning });
+        return Buffer.from(result.svg, "utf8");
       },
       post
     );

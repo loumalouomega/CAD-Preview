@@ -143,7 +143,10 @@ const SHOTS = [
   {
     file: "file-menu.png",
     setup: async (page) => { await populate(page); await page.click("#file-menu"); await sleep(150); },
-    target: { clip: { x: 0, y: 0, width: 320, height: 250 } },
+    // Height must cover every item in the dropdown — it grew by one row when
+    // "Export Silhouette SVG…" was added, and a too-short clip silently cuts
+    // the last entry off rather than failing the run.
+    target: { clip: { x: 0, y: 0, width: 320, height: 285 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the
