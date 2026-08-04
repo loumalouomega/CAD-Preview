@@ -199,6 +199,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     loadBRepCachedForDocument: (...args) => callKernel("loadBRepCachedForDocument", args) as Promise<BRepResult>,
     disposeBRepCacheForDocument: (...args) => callKernel("disposeBRepCacheForDocument", args) as Promise<void>,
     readMeshioFieldValues: (...args) => callKernel("readMeshioFieldValues", args) as ReturnType<typeof readMeshioFieldValues>,
+    checkMeshHealth: (...args) => callKernel("checkMeshHealth", args) as ReturnType<Pipeline["checkMeshHealth"]>,
     cancelCurrent: killCurrentChild,
   };
 }

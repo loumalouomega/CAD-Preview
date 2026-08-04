@@ -153,7 +153,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 23, `tools/list exposes 23 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 24, `tools/list exposes 24 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -662,6 +662,72 @@ try {
   assert(
     gltfRejected.supported === false && /STEP\/IGES\/BREP\/STL\/OBJ\/PLY/i.test(gltfRejected.warnings?.[0] ?? ""),
     `compare_models still rejects glTF with a clear message, not a crash (got: ${JSON.stringify(gltfRejected)})`
+  );
+
+  // check_mesh_health (roadmap "Mesh -> B-rep promotion, diagnostic-first",
+  // Phase 1: read-only report, no promotion). examples/STL/cube.stl is a
+  // real, already-closed 10x10x10 cube (volume 1000, surface area 600) —
+  // sewing should close it at the tightest ladder rung with ~0 delta.
+  const cleanHealth = await call("check_mesh_health", { path: cubeStl });
+  assert(cleanHealth.supported === true, "check_mesh_health supports a clean STL source");
+  assert(cleanHealth.componentCount === 1, `check_mesh_health(cube.stl): 1 component expected (got ${cleanHealth.componentCount})`);
+  const cleanComponent = cleanHealth.components[0];
+  assert(
+    cleanComponent.freeEdgeCount === 0 && cleanComponent.nonManifoldEdgeCount === 0 && cleanComponent.degenerateFaceCount === 0,
+    `check_mesh_health(cube.stl) reports a clean, already-manifold mesh (got: ${JSON.stringify(cleanComponent)})`
+  );
+  assert(
+    cleanComponent.requiredTolerance === 1e-6,
+    `check_mesh_health(cube.stl) closes at the tightest ladder rung (got requiredTolerance=${cleanComponent.requiredTolerance})`
+  );
+  assert(
+    Math.abs(cleanComponent.healedVolume - 1000) < 1e-3 && Math.abs(cleanComponent.volumeDeltaPct) < 1e-6,
+    `check_mesh_health(cube.stl) reports the exact healed volume with ~0 delta (got: ${JSON.stringify(cleanComponent)})`
+  );
+
+  // OBJ/PLY support (both a real unit cube — no host-side triangle-soup
+  // welding needed for either, unlike STL).
+  const objHealth = await call("check_mesh_health", { path: cubeObj });
+  assert(objHealth.supported === true, "check_mesh_health supports OBJ sources");
+  const plyHealth = await call("check_mesh_health", { path: cubePly });
+  assert(plyHealth.supported === true, "check_mesh_health supports PLY sources");
+
+  // A deliberately non-manifold mesh — three triangles fanning out from one
+  // shared edge (real "T-junction" topology, not a hole) — confirms
+  // nonManifoldEdgeCount fires and the tool never crashes on a genuinely
+  // pathological input.
+  const nonManifoldStl = path.join(dir, "non-manifold.stl");
+  fs.writeFileSync(
+    nonManifoldStl,
+    [
+      "solid t",
+      "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 -1 0", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 1", "endloop", "endfacet",
+      "endsolid t",
+    ].join("\n")
+  );
+  const nonManifoldHealth = await call("check_mesh_health", { path: nonManifoldStl });
+  assert(nonManifoldHealth.supported === true, "check_mesh_health supports a non-manifold STL source (never throws on pathological input)");
+  assert(
+    nonManifoldHealth.components[0].nonManifoldEdgeCount === 1,
+    `check_mesh_health detects the non-manifold shared edge (got: ${JSON.stringify(nonManifoldHealth.components[0])})`
+  );
+
+  // B-rep sources: nothing to heal (already exact geometry) — supported:false,
+  // never a crash or a meaningless report.
+  const brepHealth = await call("check_mesh_health", { path: model });
+  assert(
+    brepHealth.supported === false && /already a B-rep source/i.test(brepHealth.warnings?.[0] ?? ""),
+    `check_mesh_health reports supported:false for a B-rep source (got: ${JSON.stringify(brepHealth)})`
+  );
+
+  // glTF: no host-side triangle-soup parser — same graceful degradation as
+  // compare_models' own glTF rejection above, not a crash.
+  const gltfHealthRejected = await call("check_mesh_health", { path: path.join(ROOT, "examples", "GLTF", "cube.gltf") });
+  assert(
+    gltfHealthRejected.supported === false && /no host-side triangle-soup parser/i.test(gltfHealthRejected.warnings?.[0] ?? ""),
+    `check_mesh_health still rejects glTF with a clear message, not a crash (got: ${JSON.stringify(gltfHealthRejected)})`
   );
 
   // render_snapshot: Playwright/Chromium is a devDependency this environment

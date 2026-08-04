@@ -36,6 +36,7 @@ import {
   searchStandardPartsTool,
   downloadStandardPartTool,
   compareModelsTool,
+  checkMeshHealthTool,
   getState,
   applyEditOps,
   runParametricScriptTool,
@@ -316,6 +317,16 @@ server.registerTool(
     inputSchema: { pathA: modelPath, pathB: modelPath, includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)") },
   },
   wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean }) => compareModelsTool(ctx, args))
+);
+
+server.registerTool(
+  "check_mesh_health",
+  {
+    description:
+      "Mesh -> B-rep promotion, diagnostic-first (Phase 1: read-only report, no promotion). For an STL/OBJ/PLY source, reports per connected component: free/non-manifold edge counts, degenerate face count, the BRepBuilderAPI_Sewing tolerance-ladder rung actually required to close the shape into a solid (null if it never closed even at the loosest rung), and the resulting healed area/volume delta vs. the raw mesh. Never mutates or persists anything, and there is still no path from a triangle mesh into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS unchanged) — a null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail. B-rep sources return supported:false (nothing to heal); glTF/meshio-only formats return supported:false (no host-side triangle-soup parser).",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => checkMeshHealthTool(ctx, args))
 );
 
 server.registerTool(

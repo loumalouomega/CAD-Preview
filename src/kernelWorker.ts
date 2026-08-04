@@ -39,6 +39,7 @@ import {
   readMeshioMetadata,
   readMeshioFieldValues,
 } from "./meshioService";
+import { checkMeshHealth } from "./meshHeal";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
 
@@ -119,6 +120,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,
+  checkMeshHealth: checkMeshHealth as Handler,
 };
 
 process.on("message", (msg: KernelRequest) => {

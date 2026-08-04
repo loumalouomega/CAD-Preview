@@ -237,6 +237,26 @@ interface ExactMeasureResult {
   fromPoint?: [number, number, number]   // kind: "distance" only — the actual nearest points OCCT found
   toPoint?: [number, number, number]
 }
+
+interface ComponentHealthReport {   // src/meshHeal.ts — one per connected component
+  index: number
+  triangleCount: number
+  freeEdgeCount: number
+  nonManifoldEdgeCount: number
+  degenerateFaceCount: number
+  rawArea: number
+  rawVolume: number
+  requiredTolerance: number | null   // the sewing-tolerance-ladder rung that closed it; null if it never closed
+  healedArea: number | null          // null unless requiredTolerance is set
+  healedVolume: number | null
+  areaDeltaPct: number | null
+  volumeDeltaPct: number | null
+}
+
+interface MeshHealthReport {
+  componentCount: number
+  components: ComponentHealthReport[]
+}
 ```
 
 `ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) — cross-document defaults only; a per-document sidecar value or a runtime toggle (the toolbar Grid button) always wins once set. `MassProperties` is computed via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources compute the equivalent client-side and never send it over this protocol at all (no host round trip) — see [Extension Host API](./extension-host-api.md) and [Webview API](./webview-api.md).
@@ -282,6 +302,8 @@ type HostToWebview =
   | { type: 'massPropertiesError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
   | { type: 'measureExactError'; requestId: string; message: string }
+  | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
+  | { type: 'meshHealError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
 ```
@@ -544,6 +566,18 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 { "type": "measureExactError", "requestId": "1234-0.56", "message": "This edge is not a circular arc — radius is only defined for circular edges" }
 ```
 
+### `meshHealResult` / `meshHealError`
+
+Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY sources only** — a B-rep source has nothing to heal and a meshio-converted/glTF source has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`).
+
+```json
+{ "type": "meshHealResult", "requestId": "1234-0.56", "report": { "componentCount": 1, "components": [{ "index": 0, "triangleCount": 12, "freeEdgeCount": 0, "nonManifoldEdgeCount": 0, "degenerateFaceCount": 0, "rawArea": 600, "rawVolume": 1000, "requiredTolerance": 0.000001, "healedArea": 600, "healedVolume": 1000, "areaDeltaPct": 0, "volumeDeltaPct": 0 }] } }
+```
+
+```json
+{ "type": "meshHealError", "requestId": "1234-0.56", "message": "Mesh healability check requires an STL/OBJ/PLY source." }
+```
+
 ### `colorFieldResult` / `colorFieldError`
 
 Sent in reply to `colorFieldRequest` (webview → host, below) — **meshio++-imported sources only** (`src/meshioService.ts`'s `readMeshioFieldValues`, called from `provider.ts`'s new `colorFieldRequest` handler). `values` is a base64 `Float32Array`, one entry per triangle CORNER in the SAME order as the currently-loaded model's own triangle soup (i.e. `pristineMesh`'s position attribute) — the webview builds a vertex-coloured overlay directly from it with no further reordering (`src/webview/geometryBuilder.ts`'s `buildColorFieldOverlay`). `min`/`max` seed the legend's gradient bar and are NOT length-dimensioned (no unit conversion/suffix — unlike `measureExactResult`, a scalar field like temperature or stress has no length unit to convert).
@@ -618,6 +652,7 @@ type WebviewToHost =
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
+  | { type: 'meshHealRequest'; requestId: string }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
@@ -778,6 +813,14 @@ Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep sourc
 
 ```json
 { "type": "measureExactRequest", "requestId": "1234-0.56", "kind": "distance", "entityIdA": "solid-0", "entityIdB": "solid-1" }
+```
+
+### `meshHealRequest`
+
+Sent when the Mesh Health panel's **Check Healability** button is clicked — only reachable for a native `.stl`/`.obj`/`.ply` file on disk (a meshio-converted document or glTF hides the panel entirely, mirroring `check_mesh_health`'s own MCP-tool gate; see `meshHealResult`/`meshHealError` above). No parameters beyond `requestId` — the host re-reads the currently-open document's own bytes.
+
+```json
+{ "type": "meshHealRequest", "requestId": "1234-0.56" }
 ```
 
 ### `colorFieldRequest`

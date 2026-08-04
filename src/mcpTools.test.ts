@@ -9,6 +9,7 @@ import {
   loadModel,
   getMassProperties,
   compareModelsTool,
+  checkMeshHealthTool,
   getState,
   applyEditOps,
   runParametricScriptTool,
@@ -44,6 +45,7 @@ import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { ModelDiff } from "./modelDiff";
+import type { MeshHealthReport } from "./meshHeal";
 
 // The exact 6-triangle boundary `convertToStlBoundaryWithRegions` produces
 // for `examples/MED/two-material-tets.med` — see `meshioRegionParts.test.ts`
@@ -241,6 +243,26 @@ const FAKE_MODEL_DIFF: ModelDiff = {
   matched: [{ a: { id: "solid-0", centre: [0, 0, 0], diagonal: 10, volume: 24 }, b: { id: "solid-0", centre: [0, 0, 0], diagonal: 10, volume: 24 }, centreDistance: 0, volumeDeltaPct: 0 }],
 };
 
+const FAKE_MESH_HEALTH_REPORT: MeshHealthReport = {
+  componentCount: 1,
+  components: [
+    {
+      index: 0,
+      triangleCount: 12,
+      freeEdgeCount: 0,
+      nonManifoldEdgeCount: 0,
+      degenerateFaceCount: 0,
+      rawArea: 6,
+      rawVolume: 1,
+      requiredTolerance: 1e-6,
+      healedArea: 6,
+      healedVolume: 1,
+      areaDeltaPct: 0,
+      volumeDeltaPct: 0,
+    },
+  ],
+};
+
 function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   return {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
@@ -259,6 +281,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
     downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
+    checkMeshHealth: vi.fn(async () => FAKE_MESH_HEALTH_REPORT),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
     convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
@@ -919,6 +942,52 @@ describe("compare_models", () => {
     expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
     expect(result.images).toEqual([]);
     expect(result.warnings.filter((w) => /has no visual snapshot/i.test(w))).toHaveLength(2);
+  });
+});
+
+describe("check_mesh_health", () => {
+  it("reports the pipeline's heal-quality report for an STL source", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: stlModel });
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl");
+    expect(result).toEqual({ format: "stl", supported: true, warnings: [], ...FAKE_MESH_HEALTH_REPORT });
+  });
+
+  it("reports the pipeline's heal-quality report for an OBJ source", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: objModel });
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "obj");
+    expect(result.supported).toBe(true);
+  });
+
+  it("reports the pipeline's heal-quality report for a PLY source", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: plyModel });
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "ply");
+    expect(result.supported).toBe(true);
+  });
+
+  it("returns supported: false with a warning for a B-rep source, without touching WASM", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: stpModel });
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/already a B-rep source/i);
+  });
+
+  it("returns supported: false with a warning for glTF (no host-side triangle-soup parser)", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: gltfModel });
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/no host-side triangle-soup parser/i);
+  });
+
+  it("never mutates or persists anything — no sidecar files are written", async () => {
+    const c = ctx();
+    await checkMeshHealthTool(c, { path: stlModel });
+    await expect(fs.access(`${stlModel}.edits.json`)).rejects.toThrow();
+    await expect(fs.access(`${stlModel}.parts.json`)).rejects.toThrow();
   });
 });
 

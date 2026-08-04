@@ -64,6 +64,7 @@ import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import type { checkMeshHealth, MeshHealthReport } from "./meshHeal";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -118,6 +119,7 @@ export interface Pipeline {
   convertToStlBoundaryWithRegions: typeof convertToStlBoundaryWithRegions;
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
+  checkMeshHealth: typeof checkMeshHealth;
 }
 
 export interface ToolContext {
@@ -243,6 +245,7 @@ export function describeCapabilities() {
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
       "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; glTF and meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
+      "check_mesh_health (STL/OBJ/PLY sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
@@ -785,6 +788,55 @@ export async function compareModelsTool(
   const [imagesA, imagesB] = await Promise.all([renderOne("A", sourceA), renderOne("B", sourceB)]);
 
   return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff, images: [...imagesA, ...imagesB] };
+}
+
+// ---------------------------------------------------------------------------
+// check_mesh_health
+
+/**
+ * "Mesh → B-rep promotion, diagnostic-first", Phase 1: a READ-ONLY
+ * heal-quality report for an STL/OBJ/PLY source — free/non-manifold edge
+ * counts, degenerate face count, the OCCT sewing-tolerance-ladder rung
+ * actually required to close each connected component, and the resulting
+ * area/volume delta a hypothetical promotion would produce. Never mutates or
+ * persists anything, and never computes a pass/fail verdict — every field is
+ * a fact (matching `check_interference`'s `hasOverlap`-as-fact convention
+ * and this tool's own `verdictConventions`): a component whose
+ * `requiredTolerance` is `null` never closed at all, and a large
+ * `volumeDeltaPct`/`areaDeltaPct` on one that DID close is a signal the
+ * closure came at real geometric cost — render the verdict yourself.
+ *
+ * There is deliberately no promotion here — `BREP_ONLY_OPS`/
+ * `exportTargets.ts`'s "no path from a triangle mesh back to a B-rep" is
+ * unchanged by this tool. B-rep sources (already exact B-rep geometry) and
+ * glTF/meshio-only formats (no host-side triangle-soup parser) return
+ * `supported: false`.
+ */
+export async function checkMeshHealthTool(
+  ctx: ToolContext,
+  params: { path: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeshHealthReport>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy === "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is already a B-rep source — nothing to heal.`],
+    };
+  }
+  if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} has no host-side triangle-soup parser (only stl/obj/ply are supported) — cannot compute a heal-quality report headless.`],
+    };
+  }
+
+  const bytes = await readModelBytes(modelPath);
+  const report = await ctx.pipeline.checkMeshHealth(ctx.extensionPath, bytes, route.format as "stl" | "obj" | "ply");
+  return { format: route.format, supported: true, warnings: [], ...report };
 }
 
 // ---------------------------------------------------------------------------

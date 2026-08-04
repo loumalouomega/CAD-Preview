@@ -170,3 +170,29 @@ export function volumeOfTriangles(positions: Float32Array, indices: Uint32Array,
   }
   return Math.abs(sum / 6);
 }
+
+/**
+ * Sum of per-triangle areas (`|cross(v1-v0, v2-v0)| / 2`) over `triangles` —
+ * the natural sibling of `volumeOfTriangles` above, added for the "Mesh →
+ * B-rep promotion, diagnostic-first" heal-quality report (`meshHeal.ts`),
+ * which needs a raw (pre-heal) surface area to compare a hypothetical
+ * healed-solid's OCCT-computed area against.
+ */
+export function areaOfTriangles(positions: Float32Array, indices: Uint32Array, triangles: number[]): number {
+  let sum = 0;
+  for (const t of triangles) {
+    const i0 = indices[t * 3] * 3;
+    const i1 = indices[t * 3 + 1] * 3;
+    const i2 = indices[t * 3 + 2] * 3;
+    const ax = positions[i0], ay = positions[i0 + 1], az = positions[i0 + 2];
+    const bx = positions[i1], by = positions[i1 + 1], bz = positions[i1 + 2];
+    const cx = positions[i2], cy = positions[i2 + 1], cz = positions[i2 + 2];
+    const ux = bx - ax, uy = by - ay, uz = bz - az;
+    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    const cxp = uy * vz - uz * vy;
+    const cyp = uz * vx - ux * vz;
+    const czp = ux * vy - uy * vx;
+    sum += Math.hypot(cxp, cyp, czp) / 2;
+  }
+  return sum;
+}

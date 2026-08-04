@@ -98,6 +98,13 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="mass-body"></div>
       </div>
+      <div id="mesh-health-panel" hidden>
+        <div id="mesh-health-header">
+          <span id="mesh-health-title">Mesh Health</span>
+          <button id="mesh-health-check" title="Read-only diagnostic: checks whether this mesh could be closed into a valid B-rep solid, and at what tolerance/cost — does not promote or change anything">${icon("generate")} Check Healability</button>
+        </div>
+        <div id="mesh-health-body"></div>
+      </div>
       <div id="standard-parts-panel">
         <div id="standard-parts-header">
           <span id="standard-parts-title">Standard Parts</span>

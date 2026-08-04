@@ -11,6 +11,7 @@ import type { ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipAxis } from "./webview/clipping";
 import type { StandardPart } from "./stepPartsService";
+import type { MeshHealthReport } from "./meshHeal";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -257,6 +258,8 @@ export type HostToWebview =
   | { type: "massPropertiesError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
   | { type: "measureExactError"; requestId: string; message: string }
+  | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
+  | { type: "meshHealError"; requestId: string; message: string }
   | {
       type: "colorFieldResult";
       requestId: string;
@@ -338,7 +341,8 @@ export type WebviewToHost =
     }
   | { type: "renderViewResult"; requestId: string; data: string }
   | { type: "renderViewError"; requestId: string; message: string }
-  | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" };
+  | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
+  | { type: "meshHealRequest"; requestId: string };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {

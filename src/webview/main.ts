@@ -22,6 +22,7 @@ import { extractIdentifiers } from "../paramExpr";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
+import { MeshHealthPanel } from "./meshHealthPanel";
 import { StandardPartsPanel } from "./standardPartsPanel";
 import type { StandardPart } from "../stepPartsService";
 import { computeMeshMassProperties } from "./meshMassProperties";
@@ -1096,6 +1097,30 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
     post({ type: "massPropertiesRequest", requestId, entityId: target ? target.entityId : null });
   },
 });
+
+// ── Mesh Health (roadmap "Mesh -> B-rep promotion, diagnostic-first",
+// Phase 1: read-only report only, no promotion) ────────────────────────────
+// Eligible only for a NATIVE stl/obj/ply file on disk — the same
+// COMPARABLE_MESH_FORMATS gate `check_mesh_health`'s MCP tool applies. A
+// meshio-converted document (`loadMeshBytes`, already-triangulated but not
+// itself an stl/obj/ply FILE) and glTF both stay ineligible.
+let meshHealthEligibleFormat: "stl" | "obj" | "ply" | null = null;
+let meshHealRequestId: string | null = null;
+
+const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health-panel")!, {
+  onCheck: () => {
+    if (!meshHealthEligibleFormat) return;
+    const requestId = `${Date.now()}-${Math.random()}`;
+    meshHealRequestId = requestId;
+    meshHealthPanel.renderMessage("Checking…");
+    post({ type: "meshHealRequest", requestId });
+  },
+});
+
+function setMeshHealthEligibility(format: "stl" | "obj" | "ply" | null): void {
+  meshHealthEligibleFormat = format;
+  meshHealthPanel.setEligible(format !== null);
+}
 
 const standardPartsPanel = new StandardPartsPanel(document.getElementById("standard-parts-panel")!, {
   onSearch: (q: string) => {
@@ -2270,6 +2295,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         viewer.detachTransformGizmo();
         lastRawMassProperties = null; // stale — refers to the just-replaced model
         lastMeasurement = null; // stale entity ids — refer to the just-replaced model
+        setMeshHealthEligibility(null); // B-rep sources have nothing to heal
         clearMarkupOverlay?.();
         refreshColors();
         renderAnnotationsList(); // detached status may have changed for the new model
@@ -2323,10 +2349,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadUrl":
+      setMeshHealthEligibility(msg.format === "stl" || msg.format === "obj" || msg.format === "ply" ? msg.format : null);
       await loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase());
       break;
 
     case "loadMeshBytes":
+      // A meshio-converted STL boundary is not itself a real .stl/.obj/.ply
+      // file on disk (the actual source is VTK/MED/CGNS/Exodus/XDMF/MDPA) —
+      // check_mesh_health's MCP tool would reject that source's real path
+      // the same way, so the panel stays ineligible here too.
+      setMeshHealthEligibility(null);
       // Host-converted bytes (meshio++-imported document — VTK/MED/CGNS/
       // Exodus/XDMF/MDPA — funneled into an STL boundary surface via
       // `convertToStlBoundary`/`convertToStlBoundaryWithRegions`; see
@@ -2520,6 +2552,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== measureExactRequestId) break;
       setMeasureReadout(msg.message, true);
       (document.getElementById("measure-exact-btn") as HTMLButtonElement | null)?.removeAttribute("disabled");
+      break;
+
+    case "meshHealResult":
+      if (msg.requestId !== meshHealRequestId) break; // stale — a newer check/load superseded it
+      meshHealthPanel.render(msg.report);
+      break;
+
+    case "meshHealError":
+      if (msg.requestId !== meshHealRequestId) break;
+      meshHealthPanel.renderMessage(msg.message, true);
       break;
 
     case "colorFieldResult": {

@@ -946,6 +946,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         }
         return;
       }
+
+      if (msg.type === "meshHealRequest") {
+        try {
+          if (!route || route.strategy !== "three" || route.format === "gltf") {
+            throw new Error("Mesh healability check requires an STL/OBJ/PLY source.");
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const report = await this.pipeline.checkMeshHealth(this.context.extensionPath, bytes, route.format as "stl" | "obj" | "ply");
+          post({ type: "meshHealResult", requestId: msg.requestId, report });
+        } catch (err) {
+          post({ type: "meshHealError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
     });
 
     webviewPanel.webview.html = this.getHtml(webviewPanel.webview);

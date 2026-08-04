@@ -23,6 +23,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/measurementOverlay.ts` | Lazily-built marker/line/label Three.js objects for the measurement overlay |
 | `src/webview/annotationsModel.ts` | Persisted, topology-anchored annotations (pinned measurements) data model, DOM-free (unit-tested) |
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
+| `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
 | `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
@@ -55,7 +56,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 
 1. Acquire VS Code API: `const vscode = acquireVsCodeApi()`.
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
-3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, and `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`.
+3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`, and `MeshHealthPanel(document.getElementById('mesh-health-panel'), ...)`.
 4. Call `setupViewControls(viewer)`, `setupViewMenu()`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()`, `setupDragAndDrop()`, `setupAppearanceControls()`, `setupClippingControls()`, `setupMarkupControls()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
 5. Wire toolbar buttons. Only `#fit`, `#tree-toggle`, and `#meshing-toggle` sit directly on the strip; everything else lives inside one of four dropdown panels (`#view-dropdown`, `#select-dropdown`, `#measure-dropdown`, `#markup-dropdown`) wired by `dropdownMenu.ts` (see below). `#screenshot` (in **View ▾**) posts `{ type: "screenshotButtonClicked" }` — it shows no UI itself, the host owns the save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. The measure mode toggle / `.measure-tool-btn` row / Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted, **except** the `#measure-exact-btn` (⟟ Exact) that appears next to a completed distance/edge-length/radius result, which round-trips a `measureExactRequest` to the host for a true B-rep-precision value (see below), and `#measure-pin-btn` (📌 Pin), which posts `annotationsChanged` to persist the result (see `annotationsModel.ts` below). `#grid`, `#edges`, and `#hide-smooth-edges` are `menuitemcheckbox`es whose `aria-checked` reflects `viewer.toggleGrid()`'s return value and `setupAppearanceControls()`'s `edgesVisible`/`smoothEdgesShown` flags respectively, purely session-side. There is no standalone `#wireframe` toolbar button — Wireframe is one of five mutually exclusive **Display mode** states (`#display-mode-group` in the view-controls Appearance area, `setupAppearanceControls()`) driving `viewer.setDisplayMode()`; see below.
 6. Register `window.addEventListener('message', ...)` for host messages.
@@ -951,6 +952,40 @@ class MassPropertiesPanel {
 `main.ts`'s `onRefresh` reads the current `SelectionSet`: 0 entries → whole model (`entityId: null`), exactly 1 → that entity, 2+ → `renderMessage`s a "select exactly one, or none" guidance line without sending any request. For a B-rep source it posts `massPropertiesRequest` and awaits `massPropertiesResult`/ `massPropertiesError` (guarded by a `massPropertiesRequestId` so a stale reply from a superseded refresh is ignored); for a mesh source it calls `computeAndRenderMeshMassProperties()` (below) with **no host round trip at all**. `momentsOfInertia` only shows its diagonal terms (`ixx`/`iyy`/`izz`) — the off-diagonal products of inertia are near-zero for most axis-aligned bodies and not worth the panel's space; mesh sources never populate this field (client-side inertia isn't computed, out of scope for the first cut) — and, per `units.ts` below, moments of inertia are also the one field `render()` never rescales regardless of `unitLabel`.
 
 Both call sites go through `main.ts`'s `renderMassProperties(raw)` wrapper, never `massPropertiesPanel.render()` directly: it caches `raw` (always millimetres) in a module-level `lastRawMassProperties`, then calls `massPropertiesPanel.render(convertLengthBasedProperties(raw, currentDisplayUnit), currentDisplayUnit)`. Caching the *raw* value (not the already-converted one) is what lets `setDisplayUnit()` (below) live-rescale an already-displayed result when the user changes the unit selector, without re-requesting anything from the host or recomputing the mesh-source case.
+
+---
+
+## `src/webview/meshHealthPanel.ts`
+
+"Mesh → B-rep promotion, diagnostic-first" (roadmap item, Phase 1 only — a read-only report, no promotion). Same bespoke-DOM-class shape as `massPropertiesPanel.ts` above, no unit test (this codebase's established convention for DOM panel classes).
+
+```typescript
+interface ComponentHealthDisplay {
+  index: number
+  triangleCount: number
+  freeEdgeCount: number
+  nonManifoldEdgeCount: number
+  degenerateFaceCount: number
+  requiredTolerance: number | null
+  areaDeltaPct: number | null
+  volumeDeltaPct: number | null
+}
+interface MeshHealthDisplay {
+  componentCount: number
+  components: ComponentHealthDisplay[]
+}
+
+class MeshHealthPanel {
+  constructor(panel: HTMLElement, cb: { onCheck: () => void })
+  setEligible(eligible: boolean): void   // shows/hides the whole panel
+  renderMessage(text: string, isError?: boolean): void
+  render(report: MeshHealthDisplay): void
+}
+```
+
+`setEligible()` toggles `panel.hidden` and, when turning eligible, resets the body to a neutral "Click Check Healability…" prompt — the panel is visible ONLY for a genuinely native `.stl`/`.obj`/`.ply` file on disk, the same `COMPARABLE_MESH_FORMATS` gate the MCP tool's `check_mesh_health` applies to a real file path. `main.ts` tracks this via a module-level `meshHealthEligibleFormat: "stl" | "obj" | "ply" | null`, set from `case "loadUrl"`'s `msg.format` (a native mesh open) and reset to `null` on `case "geometry"` (B-rep — nothing to heal) and `case "loadMeshBytes"` (a meshio-converted document is not itself a real stl/obj/ply file, even though its bytes happen to be STL-shaped). `render()` renders one row-group per component — free/non-manifold edge counts, degenerate face count, the required sewing tolerance (or "did not close" for `null`), and area/volume delta percentages (blank when the component never closed) — deliberately with NO promote/apply action, since Phase 2 (an actual promotion `EditOpKind`) doesn't exist.
+
+`onCheck` posts a `meshHealRequest` (guarded by a `meshHealRequestId`, the same stale-response-guard idiom `massPropertiesRequestId`/`measureExactRequestId` already use) and awaits `meshHealResult`/`meshHealError` — a genuine host round trip through `checkMeshHealth` (extension-host-api.md), since the sewing-tolerance-ladder check needs live OCCT, unlike Mass Properties' mesh-source path which computes entirely client-side.
 
 ---
 
