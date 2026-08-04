@@ -9,6 +9,8 @@ import {
   loadModel,
   getMassProperties,
   compareModelsTool,
+  checkMeshHealthTool,
+  promoteMeshToBrepTool,
   getState,
   applyEditOps,
   runParametricScriptTool,
@@ -44,6 +46,7 @@ import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { ModelDiff } from "./modelDiff";
+import type { MeshHealthReport, PromoteMeshResult } from "./meshHeal";
 
 // The exact 6-triangle boundary `convertToStlBoundaryWithRegions` produces
 // for `examples/MED/two-material-tets.med` — see `meshioRegionParts.test.ts`
@@ -74,6 +77,7 @@ let stlModel: string;
 let objModel: string;
 let plyModel: string;
 let gltfModel: string;
+let vtkModel: string;
 
 /** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
 const UNIT_CUBE_OBJ = `
@@ -118,6 +122,21 @@ end_header
 4 2 3 7 6
 4 3 0 4 7
 `;
+
+/** A minimal but genuinely parseable glTF (one triangle, embedded `data:`
+ * buffer). It must really parse: since glTF gained a host-side parser, the
+ * tools resolve its external buffers before calling the pipeline, which means
+ * reading the JSON for real rather than treating the file as opaque bytes. */
+const MINIMAL_GLTF = JSON.stringify({
+  asset: { version: "2.0" },
+  scene: 0,
+  scenes: [{ nodes: [0] }],
+  nodes: [{ mesh: 0 }],
+  meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+  accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3" }],
+  bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 36 }],
+  buffers: [{ byteLength: 36, uri: "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA" }],
+});
 
 const FAKE_BREP_RESULT: BRepResult = {
   groups: [
@@ -241,6 +260,33 @@ const FAKE_MODEL_DIFF: ModelDiff = {
   matched: [{ a: { id: "solid-0", centre: [0, 0, 0], diagonal: 10, volume: 24 }, b: { id: "solid-0", centre: [0, 0, 0], diagonal: 10, volume: 24 }, centreDistance: 0, volumeDeltaPct: 0 }],
 };
 
+const FAKE_MESH_HEALTH_REPORT: MeshHealthReport = {
+  componentCount: 1,
+  components: [
+    {
+      index: 0,
+      triangleCount: 12,
+      freeEdgeCount: 0,
+      nonManifoldEdgeCount: 0,
+      degenerateFaceCount: 0,
+      rawArea: 6,
+      rawVolume: 1,
+      requiredTolerance: 1e-6,
+      healedArea: 6,
+      healedVolume: 1,
+      areaDeltaPct: 0,
+      volumeDeltaPct: 0,
+    },
+  ],
+};
+
+const FAKE_PROMOTE_RESULT: PromoteMeshResult = {
+  bytes: new TextEncoder().encode("ISO-10303-21;PROMOTED"),
+  promotedComponents: [0],
+  skippedComponents: [],
+  warnings: [],
+};
+
 function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   return {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
@@ -259,6 +305,8 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
     downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
+    checkMeshHealth: vi.fn(async () => FAKE_MESH_HEALTH_REPORT),
+    promoteMeshToBrep: vi.fn(async () => FAKE_PROMOTE_RESULT),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
     convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
@@ -285,12 +333,18 @@ beforeEach(async () => {
   objModel = path.join(dir, "model.obj");
   plyModel = path.join(dir, "model.ply");
   gltfModel = path.join(dir, "model.gltf");
+  vtkModel = path.join(dir, "model.vtk");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
   await fs.writeFile(objModel, UNIT_CUBE_OBJ, "utf8");
   await fs.writeFile(plyModel, UNIT_CUBE_PLY, "utf8");
-  await fs.writeFile(gltfModel, "{}", "utf8");
+  // A minimal but genuinely parseable glTF: the tools now resolve external
+  // buffers before calling the pipeline, which reads the JSON for real.
+  await fs.writeFile(gltfModel, MINIMAL_GLTF, "utf8");
+  // meshio-only source — the remaining "no host-side geometry" rejection path,
+  // which glTF used to cover before it gained a parser.
+  await fs.writeFile(vtkModel, "# vtk DataFile Version 3.0\n", "utf8");
 });
 
 afterEach(async () => {
@@ -858,13 +912,24 @@ describe("compare_models", () => {
     expect(result.warnings[0]).toMatch(/OBJ/);
   });
 
-  it("returns supported: false with a warning when either side is an unsupported format (glTF), without touching WASM", async () => {
+  it("diffs a B-rep source against a glTF source, resolving its external buffers first", async () => {
     const c = ctx();
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: gltfModel });
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
+      { kind: "gltf", bytes: expect.any(Uint8Array), externalBuffers: {} }
+    );
+    expect(result.supported).toBe(true);
+  });
+
+  it("returns supported: false with a warning for a meshio-only format (.vtk), without touching WASM", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: vtkModel });
     expect(c.pipeline.compareModels).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
     expect(result.diff).toBeUndefined();
-    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/STL\/OBJ\/PLY/i);
+    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/STL\/OBJ\/PLY\/glTF/i);
   });
 
   it("rejects unsupported extensions on either path", async () => {
@@ -919,6 +984,157 @@ describe("compare_models", () => {
     expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
     expect(result.images).toEqual([]);
     expect(result.warnings.filter((w) => /has no visual snapshot/i.test(w))).toHaveLength(2);
+  });
+});
+
+describe("check_mesh_health", () => {
+  it("reports the pipeline's heal-quality report for an STL source", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: stlModel });
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", undefined);
+    expect(result).toEqual({ format: "stl", supported: true, warnings: [], ...FAKE_MESH_HEALTH_REPORT });
+  });
+
+  it("reports the pipeline's heal-quality report for an OBJ source", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: objModel });
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "obj", undefined);
+    expect(result.supported).toBe(true);
+  });
+
+  it("reports the pipeline's heal-quality report for a PLY source", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: plyModel });
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "ply", undefined);
+    expect(result.supported).toBe(true);
+  });
+
+  it("returns supported: false with a warning for a B-rep source, without touching WASM", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: stpModel });
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/already a B-rep source/i);
+  });
+
+  it("reports the heal-quality report for a glTF source, passing its resolved external buffers", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: gltfModel });
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "gltf", {});
+    expect(result.supported).toBe(true);
+  });
+
+  it("returns supported: false with a warning for a meshio-only format (.vtk)", async () => {
+    const c = ctx();
+    const result = await checkMeshHealthTool(c, { path: vtkModel });
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/no host-side triangle-soup parser/i);
+  });
+
+  it("never mutates or persists anything — no sidecar files are written", async () => {
+    const c = ctx();
+    await checkMeshHealthTool(c, { path: stlModel });
+    await expect(fs.access(`${stlModel}.edits.json`)).rejects.toThrow();
+    await expect(fs.access(`${stlModel}.parts.json`)).rejects.toThrow();
+  });
+});
+
+describe("promote_mesh_to_brep", () => {
+  it("promotes an STL source to STEP (the default target) and writes the pipeline's bytes", async () => {
+    const c = ctx();
+    const outputPath = path.join(dir, "promoted.step");
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm", undefined);
+    expect(result).toMatchObject({ written: outputPath, promotedComponents: [0], skippedComponents: [], warnings: [] });
+    expect(await fs.readFile(outputPath)).toEqual(Buffer.from(FAKE_PROMOTE_RESULT.bytes));
+  });
+
+  it("promotes OBJ/PLY sources too", async () => {
+    const c = ctx();
+    const objOut = path.join(dir, "promoted-obj.step");
+    await promoteMeshToBrepTool(c, { path: objModel, outputPath: objOut });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", "step", "mm", undefined);
+
+    const plyOut = path.join(dir, "promoted-ply.step");
+    await promoteMeshToBrepTool(c, { path: plyModel, outputPath: plyOut });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", "step", "mm", undefined);
+  });
+
+  it("respects an explicit targetFormat and unit", async () => {
+    const c = ctx();
+    const outputPath = path.join(dir, "promoted.iges");
+    await promoteMeshToBrepTool(c, { path: stlModel, outputPath, targetFormat: "iges", unit: "in" });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "iges", "in", undefined);
+  });
+
+  it("falls back to mm with a warning for an unrecognized unit, never throwing", async () => {
+    const c = ctx();
+    const outputPath = path.join(dir, "promoted.step");
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath, unit: "furlongs" });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm", undefined);
+    expect(result.warnings.some((w) => /unknown unit/i.test(w))).toBe(true);
+  });
+
+  it("rejects an invalid targetFormat with a clear error, without touching the pipeline", async () => {
+    const c = ctx();
+    await expect(
+      promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "x.step"), targetFormat: "stl" })
+    ).rejects.toThrow(/invalid targetformat/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+  });
+
+  it("throws for a B-rep source (nothing to promote), without touching WASM", async () => {
+    const c = ctx();
+    await expect(
+      promoteMeshToBrepTool(c, { path: stpModel, outputPath: path.join(dir, "x.step") })
+    ).rejects.toThrow(/already a B-rep source/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+  });
+
+  it("promotes a glTF source, passing its resolved external buffers", async () => {
+    const c = ctx();
+    await promoteMeshToBrepTool(c, { path: gltfModel, outputPath: path.join(dir, "promoted-gltf.step") });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "gltf", "step", "mm", {});
+  });
+
+  it("throws for a meshio-only format (.vtk, no host-side triangle-soup parser)", async () => {
+    const c = ctx();
+    await expect(
+      promoteMeshToBrepTool(c, { path: vtkModel, outputPath: path.join(dir, "x.step") })
+    ).rejects.toThrow(/no host-side triangle-soup parser/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+  });
+
+  it("warns (but still promotes the raw file) when the mesh source has pending edits that can't be baked in", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "x.step") });
+    expect(result.warnings.some((w) => /not baked in/i.test(w))).toBe(true);
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenCalled();
+  });
+
+  it("surfaces the pipeline's own skippedComponents/warnings (e.g. a component that never closed)", async () => {
+    const c = ctx(
+      fakePipeline({
+        promoteMeshToBrep: vi.fn(async () => ({
+          bytes: new TextEncoder().encode("partial"),
+          promotedComponents: [0],
+          skippedComponents: [1],
+          warnings: ["Component 1 (4 triangles) did not close into a valid solid..."],
+        })),
+      })
+    );
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "x.step") });
+    expect(result.promotedComponents).toEqual([0]);
+    expect(result.skippedComponents).toEqual([1]);
+    expect(result.warnings.some((w) => /did not close/i.test(w))).toBe(true);
+  });
+
+  it("rejects writing to the source path itself", async () => {
+    const c = ctx();
+    await expect(promoteMeshToBrepTool(c, { path: stlModel, outputPath: stlModel })).rejects.toThrow();
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
   });
 });
 
@@ -1578,7 +1794,7 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out-mm.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm");
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm", true, []);
     expect(result.unit).toBe("mm");
     expect(result.warnings).toEqual([]);
   });
@@ -1587,7 +1803,7 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out-in.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "in" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "in");
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "in", true, []);
     expect(result.unit).toBe("in");
   });
 
@@ -1595,7 +1811,7 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out-bad.brep");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: out, unit: "parsec" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm");
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "brep", [], "mm", true, []);
     expect(result.unit).toBe("mm");
     expect(result.warnings[0]).toMatch(/unknown unit/i);
   });
@@ -1604,7 +1820,7 @@ describe("export_brep", () => {
     const c = ctx();
     const out = path.join(dir, "out.iges");
     const result = await exportBRepTool(c, { path: stpModel, targetFormat: "iges", outputPath: out, unit: "in" });
-    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], "in");
+    expect(c.pipeline.exportBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", "iges", [], "in", true, []);
     expect(result.unit).toBe("in");
     expect(result.warnings).toEqual([]);
   });

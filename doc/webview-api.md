@@ -8,8 +8,9 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | --- | --- |
 | `src/webview/main.ts` | Entry point, VS Code API, message routing, UI wiring |
 | `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
-| `src/webview/viewer.ts` | Three.js scene, camera, rendering, gizmo |
+| `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
 | `src/webview/cameraControls.ts` | Pure camera math utilities (unit-testable) |
+| `src/webview/gizmoTransform.ts` | Pure per-target delta math (translate/rotate-about-pivot/scale-about-pivot, axis-angle decomposition, grid/point snapping) for the Transform Gizmo (unit-tested) |
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
 | `src/webview/geometryBuilder.ts` | Decode and build per-face meshes + per-edge lines from encoded buffers |
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
@@ -22,10 +23,12 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/measurementOverlay.ts` | Lazily-built marker/line/label Three.js objects for the measurement overlay |
 | `src/webview/annotationsModel.ts` | Persisted, topology-anchored annotations (pinned measurements) data model, DOM-free (unit-tested) |
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
+| `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
 | `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
+| `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts` |
 | `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
@@ -53,7 +56,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 
 1. Acquire VS Code API: `const vscode = acquireVsCodeApi()`.
 2. Instantiate `Viewer(document.getElementById('canvas'))`.
-3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, and `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`.
+3. Instantiate `TreePanel(document.getElementById('tree-panel'))`, `PartsPanel`, `EditsPanel`, `MeshingPanel(document.getElementById('meshing-panel'), ...)`, `MassPropertiesPanel(document.getElementById('mass-panel'), ...)`, and `MeshHealthPanel(document.getElementById('mesh-health-panel'), ...)`.
 4. Call `setupViewControls(viewer)`, `setupViewMenu()`, `setupSelectionControls()`, `setupMeasureControls()`, `setupFileMenu()`, `setupDragAndDrop()`, `setupAppearanceControls()`, `setupClippingControls()`, `setupMarkupControls()` (in a shared `try/catch` — a UI wiring failure must not block the ready handshake).
 5. Wire toolbar buttons. Only `#fit`, `#tree-toggle`, and `#meshing-toggle` sit directly on the strip; everything else lives inside one of four dropdown panels (`#view-dropdown`, `#select-dropdown`, `#measure-dropdown`, `#markup-dropdown`) wired by `dropdownMenu.ts` (see below). `#screenshot` (in **View ▾**) posts `{ type: "screenshotButtonClicked" }` — it shows no UI itself, the host owns the save dialog. `#meshing-toggle` (in its own `try/catch`, same rule as the view controls) only shows/clears the FE-mesh overlay — the panel itself is always visible. The measure mode toggle / `.measure-tool-btn` row / Clear drive `viewer.setMeasureMode()`/`MeasurementState` (see below) — entirely webview-side, no message posted, **except** the `#measure-exact-btn` (⟟ Exact) that appears next to a completed distance/edge-length/radius result, which round-trips a `measureExactRequest` to the host for a true B-rep-precision value (see below), and `#measure-pin-btn` (📌 Pin), which posts `annotationsChanged` to persist the result (see `annotationsModel.ts` below). `#grid`, `#edges`, and `#hide-smooth-edges` are `menuitemcheckbox`es whose `aria-checked` reflects `viewer.toggleGrid()`'s return value and `setupAppearanceControls()`'s `edgesVisible`/`smoothEdgesShown` flags respectively, purely session-side. There is no standalone `#wireframe` toolbar button — Wireframe is one of five mutually exclusive **Display mode** states (`#display-mode-group` in the view-controls Appearance area, `setupAppearanceControls()`) driving `viewer.setDisplayMode()`; see below.
 6. Register `window.addEventListener('message', ...)` for host messages.
@@ -387,6 +390,18 @@ clearMeasurementOverlay(): void
 
 `measureMode` is a **parallel interaction mode**, deliberately independent of `selectionMode`/`SelectionSet` — a click takes measurement priority over the normal Parts/Edits pick when both happen to be active (`onSelectPointerUp`). On a measure-mode hit, `buildMeasurementPick()` (private) assembles a `MeasurementPick` (`src/webview/measurementState.ts`) from the raycast intersection: the world-space hit point (available in the hit loop but normally discarded — the ordinary `onEntityPick` path only forwards the resolved `{entityType, entityId}`), a world-space direction for a `surface`/`line` hit (face normal via the intersection's local `face.normal` + normal matrix, or edge tangent from the two polyline points straddling the hit — used by the "angle" tool), and the picked edge's full world-space polyline (used by "edgeLength"/"radius"). `showMeasurementMarker`/ `showMeasurementOverlay`/`clearMeasurementOverlay` manage a `measurementOverlay` scene-sibling `THREE.Object3D` (same pattern as `meshOverlay`), built via `measurementOverlay.ts`'s `makeMeasureMarkerSprite`/`buildMeasureLine`/ `makeMeasureLabelSprite`. The overlay's label sprite is rescaled every `animate()` frame (`distance-to-camera × 0.06`) to stay a constant on-screen size while zooming — unlike the point-sprite scale in `frame()`, which only updates on fit/reset. `setModel()` clears any measurement overlay, same as it clears the FE-mesh overlay — both refer to geometry that's about to be replaced.
 
+**Transform Gizmo (live drag preview for Move/Rotate/Scale, never itself an edit op):**
+
+```typescript
+attachTransformGizmo(pivot: THREE.Vector3, mode: "translate" | "rotate" | "scale"): void
+detachTransformGizmo(): void
+isGizmoDragging(): boolean
+getGizmoDelta(): { positionDelta: THREE.Vector3; quaternionDelta: THREE.Quaternion; scaleDelta: THREE.Vector3; pivot: THREE.Vector3 }
+setGizmoHandlers(onChange: () => void, onDraggingChanged: (dragging: boolean) => void): void
+```
+
+Wraps three.js's own `TransformControls` (from `three/examples/jsm/controls/TransformControls.js`, already part of the `three` dependency — no new package), attached to a dedicated, permanently-scene-resident, geometry-free proxy `Object3D` (`gizmoProxy`) rather than directly to a real model object — a drag typically needs to move a WHOLE multi-solid selection as one rigid group about their shared bbox centroid, a capability the native single-object `attach()` doesn't have. `attachTransformGizmo(pivot, mode)` resets the proxy to `position = pivot, quaternion = identity, scale = (1,1,1)` on every (re)attach, which is what makes `getGizmoDelta()` trivial — the proxy's CURRENT transform after any drag directly IS the delta (only `positionDelta` needs the pivot subtracted back out). Per-target delta application (`applyTranslateDelta`/`applyRotateDelta`/`applyScaleDelta`/`quaternionToAxisAngle`, `gizmoTransform.ts` below) is pure, DOM-free math the caller (`main.ts`) runs once per selected object on every `onChange` callback. `setGizmoHandlers`' `onDraggingChanged` fires from the underlying `"dragging-changed"` event — genuinely dispatched despite not appearing as a literal string anywhere in the installed three.js source (`TransformControls`' generic `defineProperty` reactive-property setter constructs the event name dynamically) — and is what suspends/resumes `OrbitControls` for the duration of a drag. `onSelectPointerDown`/`onSelectPointerUp` both early-return while `isGizmoDragging()` is true, so a gizmo-handle drag never also triggers entity picking.
+
 **Internal:**
 
 ```typescript
@@ -467,6 +482,49 @@ function viewDirection(
 ```
 
 Returns the normalized vector from the target to the camera (`camera.position.clone().sub(target).normalize()`).
+
+---
+
+## `src/webview/gizmoTransform.ts`
+
+Pure math — no DOM, no THREE renderer, no `TransformControls` dependency (only `THREE.Vector3`/`THREE.Quaternion`). Unit-tested headlessly via Vitest. Backs the Transform Gizmo (`Viewer.attachTransformGizmo`/`getGizmoDelta`, above) and its grid/entity-point snapping.
+
+```typescript
+interface GizmoDelta {
+  positionDelta: THREE.Vector3
+  quaternionDelta: THREE.Quaternion
+  scaleDelta: THREE.Vector3
+  pivot: THREE.Vector3
+}
+interface TransformBase {
+  position: THREE.Vector3
+  quaternion: THREE.Quaternion
+  scale: THREE.Vector3
+}
+```
+
+`GizmoDelta` is what `Viewer.getGizmoDelta()` returns — the gizmo proxy's own transform after a drag, reinterpreted as a delta since the proxy always starts each attach at identity. `TransformBase` is one target object's transform captured fresh at drag START (`main.ts` snapshots one per selected volume when `onDraggingChanged(true)` fires).
+
+```typescript
+function applyTranslateDelta(base: TransformBase, delta: GizmoDelta): { position: THREE.Vector3 }
+function applyRotateDelta(base: TransformBase, delta: GizmoDelta): { position: THREE.Vector3; quaternion: THREE.Quaternion }
+function applyScaleDelta(base: TransformBase, delta: GizmoDelta): { position: THREE.Vector3; scale: THREE.Vector3 }
+```
+
+All three apply `delta` to `base` **about `delta.pivot`, not about the target's own position** — `applyRotateDelta`/`applyScaleDelta` move an off-centre target's position too, not just its orientation/size (verified in `gizmoTransform.test.ts` with a target exactly AT the pivot, where the position term correctly reduces to zero). `applyScaleDelta`'s formula (`pivot + scaleDelta·(basePosition − pivot)`, applied component-wise) is the identical affine transform `occtOperations.ts`'s non-uniform-scale edit op already computes server-side via `gp_GTrsf`, so the live gizmo preview and the eventual real B-rep replay agree on what "scale about a centre" means.
+
+```typescript
+function quaternionToAxisAngle(q: THREE.Quaternion): { axis: THREE.Vector3; angleRad: number }
+```
+
+Decomposes a rotation delta into the `axisDir`/`angleDeg` fields the `rotate` edit op actually needs (no THREE built-in does this) — handles both a single-axis ring drag and the free/screen-facing ring uniformly. Degenerates to the +Z axis at zero rotation (an arbitrary but stable choice, never NaN).
+
+```typescript
+function snapTranslateDelta(positionDelta: THREE.Vector3, gridSize: number): THREE.Vector3
+function nearestSnapPoint(position: THREE.Vector3, candidates: THREE.Vector3[], tolerance: number): THREE.Vector3 | null
+```
+
+Grid and entity-point snapping (`main.ts`'s wiring for **View ▾ → Snap to grid / Snap to points**), applied only during a Translate drag. `snapTranslateDelta` rounds the SHARED drag delta to the nearest multiple of `gridSize` **once**, before any per-target loop, so a multi-target drag still moves as one rigid group with relative spacing exactly preserved (`gridSize <= 0` is a no-op passthrough, i.e. disabled). `nearestSnapPoint` instead runs **per target**, against each target's own candidate resulting position, against a plain array of `point-N` sprite world positions (`main.ts`'s `collectSnapPoints()`) — returns the closest candidate within `tolerance`, or `null`. Because it's per-target rather than shared, different targets in the same multi-selection drag may legitimately snap to different nearby points; when both toggles are on, point-snap wins for whichever target found a candidate within tolerance, grid-snap still applies to any target that didn't.
 
 ---
 
@@ -781,6 +839,8 @@ function resolveMeshTargets(root: THREE.Object3D, ids: string[]): THREE.Object3D
 
 **Holes** (`addHole`/`addCounterboreHole`/`addCountersinkHole`) go through `applyMeshHole`, which subtracts a cylinder tool brush — plus a second wider cylinder (counterbore) or cone (countersink) as a sequential second `SUBTRACTION` — from the first mesh of the resolved targets, then replaces the target with the result (tagged with the target's node id, mirroring `applyMeshBoolean`). Tool placement reuses `baseAlignedMatrix` (mouth at `position`, drilled along `axis`). **Dispatch-order invariant:** hole op names start with `add`, so `applyEditsMesh` must handle them *before* the generic `op.op.startsWith("add")` primitive branch, and they never increment the `prim-{K}` counter (they don't create a body) — both locked by regression tests in `meshEdits.test.ts`.
 
+**Align and pattern** (`align`/`patternLinear`/`patternCircular`, neither B-rep only) go through `applyMeshAlign`/`applyMeshPattern`. `applyMeshAlign` moves each target's `THREE.Box3` extent onto the absolute `to` coordinate, independently per target — the same "no whole-shape fast path" rule `alignSolids()` follows host-side. `applyMeshPattern` clones each target (`Object3D.clone(true)` — geometry/materials shared by reference, transform independent) `count - 1` times and `applyMatrix4`s each copy into place, tagging every new object `userData.groupId = "pattern-{K}"` — a **separate** counter (`patternCount`) from primitives' `prim-{K}`, since one pattern OP can produce multiple new tagged objects where one `addX` op produces exactly one.
+
 ## `src/webview/meshingModel.ts`
 
 ### `MeshingModel`
@@ -892,6 +952,42 @@ class MassPropertiesPanel {
 `main.ts`'s `onRefresh` reads the current `SelectionSet`: 0 entries → whole model (`entityId: null`), exactly 1 → that entity, 2+ → `renderMessage`s a "select exactly one, or none" guidance line without sending any request. For a B-rep source it posts `massPropertiesRequest` and awaits `massPropertiesResult`/ `massPropertiesError` (guarded by a `massPropertiesRequestId` so a stale reply from a superseded refresh is ignored); for a mesh source it calls `computeAndRenderMeshMassProperties()` (below) with **no host round trip at all**. `momentsOfInertia` only shows its diagonal terms (`ixx`/`iyy`/`izz`) — the off-diagonal products of inertia are near-zero for most axis-aligned bodies and not worth the panel's space; mesh sources never populate this field (client-side inertia isn't computed, out of scope for the first cut) — and, per `units.ts` below, moments of inertia are also the one field `render()` never rescales regardless of `unitLabel`.
 
 Both call sites go through `main.ts`'s `renderMassProperties(raw)` wrapper, never `massPropertiesPanel.render()` directly: it caches `raw` (always millimetres) in a module-level `lastRawMassProperties`, then calls `massPropertiesPanel.render(convertLengthBasedProperties(raw, currentDisplayUnit), currentDisplayUnit)`. Caching the *raw* value (not the already-converted one) is what lets `setDisplayUnit()` (below) live-rescale an already-displayed result when the user changes the unit selector, without re-requesting anything from the host or recomputing the mesh-source case.
+
+---
+
+## `src/webview/meshHealthPanel.ts`
+
+"Mesh → B-rep promotion" (roadmap item, closed — both phases). Same bespoke-DOM-class shape as `massPropertiesPanel.ts` above, no unit test (this codebase's established convention for DOM panel classes).
+
+```typescript
+interface ComponentHealthDisplay {
+  index: number
+  triangleCount: number
+  freeEdgeCount: number
+  nonManifoldEdgeCount: number
+  degenerateFaceCount: number
+  requiredTolerance: number | null
+  areaDeltaPct: number | null
+  volumeDeltaPct: number | null
+}
+interface MeshHealthDisplay {
+  componentCount: number
+  components: ComponentHealthDisplay[]
+}
+
+class MeshHealthPanel {
+  constructor(panel: HTMLElement, cb: { onCheck: () => void; onPromote: () => void })
+  setEligible(eligible: boolean): void   // shows/hides the whole panel, disables Promote
+  renderMessage(text: string, isError?: boolean): void
+  render(report: MeshHealthDisplay): void
+}
+```
+
+`setEligible()` toggles `panel.hidden` and, when turning eligible, resets the body to a neutral "Click Check Healability…" prompt — the panel is visible ONLY for a genuinely native `.stl`/`.obj`/`.ply` file on disk, the same `COMPARABLE_MESH_FORMATS` gate the MCP tools' `check_mesh_health`/`promote_mesh_to_brep` apply to a real file path. `main.ts` tracks this via a module-level `meshHealthEligibleFormat: "stl" | "obj" | "ply" | null`, set from `case "loadUrl"`'s `msg.format` (a native mesh open) and reset to `null` on `case "geometry"` (B-rep — nothing to heal) and `case "loadMeshBytes"` (a meshio-converted document is not itself a real stl/obj/ply file, even though its bytes happen to be STL-shaped). `render()` renders one row-group per component — free/non-manifold edge counts, degenerate face count, the required sewing tolerance (or "did not close" for `null`), and area/volume delta percentages (blank when the component never closed).
+
+**Promote to B-rep… (Phase 2)** — the `#mesh-health-promote` button, enabled only when `render()`'s report shows at least one component with `requiredTolerance !== null` (both `render()` and `renderMessage()` otherwise force it back to `disabled`). Clicking it fires `cb.onPromote()`, which posts a single parameter-free `{type: "promoteToBrepButtonClicked"}` message — deliberately NOT a request/response round trip (mirrors `screenshotButtonClicked`'s precedent): the host owns the entire format/unit-quick-pick + save-dialog + write flow (`provider.ts`'s `handlePromoteToBrep`, mirroring `handleExport`'s structure) and reports outcome via the plain `"status"`/`"error"` messages, so the panel needs no new message-handler case at all, just the button wiring. Promoting does NOT change anything about the currently-open document — it writes an independent new file the user opens separately (see CLAUDE.md's "Mesh → B-rep promotion" section for why this is a one-shot export, not an in-place reclassification).
+
+`onCheck` posts a `meshHealRequest` (guarded by a `meshHealRequestId`, the same stale-response-guard idiom `massPropertiesRequestId`/`measureExactRequestId` already use) and awaits `meshHealResult`/`meshHealError` — a genuine host round trip through `checkMeshHealth` (extension-host-api.md), since the sewing-tolerance-ladder check needs live OCCT, unlike Mass Properties' mesh-source path which computes entirely client-side.
 
 ---
 

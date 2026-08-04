@@ -1,0 +1,12 @@
+% Op icon: linear pattern — one solid square (the original) plus three ghosted
+% copies evenly spaced along a directional arrow.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!25] (-12,-3) rectangle (-6,3);
+  \draw[dashed, fill=gray!10] (-4,-3) rectangle (2,3);
+  \draw[dashed, fill=gray!10] (4,-3) rectangle (10,3);
+  \draw[->, thick] (-9,-8) -- (9,-8);
+\end{tikzpicture}
+\end{document}

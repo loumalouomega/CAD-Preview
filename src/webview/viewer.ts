@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import * as cam from "./cameraControls";
 import type { ViewerCamera } from "./cameraControls";
 import { OrientationCube } from "./orientationCube";
@@ -57,6 +58,17 @@ export class Viewer {
   private orthoHalfHeight = 5;
   private readonly renderer: THREE.WebGLRenderer;
   private controls: OrbitControls;
+  /** The Transform Gizmo (roadmap "Transform gizmo", closed) — Three.js's own
+   * `TransformControls`, not hand-rolled drag math. Named distinctly from
+   * `this.gizmo` (the unrelated corner orientation cube) to avoid confusion. */
+  private transformControls: TransformControls;
+  /** Invisible, geometry-free — the gizmo's actual attach target; see the
+   * "Transform gizmo" section below for why a dedicated proxy is used
+   * instead of attaching directly to a real model object. */
+  private readonly gizmoProxy = new THREE.Object3D();
+  private readonly gizmoBasePosition = new THREE.Vector3();
+  private onGizmoChange: (() => void) | null = null;
+  private onGizmoDraggingChanged: ((dragging: boolean) => void) | null = null;
   private readonly grid: THREE.GridHelper;
   private readonly axes: THREE.AxesHelper;
   private readonly gizmo = new OrientationCube();
@@ -189,6 +201,33 @@ export class Viewer {
 
     this.controls = new OrbitControls(this.activeCamera, this.renderer.domElement);
     this.controls.enableDamping = true;
+
+    // Rotate mode operates in world space to match the `rotate` edit op's own
+    // `axisPoint`/`axisDir` fields, which are world coordinates, not local to
+    // whichever proxy object the gizmo happens to be attached to.
+    this.transformControls = new TransformControls(this.activeCamera, this.renderer.domElement);
+    this.transformControls.setSpace("world");
+    // The helper starts invisible (TransformControlsRoot's own default) and
+    // attach()/detach() toggle it automatically — nothing to do here.
+    this.scene.add(this.transformControls.getHelper());
+    // `"dragging-changed"` isn't a literal string anywhere in this three.js
+    // version's source — verified against the installed source (not assumed
+    // from memory/docs) that it's still real: `dragging` is registered via
+    // this class's generic `defineProperty(propName, default)` helper, whose
+    // setter unconditionally dispatches `{type: propName + '-changed', value}`
+    // on every value change, so assigning `this.dragging = true/false`
+    // internally (on pointerdown/pointerup) does genuinely fire this event
+    // with a boolean `.value` payload — the standard three.js integration
+    // pattern documented for TransformControls still applies unchanged here.
+    this.transformControls.addEventListener("dragging-changed", (event) => {
+      const dragging = event.value as boolean;
+      // Standard three.js integration: suspend orbit while the gizmo is
+      // being dragged so the two controls don't fight over the same drag.
+      this.controls.enabled = !dragging;
+      this.onGizmoDraggingChanged?.(dragging);
+    });
+    this.transformControls.addEventListener("objectChange", () => this.onGizmoChange?.());
+    this.scene.add(this.gizmoProxy);
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.0));
     const dir = new THREE.DirectionalLight(0xffffff, 1.5);
@@ -612,6 +651,10 @@ export class Viewer {
     const dir = cam.viewDirection(prev, this.controls.target);
     this.activeCamera = next;
     this.controls.object = next;
+    // `TransformControls.camera` is a reassignable accessor (verified against
+    // the live three.js source) — without this, the gizmo would keep
+    // raycasting against the now-stale camera after a perspective/ortho toggle.
+    this.transformControls.camera = next;
     this.frame(dir);
   }
 
@@ -888,6 +931,74 @@ export class Viewer {
   setEntityPickHandler(onPick: (r: PickResult, additive: boolean) => void, onEmpty: () => void): void {
     this.onEntityPick = onPick;
     this.onEmptyPick = onEmpty;
+  }
+
+  // ── Transform gizmo (roadmap "Transform gizmo", closed) ─────────────────
+  // Thin wrapper over three.js's own `TransformControls`, not hand-rolled
+  // drag math. The gizmo is always attached to `this.gizmoProxy` — an
+  // invisible, geometry-free pivot this class owns and keeps in the scene
+  // graph permanently (so it always has a valid, auto-updated `matrixWorld`)
+  // — never directly to a real model object, since a drag typically needs to
+  // move a WHOLE selection (possibly several solids) as one rigid group
+  // about their shared centroid, not just the one object TransformControls
+  // natively supports attaching to. `main.ts` owns the actual per-target math
+  // (resolving `node-N`/`solid-N` ids to live objects, applying each
+  // target's share of {@link getGizmoDelta} to a captured pristine base —
+  // the exact never-compound-onto-the-previous-frame discipline
+  // `explodePreview.ts` already established — and pushing the live values
+  // into the open translate/rotate/scale form); this class only owns the
+  // proxy object and the raw attach/detach/mode/delta/event surface.
+
+  /** Repositions the (already-scene-resident) proxy to `pivot` with an
+   * identity transform, then attaches the gizmo to it in `mode` — this reset
+   * is what makes `getGizmoDelta()` below correct: since the proxy's base is
+   * ALWAYS position=pivot/quaternion=identity/scale=(1,1,1) at the moment of
+   * attach, its CURRENT transform after any drag directly IS the delta,
+   * with no separate "subtract the base" bookkeeping needed for rotation/
+   * scale (only position needs the pivot subtracted back out). */
+  attachTransformGizmo(pivot: THREE.Vector3, mode: "translate" | "rotate" | "scale"): void {
+    this.gizmoProxy.position.copy(pivot);
+    this.gizmoProxy.quaternion.identity();
+    this.gizmoProxy.scale.set(1, 1, 1);
+    this.gizmoBasePosition.copy(pivot);
+    this.transformControls.setMode(mode);
+    this.transformControls.attach(this.gizmoProxy);
+  }
+
+  /** Detaches the gizmo, hiding it. Safe to call even when nothing is attached. */
+  detachTransformGizmo(): void {
+    this.transformControls.detach();
+  }
+
+  /** True while the gizmo is actively being dragged — `onSelectPointerDown`/
+   * `onSelectPointerUp` check this to avoid also firing an entity pick for
+   * the same pointer interaction. */
+  isGizmoDragging(): boolean {
+    return this.transformControls.dragging;
+  }
+
+  /** The proxy's live transform relative to the base captured by the most
+   * recent {@link attachTransformGizmo} call — `positionDelta` is the raw
+   * world-space translation (pivot already subtracted out); `quaternionDelta`
+   * and `scaleDelta` can be used directly (no subtraction needed) since the
+   * proxy's base rotation/scale are always identity/(1,1,1) by construction.
+   * `pivot` is the captured attach-time position, for callers that need the
+   * rotation/scale centre (e.g. to push into the `rotate` op's `axisPoint`
+   * or the `scale` op's `center` field). */
+  getGizmoDelta(): { positionDelta: THREE.Vector3; quaternionDelta: THREE.Quaternion; scaleDelta: THREE.Vector3; pivot: THREE.Vector3 } {
+    return {
+      positionDelta: this.gizmoProxy.position.clone().sub(this.gizmoBasePosition),
+      quaternionDelta: this.gizmoProxy.quaternion.clone(),
+      scaleDelta: this.gizmoProxy.scale.clone(),
+      pivot: this.gizmoBasePosition.clone(),
+    };
+  }
+
+  /** Registers callbacks fired on every live change to the attached gizmo
+   * object (mid-drag) and whenever a drag starts/stops. */
+  setGizmoHandlers(onChange: () => void, onDraggingChanged: (dragging: boolean) => void): void {
+    this.onGizmoChange = onChange;
+    this.onGizmoDraggingChanged = onDraggingChanged;
   }
 
   // ── Measurement (display-only overlay, never an edit op, never persisted) ──
@@ -1222,6 +1333,7 @@ export class Viewer {
     this.gizmo.dispose();
     this.clearModel();
     this.controls.dispose();
+    this.transformControls.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -1285,12 +1397,14 @@ export class Viewer {
   }
 
   private onSelectPointerDown = (event: PointerEvent): void => {
+    if (this.transformControls.dragging) return; // the gizmo owns this pointer interaction
     this.pointerDownPos = { x: event.clientX, y: event.clientY };
   };
 
   private onSelectPointerUp = (event: PointerEvent): void => {
     const down = this.pointerDownPos;
     this.pointerDownPos = null;
+    if (this.transformControls.dragging) return; // ditto — a gizmo drag-release must never also pick an entity
     if (!down || (!this.measureMode && this.selectionMode === null) || !this.model) return;
     // Ignore drags (orbit/pan) — only a near-stationary click selects.
     if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;

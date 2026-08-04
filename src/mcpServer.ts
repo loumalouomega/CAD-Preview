@@ -23,14 +23,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { loadBRep, exportBRep } from "./occtService";
-import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
-import { computeMassProperties } from "./massProperties";
-import { getEntityFacts, measureEntities, measureExact, checkInterference, rebindPartsAcrossOps } from "./entityFacts";
-import { renderSnapshot, isRenderAvailable } from "./renderService";
-import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
-import { compareModels } from "./modelDiffHost";
-import { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import { createKernelClient } from "./kernelClient";
 import {
   describeCapabilities,
   loadModel,
@@ -43,6 +36,9 @@ import {
   searchStandardPartsTool,
   downloadStandardPartTool,
   compareModelsTool,
+  checkMeshHealthTool,
+  promoteMeshToBrepTool,
+  exportSvgSilhouetteTool,
   getState,
   applyEditOps,
   runParametricScriptTool,
@@ -66,31 +62,20 @@ import type { MeshOptions } from "./meshOptions";
 // layouts.
 const extensionPath = process.env.CAD_PREVIEW_ROOT ?? path.join(__dirname, "..");
 
+// Every WASM-touching pipeline call now routes through a forked child
+// process (roadmap "OCCT in a forked child process", Phase 0+1 — see
+// CLAUDE.md) rather than calling occtService.ts/gmshService.ts/etc.
+// directly: `createKernelClient` returns an object satisfying the exact same
+// `Pipeline` shape `mcpTools.ts` already consumes, so `mcpTools.ts` itself
+// needed zero changes. This gives the server two things it never had
+// in-process — a hung/crashed WASM call can be killed without wedging the
+// whole server, and a genuinely corrupted WASM heap (not just a cleanly
+// thrown, regex-detected abort) can no longer poison a later, unrelated
+// call, since the next call after a dead child transparently respawns a
+// fresh one.
 const ctx: ToolContext = {
   extensionPath,
-  pipeline: {
-    loadBRep,
-    exportBRep,
-    generateMesh,
-    exportMeshFormat,
-    exportMdpa,
-    exportGeoUnrolled,
-    computeMassProperties,
-    getEntityFacts,
-    measureEntities,
-    measureExact,
-    checkInterference,
-    rebindPartsAcrossOps,
-    renderSnapshot,
-    isRenderAvailable,
-    searchStandardParts,
-    downloadStandardPart,
-    compareModels,
-    convertToStlBoundary,
-    convertToStlBoundaryWithRegions,
-    exportViaMeshio,
-    readMeshioMetadata,
-  },
+  pipeline: createKernelClient(extensionPath),
 };
 
 const server = new McpServer({ name: "cad-preview", version: "1.0.0" });
@@ -334,6 +319,52 @@ server.registerTool(
     inputSchema: { pathA: modelPath, pathB: modelPath, includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)") },
   },
   wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean }) => compareModelsTool(ctx, args))
+);
+
+server.registerTool(
+  "check_mesh_health",
+  {
+    description:
+      "Mesh -> B-rep promotion, diagnostic-first (Phase 1: read-only report, no promotion). For an STL/OBJ/PLY/glTF source, reports per connected component: free/non-manifold edge counts, degenerate face count, the BRepBuilderAPI_Sewing tolerance-ladder rung actually required to close the shape into a solid (null if it never closed even at the loosest rung), and the resulting healed area/volume delta vs. the raw mesh. Never mutates or persists anything, and there is still no path from a triangle mesh into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS unchanged) — a null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail. B-rep sources return supported:false (nothing to heal); meshio-only formats return supported:false (no host-side triangle-soup parser). Refuses a mesh above 50000 triangles with an actionable error (it builds one OCCT face per triangle) -- most likely to bite on glTF, a rendering format whose files are routinely far larger than hand-authored STL/OBJ/PLY.",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => checkMeshHealthTool(ctx, args))
+);
+
+server.registerTool(
+  "promote_mesh_to_brep",
+  {
+    description:
+      "Mesh -> B-rep promotion, Phase 2: sews a healed STL/OBJ/PLY/glTF mesh into a brand-new STEP/IGES/BREP file at outputPath (default targetFormat 'step') via the same writer pipeline export_brep uses. This is a ONE-SHOT EXPORT, not an in-place reclassification -- the original mesh source is left completely untouched; the written file is an ordinary, fully-editable B-rep document from the moment it exists (fillet/chamfer/measure_exact/get_mass_properties/further export_brep all just work on it -- open it with load_model to confirm). A component that never closes (even at the loosest sewing tolerance) is skipped and reported in skippedComponents/warnings, never silently dropped or forced into an invalid solid; if NO component closes, the call fails -- run check_mesh_health first to see why. Never requires a prior check_mesh_health call (fully standalone), but running one first is recommended. Optional unit (mm/cm/m/in/ft, default mm) applies the same real geometric scale export_brep's unit param does. B-rep sources return an error (nothing to promote); meshio-only formats return an error (no host-side triangle-soup parser).",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write the new B-rep file to (must not be the source path)"),
+      targetFormat: z.enum(["step", "iges", "brep"]).optional().describe("Output format (default: step)"),
+      unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
+    },
+  },
+  wrap((args: { path: string; outputPath: string; targetFormat?: string; unit?: string }) => promoteMeshToBrepTool(ctx, args))
+);
+
+server.registerTool(
+  "export_svg_silhouette",
+  {
+    description:
+      "Write a 2D OUTLINE (silhouette) of a model to an .svg file. OUTLINE ONLY -- there is NO hidden-line removal, so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 SVG user unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write the .svg to (must not be the source path)"),
+      view: z.string().optional().describe("Named view: FRONT | BACK | TOP | BOTTOM | LEFT | RIGHT | ISO (default FRONT)"),
+      direction: z.array(z.number()).optional().describe("Explicit view direction [x,y,z] (model -> camera); overrides view"),
+      up: z.array(z.number()).optional().describe("Explicit up vector [x,y,z]"),
+      unit: z.string().optional().describe("Output unit: mm | cm | m | in | ft (default mm, no conversion)"),
+      strokeWidth: z.number().optional().describe("Stroke width in output units (default: proportional to the drawing's size)"),
+      tessellationQuality: z.string().optional().describe("B-rep sources only: draft | standard | fine (default fine)"),
+    },
+  },
+  wrap((args: { path: string; outputPath: string; view?: string; direction?: number[]; up?: number[]; unit?: string; strokeWidth?: number; tessellationQuality?: string }) =>
+    exportSvgSilhouetteTool(ctx, args)
+  )
 );
 
 server.registerTool(

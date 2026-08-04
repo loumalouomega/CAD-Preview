@@ -75,6 +75,109 @@ describe("applyEditsMesh", () => {
   });
 });
 
+describe("applyEditsMesh align", () => {
+  function boxAt(x: number, y: number, z: number): THREE.Object3D {
+    const root = new THREE.Group();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2)); // extents ±1 before placement
+    mesh.position.set(x, y, z);
+    root.add(mesh);
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    return root;
+  }
+
+  it("aligns the min extent along z to the target coordinate", () => {
+    const root = boxAt(0, 0, 5); // box spans z: 4..6
+    applyEditsMesh(root, [{ op: "align", targets: ["node-1"], axis: "z", extent: "min", to: 0 }]);
+    const box = new THREE.Box3().setFromObject(root.children[0]);
+    expect(round(box.min.z)).toBe(0);
+    expect(round(box.max.z)).toBe(2);
+  });
+
+  it("aligns the center extent along x, leaving y/z untouched", () => {
+    const root = boxAt(3, 7, 9);
+    applyEditsMesh(root, [{ op: "align", targets: ["node-1"], axis: "x", extent: "center", to: 0 }]);
+    const box = new THREE.Box3().setFromObject(root.children[0]);
+    const center = box.getCenter(new THREE.Vector3());
+    expect(round(center.x)).toBe(0);
+    expect(round(center.y)).toBe(7);
+    expect(round(center.z)).toBe(9);
+  });
+
+  it("is a no-op for an unresolved target", () => {
+    const root = boxAt(0, 0, 5);
+    expect(() =>
+      applyEditsMesh(root, [{ op: "align", targets: ["node-9"], axis: "z", extent: "min", to: 0 }])
+    ).not.toThrow();
+    const box = new THREE.Box3().setFromObject(root.children[0]);
+    expect(round(box.min.z)).toBe(4);
+  });
+});
+
+describe("applyEditsMesh patterns", () => {
+  function singleBox(): THREE.Object3D {
+    const root = new THREE.Group();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    root.add(mesh);
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    return root;
+  }
+
+  function centers(root: THREE.Object3D): [number, number, number][] {
+    const out: [number, number, number][] = [];
+    root.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) {
+        const box = new THREE.Box3().setFromObject(o);
+        const c = box.getCenter(new THREE.Vector3());
+        out.push([round(c.x) || 0, round(c.y) || 0, round(c.z) || 0]); // `|| 0` folds -0 to 0
+      }
+    });
+    return out;
+  }
+
+  it("patternLinear produces `count` total instances, evenly spaced, original untouched", () => {
+    const root = singleBox();
+    applyEditsMesh(root, [{ op: "patternLinear", targets: ["node-1"], direction: [1, 0, 0], spacing: 5, count: 4 }]);
+    const cs = centers(root).sort((a, b) => a[0] - b[0]);
+    expect(cs).toEqual([[0, 0, 0], [5, 0, 0], [10, 0, 0], [15, 0, 0]]);
+  });
+
+  it("patternLinear tags copies with unique pattern-{K} ids, never reusing the original's node id", () => {
+    const root = singleBox();
+    applyEditsMesh(root, [{ op: "patternLinear", targets: ["node-1"], direction: [1, 0, 0], spacing: 1, count: 3 }]);
+    const ids: string[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) ids.push(o.userData.groupId as string); });
+    expect(ids).toEqual(["node-1", "pattern-0", "pattern-1"]);
+  });
+
+  it("patternCircular produces `count` total instances evenly spaced around the axis", () => {
+    const root = singleBox();
+    const boxDistance = 4;
+    root.children[0].position.set(boxDistance, 0, 0);
+    applyEditsMesh(root, [
+      { op: "patternCircular", targets: ["node-1"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 90, count: 4 },
+    ]);
+    const cs = centers(root);
+    expect(cs).toHaveLength(4);
+    // Every copy stays the same distance from the rotation axis.
+    for (const [x, y] of cs) expect(round(Math.hypot(x, y))).toBe(boxDistance);
+    // 90° apart each: (4,0) -> (0,4) -> (-4,0) -> (0,-4).
+    expect(cs).toContainEqual([boxDistance, 0, 0]);
+    expect(cs).toContainEqual([0, boxDistance, 0]);
+    expect(cs).toContainEqual([-boxDistance, 0, 0]);
+    expect(cs).toContainEqual([0, -boxDistance, 0]);
+  });
+
+  it("is a no-op for an unresolved target", () => {
+    const root = singleBox();
+    expect(() =>
+      applyEditsMesh(root, [{ op: "patternLinear", targets: ["node-9"], direction: [1, 0, 0], spacing: 1, count: 3 }])
+    ).not.toThrow();
+    expect(centers(root)).toHaveLength(1);
+  });
+});
+
 describe("applyEditsMesh booleans (three-bvh-csg)", () => {
   function twoBoxes(): THREE.Object3D {
     const root = new THREE.Group();

@@ -69,6 +69,8 @@ You can also drag a file from the OS file explorer (or another editor tab) and d
 
 *The full editor — here previewing `bull.stp` with three colour-coded parts assigned, parametric variables, and every panel populated.*
 
+Opening a STEP/IGES/BREP file for the first time (or reopening one after an external change) shows a native VS Code progress notification with a **Cancel** button while OpenCascade parses and tessellates it. Clicking Cancel stops the result from being applied — the toolbar status line immediately shows "Cancelled" — though the underlying computation, once started, always finishes in the background regardless; a subsequent edit or reopen starts a fresh load. Routine edits (adding/undoing an operation) don't show this notification — with the model already parsed, they're normally near-instant and stay on the lightweight toolbar status line only.
+
 ### Camera Interaction
 
 | Action | Control          |
@@ -91,8 +93,10 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | **Export…** | Convert the model to a compatible format and save it (see [Exporting a Model](#exporting-a-model)) | Ctrl+E |
 | **Save Preprocess…** | Bundle the CAD file plus whichever of its `.parts.json` / `.annotations.json` / `.edits.json` / `.mesh.json` sidecars currently exist into a single `.zip` archive (with a per-entry SHA-256 checksum recorded in its manifest), so the whole working state can be shared or archived as one file | Ctrl+Alt+S |
 | **Load Preprocess…** | Restore a `.zip` built by Save Preprocess: pick a destination for the CAD file, write back whichever sidecars it contains, and open the result — rejects a corrupted/tampered archive or a destination whose file extension doesn't match the archive's own format | Ctrl+Alt+O |
+| **Import SVG…** | Pick a `.svg` file and import every `<path>` in it as sketch **Polyline** edit ops — one per closed/open subpath (a shape with a hole, e.g. a traced letter "O", becomes two separate polylines) — ready to select (**Line** mode) and feed into Build → Surface / Extrude. B-rep only; only plain `<path>` elements are read (no `<rect>`/`<circle>`/other shape elements, and any `transform` attribute on the path is ignored) | — |
+| **Export Silhouette SVG…** | Write a 2D **outline** of the model as an `.svg` file — pick a view (**Current view**, or Front/Back/Top/Bottom/Left/Right/Iso), then an export unit, then a destination. An outline, **not** a dimensioned technical drawing (see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg)) | — |
 
-![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, and Load Preprocess.](/screenshots/file-menu.png)
+![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, and Export Silhouette SVG.](/screenshots/file-menu.png)
 
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette). The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't override VS Code's global Open/Save elsewhere.
 
@@ -123,6 +127,8 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 | **Grid** | Show/hide the world-space grid and axis helpers (ticked when shown) |
 | **Edges** | Show/hide edge lines independently of the shaded faces (ticked when shown) |
 | **Hide smooth edges** | Declutter tangent patch-seam edges (e.g. between adjacent NURBS patches of one conceptually-curved surface on an imported STEP file) while keeping genuine feature edges — ticked when smooth edges are hidden. Off by default, so an existing model looks unchanged until you opt in |
+| **Snap to grid** | While dragging the [Transform Gizmo](#transform-gizmo) in Translate mode, round the move to whole multiples of the **Grid size** field (view-controls Appearance group, default `1`) — off by default |
+| **Snap to points** | While dragging the gizmo, snap a moved solid's nearest corner onto a nearby existing `point-N` vertex (any B-rep vertex or standalone point in the model) once it's within about 1% of the model's size — off by default. Both toggles can be on together; grid-snap applies once to the whole dragged group, point-snap then applies per solid, so different solids may snap to different nearby points |
 | **Screenshot…** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
 
 **Select ▾**
@@ -162,7 +168,7 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Fit** — Same as the toolbar Fit button (reframe in current orientation).
 - **Ctr** — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
 - **Clip group** — Enable a live section/clipping plane along **X**, **Y**, or **Z**, then drag the offset slider to sweep it across the model's bounding box (`-1` = min face, `0` = centre, `1` = max face). The cross-section is solid-filled, not see-through, and also applies to the FE Mesh overlay when shown. Turning it off instantly restores the full model.
-- **Appearance group** — A background-colour swatch (live preview only — the session-only override always wins over the [`cadPreview.background` setting](#settings) until you reload), an opacity slider for the whole model, a **Persp / Ortho** button toggling between perspective and orthographic projection (orbit/pan/zoom, picking, and the orientation cube all keep working under either projection), and a **Units** dropdown (mm/cm/m/in/ft, see [Units](#units) below). For a meshio++-imported source that declares point or cell scalar data (temperatures, stresses, …), a **Colour by field** dropdown also appears here — picking a field paints the model as a viridis colour ramp with a min/max legend; picking "None" reverts. Background/opacity/units/colour-by-field stay session-only (never exported/persisted); colour-by-field additionally resets whenever an edit is applied, since a field's values only stay meaningful for the model's original, unedited geometry.
+- **Appearance group** — A background-colour swatch (live preview only — the session-only override always wins over the [`cadPreview.background` setting](#settings) until you reload), an opacity slider for the whole model, a **Persp / Ortho** button toggling between perspective and orthographic projection (orbit/pan/zoom, picking, and the orientation cube all keep working under either projection), a **Units** dropdown (mm/cm/m/in/ft, see [Units](#units) below), and a **Grid size** field controlling the [Transform Gizmo](#transform-gizmo)'s Snap to grid increment (see **View ▾** above — unrelated to the display grid's own Grid toggle). For a meshio++-imported source that declares point or cell scalar data (temperatures, stresses, …), a **Colour by field** dropdown also appears here — picking a field paints the model as a viridis colour ramp with a min/max legend; picking "None" reverts. Background/opacity/units/grid-size/colour-by-field stay session-only (never exported/persisted); colour-by-field additionally resets whenever an edit is applied, since a field's values only stay meaningful for the model's original, unedited geometry.
 - **Display group** — Five mutually exclusive rendering modes, replacing the old standalone Wireframe toolbar toggle: **Shaded** (the default, lit faces), **Wire** (faces rendered as a mesh of lines), **X-Ray** (translucent faces so edges show through), **Hidden** (edges of occluded geometry shown faintly through solid faces, full-strength where actually visible), and **Flat** (unlit, constant-colour faces — no lighting gradient, useful for reading true part colours without shading artifacts).
 
 ![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, Appearance, and Display.](/screenshots/view-controls.png)
@@ -238,6 +244,18 @@ Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD 
 
 > **Mesh formats** (STL/OBJ/PLY/glTF) have no stored face/edge topology. CAD Preview segments each mesh into connected, near-coplanar **facets** on load, so **Surf** picks a flat face (a cube → its 6 faces) and **Vol** picks the whole object. Highly curved meshes that would split into very many facets are kept whole; **Line** and **Point** are disabled for meshes.
 
+### Inserting Standard Parts
+
+The **Standard Parts** panel (below Parts in the sidebar) searches the hosted [step.parts](https://www.step.parts) catalog — fasteners, bearings, connectors, extrusions, and more — and inserts a result as an ordinary STEP file:
+
+1. Type a query (e.g. "M6 hex bolt") and click **Search**.
+2. Each result shows its name, description, category, and standard designation. Click **Insert…** on one.
+3. A Save dialog appears, defaulting to `<part-id>.step` next to the currently open document. Saving downloads the file (its checksum is verified against the catalog's own recorded SHA-256, when one exists) and opens it as a new tab; dismissing the dialog is a no-op.
+
+![The Standard Parts panel showing two search results with their Insert buttons.](/screenshots/standard-parts-panel.png)
+
+An inserted part opens as its own document rather than merging into whatever model you already had open — combine it with your existing model using the ordinary [Editing Geometry](#editing-geometry) tools (position it with Move/the Transform Gizmo, then Boolean/Mate it in) once both are open. This requires network access to `api.step.parts`; if the service is unreachable, the panel shows a clear status message rather than an error.
+
 ### Editing Geometry
 
 The **Edits** panel (below the Parts panel) applies non-destructive **edit operations** to the model. Edits never touch the CAD file — they are saved as an ordered, replayable op-list in a `<model>.edits.json` sidecar and re-applied each time you open the file.
@@ -256,6 +274,10 @@ To apply a transform:
 1. Open **Select ▾**, click **Selection mode**, choose **Vol**, and click one or more volumes (solids).
 2. In the **Edits** panel open the **EDIT** tab and pick an operation — **Move**, **Rotate**, **Scale**, or **Mirror** — and fill in the numeric fields.
 3. Click **Apply**. The model updates live and the operation is added to the list.
+
+#### Transform Gizmo
+
+Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches a draggable 3D gizmo to the selected volume(s), centred on their shared bounding-box centre — dragging it is a live preview only (nothing is applied yet) and fills in the same numeric fields the form already shows, so typing and dragging stay in sync. **Move** shows a 3-axis arrow set (drag one to move along that axis only); **Rotate** shows rotation rings about the pivot; **Scale** shows drag handles. Selecting two or more volumes moves/rotates/scales them together as one rigid group, not independently. Orbit/pan is automatically suspended for the duration of a gizmo drag. Releasing the drag leaves the preview showing — nothing is added to the op list until you click **Apply**; switching to a different form, or clicking a different selection, discards an uncommitted drag and snaps the model back to where it was. **Snap to grid** and **Snap to points** (see **View ▾** above) both apply live during a Translate drag.
 
 **GEOMETRY → 2D** (all B-rep only; each is typed-in, no selection needed unless noted):
 
@@ -293,6 +315,9 @@ To apply a transform:
 | **Section** | Select volumes (**Vol** mode), define the plane, **Apply** — appends the planar cross-section as a sketch face, leaving the solids untouched (B-rep only) |
 | **Explode** | Drag the slider (or type the factor) for a live preview — bodies spread radially from the model centre as you drag, snapping back at 0 — then **Apply** to commit it as an operation (all formats) |
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
+| **Align** | Select volumes (**Vol** mode); choose an **Axis** (X/Y/Z), an **Extent** (min/center/max of each volume's own bounding box), and a target coordinate **To**; **Apply** — moves each selected volume along that one axis so its own chosen extent lands exactly on the target. Every targeted volume aligns independently, even when the whole model is selected (all formats) |
+| **Linear Pattern** | Select volumes (**Vol** mode); set a **Direction**, a **Spacing**, and a **Count** (total instances, including the original); **Apply** — appends `Count − 1` evenly-spaced copies of each selected volume (all formats) |
+| **Circular Pattern** | Select volumes (**Vol** mode); set an **Axis point** + **Axis direction**, an **Angle** step, and a **Count**; **Apply** — appends `Count − 1` copies arrayed around that axis at equal angular spacing (all formats) |
 
 Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all operations (back to the original model). To remove one specific operation without discarding everything applied after it, hover its row in the history list and click the **✕** that appears — unlike Undo, which only pops the most recent operation, this removes any row directly.
 
@@ -388,9 +413,23 @@ The format you opened is never offered as an export target. Picking any target f
 
 B-rep targets are converted by OpenCascade.js's own writers, so STEP ↔ IGES ↔ BREP round-trips preserve true CAD geometry, not just a tessellated approximation. Mesh targets are generated from the triangulated geometry already shown in the viewer — there is no way to turn a mesh file (or a tessellated B-rep) back into precise CAD surfaces, which is why mesh sources can't export to STEP/IGES/BREP.
 
+### Exporting a Silhouette SVG
+
+Pick **File ▸ Export Silhouette SVG…** (or run `CAD Preview: Export Silhouette SVG…` from the Command Palette with a CAD Preview tab focused) to write a 2D **outline drawing** of the model as an `.svg` file. This is separate from the Export… flow above — an SVG is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
+
+1. **Pick a view.** The first entry is **Current view** — the angle you are currently looking at — followed by Front, Back, Top, Bottom, Left, Right, and Iso. Pressing Escape here cancels the export.
+2. **Pick an export unit.** The same quick-pick every other export shows, defaulting to native mm; Escape here still exports (at mm), it doesn't cancel.
+3. **Choose a destination** in the native Save dialog.
+
+> **It's an outline, not a dimensioned 2D technical drawing — there is no hidden-line removal.** Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette (a hole seen face-on draws as a circle; the same hole seen edge-on draws nothing). OpenCascade's hidden-line machinery is entirely unavailable in the bundled WASM build, so the outline is derived from triangle adjacency instead — which is also why this works for mesh files, not just B-rep. Use it for review notes, documentation figures, and laser/plotter outlines; use the [Measurement](#measuring) tools for any dimension you need to be sure of.
+
+Works for STEP/IGES/BREP (with your edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (from the raw file — edits are **not** baked in, since mesh edits can't be replayed outside the viewer). VTK/MED/CGNS/Exodus/XDMF/MDPA sources are rejected.
+
+The output is a single self-contained `<path>` with no external references, at **1 SVG user unit = 1 model unit** and a physical size in millimetres — so a drawing exported from a native (mm) model prints 1:1 in any vector tool. One caveat: the outline depends on consistent triangle winding, so a mesh with mixed winding (as some exporters and hand-edited files produce) draws spurious interior lines.
+
 ### Comparing Models
 
-Run **CAD Preview: Compare Models…** from the Command Palette to diff two STEP/IGES/BREP, STL, OBJ, or PLY files (any combination) solid-by-solid — useful for checking what actually changed between two versions of a model. If a CAD Preview tab is focused when you run the command, its file is used as model **A** automatically and you're only prompted for **B**; otherwise you're prompted for both.
+Run **CAD Preview: Compare Models…** from the Command Palette to diff two STEP/IGES/BREP, STL, OBJ, PLY, or glTF/GLB files (any combination) solid-by-solid — useful for checking what actually changed between two versions of a model. If a CAD Preview tab is focused when you run the command, its file is used as model **A** automatically and you're only prompted for **B**; otherwise you're prompted for both.
 
 A results tab opens beside the editor showing:
 
@@ -398,14 +437,17 @@ A results tab opens beside the editor showing:
 - **Removed** solids — present only in A.
 - **Added** solids — present only in B.
 
-This is a display-only report (no 3D view, no merge) — to actually look at both models side by side, open each in its own tab and use VS Code's split editor layout. STEP/IGES/BREP, STL, OBJ, and PLY are all supported, in any combination (glTF still isn't — it has no host-side geometry to match without opening it in the viewer first; see the "Known Limitations" section below). For a STEP/IGES/BREP file, the comparison reflects its currently-applied edits (its `.edits.json` sidecar, if any); for an STL/OBJ/PLY file, edits are **not** baked in (there's no way to replay a mesh edit outside the viewer) — a warning banner says so if the file has pending edits, and the comparison runs against the raw file as-is.
+This is a display-only report (no 3D view, no merge) — to actually look at both models side by side, open each in its own tab and use VS Code's split editor layout. STEP/IGES/BREP, STL, OBJ, PLY, and glTF/GLB are all supported, in any combination; the meshio-only formats (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA) are the one remaining exception, since they never expose a triangle array outside their own WASM module. For a STEP/IGES/BREP file, the comparison reflects its currently-applied edits (its `.edits.json` sidecar, if any); for an STL/OBJ/PLY/glTF file, edits are **not** baked in (there's no way to replay a mesh edit outside the viewer) — a warning banner says so if the file has pending edits, and the comparison runs against the raw file as-is.
 
 ## Known Limitations
 
 - **No texture support for OBJ.** MTL material files are not loaded; a default grey material is applied.
 - **No glTF animations.** Animation playback is not implemented — only the first frame (bind pose) is shown.
 - **No BRep-embedded geometry in glTF.** Only triangulated `mesh` primitives inside glTF are rendered.
-- **No Compare Models support for glTF.** STEP/IGES/BREP/STL/OBJ/PLY are all supported (any combination); glTF's format complexity (accessor/sparse-accessor decoding, scene-graph transform composition) was judged too large a surface to hand-roll and validate correctly, so it's excluded from Compare Models specifically (it still opens and previews normally everywhere else).
+- **No Compare Models / Mesh Health support for the meshio-only formats.** STEP/IGES/BREP/STL/OBJ/PLY/glTF are all supported (any combination) — glTF included since a dedicated host-side parser shipped, cross-validated against three.js's own `GLTFLoader`. VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA remain excluded: meshio++'s WASM module converts them to a boundary surface for display but never hands a triangle array back to JS, so there's nothing for the host to match on (they still open and preview normally).
+- **Compressed glTF isn't parsed host-side.** A `.gltf`/`.glb` requiring `KHR_draco_mesh_compression` or `EXT_meshopt_compression` is rejected with a clear error by Compare Models / Mesh Health / Promote to B-rep / Silhouette SVG — the host-side parser can't decode compressed buffers. Viewing such a file in the 3D view is unaffected.
+- **Mesh Health and Promote to B-rep cap out at 50,000 triangles.** Both build one OCCT face per triangle and sew them, so a larger mesh is refused with an actionable error rather than exhausting the WASM heap. Most likely to come up with glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY — decimate first if you hit it.
+- **Silhouette SVG has no hidden-line removal.** It draws an outline, not a dimensioned 2D technical drawing — see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg).
 - **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in-process in the Node extension host — there is no streaming.
 - **One-time WASM startup.** The first B-rep file open triggers OpenCascade.js initialization (~300 ms on a typical machine). Subsequent B-rep files open faster because the kernel is memoized.
 - **Source CAD file is never modified.** CAD Preview never writes the opened CAD file. **Export** writes a new, separate file; **part** definitions are saved to a `<model>.parts.json` sidecar; **pinned measurements** to a `<model>.annotations.json` sidecar; and **edit operations** are saved to a `<model>.edits.json` sidecar — the original geometry is always left untouched. Edits are non-destructive and replayable, and are baked in only when you **Export**.

@@ -237,6 +237,26 @@ interface ExactMeasureResult {
   fromPoint?: [number, number, number]   // kind: "distance" only — the actual nearest points OCCT found
   toPoint?: [number, number, number]
 }
+
+interface ComponentHealthReport {   // src/meshHeal.ts — one per connected component
+  index: number
+  triangleCount: number
+  freeEdgeCount: number
+  nonManifoldEdgeCount: number
+  degenerateFaceCount: number
+  rawArea: number
+  rawVolume: number
+  requiredTolerance: number | null   // the sewing-tolerance-ladder rung that closed it; null if it never closed
+  healedArea: number | null          // null unless requiredTolerance is set
+  healedVolume: number | null
+  areaDeltaPct: number | null
+  volumeDeltaPct: number | null
+}
+
+interface MeshHealthReport {
+  componentCount: number
+  components: ComponentHealthReport[]
+}
 ```
 
 `ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) — cross-document defaults only; a per-document sidecar value or a runtime toggle (the toolbar Grid button) always wins once set. `MassProperties` is computed via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources compute the equivalent client-side and never send it over this protocol at all (no host round trip) — see [Extension Host API](./extension-host-api.md) and [Webview API](./webview-api.md).
@@ -272,10 +292,18 @@ type HostToWebview =
   | { type: 'meshingError'; message: string }
   | ({ type: 'viewerDefaults' } & ViewerDefaults)
   | { type: 'screenshotRequest'; requestId: string }
+  | { type: 'standardPartsSearchResult'; requestId: string; items: StandardPart[]; page: number; totalPages: number; total: number }
+  | { type: 'standardPartsSearchError'; requestId: string; message: string }
+  | { type: 'standardPartsInsertResult'; requestId: string; path: string | null }
+  | { type: 'standardPartsInsertError'; requestId: string; message: string }
+  | { type: 'importSvgResult'; text: string }
+  | { type: 'importSvgError'; message: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
   | { type: 'measureExactError'; requestId: string; message: string }
+  | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
+  | { type: 'meshHealError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
 ```
@@ -538,6 +566,18 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 { "type": "measureExactError", "requestId": "1234-0.56", "message": "This edge is not a circular arc — radius is only defined for circular edges" }
 ```
 
+### `meshHealResult` / `meshHealError`
+
+Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF.
+
+```json
+{ "type": "meshHealResult", "requestId": "1234-0.56", "report": { "componentCount": 1, "components": [{ "index": 0, "triangleCount": 12, "freeEdgeCount": 0, "nonManifoldEdgeCount": 0, "degenerateFaceCount": 0, "rawArea": 600, "rawVolume": 1000, "requiredTolerance": 0.000001, "healedArea": 600, "healedVolume": 1000, "areaDeltaPct": 0, "volumeDeltaPct": 0 }] } }
+```
+
+```json
+{ "type": "meshHealError", "requestId": "1234-0.56", "message": "Mesh healability check requires an STL/OBJ/PLY source." }
+```
+
 ### `colorFieldResult` / `colorFieldError`
 
 Sent in reply to `colorFieldRequest` (webview → host, below) — **meshio++-imported sources only** (`src/meshioService.ts`'s `readMeshioFieldValues`, called from `provider.ts`'s new `colorFieldRequest` handler). `values` is a base64 `Float32Array`, one entry per triangle CORNER in the SAME order as the currently-loaded model's own triangle soup (i.e. `pristineMesh`'s position attribute) — the webview builds a vertex-coloured overlay directly from it with no further reordering (`src/webview/geometryBuilder.ts`'s `buildColorFieldOverlay`). `min`/`max` seed the legend's gradient bar and are NOT length-dimensioned (no unit conversion/suffix — unlike `measureExactResult`, a scalar field like temperature or stress has no length unit to convert).
@@ -548,6 +588,42 @@ Sent in reply to `colorFieldRequest` (webview → host, below) — **meshio++-im
 
 ```json
 { "type": "colorFieldError", "requestId": "1234-0.56", "message": "Field \"Pressure\" not found, not a plain scalar, or the boundary isn't pure triangles." }
+```
+
+### `standardPartsSearchResult` / `standardPartsSearchError`
+
+Sent in reply to `standardPartsSearchRequest` (webview → host, below). `items` is the raw `StandardPart[]` page returned by the hosted [step.parts](https://www.step.parts) REST API (`src/stepPartsService.ts`'s `searchStandardParts` — this extension's only external network dependency); `page`/`totalPages`/`total` mirror the API's own pagination fields. A network/API failure (unreachable host, non-2xx response, timeout) is reported through `standardPartsSearchError`, never a thrown exception — the same `{available: false, reason}` semantics `search_standard_parts`'s MCP tool already uses, just routed through postMessage instead of a JSON-RPC response.
+
+```json
+{ "type": "standardPartsSearchResult", "requestId": "1234-0.56", "items": [{ "id": "iso-4762-m6x20", "name": "ISO 4762 Hex Socket Head Cap Screw M6x20", "description": "...", "category": "Fasteners", "standard": { "body": "ISO", "number": "4762", "designation": "ISO 4762" }, "stepUrl": "https://media.githubusercontent.com/...", "sha256": "..." }], "page": 1, "totalPages": 3, "total": 27 }
+```
+
+```json
+{ "type": "standardPartsSearchError", "requestId": "1234-0.56", "message": "step.parts is unreachable (timed out after 10s)." }
+```
+
+### `standardPartsInsertResult` / `standardPartsInsertError`
+
+Sent in reply to `standardPartsInsertRequest` (webview → host, below), after `provider.ts` downloads the chosen part's STEP file (`downloadStandardPart`, verifying its checksum when the catalog records one), shows a Save dialog defaulting to `<part-id>.step`/`.stp` next to the currently open document, writes the bytes, and opens the result as a new tab via `vscode.openWith`. `path: null` means the user dismissed the Save dialog — a quiet no-op the webview treats as "re-enable the Insert button", not an error (this case never goes through `standardPartsInsertError`).
+
+```json
+{ "type": "standardPartsInsertResult", "requestId": "1234-0.56", "path": "/home/user/project/iso-4762-m6x20.step" }
+```
+
+```json
+{ "type": "standardPartsInsertError", "requestId": "1234-0.56", "message": "Download failed: checksum mismatch — the downloaded bytes do NOT match the catalog's recorded sha256." }
+```
+
+### `importSvgResult` / `importSvgError`
+
+Sent in reply to `importSvgRequest` (webview → host, below) — no `requestId`, unlike every other request/response pair on this page: `vscode.window.showOpenDialog` is modal, so at most one import can plausibly be in flight, leaving nothing to disambiguate. `text` is the picked `.svg` file's raw UTF-8 contents, read host-side with no parsing — parsing (`src/svgImport.ts`'s `parseSvgPaths`) happens in the webview, since the resulting `addPolyline` ops need to be pushed onto `EditsModel` there anyway. A dismissed file-picker dialog is a quiet no-op (posts neither message), mirroring every other file-picker cancellation in this codebase.
+
+```json
+{ "type": "importSvgResult", "text": "<svg><path d=\"M0 0 L10 0 L10 10 Z\"/></svg>" }
+```
+
+```json
+{ "type": "importSvgError", "message": "Could not read the selected file." }
 ```
 
 ---
@@ -566,17 +642,23 @@ type WebviewToHost =
   | { type: 'openPath'; path: string }
   | { type: 'saveSidecars' }
   | { type: 'exportRequest' }
+  | { type: 'exportSvgRequest' }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
   | { type: 'meshingChanged'; options: MeshOptions }
   | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
   | { type: 'meshingExport'; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: 'screenshotButtonClicked' }
+  | { type: 'promoteToBrepButtonClicked' }
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
+  | { type: 'meshHealRequest'; requestId: string }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
+  | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
+  | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
+  | { type: 'importSvgRequest' }
 ```
 
 ### `partsChanged`
@@ -687,6 +769,18 @@ Sent when the user picks **File ▸ Save As… / Export…** in the top menu bar
 { "type": "exportRequest" }
 ```
 
+### `exportSvgRequest`
+
+Sent when the user picks **File ▸ Export Silhouette SVG…** in the top menu bar (or triggers the `cad-preview.exportSvg` command — no keybinding). **No `requestId`, and no result message**, like `promoteToBrepButtonClicked` and unlike `exportRequest`: the host owns the entire flow from here — a view quick-pick (**Current view**, taken from the `viewChanged`-tracked `ViewState` the host already holds for the `.view.json` sidecar, then FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO), the existing export-unit quick-pick, a save dialog, and finally `exportSvgSilhouette` in the kernel worker — so there is nothing to correlate and nothing for the webview to compute. Success, failure, and any per-export warnings all come back through the plain, already-existing generic `status` / `error` messages.
+
+Escape on the *view* pick cancels the export outright (it's the primary choice); Escape on the *unit* pick still exports at native mm, matching `exportRequest`'s own convention. A source that is neither B-rep nor STL/OBJ/PLY/glTF (i.e. a meshio-only format) is rejected with an `error` message before any dialog appears.
+
+Deliberately **not** folded into `exportRequest`: an `"svg"` member of `CadFormat` would ripple through `EXPORT_EXTENSION`/`EXPORT_LABEL`/`exportTargetsFor()`/`fileRouter.ts` and, worst, into `package.json`'s `customEditors.selector` — which would make VS Code try to open `.svg` files in the 3D viewer, colliding head-on with **Import SVG…**.
+
+```json
+{ "type": "exportSvgRequest" }
+```
+
 ### `exportResult` / `exportError`
 
 Sent in reply to `exportMesh`. `data` is base64 when `binary` is `true`, plain text otherwise — the same convention as `EncodedMesh`'s buffers, just generalized to a whole file. The host correlates the reply to its pending request via `requestId` and writes the decoded bytes to the path chosen in the save dialog.
@@ -710,6 +804,14 @@ Sent when the toolbar's **📷 Screenshot** button is clicked — the webview-in
 ### `screenshotResult` / `screenshotError`
 
 Sent in reply to `screenshotRequest`. `data` is always base64 PNG bytes (no `binary` field — unlike `exportResult`, the format is never anything else). Correlated to the pending save via `requestId`, same as `exportResult`.
+
+### `promoteToBrepButtonClicked`
+
+Sent when the Mesh Health panel's **Promote to B-rep…** button is clicked ("Mesh → B-rep promotion" Phase 2) — only reachable once a report shows at least one component that closed. Unlike `screenshotButtonClicked`, there is no follow-up request message: the host runs the ENTIRE flow itself (a format quick-pick over STEP/IGES/BREP, the existing export-unit quick-pick, a save dialog, then `promoteMeshToBrep`) and reports success/failure through the plain, already-existing generic `"status"`/`"error"` messages — no new result type was needed.
+
+```json
+{ "type": "promoteToBrepButtonClicked" }
+```
 
 ```json
 { "type": "screenshotResult", "requestId": "1234-0.56", "data": "iVBORw0KGgo..." }
@@ -735,12 +837,44 @@ Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep sourc
 { "type": "measureExactRequest", "requestId": "1234-0.56", "kind": "distance", "entityIdA": "solid-0", "entityIdB": "solid-1" }
 ```
 
+### `meshHealRequest`
+
+Sent when the Mesh Health panel's **Check Healability** button is clicked — only reachable for a native `.stl`/`.obj`/`.ply`/`.gltf`/`.glb` file on disk (a meshio-converted document hides the panel entirely, mirroring `check_mesh_health`'s own MCP-tool gate; see `meshHealResult`/`meshHealError` above). No parameters beyond `requestId` — the host re-reads the currently-open document's own bytes.
+
+```json
+{ "type": "meshHealRequest", "requestId": "1234-0.56" }
+```
+
 ### `colorFieldRequest`
 
 Sent when the view-controls "Colour by field" `<select>` changes to a non-"None" value, for a meshio++-imported source only (the group stays hidden for every other source — see `webview-api.md`). `field` is the raw array name the source file declares; `kind` is `"point"` or `"cell"` depending on which of `meshioMetadata`'s `pointDataNames`/`cellDataNames` it came from (encoded together as `"point:<name>"`/`"cell:<name>"` in the `<option>` value, split back apart client-side by a fixed-length prefix — not "split on the first colon", since a field name could itself contain one).
 
 ```json
 { "type": "colorFieldRequest", "requestId": "1234-0.56", "field": "Temperature", "kind": "point" }
+```
+
+### `standardPartsSearchRequest`
+
+Sent when the Standard Parts panel's **Search** button is clicked (or Enter is pressed in the query field). `q` is the raw search text; `page` is omitted for a fresh search (page 1).
+
+```json
+{ "type": "standardPartsSearchRequest", "requestId": "1234-0.56", "q": "M6 hex bolt" }
+```
+
+### `standardPartsInsertRequest`
+
+Sent when a search result's **Insert…** button is clicked. `id` is the part's catalog id (used to re-fetch its detail/`stepUrl` and download the STEP bytes host-side); `suggestedName` seeds the Save dialog's default filename.
+
+```json
+{ "type": "standardPartsInsertRequest", "requestId": "1234-0.56", "id": "iso-4762-m6x20", "suggestedName": "iso-4762-m6x20.step" }
+```
+
+### `importSvgRequest`
+
+Sent when **File ▾ → Import SVG…** is clicked. No parameters — the host shows its own `showOpenDialog` filtered to `.svg`; see `importSvgResult`/`importSvgError` above.
+
+```json
+{ "type": "importSvgRequest" }
 ```
 
 ---

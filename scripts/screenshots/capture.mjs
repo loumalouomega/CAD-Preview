@@ -102,6 +102,15 @@ const post = (page, msg) => page.evaluate((m) => window.__post(m), msg);
 /** Post the full set of fixtures so every panel is populated, then settle. */
 async function populate(page) {
   await post(page, fixture("geometry"));
+  // The webview only frames the camera on first load once BOTH geometry and
+  // a "viewState" message have arrived (`main.ts`'s `applyInitialViewIfNeeded`,
+  // added by the "View-state persistence" feature — real documents always get
+  // a real viewState post from provider.ts, even `{view: null}` for a
+  // document with no persisted view yet, so this harness must send the same
+  // to avoid leaving the camera at its unframed default position). Without
+  // this, every shot renders a giant, wildly misframed close-up instead of
+  // the actual model.
+  await post(page, { type: "viewState", view: null });
   await sleep(700); // OCCT geometry decode + first frame
   await post(page, fixture("tree"));
   await post(page, fixture("meshingOptions"));
@@ -134,7 +143,10 @@ const SHOTS = [
   {
     file: "file-menu.png",
     setup: async (page) => { await populate(page); await page.click("#file-menu"); await sleep(150); },
-    target: { clip: { x: 0, y: 0, width: 320, height: 250 } },
+    // Height must cover every item in the dropdown — it grew by one row when
+    // "Export Silhouette SVG…" was added, and a too-short clip silently cuts
+    // the last entry off rather than failing the run.
+    target: { clip: { x: 0, y: 0, width: 320, height: 285 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the
@@ -147,6 +159,48 @@ const SHOTS = [
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },
+  {
+    // The Standard Parts panel talks to the real step.parts network API in
+    // production — there's no WASM fixture for it, so this fakes one
+    // realistic `standardPartsSearchResult` round trip (matching the
+    // requestId the real search click generates) rather than leaving the
+    // panel in its empty pre-search state.
+    file: "standard-parts-panel.png",
+    setup: async (page) => {
+      await populate(page);
+      await page.fill("#standard-parts-query", "hex bolt");
+      await page.click("#standard-parts-search-btn");
+      const requestId = await page.waitForFunction(() => {
+        const req = (window.__sent || []).findLast((m) => m.type === "standardPartsSearchRequest");
+        return req ? req.requestId : false;
+      }).then((h) => h.jsonValue());
+      await post(page, {
+        type: "standardPartsSearchResult",
+        requestId,
+        items: [
+          {
+            id: "iso-4762-m6x20",
+            name: "ISO 4762 Hex Socket Head Cap Screw M6x20",
+            description: "Metric hex socket head cap screw, M6 thread, 20mm length, class 12.9 steel.",
+            category: "Fasteners",
+            standard: { body: "ISO", number: "4762", designation: "ISO 4762" },
+          },
+          {
+            id: "din-931-m6x25",
+            name: "DIN 931 Hex Head Bolt M6x25",
+            description: "Partially threaded hexagon head bolt, M6 thread, 25mm length.",
+            category: "Fasteners",
+            standard: { body: "DIN", number: "931", designation: "DIN 931" },
+          },
+        ],
+        page: 1,
+        totalPages: 1,
+        total: 2,
+      });
+      await sleep(200);
+    },
+    target: { sel: "#standard-parts-panel" },
+  },
   {
     file: "parts-panel.png",
     setup: async (page) => {

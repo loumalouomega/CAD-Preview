@@ -457,3 +457,77 @@ describe("validateEditOp exprs annotation", () => {
     expect(op && "exprs" in op).toBe(false);
   });
 });
+
+describe("align / patternLinear / patternCircular", () => {
+  it("accepts well-formed align/pattern ops", () => {
+    expect(validateEditOp({ op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 }))
+      .toEqual({ op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 });
+    expect(validateEditOp({
+      op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 4,
+    })).toEqual({ op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 4 });
+    expect(validateEditOp({
+      op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 6,
+    })).toEqual({
+      op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 6,
+    });
+  });
+
+  it("rejects malformed align ops", () => {
+    // bad axis enum
+    expect(validateEditOp({ op: "align", targets: ["solid-0"], axis: "w", extent: "min", to: 0 })).toBeNull();
+    // bad extent enum
+    expect(validateEditOp({ op: "align", targets: ["solid-0"], axis: "x", extent: "top", to: 0 })).toBeNull();
+    // no targets
+    expect(validateEditOp({ op: "align", targets: [], axis: "x", extent: "min", to: 0 })).toBeNull();
+    // non-finite `to`
+    expect(validateEditOp({ op: "align", targets: ["solid-0"], axis: "x", extent: "min", to: NaN })).toBeNull();
+  });
+
+  it("rejects malformed pattern ops", () => {
+    // zero direction
+    expect(validateEditOp({
+      op: "patternLinear", targets: ["solid-0"], direction: [0, 0, 0], spacing: 10, count: 4,
+    })).toBeNull();
+    // zero spacing (degenerate — every copy would coincide)
+    expect(validateEditOp({
+      op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 0, count: 4,
+    })).toBeNull();
+    // count below 2
+    expect(validateEditOp({
+      op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 1,
+    })).toBeNull();
+    // non-integer count
+    expect(validateEditOp({
+      op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 2.5,
+    })).toBeNull();
+    // zero axisDir
+    expect(validateEditOp({
+      op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 0], angleDeg: 60, count: 6,
+    })).toBeNull();
+    // count below 2
+    expect(validateEditOp({
+      op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 1,
+    })).toBeNull();
+  });
+
+  it("negative spacing/angle are valid (pattern the other direction)", () => {
+    expect(validateEditOp({
+      op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: -5, count: 3,
+    })).not.toBeNull();
+    expect(validateEditOp({
+      op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: -45, count: 3,
+    })).not.toBeNull();
+  });
+
+  it("pattern ops are topology-changing; align is not (a pure rigid move, like translate)", () => {
+    expect(TOPOLOGY_CHANGING_OPS.has("patternLinear")).toBe(true);
+    expect(TOPOLOGY_CHANGING_OPS.has("patternCircular")).toBe(true);
+    expect(TOPOLOGY_CHANGING_OPS.has("align")).toBe(false);
+  });
+
+  it("neither align nor pattern is B-rep only — both are pure rigid transforms, meaningful for meshes too", () => {
+    expect(BREP_ONLY_OPS.has("align")).toBe(false);
+    expect(BREP_ONLY_OPS.has("patternLinear")).toBe(false);
+    expect(BREP_ONLY_OPS.has("patternCircular")).toBe(false);
+  });
+});

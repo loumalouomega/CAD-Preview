@@ -24,7 +24,8 @@ import {
 } from "./editOps";
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { compileParametricScript } from "./parametricScript";
-import { routeFile, type CadFormat, type FileRoute } from "./fileRouter";
+import { routeFile, COMPARABLE_MESH_FORMATS, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
+import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION } from "./exportTargets";
 import {
   DEFAULT_MESH_OPTIONS,
@@ -64,6 +65,10 @@ import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
+import type { exportSvgSilhouette } from "./svgSilhouetteHost";
+import { normalizeTessellationQuality } from "./tessellationQuality";
+import { SVG_VIEWS } from "./svgSilhouette";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -118,6 +123,9 @@ export interface Pipeline {
   convertToStlBoundaryWithRegions: typeof convertToStlBoundaryWithRegions;
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
+  checkMeshHealth: typeof checkMeshHealth;
+  promoteMeshToBrep: typeof promoteMeshToBrep;
+  exportSvgSilhouette: typeof exportSvgSilhouette;
 }
 
 export interface ToolContext {
@@ -182,6 +190,9 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addHelix: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, pitch: n>0, turns: n>0}',
   addSurfaceFromLines: '{edges: edgeId[] (must connect into a closed loop)}',
   addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
+  align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
+  patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
+  patternCircular: '{targets: solidId[], axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n, count: int>=2 (total instances, incl. original)}',
 };
 
 /** All op kinds, derived from the panel catalog (which `opCatalog.test.ts`
@@ -239,10 +250,14 @@ export function describeCapabilities() {
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
-      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; glTF and meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
+      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
+      "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
+      "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
+      "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Decimate first if you hit it.",
+      "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
-      ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay.",
+      ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay. They ARE readable headless for geometry-only purposes — compare_models, check_mesh_health and promote_mesh_to_brep all work on them via dedicated host-side parsers.",
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written; edits/parts/annotations/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .mesh.json sidecars the extension reads on open.",
       "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
@@ -686,24 +701,37 @@ export async function renderSnapshotTool(
 // ---------------------------------------------------------------------------
 // compare_models
 
-/** Mesh formats `compareModelsTool`/`modelComparePanel.ts` can independently
- * derive solid centroids/volumes for headless, without a webview — mirrors
- * `modelComparePanel.ts`'s own `COMPARABLE_MESH_FORMATS` constant (kept as
- * two separate declarations since the two files don't otherwise share an
- * import, same as the rest of this pair's independent-but-parallel design). */
-const COMPARABLE_MESH_FORMATS = new Set(["stl", "obj", "ply"]);
+/**
+ * Reads a `.gltf`'s sibling `.bin` buffers from disk, if it has any.
+ *
+ * `gltfParser.ts` deliberately has no filesystem access (it stays pure so it
+ * unit-tests and runs in either process), so whichever caller DOES have I/O
+ * resolves the buffers first and passes them in. `resolveExternalBuffers`
+ * itself refuses anything that isn't a plain relative path beside the model.
+ * A `.glb`, or a `.gltf` with embedded `data:` buffers, resolves to `{}`.
+ */
+async function resolveGltfBuffers(modelPath: string, bytes: Uint8Array): Promise<GltfExternalBuffers> {
+  const dir = path.dirname(path.resolve(modelPath));
+  return resolveExternalBuffers(bytes, async (uri) => {
+    try {
+      return new Uint8Array(await fs.readFile(path.resolve(dir, uri)));
+    } catch {
+      return undefined;
+    }
+  });
+}
 
 /**
  * Diffs two models solid-by-solid via `modelDiffHost.ts`'s `compareModels()`
  * — bounding-box-centroid + volume matching, the same heuristic
  * `explodeSolids`/`gmshPartsMap.ts` already use elsewhere. STEP/IGES/BREP
- * (edits baked in via the live OCCT shape) and STL/OBJ/PLY (raw file bytes —
- * no host-side mesh edit engine to bake edits with, same accepted limitation
- * `generate_mesh`'s STL path already has) are supported, in any combination.
- * glTF/meshio-only formats return `supported: false` with a warning rather
- * than throwing, mirroring `get_mass_properties`'s graceful-skip convention:
- * none of those formats has host-side geometry to independently re-derive
- * centroids/volumes from without a webview.
+ * (edits baked in via the live OCCT shape) and STL/OBJ/PLY/glTF (raw file
+ * bytes — no host-side mesh edit engine to bake edits with, same accepted
+ * limitation `generate_mesh`'s STL path already has) are supported, in any
+ * combination. Only meshio-only formats return `supported: false` with a
+ * warning rather than throwing, mirroring `get_mass_properties`'s
+ * graceful-skip convention: they never expose a triangle array to JS, so
+ * there is nothing to re-derive centroids/volumes from without a webview.
  *
  * **`params.includeSnapshots` (roadmap "Visual diff for Compare Models",
  * closed) — opt-in, default `false`.** Pairing the numeric diff above with
@@ -732,7 +760,7 @@ export async function compareModelsTool(
       formatB: routeB.format,
       supported: false,
       warnings: [
-        "compare_models only supports STEP/IGES/BREP/STL/OBJ/PLY sources headlessly — glTF and meshio-only formats have no host-side geometry to independently derive solid centroids/volumes from without a webview.",
+        "compare_models only supports STEP/IGES/BREP/STL/OBJ/PLY/glTF sources headlessly — meshio-only formats (vtk/vtu/med/cgns/exodus/xdmf/mdpa) have no host-side geometry to independently derive solid centroids/volumes from without a webview.",
       ],
     };
   }
@@ -748,6 +776,9 @@ export async function compareModelsTool(
       warnings.push(
         `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — comparing the raw file only.`
       );
+    }
+    if (route.format === "gltf") {
+      return { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffers(modelPath, bytes) };
     }
     return { kind: route.format as "stl" | "obj" | "ply", bytes };
   };
@@ -782,6 +813,126 @@ export async function compareModelsTool(
   const [imagesA, imagesB] = await Promise.all([renderOne("A", sourceA), renderOne("B", sourceB)]);
 
   return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff, images: [...imagesA, ...imagesB] };
+}
+
+// ---------------------------------------------------------------------------
+// check_mesh_health
+
+/**
+ * "Mesh → B-rep promotion, diagnostic-first", Phase 1: a READ-ONLY
+ * heal-quality report for an STL/OBJ/PLY source — free/non-manifold edge
+ * counts, degenerate face count, the OCCT sewing-tolerance-ladder rung
+ * actually required to close each connected component, and the resulting
+ * area/volume delta a hypothetical promotion would produce. Never mutates or
+ * persists anything, and never computes a pass/fail verdict — every field is
+ * a fact (matching `check_interference`'s `hasOverlap`-as-fact convention
+ * and this tool's own `verdictConventions`): a component whose
+ * `requiredTolerance` is `null` never closed at all, and a large
+ * `volumeDeltaPct`/`areaDeltaPct` on one that DID close is a signal the
+ * closure came at real geometric cost — render the verdict yourself.
+ *
+ * There is deliberately no promotion here — `BREP_ONLY_OPS`/
+ * `exportTargets.ts`'s "no path from a triangle mesh back to a B-rep" is
+ * unchanged by this tool. B-rep sources (already exact B-rep geometry) and
+ * glTF/meshio-only formats (no host-side triangle-soup parser) return
+ * `supported: false`.
+ */
+export async function checkMeshHealthTool(
+  ctx: ToolContext,
+  params: { path: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeshHealthReport>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy === "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is already a B-rep source — nothing to heal.`],
+    };
+  }
+  if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} has no host-side triangle-soup parser (only stl/obj/ply/gltf are supported) — cannot compute a heal-quality report headless.`],
+    };
+  }
+
+  const bytes = await readModelBytes(modelPath);
+  const format = route.format as MeshParseFormat;
+  const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const report = await ctx.pipeline.checkMeshHealth(ctx.extensionPath, bytes, format, external);
+  return { format: route.format, supported: true, warnings: [], ...report };
+}
+
+// ---------------------------------------------------------------------------
+// promote_mesh_to_brep
+
+/**
+ * "Mesh → B-rep promotion", Phase 2 — sews a healed STL/OBJ/PLY mesh into a
+ * brand-new STEP/IGES/BREP file at `outputPath` and writes it (`meshHeal.ts`'s
+ * `promoteMeshToBrep`, reusing `exportBRep`'s own writer pipeline). The
+ * ORIGINAL mesh source is untouched — this is a one-shot export, not an
+ * in-place reclassification of the document (see CLAUDE.md's "Mesh → B-rep
+ * promotion" section for why). The written file is an ordinary B-rep
+ * document from the moment it exists — open it with `load_model` to confirm,
+ * or feed it straight into `get_mass_properties`/`measure_exact`/further
+ * `export_brep` calls. Never requires a prior `check_mesh_health` call (this
+ * tool is fully standalone/stateless, matching every other MCP tool in this
+ * server), but running one first is recommended to see whether promotion is
+ * likely to succeed and at what cost before attempting it.
+ */
+export async function promoteMeshToBrepTool(
+  ctx: ToolContext,
+  params: { path: string; outputPath: string; targetFormat?: string; unit?: string }
+): Promise<{ written: string; bytes: number; promotedComponents: number[]; skippedComponents: number[]; warnings: string[] }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy === "occt") {
+    throw new Error(`${route.format} is already a B-rep source — nothing to promote.`);
+  }
+  if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+    throw new Error(`${route.format} has no host-side triangle-soup parser (only stl/obj/ply/gltf are supported) — cannot promote headless.`);
+  }
+
+  const targetFormat = (params.targetFormat as BRepFormat | undefined) ?? "step";
+  if (targetFormat !== "step" && targetFormat !== "iges" && targetFormat !== "brep") {
+    throw new Error(`Invalid targetFormat "${params.targetFormat}" — valid: step, iges, brep.`);
+  }
+
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(modelPath, outputPath);
+  const warnings: string[] = [];
+
+  let unit: DisplayUnit = "mm";
+  if (params.unit != null) {
+    if (!DISPLAY_UNITS.includes(params.unit as DisplayUnit)) {
+      warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm" (no conversion).`);
+    } else {
+      unit = params.unit as DisplayUnit;
+    }
+  }
+
+  const { ops } = await readEdits(modelPath);
+  if (ops.length > 0) {
+    warnings.push(`${modelPath}: pending edits are NOT baked in — ${route.format.toUpperCase()} sources have no host-side edit engine; promoting the raw file only.`);
+  }
+
+  const bytes = await readModelBytes(modelPath);
+  const sourceFormat = route.format as MeshParseFormat;
+  const external = sourceFormat === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external);
+  await fs.writeFile(outputPath, result.bytes);
+
+  return {
+    written: outputPath,
+    bytes: result.bytes.byteLength,
+    promotedComponents: result.promotedComponents,
+    skippedComponents: result.skippedComponents,
+    warnings: [...warnings, ...result.warnings],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1538,13 +1689,16 @@ export async function exportBRepTool(
 
   const { ops } = await readEdits(modelPath);
   const sourceBytes = await readModelBytes(modelPath);
+  const parts = await readParts(modelPath);
   const bytes = await ctx.pipeline.exportBRep(
     ctx.extensionPath,
     sourceBytes,
     route.format as BRepFormat,
     target,
     ops,
-    unit
+    unit,
+    true,
+    parts
   );
   await fs.writeFile(outputPath, bytes);
   return {
@@ -1554,6 +1708,123 @@ export async function exportBRepTool(
     editsBaked: ops.length,
     unit,
     warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// export_svg_silhouette
+
+/**
+ * Writes a 2D outline (silhouette) of a model as an SVG file.
+ *
+ * **Outline only — there is NO hidden-line removal, so this is not a
+ * dimensioned technical drawing.** Back-facing geometry isn't drawn, but
+ * neither are interior feature edges that don't lie on a silhouette. Keeping
+ * that distinction explicit is the point: OCCT's real hidden-line machinery
+ * (`HLRBRep_*`) is entirely unavailable in this WASM build, and the one
+ * surviving alternative (`HLRAppli_ReflectLines`) was probed and produced a
+ * strictly worse drawing — see `svgSilhouetteHost.ts`'s doc comment.
+ *
+ * Works for every source with host-side geometry: B-rep (edits baked in, via
+ * the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in).
+ */
+export async function exportSvgSilhouetteTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    outputPath: string;
+    view?: string;
+    direction?: number[];
+    up?: number[];
+    unit?: string;
+    strokeWidth?: number;
+    tessellationQuality?: string;
+  }
+): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[] }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
+    throw new Error(
+      `${route.format} has no host-side geometry to derive an outline from (supported: STEP/IGES/BREP/STL/OBJ/PLY/glTF) — meshio-only formats never expose a triangle array to JS.`
+    );
+  }
+
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(modelPath, outputPath);
+  const warnings: string[] = [];
+
+  // `view` and `direction` are mutually exclusive; an explicit direction wins,
+  // with a warning rather than a throw (the same never-fail-on-ambiguous-input
+  // convention `unit` uses everywhere in this server).
+  let viewName = "FRONT";
+  let direction: [number, number, number] = SVG_VIEWS.FRONT.direction;
+  let up: [number, number, number] | undefined;
+  if (params.view != null) {
+    const named = SVG_VIEWS[params.view.toUpperCase()];
+    if (!named) {
+      warnings.push(`Unknown view "${params.view}" — valid: ${Object.keys(SVG_VIEWS).join(", ")}. Falling back to FRONT.`);
+    } else {
+      viewName = params.view.toUpperCase();
+      direction = named.direction;
+      up = named.up;
+    }
+  }
+  if (Array.isArray(params.direction) && params.direction.length === 3 && params.direction.every((n) => Number.isFinite(n))) {
+    if (params.view != null) warnings.push("Both view and direction were given — using the explicit direction.");
+    direction = params.direction as [number, number, number];
+    viewName = "custom";
+    up = undefined;
+  }
+  if (Array.isArray(params.up) && params.up.length === 3 && params.up.every((n) => Number.isFinite(n))) {
+    up = params.up as [number, number, number];
+  }
+
+  let unit: DisplayUnit = "mm";
+  if (params.unit != null) {
+    if (!DISPLAY_UNITS.includes(params.unit as DisplayUnit)) {
+      warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm" (no conversion).`);
+    } else {
+      unit = params.unit as DisplayUnit;
+    }
+  }
+
+  const quality = normalizeTessellationQuality(params.tessellationQuality ?? "fine");
+
+  const bytes = await readModelBytes(modelPath);
+  const { ops } = await readEdits(modelPath);
+  let source: CompareSource;
+  if (route.strategy === "occt") {
+    source = { kind: "brep", bytes, format: route.format as BRepFormat, ops };
+  } else {
+    if (ops.length > 0) {
+      warnings.push(
+        `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — drawing the raw file only.`
+      );
+    }
+    source =
+      route.format === "gltf"
+        ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffers(modelPath, bytes) }
+        : { kind: route.format as "stl" | "obj" | "ply", bytes };
+  }
+
+  const result = await ctx.pipeline.exportSvgSilhouette(ctx.extensionPath, source, {
+    direction,
+    up,
+    unit,
+    strokeWidth: params.strokeWidth,
+    quality,
+    title: `${path.basename(modelPath)} — ${viewName}`,
+  });
+  await fs.writeFile(outputPath, result.svg, "utf8");
+
+  return {
+    written: outputPath,
+    bytes: Buffer.byteLength(result.svg, "utf8"),
+    view: viewName,
+    segmentCount: result.segmentCount,
+    triangleCount: result.triangleCount,
+    unit,
+    warnings: [...warnings, ...result.warnings],
   };
 }
 

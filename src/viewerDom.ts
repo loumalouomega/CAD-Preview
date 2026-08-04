@@ -28,6 +28,9 @@ export function viewerBodyHtml(): string {
         <button id="menu-export" role="menuitem" title="Export the model to a new file/format">${icon("export")} Export…</button>
         <button id="menu-save-preprocess" role="menuitem" title="Bundle the CAD file + edits/parts/mesh sidecars into a single .zip">${icon("save")} Save Preprocess…</button>
         <button id="menu-load-preprocess" role="menuitem" title="Restore a CAD file + its sidecars from a .zip and open it">${icon("open")} Load Preprocess…</button>
+        <div class="tb-sep"></div>
+        <button id="menu-import-svg" role="menuitem" title="Import an SVG file's paths as standalone sketch polylines (Vol/Surf mode → Extrude to build a solid)">${icon("open")} Import SVG…</button>
+        <button id="menu-export-svg" role="menuitem" title="Export a 2D outline (silhouette) of the model as an SVG drawing — outline only, no hidden-line removal">${icon("export")} Export Silhouette SVG…</button>
       </div>
     </div>
   </div>
@@ -96,6 +99,27 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="mass-body"></div>
       </div>
+      <div id="mesh-health-panel" hidden>
+        <div id="mesh-health-header">
+          <span id="mesh-health-title">Mesh Health</span>
+          <div id="mesh-health-actions">
+            <button id="mesh-health-check" title="Read-only diagnostic: checks whether this mesh could be closed into a valid B-rep solid, and at what tolerance/cost — does not promote or change anything">${icon("generate")} Check Healability</button>
+            <button id="mesh-health-promote" title="Sew this mesh into a solid and save it as a brand-new STEP/IGES/BREP file — the original mesh file is left untouched" disabled>${icon("export")} Promote to B-rep…</button>
+          </div>
+        </div>
+        <div id="mesh-health-body"></div>
+      </div>
+      <div id="standard-parts-panel">
+        <div id="standard-parts-header">
+          <span id="standard-parts-title">Standard Parts</span>
+        </div>
+        <div id="standard-parts-search-row">
+          <input id="standard-parts-query" type="search" placeholder="Search step.parts…" title="Search the step.parts catalog (e.g. &quot;M6 hex bolt&quot;)">
+          <button id="standard-parts-search-btn" title="Search">Search</button>
+        </div>
+        <div id="standard-parts-body"></div>
+        <div id="standard-parts-status"></div>
+      </div>
     </div>
     <div id="app">
       <canvas id="markup-canvas"></canvas>
@@ -111,6 +135,9 @@ export function viewerBodyHtml(): string {
         <button id="grid" role="menuitemcheckbox" aria-checked="false" title="Toggle the grid and axis helpers">${icon("grid")} Grid</button>
         <button id="edges" role="menuitemcheckbox" aria-checked="true" title="Toggle edge visibility">${icon("edges")} Edges</button>
         <button id="hide-smooth-edges" role="menuitemcheckbox" aria-checked="false" title="Hide tangent patch-seam edges (e.g. between adjacent NURBS patches of one curved surface), keeping genuine feature edges">${icon("edges")} Hide smooth edges</button>
+        <div class="tb-sep"></div>
+        <button id="snap-grid" role="menuitemcheckbox" aria-checked="false" title="Snap Transform Gizmo drags to a grid spacing">${icon("grid")} Snap to grid</button>
+        <button id="snap-points" role="menuitemcheckbox" aria-checked="false" title="Snap Transform Gizmo drags to nearby existing points">${icon("point")} Snap to points</button>
         <div class="tb-sep"></div>
         <button id="screenshot" role="menuitem" title="Save the current view as a PNG">${icon("screenshot")} Screenshot…</button>
       </div>
@@ -236,6 +263,10 @@ export function viewerBodyHtml(): string {
           <option value="in">in</option>
           <option value="ft">ft</option>
         </select>
+      </div>
+      <div class="vc-row">
+        <label for="vc-grid-size" class="vc-label">Grid size</label>
+        <input type="text" inputmode="decimal" id="vc-grid-size" class="vc-num" value="1" title="Grid snap spacing, in the model's own units (mm unless the file declares otherwise)">
       </div>
     </div>
     <div class="vc-group" id="vc-colorfield-group" hidden>

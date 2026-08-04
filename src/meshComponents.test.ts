@@ -6,6 +6,7 @@ import {
   boundsCenter,
   boundsDiagonal,
   volumeOfTriangles,
+  areaOfTriangles,
 } from "./meshComponents";
 
 /** Builds a flat, ungrouped triangle-soup Float32Array (matching
@@ -142,5 +143,32 @@ describe("volumeOfTriangles", () => {
     const { positions, indices } = weldTriangleSoup(soup);
     const all = Array.from({ length: indices.length / 3 }, (_, i) => i);
     expect(volumeOfTriangles(positions, indices, all)).toBeCloseTo(1, 4);
+  });
+});
+
+describe("areaOfTriangles", () => {
+  it("computes a unit box's surface area as exactly 6", () => {
+    const soup = boxSoup([0, 0, 0], [1, 1, 1]);
+    const { positions, indices } = weldTriangleSoup(soup);
+    const all = Array.from({ length: indices.length / 3 }, (_, i) => i);
+    expect(areaOfTriangles(positions, indices, all)).toBeCloseTo(6, 5);
+  });
+
+  it("computes a 2x3x4 box's surface area as 2*(2*3+2*4+3*4) = 52, matching CLAUDE.md's B-rep verification fixture", () => {
+    const soup = boxSoup([0, 0, 0], [2, 3, 4]);
+    const { positions, indices } = weldTriangleSoup(soup);
+    const all = Array.from({ length: indices.length / 3 }, (_, i) => i);
+    expect(areaOfTriangles(positions, indices, all)).toBeCloseTo(52, 4);
+  });
+
+  it("is unaffected by translation", () => {
+    const soup = boxSoup([100, 200, 300], [101, 201, 301]);
+    const { positions, indices } = weldTriangleSoup(soup);
+    const all = Array.from({ length: indices.length / 3 }, (_, i) => i);
+    expect(areaOfTriangles(positions, indices, all)).toBeCloseTo(6, 4);
+  });
+
+  it("returns 0 for an empty triangle list", () => {
+    expect(areaOfTriangles(new Float32Array(), new Uint32Array(), [])).toBe(0);
   });
 });

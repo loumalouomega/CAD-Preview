@@ -19,6 +19,26 @@ export type CadFormat =
  * single source of truth to check against. */
 export const MESHIO_FORMATS: readonly CadFormat[] = ["vtk", "vtu", "med", "cgns", "exodus", "xdmf", "mdpa"];
 
+/** The mesh formats with a pure host-side triangle parser (`stlParser.ts`,
+ * `objParser.ts`, `plyParser.ts`, `gltfParser.ts`) — i.e. the ones whose
+ * geometry the host can derive on its own, with no webview and no OCCT. */
+export type MeshParseFormat = "stl" | "obj" | "ply" | "gltf";
+
+/**
+ * The mesh formats every host-side geometry consumer accepts: `compare_models`
+ * (centroid/volume signatures), `check_mesh_health`, and `promote_mesh_to_brep`.
+ *
+ * This used to be declared TWICE — once in `mcpTools.ts` and once in
+ * `modelComparePanel.ts` — with a comment justifying the duplication as "the
+ * two files don't otherwise share an import". That premise stopped being true
+ * (both already import `routeFile` from this module), and the copies were a
+ * live drift hazard: adding glTF meant widening two sets and nine separate
+ * `as "stl" | "obj" | "ply"` casts, two of which were runtime string
+ * comparisons TypeScript could not have flagged. One declaration here, with
+ * `MeshParseFormat` as the matching type, removes both problems.
+ */
+export const COMPARABLE_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat>(["stl", "obj", "ply", "gltf"]);
+
 export interface FileRoute {
   strategy: RenderStrategy;
   format: CadFormat;

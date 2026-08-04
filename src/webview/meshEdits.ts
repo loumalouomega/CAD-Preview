@@ -23,10 +23,19 @@ export function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Objec
   // deterministic by op-list position and stable across repeated replays of the
   // same list (independent of whether a given primitive's mesh build succeeds).
   let primCount = 0;
+  // Separate counter for pattern-generated copies (`pattern-{K}`) — kept
+  // distinct from `primCount` since a single patternLinear/patternCircular op
+  // produces MULTIPLE new objects (one per copy), not one per op.
+  let patternCount = 0;
   for (const op of ops) {
     if (BREP_ONLY_OPS.has(op.op)) continue; // not meaningful on a triangle mesh
     if (op.op === "boolean") { applyMeshBoolean(root, op); continue; }
     if (op.op === "explode") { applyMeshExplode(root, op.factor); continue; }
+    if (op.op === "align") { applyMeshAlign(root, op); continue; }
+    if (op.op === "patternLinear" || op.op === "patternCircular") {
+      patternCount = applyMeshPattern(root, op, patternCount);
+      continue;
+    }
     // Holes MUST dispatch before the `add*` primitive branch below (their op
     // names also start with "add") — they subtract from an existing target and
     // never produce a `prim-{K}` body, so they don't touch `primCount` either.
@@ -154,6 +163,68 @@ function applyMeshExplode(root: THREE.Object3D, factor: number): void {
     const off = b.getCenter(new THREE.Vector3()).sub(c).multiplyScalar(factor);
     child.applyMatrix4(new THREE.Matrix4().makeTranslation(off.x, off.y, off.z));
   }
+}
+
+/** Translates each targeted object along `op.axis` so its OWN world-space bbox
+ * `op.extent` (min/center/max — `THREE.Box3.min`/`.max` index by the SAME
+ * `"x"|"y"|"z"` keys `op.axis` already uses) lands at `op.to`, mirroring
+ * `occtOperations.ts`'s `alignSolids` (always independent per target, no
+ * "whole selection as one rigid group" shortcut). A target already at the
+ * target coordinate (`|delta| < 1e-9`) is left untouched. */
+function applyMeshAlign(root: THREE.Object3D, op: Extract<EditOp, { op: "align" }>): void {
+  const idx = op.axis === "x" ? 0 : op.axis === "y" ? 1 : 2;
+  for (const target of resolveMeshTargets(root, op.targets)) {
+    const box = new THREE.Box3().setFromObject(target);
+    if (box.isEmpty()) continue;
+    const current = op.extent === "min" ? box.min[op.axis] : op.extent === "max" ? box.max[op.axis] : (box.min[op.axis] + box.max[op.axis]) / 2;
+    const delta = op.to - current;
+    if (Math.abs(delta) < 1e-9) continue;
+    const v: Vec3 = [0, 0, 0];
+    v[idx] = delta;
+    target.applyMatrix4(new THREE.Matrix4().makeTranslation(...v));
+  }
+}
+
+/**
+ * Linear/circular array: for each resolved target, clones it (`Object3D.clone
+ * (true)` — geometry/materials shared by reference, only the transform is
+ * independent) `op.count - 1` times, applying an increasing offset to each
+ * copy while leaving the ORIGINAL untouched — mirroring `occtOperations.ts`'s
+ * `patternSolids` "keep original + append copies" shape. Each clone gets a
+ * fresh `pattern-{K}` id (`nextId`, threaded through by the caller so ids
+ * stay unique and deterministic across the whole op-list fold, the same
+ * discipline `primCount` already uses for `addX` ops). Returns the updated
+ * counter.
+ */
+function applyMeshPattern(
+  root: THREE.Object3D,
+  op: Extract<EditOp, { op: "patternLinear" | "patternCircular" }>,
+  nextId: number
+): number {
+  const transformAt: (k: number) => THREE.Matrix4 =
+    op.op === "patternLinear"
+      ? (() => {
+          const dir = new THREE.Vector3(...op.direction);
+          if (dir.lengthSq() === 0) return () => new THREE.Matrix4();
+          dir.normalize();
+          return (k: number) => new THREE.Matrix4().makeTranslation(dir.x * op.spacing * k, dir.y * op.spacing * k, dir.z * op.spacing * k);
+        })()
+      : (() => {
+          const axis = new THREE.Vector3(...op.axisDir);
+          if (axis.lengthSq() === 0) return () => new THREE.Matrix4();
+          axis.normalize();
+          return (k: number) => conjugateAboutPoint(new THREE.Matrix4().makeRotationAxis(axis, ((op.angleDeg * k) * Math.PI) / 180), op.axisPoint);
+        })();
+
+  for (const target of resolveMeshTargets(root, op.targets)) {
+    for (let k = 1; k < op.count; k++) {
+      const clone = target.clone(true);
+      clone.applyMatrix4(transformAt(k));
+      clone.userData.groupId = `pattern-${nextId++}`;
+      root.add(clone);
+    }
+  }
+  return nextId;
 }
 
 /**

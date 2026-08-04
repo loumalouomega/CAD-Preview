@@ -1,11 +1,12 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { loadMeshFromUrl } from "./meshLoaders";
-import type { CadFormat } from "../fileRouter";
+import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay } from "./geometryBuilder";
 import { viridisCssGradientStops } from "./colorMap";
 import { splitMeshesIntoFacets } from "./meshFacets";
+import { parseSvgPaths } from "../svgImport";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
@@ -13,6 +14,7 @@ import { AnnotationsModel } from "./annotationsModel";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
 import { EditsPanel } from "./editsPanel";
+import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
 import { evaluateVariables, resolveEditOps } from "../editVariables";
@@ -20,6 +22,9 @@ import { extractIdentifiers } from "../paramExpr";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
+import { MeshHealthPanel } from "./meshHealthPanel";
+import { StandardPartsPanel } from "./standardPartsPanel";
+import type { StandardPart } from "../stepPartsService";
 import { computeMeshMassProperties } from "./meshMassProperties";
 import { targetSizeForPreset } from "./meshSizeHeuristics";
 import { SIZE_MAX_SENTINEL } from "../meshOptions";
@@ -28,6 +33,7 @@ import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import { VisibilityState } from "./visibilityState";
 import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
+import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, snapTranslateDelta, nearestSnapPoint, type TransformBase } from "./gizmoTransform";
 import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
@@ -276,6 +282,201 @@ function cancelExplodePreview(): void {
   explodePreviewBases = null;
 }
 
+// ── Transform Gizmo (roadmap "Transform gizmo", closed) ──────────────────
+// Three.js's own `TransformControls` (viewer.ts's thin wrapper) drives a
+// LIVE PREVIEW of the currently-open translate/rotate/scale form — dragging
+// never itself pushes an edit op; Apply is still the only thing that does
+// (the same non-negotiable invariant `explodePreview.ts`'s slider already
+// established, and reused here on purpose rather than a second write path
+// that would bypass `EditsModel`'s push/undo/redo/remove contract).
+
+type GizmoMode = "translate" | "rotate" | "scale";
+
+/** One targeted volume's pristine transform, captured once per drag
+ * (not per frame) — every `objectChange` recomputes from THIS, never from
+ * the object's own already-dragged-this-frame state, matching
+ * `explodePreview.ts`'s never-compound-onto-the-previous-frame discipline. */
+interface GizmoTarget extends TransformBase {
+  object: THREE.Object3D;
+}
+
+/** Which transform-kind form (if any) is currently open — `null` when no
+ * form, or a non-transform form, is open. Set by `EditsPanelCallbacks.
+ * onFormChanged`. */
+let gizmoMode: GizmoMode | null = null;
+/** Non-null only WHILE a drag is in progress (set on `dragging-changed`
+ * true, cleared on Apply/cancel) — `null` between drags, even though the
+ * live-previewed positions remain displayed until Apply or a form/selection
+ * change discards them. */
+let gizmoTargets: GizmoTarget[] | null = null;
+
+// ── Grid/entity snapping (roadmap "Grid and entity snapping", closed) ────
+// Session-only, like every other Appearance-group control (opacity,
+// background, edge visibility) — never persisted. Wired from
+// `setupViewMenu()`/`setupAppearanceControls()`; read from the gizmo's
+// `onChange` handler below. Entity-point snap takes priority over grid
+// snap PER TARGET when both are enabled and a close point is found for
+// that specific target — grid snap still applies to any target that
+// point-snap didn't resolve.
+let snapToGridEnabled = false;
+let snapToPointsEnabled = false;
+let gridSnapSize = 1;
+
+/** Every `point-N` entity's live world position currently in the model —
+ * the entity-point snap candidate set. `point-N` sprites are the ONLY
+ * individually-tagged, always-fully-populated point entities (FE-mesh
+ * overlay vertices are display-only and excluded from picking already;
+ * edge/face-mesh vertices were never separately tagged entities at all) —
+ * see CLAUDE.md's "Bottom-up wireframe modeling" section. */
+function collectSnapPoints(): THREE.Vector3[] {
+  const points: THREE.Vector3[] = [];
+  viewer.getModel()?.traverse((o) => {
+    if (o instanceof THREE.Sprite && o.userData.entityType === "point") points.push(o.position.clone());
+  });
+  return points;
+}
+
+function gizmoModeForForm(id: PanelOpId | null): GizmoMode | null {
+  return id === "translate" || id === "rotate" || id === "scale" ? id : null;
+}
+
+/** Resolves a `solid-N`/`node-N` id to its live top-level `Object3D` — the
+ * same single-level (not deep) traversal `explodePreview.ts`'s own
+ * `captureExplodeBase` already uses, since a volume's whole transform lives
+ * on this one top-level, `groupId`-tagged node regardless of source format. */
+function resolveVolumeObject(id: string): THREE.Object3D | null {
+  return viewer.getModel()?.children.find((c) => c.userData.groupId === id) ?? null;
+}
+
+/** Re-attaches the gizmo at the CURRENT selection's combined bbox centre, or
+ * detaches it when there's nothing (compatible) selected. Safe to call at
+ * any time EXCEPT mid-drag (a drag must never have its attach target yanked
+ * out from under it) — callers gate on `!viewer.isGizmoDragging()`.
+ * Unconditionally discards any uncommitted preview first: this is also the
+ * SELECTION-change entry point (not just the form-change one, which already
+ * cancels via `updateGizmoForForm`), so a leftover live-dragged transform on
+ * a since-deselected target must never be left stranded — same "switching
+ * away discards the preview" rule `explodePreview.ts`'s form-switch cancel
+ * already established, just also triggered by a selection change here. */
+function refreshGizmoAttachment(): void {
+  cancelGizmoPreview();
+  if (!gizmoMode || viewer.isGizmoDragging()) return;
+  const objects = selectedVolumes().map(resolveVolumeObject).filter((o): o is THREE.Object3D => o !== null);
+  if (objects.length === 0) {
+    viewer.detachTransformGizmo();
+    return;
+  }
+  const box = new THREE.Box3();
+  for (const o of objects) box.union(new THREE.Box3().setFromObject(o));
+  viewer.attachTransformGizmo(box.getCenter(new THREE.Vector3()), gizmoMode);
+}
+
+/** Restores every currently-tracked target to its pristine (pre-drag) base
+ * and clears gizmo drag state — called both when the user leaves the form
+ * without applying (via `onFormChanged`/selection change) and right before
+ * a real op-stack commit, exactly mirroring `cancelExplodePreview` above and
+ * for the identical reason: the eventual model rebuild alone isn't
+ * synchronous enough (a B-rep edit is an async host round trip) to be
+ * trusted to supersede a stale live-dragged position without a visible
+ * flash of wrong geometry in between. */
+function cancelGizmoPreview(): void {
+  if (gizmoTargets) {
+    for (const t of gizmoTargets) {
+      t.object.position.copy(t.basePosition);
+      t.object.quaternion.copy(t.baseQuaternion);
+      t.object.scale.copy(t.baseScale);
+    }
+  }
+  gizmoTargets = null;
+}
+
+/** Called whenever the Edits panel's open form changes — attaches/detaches/
+ * retargets the gizmo for translate/rotate/scale, or hides it for every
+ * other form (including no form at all). */
+function updateGizmoForForm(id: PanelOpId | null): void {
+  gizmoMode = gizmoModeForForm(id);
+  if (!gizmoMode) {
+    cancelGizmoPreview();
+    viewer.detachTransformGizmo();
+    return;
+  }
+  refreshGizmoAttachment(); // also discards any preview from the PREVIOUS form/mode
+}
+
+viewer.setGizmoHandlers(
+  () => {
+    // Fires continuously while dragging ("objectChange"). `gizmoTargets` is
+    // guaranteed non-null here (set on drag-start, just below) — Three.js
+    // never fires this event outside an active drag.
+    if (!gizmoTargets || !gizmoMode) return;
+    const d = viewer.getGizmoDelta();
+    // Grid snap rounds the SHARED delta once (before the per-target loop) so
+    // a multi-target drag still moves as one rigid group — see
+    // `snapTranslateDelta`'s doc comment for why this must NOT be computed
+    // per-target. Entity-point snap is the opposite: it's inherently a
+    // per-object precision operation (aligning THIS object's resulting
+    // position onto some nearby existing point), so it's resolved inside
+    // the loop below, once per target, and — when it finds a candidate —
+    // wins over the grid-snapped position for that one target only.
+    if (gizmoMode === "translate" && snapToGridEnabled) {
+      d.positionDelta.copy(snapTranslateDelta(d.positionDelta, gridSnapSize));
+    }
+    const snapCandidates = gizmoMode === "translate" && snapToPointsEnabled ? collectSnapPoints() : null;
+    const snapTolerance = (viewer.getModelExtents()?.diagonal ?? 0) * 0.01;
+    for (const t of gizmoTargets) {
+      if (gizmoMode === "translate") {
+        const result = applyTranslateDelta(t, d);
+        const snapped = snapCandidates ? nearestSnapPoint(result.position, snapCandidates, snapTolerance) : null;
+        t.object.position.copy(snapped ?? result.position);
+      } else if (gizmoMode === "rotate") {
+        const r = applyRotateDelta(t, d);
+        t.object.position.copy(r.position);
+        t.object.quaternion.copy(r.quaternion);
+      } else {
+        const s = applyScaleDelta(t, d);
+        t.object.position.copy(s.position);
+        t.object.scale.copy(s.scale);
+      }
+    }
+    // Push the live-dragged values into the open form's fields — the answer
+    // to "what happens when a drag overwrites a field the user had typed an
+    // expression into" (see `EditsPanel.setVecField`'s doc comment): the
+    // drag wins, silently, same as the user typing over it by hand. Reflects
+    // the GRID-snapped delta when grid snap is active; deliberately does NOT
+    // try to reflect entity-point snap in the form (that's inherently a
+    // per-target adjustment with no single shared "delta" left to show when
+    // multiple targets each snapped to a different nearby point).
+    if (gizmoMode === "translate") {
+      editsPanel.setVecField("vec", [d.positionDelta.x, d.positionDelta.y, d.positionDelta.z]);
+    } else if (gizmoMode === "rotate") {
+      const { axis, angleRad } = quaternionToAxisAngle(d.quaternionDelta);
+      editsPanel.setVecField("axisPoint", [d.pivot.x, d.pivot.y, d.pivot.z]);
+      editsPanel.setVecField("axisDir", [axis.x, axis.y, axis.z]);
+      editsPanel.setNumField("angleDeg", (angleRad * 180) / Math.PI);
+    } else {
+      editsPanel.setVecField("center", [d.pivot.x, d.pivot.y, d.pivot.z]);
+      editsPanel.setVecField("factors", [d.scaleDelta.x, d.scaleDelta.y, d.scaleDelta.z]);
+    }
+  },
+  (dragging) => {
+    if (dragging) {
+      // Drag start: capture a FRESH pristine base from wherever targets
+      // currently sit — usually their true pristine position, but starting
+      // a SECOND drag after a first one (without clicking Apply in between)
+      // deliberately captures from the already-previewed position, letting
+      // successive drags compose/refine before committing.
+      const objects = selectedVolumes().map(resolveVolumeObject).filter((o): o is THREE.Object3D => o !== null);
+      gizmoTargets = objects.map((object) => ({
+        object, basePosition: object.position.clone(), baseQuaternion: object.quaternion.clone(), baseScale: object.scale.clone(),
+      }));
+    }
+    // Drag end: deliberately leave the preview showing — Apply is still the
+    // only thing that pushes an op. `gizmoTargets` stays non-null so a
+    // second drag (see above) or Apply's own read of the form fields both
+    // still have something to work from.
+  }
+);
+
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onUndo: () => editsModel.undo(),
   onRedo: () => editsModel.redo(),
@@ -297,6 +498,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       case "mirror": op = { op: "mirror", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal }; break;
     }
     if (draft.exprs) op.exprs = draft.exprs;
+    cancelGizmoPreview(); // discard the live preview — the real op replay rebuilds everything
     editsModel.push(op);
     setStatus("");
   },
@@ -384,6 +586,46 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       return;
     }
     editsModel.push({ op: "mate", faceA: faces[0], faceB: faces[1] });
+    setStatus("");
+  },
+  onApplyAlign: (draft) => {
+    const targets = selectedVolumes();
+    if (targets.length === 0) {
+      setStatus("Select one or more volumes (Vol mode) before aligning.", true);
+      return;
+    }
+    const op: EditOp = { op: "align", targets, axis: draft.axis, extent: draft.extent, to: draft.to };
+    if (draft.exprs) op.exprs = draft.exprs;
+    editsModel.push(op);
+    setStatus("");
+  },
+  onApplyPattern: (draft) => {
+    const targets = selectedVolumes();
+    if (targets.length === 0) {
+      setStatus("Select one or more volumes (Vol mode) before patterning.", true);
+      return;
+    }
+    if (!Number.isInteger(draft.count) || draft.count < 2) {
+      setStatus("Count must be an integer ≥ 2.", true);
+      return;
+    }
+    let op: EditOp;
+    switch (draft.kind) {
+      case "patternLinear":
+        if (!draft.direction.some((v) => v !== 0)) { setStatus("Direction must be non-zero.", true); return; }
+        if (draft.spacing === 0) { setStatus("Spacing must be non-zero.", true); return; }
+        op = { op: "patternLinear", targets, direction: draft.direction, spacing: draft.spacing, count: draft.count };
+        break;
+      case "patternCircular":
+        if (!draft.axisDir.some((v) => v !== 0)) { setStatus("Axis must be non-zero.", true); return; }
+        op = {
+          op: "patternCircular", targets, axisPoint: draft.axisPoint,
+          axisDir: draft.axisDir, angleDeg: draft.angleDeg, count: draft.count,
+        };
+        break;
+    }
+    if (draft.exprs) op.exprs = draft.exprs;
+    editsModel.push(op);
     setStatus("");
   },
   onApplyModify: (draft) => {
@@ -680,6 +922,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "addVolumeFromSurfaces", faces });
     setStatus("");
   },
+  onFormChanged: updateGizmoForForm,
 });
 
 // ── Meshing (GMSH FE-mesh generation) ────────────────────────────────────
@@ -734,6 +977,14 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
 // dependency) — see `computeAndRenderMeshMassProperties` below.
 let sourceKind: "brep" | "mesh" | null = null;
 let massPropertiesRequestId: string | null = null;
+
+// ── Standard parts (step.parts search/insert) ────────────────────────────
+// Search requestId is stale-guarded like every other request/response round
+// trip here; insert requestId maps to the part id so the settling response
+// can re-enable the right row's Insert button (searches/inserts are
+// otherwise independent — a fresh search never cancels an in-flight insert).
+let standardPartsSearchRequestId: string | null = null;
+const standardPartsInsertRequests = new Map<string, string>(); // requestId -> part id
 
 // ── Colour by scalar field (meshio++ sources only) ──────────────────────────
 // Region NAMES arrive unconditionally in `meshioMetadata`; the field's actual
@@ -844,6 +1095,47 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
     massPropertiesRequestId = requestId;
     massPropertiesPanel.renderMessage("Computing…");
     post({ type: "massPropertiesRequest", requestId, entityId: target ? target.entityId : null });
+  },
+});
+
+// ── Mesh Health (roadmap "Mesh -> B-rep promotion", both phases closed) ────
+// Eligible only for a NATIVE stl/obj/ply/gltf file on disk — the same
+// COMPARABLE_MESH_FORMATS gate check_mesh_health/promote_mesh_to_brep's MCP
+// tools apply. A meshio-converted document (`loadMeshBytes`, already-
+// triangulated but not itself one of those FILES) stays ineligible.
+let meshHealthEligibleFormat: MeshParseFormat | null = null;
+let meshHealRequestId: string | null = null;
+
+const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health-panel")!, {
+  onCheck: () => {
+    if (!meshHealthEligibleFormat) return;
+    const requestId = `${Date.now()}-${Math.random()}`;
+    meshHealRequestId = requestId;
+    meshHealthPanel.renderMessage("Checking…");
+    post({ type: "meshHealRequest", requestId });
+  },
+  onPromote: () => {
+    if (!meshHealthEligibleFormat) return;
+    post({ type: "promoteToBrepButtonClicked" });
+  },
+});
+
+function setMeshHealthEligibility(format: MeshParseFormat | null): void {
+  meshHealthEligibleFormat = format;
+  meshHealthPanel.setEligible(format !== null);
+}
+
+const standardPartsPanel = new StandardPartsPanel(document.getElementById("standard-parts-panel")!, {
+  onSearch: (q: string) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    standardPartsSearchRequestId = requestId;
+    post({ type: "standardPartsSearchRequest", requestId, q });
+  },
+  onInsert: (part: StandardPart) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    standardPartsInsertRequests.set(requestId, part.id);
+    const ext = part.stepUrl.toLowerCase().endsWith(".stp") ? "stp" : "step";
+    post({ type: "standardPartsInsertRequest", requestId, id: part.id, suggestedName: `${part.id}.${ext}` });
   },
 });
 
@@ -962,6 +1254,7 @@ function renderHighlight(): void {
   const entities: SelectedEntity[] =
     previewPartIndex !== null ? partsModel.entitiesOf(previewPartIndex) : selection.list();
   viewer.renderSelection(entities);
+  refreshGizmoAttachment(); // no-op unless a translate/rotate/scale form is open
 }
 
 // The pristine, tagged-but-unedited loaded object for mesh formats. Mesh edits
@@ -1004,6 +1297,8 @@ function rebuildMeshModel(): void {
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model);
   explodePreviewBases = null; // stale references to the just-replaced model's objects
+  gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
+  viewer.detachTransformGizmo();
   resetColorFieldSelection(); // any edit invalidates the field values' triangle correlation, same as importedRegionInfo above
   refreshColors();
   renderAnnotationsList(); // detached status may have changed
@@ -1410,6 +1705,61 @@ function setupViewControls(): void {
 // sidecars (the CAD file is read-only); Save As and Export both reuse the
 // existing export flow. Wired inside the same guard as the view controls so a
 // failure here can never block the `ready` handshake below.
+/**
+ * Converts an imported SVG's `<path>` elements into standalone `addPolyline`
+ * ops (roadmap "SVG import → profile ops", closed) — genuinely no new
+ * kernel surface, since `addPolyline` already exists exactly for "straight
+ * edges through points in order." One op per subpath (a single `<path
+ * d="...">` with a hole, e.g. a letter "O", parses into TWO subpaths and
+ * becomes two separate `addPolyline` ops — matching how `Build → Surface`
+ * already treats each closed loop as its own entity to select later).
+ *
+ * Placement: SVG's Y axis points DOWN; every other coordinate this codebase
+ * ever shows the user (view axes, typed op fields, …) is Y-up, so Y is
+ * negated on the way in — an unflipped import would look correct in a flat
+ * top-down view but mirrored in every other orientation. Imports flat into
+ * the XY plane at z=0, 1 SVG user unit = 1mm (this codebase's cascade
+ * unit) — a deliberate, simple default matching how Inkscape/Illustrator
+ * "trace outline" exports are typically already sized for downstream CAD
+ * use; a poorly-scaled source can be fixed afterward with the EXISTING
+ * `scale` op, same as any other placement adjustment.
+ *
+ * Degenerate subpaths (fewer than 2 points; fewer than 3 for a closed one,
+ * or a closed one whose first/last point are exactly equal after the Y
+ * flip) are silently skipped rather than pushing an op `validateEditOp`
+ * would reject anyway — same graceful-degradation rule as every other
+ * import path in this codebase.
+ */
+function importSvgPaths(svgText: string): void {
+  if (sourceKind === "mesh") {
+    // addPolyline is BREP_ONLY_OPS (meshes have no sketch/exact topology) —
+    // same scope as every other wireframe/2D-profile op in this codebase.
+    // Caught here, before pushing anything, rather than letting the ops
+    // silently no-op in `applyEditsMesh`'s BREP_ONLY_OPS skip — a user
+    // importing an SVG deserves to know why nothing appeared.
+    setStatus("SVG import builds sketch polylines, which are B-rep only — open a STEP/IGES/BREP file to use it.", true);
+    return;
+  }
+  const subpaths = parseSvgPaths(svgText);
+  let imported = 0;
+  for (const sub of subpaths) {
+    const points: [number, number, number][] = sub.points.map(([x, y]) => [x, -y, 0]);
+    if (points.length < 2) continue;
+    if (sub.closed && (points.length < 3 || pointsEqual(points[0], points[points.length - 1]))) continue;
+    editsModel.push({ op: "addPolyline", points, closed: sub.closed });
+    imported++;
+  }
+  if (imported === 0) {
+    setStatus("No usable paths found in that SVG (no <path> elements, or every one was degenerate).", true);
+    return;
+  }
+  setStatus(`Imported ${imported} path${imported === 1 ? "" : "s"} from SVG as sketch polylines.`);
+}
+
+function pointsEqual(a: [number, number, number], b: [number, number, number]): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
 function setupFileMenu(): void {
   const menu = setupDropdown("file-menu", "file-dropdown");
   if (!menu) return;
@@ -1426,6 +1776,8 @@ function setupFileMenu(): void {
   item("menu-export", () => post({ type: "exportRequest" }));
   item("menu-save-preprocess", () => post({ type: "savePreprocessRequest" }));
   item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
+  item("menu-import-svg", () => post({ type: "importSvgRequest" }));
+  item("menu-export-svg", () => post({ type: "exportSvgRequest" }));
 }
 
 /**
@@ -1444,6 +1796,21 @@ function setupViewMenu(): void {
     grid.setAttribute("aria-checked", String(viewer.toggleGrid()));
   });
   grid?.setAttribute("aria-checked", String(viewer.isGridVisible()));
+
+  // Grid/entity snapping (roadmap "Grid and entity snapping", closed) —
+  // session-only booleans read by the Transform Gizmo's `onChange` handler
+  // above; clicks inside this dropdown don't close it (established "flip a
+  // mode, keep the panel open" convention this menu already follows).
+  const snapGridBtn = document.getElementById("snap-grid");
+  snapGridBtn?.addEventListener("click", () => {
+    snapToGridEnabled = !snapToGridEnabled;
+    snapGridBtn.setAttribute("aria-checked", String(snapToGridEnabled));
+  });
+  const snapPointsBtn = document.getElementById("snap-points");
+  snapPointsBtn?.addEventListener("click", () => {
+    snapToPointsEnabled = !snapToPointsEnabled;
+    snapPointsBtn.setAttribute("aria-checked", String(snapToPointsEnabled));
+  });
 
   // #edges is owned by setupAppearanceControls() — it holds the visibility
   // flag; this only reflects it. Screenshot is one-shot, so it dismisses.
@@ -1542,6 +1909,16 @@ function setupAppearanceControls(): AppearanceControlsHandle {
 
   document.getElementById("vc-unit")?.addEventListener("change", (e) => {
     setDisplayUnit((e.target as HTMLSelectElement).value as DisplayUnit);
+  });
+
+  // Grid snap spacing (roadmap "Grid and entity snapping", closed) — a
+  // plain number, not a parametric-expression field like the Edits panel's
+  // op params, so a non-positive/unparsable value just falls back to
+  // `gridSnapSize`'s last-good value (same tolerant-input spirit as every
+  // other session-only Appearance control, no error toast for a bad keystroke).
+  document.getElementById("vc-grid-size")?.addEventListener("input", (e) => {
+    const n = Number((e.target as HTMLInputElement).value);
+    if (Number.isFinite(n) && n > 0) gridSnapSize = n;
   });
 
   // Display mode replaces the old standalone Wireframe toolbar toggle —
@@ -1918,8 +2295,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group);
         explodePreviewBases = null; // stale references to the just-replaced model's objects
+        gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
+        viewer.detachTransformGizmo();
         lastRawMassProperties = null; // stale — refers to the just-replaced model
         lastMeasurement = null; // stale entity ids — refer to the just-replaced model
+        setMeshHealthEligibility(null); // B-rep sources have nothing to heal
         clearMarkupOverlay?.();
         refreshColors();
         renderAnnotationsList(); // detached status may have changed for the new model
@@ -1973,10 +2353,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadUrl":
+      setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
       await loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase());
       break;
 
     case "loadMeshBytes":
+      // A meshio-converted STL boundary is not itself a real .stl/.obj/.ply
+      // file on disk (the actual source is VTK/MED/CGNS/Exodus/XDMF/MDPA) —
+      // check_mesh_health's MCP tool would reject that source's real path
+      // the same way, so the panel stays ineligible here too.
+      setMeshHealthEligibility(null);
       // Host-converted bytes (meshio++-imported document — VTK/MED/CGNS/
       // Exodus/XDMF/MDPA — funneled into an STL boundary surface via
       // `convertToStlBoundary`/`convertToStlBoundaryWithRegions`; see
@@ -2123,6 +2509,41 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       massPropertiesPanel.renderMessage(msg.message, true);
       break;
 
+    case "standardPartsSearchResult":
+      if (msg.requestId !== standardPartsSearchRequestId) break; // stale — a newer search superseded it
+      standardPartsPanel.renderResults(msg.items, msg.total);
+      break;
+
+    case "standardPartsSearchError":
+      if (msg.requestId !== standardPartsSearchRequestId) break;
+      standardPartsPanel.renderError(msg.message);
+      break;
+
+    case "standardPartsInsertResult": {
+      const id = standardPartsInsertRequests.get(msg.requestId);
+      standardPartsInsertRequests.delete(msg.requestId);
+      if (!id) break;
+      standardPartsPanel.onInsertSettled(id);
+      if (msg.path) standardPartsPanel.setStatus(`Inserted → ${msg.path}`);
+      break;
+    }
+
+    case "standardPartsInsertError": {
+      const id = standardPartsInsertRequests.get(msg.requestId);
+      standardPartsInsertRequests.delete(msg.requestId);
+      if (id) standardPartsPanel.onInsertSettled(id);
+      standardPartsPanel.setStatus(msg.message, true);
+      break;
+    }
+
+    case "importSvgResult":
+      importSvgPaths(msg.text);
+      break;
+
+    case "importSvgError":
+      setStatus(`SVG import failed: ${msg.message}`, true);
+      break;
+
     case "measureExactResult": {
       if (msg.requestId !== measureExactRequestId) break; // stale — a newer request/Clear superseded it
       const label = msg.result.kind === "distance" ? "D" : msg.result.kind === "edgeLength" ? "L" : "R";
@@ -2135,6 +2556,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== measureExactRequestId) break;
       setMeasureReadout(msg.message, true);
       (document.getElementById("measure-exact-btn") as HTMLButtonElement | null)?.removeAttribute("disabled");
+      break;
+
+    case "meshHealResult":
+      if (msg.requestId !== meshHealRequestId) break; // stale — a newer check/load superseded it
+      meshHealthPanel.render(msg.report);
+      break;
+
+    case "meshHealError":
+      if (msg.requestId !== meshHealRequestId) break;
+      meshHealthPanel.renderMessage(msg.message, true);
       break;
 
     case "colorFieldResult": {

@@ -7,7 +7,8 @@ import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, extractVertices, type SolidGroup, type EdgeLine, type PointEntity } from "./meshExtract";
 import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter } from "./occtOperations";
 import { readXcafAssembly, correlateAssemblyTree, type XcafAssemblyInfo } from "./xcafTree";
-import type { TreeNode } from "./protocol";
+import { buildXcafDocumentForExport, writeXcafStep, readXcafFallbackShape } from "./xcafWrite";
+import type { TreeNode, Part } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import { type DisplayUnit, unitScaleFactor, igesUnitName } from "./lengthUnits";
@@ -396,6 +397,17 @@ export function readShape(oc: any, filePath: string, format: string, cleanup: Ar
     reader.TransferRoots();
     const shape = reader.OneShape();
     cleanup.push(shape);
+    // A STEP file this codebase's own XCAF writer produced (see
+    // xcafWrite.ts's doc comment) reads as zero shapes through the plain
+    // reader — its content is wrapped in AP242 "document management"
+    // bookkeeping the plain STEPControl_Reader can't unwrap. Fall back to
+    // the document-aware reader ONLY in that case; every ordinary STEP file
+    // (including every existing fixture) reports NbShapes() > 0 here and
+    // never reaches this branch.
+    if (reader.NbShapes() === 0) {
+      const fallback = readXcafFallbackShape(oc, filePath, cleanup);
+      if (fallback) return fallback;
+    }
     return shape;
   }
 
@@ -473,6 +485,15 @@ type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
  * Gmsh reads it), so keeping its header at the OCCT-native `"mm"` label while
  * still scaling its geometry — the exact behavior this codebase already had
  * before STEP-header-patching existed — has zero externally-visible effect.
+ *
+ * `parts` (default `[]`, i.e. no-op) is used ONLY for a `"step"` target —
+ * when at least one part names a solid, the file is written via
+ * `xcafWrite.ts`'s XCAF-aware path instead of the plain writer, carrying
+ * assembly structure and per-part NAMES (color export is investigated and
+ * confirmed non-functional in this OCCT build — see that module's doc
+ * comment). Every OTHER caller (meshing input, mass properties, `compare_
+ * models`, …) passes no `parts` and gets byte-for-byte the same plain
+ * writer output as before this feature existed.
  */
 export async function exportBRep(
   extensionPath: string,
@@ -481,7 +502,8 @@ export async function exportBRep(
   targetFormat: BRepFormat,
   ops: EditOp[] = [],
   unit: DisplayUnit = "mm",
-  labelStepUnit = true
+  labelStepUnit = true,
+  parts: Part[] = []
 ): Promise<Uint8Array> {
   const oc = await getOcct(extensionPath);
 
@@ -504,7 +526,7 @@ export async function exportBRep(
     let shape = applyEditsBRep(oc, baseShape, ops, cleanup);
     const factor = unitScaleFactor(unit);
     if (factor !== 1 && targetFormat !== "iges") shape = scaleShapeForExport(oc, shape, factor, cleanup);
-    writeShape(oc, shape, outPath, targetFormat, cleanup, unit);
+    writeShape(oc, shape, outPath, targetFormat, cleanup, unit, parts);
     const outBytes: Uint8Array = oc.FS.readFile(outPath);
     if (targetFormat === "step" && unit !== "mm" && labelStepUnit) {
       const text = Buffer.from(outBytes).toString("utf8");
@@ -534,12 +556,27 @@ export async function exportBRep(
  * by feeding it an 11+ character MEMFS path (this build's undocumented
  * path-length limit, documented above in `exportBRep`), not a real limitation
  * of the writer itself.
+ *
+ * `parts` (STEP only) routes through `xcafWrite.ts`'s `buildXcafDocumentForExport`
+ * — a `null` result (no parts, no named solids, or a structural surprise
+ * `buildXcafDocumentForExport` isn't confident about) falls through to the
+ * exact same plain `STEPControl_Writer_1` path this function always used.
+ *
+ * Exported (was module-private) so `meshHeal.ts`'s `promoteMeshToBrep` can
+ * write an in-memory promoted shape (built from a sewn/solidified mesh, not
+ * read from a source file) through the exact same writer paths `exportBRep`
+ * uses — no behavior change to this function itself.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function writeShape(oc: any, shape: any, filePath: string, format: BRepFormat, cleanup: Array<{ delete(): void }>, unit: DisplayUnit = "mm"): void {
+export function writeShape(oc: any, shape: any, filePath: string, format: BRepFormat, cleanup: Array<{ delete(): void }>, unit: DisplayUnit = "mm", parts: Part[] = []): void {
   const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
 
   if (format === "step") {
+    const docHandle = parts.length > 0 ? buildXcafDocumentForExport(oc, shape, parts, cleanup) : null;
+    if (docHandle) {
+      writeXcafStep(oc, docHandle, filePath, cleanup);
+      return;
+    }
     const writer = new oc.STEPControl_Writer_1();
     cleanup.push(writer);
     const transferStatus = writer.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true);

@@ -25,7 +25,7 @@ export type PanelOpId =
   // EDIT — modify
   | "shell" | "splitByPlane" | "section"
   // EDIT — assembly
-  | "explode" | "mate"
+  | "explode" | "mate" | "align" | "patternLinear" | "patternCircular"
   // GEOMETRY 2D — wireframe
   | "addPoint" | "addLine" | "addArc"
   // GEOMETRY 2D — curves
@@ -179,6 +179,9 @@ export const OP_CATALOG: {
       ops: [
         entry("explode", "Explode", ["explode"]),
         entry("mate", "Mate", ["mate"]),
+        entry("align", "Align", ["align"]),
+        entry("patternLinear", "Linear Pattern", ["patternLinear"]),
+        entry("patternCircular", "Circular Pattern", ["patternCircular"]),
       ],
     },
   ],
@@ -247,6 +250,9 @@ function describeOpBase(op: EditOp): string {
     case "addHelix": return `⌇ Helix r=${op.radius} p=${op.pitch} ×${op.turns}`;
     case "addSurfaceFromLines": return `⌗ Surface from ${op.edges.length} lines`;
     case "addVolumeFromSurfaces": return `⬢ Volume from ${op.faces.length} surfaces`;
+    case "align": return `⇥ Align ${op.targets.length} ${op.axis}:${op.extent}→${op.to}`;
+    case "patternLinear": return `⠿ Linear ×${op.count} (${op.direction.join(",")}) s=${op.spacing}`;
+    case "patternCircular": return `⠿ Circular ×${op.count} ${op.angleDeg}°`;
   }
 }
 

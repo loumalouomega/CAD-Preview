@@ -1,13 +1,16 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
-import { loadBRepCached, disposeBRepCache, exportBRep, type BRepCacheEntry } from "./occtService";
+import { createKernelClient, type KernelClient } from "./kernelClient";
 import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellationQuality";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
-import { convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata, readMeshioFieldValues } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
-import type { CadFormat, FileRoute } from "./fileRouter";
+import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
+import { COMPARABLE_MESH_FORMATS } from "./fileRouter";
+import { SVG_VIEWS } from "./svgSilhouette";
+import type { CompareSource } from "./modelDiffHost";
+import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
@@ -16,14 +19,12 @@ import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri } from "./meshOptionsStore";
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
-import { generateMesh, exportGeoUnrolled, exportMeshFormat, exportMdpa, type MeshGenerationInput } from "./gmshService";
+import type { MeshGenerationInput } from "./gmshService";
 import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
 import { normalizeViewerDefaults } from "./viewerDefaults";
-import { computeMassProperties } from "./massProperties";
-import { measureExact, rebindPartsAcrossOps } from "./entityFacts";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
@@ -43,6 +44,27 @@ const PARTS_SAVE_DEBOUNCE_MS = 500;
 const EXTERNAL_CHANGE_DEBOUNCE_MS = 300;
 
 const BREP_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
+
+/**
+ * Reads a `.gltf`'s sibling `.bin` buffers, when the source is glTF at all.
+ *
+ * `gltfParser.ts` deliberately has no I/O capability (it stays pure so it
+ * unit-tests and runs unchanged in the kernel worker), so whichever caller
+ * has one resolves the buffers and passes them in; `resolveExternalBuffers`
+ * itself refuses anything that isn't a plain relative path beside the model.
+ * Returns `undefined` for every other format, and for a `.glb` or a `.gltf`
+ * with embedded `data:` buffers there is simply nothing to read.
+ */
+async function resolveGltfBuffersFor(uri: vscode.Uri, format: CadFormat, bytes: Uint8Array): Promise<GltfExternalBuffers | undefined> {
+  if (format !== "gltf") return undefined;
+  return resolveExternalBuffers(bytes, async (relative) => {
+    try {
+      return await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, "..", relative));
+    } catch {
+      return undefined;
+    }
+  });
+}
 
 interface PendingExport {
   resolve: (result: { data: string; binary: boolean }) => void;
@@ -64,6 +86,8 @@ interface EditorSession {
   savePreprocess(): void;
   /** Save the current 3D view as a PNG (save dialog). */
   screenshot(): void;
+  /** Export a 2D outline (silhouette) of the model as an SVG drawing. */
+  exportSvg(): void;
 }
 
 /** Read-only custom document: previews hold no editable state beyond their URI. */
@@ -87,7 +111,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   /** The focused editor, tracked so commands/keybindings can reach it. */
   private activeSession?: EditorSession;
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  /**
+   * The one kernel-worker child process (+ its request queue) for this whole
+   * extension-host instance (roadmap "OCCT in a forked child process",
+   * Phase 2+3 — see CLAUDE.md) — created once here, NOT per-document, since
+   * the underlying child is itself shared across every open document (same
+   * "one child per parent process" design Phase 0+1 already established for
+   * the MCP server). Every kernel call in this file goes through it instead
+   * of importing `occtService.ts`/`gmshService.ts`/etc. directly.
+   */
+  private readonly pipeline: KernelClient;
+
+  constructor(private readonly context: vscode.ExtensionContext) {
+    // Assigned in the constructor body, not a field initializer, so there is
+    // no ambiguity about running after the `context` parameter property is
+    // set (field initializers and parameter-property assignment ordering is
+    // a real TS subtlety not worth relying on here).
+    this.pipeline = createKernelClient(this.context.extensionPath);
+  }
 
   public static register(context: vscode.ExtensionContext): vscode.Disposable {
     const provider = new CadPreviewProvider(context);
@@ -121,8 +162,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.loadPreprocess", () => void this.loadPreprocessDialog()),
       vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
+      vscode.commands.registerCommand("cad-preview.exportSvg", withSession((s) => s.exportSvg())),
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
-        void runCompareModelsCommand(this.context, this.activeSession?.uri)
+        void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
     ];
   }
@@ -172,14 +214,34 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
-    // Live OCCT parse+replay cache for THIS document (roadmap "Base-shape
-    // caching and incremental replay", closed) — see `loadBRepCached`'s doc
-    // comment in `occtService.ts` for the reuse rules. Held as a plain
-    // mutable holder (not a closure `let` `handleBRep` could reassign
-    // directly, since `handleBRep` is a class method, not itself inside this
-    // closure) so both `handleBRep` and this constructor's `onDidDispose`
-    // below can reach the SAME, current entry.
-    const brepCache: { current: BRepCacheEntry | undefined } = { current: undefined };
+    // The document's OCCT parse+replay cache (roadmap "Base-shape caching
+    // and incremental replay", closed) now lives INSIDE the kernel-worker
+    // child (`loadBRepCachedForDocument`'s own doc comment in
+    // `kernelClient.ts`/`kernelWorker.ts` has the reuse rules — Phase 2 of
+    // "OCCT in a forked child process" moved it there, since a live OCCT
+    // handle can never cross the IPC boundary). All this closure needs is a
+    // stable key identifying the document to the child — the URI string —
+    // used by both `handleBRep` and this method's `onDidDispose` below.
+    const documentKey = document.uri.toString();
+    // Progress reporting and cancellation (roadmap item, closed — see
+    // CLAUDE.md's "Progress reporting and cancellation" section for the full
+    // scoping rationale). `loadModel()` can be called again (a newer edit, an
+    // external reload) before a prior `handleBRep` call has finished — there
+    // is no `await` chain linking them, so without this counter whichever
+    // call's `loadBRepCached` happens to resolve LAST would win and could
+    // clobber a fresher, already-displayed result with a stale one. Bumped
+    // once per `handleBRep` invocation (a fresh "generation"); a captured
+    // generation that no longer matches `.current` by the time the async work
+    // resolves means either a NEWER load started (silently discard — that
+    // newer call will post its own result) or the user clicked Cancel on the
+    // progress notification (also silently discard — the cancellation
+    // handler already posted its own "Cancelled" status). Either way this is
+    // the maximally-honest cancellation this synchronous-WASM pipeline can
+    // offer without forking OCCT into a child process (roadmap item "OCCT in
+    // a forked child process", not attempted this session): the actual OCCT
+    // computation always runs to completion, "cancel" only ever suppresses
+    // applying its result.
+    const brepLoadGeneration: { current: number } = { current: 0 };
 
     // The live edit op-list + parametric variables. Loaded from the sidecar on
     // `ready`, updated on every `editsChanged`. Ops arrive from the webview
@@ -228,8 +290,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
     };
 
-    /** (Re)tessellates a B-rep source with the current edits, (re)loads a mesh, or (re)converts a meshio-only source. */
-    const loadModel = () => {
+    /**
+     * (Re)tessellates a B-rep source with the current edits, (re)loads a
+     * mesh, or (re)converts a meshio-only source.
+     *
+     * `showProgress` opts a B-rep load into a native, cancellable
+     * `vscode.window.withProgress` notification — reserved for the two call
+     * sites where a load is genuinely likely to be slow with a cold cache
+     * (the document's initial open, and a full external-file reload): a
+     * routine `editsChanged`/external-edits-sidecar-change re-tessellation
+     * almost always hits the base-shape cache (roadmap "Base-shape caching
+     * and incremental replay", closed) and completes in tens of
+     * milliseconds, so popping a notification on every keystroke-driven edit
+     * would be pure noise, not a helpful signal. The stale-result-discard
+     * safety net below (via `brepLoadGeneration`) applies to EVERY call
+     * regardless of `showProgress`, since the underlying race it closes can
+     * happen on any of the four call sites, not just the slow ones.
+     */
+    const loadModel = (showProgress = false) => {
       if (!route) return;
       if (route.strategy === "three") {
         const url = webviewPanel.webview.asWebviewUri(document.uri).toString();
@@ -243,13 +321,44 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           currentParts = parts;
         });
       } else {
-        void this.handleBRep(
-          document.uri,
-          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
-          post,
-          currentEdits,
-          brepCache
-        );
+        const format = route.format as Extract<CadFormat, "step" | "iges" | "brep">;
+        const generation = ++brepLoadGeneration.current;
+        if (showProgress) {
+          void vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `CAD Preview: Loading ${format.toUpperCase()}…`,
+              cancellable: true,
+            },
+            async (progress, token) => {
+              token.onCancellationRequested(() => {
+                // Supersede this in-flight call (the discard-the-result half
+                // of cancellation — still needed regardless of the line
+                // below, since the kernel-worker child is shared across
+                // every open document: killing it can only ever interrupt
+                // whichever ONE call is truly executing right now, so a
+                // request that was merely QUEUED behind another document's
+                // in-flight call needs this generation bump to still be
+                // discarded once it eventually DOES run against the
+                // respawned child).
+                brepLoadGeneration.current++;
+                post({ type: "status", text: "Cancelled" });
+                // Roadmap "OCCT in a forked child process", Phase 3: genuine
+                // interruption, not just a discarded result — kills the
+                // shared kernel-worker child. See this.pipeline's own doc
+                // comment on the one sharp edge this has: if some OTHER
+                // document's call happens to be the one truly executing at
+                // this exact moment (this document's own call was merely
+                // queued behind it), that other call is interrupted too, not
+                // just this one — an accepted trade-off of one shared child.
+                this.pipeline.cancelCurrent();
+              });
+              await this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration, progress);
+            }
+          );
+        } else {
+          void this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration);
+        }
       }
     };
 
@@ -286,7 +395,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
-        const result = await rebindPartsAcrossOps(
+        const result = await this.pipeline.rebindPartsAcrossOps(
           this.context.extensionPath,
           bytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
@@ -358,7 +467,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     watchForExternalChange(document.uri, () => {
       if (!route) return;
       post({ type: "status", text: "File changed on disk — reloading…" });
-      loadModel();
+      loadModel(true);
     });
 
     watchForExternalChange(editsSidecarUri(document.uri), () => {
@@ -421,7 +530,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
     webviewPanel.onDidDispose(() => {
       for (const d of watcherDisposables) d.dispose();
-      if (brepCache.current) disposeBRepCache(brepCache.current);
+      // Fire-and-forget — nothing depends on this settling before the tab
+      // finishes closing (matches every other fire-and-forget cleanup in
+      // this method); frees this document's cached OCCT handles inside the
+      // shared kernel-worker child.
+      void this.pipeline.disposeBRepCacheForDocument(documentKey);
     });
 
     // Track this editor as the active one while it is focused, so the
@@ -429,7 +542,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const session: EditorSession = {
       uri: document.uri,
       export: () => {
-        if (route) this.handleExport(document.uri, route, post, pending, currentEdits);
+        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts);
       },
       save: flushSidecars,
       savePreprocess: () => {
@@ -437,6 +550,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       },
       screenshot: () => {
         void this.handleScreenshot(document.uri, post, pending);
+      },
+      exportSvg: () => {
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState);
       },
     };
     const track = () => {
@@ -458,7 +574,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const parsed = await readEdits(document.uri);
         currentEdits = parsed.ops;
         currentVariables = parsed.variables;
-        loadModel();
+        loadModel(true);
         post({ type: "edits", ops: currentEdits, variables: currentVariables });
         // The meshio route's own handleMeshio() (above) owns the parts round
         // trip for that route instead (it may need to auto-create Parts from
@@ -568,7 +684,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           }
           const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
           const startedAt = Date.now();
-          const result = await generateMesh(this.context.extensionPath, input, options, parts);
+          const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
           post({
             type: "meshingResult",
             positions: encodeBuffer(result.positions),
@@ -602,7 +718,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           }
           const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options, unit);
           if (msg.target === "msh") {
-            const result = await generateMesh(this.context.extensionPath, input, options, parts);
+            const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
               document.uri,
               "msh",
@@ -611,7 +727,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
               post
             );
           } else if (msg.target === "geoUnrolled") {
-            const geo = await exportGeoUnrolled(this.context.extensionPath, input, options, parts);
+            const geo = await this.pipeline.exportGeoUnrolled(this.context.extensionPath, input, options, parts);
             await this.promptSaveAndWrite(
               document.uri,
               "geo_unrolled",
@@ -635,7 +751,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
             // exportMdpa's doc comment), unlike every other format below.
             const format = meshExportFormat(msg.target)!;
-            const text = await exportMdpa(
+            const text = await this.pipeline.exportMdpa(
               this.context.extensionPath,
               input,
               options,
@@ -658,8 +774,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // comment; before 9.7.0 this needed a legacy MSH 2.2 detour).
             // See `meshExportFormats.ts`'s doc comment for the MED/CGNS caveats.
             const format = meshExportFormat(msg.target)!;
-            const meshed = await generateMesh(this.context.extensionPath, input, options, parts);
-            const { bytes, companion } = await exportViaMeshio(meshed.mshText, msg.target);
+            const meshed = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
+            const { bytes, companion } = await this.pipeline.exportViaMeshio(meshed.mshText, msg.target);
             await this.promptSaveAndWrite(
               document.uri,
               format.extension,
@@ -683,7 +799,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // plain generate-then-write with no companion file, see `exportMeshFormat`.
             const format = meshExportFormat(msg.target);
             if (!format) throw new Error(`Unknown mesh export format: ${msg.target}`);
-            const text = await exportMeshFormat(this.context.extensionPath, input, options, parts, msg.target);
+            const text = await this.pipeline.exportMeshFormat(this.context.extensionPath, input, options, parts, msg.target);
             await this.promptSaveAndWrite(
               document.uri,
               format.extension,
@@ -714,7 +830,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "exportRequest") {
-        if (route) this.handleExport(document.uri, route, post, pending, currentEdits);
+        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts);
         return;
       }
 
@@ -742,6 +858,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "promoteToBrepButtonClicked") {
+        if (route) void this.handlePromoteToBrep(document.uri, route, post);
+        return;
+      }
+
       if (msg.type === "screenshotResult" || msg.type === "screenshotError") {
         const p = pending.get(msg.requestId);
         if (!p) return;
@@ -757,7 +878,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             throw new Error("Mass properties are computed for B-rep sources on the host; mesh sources compute this client-side.");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const properties = await computeMassProperties(
+          const properties = await this.pipeline.computeMassProperties(
             this.context.extensionPath,
             bytes,
             route.format as Extract<CadFormat, "step" | "iges" | "brep">,
@@ -771,13 +892,72 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "standardPartsSearchRequest") {
+        try {
+          const result = await this.pipeline.searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });
+          if (!result.available) throw new Error(result.reason);
+          post({
+            type: "standardPartsSearchResult",
+            requestId: msg.requestId,
+            items: result.value.items,
+            page: result.value.page,
+            totalPages: result.value.totalPages,
+            total: result.value.total,
+          });
+        } catch (err) {
+          post({ type: "standardPartsSearchError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "standardPartsInsertRequest") {
+        try {
+          const downloaded = await this.pipeline.downloadStandardPart(msg.id);
+          if (!downloaded.available) throw new Error(downloaded.reason);
+          const defaultUri = vscode.Uri.joinPath(document.uri, "..", msg.suggestedName);
+          const saveUri = await vscode.window.showSaveDialog({ defaultUri, filters: { "STEP files": ["step", "stp"] } });
+          if (!saveUri) {
+            post({ type: "standardPartsInsertResult", requestId: msg.requestId, path: null });
+            return;
+          }
+          await vscode.workspace.fs.writeFile(saveUri, downloaded.value.bytes);
+          post({ type: "standardPartsInsertResult", requestId: msg.requestId, path: saveUri.fsPath });
+          await this.openPathInEditor(saveUri.fsPath);
+        } catch (err) {
+          post({ type: "standardPartsInsertError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "importSvgRequest") {
+        try {
+          const svgUris = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            openLabel: "Import SVG",
+            filters: { "SVG files": ["svg"] },
+          });
+          const svgUri = svgUris?.[0];
+          if (!svgUri) return; // dialog dismissed — a quiet no-op, not an error
+          const bytes = await vscode.workspace.fs.readFile(svgUri);
+          post({ type: "importSvgResult", text: Buffer.from(bytes).toString("utf8") });
+        } catch (err) {
+          post({ type: "importSvgError", message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "exportSvgRequest") {
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState);
+        return;
+      }
+
       if (msg.type === "measureExactRequest") {
         try {
           if (!route || route.strategy !== "occt") {
             throw new Error("Exact measurement requires a B-rep source; mesh sources have no host-side geometry to re-derive it from.");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const result = await measureExact(
+          const result = await this.pipeline.measureExact(
             this.context.extensionPath,
             bytes,
             route.format as Extract<CadFormat, "step" | "iges" | "brep">,
@@ -799,11 +979,30 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             throw new Error("Colour-by-field is only available for meshio++-imported sources (VTK/MED/CGNS/Exodus/XDMF/MDPA).");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const result = await readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
+          const result = await this.pipeline.readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
           if (!result) throw new Error(`Field "${msg.field}" not found, not a plain scalar, or the boundary isn't pure triangles.`);
           post({ type: "colorFieldResult", requestId: msg.requestId, values: encodeBuffer(result.values), min: result.min, max: result.max });
         } catch (err) {
           post({ type: "colorFieldError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "meshHealRequest") {
+        try {
+          if (!route || route.strategy !== "three") {
+            throw new Error("Mesh healability check requires an STL/OBJ/PLY/glTF source.");
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const report = await this.pipeline.checkMeshHealth(
+            this.context.extensionPath,
+            bytes,
+            route.format as MeshParseFormat,
+            await resolveGltfBuffersFor(document.uri, route.format, bytes)
+          );
+          post({ type: "meshHealResult", requestId: msg.requestId, report });
+        } catch (err) {
+          post({ type: "meshHealError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }
@@ -813,26 +1012,45 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   }
 
   /**
-   * `cache` is a per-document holder (`brepCache` in `resolveCustomEditor`),
-   * mutated in place: `loadBRepCached` reuses `cache.current` when possible
-   * (skipping the STEP/IGES/BREP parse, and — for a pure op-list append —
-   * the full replay too), and this method always writes the fresh entry it
-   * returns back into `cache.current` for the next call. On any error, the
-   * held entry is dropped (not reused, not explicitly disposed — see
-   * `loadBRepCached`'s doc comment for why a thrown call must not attempt to
-   * free its own stale handles) so the NEXT call starts from a clean parse.
+   * `documentKey` identifies this document to the kernel-worker child's own
+   * cache (roadmap "Base-shape caching and incremental replay", closed, now
+   * living entirely inside the child as of "OCCT in a forked child process"
+   * Phase 2 — see `kernelClient.ts`'s `DocumentPipeline.
+   * loadBRepCachedForDocument` doc comment for the reuse rules; this method
+   * no longer sees or manages a `BRepCacheEntry` at all, since live OCCT
+   * handles can never cross the IPC boundary).
+   *
+   * `generation`/`genHolder` implement the stale-result-discard safety net
+   * documented on `brepLoadGeneration` in `resolveCustomEditor` — every
+   * `return`/`post` past the `loadBRepCachedForDocument` await first checks
+   * `generation === genHolder.current`, and silently does nothing (no post)
+   * when it doesn't: a newer `loadModel()` call has since started, or the
+   * user cancelled via `progress`'s notification (whose
+   * `onCancellationRequested` handler already bumped `genHolder.current`,
+   * posted its own "Cancelled" status, and killed the shared kernel-worker
+   * child — this method must not post a second, possibly-conflicting
+   * status/result after that). `progress` is present only for the two call
+   * sites that opt into a native progress notification (see `loadModel`'s
+   * doc comment) — every `progress.report` call is additionally guarded by
+   * `progress &&` since it's `undefined` on a routine, no-notification edit
+   * re-tessellation.
    */
   private async handleBRep(
     uri: vscode.Uri,
     format: Extract<CadFormat, "step" | "iges" | "brep">,
     post: (msg: HostToWebview) => void,
     ops: EditOp[] = [],
-    cache: { current: BRepCacheEntry | undefined }
+    documentKey: string,
+    generation: number,
+    genHolder: { current: number },
+    progress?: vscode.Progress<{ message?: string }>
   ): Promise<void> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
+      progress?.report({ message: `Loading ${format.toUpperCase()} kernel…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
+      progress?.report({ message: `Tessellating ${format.toUpperCase()}…` });
       // Re-read fresh on every call (cheap) rather than cached at document-open
       // time — a mid-session settings change should take effect on the NEXT
       // edit without needing to reopen the tab, same as every other
@@ -840,15 +1058,17 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const quality = normalizeTessellationQuality(
         vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
       );
-      const { result, cache: nextCache } = await loadBRepCached(
+      const result = await this.pipeline.loadBRepCachedForDocument(
+        documentKey,
         this.context.extensionPath,
         bytes,
         format,
         ops,
-        cache.current,
         tessellationParamsFor(quality)
       );
-      cache.current = nextCache;
+      if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
+      post({ type: "status", text: "Rendering…" });
+      progress?.report({ message: "Rendering…" });
       const { groups, edges, points, tree } = result;
       post({
         type: "geometry",
@@ -874,12 +1094,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const sourceUnit = format === "step" ? detectStepLengthUnit(text!) : format === "iges" ? detectIgesLengthUnit(text!) : undefined;
       post({ type: "tree", root: tree, sourceUnit });
     } catch (err) {
-      // Drop (never reuse) whatever cache entry was held — see
-      // `loadBRepCached`'s doc comment on why a thrown call doesn't already
-      // dispose its own stale state; the next `handleBRep` call starts from
-      // a clean parse regardless of whether this was a real WASM abort or an
-      // ordinary error (e.g. an unreadable file).
-      cache.current = undefined;
+      if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
+      // No cache to drop here anymore — the kernel-worker child owns its own
+      // cache entry for `documentKey` entirely internally
+      // (`loadBRepCachedForDocument`'s doc comment covers what happens to it
+      // on a thrown error there), so this method has nothing left to clean
+      // up on failure beyond reporting it.
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
     }
   }
@@ -912,8 +1132,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       post({ type: "status", text: `Loading ${format.toUpperCase()}…` });
       const bytes = await vscode.workspace.fs.readFile(uri);
       const [boundary, metadata, existingParts] = await Promise.all([
-        convertToStlBoundaryWithRegions(bytes, format),
-        readMeshioMetadata(bytes, format),
+        this.pipeline.convertToStlBoundaryWithRegions(bytes, format),
+        this.pipeline.readMeshioMetadata(bytes, format),
         readParts(uri),
       ]);
       let parts = existingParts;
@@ -1028,7 +1248,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       // never shown to the user, so it stays at the OCCT-native "mm" label
       // while its geometry is still genuinely scaled. See exportBRep's doc
       // comment for the full write-up.
-      const stepBytes = await exportBRep(
+      const stepBytes = await this.pipeline.exportBRep(
         this.context.extensionPath,
         sourceBytes,
         route.format as Extract<CadFormat, "step" | "iges" | "brep">,
@@ -1083,7 +1303,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     route: FileRoute,
     post: (msg: HostToWebview) => void,
     pending: Map<string, PendingExport>,
-    ops: EditOp[] = []
+    ops: EditOp[] = [],
+    parts: Part[] = []
   ): Promise<void> {
     const targets = exportTargetsFor(route);
     if (targets.length === 0) return;
@@ -1106,13 +1327,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async (_saveUri) => {
       if (BREP_FORMATS.has(targetFormat)) {
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
-        return exportBRep(
+        return this.pipeline.exportBRep(
           this.context.extensionPath,
           sourceBytes,
           route.format as Extract<CadFormat, "step" | "iges" | "brep">,
           targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
           ops,
-          unit
+          unit,
+          true,
+          parts
         );
       }
 
@@ -1145,6 +1368,141 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       { placeHolder: "Export unit…" }
     );
     return picked?.unit ?? "mm";
+  }
+
+  /**
+   * "Mesh → B-rep promotion" (roadmap item, closed), Phase 2 — the Mesh
+   * Health panel's "Promote to B-rep…" button. Deliberately a ONE-SHOT
+   * EXPORT (sew the mesh into a solid, write it as a brand-new STEP/IGES/
+   * BREP file the user opens separately), not an in-place reclassification
+   * of THIS document — see CLAUDE.md's "Mesh → B-rep promotion" section for
+   * why. Mirrors `handleExport`'s exact structure (format quick-pick over
+   * the same `BREP_FORMATS`, the existing `pickExportUnit()`, the shared
+   * `promptSaveAndWrite()` for the save dialog + write + status/error
+   * posting) with a new `getBytes` callback calling
+   * `this.pipeline.promoteMeshToBrep` instead of `exportBRep`. Known,
+   * accepted simplification: `promptSaveAndWrite`'s own generic "Exported
+   * to …" status message is reused as-is — a component that was skipped
+   * (never closed) is NOT separately called out here in the interactive
+   * flow, since the user already saw that in the Mesh Health panel's report
+   * before clicking Promote; the MCP tool's `skippedComponents`/`warnings`
+   * fields remain the authoritative, always-surfaced signal for headless
+   * callers.
+   */
+  private async handlePromoteToBrep(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void): Promise<void> {
+    if (route.strategy !== "three") {
+      post({ type: "error", message: "Promote to B-rep requires an STL/OBJ/PLY/glTF source." });
+      return;
+    }
+    const meshFormat = route.format as MeshParseFormat;
+
+    const picked = await vscode.window.showQuickPick(
+      [...BREP_FORMATS].map((format) => ({
+        label: EXPORT_LABEL[format],
+        description: `.${EXPORT_EXTENSION[format]}`,
+        format: format as Extract<CadFormat, "step" | "iges" | "brep">,
+      })),
+      { placeHolder: "Promote to B-rep as…" }
+    );
+    if (!picked) return;
+
+    const unit = await this.pickExportUnit();
+
+    await this.promptSaveAndWrite(
+      uri,
+      EXPORT_EXTENSION[picked.format],
+      EXPORT_LABEL[picked.format],
+      async (_saveUri) => {
+        const sourceBytes = await vscode.workspace.fs.readFile(uri);
+        const result = await this.pipeline.promoteMeshToBrep(
+          this.context.extensionPath,
+          sourceBytes,
+          meshFormat,
+          picked.format,
+          unit,
+          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes)
+        );
+        return result.bytes;
+      },
+      post
+    );
+  }
+
+  /**
+   * "SVG silhouette export" (roadmap item, closed) — File ▸ Export Silhouette
+   * SVG… and the `cad-preview.exportSvg` command.
+   *
+   * Mirrors `handlePromoteToBrep`'s structure (quick-picks, then the shared
+   * `promptSaveAndWrite`), with one addition: a view quick-pick whose first
+   * entry is **Current view**, taken from `currentViewState` — the same
+   * `viewChanged`-tracked state the `.view.json` sidecar already persists, so
+   * "draw it the way I'm looking at it" needs no new protocol message at all.
+   *
+   * Escape on the VIEW pick cancels the export (it's the primary choice),
+   * unlike `pickExportUnit`'s Escape, which deliberately falls through to mm
+   * rather than cancelling.
+   *
+   * Deliberately NOT folded into `handleExport`/`CadFormat`: an `"svg"` format
+   * member would ripple through `EXPORT_EXTENSION`/`EXPORT_LABEL`/
+   * `exportTargetsFor`/`fileRouter.ts` and — worst — into `package.json`'s
+   * `customEditors.selector`, which would make VS Code try to OPEN `.svg`
+   * files in the 3D viewer, colliding head-on with Import SVG…. `handleScreenshot`
+   * is the established precedent for an output format that isn't a `CadFormat`.
+   */
+  private async handleExportSvg(
+    uri: vscode.Uri,
+    route: FileRoute,
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[],
+    viewState: ViewState | undefined
+  ): Promise<void> {
+    if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
+      post({ type: "error", message: "Silhouette SVG export requires a STEP/IGES/BREP or STL/OBJ/PLY/glTF source." });
+      return;
+    }
+
+    type ViewChoice = { label: string; description?: string; direction: [number, number, number]; up?: [number, number, number] };
+    const choices: ViewChoice[] = [];
+    if (viewState) {
+      choices.push({
+        label: "Current view",
+        description: "as shown in the 3D view",
+        direction: viewState.viewDirection,
+        up: viewState.cameraUp,
+      });
+    }
+    for (const [name, view] of Object.entries(SVG_VIEWS)) {
+      choices.push({ label: name.charAt(0) + name.slice(1).toLowerCase(), description: `[${view.direction.join(", ")}]`, ...view });
+    }
+
+    const picked = await vscode.window.showQuickPick(choices, { placeHolder: "Silhouette view…" });
+    if (!picked) return; // the primary choice — Escape cancels the export
+
+    const unit = await this.pickExportUnit();
+
+    await this.promptSaveAndWrite(
+      uri,
+      "svg",
+      "SVG Drawing",
+      async () => {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const source: CompareSource =
+          route.strategy === "occt"
+            ? { kind: "brep", bytes, format: route.format as Extract<CadFormat, "step" | "iges" | "brep">, ops }
+            : route.format === "gltf"
+              ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes) }
+              : { kind: route.format as "stl" | "obj" | "ply", bytes };
+        const result = await this.pipeline.exportSvgSilhouette(this.context.extensionPath, source, {
+          direction: picked.direction,
+          up: picked.up,
+          unit,
+          title: `${uri.path.slice(uri.path.lastIndexOf("/") + 1)} — ${picked.label}`,
+        });
+        for (const warning of result.warnings) post({ type: "status", text: warning });
+        return Buffer.from(result.svg, "utf8");
+      },
+      post
+    );
   }
 
   /**

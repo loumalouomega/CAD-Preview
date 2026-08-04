@@ -26,8 +26,35 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 const SERVER = path.join(ROOT, "dist", "mcp-server.js");
 const FIXTURE = path.join(ROOT, "examples", "STP", "bull.stp");
 
+/**
+ * A real, live-discovered bug this fixes, not a hypothetical: `process.exit()`
+ * terminates the process immediately, WITHOUT running any pending `finally`
+ * block (including the one at the bottom of this file that kills `child` and
+ * removes the temp dir) — so a failing `assert()` mid-script used to leave
+ * the spawned `dist/mcp-server.js` (and ITS OWN forked `dist/kernel-worker.js`
+ * child) permanently orphaned and running, never reaped, silently consuming
+ * memory/CPU forever. Caught live: a rare genuine OCCT WASM abort ("table
+ * index is out of bounds") during `apply_edit_ops` failed an assertion, and
+ * the orphaned kernel-worker process was still alive — having done almost no
+ * further work — HOURS later. `fail()` now kills `child` and clears the temp
+ * dir itself, mirroring the success-path `finally` block, before exiting —
+ * safe to call from any `fail()` call site, including ones that run before
+ * the try/finally below even starts (`shuttingDown`/`child` are both already
+ * initialized by the time any assertion can fail).
+ */
 function fail(message) {
   console.error(`✗ ${message}`);
+  shuttingDown = true;
+  try {
+    child.kill();
+  } catch {
+    /* ignore */
+  }
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   process.exit(1);
 }
 
@@ -115,6 +142,44 @@ async function callTolerant(name, args) {
   return { value: JSON.parse(result.content?.[0]?.text ?? "") };
 }
 
+/**
+ * Like `call`, but for a call whose failure mode can be a transient, ALREADY
+ * SELF-HEALING WASM abort — `wrapOcctFault`/`resetOcct` (`occtService.ts`)
+ * detect this class of error, reset the kernel singleton, and return a
+ * message ending "...try the operation again", i.e. the product code
+ * itself documents this as recoverable via a retry, not a hard failure.
+ *
+ * Live-WASM investigation (bisection, not guesswork — see CLAUDE.md's "Mesh
+ * -> B-rep promotion" section for the full trail): this class of abort here
+ * requires substantial ACCUMULATED WASM heap pressure from this file's own
+ * large total call volume — removing either large half of the preceding
+ * script (independently) eliminated the crash, so it is not a discrete
+ * logic bug reachable from a short, isolated repro, and not something this
+ * codebase can fix by changing product code (the WASM binaries are a
+ * third-party dependency). The kernel's own reset-and-recover behavior is
+ * already correct and already tested elsewhere (`occtService.test.ts`'s
+ * `wrapOcctFault` coverage, the "Kernel fault recovery" work) — this smoke
+ * harness was the only thing treating a self-healing abort as fatal.
+ *
+ * A blind retry of the SAME call is unsafe for anything with a side effect
+ * that could have partially landed before the abort (a first attempt tried
+ * exactly this for `apply_edit_ops` and caused a DIFFERENT, spurious
+ * downstream failure — apparently by re-appending the same op to
+ * `.edits.json` a second time). `resetState()` must put every file this
+ * call touches back into a known-clean state — re-copying the source
+ * fixture and deleting any sidecar it could have written — before the
+ * retry, so the retry can never observe a partial prior attempt.
+ */
+async function callWithCleanRetry(name, args, resetState) {
+  const result = await request("tools/call", { name, arguments: args });
+  if (!result.isError) return JSON.parse(result.content?.[0]?.text ?? "");
+  const message = result.content?.[0]?.text ?? "";
+  if (!/kernel has been reset/i.test(message)) fail(`${name} returned an error: ${message}`);
+  console.error(`  (transient: ${name} hit a WASM abort, kernel auto-reset — resetting state and retrying once) ${message}`);
+  resetState();
+  return call(name, args);
+}
+
 /** Max absolute coordinate magnitude across every node in a Gmsh MSH 4.1
  * `$Nodes` block — a cheap proxy for "how big is this mesh's geometry" used
  * to verify export_mesh's unit conversion produced a REAL geometric scale,
@@ -153,7 +218,7 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 23, `tools/list exposes 23 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 26, `tools/list exposes 26 tools (got ${tools.length}: ${tools.join(", ")})`);
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -212,6 +277,80 @@ try {
   // index, so this stays robust against edge-numbering shifts. Uses its OWN
   // copy of the fixture (not the shared `model`) so this extra solid doesn't
   // throw off the solid/edge counts every later step in this script assumes.
+  // Align + linear/circular pattern (roadmap "Align, distribute, and pattern
+  // UI") — own fresh copy so it doesn't disturb the shared `model`'s solid/
+  // edge counts every later step in this script assumes.
+  const alignPatternModel = path.join(dir, "bull-for-align-pattern-test.stp");
+  fs.copyFileSync(FIXTURE, alignPatternModel);
+  const boxSize = 4;
+  const boxAdded = await call("apply_edit_ops", {
+    path: alignPatternModel,
+    ops: [{ op: "addBox", center: [bbox.max[0] + 3 * s, 0, 20], size: [boxSize, boxSize, boxSize] }],
+  });
+  assert(boxAdded.applied === 1 && boxAdded.model.solids.length === 2, "align/pattern fixture: box added as solid-1");
+  const beforeAlign = await call("inspect", { path: alignPatternModel, entityId: "solid-1" });
+  assert(Math.abs(beforeAlign.bbox.min[2] - 18) < 1e-6, `box's z-min before align is 18 (got ${beforeAlign.bbox.min[2]})`);
+
+  const aligned = await call("apply_edit_ops", {
+    path: alignPatternModel,
+    ops: [{ op: "align", targets: ["solid-1"], axis: "z", extent: "min", to: 0 }],
+  });
+  assert(aligned.applied === 1 && aligned.model.solids.length === 2, "align does not change the solid count");
+  const afterAlign = await call("inspect", { path: alignPatternModel, entityId: "solid-1" });
+  assert(Math.abs(afterAlign.bbox.min[2]) < 1e-6, `align moved the box's z-min to exactly 0 (got ${afterAlign.bbox.min[2]})`);
+  assert(
+    Math.abs(afterAlign.center[0] - beforeAlign.center[0]) < 1e-6 && Math.abs(afterAlign.center[1] - beforeAlign.center[1]) < 1e-6,
+    "align only moved the box along z — x/y unchanged"
+  );
+
+  const spacing = 10;
+  const linearApplied = await call("apply_edit_ops", {
+    path: alignPatternModel,
+    ops: [{ op: "patternLinear", targets: ["solid-1"], direction: [1, 0, 0], spacing, count: 3 }],
+  });
+  assert(
+    linearApplied.applied === 1 && linearApplied.model.solids.length === 4,
+    `patternLinear count:3 appends exactly 2 new solids (got ${linearApplied.model.solids.length} total)`
+  );
+  const linearCenters = [];
+  for (const id of ["solid-1", "solid-2", "solid-3"]) {
+    linearCenters.push((await call("inspect", { path: alignPatternModel, entityId: id })).center[0]);
+  }
+  linearCenters.sort((a, b) => a - b);
+  const linearGaps = [linearCenters[1] - linearCenters[0], linearCenters[2] - linearCenters[1]];
+  assert(
+    linearGaps.every((g) => Math.abs(g - spacing) < 1e-6),
+    `patternLinear's 3 instances are evenly spaced ${spacing} apart along x (got gaps ${linearGaps.map((g) => g.toFixed(6))})`
+  );
+
+  const circularModel = path.join(dir, "bull-for-circular-pattern-test.stp");
+  fs.copyFileSync(FIXTURE, circularModel);
+  const circAdded = await call("apply_edit_ops", {
+    path: circularModel,
+    ops: [{ op: "addBox", center: [bbox.max[0] + 3 * s + 10, 0, 20], size: [2, 2, 2] }],
+  });
+  assert(circAdded.applied === 1, "circular pattern fixture: box added as solid-1");
+  const circCenterBefore = (await call("inspect", { path: circularModel, entityId: "solid-1" })).center;
+  const circApplied = await call("apply_edit_ops", {
+    path: circularModel,
+    ops: [{
+      op: "patternCircular", targets: ["solid-1"],
+      axisPoint: [bbox.max[0] + 3 * s, 0, 0], axisDir: [0, 0, 1], angleDeg: 90, count: 4,
+    }],
+  });
+  assert(
+    circApplied.applied === 1 && circApplied.model.solids.length === 5,
+    `patternCircular count:4 appends exactly 3 new solids (got ${circApplied.model.solids.length} total)`
+  );
+  const axisCenter = [bbox.max[0] + 3 * s, 0];
+  const radiusBefore = Math.hypot(circCenterBefore[0] - axisCenter[0], circCenterBefore[1] - axisCenter[1]);
+  for (const id of ["solid-1", "solid-2", "solid-3", "solid-4"]) {
+    const c = (await call("inspect", { path: circularModel, entityId: id })).center;
+    const r = Math.hypot(c[0] - axisCenter[0], c[1] - axisCenter[1]);
+    assert(Math.abs(r - radiusBefore) < 1e-6, `${id} stays the same distance from the rotation axis (got ${r} vs ${radiusBefore})`);
+    assert(Math.abs(c[2] - circCenterBefore[2]) < 1e-6, `${id} keeps the same z (rotation is about the z axis)`);
+  }
+
   const radiusTestModel = path.join(dir, "bull-for-radius-test.stp");
   fs.copyFileSync(FIXTURE, radiusTestModel);
   const knownRadius = s / 4;
@@ -580,14 +719,322 @@ try {
   const bullVsObj = await call("compare_models", { pathA: model, pathB: cubeObj });
   assert(bullVsObj.supported === true, "compare_models diffs a B-rep source against an OBJ source");
 
-  // glTF remains unsupported headless (no host-side parser, by design — see
-  // CLAUDE.md) — confirms it still degrades to a clear message, not a crash
-  // (a normal supported:false response, not a tool error), now that OBJ/PLY
-  // are supported alongside it in the same format family.
-  const gltfRejected = await call("compare_models", { pathA: model, pathB: path.join(ROOT, "examples", "GLTF", "cube.gltf") });
+  // glTF/GLB (roadmap "glTF support for compare_models", closed) — a real
+  // host-side parser now, cross-validated against three's own GLTFLoader in
+  // the unit tests. cube.gltf and cube.glb are the SAME unit cube in the two
+  // different containers, so they must self-match AND match each other.
+  const cubeGltf = path.join(ROOT, "examples", "GLTF", "cube.gltf");
+  const cubeGlb = path.join(ROOT, "examples", "GLTF", "cube.glb");
+  const twoBoxes = path.join(ROOT, "examples", "GLTF", "two-boxes.gltf");
+
+  const gltfSelf = await call("compare_models", { pathA: cubeGltf, pathB: cubeGltf });
+  assert(gltfSelf.supported === true, `compare_models supports a glTF source (got: ${JSON.stringify(gltfSelf).slice(0, 200)})`);
   assert(
-    gltfRejected.supported === false && /STEP\/IGES\/BREP\/STL\/OBJ\/PLY/i.test(gltfRejected.warnings?.[0] ?? ""),
-    `compare_models still rejects glTF with a clear message, not a crash (got: ${JSON.stringify(gltfRejected)})`
+    gltfSelf.diff.matched.length === 1 && gltfSelf.diff.added.length === 0 && gltfSelf.diff.removed.length === 0,
+    `compare_models(cube.gltf vs itself): exactly 1 matched solid (got: ${JSON.stringify(gltfSelf.diff)})`
+  );
+
+  // The GLB container end-to-end — a binary chunk layout the .gltf path never
+  // exercises. Comparing it against the .gltf proves both decode identically.
+  const glbVsGltf = await call("compare_models", { pathA: cubeGlb, pathB: cubeGltf });
+  assert(
+    glbVsGltf.supported === true && glbVsGltf.diff.matched.length === 1 && glbVsGltf.diff.added.length === 0 && glbVsGltf.diff.removed.length === 0,
+    `compare_models diffs a binary .glb against the equivalent .gltf as an exact match (got: ${JSON.stringify(glbVsGltf.diff)})`
+  );
+  assert(
+    Math.abs(glbVsGltf.diff.matched[0].volumeDeltaPct) < 1e-6 && glbVsGltf.diff.matched[0].centreDistance < 1e-6,
+    `compare_models(.glb vs .gltf) is an exact geometric match (got: ${JSON.stringify(glbVsGltf.diff.matched[0])})`
+  );
+
+  // Node transform composition — the single likeliest way a hand-rolled glTF
+  // parser goes subtly wrong. two-boxes.gltf instances ONE mesh from two nodes
+  // at x=-5 and x=+5, so ignoring transforms would collapse it to 1 solid.
+  const twoBoxesSelf = await call("compare_models", { pathA: twoBoxes, pathB: twoBoxes });
+  assert(
+    twoBoxesSelf.diff.matched.length === 2,
+    `compare_models(two-boxes.gltf): node transforms resolve to 2 separate solids (got ${twoBoxesSelf.diff.matched.length})`
+  );
+
+  const gltfVsPly = await call("compare_models", { pathA: cubeGltf, pathB: cubePly });
+  assert(gltfVsPly.supported === true, "compare_models diffs a glTF source against a PLY source directly");
+  const bullVsGltf = await call("compare_models", { pathA: model, pathB: cubeGltf });
+  assert(bullVsGltf.supported === true, "compare_models diffs a B-rep source against a glTF source");
+
+  // meshio-only formats are now the ONLY unsupported family — confirm that
+  // path still degrades to a clear supported:false, not a tool error.
+  const vtkForCompare = path.join(dir, "compare.vtk");
+  fs.writeFileSync(vtkForCompare, "# vtk DataFile Version 3.0\ncompare\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 0 float\n");
+  const vtkRejected = await call("compare_models", { pathA: model, pathB: vtkForCompare });
+  assert(
+    vtkRejected.supported === false && /STEP\/IGES\/BREP\/STL\/OBJ\/PLY\/glTF/i.test(vtkRejected.warnings?.[0] ?? ""),
+    `compare_models rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkRejected)})`
+  );
+
+  // check_mesh_health (roadmap "Mesh -> B-rep promotion, diagnostic-first",
+  // Phase 1: read-only report, no promotion). examples/STL/cube.stl is a
+  // real, already-closed 10x10x10 cube (volume 1000, surface area 600) —
+  // sewing should close it at the tightest ladder rung with ~0 delta.
+  const cleanHealth = await call("check_mesh_health", { path: cubeStl });
+  assert(cleanHealth.supported === true, "check_mesh_health supports a clean STL source");
+  assert(cleanHealth.componentCount === 1, `check_mesh_health(cube.stl): 1 component expected (got ${cleanHealth.componentCount})`);
+  const cleanComponent = cleanHealth.components[0];
+  assert(
+    cleanComponent.freeEdgeCount === 0 && cleanComponent.nonManifoldEdgeCount === 0 && cleanComponent.degenerateFaceCount === 0,
+    `check_mesh_health(cube.stl) reports a clean, already-manifold mesh (got: ${JSON.stringify(cleanComponent)})`
+  );
+  assert(
+    cleanComponent.requiredTolerance === 1e-6,
+    `check_mesh_health(cube.stl) closes at the tightest ladder rung (got requiredTolerance=${cleanComponent.requiredTolerance})`
+  );
+  assert(
+    Math.abs(cleanComponent.healedVolume - 1000) < 1e-3 && Math.abs(cleanComponent.volumeDeltaPct) < 1e-6,
+    `check_mesh_health(cube.stl) reports the exact healed volume with ~0 delta (got: ${JSON.stringify(cleanComponent)})`
+  );
+
+  // OBJ/PLY support (both a real unit cube — no host-side triangle-soup
+  // welding needed for either, unlike STL).
+  const objHealth = await call("check_mesh_health", { path: cubeObj });
+  assert(objHealth.supported === true, "check_mesh_health supports OBJ sources");
+  const plyHealth = await call("check_mesh_health", { path: cubePly });
+  assert(plyHealth.supported === true, "check_mesh_health supports PLY sources");
+
+  // A deliberately non-manifold mesh — three triangles fanning out from one
+  // shared edge (real "T-junction" topology, not a hole) — confirms
+  // nonManifoldEdgeCount fires and the tool never crashes on a genuinely
+  // pathological input.
+  const nonManifoldStl = path.join(dir, "non-manifold.stl");
+  fs.writeFileSync(
+    nonManifoldStl,
+    [
+      "solid t",
+      "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 -1 0", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 1", "endloop", "endfacet",
+      "endsolid t",
+    ].join("\n")
+  );
+  const nonManifoldHealth = await call("check_mesh_health", { path: nonManifoldStl });
+  assert(nonManifoldHealth.supported === true, "check_mesh_health supports a non-manifold STL source (never throws on pathological input)");
+  assert(
+    nonManifoldHealth.components[0].nonManifoldEdgeCount === 1,
+    `check_mesh_health detects the non-manifold shared edge (got: ${JSON.stringify(nonManifoldHealth.components[0])})`
+  );
+
+  // B-rep sources: nothing to heal (already exact geometry) — supported:false,
+  // never a crash or a meaningless report.
+  const brepHealth = await call("check_mesh_health", { path: model });
+  assert(
+    brepHealth.supported === false && /already a B-rep source/i.test(brepHealth.warnings?.[0] ?? ""),
+    `check_mesh_health reports supported:false for a B-rep source (got: ${JSON.stringify(brepHealth)})`
+  );
+
+  // glTF/GLB now have a host-side parser too — the unit cube must close at
+  // the tightest ladder rung with volume 1, in BOTH containers.
+  for (const [label, gltfPath] of [["cube.gltf", cubeGltf], ["cube.glb", cubeGlb]]) {
+    const health = await call("check_mesh_health", { path: gltfPath });
+    assert(health.supported === true, `check_mesh_health supports ${label} (got: ${JSON.stringify(health).slice(0, 200)})`);
+    assert(health.componentCount === 1, `check_mesh_health(${label}): 1 component expected (got ${health.componentCount})`);
+    const component = health.components[0];
+    assert(
+      component.freeEdgeCount === 0 && component.requiredTolerance === 1e-6,
+      `check_mesh_health(${label}): closed, watertight at the tightest rung (got: ${JSON.stringify(component)})`
+    );
+    assert(
+      Math.abs(component.healedVolume - 1) < 1e-6,
+      `check_mesh_health(${label}): healed volume is the analytic unit cube's 1 (got ${component.healedVolume})`
+    );
+  }
+
+  // meshio-only formats are now the only rejection path here.
+  const vtkHealthRejected = await call("check_mesh_health", { path: vtkForCompare });
+  assert(
+    vtkHealthRejected.supported === false && /no host-side triangle-soup parser/i.test(vtkHealthRejected.warnings?.[0] ?? ""),
+    `check_mesh_health rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkHealthRejected)})`
+  );
+
+  // promote_mesh_to_brep (roadmap "Mesh -> B-rep promotion", Phase 2 — a
+  // one-shot EXPORT to a NEW file, never an in-place reclassification).
+  // A clean cube.stl promotes to STEP/IGES/BREP, and — critically — the
+  // WRITTEN file is verified by a genuinely separate load_model +
+  // get_mass_properties call, proving the output is an ordinary,
+  // fully-capable B-rep document, not just "didn't throw".
+  const promotedStep = path.join(dir, "promoted.step");
+  const promoteStepResult = await call("promote_mesh_to_brep", { path: cubeStl, outputPath: promotedStep });
+  assert(
+    promoteStepResult.promotedComponents.length === 1 && promoteStepResult.skippedComponents.length === 0,
+    `promote_mesh_to_brep(cube.stl -> step): 1 promoted, 0 skipped (got: ${JSON.stringify(promoteStepResult)})`
+  );
+  assert(fs.existsSync(promotedStep) && fs.statSync(promotedStep).size > 0, "promote_mesh_to_brep wrote a non-empty STEP file");
+
+  const promotedLoad = await call("load_model", { path: promotedStep });
+  assert(promotedLoad.tree, "the promoted STEP file loads as an ordinary B-rep document via load_model");
+  const promotedMass = await call("get_mass_properties", { path: promotedStep });
+  assert(
+    promotedMass.supported === true && Math.abs(promotedMass.volume - 1000) < 1e-3,
+    `the promoted STEP file's own get_mass_properties reports the correct volume (expected 1000, got: ${JSON.stringify(promotedMass)})`
+  );
+
+  const promotedIges = path.join(dir, "promoted.iges");
+  const promoteIgesResult = await call("promote_mesh_to_brep", { path: cubeStl, outputPath: promotedIges, targetFormat: "iges" });
+  assert(promoteIgesResult.promotedComponents.length === 1, "promote_mesh_to_brep supports targetFormat iges");
+  assert(fs.existsSync(promotedIges) && fs.statSync(promotedIges).size > 0, "promote_mesh_to_brep wrote a non-empty IGES file");
+
+  const promotedBrep = path.join(dir, "promoted.brep");
+  const promoteBrepResult = await call("promote_mesh_to_brep", { path: cubeStl, outputPath: promotedBrep, targetFormat: "brep" });
+  assert(promoteBrepResult.promotedComponents.length === 1, "promote_mesh_to_brep supports targetFormat brep");
+  assert(fs.existsSync(promotedBrep) && fs.statSync(promotedBrep).size > 0, "promote_mesh_to_brep wrote a non-empty BREP file");
+
+  // Multi-solid: two disjoint boxes in one STL both get promoted into the
+  // SAME compound — confirms combineSolids' reuse and that skippedComponents
+  // correctly stays empty when everything closes.
+  const twoBoxesStl = path.join(dir, "two-boxes.stl");
+  fs.writeFileSync(
+    twoBoxesStl,
+    [
+      "solid a",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 0 10 0", "vertex 10 10 0", "endloop", "endfacet",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 10 10 0", "vertex 10 0 0", "endloop", "endfacet",
+      "facet normal 0 0 1", "outer loop", "vertex 0 0 10", "vertex 10 10 10", "vertex 0 10 10", "endloop", "endfacet",
+      "facet normal 0 0 1", "outer loop", "vertex 0 0 10", "vertex 10 0 10", "vertex 10 10 10", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 10 0 0", "vertex 10 0 10", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 10 0 10", "vertex 0 0 10", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 0 10 0", "vertex 0 10 10", "vertex 10 10 10", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 0 10 0", "vertex 10 10 10", "vertex 10 10 0", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 0 10", "vertex 0 10 10", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 10 10", "vertex 0 10 0", "endloop", "endfacet",
+      "facet normal 1 0 0", "outer loop", "vertex 10 0 0", "vertex 10 10 0", "vertex 10 10 10", "endloop", "endfacet",
+      "facet normal 1 0 0", "outer loop", "vertex 10 0 0", "vertex 10 10 10", "vertex 10 0 10", "endloop", "endfacet",
+      "endsolid a",
+      "solid b",
+      "facet normal 0 0 -1", "outer loop", "vertex 50 0 0", "vertex 50 5 0", "vertex 55 5 0", "endloop", "endfacet",
+      "facet normal 0 0 -1", "outer loop", "vertex 50 0 0", "vertex 55 5 0", "vertex 55 0 0", "endloop", "endfacet",
+      "facet normal 0 0 1", "outer loop", "vertex 50 0 5", "vertex 55 5 5", "vertex 50 5 5", "endloop", "endfacet",
+      "facet normal 0 0 1", "outer loop", "vertex 50 0 5", "vertex 55 0 5", "vertex 55 5 5", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 50 0 0", "vertex 55 0 0", "vertex 55 0 5", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 50 0 0", "vertex 55 0 5", "vertex 50 0 5", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 50 5 0", "vertex 50 5 5", "vertex 55 5 5", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 50 5 0", "vertex 55 5 5", "vertex 55 5 0", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 50 0 0", "vertex 50 0 5", "vertex 50 5 5", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 50 0 0", "vertex 50 5 5", "vertex 50 5 0", "endloop", "endfacet",
+      "facet normal 1 0 0", "outer loop", "vertex 55 0 0", "vertex 55 5 0", "vertex 55 5 5", "endloop", "endfacet",
+      "facet normal 1 0 0", "outer loop", "vertex 55 0 0", "vertex 55 5 5", "vertex 55 0 5", "endloop", "endfacet",
+      "endsolid b",
+    ].join("\n")
+  );
+  const promotedMulti = path.join(dir, "promoted-multi.step");
+  const promoteMultiResult = await call("promote_mesh_to_brep", { path: twoBoxesStl, outputPath: promotedMulti });
+  assert(
+    promoteMultiResult.promotedComponents.length === 2 && promoteMultiResult.skippedComponents.length === 0,
+    `promote_mesh_to_brep(two disjoint boxes): both components promoted, none skipped (got: ${JSON.stringify(promoteMultiResult)})`
+  );
+  const promotedMultiMass = await call("get_mass_properties", { path: promotedMulti });
+  assert(
+    Math.abs(promotedMultiMass.volume - 1125) < 1e-3,
+    `the promoted multi-solid file's combined volume is 1000 + 125 = 1125 (got ${promotedMultiMass.volume})`
+  );
+
+  // B-rep sources / glTF: same rejection convention as check_mesh_health,
+  // via a thrown tool error rather than a supported:false response (this
+  // tool has no destination to route a graceful "nothing to promote" reply
+  // through the way a plain report tool does).
+  const promoteBrepSourceRejected = await callTolerant("promote_mesh_to_brep", { path: model, outputPath: path.join(dir, "x.step") });
+  assert(
+    /already a B-rep source/i.test(promoteBrepSourceRejected.error ?? ""),
+    `promote_mesh_to_brep rejects a B-rep source with a clear error (got: ${JSON.stringify(promoteBrepSourceRejected)})`
+  );
+  const promoteMeshioRejected = await callTolerant("promote_mesh_to_brep", {
+    path: vtkForCompare,
+    outputPath: path.join(dir, "y.step"),
+  });
+  assert(
+    /no host-side triangle-soup parser/i.test(promoteMeshioRejected.error ?? ""),
+    `promote_mesh_to_brep rejects a meshio-only source with a clear error (got: ${JSON.stringify(promoteMeshioRejected)})`
+  );
+
+  // glTF promotion, verified through a SEPARATE load_model + get_mass_properties
+  // pair — proving the written file is an ordinary B-rep document, not just
+  // that the promote call didn't throw. cube.glb also exercises the binary
+  // container all the way through the promotion pipeline.
+  const promotedGlb = path.join(dir, "promoted-glb.step");
+  const promoteGlbResult = await call("promote_mesh_to_brep", { path: cubeGlb, outputPath: promotedGlb });
+  assert(
+    promoteGlbResult.promotedComponents.length === 1 && promoteGlbResult.skippedComponents.length === 0,
+    `promote_mesh_to_brep(cube.glb -> step): 1 promoted, 0 skipped (got: ${JSON.stringify(promoteGlbResult)})`
+  );
+  const promotedGlbLoaded = await call("load_model", { path: promotedGlb });
+  assert(
+    promotedGlbLoaded.solids.length === 1 && promotedGlbLoaded.tree,
+    `the glTF-promoted STEP reopens as an ordinary 1-solid B-rep document (got ${promotedGlbLoaded.solids?.length} solids)`
+  );
+  const promotedGlbMass = await call("get_mass_properties", { path: promotedGlb });
+  assert(
+    Math.abs(promotedGlbMass.volume - 1) < 1e-6,
+    `the glTF-promoted STEP has the analytic unit cube's volume of 1 (got ${promotedGlbMass.volume})`
+  );
+
+  // export_svg_silhouette (roadmap "SVG silhouette export", closed) — an
+  // OUTLINE, not a hidden-line drawing. cube.stl is a real 10x10x10 cube, so
+  // its FRONT view has an analytically-known answer: exactly 4 segments and a
+  // ~10x10 viewBox (plus the default 2% margin each side => 10.4).
+  const svgCube = path.join(dir, "cube-front.svg");
+  const svgCubeResult = await call("export_svg_silhouette", { path: cubeStl, outputPath: svgCube, view: "FRONT" });
+  assert(
+    svgCubeResult.segmentCount === 4,
+    `export_svg_silhouette(cube.stl, FRONT): exactly 4 outline segments (got ${svgCubeResult.segmentCount})`
+  );
+  const svgCubeText = fs.readFileSync(svgCube, "utf8");
+  assert(svgCubeText.startsWith("<svg"), "export_svg_silhouette wrote a document starting with <svg");
+  assert(/viewBox="[-\d. ]+"/.test(svgCubeText), "export_svg_silhouette's output carries a viewBox");
+  assert(svgCubeText.includes("<path"), "export_svg_silhouette's output carries a <path>");
+  const cubeViewBox = /viewBox="([^"]+)"/.exec(svgCubeText)[1].split(" ").map(Number);
+  assert(
+    Math.abs(cubeViewBox[2] - 10.4) < 1e-6 && Math.abs(cubeViewBox[3] - 10.4) < 1e-6,
+    `export_svg_silhouette(cube.stl): viewBox is the cube's 10 units + a 2% margin (got ${cubeViewBox.join(" ")})`
+  );
+  assert(!/NaN|Infinity/.test(svgCubeText), "export_svg_silhouette never emits NaN/Infinity coordinates");
+
+  // A B-rep source goes through the tessellation instead, and must produce a
+  // real drawing (bull.stp has curved features, so far more than 4 segments).
+  const svgBull = path.join(dir, "bull-front.svg");
+  const svgBullResult = await call("export_svg_silhouette", { path: model, outputPath: svgBull, view: "FRONT" });
+  assert(svgBullResult.segmentCount > 0 && svgBullResult.triangleCount > 0, `export_svg_silhouette works for a B-rep source (got: ${JSON.stringify(svgBullResult)})`);
+  assert(fs.readFileSync(svgBull, "utf8").startsWith("<svg"), "export_svg_silhouette wrote a valid SVG for a B-rep source");
+
+  // A different view must genuinely differ, not silently reuse one direction.
+  const svgBullIso = path.join(dir, "bull-iso.svg");
+  const svgBullIsoResult = await call("export_svg_silhouette", { path: model, outputPath: svgBullIso, view: "ISO" });
+  assert(
+    svgBullIsoResult.segmentCount !== svgBullResult.segmentCount,
+    `export_svg_silhouette's ISO view differs from its FRONT view (both got ${svgBullResult.segmentCount} segments)`
+  );
+
+  // glTF/GLB sources work too (they never touch OCCT at all).
+  const svgGlb = path.join(dir, "cube-glb.svg");
+  const svgGlbResult = await call("export_svg_silhouette", { path: cubeGlb, outputPath: svgGlb, view: "FRONT" });
+  assert(svgGlbResult.segmentCount === 4, `export_svg_silhouette(cube.glb, FRONT): 4 outline segments (got ${svgGlbResult.segmentCount})`);
+
+  // Unit conversion is a real coordinate scale, exactly like every other export.
+  const svgCubeIn = path.join(dir, "cube-front-in.svg");
+  await call("export_svg_silhouette", { path: cubeStl, outputPath: svgCubeIn, view: "FRONT", unit: "in" });
+  const inViewBox = /viewBox="([^"]+)"/.exec(fs.readFileSync(svgCubeIn, "utf8"))[1].split(" ").map(Number);
+  assert(
+    Math.abs(cubeViewBox[2] / inViewBox[2] - 25.4) < 1e-3,
+    `export_svg_silhouette(unit:"in") scales the drawing by exactly 1/25.4 (got ratio ${cubeViewBox[2] / inViewBox[2]})`
+  );
+
+  // An unknown view name falls back with a warning rather than throwing —
+  // the same never-fail-on-ambiguous-input convention `unit` uses.
+  const svgBadView = await call("export_svg_silhouette", { path: cubeStl, outputPath: path.join(dir, "bad-view.svg"), view: "SIDEWAYS" });
+  assert(
+    svgBadView.view === "FRONT" && svgBadView.warnings.some((w) => /unknown view/i.test(w)),
+    `export_svg_silhouette falls back to FRONT with a warning for an unknown view (got: ${JSON.stringify(svgBadView)})`
+  );
+
+  // meshio-only sources have no host-side triangles to outline.
+  const svgMeshioRejected = await callTolerant("export_svg_silhouette", { path: vtkForCompare, outputPath: path.join(dir, "z.svg") });
+  assert(
+    /no host-side geometry/i.test(svgMeshioRejected.error ?? ""),
+    `export_svg_silhouette rejects a meshio-only source with a clear error (got: ${JSON.stringify(svgMeshioRejected)})`
   );
 
   // render_snapshot: Playwright/Chromium is a devDependency this environment
@@ -832,6 +1279,72 @@ try {
   assert(
     Math.abs(igesVolumeIn / igesVolumeMm - 1) < 1e-6,
     `export_brep's IGES inch export round-trips to the SAME real-world volume: reopening both through get_mass_properties gives ratio ${(igesVolumeIn / igesVolumeMm).toFixed(9)} ≈ 1 (mm=${igesVolumeMm.toFixed(3)}, in=${igesVolumeIn.toFixed(3)})`
+  );
+
+  // XCAF write — assembly structure + per-part names on STEP export
+  // (roadmap "XCAF write — assembly structure and per-part colors", closed
+  // as names+structure only; per-part COLOR export was investigated and
+  // confirmed non-functional in this OCCT WASM build — see xcafWrite.ts's
+  // doc comment). Own fresh copy + own parts, so this doesn't disturb
+  // `model`'s parts list (asserted to have exactly 1 part, "Bull", by the
+  // save_preprocess/load_preprocess checks near the end of this script).
+  // `xcafModel` is itself a .stp source, so it can't export to "step" (its
+  // own format is always excluded, same as the `stepResult` check above) —
+  // export through an intermediate .brep first (baking the box edit), then
+  // assign parts to THAT file (export_brep reads parts from whichever path
+  // is passed as the export source) before the real STEP export.
+  const xcafModel = path.join(dir, "bull-for-xcaf-write-test.stp");
+  fs.copyFileSync(FIXTURE, xcafModel);
+  await callWithCleanRetry(
+    "apply_edit_ops",
+    { path: xcafModel, ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }] },
+    () => {
+      fs.copyFileSync(FIXTURE, xcafModel);
+      fs.rmSync(`${xcafModel}.edits.json`, { force: true });
+    }
+  );
+  const xcafBrepOut = path.join(dir, "xcaf-write-test.brep");
+  await call("export_brep", { path: xcafModel, targetFormat: "brep", outputPath: xcafBrepOut });
+  await call("set_part", { path: xcafBrepOut, name: "BullBody", volumes: ["solid-0"] });
+  await call("set_part", { path: xcafBrepOut, name: "TinyBox", volumes: ["solid-1"] });
+  const xcafStepOut = path.join(dir, "out-xcaf.step");
+  const xcafExport = await call("export_brep", { path: xcafBrepOut, targetFormat: "step", outputPath: xcafStepOut });
+  assert(xcafExport.warnings.length === 0 && fs.statSync(xcafStepOut).size > 0, "export_brep with named parts writes a non-empty STEP file, no warnings");
+  const xcafStepText = fs.readFileSync(xcafStepOut, "utf8");
+  assert(
+    xcafStepText.includes("BullBody") && xcafStepText.includes("TinyBox"),
+    "the exported STEP file's own PRODUCT entities carry the part names, not generic placeholders"
+  );
+  // This build's STEPCAFControl_Writer unconditionally wraps document-
+  // structured output in AP242 "document management" bookkeeping that the
+  // PLAIN STEPControl_Reader can't unwrap (see xcafWrite.ts's doc comment)
+  // — occtService.ts's readShape falls back to a document-aware read
+  // automatically. Confirm THIS codebase's own pipeline can still reopen
+  // its own named-parts export and recover the exact original geometry.
+  const xcafReloaded = await call("load_model", { path: xcafStepOut });
+  assert(xcafReloaded.solids.length === 2, `reopening the named-parts export recovers both solids (got ${xcafReloaded.solids.length})`);
+  const xcafOriginalVolume =
+    (await call("get_mass_properties", { path: xcafBrepOut, entityId: "solid-0" })).volume +
+    (await call("get_mass_properties", { path: xcafBrepOut, entityId: "solid-1" })).volume;
+  const xcafReloadedVolume = (await call("get_mass_properties", { path: xcafStepOut })).volume;
+  // A looser tolerance than the unit-conversion checks above on purpose:
+  // those compare two independently STEP-exported files against each
+  // other (their STEP-text ASCII coordinate precision loss cancels out
+  // relatively); this compares LIVE in-memory geometry against its own
+  // post-export-and-reread STEP round trip, where that precision loss is
+  // the whole difference being measured, not something to expect at 1e-6.
+  assert(
+    Math.abs(xcafReloadedVolume / xcafOriginalVolume - 1) < 1e-4,
+    `reopened named-parts export's total volume matches the original (within STEP-text precision): ${xcafReloadedVolume.toFixed(6)} vs ${xcafOriginalVolume.toFixed(6)}`
+  );
+  // An export with NO parts (the overwhelming majority case) must stay on
+  // the plain writer, byte-for-byte unaffected by this feature existing —
+  // reuse `stepOutMm` above (exported from `brepOut`, which has no parts
+  // assigned) rather than a redundant new export.
+  const stepOutMmText = fs.readFileSync(stepOutMm, "utf8");
+  assert(
+    !stepOutMmText.includes("DOCUMENT_FILE") && !stepOutMmText.includes("APPLIED_EXTERNAL_IDENTIFICATION"),
+    "an export with no parts assigned stays on the plain writer (no XCAF document-management entities)"
   );
 
   // Regression guard: does the meshing-input STEP path (export_mesh/

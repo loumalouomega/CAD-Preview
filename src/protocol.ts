@@ -10,6 +10,8 @@ import type { DisplayUnit } from "./lengthUnits";
 import type { ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipAxis } from "./webview/clipping";
+import type { StandardPart } from "./stepPartsService";
+import type { MeshHealthReport } from "./meshHeal";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -234,10 +236,30 @@ export type HostToWebview =
   | { type: "meshingError"; message: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)
   | { type: "screenshotRequest"; requestId: string }
+  | {
+      type: "standardPartsSearchResult";
+      requestId: string;
+      items: StandardPart[];
+      page: number;
+      totalPages: number;
+      total: number;
+    }
+  | { type: "standardPartsSearchError"; requestId: string; message: string }
+  /** `path: null` means the user dismissed the save dialog — a quiet no-op,
+   * not an error (never posted through `standardPartsInsertError`). */
+  | { type: "standardPartsInsertResult"; requestId: string; path: string | null }
+  | { type: "standardPartsInsertError"; requestId: string; message: string }
+  /** No `requestId` — unlike the request/response pairs above, only one SVG
+   * import can plausibly be in flight at a time (a modal file-open dialog
+   * blocks further requests), so there's nothing to disambiguate. */
+  | { type: "importSvgResult"; text: string }
+  | { type: "importSvgError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
   | { type: "measureExactError"; requestId: string; message: string }
+  | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
+  | { type: "meshHealError"; requestId: string; message: string }
   | {
       type: "colorFieldResult";
       requestId: string;
@@ -303,9 +325,18 @@ export type WebviewToHost =
   | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
   | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: "screenshotButtonClicked" }
+  | { type: "promoteToBrepButtonClicked" }
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
+  | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
+  | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
+  | { type: "importSvgRequest" }
+  /** File ▸ Export Silhouette SVG… — like `exportRequest`, the host owns the
+   * whole flow from here (view quick-pick → unit quick-pick → save dialog), so
+   * there is nothing to correlate and no result message: success/failure come
+   * back through the generic `status`/`error` messages. */
+  | { type: "exportSvgRequest" }
   | {
       type: "measureExactRequest";
       requestId: string;
@@ -316,7 +347,8 @@ export type WebviewToHost =
     }
   | { type: "renderViewResult"; requestId: string; data: string }
   | { type: "renderViewError"; requestId: string; message: string }
-  | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" };
+  | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
+  | { type: "meshHealRequest"; requestId: string };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {

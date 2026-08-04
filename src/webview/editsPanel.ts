@@ -89,6 +89,17 @@ export type ModifyDraft = (
   | { kind: "section"; planePoint: Vec3; planeNormal: Vec3 }
 ) & { exprs?: ExprMap };
 
+/** Align draft minus its `targets` (the wiring injects the selected volumes) —
+ * a pure rigid move, like translate, so it works on every format. */
+export type AlignDraft = { axis: "x" | "y" | "z"; extent: "min" | "center" | "max"; to: number } & { exprs?: ExprMap };
+
+/** A linear/circular pattern draft minus its `targets` (the wiring injects the
+ * selected volumes) — pure rigid transforms, so both work on every format. */
+export type PatternDraft = (
+  | { kind: "patternLinear"; direction: Vec3; spacing: number; count: number }
+  | { kind: "patternCircular"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; count: number }
+) & { exprs?: ExprMap };
+
 export interface EditsPanelCallbacks {
   onUndo: () => void;
   onRedo: () => void;
@@ -117,6 +128,12 @@ export interface EditsPanelCallbacks {
   onExplodePreviewCancel: () => void;
   /** Mate: align the first selected face onto the second (B-rep only). */
   onApplyMate: () => void;
+  /** Align the selected volumes' bbox extent along an axis to an absolute
+   * coordinate (the wiring supplies targets; all formats). */
+  onApplyAlign: (draft: AlignDraft) => void;
+  /** Linear/circular array of the selected volumes (the wiring supplies
+   * targets; all formats). */
+  onApplyPattern: (draft: PatternDraft) => void;
   /** Apply a modify op (shell/split/section); operands come from the selection (B-rep only). */
   onApplyModify: (draft: ModifyDraft) => void;
   /** Add a new primitive body at the given placement (no selection needed; all formats). */
@@ -131,6 +148,11 @@ export interface EditsPanelCallbacks {
   onBuildSurfaceFromLines: () => void;
   /** Build a solid by sewing the currently-selected surfaces (Surf mode, B-rep only). */
   onBuildVolumeFromSurfaces: () => void;
+  /** Fired whenever the open param form changes (a different op button
+   * clicked, or the form collapsed — `null`). Lets `main.ts` show/hide/
+   * retarget the Transform Gizmo for `"translate"`/`"rotate"`/`"scale"`
+   * without this panel needing to know the gizmo exists. */
+  onFormChanged: (id: PanelOpId | null) => void;
 }
 
 type TabId = "geometry" | "edit";
@@ -155,6 +177,14 @@ type SubtabId = "2d" | "3d";
  * or abort the apply with an inline error if any expression failed — so the
  * ~40 per-op apply closures stay untouched.
  */
+
+/** Rounds to 6 decimal places — used only for display when the Transform
+ * Gizmo pushes a live-dragged value into a field, so a float's long tail
+ * doesn't render as visual noise in the input. */
+function round6(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
+}
+
 export class EditsPanel {
   private readonly body: HTMLElement;
   private readonly compose: HTMLElement;
@@ -455,6 +485,7 @@ export class EditsPanel {
     this.activeOp = id;
     for (const [opId, btn] of this.opButtons) btn.classList.toggle("active", opId === id);
     this.renderParams();
+    this.cb.onFormChanged(id);
   }
 
   // ── Parameter forms (one per op button, rendered into #edits-params) ──────
@@ -594,6 +625,44 @@ export class EditsPanel {
         f.appendChild(this.hint("Select face A then B (Surf mode)"));
         f.appendChild(this.applyButton("Apply", "Align the first selected face onto the second", () =>
           this.cb.onApplyMate()));
+        break;
+      case "align":
+        f.appendChild(this.hint("Moves the selected volumes (Vol mode) along an axis to an absolute coordinate"));
+        f.appendChild(this.enumField("axis", "Axis", [["x", "X"], ["y", "Y"], ["z", "Z"]], "z"));
+        f.appendChild(this.enumField("extent", "Extent", [
+          ["min", "Min"], ["center", "Center"], ["max", "Max"],
+        ], "min"));
+        f.appendChild(this.numField("to", "To", 0));
+        f.appendChild(this.applyButton("Apply", "Align the selected volumes", () =>
+          this.cb.onApplyAlign({
+            axis: this.readEnum("axis", "z") as "x" | "y" | "z",
+            extent: this.readEnum("extent", "min") as "min" | "center" | "max",
+            to: this.readNum("to"),
+          })));
+        break;
+      case "patternLinear":
+        f.appendChild(this.hint("Arrays the selected volumes (Vol mode) along a direction"));
+        f.appendChild(this.vecField("direction", "Dir", [1, 0, 0]));
+        f.appendChild(this.numField("spacing", "Spacing", 10));
+        f.appendChild(this.numField("count", "Count", 3));
+        f.appendChild(this.applyButton("Apply", "Pattern the selected volumes", () =>
+          this.cb.onApplyPattern({
+            kind: "patternLinear", direction: this.readVec("direction"),
+            spacing: this.readNum("spacing"), count: this.readNum("count"),
+          })));
+        break;
+      case "patternCircular":
+        f.appendChild(this.hint("Arrays the selected volumes (Vol mode) around an axis"));
+        f.appendChild(this.vecField("axisPoint", "Point", [0, 0, 0]));
+        f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
+        f.appendChild(this.numField("angleDeg", "Angle°", 60));
+        f.appendChild(this.numField("count", "Count", 6));
+        f.appendChild(this.applyButton("Apply", "Pattern the selected volumes", () =>
+          this.cb.onApplyPattern({
+            kind: "patternCircular", axisPoint: this.readVec("axisPoint"),
+            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"),
+            count: this.readNum("count"),
+          })));
         break;
 
       // ── GEOMETRY 2D · wireframe ──
@@ -1001,6 +1070,32 @@ export class EditsPanel {
     input.value = String(def);
     row.appendChild(input);
     return row;
+  }
+
+  /**
+   * Live-pushes a value from an external source (the Transform Gizmo drag,
+   * `main.ts`) into a currently-rendered `vecField`/`numField`'s inputs — a
+   * no-op if that field isn't in the currently-open form (e.g. the user
+   * switched op forms mid-drag). Writing a plain numeric string is what
+   * clears any expression the field previously held: `parseNumeric` only
+   * ever reads `.value` fresh at Apply time and re-evaluates it then, so a
+   * literal number here simply parses as a literal number — no separate
+   * `pendingExprs` bookkeeping needs touching. This is the answer to "what
+   * happens when a drag overwrites a field the user had typed an expression
+   * into": the drag wins, silently, same as typing over the field by hand.
+   */
+  setVecField(name: string, value: Vec3): void {
+    const inputs = this.paramsEl.querySelectorAll<HTMLInputElement>(`input[data-name="${name}"]`);
+    inputs.forEach((input) => {
+      const i = Number(input.dataset.i);
+      if (Number.isInteger(i) && i >= 0 && i < 3) input.value = String(round6(value[i]));
+    });
+  }
+
+  /** See {@link setVecField}. */
+  setNumField(name: string, value: number): void {
+    const input = this.paramsEl.querySelector<HTMLInputElement>(`input[data-name="${name}"]`);
+    if (input) input.value = String(round6(value));
   }
 
   /**

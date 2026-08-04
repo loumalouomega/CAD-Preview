@@ -78,7 +78,8 @@ body {
 #parts-header,
 #edits-header,
 #meshing-header,
-#mass-header {
+#mass-header,
+#mesh-health-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -94,7 +95,8 @@ body {
 
 #edits-header,
 #meshing-header,
-#mass-header {
+#mass-header,
+#mesh-health-header {
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
 }
 
@@ -631,6 +633,21 @@ input[type="range"]#vc-opacity.meshing-slider {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+.vc-num {
+  font: inherit;
+  font-size: 12px;
+  width: 52px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #1e1e1e);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 3px 4px;
+}
+.vc-num:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
 #vc-colorfield-select {
   font: inherit;
   font-size: 12px;
@@ -960,7 +977,8 @@ input[type="range"]#vc-opacity.meshing-slider {
 }
 
 #edits-actions,
-#meshing-actions {
+#meshing-actions,
+#mesh-health-actions {
   display: flex;
   gap: 2px;
   flex-wrap: wrap;
@@ -968,6 +986,7 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 #edits-actions button,
 #meshing-actions button,
+#mesh-health-actions button,
 #mass-refresh {
   font: inherit;
   font-size: 11px;
@@ -982,12 +1001,14 @@ input[type="range"]#vc-opacity.meshing-slider {
 }
 #edits-actions button:hover:not(:disabled),
 #meshing-actions button:hover:not(:disabled),
+#mesh-health-actions button:hover:not(:disabled),
 #mass-refresh:hover:not(:disabled) {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
 }
 #edits-actions button:disabled,
-#meshing-actions button:disabled { opacity: 0.35; cursor: default; }
+#meshing-actions button:disabled,
+#mesh-health-actions button:disabled { opacity: 0.35; cursor: default; }
 
 #meshing-worst-toggle.active {
   opacity: 1;
@@ -1342,6 +1363,147 @@ input[type="range"].meshing-slider:focus {
   padding: 4px 8px;
 }
 
+/* ── Mesh health panel (Mesh -> B-rep promotion, diagnostic-first) ──────── */
+
+#mesh-health-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  max-height: 30%;
+  overflow: hidden;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+#mesh-health-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+
+.mesh-health-component {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+.mesh-health-component:last-child {
+  border-bottom: none;
+}
+
+.mesh-health-component-title {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.85;
+  padding-bottom: 2px;
+}
+
+/* ── Standard parts panel ─────────────────────────────────────────────── */
+
+#standard-parts-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  max-height: 35%;
+  overflow: hidden;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+#standard-parts-search-row {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  flex-shrink: 0;
+}
+
+#standard-parts-query {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #1e1e1e);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+#standard-parts-query:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+#standard-parts-search-btn {
+  flex-shrink: 0;
+  font-size: 11px;
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  border: none;
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+#standard-parts-search-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+
+#standard-parts-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+
+#standard-parts-status {
+  padding: 2px 8px 6px;
+  font-size: 11px;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+.standard-part-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+.standard-part-row:last-child { border-bottom: none; }
+
+.standard-part-name {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.standard-part-desc {
+  font-size: 10px;
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.standard-part-meta {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.standard-part-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.standard-part-insert {
+  font-size: 10px;
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  border: none;
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.standard-part-insert:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+.standard-part-insert:disabled { opacity: 0.5; cursor: default; }
+
 .mass-row {
   display: flex;
   justify-content: space-between;
@@ -1365,6 +1527,33 @@ input[type="range"].meshing-slider:focus {
 }
 
 .mass-message-error {
+  color: var(--vscode-errorForeground, #f48771);
+  opacity: 1;
+}
+
+.mesh-health-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 11px;
+}
+
+.mesh-health-label {
+  opacity: 0.75;
+}
+
+.mesh-health-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.mesh-health-message {
+  padding: 4px 0;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.mesh-health-message-error {
   color: var(--vscode-errorForeground, #f48771);
   opacity: 1;
 }
