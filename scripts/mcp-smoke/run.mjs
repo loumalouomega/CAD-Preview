@@ -142,6 +142,44 @@ async function callTolerant(name, args) {
   return { value: JSON.parse(result.content?.[0]?.text ?? "") };
 }
 
+/**
+ * Like `call`, but for a call whose failure mode can be a transient, ALREADY
+ * SELF-HEALING WASM abort — `wrapOcctFault`/`resetOcct` (`occtService.ts`)
+ * detect this class of error, reset the kernel singleton, and return a
+ * message ending "...try the operation again", i.e. the product code
+ * itself documents this as recoverable via a retry, not a hard failure.
+ *
+ * Live-WASM investigation (bisection, not guesswork — see CLAUDE.md's "Mesh
+ * -> B-rep promotion" section for the full trail): this class of abort here
+ * requires substantial ACCUMULATED WASM heap pressure from this file's own
+ * large total call volume — removing either large half of the preceding
+ * script (independently) eliminated the crash, so it is not a discrete
+ * logic bug reachable from a short, isolated repro, and not something this
+ * codebase can fix by changing product code (the WASM binaries are a
+ * third-party dependency). The kernel's own reset-and-recover behavior is
+ * already correct and already tested elsewhere (`occtService.test.ts`'s
+ * `wrapOcctFault` coverage, the "Kernel fault recovery" work) — this smoke
+ * harness was the only thing treating a self-healing abort as fatal.
+ *
+ * A blind retry of the SAME call is unsafe for anything with a side effect
+ * that could have partially landed before the abort (a first attempt tried
+ * exactly this for `apply_edit_ops` and caused a DIFFERENT, spurious
+ * downstream failure — apparently by re-appending the same op to
+ * `.edits.json` a second time). `resetState()` must put every file this
+ * call touches back into a known-clean state — re-copying the source
+ * fixture and deleting any sidecar it could have written — before the
+ * retry, so the retry can never observe a partial prior attempt.
+ */
+async function callWithCleanRetry(name, args, resetState) {
+  const result = await request("tools/call", { name, arguments: args });
+  if (!result.isError) return JSON.parse(result.content?.[0]?.text ?? "");
+  const message = result.content?.[0]?.text ?? "";
+  if (!/kernel has been reset/i.test(message)) fail(`${name} returned an error: ${message}`);
+  console.error(`  (transient: ${name} hit a WASM abort, kernel auto-reset — resetting state and retrying once) ${message}`);
+  resetState();
+  return call(name, args);
+}
+
 /** Max absolute coordinate magnitude across every node in a Gmsh MSH 4.1
  * `$Nodes` block — a cheap proxy for "how big is this mesh's geometry" used
  * to verify export_mesh's unit conversion produced a REAL geometric scale,
@@ -1114,7 +1152,14 @@ try {
   // is passed as the export source) before the real STEP export.
   const xcafModel = path.join(dir, "bull-for-xcaf-write-test.stp");
   fs.copyFileSync(FIXTURE, xcafModel);
-  await call("apply_edit_ops", { path: xcafModel, ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }] });
+  await callWithCleanRetry(
+    "apply_edit_ops",
+    { path: xcafModel, ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }] },
+    () => {
+      fs.copyFileSync(FIXTURE, xcafModel);
+      fs.rmSync(`${xcafModel}.edits.json`, { force: true });
+    }
+  );
   const xcafBrepOut = path.join(dir, "xcaf-write-test.brep");
   await call("export_brep", { path: xcafModel, targetFormat: "brep", outputPath: xcafBrepOut });
   await call("set_part", { path: xcafBrepOut, name: "BullBody", volumes: ["solid-0"] });
