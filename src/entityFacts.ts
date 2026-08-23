@@ -12,6 +12,7 @@ import {
 } from "./occtOperations";
 import { rebindEntities, remapPartEntityIds, type EntitySignature } from "./entityRebind";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
+import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp, Vec3 } from "./editOps";
 import type { Annotation, Part } from "./protocol";
@@ -202,7 +203,7 @@ export async function getEntityFacts(
     if (kind === "solid" || kind === "face") {
       const props = new oc.GProp_GProps_1();
       cleanup.push(props);
-      oc.BRepGProp.SurfaceProperties_1(handle, props, false, false);
+      surfacePropertiesAdaptive(oc, handle, props);
       area = props.Mass();
     }
 
@@ -446,7 +447,7 @@ export interface InterferenceResult {
  * copies for its own `a`/`b` operands, verified via the live `boolean` edit
  * op) for the intersection itself (`BRepAlgoAPI_Common_3(a, b)` →
  * `.IsDone()` → `.Shape()`), and this file's own `volumeOf` (the same
- * `BRepGProp.VolumeProperties_1` call shape `get_mass_properties` uses) for
+ * `BRepGProp` volume call shape (via `src/brepGProp.ts`'s adaptive wrapper) that `get_mass_properties` uses) for
  * the resulting volume.
  *
  * `a`/`b` are `solid-N` id arrays — a Part with multiple volumes maps
@@ -524,7 +525,7 @@ export async function checkInterference(
 function areaOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): number {
   const props = new oc.GProp_GProps_1();
   cleanup.push(props);
-  oc.BRepGProp.SurfaceProperties_1(handle, props, false, false);
+  surfacePropertiesAdaptive(oc, handle, props);
   return props.Mass();
 }
 
@@ -540,7 +541,7 @@ function lengthOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): num
 function volumeOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): number {
   const props = new oc.GProp_GProps_1();
   cleanup.push(props);
-  oc.BRepGProp.VolumeProperties_1(handle, props, false, false, false);
+  volumePropertiesAdaptive(oc, handle, props);
   return props.Mass();
 }
 

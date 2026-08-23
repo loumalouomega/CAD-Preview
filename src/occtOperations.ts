@@ -1,4 +1,4 @@
-import type { EditOp, Vec3 } from "./editOps";
+import type { EditOp, Vec3, OpOutcome, OutcomeFail } from "./editOps";
 import { enumerateEdges } from "./edgeEnumeration";
 
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
@@ -25,10 +25,37 @@ const HASH_UPPER = 1 << 30;
  * applied via `BRepBuilderAPI_Transform_2(shape, trsf, true).Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>): any {
+export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[]): any {
   let shape = baseShape;
-  for (const op of ops) {
-    shape = applyOneOp(oc, shape, op, cleanup);
+  for (let index = 0; index < ops.length; index++) {
+    const op = ops[index];
+    const before = shape;
+    const outcome: OpOutcome = { index, kind: op.op, applied: true };
+    // First `fail` call wins for this op; every helper calls it immediately
+    // before returning the unmodified shape at a skip site.
+    const fail: OutcomeFail = (diagnostic, hint) => {
+      if (!outcome.applied) return;
+      outcome.applied = false;
+      outcome.diagnostic = diagnostic;
+      if (hint) outcome.hint = hint;
+    };
+    try {
+      shape = applyOneOp(oc, shape, op, cleanup, fail);
+    } catch (err) {
+      // A helper's own builder throws are caught internally; reaching here is
+      // an unexpected fault. Record it, then re-throw to preserve the existing
+      // "a hard kernel error fails the whole load" behavior.
+      fail(`threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`);
+      outcomes?.push(outcome);
+      throw err;
+    }
+    // Every helper signals a skip by returning the SAME shape handle (its own
+    // documented convention), so identity is the universal backstop for any
+    // skip site without its own `fail` reason yet.
+    if (outcome.applied && shape === before) {
+      fail("returned the model unchanged");
+    }
+    outcomes?.push(outcome);
   }
   return shape;
 }
@@ -40,38 +67,39 @@ type Transformer = (s: any) => any;
 /**
  * Applies a single op to `shape`, returning the resulting shape (possibly the
  * same handle when the op is a no-op). Unimplemented ops are skipped so a sidecar
- * authored against a newer build never hard-fails an older one.
+ * authored against a newer build never hard-fails an older one. A skip calls
+ * `fail` with a reason (see {@link OpOutcome}) before returning.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail): any {
   switch (op.op) {
     case "translate":
     case "rotate":
     case "scale":
     case "mirror": {
       const transform = makeTransformer(oc, op, cleanup);
-      return transform ? transformSolids(oc, shape, op.targets, transform, cleanup) : shape;
+      return transform ? transformSolids(oc, shape, op.targets, transform, cleanup, fail) : shape;
     }
     case "boolean":
-      return booleanSolids(oc, shape, op, cleanup);
+      return booleanSolids(oc, shape, op, cleanup, fail);
     case "fillet":
     case "chamfer":
-      return filletEdges(oc, shape, op, cleanup);
+      return filletEdges(oc, shape, op, cleanup, fail);
     case "extrude":
     case "revolve":
     case "sweep":
     case "loft":
-      return featureModel(oc, shape, op, cleanup);
+      return featureModel(oc, shape, op, cleanup, fail);
     case "explode":
-      return explodeSolids(oc, shape, op.factor, cleanup);
+      return explodeSolids(oc, shape, op.factor, cleanup, fail);
     case "mate":
-      return mateShape(oc, shape, op, cleanup);
+      return mateShape(oc, shape, op, cleanup, fail);
     case "shell":
-      return shellSolids(oc, shape, op, cleanup);
+      return shellSolids(oc, shape, op, cleanup, fail);
     case "splitByPlane":
-      return splitSolidsByPlane(oc, shape, op, cleanup);
+      return splitSolidsByPlane(oc, shape, op, cleanup, fail);
     case "section":
-      return sectionSolids(oc, shape, op, cleanup);
+      return sectionSolids(oc, shape, op, cleanup, fail);
     case "addBox":
     case "addSphere":
     case "addCylinder":
@@ -79,11 +107,11 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addTorus":
     case "addPrism":
     case "addWedge":
-      return addPrimitive(oc, shape, op, cleanup);
+      return addPrimitive(oc, shape, op, cleanup, fail);
     case "addHole":
     case "addCounterboreHole":
     case "addCountersinkHole":
-      return cutHole(oc, shape, op, cleanup);
+      return cutHole(oc, shape, op, cleanup, fail);
     case "addCircleProfile":
     case "addRectangleProfile":
     case "addPolygonProfile":
@@ -91,7 +119,7 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addRoundedRectangleProfile":
     case "addSlotProfile":
     case "addTrapezoidProfile":
-      return addProfile(oc, shape, op, cleanup);
+      return addProfile(oc, shape, op, cleanup, fail);
     case "addPoint":
     case "addLine":
     case "addArc":
@@ -101,18 +129,21 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addBezier":
     case "addEllipseArc":
     case "addHelix":
-      return addWireframePrimitive(oc, shape, op, cleanup);
+      return addWireframePrimitive(oc, shape, op, cleanup, fail);
     case "addSurfaceFromLines":
-      return addSurfaceFromLines(oc, shape, op, cleanup);
+      return addSurfaceFromLines(oc, shape, op, cleanup, fail);
     case "addVolumeFromSurfaces":
-      return addVolumeFromSurfaces(oc, shape, op, cleanup);
+      return addVolumeFromSurfaces(oc, shape, op, cleanup, fail);
     case "align":
-      return alignSolids(oc, shape, op, cleanup);
+      return alignSolids(oc, shape, op, cleanup, fail);
     case "patternLinear":
-      return patternLinear(oc, shape, op, cleanup);
+      return patternLinear(oc, shape, op, cleanup, fail);
     case "patternCircular":
-      return patternCircular(oc, shape, op, cleanup);
+      return patternCircular(oc, shape, op, cleanup, fail);
     default:
+      // Exhaustive over the current union — reachable only against a sidecar
+      // authored on a NEWER build (the tolerant-replay case this guards).
+      fail(`op kind "${(op as { op: string }).op}" is not implemented in this build`);
       return shape;
   }
 }
@@ -205,15 +236,25 @@ function rigid(oc: any, trsf: any, cleanup: Array<{ delete(): void }>): Transfor
  * compound is assembled from the transformed targets plus the untouched rest.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function transformSolids(oc: any, shape: any, targets: string[], transform: Transformer, cleanup: Array<{ delete(): void }>): any {
+function transformSolids(oc: any, shape: any, targets: string[], transform: Transformer, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const want = new Set(targets);
   const solids = collectSolids(oc, shape, cleanup);
 
   if (solids.length === 0) {
-    return want.has("solid-0") ? transform(shape) : shape;
+    if (want.has("solid-0")) return transform(shape);
+    fail?.(`none of the target ids (${[...want].join(", ")}) resolve — the model has no solids`);
+    return shape;
   }
   if (solids.every((s) => want.has(s.id))) {
     return transform(shape);
+  }
+  const targeted = solids.filter((s) => want.has(s.id));
+  if (targeted.length === 0) {
+    fail?.(
+      `none of the target ids (${[...want].join(", ")}) resolve to a solid`,
+      "re-check solid-N ids after topology-changing ops — load_model re-lists them"
+    );
+    return shape;
   }
 
   const comp = new oc.TopoDS_Compound();
@@ -241,10 +282,11 @@ const AXIS_INDEX: Record<"x" | "y" | "z", 0 | 1 | 2> = { x: 0, y: 1, z: 2 };
  * left untouched rather than producing a wasted zero-length transform.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function alignSolids(oc: any, shape: any, op: Extract<EditOp, { op: "align" }>, cleanup: Array<{ delete(): void }>): any {
+export function alignSolids(oc: any, shape: any, op: Extract<EditOp, { op: "align" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const solids = collectSolids(oc, shape, cleanup);
   const want = new Set(op.targets);
   const idx = AXIS_INDEX[op.axis];
+  let moved = 0;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const alignOne = (s: any): any => {
@@ -252,6 +294,7 @@ export function alignSolids(oc: any, shape: any, op: Extract<EditOp, { op: "alig
     const current = op.extent === "min" ? ext.min[idx] : op.extent === "max" ? ext.max[idx] : (ext.min[idx] + ext.max[idx]) / 2;
     const delta = op.to - current;
     if (Math.abs(delta) < 1e-9) return s;
+    moved++;
     const v: Vec3 = [0, 0, 0];
     v[idx] = delta;
     const t = new oc.gp_Trsf_1();
@@ -261,7 +304,16 @@ export function alignSolids(oc: any, shape: any, op: Extract<EditOp, { op: "alig
   };
 
   if (solids.length === 0) {
-    return want.has("solid-0") ? alignOne(shape) : shape;
+    if (want.has("solid-0")) return alignOne(shape);
+    fail?.(`none of the target ids (${[...want].join(", ")}) resolve — the model has no solids`);
+    return shape;
+  }
+  if (!solids.some((s) => want.has(s.id))) {
+    fail?.(
+      `none of the target ids (${[...want].join(", ")}) resolve to a solid`,
+      "re-check solid-N ids after topology-changing ops — load_model re-lists them"
+    );
+    return shape;
   }
 
   const comp = new oc.TopoDS_Compound();
@@ -271,6 +323,10 @@ export function alignSolids(oc: any, shape: any, op: Extract<EditOp, { op: "alig
   builder.MakeCompound(comp);
   for (const { id, solid } of solids) {
     builder.Add(comp, want.has(id) ? alignOne(solid) : solid);
+  }
+  if (moved === 0) {
+    // Every targeted solid was already at the requested coordinate.
+    fail?.(`all targeted solids are already ${op.extent}-aligned to ${op.to} on ${op.axis}`);
   }
   return comp;
 }
@@ -293,14 +349,23 @@ function patternSolids(
   count: number,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   copyAt: (solid: any, k: number) => any,
-  cleanup: Array<{ delete(): void }>
+  cleanup: Array<{ delete(): void }>,
+  fail?: OutcomeFail
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): any {
   const solids = collectSolids(oc, shape, cleanup);
   const want = new Set(targets);
 
+  if (count < 2) {
+    fail?.(`count is ${count} — a pattern's count INCLUDES the original, so fewer than 2 instances adds no copies`);
+    return shape;
+  }
+
   if (solids.length === 0) {
-    if (!want.has("solid-0")) return shape;
+    if (!want.has("solid-0")) {
+      fail?.(`none of the target ids (${[...want].join(", ")}) resolve — the model has no solids`);
+      return shape;
+    }
     const comp = new oc.TopoDS_Compound();
     cleanup.push(comp);
     const builder = new oc.BRep_Builder();
@@ -312,7 +377,13 @@ function patternSolids(
   }
 
   const targeted = solids.filter((s) => want.has(s.id));
-  if (targeted.length === 0) return shape;
+  if (targeted.length === 0) {
+    fail?.(
+      `none of the target ids (${[...want].join(", ")}) resolve to a solid`,
+      "re-check solid-N ids after topology-changing ops — load_model re-lists them"
+    );
+    return shape;
+  }
 
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
@@ -333,7 +404,7 @@ function patternSolids(
 /** Linear array: `op.count` total instances (the original plus `count - 1` new
  * copies), each `op.spacing` further along the normalized `op.direction`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function patternLinear(oc: any, shape: any, op: Extract<EditOp, { op: "patternLinear" }>, cleanup: Array<{ delete(): void }>): any {
+export function patternLinear(oc: any, shape: any, op: Extract<EditOp, { op: "patternLinear" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const [dx, dy, dz] = op.direction;
   const len = Math.hypot(dx, dy, dz);
   const unit: Vec3 = [dx / len, dy / len, dz / len];
@@ -345,14 +416,14 @@ export function patternLinear(oc: any, shape: any, op: Extract<EditOp, { op: "pa
     t.SetTranslation_1(vec(oc, v));
     return rigid(oc, t, cleanup)(s);
   };
-  return patternSolids(oc, shape, op.targets, op.count, copyAt, cleanup);
+  return patternSolids(oc, shape, op.targets, op.count, copyAt, cleanup, fail);
 }
 
 /** Circular array: `op.count` total instances (the original plus `count - 1`
  * new copies), each a further `op.angleDeg` rotated about the axis through
  * `op.axisPoint` along `op.axisDir`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "patternCircular" }>, cleanup: Array<{ delete(): void }>): any {
+export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "patternCircular" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const angleRad = (op.angleDeg * Math.PI) / 180;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const copyAt = (s: any, k: number): any => {
@@ -363,7 +434,7 @@ export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "
     t.SetRotation_1(ax, angleRad * k);
     return rigid(oc, t, cleanup)(s);
   };
-  return patternSolids(oc, shape, op.targets, op.count, copyAt, cleanup);
+  return patternSolids(oc, shape, op.targets, op.count, copyAt, cleanup, fail);
 }
 
 /**
@@ -379,14 +450,20 @@ export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "
  * complete (`IsDone()` false), is skipped so replay never hard-fails.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function booleanSolids(oc: any, shape: any, op: Extract<EditOp, { op: "boolean" }>, cleanup: Array<{ delete(): void }>): any {
+function booleanSolids(oc: any, shape: any, op: Extract<EditOp, { op: "boolean" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const solids = collectSolids(oc, shape, cleanup);
   const byId = new Map(solids.map((s) => [s.id, s.solid]));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const aShapes = op.a.map((id) => byId.get(id)).filter((s): s is any => s != null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const bShapes = op.b.map((id) => byId.get(id)).filter((s): s is any => s != null);
-  if (aShapes.length === 0 || bShapes.length === 0) return shape;
+  if (aShapes.length === 0 || bShapes.length === 0) {
+    fail?.(
+      `operand ${aShapes.length === 0 ? "A" : "B"} ids (${(aShapes.length === 0 ? op.a : op.b).join(", ")}) did not resolve to solids`,
+      "re-check solid-N ids after topology-changing ops — load_model re-lists them"
+    );
+    return shape;
+  }
 
   const a = combineSolids(oc, aShapes, cleanup);
   const b = combineSolids(oc, bShapes, cleanup);
@@ -396,7 +473,10 @@ function booleanSolids(oc: any, shape: any, op: Extract<EditOp, { op: "boolean" 
         : oc.BRepAlgoAPI_Common_3;
   const algo = new Ctor(a, b);
   cleanup.push(algo);
-  if (!algo.IsDone()) return shape;
+  if (!algo.IsDone()) {
+    fail?.(`the ${op.kind} boolean did not complete (IsDone() false)`, "operands may not intersect or may be degenerate");
+    return shape;
+  }
   const result = algo.Shape();
   cleanup.push(result);
 
@@ -425,20 +505,32 @@ function booleanSolids(oc: any, shape: any, op: Extract<EditOp, { op: "boolean" 
  * `IsDone()` false all skip gracefully.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function cutHole(oc: any, shape: any, op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>, cleanup: Array<{ delete(): void }>): any {
+function cutHole(oc: any, shape: any, op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const solids = collectSolids(oc, shape, cleanup);
   const byId = new Map(solids.map((s) => [s.id, s.solid]));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const targets = op.targets.map((id) => byId.get(id)).filter((s): s is any => s != null);
-  if (targets.length === 0) return shape;
+  if (targets.length === 0) {
+    fail?.(
+      `target ids (${op.targets.join(", ")}) did not resolve to solids`,
+      "re-check solid-N ids after topology-changing ops — load_model re-lists them"
+    );
+    return shape;
+  }
 
   const tool = buildHoleTool(oc, op, cleanup);
-  if (!tool) return shape;
+  if (!tool) {
+    fail?.("the hole's cutting tool could not be built", "check radius/depth values are positive and the axis is a non-zero direction");
+    return shape;
+  }
 
   const a = combineSolids(oc, targets, cleanup);
   const algo = new oc.BRepAlgoAPI_Cut_3(a, tool);
   cleanup.push(algo);
-  if (!algo.IsDone()) return shape;
+  if (!algo.IsDone()) {
+    fail?.("the hole subtraction did not complete (IsDone() false)", "the hole may lie entirely outside the target solid");
+    return shape;
+  }
   const result = algo.Shape();
   cleanup.push(result);
 
@@ -512,11 +604,17 @@ export function combineSolids(oc: any, shapes: any[], cleanup: Array<{ delete():
  * throws), is skipped so replay never hard-fails.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function filletEdges(oc: any, shape: any, op: Extract<EditOp, { op: "fillet" | "chamfer" }>, cleanup: Array<{ delete(): void }>): any {
+function filletEdges(oc: any, shape: any, op: Extract<EditOp, { op: "fillet" | "chamfer" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const edges = collectEdges(oc, shape, cleanup);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const picked = op.edges.map((id) => edges[edgeIndex(id)]).filter((e): e is any => e != null);
-  if (picked.length === 0) return shape;
+  if (picked.length === 0) {
+    fail?.(
+      `none of the edge ids (${op.edges.join(", ")}) resolve`,
+      "re-check edge-N ids after topology-changing ops — load_model re-lists them"
+    );
+    return shape;
+  }
 
   const isFillet = op.op === "fillet";
   const maker = isFillet
@@ -531,9 +629,16 @@ function filletEdges(oc: any, shape: any, op: Extract<EditOp, { op: "fillet" | "
   try {
     result = maker.Shape();
   } catch {
-    return shape; // e.g. radius too large for the geometry
+    fail?.(
+      `the ${op.op} build threw — the ${isFillet ? "radius" : "distance"} ${amount} is likely too large for the geometry`,
+      `try a smaller value, or fewer edges at once`
+    );
+    return shape;
   }
-  if (!maker.IsDone()) return shape;
+  if (!maker.IsDone()) {
+    fail?.(`the ${op.op} did not complete (IsDone() false)`, `the ${isFillet ? "radius" : "distance"} may be too large for the selected edges`);
+    return shape;
+  }
   cleanup.push(result);
   return result;
 }
@@ -565,9 +670,12 @@ function faceIndex(id: string): number {
  *             BRepTools.OuterWire(face))` per profile + `.Build()` + `.Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const solid = buildFeatureSolid(oc, shape, op, cleanup);
-  if (!solid) return shape;
+  if (!solid) {
+    fail?.(`${op.op} could not build a new body`, "check that the profile face-N (and, for sweep, the path edge-N) resolve to real entities");
+    return shape;
+  }
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
   const builder = new oc.BRep_Builder();
@@ -653,9 +761,12 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
  * true)` → the already-verified `BRepPrimAPI_MakePrism_1(face, vec, false, true)`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addPrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function addPrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const solid = buildPrimitiveSolid(oc, op, cleanup);
-  if (!solid) return shape;
+  if (!solid) {
+    fail?.(`could not build the ${op.op} body`, "check the primitive's parameters (radii/sizes must be positive, axis a non-zero direction)");
+    return shape;
+  }
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
   const builder = new oc.BRep_Builder();
@@ -779,9 +890,12 @@ function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, si
  * a flat sketch in a way it mostly doesn't for a solid of revolution).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addProfile(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function addProfile(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const face = buildProfileFace(oc, op, cleanup);
-  if (!face) return shape;
+  if (!face) {
+    fail?.(`could not build the ${op.op} sketch face`, "check the profile's parameters (radius/width/height must be positive, normal a non-zero direction)");
+    return shape;
+  }
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
   const builder = new oc.BRep_Builder();
@@ -955,9 +1069,12 @@ function faceFromEdges(oc: any, edges: any[], cleanup: Array<{ delete(): void }>
  *           confirmed against the live WASM, not assumed.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const entity = buildWireframePrimitive(oc, op, cleanup);
-  if (!entity) return shape;
+  if (!entity) {
+    fail?.(`could not build the ${op.op} entity`, "check the coordinates (a collinear 3-point arc, for example, cannot build an edge)");
+    return shape;
+  }
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
   const builder = new oc.BRep_Builder();
@@ -1118,9 +1235,15 @@ function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): vo
  * (never a crash), consistent with this codebase's graceful-degradation rule.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>): any {
+function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const face = buildSurfaceFromLines(oc, shape, op, cleanup);
-  if (!face) return shape;
+  if (!face) {
+    fail?.(
+      "the selected edges did not form a buildable face",
+      "at least 3 edge-N ids that connect into a chain are required (a genuinely disconnected set is rejected)"
+    );
+    return shape;
+  }
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
   const builder = new oc.BRep_Builder();
@@ -1196,9 +1319,15 @@ function buildSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "a
  * cosmetic concern.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addVolumeFromSurfaces(oc: any, shape: any, op: Extract<EditOp, { op: "addVolumeFromSurfaces" }>, cleanup: Array<{ delete(): void }>): any {
+function addVolumeFromSurfaces(oc: any, shape: any, op: Extract<EditOp, { op: "addVolumeFromSurfaces" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const solid = buildVolumeFromSurfaces(oc, shape, op, cleanup);
-  if (!solid) return shape;
+  if (!solid) {
+    fail?.(
+      "the selected faces did not sew into a CLOSED shell",
+      "at least 4 face-N ids forming a closed volume are required — run a smaller selection or check for missing faces"
+    );
+    return shape;
+  }
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
   const builder = new oc.BRep_Builder();
@@ -1375,9 +1504,12 @@ function addFreeFacesOf(oc: any, shape: any, out: any[], cleanup: Array<{ delete
  * (`Bnd_Box.Get()` is unbound — see CLAUDE.md).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function explodeSolids(oc: any, shape: any, factor: number, cleanup: Array<{ delete(): void }>): any {
+function explodeSolids(oc: any, shape: any, factor: number, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const solids = collectSolids(oc, shape, cleanup);
-  if (solids.length < 2) return shape;
+  if (solids.length < 2) {
+    fail?.("explode spreads multiple bodies apart — the model has fewer than two solids");
+    return shape;
+  }
   const c = bboxCenter(oc, shape, cleanup);
 
   const comp = new oc.TopoDS_Compound();
@@ -1406,14 +1538,26 @@ function explodeSolids(oc: any, shape: any, factor: number, cleanup: Array<{ del
  * Non-planar faces, unresolved ids, or a failed displacement are skipped.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mateShape(oc: any, shape: any, op: Extract<EditOp, { op: "mate" }>, cleanup: Array<{ delete(): void }>): any {
+function mateShape(oc: any, shape: any, op: Extract<EditOp, { op: "mate" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const faces = collectFaces(oc, shape, cleanup);
   const fa = faces[faceIndex(op.faceA)];
   const fb = faces[faceIndex(op.faceB)];
-  if (!fa || !fb) return shape;
+  if (!fa || !fb) {
+    fail?.(
+      `face id${!fa && !fb ? "s" : ""} ${[!fa ? op.faceA : null, !fb ? op.faceB : null].filter(Boolean).join(", ")} did not resolve`,
+      "re-check face-N ids after topology-changing ops — load_model re-lists them"
+    );
+    return shape;
+  }
   const pa = facePlane(oc, fa, cleanup);
   const pb = facePlane(oc, fb, cleanup);
-  if (!pa || !pb) return shape;
+  if (!pa || !pb) {
+    fail?.(
+      `face ${!pa ? op.faceA : op.faceB} is not planar`,
+      "mate aligns two PLANAR faces onto each other — pick flat faces"
+    );
+    return shape;
+  }
 
   const t = new oc.gp_Trsf_1();
   cleanup.push(t);
@@ -1424,6 +1568,7 @@ function mateShape(oc: any, shape: any, op: Extract<EditOp, { op: "mate" }>, cle
     cleanup.push(ax3B);
     t.SetDisplacement(ax3A, ax3B);
   } catch {
+    fail?.("the rigid displacement between the two face planes could not be built");
     return shape;
   }
   const transform = rigid(oc, t, cleanup);
@@ -1461,15 +1606,24 @@ function mateShape(oc: any, shape: any, op: Extract<EditOp, { op: "mate" }>, cle
  * affected solid stays unshelled).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, cleanup: Array<{ delete(): void }>): any {
+function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     const faces = collectFaces(oc, shape, cleanup);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const picked = op.openingFaces.map((id) => faces[faceIndex(id)]).filter((f): f is any => f != null);
-    if (picked.length === 0) return shape;
+    if (picked.length === 0) {
+      fail?.(
+        `none of the opening-face ids (${op.openingFaces.join(", ")}) resolve`,
+        "re-check face-N ids after topology-changing ops — load_model re-lists them"
+      );
+      return shape;
+    }
     const solids = collectSolids(oc, shape, cleanup);
-    if (solids.length === 0) return shape;
+    if (solids.length === 0) {
+      fail?.("the model has no solids to shell");
+      return shape;
+    }
 
     // Group the opening faces by owning solid (a face can only belong to one).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1492,7 +1646,10 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
         }
       }
     }
-    if (openingsBySolid.size === 0) return shape;
+    if (openingsBySolid.size === 0) {
+      fail?.("no opening face is owned by a solid");
+      return shape;
+    }
 
     const mode = oc.BRepOffset_Mode.BRepOffset_Skin;
     const join = oc.GeomAbs_JoinType.GeomAbs_Arc;
@@ -1509,7 +1666,10 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
         // this solid stays unshelled
       }
     }
-    if (replaced.size === 0) return shape;
+    if (replaced.size === 0) {
+      fail?.("the hollow build failed for every opening solid", "the thickness may be too large for the solid's walls");
+      return shape;
+    }
     if (solids.length === 1) return replaced.get(0) ?? shape;
 
     const comp = new oc.TopoDS_Compound();
@@ -1520,6 +1680,7 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
     solids.forEach((s, i) => builder.Add(comp, replaced.get(i) ?? s.solid));
     return comp;
   } catch {
+    fail?.("the shell builder threw");
     return shape;
   }
 }
@@ -1536,14 +1697,20 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
  * Unresolved targets or a failed boolean skip gracefully.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "splitByPlane" }>, cleanup: Array<{ delete(): void }>): any {
+function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "splitByPlane" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     const solids = collectSolids(oc, shape, cleanup);
     const byId = new Map(solids.map((s) => [s.id, s.solid]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const targets = op.targets.map((id) => byId.get(id)).filter((s): s is any => s != null);
-    if (targets.length === 0) return shape;
+    if (targets.length === 0) {
+      fail?.(
+        `target ids (${op.targets.join(", ")}) did not resolve to solids`,
+        "re-check solid-N ids after topology-changing ops — load_model re-lists them"
+      );
+      return shape;
+    }
 
     const d = Math.max(bboxDiagonal(oc, shape, cleanup), 1) * 10;
     const rawBox = keep(keep(new oc.BRepPrimAPI_MakeBox_3(
@@ -1561,12 +1728,18 @@ function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "spli
     const pieces: any[] = [];
     if (op.keep === "positive" || op.keep === "both") {
       const cut = keep(new oc.BRepAlgoAPI_Cut_3(a, halfSpace));
-      if (!cut.IsDone()) return shape;
+      if (!cut.IsDone()) {
+        fail?.("the positive-side cut did not complete (IsDone() false)");
+        return shape;
+      }
       pieces.push(keep(cut.Shape()));
     }
     if (op.keep === "negative" || op.keep === "both") {
       const common = keep(new oc.BRepAlgoAPI_Common_3(a, halfSpace));
-      if (!common.IsDone()) return shape;
+      if (!common.IsDone()) {
+        fail?.("the negative-side intersection did not complete (IsDone() false)");
+        return shape;
+      }
       pieces.push(keep(common.Shape()));
     }
 
@@ -1583,6 +1756,7 @@ function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "spli
     for (const s of leftovers) builder.Add(comp, s);
     return comp;
   } catch {
+    fail?.("the split builder threw");
     return shape;
   }
 }
@@ -1598,14 +1772,20 @@ function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "spli
  * (no faces in the result) or a failed boolean skips gracefully.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" }>, cleanup: Array<{ delete(): void }>): any {
+function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     const solids = collectSolids(oc, shape, cleanup);
     const byId = new Map(solids.map((s) => [s.id, s.solid]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const targets = op.targets.map((id) => byId.get(id)).filter((s): s is any => s != null);
-    if (targets.length === 0) return shape;
+    if (targets.length === 0) {
+      fail?.(
+        `target ids (${op.targets.join(", ")}) did not resolve to solids`,
+        "re-check solid-N ids after topology-changing ops — load_model re-lists them"
+      );
+      return shape;
+    }
 
     const d = Math.max(bboxDiagonal(oc, shape, cleanup), 1) * 10;
     const [u, v] = planeBasis(op.planeNormal);
@@ -1616,18 +1796,30 @@ function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" 
       addScaled(op.planePoint, u, -d / 2, v, d / 2),
     ];
     const planeFace = buildFlatFace(oc, corners, cleanup);
-    if (!planeFace) return shape;
+    if (!planeFace) {
+      fail?.("the cutting plane face could not be built", "the planeNormal must be a non-zero direction");
+      return shape;
+    }
 
     const a = combineSolids(oc, targets, cleanup);
     const algo = keep(new oc.BRepAlgoAPI_Common_3(planeFace, a));
-    if (!algo.IsDone()) return shape;
+    if (!algo.IsDone()) {
+      fail?.("the section intersection did not complete (IsDone() false)");
+      return shape;
+    }
     const section = keep(algo.Shape());
 
     // The plane must actually cross the targets — an empty result appends nothing.
     const faceExp = keep(new oc.TopExp_Explorer_2(
       section, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE
     ));
-    if (!faceExp.More()) return shape;
+    if (!faceExp.More()) {
+      fail?.(
+        "the plane does not cross the targeted solids — there is no cross-section",
+        "move planePoint onto/through the model"
+      );
+      return shape;
+    }
 
     const comp = new oc.TopoDS_Compound();
     cleanup.push(comp);
@@ -1638,6 +1830,7 @@ function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" 
     builder.Add(comp, section);
     return comp;
   } catch {
+    fail?.("the section builder threw");
     return shape;
   }
 }

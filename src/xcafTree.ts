@@ -1,6 +1,7 @@
 import type { Vec3 } from "./editOps";
 import type { TreeNode } from "./protocol";
 import { bboxCenter } from "./occtOperations";
+import { volumePropertiesAdaptive } from "./brepGProp";
 import { rebindEntities, type EntitySignature } from "./entityRebind";
 
 /**
@@ -57,7 +58,7 @@ export interface XcafAssemblyInfo {
 function volumeOf(oc: any, shape: any, cleanup: Array<{ delete(): void }>): number {
   const props = new oc.GProp_GProps_1();
   cleanup.push(props);
-  oc.BRepGProp.VolumeProperties_1(shape, props, false, false, false);
+  volumePropertiesAdaptive(oc, shape, props);
   return props.Mass();
 }
 

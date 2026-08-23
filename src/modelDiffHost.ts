@@ -1,5 +1,6 @@
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { applyEditsBRep, collectSolids, bboxCenter, bboxDiagonal } from "./occtOperations";
+import { volumePropertiesAdaptive } from "./brepGProp";
 import type { BRepFormat } from "./massProperties";
 import type { EditOp } from "./editOps";
 import { diffSolids, type ModelDiff, type SolidSignature } from "./modelDiff";
@@ -31,7 +32,7 @@ export type CompareSource =
 /**
  * OCCT-side half of "Compare Models" — resolves each solid's `bboxCenter`/
  * `bboxDiagonal` (both already shared with `explodeSolids`/`gmshPartsMap.ts`)
- * and volume (the same `BRepGProp.VolumeProperties_1` call shape
+ * and volume (the same `BRepGProp` volume call shape via `src/brepGProp.ts`'s adaptive wrapper
  * `massProperties.ts`'s `solidProperties` uses) into a `SolidSignature[]` for
  * `src/modelDiff.ts`'s pure matcher. Both files are read independently via
  * the existing `readShape()`, so this needs no webview involvement and works
@@ -57,7 +58,7 @@ async function extractBrepSolidSignatures(
       const centre = bboxCenter(oc, solid, cleanup);
       const props = new oc.GProp_GProps_1();
       cleanup.push(props);
-      oc.BRepGProp.VolumeProperties_1(solid, props, false, false, false);
+      volumePropertiesAdaptive(oc, solid, props);
       return { id, centre, diagonal: bboxDiagonal(oc, solid, cleanup), volume: props.Mass() };
     });
     return { signatures, diagonal };

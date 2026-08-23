@@ -1,5 +1,6 @@
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { applyEditsBRep, collectSolids, collectFaces, collectEdges } from "./occtOperations";
+import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 
@@ -43,11 +44,15 @@ export interface MassProperties {
  * overload/arg-count probing, same convention as every other OCCT call in
  * this codebase — see CLAUDE.md): `new oc.GProp_GProps_1()` (the *only*
  * accessible constructor — the unsuffixed `GProp_GProps` has none) →
- * `oc.BRepGProp.VolumeProperties_1(shape, props, onlyClosed, skipShared,
- * useTriangulation)` (exactly 5 args; all `false` verified correct — a
- * 2×3×4 box gave `Mass()` = 24) → `oc.BRepGProp.SurfaceProperties_1(shape,
- * props, skipShared, useTriangulation)` (4 args; verified area 52 on the same
- * box) → `oc.BRepGProp.LinearProperties(shape, props, skipShared, ?)`
+ * volume/surface integration goes through `src/brepGProp.ts`'s ADAPTIVE
+ * (`eps`-driven) wrappers — `VolumeProperties2(shape, props, eps,
+ * onlyClosed, skipShared)` / `SurfaceProperties2(shape, props, eps,
+ * skipShared)`, the embind-renamed variants stock opencascade.js exposes
+ * because the plain-overload names collide on `Standard_Real Eps` — NOT the
+ * fixed-order `_1` forms, which under-integrate B-spline-trimmed faces (see
+ * `brepGProp.ts`'s doc comment for the measured numbers). The 2×3×4 box
+ * still integrates to exactly 24 either way. →
+ * `oc.BRepGProp.LinearProperties(shape, props, skipShared, ?)`
  * (**unsuffixed**, but still needs exactly 4 args in this binding; verified
  * against a single edge, NOT the whole shape — `LinearProperties` over an
  * entire B-rep shape double-counts every edge shared by two faces, so it must
@@ -155,13 +160,13 @@ function readCenterAndInertia(
 function solidProperties(oc: any, shape: any, cleanup: Array<{ delete(): void }>): MassProperties {
   const vprops = new oc.GProp_GProps_1();
   cleanup.push(vprops);
-  oc.BRepGProp.VolumeProperties_1(shape, vprops, false, false, false);
+  volumePropertiesAdaptive(oc, shape, vprops);
   const volume = vprops.Mass();
   const { centerOfMass, momentsOfInertia } = readCenterAndInertia(vprops, cleanup);
 
   const sprops = new oc.GProp_GProps_1();
   cleanup.push(sprops);
-  oc.BRepGProp.SurfaceProperties_1(shape, sprops, false, false);
+  surfacePropertiesAdaptive(oc, shape, sprops);
   const area = sprops.Mass();
 
   return { volume, area, length: null, centerOfMass, momentsOfInertia };
@@ -172,7 +177,7 @@ function solidProperties(oc: any, shape: any, cleanup: Array<{ delete(): void }>
 function surfaceProperties(oc: any, face: any, cleanup: Array<{ delete(): void }>): MassProperties {
   const props = new oc.GProp_GProps_1();
   cleanup.push(props);
-  oc.BRepGProp.SurfaceProperties_1(face, props, false, false);
+  surfacePropertiesAdaptive(oc, face, props);
   const area = props.Mass();
   const { centerOfMass, momentsOfInertia } = readCenterAndInertia(props, cleanup);
   return { volume: null, area, length: null, centerOfMass, momentsOfInertia };

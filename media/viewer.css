@@ -1617,6 +1617,18 @@ input[type="range"].meshing-slider:focus {
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
 }
 
+/* A replay outcome of "did not apply" (see EditsPanel.render's opOutcomes):
+ * the row dims and carries a ⚠ marker whose tooltip holds the diagnostic +
+ * hint. Warning color matches the editor theme's error/warning foreground. */
+.edit-row-skipped .edit-label { opacity: 0.45; }
+.edit-skip-warning {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-list-warningForeground, #cca700));
+  cursor: help;
+}
+
 #edits-compose {
   padding: 6px 8px;
   border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);

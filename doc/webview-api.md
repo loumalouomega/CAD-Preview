@@ -16,7 +16,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
-| `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity, plus mode-unfiltered measurement picking (unit-testable) |
+| `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity, plus mode-unfiltered measurement picking (unit-testable). Both collectors walk with `traverseVisible`, not `traverse` — **load-bearing**: three's `Raycaster` tests only `layers` and ignores `.visible` entirely, so plain traversal would let clicks (and measurements, and `collectSnapPoints()`'s gizmo-drag snap candidates) land on geometry the user explicitly hid — a Part hidden by its eye-toggle, anything outside an active Isolate, or the model's faces under an FE-mesh/colour-field overlay. `traverseVisible` prunes such a subtree at the invisible ancestor, exactly the unit of hiding in all four cases. |
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
 | `src/webview/measurement.ts` | Pure distance/length/angle/radius math over plain tuples (unit-tested) |
 | `src/webview/measurementState.ts` | 0–2-pick buffer for the in-progress measurement, DOM-free (unit-tested) |
@@ -798,11 +798,13 @@ Manages the `#edits-panel` DOM: two top-level tabs — **GEOMETRY** (creation op
 ```typescript
 class EditsPanel {
   constructor(panel: HTMLElement, cb: EditsPanelCallbacks)
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean): void
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null): void
   setBRepOnly(enabled: boolean): void
   setVariables(values: Record<string, number>): void  // evaluated values for expression fields
 }
 ```
+
+**Replay-outcome markers:** the optional `opOutcomes` (the most recent replay's per-op results — the B-rep path's arrive on the `"geometry"` message, the mesh path's are computed locally in `rebuildMeshModel()`; both feed `main.ts`'s shared `lastOpOutcomes` state) marks an op whose replay gracefully skipped: its history row gets a dimmed style plus a ⚠ marker whose tooltip carries the diagnostic and hint (`roadmap "A failed edit op is indistinguishable from one that did nothing", closed`). Rows with no matching outcome render unmarked.
 
 **Expression fields:** every numeric input is `type="text"` (`inputmode= decimal`) and accepts either a plain number or an expression over the document's variables (`L*2`). The field readers (`readNum`/`readVec`/`rowVec`) evaluate non-numeric text against `setVariables`' values and side-collect the raw strings (keyed by op field path — `length`, `size[1]`, `points[2][0]`) into a pending `ExprMap`; the callbacks are **wrapped once in the constructor** so every apply transparently attaches the collected map to the outgoing draft as `draft.exprs` — or aborts with an inline `.expr-error-msg` when an expression failed — leaving the ~40 per-op apply closures untouched. `main.ts` copies `draft.exprs` onto the pushed op (remapping fillet/chamfer's shared `amount` field to the op's real `radius`/`distance` key).
 
@@ -828,10 +830,12 @@ class EditsPanel {
 The webview edit engine for **mesh formats** (no OCCT in the host). Folds the op-list over a pristine `THREE.Object3D` clone so ops replay cleanly on every change.
 
 ```typescript
-function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Object3D
+function applyEditsMesh(root: THREE.Object3D, ops: EditOp[], outcomes?: OpOutcome[]): THREE.Object3D
 function transformMatrixForOp(op: EditOp): THREE.Matrix4 | null   // pure, unit-tested
 function resolveMeshTargets(root: THREE.Object3D, ids: string[]): THREE.Object3D[]
 ```
+
+When `outcomes` is given, one `OpOutcome` is pushed per op — the webview-side half of the applied/not-applied reporting (the host's `applyEditsBRep` is the other half; there is no shared shape handle to identity-compare against here, so each dispatch site reports explicitly). A skipped op (B-rep-only kind, unresolved boolean/hole/transform targets, a pattern whose count adds no copies, an align that moves nothing) reports `applied: false` with a diagnostic and hint.
 
 `transformMatrixForOp` builds the world-space matrix for translate/rotate/scale/ mirror (rotation/scale/mirror conjugated about their point via `T(p)·M·T(−p)`; mirror is a Householder reflection). **Booleans** go through `applyMeshBoolean`, which resolves operand A/B to their first mesh, evaluates a CSG via **`three-bvh-csg`** (`Evaluator`/`Brush` with `ADDITION`/`SUBTRACTION`/`INTERSECTION`), and replaces both operands in the tree with the single result mesh (tagged with A's node id). Feature-modeling ops (`BREP_ONLY_OPS`) are skipped — meshes have no sketch/exact topology. `main.ts` caches the pristine tagged object and calls `applyEditsMesh` on a clone inside `rebuildMeshModel()`.
 

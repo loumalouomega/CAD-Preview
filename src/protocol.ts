@@ -132,7 +132,18 @@ export interface ViewState {
 
 /** Messages sent from the extension host to the webview. */
 export type HostToWebview =
-  | { type: "geometry"; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
+  | {
+      type: "geometry";
+      meshes: EncodedMesh[];
+      edges: EncodedEdge[];
+      points: EncodedPoint[];
+      /** Per-op replay outcomes (see `editOps.ts`'s `OpOutcome`) for the
+       * B-rep path — lets the Edits history mark an op that gracefully
+       * skipped instead of silently showing an unchanged model.
+       * Absent for mesh sources (their replay is client-side, in
+       * `rebuildMeshModel`, which reports outcomes directly). */
+      opOutcomes?: import("./editOps").OpOutcome[];
+    }
   | {
       type: "tree";
       root: TreeNode;

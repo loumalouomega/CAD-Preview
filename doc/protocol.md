@@ -267,7 +267,7 @@ interface MeshHealthReport {
 
 ```typescript
 type HostToWebview =
-  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
+  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
   | { type: 'tree';     root: TreeNode; sourceUnit?: string }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | {
@@ -312,6 +312,8 @@ type HostToWebview =
 
 Sent after B-rep tessellation. Contains every face as an encoded mesh, every unique edge as a polyline, and every vertex as a point. The webview calls `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` (one `THREE.Mesh` per face, one `THREE.Line` per edge, one `THREE.Sprite` per point, parented under per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group)`.
 
+The optional `opOutcomes` array (roadmap "A failed edit op is indistinguishable from one that did nothing", closed) carries one entry per replayed op — `{index, kind, applied, diagnostic?, hint?}` in list order. An op that gracefully skipped during the host's B-rep replay (unresolved operands after id drift, a builder throw, `IsDone() === false`) reports `applied: false` with a human-readable `diagnostic` and an actionable `hint`, which the webview renders as a ⚠ marker on that op's row in the Edits history instead of silently showing an unchanged model. Absent for mesh sources — their replay is client-side (`rebuildMeshModel()` → `applyEditsMesh(root, ops, outcomes)`), which reports outcomes directly without a protocol round trip.
+
 ```json
 {
   "type": "geometry",
@@ -324,6 +326,12 @@ Sent after B-rep tessellation. Contains every face as an encoded mesh, every uni
   ],
   "points": [
     { "position": "DDDD...", "pointId": "point-0" }
+  ],
+  "opOutcomes": [
+    { "index": 0, "kind": "addBox", "applied": true },
+    { "index": 1, "kind": "fillet", "applied": false,
+      "diagnostic": "the fillet build threw — the radius 1000000 is likely too large for the geometry",
+      "hint": "try a smaller value, or fewer edges at once" }
   ]
 }
 ```

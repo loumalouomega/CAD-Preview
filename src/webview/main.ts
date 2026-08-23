@@ -44,6 +44,7 @@ import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./m
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
+import type { OpOutcome } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -229,9 +230,17 @@ function renderEditsUi(): void {
   const { values, errors } = evaluateVariables(variablesModel.list());
   const { ops } = resolveEditOps(editsModel.list(), values);
   editsPanel.setVariables(values);
-  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo);
+  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
 }
+
+/** The most recent replay's per-op outcomes (see `editOps.ts`'s
+ * `OpOutcome`) — set by the B-rep `"geometry"` handler and by
+ * `rebuildMeshModel()` for mesh sources, consumed by `renderEditsUi()` so the
+ * Edits history can mark an op that gracefully skipped instead of silently
+ * showing an unchanged model. Cleared whenever a genuinely new model loads
+ * before its fresh outcomes arrive (the geometry post always carries them). */
+let lastOpOutcomes: OpOutcome[] | null = null;
 
 /** Fired on every op-stack or variable mutation: resolve, persist, re-display. */
 function syncEdits(): void {
@@ -327,10 +336,15 @@ let gridSnapSize = 1;
  * individually-tagged, always-fully-populated point entities (FE-mesh
  * overlay vertices are display-only and excluded from picking already;
  * edge/face-mesh vertices were never separately tagged entities at all) —
- * see CLAUDE.md's "Bottom-up wireframe modeling" section. */
+ * see CLAUDE.md's "Bottom-up wireframe modeling" section.
+ *
+ * `traverseVisible`, not `traverse` — same load-bearing reason as
+ * `picking.ts`'s collectors: a snap candidate is an implicit pick target,
+ * and a hidden Part's points must not attract gizmo drags either (three's
+ * Raycaster ignores `.visible`; this traversal must not). */
 function collectSnapPoints(): THREE.Vector3[] {
   const points: THREE.Vector3[] = [];
-  viewer.getModel()?.traverse((o) => {
+  viewer.getModel()?.traverseVisible((o) => {
     if (o instanceof THREE.Sprite && o.userData.entityType === "point") points.push(o.position.clone());
   });
   return points;
@@ -1293,7 +1307,9 @@ let importedRegionInfo: { triangleRegion: Int32Array } | null = null;
 function rebuildMeshModel(): void {
   if (!pristineMesh) return;
   const ops = currentResolvedOps().ops;
-  const edited = applyEditsMesh(pristineMesh.clone(), ops);
+  const outcomes: OpOutcome[] = [];
+  const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes);
+  lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model);
   explodePreviewBases = null; // stale references to the just-replaced model's objects
@@ -1307,6 +1323,7 @@ function rebuildMeshModel(): void {
   // `geometry` message after each edit.)
   meshingPanel.setModelExtents(viewer.getModelExtents());
   applyInitialViewIfNeeded(); // no-op after the document's first load; see its doc comment
+  renderEditsUi(); // re-render with THIS replay's outcome markers (syncEdits rendered before they existed)
 }
 
 function showSidebar(): void {
@@ -2296,13 +2313,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         viewer.setModel(group);
         explodePreviewBases = null; // stale references to the just-replaced model's objects
         gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
-        viewer.detachTransformGizmo();
         lastRawMassProperties = null; // stale — refers to the just-replaced model
         lastMeasurement = null; // stale entity ids — refer to the just-replaced model
+        lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
         clearMarkupOverlay?.();
         refreshColors();
         renderAnnotationsList(); // detached status may have changed for the new model
+        renderEditsUi(); // re-render the history with the fresh per-op outcome markers
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
         sourceKind = "brep";

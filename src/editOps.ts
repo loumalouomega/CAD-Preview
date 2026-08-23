@@ -138,6 +138,33 @@ export type EditOp = (
 
 export type EditOpKind = EditOp["op"];
 
+/**
+ * Per-op replay outcome, reported by BOTH engines (roadmap "A failed edit op
+ * is indistinguishable from one that did nothing", closed): the graceful-skip
+ * rule stays — a sidecar authored against a different build must never hard-
+ * fail a replay — but a skipped op is no longer silent. `applied: false` with
+ * a `diagnostic` (what happened) and an optional `hint` (what to try) is what
+ * turns "the model just didn't change" into an actionable report, both in the
+ * MCP tools' responses and as per-row markers in the webview's Edits history.
+ *
+ * Pure data — plain JSON all the way down, so it crosses kernel-worker IPC
+ * (`kernelIpc.ts`'s generic marshalling) and postMessage untouched.
+ */
+export interface OpOutcome {
+  /** Position of the op in the list being applied (0-based). */
+  index: number;
+  kind: EditOpKind;
+  applied: boolean;
+  /** Set when `applied` is false — what went wrong, in one sentence. */
+  diagnostic?: string;
+  /** Optional actionable suggestion accompanying `diagnostic`. */
+  hint?: string;
+}
+
+/** Called by an op helper at each of its skip sites, immediately before
+ * returning the unmodified shape/model — first call wins for that op. */
+export type OutcomeFail = (diagnostic: string, hint?: string) => void;
+
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",

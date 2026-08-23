@@ -1,4 +1,4 @@
-import type { EditOp, ExprMap, Vec3 } from "../editOps";
+import type { EditOp, ExprMap, Vec3, OpOutcome } from "../editOps";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
@@ -313,10 +313,20 @@ export class EditsPanel {
     return 0;
   }
 
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean): void {
+  /**
+   * Renders the applied op history. The optional `opOutcomes` (the most recent
+   * replay's per-op results — see `editOps.ts`'s `OpOutcome`) marks an op that
+   * gracefully skipped: its row gets a ⚠ marker (tooltip = diagnostic + hint)
+   * and a dimmed style, so "the model just didn't change" is at least visible
+   * WHERE it happened rather than silent. Rows with no matching outcome render
+   * unmarked (e.g. before any replay has run).
+   */
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null): void {
     this.undoBtn.disabled = !canUndo;
     this.redoBtn.disabled = !canRedo;
     this.clearBtn.disabled = ops.length === 0;
+
+    const outcomeOf = new Map((opOutcomes ?? []).map((o) => [o.index, o]));
 
     this.body.innerHTML = "";
     if (ops.length === 0) {
@@ -332,6 +342,11 @@ export class EditsPanel {
     ops.forEach((op, i) => {
       const li = document.createElement("li");
       li.className = "edit-row";
+      const outcome = outcomeOf.get(i);
+      if (outcome && !outcome.applied) {
+        li.classList.add("edit-row-skipped");
+        li.title = `Did not apply — ${outcome.diagnostic ?? "no reason recorded"}${outcome.hint ? `\nHint: ${outcome.hint}` : ""}`;
+      }
       const idx = document.createElement("span");
       idx.className = "edit-index";
       idx.textContent = `${i + 1}.`;
@@ -345,6 +360,14 @@ export class EditsPanel {
       del.addEventListener("click", () => this.cb.onRemoveOp(i));
       li.appendChild(idx);
       li.appendChild(label);
+      // A skipped op's warning marker sits between the label and the remove
+      // button so it can't be mistaken for a row-level action.
+      if (outcome && !outcome.applied) {
+        const warn = document.createElement("span");
+        warn.className = "edit-skip-warning";
+        warn.textContent = "⚠";
+        li.appendChild(warn);
+      }
       li.appendChild(del);
       ol.appendChild(li);
     });

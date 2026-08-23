@@ -46,7 +46,7 @@
  *     "many repeated `Perform()` calls on one instance" behavior.
  *   - Triangle-soup → one tiny planar `BRepBuilderAPI_MakeFace` per triangle
  *     → `Sewing` → `NbFreeEdges()===0` → pull the `TopAbs_SHELL` →
- *     `BRepBuilderAPI_MakeSolid_3` → `BRepGProp.VolumeProperties_1` gives an
+ *     `BRepBuilderAPI_MakeSolid_3` → `volumePropertiesAdaptive` (`BRepGProp`'s adaptive overload, see `src/brepGProp.ts`) gives an
  *     exact volume match against a real STL fixture (verified against
  *     `examples/STL/cube.stl`, 1000 for a 10×10×10 cube, floating-point
  *     exact).
@@ -54,6 +54,7 @@
 
 import { getOcct, wrapOcctFault, writeShape } from "./occtService";
 import { scaleShapeForExport, combineSolids } from "./occtOperations";
+import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
 import { parseStl } from "./stlParser";
 import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
@@ -226,12 +227,12 @@ function solidPropertiesFromSewedShape(oc: any, sewedShape: unknown, cleanup: Ar
 
   const volumeProps = new oc.GProp_GProps_1();
   cleanup.push(volumeProps);
-  oc.BRepGProp.VolumeProperties_1(solid, volumeProps, false, false, false);
+  volumePropertiesAdaptive(oc, solid, volumeProps);
   const volume = volumeProps.Mass();
 
   const areaProps = new oc.GProp_GProps_1();
   cleanup.push(areaProps);
-  oc.BRepGProp.SurfaceProperties_1(solid, areaProps, false, false);
+  surfacePropertiesAdaptive(oc, solid, areaProps);
   const area = areaProps.Mass();
 
   return { area, volume };
