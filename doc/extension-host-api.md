@@ -275,6 +275,7 @@ interface EntityFacts {
   area: number | null    // solid: boundary area; face: its own area; null otherwise
   length: number | null  // edge only
   normal: Vec3 | null       // planar face only
+  planeOrigin: Vec3 | null  // planar face only — OCCT's own plane origin (gp_Pln.Location()), a point ON the plane; usable as planePoint for section/splitByPlane/mirror
   surfaceType: SurfaceType | null   // face only
 }
 

@@ -61,6 +61,13 @@ export interface EntityFacts {
   length: number | null;
   /** Set only for a planar face; null for non-planar faces and every other kind. */
   normal: Vec3 | null;
+  /** Set only for a planar face, beside `normal`: the plane's own origin as
+   * OCCT computed it (`gp_Pln.Location()` via `facePlane`) — a point that
+   * genuinely lies ON the face's plane, unlike `center` (the bounding-box
+   * centre, which is coplanar with a planar face but is not guaranteed to
+   * lie on an annular or concave one). Usable directly as `planePoint` for
+   * the `section`/`splitByPlane`/`mirror` ops. */
+  planeOrigin: Vec3 | null;
   /** Set only for a face. */
   surfaceType: SurfaceType | null;
 }
@@ -189,6 +196,7 @@ export async function getEntityFacts(
     let area: number | null = null;
     let length: number | null = null;
     let normal: Vec3 | null = null;
+    let planeOrigin: Vec3 | null = null;
     let surfaceType: SurfaceType | null = null;
 
     if (kind === "solid" || kind === "face") {
@@ -208,12 +216,13 @@ export async function getEntityFacts(
     if (kind === "face") {
       const plane = facePlane(oc, handle, cleanup);
       normal = plane?.nl ?? null;
+      planeOrigin = plane?.pt ?? null;
       const surf = new oc.BRepAdaptor_Surface_2(handle, true);
       cleanup.push(surf);
       surfaceType = SURFACE_TYPE_BY_VALUE[surf.GetType().value] ?? "other";
     }
 
-    return { entityId, kind, bbox, center, area, length, normal, surfaceType };
+    return { entityId, kind, bbox, center, area, length, normal, planeOrigin, surfaceType };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

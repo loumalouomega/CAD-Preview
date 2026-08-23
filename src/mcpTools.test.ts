@@ -181,6 +181,7 @@ const FAKE_ENTITY_FACTS: EntityFacts = {
   area: 52,
   length: null,
   normal: null,
+  planeOrigin: null,
   surfaceType: null,
 };
 

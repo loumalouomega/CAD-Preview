@@ -253,6 +253,32 @@ try {
   const boxFacts = await call("inspect", { path: model, entityId: "solid-1" });
   assert(boxFacts.supported === true && boxFacts.kind === "solid", "inspect resolves the added box (solid-1)");
 
+  // planeOrigin (roadmap "two small plane-handling gaps", closed): a planar
+  // face reports the OCCT-computed plane origin beside `normal` — a point
+  // genuinely ON the face's plane, usable as planePoint for section/split/
+  // mirror ops (unlike the bbox centre, which need not lie on a tilted
+  // face's plane). The box primitive's faces are axis-aligned, so its bbox
+  // centre IS coplanar here: their difference must have no normal component.
+  const boxFaceId = applied.model.solids[applied.model.solids.length - 1].faceIds[0];
+  const boxFace = await call("inspect", { path: model, entityId: boxFaceId });
+  assert(
+    boxFace.supported === true && boxFace.kind === "face" && boxFace.surfaceType === "plane",
+    `inspect reports the added box's face (${boxFaceId}) as a planar face`
+  );
+  {
+    const [nx, ny, nz] = boxFace.normal;
+    const d = [
+      boxFace.center[0] - boxFace.planeOrigin[0],
+      boxFace.center[1] - boxFace.planeOrigin[1],
+      boxFace.center[2] - boxFace.planeOrigin[2],
+    ];
+    const tol = 1e-6 * boxFace.bbox.diagonal;
+    assert(
+      Array.isArray(boxFace.planeOrigin) && Math.abs(d[0] * nx + d[1] * ny + d[2] * nz) < tol,
+      `inspect's planeOrigin lies on the planar face's plane (${boxFaceId})`
+    );
+  }
+
   const measured = await call("measure", { path: model, from: "solid-0", to: "solid-1" });
   assert(
     measured.supported === true && measured.distance > 0,
