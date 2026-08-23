@@ -296,7 +296,7 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "mirror": {
       const targets = asIdArray(o.targets);
       const planePoint = asVec3(o.planePoint);
-      const planeNormal = asVec3(o.planeNormal);
+      const planeNormal = asNonZeroVec3(o.planeNormal);
       return targets && planePoint && planeNormal
         ? { op: "mirror", targets, planePoint, planeNormal }
         : null;
