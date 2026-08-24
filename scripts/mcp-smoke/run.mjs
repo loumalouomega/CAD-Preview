@@ -218,7 +218,10 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 26, `tools/list exposes 26 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 30, `tools/list exposes 30 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix"]) {
+    assert(tools.includes(t), `tools/list exposes ${t}`);
+  }
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
@@ -242,6 +245,57 @@ try {
 
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
+
+  // render_ops_prefix (roadmap item, closed) — read-only prefix replay for
+  // bisection. The model currently holds exactly ONE op, so the prefix
+  // lengths are analytically known: -1 → bull alone (1 solid), 0 → bull +
+  // box (2 solids). The read-only guarantee — the edits sidecar is
+  // byte-identical afterward — is the headline assertion.
+  {
+    const editsPath = `${model}.edits.json`;
+    const editsBefore = fs.readFileSync(editsPath);
+
+    const base = await call("render_ops_prefix", { path: model, throughIndex: -1 });
+    assert(
+      base.supported === true && base.persisted === false && base.prefixOpCount === 0 && base.model.solids.length === 1,
+      `render_ops_prefix at -1 shows the base shape only (got ${base.model.solids.length} solid(s), persisted=${base.persisted})`
+    );
+    assert(base.warnings.some((w) => /Read-only preview/.test(w)), "render_ops_prefix says plainly that nothing was written");
+
+    const mid = await call("render_ops_prefix", { path: model, throughIndex: 0 });
+    assert(
+      mid.supported === true && mid.prefixOpCount === 1 && mid.totalOpCount === 1 && mid.model.solids.length === 2,
+      `render_ops_prefix at op 0 replays just the box (got ${mid.model.solids.length} solid(s))`
+    );
+
+    const tooFar = await callTolerant("render_ops_prefix", { path: model, throughIndex: 1 });
+    assert(tooFar.error && /out of range/.test(tooFar.error), `render_ops_prefix rejects an out-of-range index (got: ${tooFar.error})`);
+
+    // render:true degrades to a warning without Playwright/Chromium and
+    // returns the image packet when it IS available — either way the numeric
+    // prefix facts above must be unaffected.
+    const withRender = await call("render_ops_prefix", { path: model, throughIndex: 0, render: true });
+    assert(
+      withRender.supported === true && (Array.isArray(withRender.images) || withRender.warnings.some((w) => /renderer unavailable|snapshot failed/i.test(w))),
+      "render_ops_prefix render:true either returns images or degrades to a clear warning"
+    );
+
+    assert(fs.readFileSync(editsPath).equals(editsBefore), "render_ops_prefix left the edits sidecar byte-identical (read-only)");
+  }
+
+  // list_workspace_models (roadmap item, closed) — stateless discovery over
+  // routeFile() + sidecar presence. The temp dir at this point holds the
+  // model copy plus its freshly-written .edits.json and no parts sidecar.
+  {
+    const listing = await call("list_workspace_models", { root: dir });
+    assert(listing.supported !== false && listing.models?.length >= 1, `list_workspace_models discovers ${listing.models?.length} model(s)`);
+    const self = listing.models.find((m) => m.path === model);
+    assert(self && self.format === "step" && self.strategy === "occt", "list_workspace_models reports the fixture with its real format/strategy");
+    assert(self.sidecars.edits === true && self.sidecars.parts === false, "list_workspace_models' sidecar presence matches reality (.edits.json written, .parts.json not)");
+
+    const missing = await callTolerant("list_workspace_models", { root: path.join(dir, "does-not-exist") });
+    assert(missing.error && /does not exist/i.test(missing.error), `list_workspace_models throws a clear error for a nonexistent root (got: ${missing.error})`);
+  }
 
   // inspect/measure: real OCCT entity facts + distance for the bull solid
   // (solid-0) and the just-added box (solid-1).
@@ -295,6 +349,66 @@ try {
     exactDist.supported === true && exactDist.value > 0 && Array.isArray(exactDist.fromPoint) && Array.isArray(exactDist.toPoint),
     `measure_exact reports a real geometric distance + nearest points between solid-0 and solid-1 (got ${exactDist.value})`
   );
+
+  // Richer exact measurement (roadmap item, closed): additive context fields.
+  // centreDistance must equal what `measure` reports (same bbox-centre
+  // convention), and a solid-vs-solid pair has no face-plane geometry, so
+  // primary falls to "min" with no parallel/angle fields.
+  assert(
+    typeof exactDist.centreDistance === "number" && Math.abs(exactDist.centreDistance - measured.distance) < 1e-6,
+    `measure_exact's centreDistance matches measure's bbox-centre distance (${exactDist.centreDistance} vs ${measured.distance})`
+  );
+  assert(
+    exactDist.primary === "min" && exactDist.parallelDistance === undefined,
+    `measure_exact names "min" as primary for a solid/solid pair with no parallel-distance field`
+  );
+
+  // Face-pair facts on the added box: find two mutually PARALLEL planar faces
+  // and two PERPENDICULAR ones from the box's own six faces, then verify
+  // angleDeg / parallelDistance / primary against analytic values (parallel
+  // opposite faces of a box are exactly s apart; outward normals of opposite
+  // faces read 180°; adjacent faces read 90°).
+  {
+    const boxFaces = applied.model.solids[applied.model.solids.length - 1].faceIds;
+    const inspected = [];
+    for (const id of boxFaces) {
+      const f = await call("inspect", { path: model, entityId: id });
+      if (f.surfaceType === "plane" && Array.isArray(f.normal)) inspected.push({ id, normal: f.normal });
+    }
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let paraPair = null;
+    let perpPair = null;
+    outer: for (let i = 0; i < inspected.length; i++) {
+      for (let j = i + 1; j < inspected.length; j++) {
+        const d = dot(inspected[i].normal, inspected[j].normal);
+        if (Math.abs(Math.abs(d) - 1) < 1e-6) paraPair = [inspected[i], inspected[j]];
+        else if (Math.abs(d) < 1e-6) perpPair = [inspected[i], inspected[j]];
+        if (paraPair && perpPair) break outer;
+      }
+    }
+    assert(paraPair && perpPair, "box fixture exposes both a parallel and a perpendicular planar-face pair");
+
+    const para = await call("measure_exact", { path: model, kind: "distance", entityIdA: paraPair[0].id, entityIdB: paraPair[1].id });
+    assert(
+      Math.abs(para.angleDeg - 180) < 1e-6 || Math.abs(para.angleDeg) < 1e-6,
+      `measure_exact reports the parallel faces' normal-angle as 0°/180° (got ${para.angleDeg})`
+    );
+    assert(
+      typeof para.parallelDistance === "number" && Math.abs(para.parallelDistance - s) < 1e-6 * Math.max(1, s),
+      `measure_exact reports the opposite faces' perpendicular gap as exactly the box size s=${s} (got ${para.parallelDistance})`
+    );
+    assert(para.primary === "parallel", `measure_exact names "parallel" as primary for two parallel planar faces`);
+
+    const perp = await call("measure_exact", { path: model, kind: "distance", entityIdA: perpPair[0].id, entityIdB: perpPair[1].id });
+    assert(
+      Math.abs(perp.angleDeg - 90) < 1e-6,
+      `measure_exact reports perpendicular faces' normal-angle as exactly 90° (got ${perp.angleDeg})`
+    );
+    assert(
+      perp.parallelDistance === undefined && perp.primary === "min",
+      "measure_exact omits parallelDistance and names \"min\" as primary for a non-parallel pair"
+    );
+  }
 
   // A cylinder with a known radius, added specifically to verify radius/
   // edgeLength against an exact expected value (not just "the call didn't
@@ -489,6 +603,89 @@ try {
 
   const clashMesh = await call("check_interference", { path: path.join(ROOT, "examples", "STL", "cube.stl"), a: ["node-0"], b: ["node-0"] });
   assert(clashMesh.supported === false, `check_interference reports supported:false for a mesh-format source (got: ${JSON.stringify(clashMesh)})`);
+
+  // check_interference_all (roadmap item, closed) — every Part against every
+  // other in ONE call, AABB pre-filter screening strictly-disjoint pairs
+  // without a boolean. Parts over the SAME 4-box fixture above, whose
+  // geometry makes each expected outcome analytically known:
+  // BoxA×BoxB → the real ~700 overlap (no bbox screen — their boxes overlap);
+  // any part × Far → screenedByBbox (x=[99.5,100.5] vs everything else);
+  // BoxA×Toucher → touching AABBs are NOT screened, and the boolean resolves
+  // the degenerate shared-face contact to hasOverlap:false, exactly like the
+  // single-pair path.
+  await call("set_part", { path: clashModel, name: "BoxA", volumes: ["solid-1"] });
+  await call("set_part", { path: clashModel, name: "BoxB", volumes: ["solid-2"] });
+  await call("set_part", { path: clashModel, name: "Far", volumes: ["solid-3"] });
+  await call("set_part", { path: clashModel, name: "Toucher", volumes: ["solid-4"] });
+
+  const allClash = await call("check_interference_all", { path: clashModel });
+  const clashParts = ["ClashGroup", "BoxA", "BoxB", "Far", "Toucher"];
+  assert(
+    allClash.supported === true && allClash.pairs.length === (clashParts.length * (clashParts.length - 1)) / 2,
+    `check_interference_all pairs every sidecar part C(${clashParts.length},2) in one call (got ${allClash.pairs.length})`
+  );
+  const pairByName = (r, a, b) => r.pairs.find((p) => (p.partA === a && p.partB === b) || (p.partA === b && p.partB === a));
+
+  const realOverlapPair = pairByName(allClash, "BoxA", "BoxB");
+  assert(
+    realOverlapPair && realOverlapPair.hasOverlap === true && Math.abs(realOverlapPair.overlapVolume - 700) < 1e-6 && !realOverlapPair.screenedByBbox,
+    `check_interference_all finds the exact 700-unit overlap between BoxA and BoxB (got ${realOverlapPair?.overlapVolume}, screened=${realOverlapPair?.screenedByBbox})`
+  );
+
+  const screenedPair = pairByName(allClash, "ClashGroup", "Far");
+  assert(
+    screenedPair && screenedPair.hasOverlap === false && screenedPair.screenedByBbox === true,
+    "check_interference_all screens the strictly-disjoint pair by bounding box without paying for a boolean"
+  );
+
+  const toucherPair = pairByName(allClash, "BoxA", "Toucher");
+  assert(
+    toucherPair && toucherPair.hasOverlap === false && !toucherPair.screenedByBbox,
+    "check_interference_all does NOT screen merely-touching boxes — the real boolean decides, and reports no volume overlap"
+  );
+
+  const explicitAll = await call("check_interference_all", { path: clashModel, parts: ["Ghost", "BoxA", "BoxB"] });
+  assert(
+    explicitAll.pairs.length === 1 && Math.abs(explicitAll.pairs[0].overlapVolume - 700) < 1e-6,
+    "check_interference_all with explicit parts skips the unknown name (warned) and still finds the overlap"
+  );
+  assert(
+    explicitAll.warnings.some((w) => /"Ghost" not found/.test(w)),
+    `check_interference_all warns for an unknown part name (got: ${JSON.stringify(explicitAll.warnings)})`
+  );
+
+  const allMesh = await call("check_interference_all", { path: path.join(ROOT, "examples", "STL", "cube.stl") });
+  assert(allMesh.supported === false, "check_interference_all is B-rep-only headless like its single-pair sibling");
+
+  // generate_bom (roadmap item, closed) — one row per Part over one parse/
+  // replay, SUM-OF-PARTS volumes (documented convention: overlapping members
+  // count twice), plus a ready-to-paste TSV string.
+  {
+    const emptyBomModel = path.join(dir, "bull-for-empty-bom.stp");
+    fs.copyFileSync(FIXTURE, emptyBomModel);
+    const emptyBom = await call("generate_bom", { path: emptyBomModel });
+    assert(
+      emptyBom.supported === true && emptyBom.rows.length === 0 && /No parts defined/.test(emptyBom.warnings[0] ?? ""),
+      "generate_bom returns zero rows + a warning for a document with no parts (a fact, not an error)"
+    );
+
+    const bom = await call("generate_bom", { path: clashModel });
+    assert(bom.supported === true && bom.rows.length === clashParts.length, `generate_bom emits one row per part (got ${bom.rows.length})`);
+    const boxARow = bom.rows.find((r) => r.name === "BoxA");
+    const groupRow = bom.rows.find((r) => r.name === "ClashGroup");
+    assert(boxARow && Math.abs(boxARow.volume - 1000) < 1e-6, `generate_bom's BoxA volume is exactly 1000 (got ${boxARow?.volume})`);
+    assert(
+      groupRow && Math.abs(groupRow.volume - 2000) < 1e-6,
+      `generate_bom uses SUM-OF-PARTS volumes: ClashGroup's two overlapping boxes sum to 2000, not the combined ~1700 (got ${groupRow?.volume})`
+    );
+    const bomLines = bom.bom.split("\n");
+    assert(
+      bomLines.length === clashParts.length + 1 && bomLines[0].startsWith("Name\tSolids\t"),
+      "generate_bom's TSV payload has a header row plus one line per part"
+    );
+    const boxATsvLine = bomLines.find((l) => l.startsWith("BoxA\t"));
+    assert(boxATsvLine && boxATsvLine.split("\t")[5] === "1000", `generate_bom's TSV carries the numbers through (${boxATsvLine})`);
+  }
 
   // Entity-id rebinding after topology-changing ops (roadmap item, closed) —
   // a Part referencing face-N/edge-N ids used to silently lose them once a

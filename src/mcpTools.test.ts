@@ -8,21 +8,18 @@ import {
   OP_PARAM_DOCS,
   loadModel,
   getMassProperties,
+  generateBomTool,
+  listWorkspaceModels,
   compareModelsTool,
   checkMeshHealthTool,
   promoteMeshToBrepTool,
-  getState,
-  applyEditOps,
-  runParametricScriptTool,
-  removeEditOp,
-  setVariables,
-  setPart,
-  setMeshOptions,
   inspectEntity,
   measureTool,
   measureExactTool,
   checkInterferenceTool,
+  checkInterferenceAllTool,
   renderSnapshotTool,
+  renderOpsPrefixTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
   generateMeshTool,
@@ -31,10 +28,18 @@ import {
   rewriteGeoMerge,
   savePreprocessTool,
   loadPreprocessTool,
+  getState,
+  applyEditOps,
+  runParametricScriptTool,
+  removeEditOp,
+  setVariables,
+  setPart,
+  setMeshOptions,
   type Pipeline,
   type ToolContext,
 } from "./mcpTools";
-import { readEdits, readParts, readAnnotations, writeAnnotations, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath } from "./mcpSidecars";
+import { readEdits, readParts, readAnnotations, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath } from "./mcpSidecars";
+import type { EditOp } from "./editOps";
 import { MESH_EXPORT_FORMATS } from "./meshExportFormats";
 import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
@@ -299,10 +304,40 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
     exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "/out.geo_unrolled.xao";\n', xao: new Uint8Array([9]) })),
     computeMassProperties: vi.fn(async () => FAKE_MASS_PROPERTIES),
+    computeBom: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, _ops: unknown[], parts: Array<{ name: string; color: string; volumes: string[]; surfaces: string[]; lines: string[]; points: string[] }>) => ({
+      rows: parts.map((p) => ({
+        name: p.name,
+        color: p.color,
+        solidCount: p.volumes.length,
+        surfaceCount: p.surfaces.length,
+        lineCount: p.lines.length,
+        pointCount: p.points.length,
+        volume: p.volumes.length > 0 ? 1000 * p.volumes.length : null,
+        area: p.volumes.length > 0 ? 600 * p.volumes.length : null,
+        unresolvedIds: [],
+      })),
+      warnings: [],
+    })),
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
     measureExact: vi.fn(async () => FAKE_EXACT_MEASURE_RESULT),
     checkInterference: vi.fn(async () => FAKE_INTERFERENCE_RESULT),
+    checkInterferenceAll: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, _ops: unknown[], groups: string[][]) => {
+      const pairs: Array<Record<string, unknown>> = [];
+      for (let i = 0; i < groups.length; i++) {
+        for (let j = i + 1; j < groups.length; j++) {
+          pairs.push({
+            a: groups[i],
+            b: groups[j],
+            hasOverlap: false,
+            overlapVolume: 0,
+            unresolvedA: [],
+            unresolvedB: [],
+          });
+        }
+      }
+      return { pairs, warnings: [] };
+    }),
     renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
     isRenderAvailable: vi.fn(async () => ({ available: true })),
     searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
@@ -2089,5 +2124,212 @@ describe("load_preprocess", () => {
     const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
     expect(result.manifestSource).toBe("model.stp");
     expect(await fs.readFile(restored)).toEqual(sourceBytes);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list_workspace_models
+
+describe("list_workspace_models", () => {
+  it("discovers recognized files with their route and sidecar presence, skipping unrecognized files and skip-dirs", async () => {
+    const sub = path.join(dir, "nested");
+    await fs.mkdir(sub);
+    await fs.writeFile(path.join(sub, "b.step"), "ISO-10303-21;", "utf8");
+    await fs.writeFile(path.join(sub, "b.step.parts.json"), "[]", "utf8");
+    await fs.writeFile(path.join(dir, "notes.txt"), "not a model", "utf8");
+    const nodeModules = path.join(dir, "node_modules");
+    await fs.mkdir(nodeModules);
+    await fs.writeFile(path.join(nodeModules, "ignored.stl"), "solid x\nendsolid x\n", "utf8");
+
+    const result = await listWorkspaceModels({ root: dir });
+    expect(result.truncated).toBe(false);
+    const expected = ["model.gltf", "model.obj", "model.ply", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
+    expect(result.models.map((m) => path.relative(dir, m.path))).toEqual(expected);
+    expect(result.models.some((m) => m.path.includes("ignored"))).toBe(false);
+    expect(result.models.some((m) => m.path.endsWith("notes.txt"))).toBe(false);
+
+    const bStep = result.models.find((m) => m.path === path.join(sub, "b.step"));
+    expect(bStep).toBeDefined();
+    expect(bStep!.format).toBe("step");
+    expect(bStep!.strategy).toBe("occt");
+    expect(bStep!.sidecars.parts).toBe(true);
+    expect(bStep!.sidecars.edits).toBe(false);
+
+    const warnings = result.warnings.join("\n");
+    expect(warnings).toMatch(/node_modules/);
+  });
+
+  it("reports the depth cap via truncated + a warning rather than scanning forever", async () => {
+    let deep = dir;
+    for (let i = 0; i < 8; i++) {
+      deep = path.join(deep, `level-${i}`);
+      await fs.mkdir(deep);
+    }
+    await fs.writeFile(path.join(deep, "deep.stl"), "solid x\nendsolid x\n", "utf8");
+
+    const result = await listWorkspaceModels({ root: dir });
+    expect(result.truncated).toBe(true);
+    expect(result.warnings.join("\n")).toMatch(/[Dd]epth cap/);
+    // The too-deep file is NOT in the list — the truncation is honest.
+    expect(result.models.some((m) => m.path.endsWith("deep.stl"))).toBe(false);
+  });
+
+  it("throws for a nonexistent or non-directory root", async () => {
+    await expect(listWorkspaceModels({ root: path.join(dir, "missing-dir") })).rejects.toThrow(/does not exist/i);
+    await expect(listWorkspaceModels({ root: stpModel })).rejects.toThrow(/not a directory/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generate_bom
+
+describe("generate_bom", () => {
+  it("returns zero rows + a warning for an empty parts sidecar (a fact, not an error)", async () => {
+    const c = ctx();
+    const result = await generateBomTool(c, { path: stpModel });
+    expect(result.supported).toBe(true);
+    expect(result.rows).toEqual([]);
+    expect(result.bom).toBe("");
+    expect(result.warnings[0]).toMatch(/No parts defined/);
+  });
+
+  it("rejects mesh-format sources like every other mass-properties tool", async () => {
+    const result = await generateBomTool(ctx(), { path: vtkModel });
+    expect(result.supported).toBe(false);
+  });
+
+  it("loops the pipeline once over the sidecar's parts and returns rows + TSV", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "Body", volumes: ["solid-0"] });
+    await setPart({ path: stpModel, name: "Boss", volumes: ["solid-0", "solid-1"], surfaces: ["face-0"], lines: ["edge-0"], points: ["point-0"] });
+
+    const result = await generateBomTool(c, { path: stpModel });
+    expect(result.supported).toBe(true);
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows![0]).toMatchObject({ name: "Body", solidCount: 1, volume: 1000 });
+    expect(result.rows![1]).toMatchObject({ name: "Boss", solidCount: 2, surfaceCount: 1, volume: 2000 });
+
+    const lines = result.bom!.split("\n");
+    expect(lines[0]).toBe("Name\tSolids\tSurfaces\tLines\tPoints\tVolume_mm3\tArea_mm2\tUnresolved");
+    expect(lines[1].split("\t")[0]).toBe("Body");
+    expect(lines[2].split("\t")[5]).toBe("2000");
+
+    // One pipeline call for both parts — not one per part.
+    expect(c.pipeline.computeBom).toHaveBeenCalledTimes(1);
+    expect(c.pipeline.computeBom).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], expect.arrayContaining([expect.objectContaining({ name: "Body" }), expect.objectContaining({ name: "Boss" })]));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// check_interference_all
+
+describe("check_interference_all", () => {
+  it("rejects mesh-format sources like single-pair check_interference", async () => {
+    const result = await checkInterferenceAllTool(ctx(), { path: vtkModel });
+    expect(result.supported).toBe(false);
+  });
+
+  it("skips unknown and empty-volume parts with warnings, and refuses to run on fewer than two usable groups", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "Empty", volumes: [] });
+
+    const result = await checkInterferenceAllTool(c, { path: stpModel, parts: ["Ghost", "Empty"] });
+    expect(result.pairs).toEqual([]);
+    expect(result.warnings.join("\n")).toMatch(/"Ghost" not found/);
+    expect(result.warnings.join("\n")).toMatch(/"Empty" has no assigned solids/);
+    expect(result.warnings.join("\n")).toMatch(/Fewer than two usable parts/);
+  });
+
+  it("defaults to every sidecar part, pairs them C(n,2), and labels each pair by name", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
+    await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
+    await setPart({ path: stpModel, name: "C", volumes: ["solid-0", "solid-1"] });
+
+    const result = await checkInterferenceAllTool(c, { path: stpModel });
+    expect(result.pairs).toHaveLength(3); // C(3,2)
+    expect(result.pairs![0]).toMatchObject({ partA: "A", partB: "B" });
+    expect(result.pairs![1]).toMatchObject({ partA: "A", partB: "C" });
+    expect(result.pairs![2]).toMatchObject({ partA: "B", partB: "C" });
+    expect(c.pipeline.checkInterferenceAll).toHaveBeenCalledWith(
+      dir,
+      expect.any(Uint8Array),
+      "step",
+      [],
+      [["solid-0"], ["solid-1"], ["solid-0", "solid-1"]]
+    );
+  });
+
+  it("fails loudly if the pipeline returns a pair count that doesn't match C(n,2)", async () => {
+    const pair = { a: [], b: [], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] };
+    // TWO pairs for TWO parts (C(2,2) = 1) — the mislabeling guard fires.
+    const pipeline = fakePipeline({
+      checkInterferenceAll: vi.fn(async () => ({ pairs: [pair, pair], warnings: [] })),
+    });
+    const c = ctx(pipeline);
+    await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
+    await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
+    await expect(checkInterferenceAllTool(c, { path: stpModel })).rejects.toThrow(/shape mismatch/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// render_ops_prefix
+
+describe("render_ops_prefix", () => {
+  it("rejects mesh-format sources (no headless replay exists for them)", async () => {
+    const result = await renderOpsPrefixTool(ctx(), { path: vtkModel, throughIndex: -1 });
+    expect(result.supported).toBe(false);
+  });
+
+  it("validates throughIndex against [-1, stackLength-1]", async () => {
+    await writeEdits(stpModel, [{ op: "addBox", center: [0, 0, 0], size: [5, 5, 5] }] as unknown as EditOp[], []);
+    await expect(renderOpsPrefixTool(ctx(), { path: stpModel, throughIndex: 1 })).rejects.toThrow(/out of range/);
+    await expect(renderOpsPrefixTool(ctx(), { path: stpModel, throughIndex: -2 })).rejects.toThrow(/out of range/);
+  });
+
+  it("replays only the requested prefix, persists nothing, and reports that fact", async () => {
+    const ops = [
+      { op: "addBox", center: [0, 0, 0], size: [5, 5, 5] },
+      { op: "explode", factor: 1.5 },
+    ] as unknown as EditOp[];
+    await writeEdits(stpModel, ops, []);
+    const editsPath = path.join(dir, "model.stp.edits.json");
+    const before = await fs.readFile(editsPath, "utf8");
+
+    const c = ctx();
+    const result = await renderOpsPrefixTool(c, { path: stpModel, throughIndex: 0 });
+    expect(result.supported).toBe(true);
+    expect(result.persisted).toBe(false);
+    expect(result.throughIndex).toBe(0);
+    expect(result.prefixOpCount).toBe(1);
+    expect(result.totalOpCount).toBe(2);
+    expect(result.model).toBeDefined();
+    expect(c.pipeline.loadBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [ops[0]]);
+    expect(result.warnings.join("\n")).toMatch(/Read-only preview/);
+
+    // The read-only guarantee is the part most worth asserting.
+    expect(await fs.readFile(editsPath, "utf8")).toBe(before);
+  });
+
+  it("throughIndex=-1 means the base shape with no ops replayed", async () => {
+    await writeEdits(stpModel, [{ op: "explode", factor: 1.5 }] as unknown as EditOp[], []);
+    const c = ctx();
+    const result = await renderOpsPrefixTool(c, { path: stpModel, throughIndex: -1 });
+    expect(result.prefixOpCount).toBe(0);
+    expect(c.pipeline.loadBRep).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", []);
+  });
+
+  it("degrades render:true to a warning when the renderer is unavailable, and passes images through when available", async () => {
+    await writeEdits(stpModel, [], []);
+    const unavailable = ctx(fakePipeline({ isRenderAvailable: vi.fn(async () => ({ available: false, reason: "no chromium here" })) }));
+    const noRender = await renderOpsPrefixTool(unavailable, { path: stpModel, throughIndex: -1, render: true });
+    expect(noRender.images).toBeUndefined();
+    expect(noRender.warnings.join("\n")).toMatch(/renderer unavailable.*no chromium here/s);
+
+    const available = ctx();
+    const withRender = await renderOpsPrefixTool(available, { path: stpModel, throughIndex: -1, render: true });
+    expect(withRender.images).toHaveLength(4);
+    expect(available.pipeline.renderSnapshot).toHaveBeenCalled();
   });
 });

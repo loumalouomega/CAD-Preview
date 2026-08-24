@@ -28,11 +28,15 @@ import {
   describeCapabilities,
   loadModel,
   getMassProperties,
+  generateBomTool,
   inspectEntity,
   measureTool,
   measureExactTool,
   checkInterferenceTool,
+  checkInterferenceAllTool,
   renderSnapshotTool,
+  renderOpsPrefixTool,
+  listWorkspaceModels,
   searchStandardPartsTool,
   downloadStandardPartTool,
   compareModelsTool,
@@ -189,6 +193,16 @@ server.registerTool(
 );
 
 server.registerTool(
+  "generate_bom",
+  {
+    description:
+      "One bill-of-materials row per Part: name, entity counts, and volume/area (SUM of member solids' individual volumes — sum-of-parts procurement convention, NOT a combined-solid volume; overlapping members count their overlap twice). Also returns `bom`, a ready-to-paste tab-separated string with a header row for spreadsheet handoff. Facts only — unresolvable ids are reported per row (unresolvedIds) and in warnings, never silently dropped; an empty parts sidecar returns zero rows with a warning. Read-only. B-rep sources only headless.",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => generateBomTool(ctx, args))
+);
+
+server.registerTool(
   "inspect",
   {
     description:
@@ -223,7 +237,7 @@ server.registerTool(
   "measure_exact",
   {
     description:
-      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true nearest points found, not either entity's centre. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
+      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true minimum distance plus the realizing points where it lands, centreDistance (bbox-centre-to-bbox-centre, what `measure` reports), and — for two planar faces — angleDeg between their normals and parallelDistance (perpendicular plane-to-plane gap) when the planes are parallel; `primary` names which value most likely answers 'how far apart are these' for that pair ('parallel' for two parallel planar faces, else 'min') — a fact about which quantity fits the geometry, never a judgment of it. There is NO maximum-distance field: probed and genuinely unavailable in this WASM build. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
     inputSchema: {
       path: modelPath,
       kind: z.enum(["distance", "edgeLength", "radius"]),
@@ -253,6 +267,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  "check_interference_all",
+  {
+    description:
+      "Facts only (see describe_capabilities' verdictConventions): assembly-wide interference check — runs the same exact BRepAlgoAPI_Common_3 overlap test over EVERY pair of Parts in one call, with a cheap bounding-box pre-filter (strictly-disjoint pairs are reported without paying for a boolean; screenedByBbox:true marks those). Each row: {partA, partB, hasOverlap, overlapVolume} plus unresolved id lists. parts omitted = every Part in the sidecar; unknown/empty parts are skipped with warnings. hasOverlap is only true for a genuine non-degenerate volume overlap (merely-touching solids report false). Cost is O(n^2) pairs worst case. Read-only, never mutates the model. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      parts: z.array(z.string()).optional().describe("Part names to compare pairwise (default: every Part in the sidecar)"),
+    },
+  },
+  wrap((args: { path: string; parts?: string[] }) => checkInterferenceAllTool(ctx, args))
+);
+
+server.registerTool(
   "render_snapshot",
   {
     description:
@@ -268,6 +295,23 @@ server.registerTool(
     (args: { path: string; focus?: string[]; hide?: string[]; displayMode?: "shaded" | "wireframe" }) =>
       renderSnapshotTool(ctx, args)
   )
+);
+
+server.registerTool(
+  "render_ops_prefix",
+  {
+    description:
+      "Render the model AS OF op N — read-only bisection for 'the finished model is wrong and I don't know which step broke it'. Replays only ops[0..throughIndex] (0-based, inclusive; -1 = the base shape before any op) through the same stateless pipeline load_model uses and returns that prefix's entity inventory; PERSISTS NOTHING (the sidecar op stack is untouched). Optional render:true adds render_snapshot's 4-view PNG packet of the PREFIX model as image content blocks (same Playwright/Chromium prerequisite and supported:false degradation). Workflow: snapshot the middle index, look, halve again — two or three snapshots localize the culprit faster than re-reading the whole op list. Each prefix length pays a full replay (no incremental reuse across differing lengths), so this is a click-to-jump tool, not a scrubber. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      throughIndex: z
+        .number()
+        .int()
+        .describe("Last applied op to include, 0-based (-1 = base shape with no ops applied)"),
+      render: z.boolean().optional().describe("Also render the prefix model's 4-view PNG packet (default false)"),
+    },
+  },
+  wrap((args: { path: string; throughIndex: number; render?: boolean }) => renderOpsPrefixTool(ctx, args))
 );
 
 server.registerTool(
@@ -365,6 +409,18 @@ server.registerTool(
   wrap((args: { path: string; outputPath: string; view?: string; direction?: number[]; up?: number[]; unit?: string; strokeWidth?: number; tessellationQuality?: string }) =>
     exportSvgSilhouetteTool(ctx, args)
   )
+);
+
+server.registerTool(
+  "list_workspace_models",
+  {
+    description:
+      "Stateless discovery: given a folder, return every CAD file routeFile() recognizes beneath it (depth-capped walk; .git and node_modules are never scanned), each with its detected format/strategy and which companion sidecars (.edits.json/.parts.json/.annotations.json/.mesh.json/.view.json/.geo) currently exist beside it. Caps are reported via truncated + warnings — the list is never quietly partial. Purely additive over load_model's own routing rules: use it to discover what's in a project before calling explicit-path tools; every other tool stays fully path-explicit (this server has no open-document state).",
+    inputSchema: {
+      root: z.string().describe("Absolute path to the folder to scan"),
+    },
+  },
+  wrap((args: { root: string }) => listWorkspaceModels(args))
 );
 
 server.registerTool(

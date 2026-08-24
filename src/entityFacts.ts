@@ -7,6 +7,7 @@ import {
   collectVertices,
   bboxCenter,
   bboxDiagonal,
+  bboxExtent,
   facePlane,
   combineSolids,
 } from "./occtOperations";
@@ -82,6 +83,27 @@ export interface ExactMeasureResult {
    * on each shape (not necessarily either entity's centre or an endpoint). */
   fromPoint?: Vec3;
   toPoint?: Vec3;
+  /** `kind: "distance"` only — straight-line distance between the two
+   * entities' bounding-box centres (the number `measure` reports; included
+   * here so one call answers both "how close do they get" and "how far apart
+   * are they overall"). */
+  centreDistance?: number;
+  /** `kind: "distance"` between two PLANAR faces only — the perpendicular
+   * distance between their planes, meaningful exactly when the planes are
+   * parallel. Absent when either face is non-planar or the planes aren't
+   * parallel. */
+  parallelDistance?: number;
+  /** `kind: "distance"` between two planar faces only — angle between their
+   * (outward-oriented) normal vectors in degrees, `[0, 180]`. Two
+   * opposite-facing parallel faces of a solid legitimately read 180; use
+   * `parallelDistance`'s presence as the parallelism signal, not this value. */
+  angleDeg?: number;
+  /** `kind: "distance"` only — which reported number most likely answers
+   * "how far apart are these": `"parallel"` when `parallelDistance` was
+   * computed (two parallel planar faces — the perpendicular gap is almost
+   * always the dimension being asked about), else `"min"`. A fact about
+   * which quantity fits the pair's geometry, never a judgment of the value. */
+  primary?: "min" | "parallel";
 }
 
 export interface MeasureResult {
@@ -162,6 +184,17 @@ function boundsOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): { m
   const min: Vec3 = [mn.X(), mn.Y(), mn.Z()];
   const max: Vec3 = [mx.X(), mx.Y(), mx.Z()];
   return { min, max, diagonal: Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) };
+}
+
+/** Pure helpers for `measureExact`'s additive face-pair fields — trivial, but
+ * kept named so the parallelism tolerance reads as intent rather than magic. */
+function normalizeVec(v: Vec3): Vec3 {
+  const len = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n));
 }
 
 /**
@@ -330,6 +363,22 @@ export async function measureEntities(
  * or any point a user could have picked, which is exactly the extra
  * precision a triangulated approximation can't give.
  *
+ * **MAX distance (roadmap "Richer exact measurement", closed as
+ * probed-and-unavailable)** — the roadmap asked for minimum AND maximum
+ * separation. Probed against the live WASM, both candidate kernel paths are
+ * genuinely dead in this build, recorded here so neither is re-proposed:
+ * (1) `BRepExtrema_DistanceSS` (green in the manifest) — its usable 7-arg
+ * constructor `(S1, S2, Bnd_Box, Bnd_Box, dst, Extrema_ExtFlag,
+ * Extrema_ExtAlgo)` constructs but NEVER computes (no `Perform` method
+ * exists; `IsDone()` stays false and `DistValue()` echoes the `dst`
+ * early-exit hint verbatim regardless of filled bounding boxes or flag),
+ * and its other overloads need `BRepExtrema_ShapeType`, which is NOT bound;
+ * (2) `DistShapeShape_2(S1, S2, extFlag, extAlgo)` accepts the (bound!)
+ * `Extrema_ExtFlag_MAX` silently but ignores it — always returns the
+ * minimum. So this function reports the minimum exactly, plus the additive
+ * context fields below; a caller wanting "how far apart overall" has
+ * `centreDistance`.
+ *
  * **`kind: "edgeLength"`** — reuses the exact `BRepGProp.LinearProperties`
  * call shape `getEntityFacts` above already verified (single-edge only, per
  * that function's own doc comment — never call it over multiple edges).
@@ -380,12 +429,46 @@ export async function measureExact(
       cleanup.push(p1);
       const p2 = dist.PointOnShape2(1);
       cleanup.push(p2);
-      return {
+      const result: ExactMeasureResult = {
         kind,
         value: dist.Value(),
         fromPoint: [p1.X(), p1.Y(), p1.Z()],
         toPoint: [p2.X(), p2.Y(), p2.Z()],
       };
+
+      // Additive context fields (roadmap "Richer exact measurement", closed).
+      // centreDistance is the number `measure` reports — included so one call
+      // answers both "how close do they get" and "how far apart overall".
+      const c1 = bboxCenter(oc, a.handle, cleanup);
+      const c2 = bboxCenter(oc, b.handle, cleanup);
+      result.centreDistance = Math.hypot(c2[0] - c1[0], c2[1] - c1[1], c2[2] - c1[2]);
+
+      // Two planar faces additionally get the angle between their normals and
+      // — when the planes are parallel — the perpendicular plane-to-plane gap,
+      // which becomes the primary answer for that pair. (MAX distance was the
+      // roadmap's other ask; probed and genuinely unavailable in this WASM
+      // build — see this function's doc comment.)
+      if (a.kind === "face" && b.kind === "face") {
+        const planeA = facePlane(oc, a.handle, cleanup);
+        const planeB = facePlane(oc, b.handle, cleanup);
+        if (planeA && planeB) {
+          const n1 = normalizeVec(planeA.nl);
+          const n2 = normalizeVec(planeB.nl);
+          const cosAngle = clamp(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2], -1, 1);
+          result.angleDeg = Math.acos(cosAngle) * (180 / Math.PI);
+          // Parallel within ~1e-6 cosine (~8e-5 degrees): report the
+          // perpendicular gap |Δorigin·n̂1| and name it the primary value.
+          if (Math.abs(cosAngle) >= 1 - 1e-6) {
+            const dx = planeB.pt[0] - planeA.pt[0];
+            const dy = planeB.pt[1] - planeA.pt[1];
+            const dz = planeB.pt[2] - planeA.pt[2];
+            result.parallelDistance = Math.abs(dx * n1[0] + dy * n1[1] + dz * n1[2]);
+            result.primary = "parallel";
+          }
+        }
+      }
+      result.primary ??= "min";
+      return result;
     }
 
     if (kind === "edgeLength") {
@@ -503,6 +586,187 @@ export async function checkInterference(
     // A degenerate (zero-volume) intersection — e.g. two solids that only
     // touch at a face/edge/point — is reported as no real overlap.
     return { hasOverlap: overlapVolume > 1e-9, overlapVolume, unresolvedA, unresolvedB };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try {
+        cleanup[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export interface InterferencePairResult {
+  a: string[];
+  b: string[];
+  hasOverlap: boolean;
+  overlapVolume: number;
+  unresolvedA: string[];
+  unresolvedB: string[];
+  /** True when the pair was rejected by the cheap AABB pre-filter without
+   * paying for a real boolean — a fact about HOW the result was derived,
+   * not a different answer: two strictly-disjoint bounding boxes can never
+   * produce a Common_3 volume. Pairs whose boxes merely touch are NOT
+   * screened (they go to the real boolean, which resolves a touching-only
+   * pair to `hasOverlap: false` exactly like single-pair
+   * {@link checkInterference} does). */
+  screenedByBbox?: boolean;
+}
+
+/**
+ * Assembly-wide sibling of {@link checkInterference} (roadmap item, closed):
+ * runs the same exact-boolean-volume test over EVERY pair of the caller's
+ * solid-id groups in one call — one parse/replay total, not C(n,2) re-parses.
+ *
+ * Two independent external projects converged on the same shape this
+ * implements, so it is built-in from the start rather than deferred as an
+ * optimization: HCAD's assembly-wide clash pass, and SindriCAD's own
+ * `interference` op, both run a cheap bounding-box reject before any expensive
+ * boolean. Each group's extent is the union of its member solids'
+ * `bboxExtent`s (`occtOperations.ts`, exported here for exactly this caller),
+ * computed once per solid and cached across groups; a pair whose extents are
+ * STRICTLY separated on any axis is reported without a boolean
+ * (`screenedByBbox: true`). Touching AABBs are deliberately NOT screened —
+ * they go to the real boolean so the touching-vs-overlapping distinction
+ * stays exactly as authoritative as the single-pair path.
+ *
+ * The kernel surface is otherwise byte-identical to {@link checkInterference}:
+ * `combineSolids` per operand, `BRepAlgoAPI_Common_3(a, b)` → `.IsDone()` →
+ * `.Shape()`, adaptive-volume measurement, the `>1e-9` gate against a
+ * degenerate touching intersection, and graceful skip on unresolved ids or a
+ * non-converging boolean (never thrown). Cost scales O(n²) booleans worst-case;
+ * the pre-filter cuts the real cost to only the geometrically-plausible pairs.
+ */
+export async function checkInterferenceAll(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  groups: string[][]
+): Promise<{ pairs: InterferencePairResult[]; warnings: string[] }> {
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/cia.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanup: Array<{ delete(): void }> = [];
+  const warnings: string[] = [];
+  const pairs: InterferencePairResult[] = [];
+  try {
+    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    const solids = collectSolids(oc, shape, cleanup);
+    // NOTE: byId maps id → the RAW solid handle (s.solid), exactly like
+    // checkInterference above — `solid` here IS the TopoDS_Shape.
+    const byId = new Map(solids.map((s) => [s.id, s.solid]));
+
+    // Resolve every group's ids once; cache each solid's extent so a solid
+    // shared by several groups costs one bbox computation total.
+    const extentCache = new Map<string, { min: Vec3; max: Vec3 }>();
+    const extentOf = (id: string): { min: Vec3; max: Vec3 } | undefined => {
+      let ext = extentCache.get(id);
+      if (!ext) {
+        const solid = byId.get(id);
+        if (solid === undefined) return undefined;
+        ext = bboxExtent(oc, solid, cleanup);
+        extentCache.set(id, ext);
+      }
+      return ext;
+    };
+
+    interface ResolvedGroup {
+      ids: string[];
+      handles: unknown[];
+      unresolved: string[];
+      extent: { min: Vec3; max: Vec3 } | null;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resolved: ResolvedGroup[] = groups.map((group) => {
+      const handles: any[] = [];
+      const unresolved: string[] = [];
+      let min: Vec3 | null = null;
+      let max: Vec3 | null = null;
+      for (const id of group) {
+        const solid = byId.get(id);
+        if (solid === undefined) {
+          unresolved.push(id);
+          continue;
+        }
+        handles.push(solid);
+        const ext = extentOf(id)!;
+        if (min === null || max === null) {
+          min = [...ext.min];
+          max = [...ext.max];
+        } else {
+          for (let a = 0; a < 3; a++) {
+            if (ext.min[a] < min[a]) min[a] = ext.min[a];
+            if (ext.max[a] > max[a]) max[a] = ext.max[a];
+          }
+        }
+      }
+      if (unresolved.length > 0) {
+        warnings.push(`Group [${group.join(", ")}]: unresolved id(s) ${unresolved.join(", ")}.`);
+      }
+      if (handles.length === 0) {
+        warnings.push(
+          `Group [${group.join(", ")}] resolved to no solids — all of its pairs report no overlap (same graceful convention as single-pair check_interference).`
+        );
+        return { ids: [...group], handles, unresolved, extent: null };
+      }
+      return { ids: [...group], handles, unresolved, extent: { min: min!, max: max! } };
+    });
+
+    const strictlyDisjoint = (
+      a: { min: Vec3; max: Vec3 },
+      b: { min: Vec3; max: Vec3 }
+    ): boolean =>
+      a.max[0] < b.min[0] || b.max[0] < a.min[0] ||
+      a.max[1] < b.min[1] || b.max[1] < a.min[1] ||
+      a.max[2] < b.min[2] || b.max[2] < a.min[2];
+
+    for (let i = 0; i < resolved.length; i++) {
+      for (let j = i + 1; j < resolved.length; j++) {
+        const gi = resolved[i];
+        const gj = resolved[j];
+        const base = { unresolvedA: gi.unresolved, unresolvedB: gj.unresolved };
+        if (gi.extent === null || gj.extent === null) {
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, ...base });
+          continue;
+        }
+        if (strictlyDisjoint(gi.extent, gj.extent)) {
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, screenedByBbox: true, ...base });
+          continue;
+        }
+        const shapeA = combineSolids(oc, gi.handles, cleanup);
+        const shapeB = combineSolids(oc, gj.handles, cleanup);
+        const algo = new oc.BRepAlgoAPI_Common_3(shapeA, shapeB);
+        cleanup.push(algo);
+        if (!algo.IsDone()) {
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, ...base });
+          continue;
+        }
+        const resultShape = algo.Shape();
+        cleanup.push(resultShape);
+        const overlapVolume = volumeOf(oc, resultShape, cleanup);
+        pairs.push({
+          a: gi.ids,
+          b: gj.ids,
+          // Same degenerate-touching gate as checkInterference above.
+          hasOverlap: overlapVolume > 1e-9,
+          overlapVolume,
+          ...base,
+        });
+      }
+    }
+
+    return { pairs, warnings };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

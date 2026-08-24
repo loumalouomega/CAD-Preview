@@ -37,6 +37,15 @@ export function geoScriptPath(modelPath: string): string {
   return `${modelPath}.geo`;
 }
 
+/** `<model>.view.json` — the display-only camera/display-mode sidecar
+ * (`viewStateStore.ts` on the extension side). Read-only over MCP (no tool
+ * writes it); declared here so every companion filename has ONE derivation
+ * point — `list_workspace_models`' presence set reads from here rather than
+ * hand-concatenating a sixth string that could drift. */
+export function viewStateSidecarPath(modelPath: string): string {
+  return `${modelPath}.view.json`;
+}
+
 /** Reads + validates the edits sidecar; returns empty lists when missing or unreadable. */
 export async function readEdits(modelPath: string): Promise<ParsedEdits> {
   try {

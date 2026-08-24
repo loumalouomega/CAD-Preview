@@ -1863,10 +1863,14 @@ export function bboxCenter(oc: any, s: any, cleanup: Array<{ delete(): void }>):
 
 /** The bounding-box min/max corners of a shape (via `Bnd_Box` corners) — used
  * by `alignSolids` to read a per-axis extent that `bboxCenter`/`bboxDiagonal`
- * don't expose. `Bnd_Box.Get()` is NOT bound in this WASM build (see CLAUDE.md);
- * `CornerMin`/`CornerMax` is the established workaround every bbox reader here uses. */
+ * don't expose, and by `entityFacts.ts`'s `checkInterferenceAll` for its cheap
+ * AABB pair pre-filter (promoted from module-private to exported for that
+ * caller, the same convention combineSolids/facePlane/bboxCenter each followed
+ * for their own first cross-file caller). `Bnd_Box.Get()` is NOT bound in this
+ * WASM build (see CLAUDE.md); `CornerMin`/`CornerMax` is the established
+ * workaround every bbox reader here uses. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function bboxExtent(oc: any, s: any, cleanup: Array<{ delete(): void }>): { min: Vec3; max: Vec3 } {
+export function bboxExtent(oc: any, s: any, cleanup: Array<{ delete(): void }>): { min: Vec3; max: Vec3 } {
   const box = new oc.Bnd_Box_1();
   cleanup.push(box);
   oc.BRepBndLib.Add(s, box, false);

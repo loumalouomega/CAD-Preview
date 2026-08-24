@@ -3,6 +3,8 @@ import { applyEditsBRep, collectSolids, collectFaces, collectEdges } from "./occ
 import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
+import type { Part } from "./protocol";
+import type { BomRow } from "./bomExport";
 
 export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
 
@@ -192,4 +194,108 @@ function linearPropertiesOf(oc: any, edge: any, cleanup: Array<{ delete(): void 
   const length = props.Mass();
   const { centerOfMass, momentsOfInertia } = readCenterAndInertia(props, cleanup);
   return { volume: null, area: null, length, centerOfMass, momentsOfInertia };
+}
+
+// ---------------------------------------------------------------------------
+// BOM export (roadmap item, closed) — the OCCT-touching half; the pure
+// `BomRow` shape + `bomTsv` serializer live in `bomExport.ts` so mcpTools.ts
+// can import them without dragging this file's WASM graph into vitest.
+
+/**
+ * One row per Part over a single parse/replay (roadmap item, closed) — the
+ * loop-and-tabulate sibling of {@link computeMassProperties}, reusing its
+ * exact already-verified `BRepGProp` call shapes (adaptive volume + surface
+ * wrappers) with zero new kernel surface. A Part whose ids don't resolve is
+ * reported in its row (`unresolvedIds`) and warned, never thrown; a Part
+ * resolving to zero solids gets `volume`/`area` `null`. Parts are passed in
+ * whole (the caller reads them from the sidecar); this function stays
+ * ignorant of where they came from, like every other entity-resolution path.
+ */
+export async function computeBom(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  parts: Part[]
+): Promise<{ rows: BomRow[]; warnings: string[] }> {
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/bom.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanup: Array<{ delete(): void }> = [];
+  const warnings: string[] = [];
+  try {
+    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    const solids = collectSolids(oc, shape, cleanup);
+    // NOTE: byId maps id → the RAW solid handle (s.solid), exactly like
+    // entityFacts.ts's checkInterference — `solid` here IS the TopoDS_Shape.
+    const byId = new Map(solids.map((s) => [s.id, s.solid]));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const volumeOfSolid = (solid: any): number => {
+      const props = new oc.GProp_GProps_1();
+      cleanup.push(props);
+      volumePropertiesAdaptive(oc, solid, props);
+      return props.Mass();
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const areaOfSolid = (solid: any): number => {
+      const props = new oc.GProp_GProps_1();
+      cleanup.push(props);
+      surfacePropertiesAdaptive(oc, solid, props);
+      return props.Mass();
+    };
+
+    const rows: BomRow[] = parts.map((part) => {
+      const unresolvedIds: string[] = [];
+      let volume = 0;
+      let area = 0;
+      let resolvedCount = 0;
+      for (const id of part.volumes) {
+        const solid = byId.get(id);
+        if (solid === undefined) {
+          unresolvedIds.push(id);
+          continue;
+        }
+        resolvedCount++;
+        volume += volumeOfSolid(solid);
+        area += areaOfSolid(solid);
+      }
+      if (unresolvedIds.length > 0) {
+        warnings.push(`Part "${part.name}": unresolved id(s) ${unresolvedIds.join(", ")}.`);
+      }
+      if (resolvedCount === 0 && part.volumes.length > 0) {
+        warnings.push(`Part "${part.name}" resolved to no solids.`);
+      }
+      return {
+        name: part.name,
+        color: part.color,
+        solidCount: part.volumes.length,
+        surfaceCount: part.surfaces.length,
+        lineCount: part.lines.length,
+        pointCount: part.points.length,
+        volume: resolvedCount > 0 ? volume : null,
+        area: resolvedCount > 0 ? area : null,
+        unresolvedIds,
+      };
+    });
+
+    return { rows, warnings };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try {
+        cleanup[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
 }

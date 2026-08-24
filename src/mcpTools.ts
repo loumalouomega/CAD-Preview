@@ -43,18 +43,20 @@ import { MESH_EXPORT_FORMATS, meshExportFormat } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part, Annotation } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
-import type { computeMassProperties, MassProperties } from "./massProperties";
+import type { computeMassProperties, computeBom, MassProperties } from "./massProperties";
 import type {
   getEntityFacts,
   measureEntities,
   measureExact,
   checkInterference,
+  checkInterferenceAll,
   rebindPartsAcrossOps,
   EntityFacts,
   MeasureResult,
   ExactMeasureKind,
   ExactMeasureResult,
   InterferenceResult,
+  InterferencePairResult,
 } from "./entityFacts";
 import type { renderSnapshot, isRenderAvailable, RenderImage } from "./renderService";
 import type {
@@ -92,8 +94,11 @@ import {
   partsSidecarPath,
   annotationsSidecarPath,
   meshOptionsSidecarPath,
+  viewStateSidecarPath,
+  geoScriptPath,
 } from "./mcpSidecars";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
+import { bomTsv, type BomRow } from "./bomExport";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parseEditsJson } from "./editsSidecar";
@@ -111,10 +116,12 @@ export interface Pipeline {
   exportMdpa: typeof exportMdpa;
   exportGeoUnrolled: typeof exportGeoUnrolled;
   computeMassProperties: typeof computeMassProperties;
+  computeBom: typeof computeBom;
   getEntityFacts: typeof getEntityFacts;
   measureEntities: typeof measureEntities;
   measureExact: typeof measureExact;
   checkInterference: typeof checkInterference;
+  checkInterferenceAll: typeof checkInterferenceAll;
   rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
@@ -258,6 +265,10 @@ export function describeCapabilities() {
       "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
       "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
       "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Decimate first if you hit it.",
+      "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). On documents with many Parts, pass an explicit parts subset.",
+      "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
+      "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
+      "list_workspace_models is pure on-disk discovery over the same routing rules load_model uses — depth-capped walk, .git/node_modules never scanned, caps reported via truncated/warnings rather than a quietly-partial list. This server holds no open-document/session state anywhere, so there is nothing else to discover.",
       "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
@@ -530,6 +541,51 @@ export async function getMassProperties(
 }
 
 // ---------------------------------------------------------------------------
+// generate_bom
+
+/**
+ * One BOM row per Part (roadmap item, closed) — the loop-and-tabulate sibling
+ * of `get_mass_properties`, reusing its exact pipeline call shape per member
+ * solid over ONE parse/replay total. Facts only: a row's `volume` is the
+ * SUM-OF-PARTS figure (see `BomRow`'s doc comment for why that is deliberate,
+ * and how it differs from a combined-solid volume); unresolvable ids are
+ * reported per row and in `warnings`, never silently dropped, never thrown.
+ * An empty parts sidecar returns zero rows with a warning — a missing BOM is
+ * a fact about the document, not an error.
+ */
+export async function generateBomTool(
+  ctx: ToolContext,
+  params: { path: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; rows?: BomRow[]; bom?: string }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: mass properties are computed client-side in the webview's Three.js scene, not available headless.`],
+    };
+  }
+
+  const parts = await readParts(modelPath);
+  if (parts.length === 0) {
+    return {
+      format: route.format,
+      supported: true,
+      rows: [],
+      bom: "",
+      warnings: ["No parts defined on this document — create parts first (set_part, or the extension's Parts panel)."],
+    };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.computeBom(ctx.extensionPath, bytes, route.format as BRepFormat, ops, parts);
+  return { format: route.format, supported: true, rows: result.rows, bom: bomTsv(result.rows), warnings: result.warnings };
+}
+
+// ---------------------------------------------------------------------------
 // inspect / measure
 
 /**
@@ -707,6 +763,109 @@ export async function checkInterferenceTool(
 }
 
 // ---------------------------------------------------------------------------
+// check_interference_all
+
+/**
+ * Assembly-wide sibling of `check_interference` (roadmap item, closed): runs
+ * the same exact-boolean-volume interference test over EVERY pair of Parts in
+ * one call. Part-name resolution happens HERE (this tool layer owns Part
+ * resolution, exactly like `checkInterferenceTool` above — the pipeline
+ * function itself stays Part-ignorant); `parts` omitted means every Part
+ * currently in the sidecar. A part with an unknown name or no assigned solids
+ * is skipped with a warning, never thrown — the same graceful convention the
+ * single-pair tool uses for its operands. Facts only: `hasOverlap`/
+ * `overlapVolume`/`screenedByBbox` per pair; rendering "these two parts clash"
+ * is the caller's verdict.
+ *
+ * Cost is O(n²) pairs worst-case (C(n,2) booleans before the AABB pre-filter);
+ * deliberately NO caller-visible cap yet — the roadmap defers one until real
+ * Part counts on real documents are known, and the pre-filter already cuts
+ * the real cost to only geometrically-plausible pairs.
+ */
+export async function checkInterferenceAllTool(
+  ctx: ToolContext,
+  params: { path: string; parts?: string[] }
+): Promise<{
+  format: CadFormat;
+  supported: boolean;
+  warnings: string[];
+  pairs?: Array<InterferencePairResult & { partA: string; partB: string }>;
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: interference/clash detection needs exact B-rep boolean geometry, not available headless.`],
+    };
+  }
+
+  const allParts = await readParts(modelPath);
+  const warnings: string[] = [];
+  let selected: Part[];
+  if (params.parts === undefined) {
+    selected = allParts.filter((p) => p.volumes.length > 0);
+    const emptyCount = allParts.length - selected.length;
+    if (emptyCount > 0) {
+      warnings.push(`${emptyCount} part(s) with no assigned solids skipped (surfaces/lines/points are not solids and cannot interfere).`);
+    }
+    if (allParts.length === 0) {
+      warnings.push("No parts defined on this document — create parts first (set_part, or the extension's Parts panel), or pass explicit part names.");
+    }
+  } else {
+    selected = [];
+    for (const name of params.parts) {
+      const part = allParts.find((p) => p.name === name);
+      if (!part) {
+        warnings.push(`Part "${name}" not found — skipped.`);
+        continue;
+      }
+      if (part.volumes.length === 0) {
+        warnings.push(`Part "${name}" has no assigned solids (volumes) — skipped (surfaces/lines/points are not solids and cannot interfere).`);
+        continue;
+      }
+      selected.push(part);
+    }
+  }
+
+  if (selected.length < 2) {
+    return { format: route.format, supported: true, pairs: [], warnings: [...warnings, "Fewer than two usable parts — nothing to compare."] };
+  }
+
+  const { ops } = await readEdits(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.checkInterferenceAll(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    ops,
+    selected.map((p) => p.volumes)
+  );
+  warnings.push(...result.warnings);
+
+  // The pipeline emits exactly C(n,2) pairs in i<j order over the groups it
+  // was handed — mirror that loop here to attach each pair's part names. The
+  // length guard keeps a future pipeline-side change loud instead of silently
+  // mislabeling every row.
+  if (result.pairs.length !== (selected.length * (selected.length - 1)) / 2) {
+    throw new Error(
+      `checkInterferenceAll returned ${result.pairs.length} pair(s) for ${selected.length} parts — internal shape mismatch, refusing to label them.`
+    );
+  }
+  const namedPairs: Array<InterferencePairResult & { partA: string; partB: string }> = [];
+  let k = 0;
+  for (let i = 0; i < selected.length; i++) {
+    for (let j = i + 1; j < selected.length; j++) {
+      namedPairs.push({ partA: selected[i].name, partB: selected[j].name, ...result.pairs[k++] });
+    }
+  }
+
+  return { format: route.format, supported: true, pairs: namedPairs, warnings };
+}
+
+// ---------------------------------------------------------------------------
 // render_snapshot
 
 /**
@@ -750,6 +909,108 @@ export async function renderSnapshotTool(
     supported: result.supported,
     images: result.images ?? [],
     warnings: result.reason ? [result.reason] : [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// render_ops_prefix
+
+/**
+ * Render the model AS OF op N, without mutating the op list (roadmap
+ * "render_ops_prefix", closed) — the non-destructive counterpart of
+ * `remove_edit_op`, and the headless counterpart of the webview's own
+ * history scrubbing. "As of op N" is literally `ops.slice(0, N + 1)` fed to
+ * the same stateless `loadBRep` replay path every other tool uses — there is
+ * no new kernel surface and no new persistence of any kind: the sidecars on
+ * disk are never read-modified (the edits sidecar is only ever READ here),
+ * so a bisection session can never corrupt the document it is inspecting.
+ *
+ * The intended workflow is bisecting a wrong model: when the finished model
+ * misbehaves and it isn't clear which step broke it, call this at the middle
+ * index and look (`render: true`), then halve again — two or three snapshots
+ * localize the culprit faster than re-reading the whole op list.
+ *
+ * `throughIndex` is the 0-based INCLUSIVE last applied op; `-1` means the
+ * base shape before any op. Perf caveat shared with the webview scrubber:
+ * `loadBRepCached`'s replay reuse only fires for a pure append, so each
+ * prefix length pays a full replay from the (kernel-worker-cached) base
+ * shape — fine for a handful of bisection steps, never build a continuous
+ * scrubber on top.
+ */
+export async function renderOpsPrefixTool(
+  ctx: ToolContext,
+  params: { path: string; throughIndex: number; render?: boolean }
+): Promise<{
+  format: CadFormat;
+  strategy: FileRoute["strategy"];
+  supported: boolean;
+  warnings: string[];
+  throughIndex?: number;
+  totalOpCount?: number;
+  prefixOpCount?: number;
+  persisted?: boolean;
+  model?: ReturnType<typeof entitySummary>;
+  images?: RenderImage[];
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      strategy: route.strategy,
+      supported: false,
+      warnings: [
+        `${route.format} is a mesh-format source: headless replay/inventory is B-rep-only (mesh-format ops replay in the webview), so there is no prefix model to render.`,
+      ],
+    };
+  }
+
+  const current = await readEdits(modelPath);
+  const totalOpCount = current.ops.length;
+  const idx = params.throughIndex;
+  if (!Number.isInteger(idx) || idx < -1 || idx >= totalOpCount) {
+    throw new Error(
+      `throughIndex ${params.throughIndex} out of range [-1, ${totalOpCount - 1}] — the op stack has ${totalOpCount} entries (-1 = the base shape before any op).`
+    );
+  }
+  const prefixOps = current.ops.slice(0, idx + 1);
+  const warnings: string[] = [];
+
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, prefixOps);
+  // A truncated replay can legitimately skip ops whose operands came from
+  // later ops — surface that exactly like load_model does.
+  warnings.push(...opOutcomeWarnings(result.opOutcomes));
+  if (prefixOps.length < totalOpCount) {
+    warnings.push(
+      `Read-only preview: showing the model as of op ${idx} (${prefixOps.length} of ${totalOpCount} persisted op(s) replayed) — nothing was written.`
+    );
+  }
+
+  let images: RenderImage[] | undefined;
+  if (params.render) {
+    const avail = await ctx.pipeline.isRenderAvailable();
+    if (!avail.available) {
+      warnings.push(`render requested but renderer unavailable — ${avail.reason ?? "unknown reason"}.`);
+    } else {
+      const snap = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, route.format as BRepFormat, prefixOps, {});
+      if (snap.supported && snap.images) images = snap.images;
+      else warnings.push(`render requested but snapshot failed — ${snap.reason ?? "unknown reason"}.`);
+    }
+  }
+
+  return {
+    format: route.format,
+    strategy: route.strategy,
+    supported: true,
+    throughIndex: idx,
+    totalOpCount,
+    prefixOpCount: prefixOps.length,
+    persisted: false,
+    model: entitySummary(result),
+    ...(images ? { images } : {}),
+    warnings,
   };
 }
 
@@ -1021,6 +1282,150 @@ export async function getState(params: { path: string }) {
     meshOptions,
     warnings: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// list_workspace_models
+
+/** Caps for `list_workspace_models`' walk — hit either one and the response
+ * says so (`truncated` + a `warnings` entry), per this codebase's
+ * no-silent-truncation convention; never a quietly-partial list. The file cap
+ * bounds SCANNED entries (recognized or not), since that is what actually
+ * costs fs syscalls on a huge tree, not just the models that matched. */
+const LIST_WALK_MAX_DEPTH = 6;
+const LIST_WALK_MAX_FILES = 2000;
+/** Directory names never descended into — a project's CAD files don't live in
+ * dependency checkouts or VCS internals, and both can be enormous. Mentioned
+ * once in `warnings` when first encountered, so the skip is visible rather
+ * than silent. */
+const LIST_WALK_SKIP_DIRS = new Set([".git", "node_modules"]);
+
+/** One discovered CAD document — `routeFile()`'s classification plus which of
+ * its companion sidecars currently exist beside it. Paths are absolute. */
+export interface WorkspaceModelEntry {
+  path: string;
+  format: CadFormat;
+  strategy: FileRoute["strategy"];
+  sidecars: {
+    edits: boolean;
+    parts: boolean;
+    annotations: boolean;
+    meshOptions: boolean;
+    viewState: boolean;
+    geoScript: boolean;
+  };
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stateless headless discovery (roadmap "list_workspace_models", closed):
+ * given a folder, walks it and returns every file `routeFile()` recognizes,
+ * each with its detected format/strategy and which of its six possible
+ * companions currently exist beside it. Purely additive tooling over
+ * `routeFile()` + `mcpSidecars.ts`'s path derivations — NO new state
+ * anywhere, no kernel-worker call, no interaction with any session; every
+ * other tool stays fully explicit-path-in exactly as before. Deliberately NOT
+ * a session/"open documents" feature: this server has no open-document state
+ * to lose (every call is stateless), so there is nothing to report beyond
+ * what is on disk.
+ */
+export async function listWorkspaceModels(params: { root: string }): Promise<{
+  root: string;
+  scannedFiles: number;
+  modelCount: number;
+  truncated: boolean;
+  models: WorkspaceModelEntry[];
+  warnings: string[];
+}> {
+  const root = path.resolve(params.root);
+  let rootStat;
+  try {
+    rootStat = await fs.stat(root);
+  } catch {
+    throw new Error(`Root path does not exist or is not accessible: ${root}`);
+  }
+  if (!rootStat.isDirectory()) {
+    throw new Error(`Root path is not a directory: ${root}`);
+  }
+
+  const warnings: string[] = [];
+  const models: WorkspaceModelEntry[] = [];
+  let scannedFiles = 0;
+  let truncated = false;
+  let mentionedSkipDirs = false;
+
+  const walk = async (dirPath: string, depth: number): Promise<void> => {
+    if (truncated) return;
+    if (depth > LIST_WALK_MAX_DEPTH) {
+      truncated = true;
+      warnings.push(
+        `Depth cap (${LIST_WALK_MAX_DEPTH} levels below the root) reached at ${dirPath} — deeper directories were not scanned.`
+      );
+      return;
+    }
+    let entries;
+    try {
+      entries = await fs.readdir(dirPath, { withFileTypes: true });
+    } catch (err) {
+      warnings.push(
+        `Could not read directory ${dirPath}: ${err instanceof Error ? err.message : String(err)}.`
+      );
+      return;
+    }
+    for (const entry of entries) {
+      if (truncated) return;
+      if (entry.isDirectory()) {
+        if (LIST_WALK_SKIP_DIRS.has(entry.name)) {
+          if (!mentionedSkipDirs) {
+            mentionedSkipDirs = true;
+            warnings.push(
+              `${entry.name}/ directories are not scanned (${LIST_WALK_SKIP_DIRS.size === 1 ? "it" : [...LIST_WALK_SKIP_DIRS].join(", ")} can be enormous and never holds project CAD sources).`
+            );
+          }
+          continue;
+        }
+        await walk(path.join(dirPath, entry.name), depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue; // symlinks/others are skipped, never followed
+      scannedFiles++;
+      if (scannedFiles > LIST_WALK_MAX_FILES) {
+        truncated = true;
+        warnings.push(
+          `Scanned-file cap (${LIST_WALK_MAX_FILES}) reached — the model list may be incomplete. Narrow the root.`
+        );
+        return;
+      }
+      const filePath = path.join(dirPath, entry.name);
+      const route = routeFile(filePath);
+      if (!route) continue;
+      models.push({
+        path: filePath,
+        format: route.format,
+        strategy: route.strategy,
+        sidecars: {
+          edits: await fileExists(editsSidecarPath(filePath)),
+          parts: await fileExists(partsSidecarPath(filePath)),
+          annotations: await fileExists(annotationsSidecarPath(filePath)),
+          meshOptions: await fileExists(meshOptionsSidecarPath(filePath)),
+          viewState: await fileExists(viewStateSidecarPath(filePath)),
+          geoScript: await fileExists(geoScriptPath(filePath)),
+        },
+      });
+    }
+  };
+
+  await walk(root, 0);
+  models.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { root, scannedFiles, modelCount: models.length, truncated, models, warnings };
 }
 
 /**
