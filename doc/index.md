@@ -102,7 +102,7 @@ features:
 | PLY    | `.ply`          | Three.js `PLYLoader`                   |
 | glTF   | `.gltf`, `.glb` | Three.js `GLTFLoader`                  |
 
-Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, and Kratos MDPA](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa) via the host-side meshio++ bridge. SVG is not a rendering format but appears at both ends of the pipeline: **Import SVG…** traces a `.svg`'s paths into sketch polylines, and **Export Silhouette SVG…** writes a 2D outline of the model back out.
+Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, and OpenFOAM](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-openfoam) via the host-side meshio++ bridge. SVG is not a rendering format but appears at both ends of the pipeline: **Import SVG…** traces a `.svg`'s paths into sketch polylines, and **Export Silhouette SVG…** writes a 2D outline of the model back out.
 
 ## Badges
 

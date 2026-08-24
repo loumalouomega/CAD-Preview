@@ -12,12 +12,13 @@ export type RenderStrategy = "occt" | "three" | "meshio";
 
 export type CadFormat =
   | "step" | "iges" | "brep" | "stl" | "obj" | "ply" | "gltf"
-  | "vtk" | "vtu" | "med" | "cgns" | "exodus" | "xdmf" | "mdpa";
+  | "vtk" | "vtu" | "med" | "cgns" | "exodus" | "xdmf" | "mdpa"
+  | "openfoam";
 
 /** `CadFormat` members routed through meshio++ — kept as one list so every
  * place that needs to enumerate them (package.json's generation, docs) has a
  * single source of truth to check against. */
-export const MESHIO_FORMATS: readonly CadFormat[] = ["vtk", "vtu", "med", "cgns", "exodus", "xdmf", "mdpa"];
+export const MESHIO_FORMATS: readonly CadFormat[] = ["vtk", "vtu", "med", "cgns", "exodus", "xdmf", "mdpa", "openfoam"];
 
 /** The mesh formats with a pure host-side triangle parser (`stlParser.ts`,
  * `objParser.ts`, `plyParser.ts`, `gltfParser.ts`) — i.e. the ones whose
@@ -63,6 +64,13 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   e: { strategy: "meshio", format: "exodus" },
   xdmf: { strategy: "meshio", format: "xdmf" },
   mdpa: { strategy: "meshio", format: "mdpa" },
+  // OpenFOAM polyMesh. A `.foam` file is an (usually empty) marker file — the
+  // ParaView convention — whose sibling `<parent>/constant/polyMesh/` holds
+  // the real mesh (`points`, `faces`, `owner`, `neighbour`, `boundary`).
+  // meshio++'s reader resolves that directory itself, so the meshio route
+  // stages the whole case into its MEMFS before reading (see
+  // `meshioService.ts`'s foam staging).
+  foam: { strategy: "meshio", format: "openfoam" },
 };
 
 /** Returns the render route for a file path, or `undefined` if the extension is unsupported. */

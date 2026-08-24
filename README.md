@@ -28,6 +28,7 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 | Exodus      | `.exo`, `.e`    | meshio++ → STL boundary surface → Three.js |
 | XDMF        | `.xdmf`         | meshio++ → STL boundary surface → Three.js |
 | Kratos MDPA | `.mdpa`         | meshio++ → STL boundary surface → Three.js |
+| OpenFOAM    | `.foam`         | meshio++ (case staging) → STL boundary surface → Three.js |
 
 > The **Pipeline** column is how each format is *rendered*. STL, OBJ, PLY, and glTF/GLB additionally have pure host-side triangle parsers (no webview, no OCCT), which is what lets **Compare Models**, **Mesh Health / Promote to B-rep**, and **Silhouette SVG export** work on them headlessly as well as interactively. The glTF parser is geometry-only and cross-validated against three.js's own `GLTFLoader`; it rejects Draco/meshopt-compressed files with a clear error rather than guessing.
 >

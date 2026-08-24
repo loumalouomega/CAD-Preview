@@ -74,6 +74,7 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   exodus: "exo",
   xdmf: "xdmf",
   mdpa: "mdpa",
+  openfoam: "foam",
 };
 
 /** Human-readable label for a format, used in the export quick-pick. */
@@ -93,4 +94,5 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   exodus: "Exodus",
   xdmf: "XDMF",
   mdpa: "MDPA",
+  openfoam: "OpenFOAM",
 };

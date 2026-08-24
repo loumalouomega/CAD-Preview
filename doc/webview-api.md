@@ -673,7 +673,7 @@ async function loadMeshFromUrl(
 | `"ply"`  | `PLYLoader`  | Calls `geometry.computeVertexNormals()`  |
 | `"gltf"` | `GLTFLoader` | Returns `gltf.scene`                     |
 
-Every other `CadFormat` member (the meshio++-only formats — VTK/VTU/MED/CGNS/ Exodus/XDMF/MDPA) throws via the `default` case — this function is never called with one of those. A meshio-imported document is converted to STL **host-side** first (`src/meshioService.ts`), so `loadMeshFromUrl` only ever sees `"stl"` for it (see `main.ts`'s `loadMeshObjectFromUrl` below).
+Every other `CadFormat` member (the meshio++-only formats — VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) throws via the `default` case — this function is never called with one of those. A meshio-imported document is converted to STL **host-side** first (`src/meshioService.ts`), so `loadMeshFromUrl` only ever sees `"stl"` for it (see `main.ts`'s `loadMeshObjectFromUrl` below).
 
 ```typescript
 function applyDefaultMaterial(group: THREE.Group): void

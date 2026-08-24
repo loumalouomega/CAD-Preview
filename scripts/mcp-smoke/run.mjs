@@ -1482,6 +1482,57 @@ try {
   assert(medMeshed.nodeCount > 0 && medMeshed.elementCount > 0, `generate_mesh still works on the MED source: ${medMeshed.nodeCount} nodes, ${medMeshed.elementCount} elements`);
   assert(fs.statSync(path.join(dir, "tet.h5")).size > 0, "HDF5 companion has content");
 
+  // Gapped-node-id Kratos MDPA import (examples/MDPA/gapped-ids.mdpa — see its
+  // README). This is THE regression the @meshioplusplus/wasm 9.13.0→9.14.0
+  // C++ reader fix closes: before it, any deck whose node ids were not exactly
+  // 1..n in file order threw "MDPA: non-sequential node ids are not supported
+  // by the C++ reader", so a routine production Kratos deck failed to open at
+  // all (mdpa is in MESHIO_FORMATS and the WASM path has no Python fallback).
+  // v9.14.0 additionally preserves original ids as `mdpa:id` point/cell data,
+  // which readMeshioMetadata now surfaces — asserted here too so both halves
+  // of the fix stay pinned.
+  const gapMdpa = path.join(dir, "gapped-ids.mdpa");
+  fs.copyFileSync(path.join(ROOT, "examples", "MDPA", "gapped-ids.mdpa"), gapMdpa);
+  const gapLoaded = await call("load_model", { path: gapMdpa });
+  assert(gapLoaded.strategy === "meshio", "load_model routes a gapped-id .mdpa through meshio");
+  const gapMetaWarning = gapLoaded.warnings.find((w) => /also declares/i.test(w));
+  assert(
+    gapMetaWarning && /mdpa:id/.test(gapMetaWarning),
+    `load_model surfaces the gapped-id MDPA's preserved-id data names (got: ${JSON.stringify(gapLoaded.warnings)})`
+  );
+  const gapMeshed = await call("generate_mesh", { path: gapMdpa, options: { sizeMax: 0.5 } });
+  assert(
+    gapMeshed.nodeCount > 0 && gapMeshed.elementCount > 0,
+    `generate_mesh on a gapped-id MDPA: ${gapMeshed.nodeCount} nodes, ${gapMeshed.elementCount} elements`
+  );
+
+  // OpenFOAM polyMesh import (examples/OpenFOAM/hex-case — see its README).
+  // A `.foam` marker is NOT a mesh; its sibling constant/polyMesh/ holds the
+  // real files. Exercises convertFoamCaseToStlBoundary's disk discovery + MEMFS
+  // staging + quad fan-triangulation (meshio++'s own STL writer emits ZERO
+  // facets for a quad-only boundary, so the converter hand-builds the STL): a
+  // single hex's boundary is 6 quads → 12 triangles. Geometry-only by design:
+  // patch names ride an unexposed C++ side-channel, asserted via the
+  // geometry-only warning.
+  const foamDir = path.join(dir, "foamcase");
+  fs.mkdirSync(foamDir, { recursive: true });
+  fs.cpSync(path.join(ROOT, "examples", "OpenFOAM", "hex-case"), foamDir, { recursive: true });
+  const foamMarker = path.join(foamDir, "case.foam");
+  const foamLoaded = await call("load_model", { path: foamMarker });
+  assert(
+    foamLoaded.strategy === "meshio" && foamLoaded.format === "openfoam",
+    "load_model routes .foam through meshio as openfoam"
+  );
+  assert(
+    foamLoaded.warnings.some((w) => /geometry-only/i.test(w)),
+    `load_model warns OpenFOAM import is geometry-only (got: ${JSON.stringify(foamLoaded.warnings)})`
+  );
+  const foamMeshed = await call("generate_mesh", { path: foamMarker, options: { sizeMax: 0.5 } });
+  assert(
+    foamMeshed.nodeCount >= 8 && foamMeshed.elementCount > 0,
+    `generate_mesh on an OpenFOAM hex case: ${foamMeshed.nodeCount} nodes, ${foamMeshed.elementCount} elements`
+  );
+
   await call("set_part", { path: model, name: "Bull", volumes: ["solid-0"] });
 
   // MED export on a model WITH a part — exercises the group-preserving bridge

@@ -1,8 +1,8 @@
 // meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM
 // singleton alongside OCCT (occtService.ts) and Gmsh (gmshService.ts), used to
-// import mesh-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA) as viewable
-// documents and to export generated FE meshes to formats Gmsh's own writers
-// cannot produce (MED, CGNS).
+// import mesh-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) as
+// viewable documents and to export generated FE meshes to formats Gmsh's own
+// writers cannot produce (MED, CGNS).
 //
 // UNLIKE gmsh-wasm/opencascade.js, this package is loaded with a DYNAMIC
 // `await import(...)`, not a static top-of-file `import` — verified against
@@ -36,6 +36,12 @@
 // `dist/meshioplusplus_wasm.mjs`) — like OCCT, unlike gmsh 0.2.0's raw-fd
 // writes — so `mcpServer.ts`'s existing top-of-file stdout rebinding already
 // covers it; no new suppression code is needed here.
+//
+// Re-confirmed against the 10.9.0 glue on the dependency bump: still exactly
+// one console.log + one console.error, zero raw fd writes.
+
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MeshioApi = any;
@@ -443,6 +449,189 @@ export async function readMeshioFieldValues(
     resetMeshioIfAbort(err);
     return null;
   }
+}
+
+/**
+ * OpenFOAM polyMesh import — the one meshio format that is NOT a single file.
+ * A `.foam` document is an (usually empty) marker file — the ParaView
+ * convention — whose real mesh lives in sibling files
+ * (`points`/`faces`/`owner`/`neighbour`/`boundary`) under
+ * `<marker's parent>/constant/polyMesh/`. meshio++'s C++ reader resolves that
+ * directory itself via `std::filesystem`, so unlike every other format in
+ * this file (bytes-in → STL-out), the whole case must be staged into MEMFS at
+ * the same relative layout before `convertSurface` can read it. This function
+ * takes the MARKER'S REAL FILESYSTEM PATH (a plain string, so it crosses the
+ * kernel-worker IPC boundary untouched), locates and copies the polyMesh
+ * siblings itself, converts to an ASCII STL boundary, and cleans up.
+ *
+ * Directory resolution mirrors meshio++'s own `_resolve_polymesh` for the two
+ * forms a marker-file open can encounter: `<parent>/constant/polyMesh` (the
+ * real case layout), then `<parent>/polyMesh` (a bare polyMesh directory kept
+ * beside the marker). A missing directory throws a clear, actionable error —
+ * an application error (not a WASM abort), thrown BEFORE any WASM work so it
+ * cannot corrupt the singleton.
+ *
+ * Deliberately geometry-only: meshio++'s OpenFOAM reader reads no point/cell/
+ * field data arrays (time-directory field files like `U`/`p`/`T` are not read)
+ * and carries patch names through a C++ side-channel struct (`OpenFoamInfo`)
+ * that is not surfaced to the JS binding — so there are no regions to
+ * correlate (`convertToStlBoundaryWithRegions`'s machinery has nothing to
+ * consume) and no metadata to report (`readMeshioMetadata`'s shape is
+ * structurally empty for this format; call sites skip both rather than pay a
+ * staging round trip for a guaranteed-empty answer).
+ *
+ * Throws on failure (unlike this file's graceful-degradation readers): a
+ * malformed case must surface as a load error naming what's wrong, exactly
+ * like every other unparseable source format.
+ */
+export async function convertFoamCaseToStlBoundary(markerPath: string): Promise<Uint8Array> {
+  // 1. Locate the polyMesh directory beside the marker on the REAL filesystem.
+  const parent = path.dirname(path.resolve(markerPath));
+  let polyMeshDir: string | null = null;
+  for (const candidate of [path.join(parent, "constant", "polyMesh"), path.join(parent, "polyMesh")]) {
+    try {
+      if ((await fs.promises.stat(candidate)).isDirectory()) { polyMeshDir = candidate; break; }
+    } catch { /* try the next candidate */ }
+  }
+  if (!polyMeshDir) {
+    throw new Error(
+      "OpenFOAM case error: no constant/polyMesh directory found beside the .foam marker — " +
+      `${path.basename(markerPath)} is a marker file; the mesh must live in its sibling constant/polyMesh/ (${parent}).`
+    );
+  }
+
+  const m = await getMeshio();
+  const caseRoot = "/foamcase";
+  const markerMemPath = `${caseRoot}/case.foam`;
+  const stagedFiles: string[] = [];
+  const rmTree = (p: string): void => {
+    try { m.FS.unlink(p); } catch { /* ignore */ }
+    try { m.FS.rmdir(p); } catch { /* ignore */ }
+  };
+  try {
+    // 2. Stage <case>/constant/polyMesh/* into MEMFS. FS.mkdir creates one
+    // level at a time (no -p semantics), so each level is attempted and its
+    // already-exists failure ignored.
+    for (const dir of [caseRoot, `${caseRoot}/constant`, `${caseRoot}/constant/polyMesh`]) {
+      try { m.FS.mkdir(dir); } catch { /* exists or fatal — writeFile below will say which */ }
+    }
+    // The marker itself is content-free by convention; copy whatever bytes the
+    // real file has anyway so the staged case mirrors the source on disk.
+    m.FS.writeFile(markerMemPath, new Uint8Array(await fs.promises.readFile(markerPath)));
+    stagedFiles.push(markerMemPath);
+    const entries = await fs.promises.readdir(polyMeshDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const memPath = `${caseRoot}/constant/polyMesh/${entry.name}`;
+      m.FS.writeFile(memPath, new Uint8Array(await fs.promises.readFile(path.join(polyMeshDir, entry.name))));
+      stagedFiles.push(memPath);
+    }
+    if (stagedFiles.length === 1) {
+      throw new Error(
+        `OpenFOAM case error: ${polyMeshDir} contains no files — expected points/faces/owner/neighbour/boundary.`
+      );
+    }
+
+    // 3. Convert. Deliberately NOT `m.convertSurface`: that call linearizes
+    // higher-ORDER cells (tri6→tri3) but does NOT split multi-node boundary
+    // FACES — and meshio++'s STL writer then silently emits zero facets for a
+    // quad-only boundary (verified live against a single-hex case: extractSurface
+    // returns one `quad` block, convertSurface's STL is `solid endsolid`). Hex-
+    // dominant meshes are THE typical OpenFOAM content, so an all-quad boundary
+    // is the common case, not an edge case. Instead: readMesh + extractSurface +
+    // fan-triangulate every boundary face here — the same hand-built-STL shape
+    // `convertToStlBoundaryWithRegions` uses, generalized from its
+    // triangle-only fast path to arbitrary polygons.
+    let mesh;
+    try {
+      mesh = m.readMesh(markerMemPath, "openfoam");
+    } catch (err) {
+      throw wrapMeshioFault(err);
+    }
+    const boundary = m.extractSurface(mesh, false);
+    const stl = boundaryTrianglesToAsciiStl(boundary.points, boundary.dim, boundary.cells);
+    if (!stl) {
+      throw new Error(
+        "OpenFOAM case error: the mesh produced an empty boundary — no faces to display."
+      );
+    }
+    return stl;
+  } finally {
+    for (const p of stagedFiles) rmTree(p);
+    rmTree(`${caseRoot}/constant/polyMesh`);
+    rmTree(`${caseRoot}/constant`);
+    rmTree(caseRoot);
+  }
+}
+
+/**
+ * Builds ASCII STL bytes from a meshio++ boundary mesh, fan-triangulating every
+ * polygonal face (`triangle`, `quad`, ragged `polygon*`) about its first vertex.
+ * Returns `null` when no triangle came out. Normals are recomputed from the
+ * post-triangulation winding via cross product — never trusted from the source,
+ * the same convention `scaleStlBytes` established. Accepts exactly the two
+ * `CellBlock` shapes a SURFACE boundary can contain (rectangular + CSR polygon);
+ * a polyhedron block on a boundary is structurally unexpected and throws rather
+ * than silently dropping faces.
+ */
+function boundaryTrianglesToAsciiStl(
+  points: Float64Array,
+  dim: number,
+  cells: unknown[]
+): Uint8Array | null {
+  const lines: string[] = ["solid meshio"];
+  let count = 0;
+  const emitTriangle = (i0: number, i1: number, i2: number): void => {
+    const v0 = [points[i0 * dim], points[i0 * dim + 1], points[i0 * dim + 2]];
+    const v1 = [points[i1 * dim], points[i1 * dim + 1], points[i1 * dim + 2]];
+    const v2 = [points[i2 * dim], points[i2 * dim + 1], points[i2 * dim + 2]];
+    const ux = v1[0] - v0[0], uy = v1[1] - v0[1], uz = v1[2] - v0[2];
+    const wx = v2[0] - v0[0], wy = v2[1] - v0[1], wz = v2[2] - v0[2];
+    let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len === 0) return; // degenerate triangle — skip, never emit NaN normals
+    nx /= len; ny /= len; nz /= len;
+    lines.push(
+      `facet normal ${nx} ${ny} ${nz}`,
+      "outer loop",
+      `vertex ${v0[0]} ${v0[1]} ${v0[2]}`,
+      `vertex ${v1[0]} ${v1[1]} ${v1[2]}`,
+      `vertex ${v2[0]} ${v2[1]} ${v2[2]}`,
+      "endloop",
+      "endfacet"
+    );
+    count++;
+  };
+  for (const block of cells) {
+    const b = block as { type?: string; data?: Int32Array; nodesPerCell?: number; rowOffsets?: Int32Array };
+    const data = b.data;
+    if (!data) throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}" (no connectivity).`);
+    if (b.rowOffsets) {
+      // Ragged polygon block (CSR): fan-triangulate each variable-length row.
+      const rows = b.rowOffsets.length - 1;
+      for (let c = 0; c < rows; c++) {
+        const start = b.rowOffsets[c], end = b.rowOffsets[c + 1];
+        for (let i = start + 1; i + 1 < end; i++) {
+          emitTriangle(data[start], data[i], data[i + 1]);
+        }
+      }
+    } else if (typeof b.nodesPerCell === "number") {
+      const n = b.nodesPerCell;
+      const cellCount = data.length / n;
+      if (n < 3 || !Number.isInteger(cellCount)) {
+        throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}" (${n} nodes/cell).`);
+      }
+      for (let c = 0; c < cellCount; c++) {
+        for (let i = 1; i + 1 < n; i++) {
+          emitTriangle(data[c * n], data[c * n + i], data[c * n + i + 1]);
+        }
+      }
+    } else {
+      throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}".`);
+    }
+  }
+  lines.push("endsolid meshio");
+  return count > 0 ? Buffer.from(lines.join("\n"), "utf8") : null;
 }
 
 /**

@@ -19,6 +19,7 @@ CAD Preview supports two classes of 3D files: **B-rep** (boundary representation
 | Exodus | `.exo`, `.e` | meshio++ → STL boundary → Three.js STLLoader | — |
 | XDMF | `.xdmf` | meshio++ → STL boundary → Three.js STLLoader | — |
 | Kratos MDPA | `.mdpa` | meshio++ → STL boundary → Three.js STLLoader | — |
+| OpenFOAM | `.foam` | meshio++ (case staging) → STL boundary → Three.js STLLoader | — |
 
 ## B-rep Formats (OCCT Pipeline)
 
@@ -102,9 +103,11 @@ Fixtures: `examples/GLTF/cube.gltf`, `examples/GLTF/cube.glb`, and `examples/GLT
 
 ---
 
-## meshio++ Bridge Formats (VTK, MED, CGNS, Exodus, XDMF, Kratos MDPA)
+## meshio++ Bridge Formats (VTK, MED, CGNS, Exodus, XDMF, Kratos MDPA, OpenFOAM)
 
-These six formats have no native Three.js loader, so the extension host converts them to a triangulated **boundary surface** in STL form first — [meshio++](https://github.com/loumalouomega/meshioplusplus) (`@meshioplusplus/wasm`, a third host-side WASM module alongside OCCT and Gmsh) reads the source file and calls `convertSurface` (entirely inside its C++ core — a volume mesh becomes its boundary, everything else passes through), producing ASCII STL bytes. Those bytes are sent to the webview (`loadMeshBytes` protocol message, base64-over-postMessage) and fed through the **exact same STL loader** a native `.stl` open uses — see `src/meshioService.ts`'s `convertToStlBoundary()` and `doc/gmsh-integration.md`'s "The meshio++ bridge" section (which also covers the reverse direction: exporting a *generated* FE mesh to MED/CGNS/ XDMF, independent of this import path).
+These formats have no native Three.js loader, so the extension host converts them to a triangulated **boundary surface** in STL form first — [meshio++](https://github.com/loumalouomega/meshioplusplus) (`@meshioplusplus/wasm`, a third host-side WASM module alongside OCCT and Gmsh) reads the source file and calls `convertSurface` (entirely inside its C++ core — a volume mesh becomes its boundary, everything else passes through), producing ASCII STL bytes. Those bytes are sent to the webview (`loadMeshBytes` protocol message, base64-over-postMessage) and fed through the **exact same STL loader** a native `.stl` open uses — see `src/meshioService.ts`'s `convertToStlBoundary()` and `doc/gmsh-integration.md`'s "The meshio++ bridge" section (which also covers the reverse direction: exporting a *generated* FE mesh to MED/CGNS/ XDMF, independent of this import path).
+
+OpenFOAM is the one exception to the single-file shape: a `.foam` file is an (usually empty) **marker** — the ParaView convention — whose real mesh lives in sibling files under `<marker's parent>/constant/polyMesh/`. `src/meshioService.ts`'s `convertFoamCaseToStlBoundary(markerPath)` takes the marker's filesystem path, stages the whole case into meshio++'s virtual filesystem itself, and hand-builds the STL by fan-triangulating every boundary face (meshio++'s own STL writer emits zero facets for the quad-only boundaries typical of hex-dominant CFD meshes). OpenFOAM import is **geometry-only**: patch names ride a C++ side-channel its JS binding doesn't expose, and field files in the case's time directories are not read at all — no Parts are auto-created and the colour-by-field selector stays empty.
 
 ### Processing Steps
 
@@ -120,7 +123,7 @@ Only geometry (points + triangle connectivity) becomes actual geometry through t
 
 ### Kratos MDPA note
 
-Unlike the MDPA **export** path (`src/mdpaWriter.ts`, hand-written — see `doc/gmsh-integration.md`'s "Kratos MDPA" section), **importing** an `.mdpa` file as a document goes through meshio++'s own native MDPA reader (mesh-level blocks only — `Nodes`/`Elements`/`Conditions`/`SubModelPart`; Kratos `Properties`/`Table`/`Geometries`/`Constraints` blocks are not represented in the WASM binding and throw if present, same as everywhere else meshio++ reads MDPA). These are two entirely independent code paths that happen to share a file extension — one reads MDPA (via meshio++, for the Components view), the other writes MDPA (hand-rolled, for FE mesh export) — neither replaces the other.
+Unlike the MDPA **export** path (`src/mdpaWriter.ts`, hand-written — see `doc/gmsh-integration.md`'s "Kratos MDPA" section), **importing** an `.mdpa` file as a document goes through meshio++'s own native MDPA reader (mesh-level blocks only — `Nodes`/`Elements`/`Conditions`/`SubModelPart`; Kratos `Properties`/`Table`/`Geometries`/`Constraints` blocks are not represented in the WASM binding and throw if present, same as everywhere else meshio++ reads MDPA). These are two entirely independent code paths that happen to share a file extension — one reads MDPA (via meshio++, for the Components view), the other writes MDPA (hand-rolled, for FE mesh export) — neither replaces the other. Non-sequential ("gapped") node ids — routine in real Kratos decks, since SubModelPart extraction, entity removal and deck merging all leave them — are supported (`@meshioplusplus/wasm` ≥ 9.13; regression-fixture: `examples/MDPA/gapped-ids.mdpa`, whose original ids surface as `mdpa:id` point/cell data names).
 
 ---
 
@@ -313,7 +316,7 @@ The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displaye
 | --- | --- |
 | B-rep (STEP/IGES/BREP) | the other two B-rep formats, **plus** STL/OBJ/PLY/glTF |
 | Mesh (STL/OBJ/PLY/glTF) | the other mesh formats only |
-| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA) | STL/OBJ/PLY/glTF — the displayed model is an ordinary `THREE.Object3D` by this point (see the meshio++ Bridge Formats section above), so it exports exactly like a native mesh source |
+| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) | STL/OBJ/PLY/glTF — the displayed model is an ordinary `THREE.Object3D` by this point (see the meshio++ Bridge Formats section above), so it exports exactly like a native mesh source |
 
 The source format is never offered as its own export target (moot for the meshio++ row above, since none of those formats are export targets to begin with).
 
@@ -333,7 +336,7 @@ glTF export always produces a binary `.glb` file (not a text `.gltf` with embedd
 | --- | --- |
 | STEP / IGES / BREP | the tessellation of the current model, **edits baked in** |
 | STL / OBJ / PLY / glTF | the raw file bytes, **edits not baked in** (there is no host-side mesh edit engine — same limitation Compare Models has) |
-| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA) | rejected — those formats never expose a triangle array back to JS |
+| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) | rejected — those formats never expose a triangle array back to JS |
 
 The output is a single self-contained `<path>` — no `<style>`, no script, no external references — so it embeds anywhere. **1 SVG user unit = 1 model unit**, with the document's physical `width`/`height` given in millimetres, so a drawing exported from a native (mm) model prints 1:1 in any vector tool. Choosing a non-mm unit applies the same real coordinate scale every other export in this codebase uses, before projection.
 

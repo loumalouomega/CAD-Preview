@@ -20,6 +20,7 @@ import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri } from "./meshOptionsStore";
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
 import type { MeshGenerationInput } from "./gmshService";
+import type { MeshioMetadataSummary } from "./meshioService";
 import { meshExportFormat } from "./meshExportFormats";
 import { applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
@@ -38,6 +39,13 @@ import { runCompareModelsCommand } from "./modelComparePanel";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
+
+/** The guaranteed-empty metadata an OpenFOAM import always reports — meshio++'s
+ * OpenFOAM reader surfaces no regions and no point/cell/field data to JS (patch
+ * names ride an unexposed C++ side-channel struct), so `handleMeshio` skips the
+ * `readMeshioMetadata` round trip entirely for that format rather than staging
+ * the whole case into MEMFS a second time for a structurally empty answer. */
+const EMPTY_MESHIO_METADATA: MeshioMetadataSummary = { regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] };
 /** Settle window for the external-change file watchers below — short enough
  * to reconcile promptly, long enough to avoid reading a file mid-write by
  * another process. */
@@ -177,7 +185,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       filters: {
         "CAD / Mesh": [
           "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep",
-          "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa",
+          "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam",
         ],
       },
     });
@@ -1106,9 +1114,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   }
 
   /**
-   * meshio++-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA) — converts the raw
-   * file to an STL boundary surface and posts it as `loadMeshBytes`, letting
-   * the webview treat it exactly like a native `.stl` open. See
+   * meshio++-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) — converts
+   * the raw file to an STL boundary surface and posts it as `loadMeshBytes`,
+   * letting the webview treat it exactly like a native `.stl` open. See
    * `src/meshioService.ts` for why this funnel-through-STL design was chosen
    * over host-side tessellation into `EncodedMesh` groups.
    *
@@ -1131,10 +1139,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   private async handleMeshio(uri: vscode.Uri, format: CadFormat, post: (msg: HostToWebview) => void): Promise<Part[]> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()}…` });
-      const bytes = await vscode.workspace.fs.readFile(uri);
+      const isFoam = format === "openfoam";
+      const bytes = isFoam ? undefined : await vscode.workspace.fs.readFile(uri);
       const [boundary, metadata, existingParts] = await Promise.all([
-        this.pipeline.convertToStlBoundaryWithRegions(bytes, format),
-        this.pipeline.readMeshioMetadata(bytes, format),
+        // OpenFOAM is the one format that is NOT a single file — a `.foam`
+        // marker's real mesh lives in sibling files under
+        // `<parent>/constant/polyMesh/`, staged into meshio++'s MEMFS by
+        // `convertFoamCaseToStlBoundary` itself (it takes the marker's path,
+        // not bytes). Its reader also surfaces no regions/data to JS (patch
+        // names ride an unexposed C++ side-channel), so the region
+        // correlation below cannot fire for it by construction.
+        isFoam
+          ? this.pipeline.convertFoamCaseToStlBoundary(uri.fsPath).then((stlBytes) => ({ stlBytes, regions: undefined }))
+          : this.pipeline.convertToStlBoundaryWithRegions(bytes!, format),
+        isFoam ? EMPTY_MESHIO_METADATA : this.pipeline.readMeshioMetadata(bytes!, format),
         readParts(uri),
       ]);
       let parts = existingParts;

@@ -35,6 +35,7 @@ import { compareModels } from "./modelDiffHost";
 import {
   convertToStlBoundary,
   convertToStlBoundaryWithRegions,
+  convertFoamCaseToStlBoundary,
   exportViaMeshio,
   readMeshioMetadata,
   readMeshioFieldValues,
@@ -116,6 +117,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   compareModels: compareModels as Handler,
   convertToStlBoundary: convertToStlBoundary as Handler,
   convertToStlBoundaryWithRegions: convertToStlBoundaryWithRegions as Handler,
+  convertFoamCaseToStlBoundary: convertFoamCaseToStlBoundary as Handler,
   exportViaMeshio: exportViaMeshio as Handler,
   readMeshioMetadata: readMeshioMetadata as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,

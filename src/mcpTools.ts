@@ -25,7 +25,7 @@ import {
 } from "./editOps";
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { compileParametricScript } from "./parametricScript";
-import { routeFile, COMPARABLE_MESH_FORMATS, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
+import { routeFile, COMPARABLE_MESH_FORMATS, MESHIO_FORMATS, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION } from "./exportTargets";
 import {
@@ -65,7 +65,7 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
@@ -123,6 +123,7 @@ export interface Pipeline {
   compareModels: typeof compareModels;
   convertToStlBoundary: typeof convertToStlBoundary;
   convertToStlBoundaryWithRegions: typeof convertToStlBoundaryWithRegions;
+  convertFoamCaseToStlBoundary: typeof convertFoamCaseToStlBoundary;
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
   checkMeshHealth: typeof checkMeshHealth;
@@ -279,7 +280,7 @@ function requireRoute(modelPath: string): FileRoute {
   const route = routeFile(modelPath);
   if (!route) {
     throw new Error(
-      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa)`
+      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam)`
     );
   }
   return route;
@@ -405,6 +406,29 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
           : "."),
     ];
     if (route.strategy === "meshio") {
+      // OpenFOAM is geometry-only by construction (its reader surfaces no
+      // regions/data arrays to JS — see meshioService.ts), so both the
+      // metadata read and the region→Parts auto-create are skipped rather
+      // than staged for a guaranteed-empty answer.
+      if (route.format === "openfoam") {
+        warnings.push(
+          "OpenFOAM source: geometry-only import — patch names and any field data are not preserved " +
+            "(meshio++ does not surface them to JS); the boundary surface is still meshable via generate_mesh."
+        );
+        const sidecars = await sidecarSummary(modelPath);
+        return {
+          format: route.format,
+          strategy: route.strategy,
+          tree: null,
+          solids: null,
+          edgeCount: null,
+          edgeIds: null,
+          pointCount: null,
+          bbox: null,
+          sidecars,
+          warnings,
+        };
+      }
       const bytes = await readModelBytes(modelPath);
       const [meta, createdCount] = await Promise.all([
         ctx.pipeline.readMeshioMetadata(bytes, route.format),
@@ -791,7 +815,9 @@ export async function compareModelsTool(
       formatB: routeB.format,
       supported: false,
       warnings: [
-        "compare_models only supports STEP/IGES/BREP/STL/OBJ/PLY/glTF sources headlessly — meshio-only formats (vtk/vtu/med/cgns/exodus/xdmf/mdpa) have no host-side geometry to independently derive solid centroids/volumes from without a webview.",
+        // Built from MESHIO_FORMATS, not a hardcoded list — the format set has
+        // already drifted once (openfoam joined at @meshioplusplus/wasm 10.x).
+        `compare_models only supports STEP/IGES/BREP/STL/OBJ/PLY/glTF sources headlessly — meshio-only formats (${MESHIO_FORMATS.join("/")}) have no host-side geometry to independently derive solid centroids/volumes from without a webview.`,
       ],
     };
   }
@@ -1468,15 +1494,20 @@ async function resolveMeshInputHeadless(
     // host-side — no webview needed — so these formats are MORE headlessly
     // capable than the other mesh formats: converted to an STL boundary
     // surface (the same funnel-through-STL design the extension itself uses)
-    // and meshed exactly like a native `.stl`.
+    // and meshed exactly like a native `.stl`. OpenFOAM is the one exception
+    // to the bytes-in shape: its `.foam` marker's mesh lives in sibling files
+    // under `<parent>/constant/polyMesh/`, so the path-based foam conversion
+    // stages the case itself.
     const { ops } = await readEdits(modelPath);
     if (ops.length > 0) {
       warnings.push(
         `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file's boundary surface is meshed.`
       );
     }
-    const bytes = await readModelBytes(modelPath);
-    const stlBytes = await ctx.pipeline.convertToStlBoundary(bytes, route.format);
+    const stlBytes =
+      route.format === "openfoam"
+        ? await ctx.pipeline.convertFoamCaseToStlBoundary(modelPath)
+        : await ctx.pipeline.convertToStlBoundary(await readModelBytes(modelPath), route.format);
     return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
   }
   throw new Error(
