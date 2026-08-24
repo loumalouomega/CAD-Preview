@@ -1829,9 +1829,53 @@ function setupViewMenu(): void {
     snapPointsBtn.setAttribute("aria-checked", String(snapToPointsEnabled));
   });
 
+  // Split view (roadmap "Split view", Phase 2) — the View ▾ layout picker:
+  // four mutually-exclusive pane layouts over one scene (one renderer, one
+  // canvas — panes are scissored viewports). Only camera state is per-pane;
+  // everything else (display mode, clip plane, selection, overlays) stays
+  // global. The active button mirrors the current layout; a layout change
+  // also updates the pane dividers and persists via `scheduleViewSave`.
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("#layout-group .layout-btn")) {
+    btn.addEventListener("click", () => {
+      const next = btn.dataset.layout as ReturnType<typeof viewer.getPaneLayout>;
+      if (!next || next === viewer.getPaneLayout()) return;
+      viewer.setPaneLayout(next);
+      reflectLayoutPicker(next);
+      setPaneDividersForLayout(next);
+      // A layout change is a user view change — persist it. `viewer`'s
+      // `onViewChanged` may not fire for this (the kept pane's camera didn't
+      // move), so call explicitly rather than relying on the change event.
+      scheduleViewSave();
+    });
+  }
+  reflectLayoutPicker(viewer.getPaneLayout());
+
   // #edges is owned by setupAppearanceControls() — it holds the visibility
   // flag; this only reflects it. Screenshot is one-shot, so it dismisses.
   document.getElementById("screenshot")?.addEventListener("click", () => menu?.close());
+}
+
+/** Syncs the picker's `.active` class to `layout` — called from the picker
+ * click handler and from `applyViewState`'s restore path. */
+function reflectLayoutPicker(layout: string): void {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("#layout-group .layout-btn")) {
+    btn.classList.toggle("active", btn.dataset.layout === layout);
+  }
+}
+
+/** Shows/hides the two thin DOM dividers between split-view panes — pure
+ * visual separators over the single canvas (pointer-events: none; the panes
+ * they delineate share that one canvas, so there is nothing to hit-test).
+ * `1×2` shows only the vertical divider, `2×1` only the horizontal, `2×2`
+ * both, `1×1` neither. Kept as a named export helper so `applyViewState`'s
+ * restore path can also sync dividers without re-dispatching a picker click. */
+function setPaneDividersForLayout(layout: string): void {
+  document.getElementById("pane-divider-v")?.classList.toggle("hidden", layout !== "1x2" && layout !== "2x2");
+  document.getElementById("pane-divider-h")?.classList.toggle("hidden", layout !== "2x1" && layout !== "2x2");
+}
+/** Backwards-compat alias for older call sites/tests that used the boolean form. */
+function setPaneDividersVisible(visible: boolean): void {
+  setPaneDividersForLayout(visible ? "2x2" : "1x1");
 }
 
 /**
@@ -1869,6 +1913,12 @@ function setupDragAndDrop(): void {
  * click duplicating that logic and risking drift. */
 interface AppearanceControlsHandle {
   applyOrtho(enabled: boolean): void;
+  /** Re-reads the focused pane's projection state onto the button's
+   * label/active class WITHOUT changing it — used when the focused pane
+   * changes (split view), since projection is per-pane and the new focus may
+   * carry the opposite mode even though the user clicked no projection
+   * control. */
+  reflectOrtho(): void;
   applyDisplayMode(mode: DisplayMode): void;
 }
 
@@ -1912,18 +1962,20 @@ function setupAppearanceControls(): AppearanceControlsHandle {
   });
 
   const orthoBtn = document.getElementById("vc-ortho");
+  const reflectOrtho = () => {
+    if (orthoBtn) {
+      orthoBtn.textContent = viewer.isOrthographic() ? "Ortho" : "Persp";
+      orthoBtn.classList.toggle("active", viewer.isOrthographic());
+    }
+  };
   const applyOrtho = (enabled: boolean) => {
     viewer.setOrthographic(enabled);
-    if (orthoBtn) {
-      orthoBtn.textContent = enabled ? "Ortho" : "Persp";
-      orthoBtn.classList.toggle("active", enabled);
-    }
+    reflectOrtho();
   };
   orthoBtn?.addEventListener("click", () => {
     applyOrtho(!viewer.isOrthographic());
     scheduleViewSave();
   });
-
   document.getElementById("vc-unit")?.addEventListener("change", (e) => {
     setDisplayUnit((e.target as HTMLSelectElement).value as DisplayUnit);
   });
@@ -1958,7 +2010,7 @@ function setupAppearanceControls(): AppearanceControlsHandle {
     });
   }
 
-  return { applyOrtho, applyDisplayMode };
+  return { applyOrtho, reflectOrtho, applyDisplayMode };
 }
 
 /** `null` clip state means clipping is off (mirrors `ViewState.clip`). */
@@ -2172,6 +2224,11 @@ try {
   clippingControls = setupClippingControls();
   setupMarkupControls();
   setupColorFieldControls();
+  // Split view: when the focused pane changes (a click in another pane), UI
+  // that mirrors FOCUSED-pane state must re-read it — projection is per-pane,
+  // so the Persp/Ortho button can need the other label even though the user
+  // clicked no projection control.
+  viewer.onFocusChanged(() => appearanceControls?.reflectOrtho());
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
   console.error(message, err);
@@ -2200,12 +2257,33 @@ let hasAppliedInitialView = false;
 /** Applies a full `ViewState` to the viewer + Appearance/Clip controls — the
  * one place that does so, shared by the initial restoration below and by a
  * post-initial external-change reconciliation of `.view.json` (`case
- * "viewState":`, when `hasAppliedInitialView` is already true). */
+ * "viewState":`, when `hasAppliedInitialView` is already true).
+ *
+ * Phase 2: `layout` + per-pane `panes` are applied first — the layout switch
+ * itself is pane-management only (no model needed), then each pane's camera
+ * direction/up/ortho is restored via the per-pane Viewer API. When no per-pane
+ * state is present (old sidecar, single-pane session) the original
+ * focused-pane-only path runs as before. Global display mode + clip stay
+ * once, not per pane. */
 function applyViewState(state: ViewState): void {
-  viewer.setCameraUp(new THREE.Vector3(...state.cameraUp));
-  if (state.orthographic !== viewer.isOrthographic()) appearanceControls?.applyOrtho(state.orthographic);
+  const layout = state.layout ?? "1x1";
+  if (layout !== viewer.getPaneLayout()) viewer.setPaneLayout(layout as ReturnType<typeof viewer.getPaneLayout>);
+  reflectLayoutPicker(layout);
+  setPaneDividersForLayout(layout);
+  if (layout !== "1x1" && state.panes && state.panes.length > 0) {
+    // Per-pane camera states — `viewStateSidecar` already padded/truncated to
+    // `paneCount(layout)`, but be defensive against a hand-edited sidecar.
+    const n = Math.min(state.panes.length, viewer.getPaneViewStates().length);
+    for (let i = 0; i < n; i++) viewer.applyPaneCameraState(i, state.panes[i]);
+    // A per-pane ortho toggle doesn't go through the Appearance button's
+    // `applyOrtho` path, so re-sync the button to the (still focused) pane 0.
+    appearanceControls?.reflectOrtho();
+  } else {
+    viewer.setCameraUp(new THREE.Vector3(...state.cameraUp));
+    if (state.orthographic !== viewer.isOrthographic()) appearanceControls?.applyOrtho(state.orthographic);
+    viewer.frameFromDirection(new THREE.Vector3(...state.viewDirection));
+  }
   appearanceControls?.applyDisplayMode(state.displayMode);
-  viewer.frameFromDirection(new THREE.Vector3(...state.viewDirection));
   clippingControls?.applyState(state.clip);
 }
 
@@ -2229,7 +2307,8 @@ let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Debounced autosave, called from every user-facing view change (camera
  * orbit/pan/zoom/fit/reset, the orientation gizmo, ortho/display-mode
- * buttons, and the clip controls). */
+ * buttons, the clip controls, and — since Phase 2 — a layout change or any
+ * per-pane camera move). */
 function scheduleViewSave(): void {
   if (!hasAppliedInitialView) return;
   if (viewSaveTimer) clearTimeout(viewSaveTimer);
@@ -2243,6 +2322,11 @@ function scheduleViewSave(): void {
       displayMode: viewer.getDisplayMode(),
       clip: clippingControls?.getState() ?? null,
     };
+    const layout = viewer.getPaneLayout();
+    if (layout !== "1x1") {
+      view.layout = layout;
+      view.panes = viewer.getPaneViewStates();
+    }
     post({ type: "viewChanged", view });
   }, VIEW_SAVE_DEBOUNCE_MS);
 }

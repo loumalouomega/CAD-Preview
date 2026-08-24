@@ -10,6 +10,7 @@ import type { DisplayUnit } from "./lengthUnits";
 import type { ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipAxis } from "./webview/clipping";
+import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 
@@ -110,6 +111,20 @@ export interface Annotation {
 }
 
 /**
+ * Per-pane camera state — the subset of {@link ViewState} that varies per pane
+ * in a split-view layout (roadmap "Split view", Phase 2). Direction + up are
+ * the same normalized vectors `ViewState` already persists; orthographic is
+ * per-pane like direction. Display mode and clip plane stay global (one value
+ * for the whole document, stored in `ViewState` itself), matching Phase 1's
+ * scoping that only camera state is per-pane.
+ */
+export interface PaneViewState {
+  viewDirection: [number, number, number];
+  cameraUp: [number, number, number];
+  orthographic: boolean;
+}
+
+/**
  * Persisted view state (roadmap "View-state persistence", closed) — camera
  * orientation, display mode, ortho/perspective, and clip plane, so reopening
  * a document restores the last view instead of always resetting to the
@@ -119,6 +134,14 @@ export interface Annotation {
  * auto-derives both from the model's current bounding box, so persisting just
  * a normalized direction + up vector is sufficient and survives edits that
  * change the model's extents.
+ *
+ * Phase 2 (roadmap "Split view", Phase 2) adds optional split-view layout +
+ * per-pane camera states. `layout` defaults to `"1x1"` when absent (an older
+ * sidecar or a session that never entered split view); `panes` holds one
+ * {@link PaneViewState} per pane of that layout, row-major, and is only
+ * meaningful when `layout !== "1x1"`. A sidecar without these fields restores
+ * as before — `view` alone is the focused/single-pane state in both
+ * directions, so version-compatibility needs no bump.
  */
 export interface ViewState {
   /** Camera direction (target → camera), as consumed by `Viewer.frame`/`setViewDirection`. */
@@ -128,6 +151,10 @@ export interface ViewState {
   displayMode: DisplayMode;
   /** `null` when clipping is off. */
   clip: { axis: ClipAxis; offsetFrac: number } | null;
+  /** Split-view layout — absent/`"1x1"` means single pane. See {@link PaneViewState}. */
+  layout?: PaneLayoutId;
+  /** Per-pane camera states, one per pane of {@link ViewState.layout}, row-major. */
+  panes?: PaneViewState[];
 }
 
 /** Messages sent from the extension host to the webview. */

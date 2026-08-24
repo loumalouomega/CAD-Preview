@@ -40,6 +40,33 @@ body {
   pointer-events: none;
 }
 
+/* Split-view pane separators (roadmap "Split view", Phase 1) — thin visual
+ * dividers between 2×2 panes, over the single WebGL canvas but under the
+ * markup canvas (z-index 4 < 5). Always pointer-events:none: the panes they
+ * delineate are scissored regions of ONE canvas, so there is nothing to
+ * hit-test and clicks must fall through to the canvas beneath. */
+.pane-divider {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  background: var(--vscode-editorWidget-border, #454545);
+}
+#pane-divider-v {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+}
+#pane-divider-h {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+}
+.pane-divider.hidden {
+  display: none;
+}
+
 /* ── Sidebar (stacks Components + Parts) ─────────────────────────────── */
 
 #side {
@@ -1866,7 +1893,8 @@ input[type="range"].meshing-slider:focus {
 
 #toolbar .tb-dropdown .sel-mode,
 #toolbar .tb-dropdown .measure-tool-btn,
-#toolbar .tb-dropdown .markup-tool-btn {
+#toolbar .tb-dropdown .markup-tool-btn,
+#toolbar .tb-dropdown .layout-btn {
   display: inline-flex;
   gap: 5px;
   padding: 4px 8px;
@@ -1876,14 +1904,16 @@ input[type="range"].meshing-slider:focus {
 
 #toolbar .tb-dropdown .sel-mode.active,
 #toolbar .tb-dropdown .measure-tool-btn.active,
-#toolbar .tb-dropdown .markup-tool-btn.active {
+#toolbar .tb-dropdown .markup-tool-btn.active,
+#toolbar .tb-dropdown .layout-btn.active {
   background: var(--vscode-button-background, #0e639c);
   color: var(--vscode-button-foreground, #fff);
 }
 
 #toolbar .tb-dropdown .sel-mode:disabled,
 #toolbar .tb-dropdown .measure-tool-btn:disabled,
-#toolbar .tb-dropdown .markup-tool-btn:disabled {
+#toolbar .tb-dropdown .markup-tool-btn:disabled,
+#toolbar .tb-dropdown .layout-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }

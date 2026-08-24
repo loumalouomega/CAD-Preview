@@ -250,6 +250,18 @@ export async function renderSnapshot(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const post = (msg: unknown) => page.evaluate((m: any) => (window as any).__post(m), msg);
     await post(geometryMsg);
+    // MUST follow "geometry": since the view-state persistence feature,
+    // `Viewer.setModel()` leaves the camera completely unframed on first load
+    // until `main.ts`'s `applyInitialViewIfNeeded()` sees BOTH a loaded model
+    // AND a "viewState" post. Real documents always get one from `provider.ts`
+    // (even `{view: null}` for a document with no sidecar yet); without this
+    // post the harness camera stayed at its constructor default (~8.66 units
+    // from origin), rendering every image as a giant misframed close-up —
+    // exactly the silent regression class capture.mjs hit first and fixed in
+    // f20816c; this file was missed by that fix because Node 18 (below
+    // Playwright's minimum) made the image path unrunnable here until the
+    // Node 20 bump, so nothing ever looked at the output.
+    await post({ type: "viewState", view: null });
     await sleep(700); // OCCT geometry decode + first frame, same settle time capture.mjs uses
     await post(treeMsg);
     await sleep(200);

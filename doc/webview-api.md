@@ -10,6 +10,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
 | `src/webview/cameraControls.ts` | Pure camera math utilities (unit-testable) |
+| `src/webview/viewerPanes.ts` | Pure split-view pane-layout math: pane rects, pointer→pane mapping, pane-relative NDC, GL-viewport conversion (unit-tested) |
 | `src/webview/gizmoTransform.ts` | Pure per-target delta math (translate/rotate-about-pivot/scale-about-pivot, axis-angle decomposition, grid/point snapping) for the Transform Gizmo (unit-tested) |
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
 | `src/webview/geometryBuilder.ts` | Decode and build per-face meshes + per-edge lines from encoded buffers |
@@ -157,7 +158,7 @@ Module scope holds only a `Set<DropdownHandle>` and a `boolean`; all DOM access 
 
 ### `Viewer`
 
-The main Three.js controller. Owns the scene, camera, renderer, lights, controls, helpers, and gizmo.
+The main Three.js controller. Owns the scene, renderer, lights, controls, helpers, and gizmos.
 
 ```typescript
 class Viewer {
@@ -173,6 +174,31 @@ The constructor creates:
 - Two lights: `AmbientLight(0xffffff, 0.6)` + `DirectionalLight(0xffffff, 0.8)`
 - `GridHelper` and `AxesHelper` (hidden by default)
 - `OrientationCube` instance
+
+#### Split view (roadmap "Split view", Phases 1+2)
+
+The viewer supports four pane layouts — `"1x1"` (default), `"1x2"` (two side-by-side columns), `"2x1"` (two stacked rows), and `"2x2"` (quad) — over the **single** scene, renderer, and canvas: panes are `setViewport`/`setScissor` regions, never separate WebGL contexts. Each pane owns its own camera pair (perspective + orthographic — projection is per-pane) and its own `OrbitControls`; only camera state (direction/up/ortho) is per-pane — model, overlays, selection, clip plane, and display mode stay global.
+
+```typescript
+getPaneLayout(): PaneLayoutId
+setPaneLayout(layout: PaneLayoutId): void
+setFocusedPane(index: number): void
+onFocusChanged(callback: (index: number) => void): void
+getPaneViewStates(): PaneViewState[]
+applyPaneCameraState(index: number, state: PaneViewState): void
+```
+
+- `PaneLayoutId = "1x1" | "1x2" | "2x1" | "2x2"` — see `src/webview/viewerPanes.ts` for the pure, unit-tested layout math.
+- `setPaneLayout` creates/disposes panes: the **focused** pane's state survives in both directions — collapsing keeps exactly what the user was looking at; expanding seeds every new pane with a copy of the focused view (all panes start identical, then orbit independently).
+- `getPaneViewStates` / `applyPaneCameraState` are the per-pane persistence primitives `main.ts`'s `scheduleViewSave`/`applyViewState` use for `.view.json` — one `PaneViewState` (direction/up/ortho) per pane, row-major.
+- **Every no-argument camera API** (`fitView`/`resetView`/`rotateView`/`panView`/`zoomView`/`setViewDirection`/`setOrthographic`/`getViewDirection`/`getCameraUp`/`isOrthographic`/`setCameraUp`/`frameFromDirection`) targets the **focused pane**, so all pre-existing call sites keep their exact semantics.
+- Focus moves on a `pointerdown` inside another pane (the capture-phase gate listener, which also enables only that pane's `OrbitControls` so N instances never fight over one drag); `onFocusChanged` lets `main.ts` re-sync UI that mirrors focused-pane state (the Persp/Ortho button label).
+- An edit-driven model rebuild (`setModel`) re-frames **every** pane along its own current direction.
+- The orientation cube renders into (and is clickable within) the focused pane's corner only; the transform gizmo retargets `TransformControls.camera` and its `viewport` (a native three.js property for sub-viewport pointer math, verified against the installed source) to the focused pane.
+- A fresh `Viewer` always starts at `"1x1"` — this is what keeps the headless render harness (`renderService.ts`, which posts no layout message) rendering one full-canvas view.
+- The View ▾ **layout picker** (`#layout-group`, four icon buttons `1×1`/`1×2`/`2×1`/`2×2`) replaces the Phase 1 checkbox; `reflectLayoutPicker(layout)` mirrors the current layout, and `setPaneDividersForLayout(layout)` shows the vertical divider for `1×2`/`2×2` and the horizontal one for `2×1`/`2×2`. A layout change calls `scheduleViewSave` so it persists (Phase 2: `layout` + per-pane `panes` as siblings of `view` in `<model>.view.json`, tolerant-parse — see [File Formats](./file-formats.md)).
+- OrbitControls has no viewport awareness (its drag sensitivity divides by the full canvas height), so per-pane `rotateSpeed`/`panSpeed` are compensated by `canvasHeight / paneHeight` — exact for `1×1`/`2×2` and for rotation + perspective pan in the `1×2` variants (both divide by `clientHeight`). Stops being exact for **orthographic pan** in non-square pane layouts (ortho's horizontal pan divides by `clientWidth` while the factor only corrects for height: `1×2` leaves ortho horizontal pan ~2× slow; `2×1` leaves it ~2× fast). One `panSpeed` scalar cannot express per-axis factors — the height-based factor stays the best single compromise.
+- Interaction with the transform gizmo inside a split view (drag begun in the focused pane) is the one piece verified against the installed three.js source but **not** by an automated probe — see CLAUDE.md's "Verify a change" for the manual F5 steps.
 
 **Model management:**
 
@@ -482,6 +508,27 @@ function viewDirection(
 ```
 
 Returns the normalized vector from the target to the camera (`camera.position.clone().sub(target).normalize()`).
+
+---
+
+## `src/webview/viewerPanes.ts`
+
+Pure pane-layout math for split view (roadmap "Split view", Phases 1+2) — DOM-free and unit-tested (`viewerPanes.test.ts`), following the `clipping.ts`/`cameraControls.ts` precedent of keeping the math testable and leaving only the three.js application in `viewer.ts`. All coordinates are CSS pixels (the space `getBoundingClientRect()` reports).
+
+```typescript
+type PaneLayoutId = "1x1" | "1x2" | "2x1" | "2x2"
+interface PaneRect { x: number; y: number; width: number; height: number } // top-left origin
+function paneCount(layout: PaneLayoutId): number
+function computePaneRects(layout: PaneLayoutId, cssWidth: number, cssHeight: number): PaneRect[]
+function paneAtPoint(rects: PaneRect[], cssX: number, cssY: number): number // -1 if outside
+function ndcInPane(rect: PaneRect, cssX: number, cssY: number): { x: number; y: number }
+function glViewportForPane(rect: PaneRect, cssHeight: number): { x: number; y: number; width: number; height: number }
+```
+
+- `computePaneRects` orders panes row-major (0 = top-left … 3 = bottom-right). The split point rounds and the last row/column absorbs the remainder, so rects always tile the canvas exactly — no gaps, no overlaps, integer edges for odd pixel counts (unit-tested).
+- `paneAtPoint` gives boundary points to exactly one pane (right/bottom edges are exclusive), so a click can never pick two panes.
+- `ndcInPane` is the pane-relative NDC (`-1..1`, +Y up) that feeds `Raycaster.setFromCamera` when picking inside a scissored viewport.
+- `glViewportForPane` converts to the bottom-left-origin rect `renderer.setViewport`/`setScissor` and `TransformControls.viewport` expect.
 
 ---
 

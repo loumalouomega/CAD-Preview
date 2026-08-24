@@ -18,12 +18,41 @@ import type { MeasurementPick } from "./measurementState";
 import { drawLabel } from "./labelOverlay";
 import { compositeCanvas } from "./canvasComposite";
 import { type DisplayMode } from "./displayMode";
-import type { EntityType } from "../protocol";
+import {
+  computePaneRects,
+  glViewportForPane,
+  ndcInPane,
+  paneAtPoint,
+  type PaneLayoutId,
+  type PaneRect,
+  paneCount,
+} from "./viewerPanes";
+import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
 
 /** Emissive tint applied to the transiently-selected entities. */
 const SELECTION_COLOR = 0x3b82f6;
+
+/**
+ * One split-view pane's private state (roadmap "Split view", Phase 1): its
+ * own perspective/orthographic camera pair (swapped per-pane by the
+ * Persp/Ortho toggle — the projection mode is per-pane, like direction/up/
+ * zoom), its own `OrbitControls` instance, and its own last-framed ortho
+ * half-height. Everything else in the viewer (scene, model, overlays,
+ * selection, clip plane, display mode) is deliberately GLOBAL — only camera
+ * state is per-pane, per the roadmap's own scoping.
+ */
+interface PaneState {
+  persp: THREE.PerspectiveCamera;
+  ortho: THREE.OrthographicCamera;
+  active: ViewerCamera;
+  controls: OrbitControls;
+  /** This pane's ortho camera's last-framed half-height (world units, before
+   * zoom) — `framePane` sets it, `applyPaneAspect` reuses it to recompute
+   * `left/right/top/bottom` for a new aspect ratio without a full reframe. */
+  orthoHalfHeight: number;
+}
 
 /** `"type:id"` key, same convention `renderSelection`/`SelectionSet` use. */
 function entityKey(e: SelectedEntity): string {
@@ -44,20 +73,25 @@ export interface EntityColorMap {
  */
 export class Viewer {
   private readonly scene = new THREE.Scene();
-  private readonly camera: THREE.PerspectiveCamera;
-  /** A second camera kept in sync with `camera`'s position/target, swapped in
-   * as `activeCamera` by `setOrthographic` — NOT reconstructed on toggle, so
-   * `frame()`/`orbit`/`pan`/`dolly` all operate on `activeCamera` (a
-   * `PerspectiveCamera | OrthographicCamera` union) rather than the hardcoded
-   * perspective camera directly. */
-  private readonly orthoCamera: THREE.OrthographicCamera;
-  private activeCamera: ViewerCamera;
-  /** The ortho camera's last-framed half-height (world units, before zoom) —
-   * `frame()` sets it, `onResize` reuses it to recompute `left/right/top/
-   * bottom` for the new aspect ratio without needing a full reframe. */
-  private orthoHalfHeight = 5;
+  /** One `PaneState` per pane of the current {@link layout} — length 1 or 4
+   * in Phase 1. Index 0 always exists; `focusedPane` selects which one every
+   * no-argument camera API (fitView/resetView/orbit/pan/dolly/getViewDirection/
+   * setOrthographic/…) acts on, so `main.ts`'s ~30 existing call sites keep
+   * their exact semantics ("the view" = the focused pane) unchanged. */
+  private panes: PaneState[];
+  /** Index into {@link panes} of the pane every camera-affecting API targets
+   * and into which the orientation cube renders. Moved by clicking a pane
+   * (the capture-phase gate listener), never by hovering. */
+  private focusedPane = 0;
+  /** The active layout — `"1x1"` (the fresh-viewer default, which is what
+   * keeps `renderService.ts`'s headless harness, which posts no layout
+   * message, rendering exactly one full-canvas view) or `"2x2"`. */
+  private layout: PaneLayoutId = "1x1";
+  /** Each pane's rect in CSS pixels (top-left origin), recomputed on resize
+   * and layout change — the one source both the GL viewport/scissor math and
+   * the pointer→pane mapping read. */
+  private paneRects: PaneRect[];
   private readonly renderer: THREE.WebGLRenderer;
-  private controls: OrbitControls;
   /** The Transform Gizmo (roadmap "Transform gizmo", closed) — Three.js's own
    * `TransformControls`, not hand-rolled drag math. Named distinctly from
    * `this.gizmo` (the unrelated corner orientation cube) to avoid confusion. */
@@ -175,21 +209,6 @@ export class Viewer {
 
     this.scene.background = new THREE.Color(0x1e1e1e);
 
-    this.camera = new THREE.PerspectiveCamera(45, width / height, 0.01, 1e6);
-    this.camera.position.set(5, 5, 5);
-
-    const aspect = width / height;
-    this.orthoCamera = new THREE.OrthographicCamera(
-      -this.orthoHalfHeight * aspect,
-      this.orthoHalfHeight * aspect,
-      this.orthoHalfHeight,
-      -this.orthoHalfHeight,
-      0.01,
-      1e6
-    );
-    this.orthoCamera.position.set(5, 5, 5);
-    this.activeCamera = this.camera;
-
     // `stencil: true` is required for the clip-cap technique (`clipCap.ts`) —
     // this three.js version's WebGLRenderer defaults it to `false`, unlike
     // older versions; without it the stencil-marking passes are silent
@@ -199,13 +218,13 @@ export class Viewer {
     this.renderer.setSize(width, height);
     container.appendChild(this.renderer.domElement);
 
-    this.controls = new OrbitControls(this.activeCamera, this.renderer.domElement);
-    this.controls.enableDamping = true;
+    this.paneRects = computePaneRects(this.layout, width, height);
+    this.panes = [this.makePane(this.paneRects[0])];
 
     // Rotate mode operates in world space to match the `rotate` edit op's own
     // `axisPoint`/`axisDir` fields, which are world coordinates, not local to
     // whichever proxy object the gizmo happens to be attached to.
-    this.transformControls = new TransformControls(this.activeCamera, this.renderer.domElement);
+    this.transformControls = new TransformControls(this.panes[0].active, this.renderer.domElement);
     this.transformControls.setSpace("world");
     // The helper starts invisible (TransformControlsRoot's own default) and
     // attach()/detach() toggle it automatically — nothing to do here.
@@ -217,17 +236,21 @@ export class Viewer {
     // setter unconditionally dispatches `{type: propName + '-changed', value}`
     // on every value change, so assigning `this.dragging = true/false`
     // internally (on pointerdown/pointerup) does genuinely fire this event
-    // with a boolean `.value` payload — the standard three.js integration
+    // with a real boolean `.value` payload — the standard three.js integration
     // pattern documented for TransformControls still applies unchanged here.
     this.transformControls.addEventListener("dragging-changed", (event) => {
       const dragging = event.value as boolean;
       // Standard three.js integration: suspend orbit while the gizmo is
       // being dragged so the two controls don't fight over the same drag.
-      this.controls.enabled = !dragging;
+      // With split view there are N controls — suspend ALL of them (a gizmo
+      // drag is focused-pane interaction; any other pane's orbit would fight
+      // over the same pointer). Restored per-pane by the next gate event.
+      for (const pane of this.panes) pane.controls.enabled = !dragging;
       this.onGizmoDraggingChanged?.(dragging);
     });
     this.transformControls.addEventListener("objectChange", () => this.onGizmoChange?.());
     this.scene.add(this.gizmoProxy);
+    this.syncTransformControlsToFocus();
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.0));
     const dir = new THREE.DirectionalLight(0xffffff, 1.5);
@@ -239,6 +262,11 @@ export class Viewer {
     this.axes = new THREE.AxesHelper(1);
     this.scene.add(this.axes);
 
+    // Capture phase, registered BEFORE the cube's own capture listener so the
+    // pane gate (focus + per-pane OrbitControls enable) has run before either
+    // the cube hit-test or OrbitControls' bubble handlers see the event.
+    this.renderer.domElement.addEventListener("pointerdown", this.onGatePointerDown, true);
+    this.renderer.domElement.addEventListener("wheel", this.onGateWheel, { capture: true, passive: true });
     // Capture-phase so a face click is handled before OrbitControls starts a drag.
     this.renderer.domElement.addEventListener("pointerdown", this.onGizmoPointerDown, true);
     // Entity picking: select on a click (down+up without a drag) so orbit still works.
@@ -246,6 +274,243 @@ export class Viewer {
     this.renderer.domElement.addEventListener("pointerup", this.onSelectPointerUp);
     window.addEventListener("resize", this.onResize);
     this.animate();
+  }
+
+  // ── Split-view pane management (roadmap "Split view", Phase 1) ──────────
+
+  /** The focused pane — the target of every no-argument camera API below. */
+  private get pane(): PaneState {
+    return this.panes[this.focusedPane];
+  }
+  /** The focused pane's current camera (persp or ortho, per its own toggle
+   * state) — the same role the old single `activeCamera` field played. */
+  private get activeCamera(): ViewerCamera {
+    return this.pane.active;
+  }
+  /** The focused pane's OrbitControls. Note the per-event pane gate
+   * ({@link onGatePointerDown}) is what makes N of these coexist: only the
+   * hovered pane's instance is enabled when a drag/wheel starts. */
+  private get controls(): OrbitControls {
+    return this.pane.controls;
+  }
+
+  /** Builds a fresh pane sized for `rect` — its own camera pair (positioned
+   * at the same (5,5,5) seed the original single camera used) and its own
+   * OrbitControls. Aspect/frustum come from the rect, not the container. */
+  private makePane(rect: PaneRect): PaneState {
+    const aspect = rect.width / rect.height;
+    const persp = new THREE.PerspectiveCamera(45, aspect, 0.01, 1e6);
+    persp.position.set(5, 5, 5);
+    const orthoHalfHeight = 5;
+    const ortho = new THREE.OrthographicCamera(
+      -orthoHalfHeight * aspect,
+      orthoHalfHeight * aspect,
+      orthoHalfHeight,
+      -orthoHalfHeight,
+      0.01,
+      1e6
+    );
+    ortho.position.set(5, 5, 5);
+    const controls = new OrbitControls(persp, this.renderer.domElement);
+    controls.enableDamping = true;
+    // Panes created after `onViewChanged` was first called must subscribe the
+    // already-registered callbacks too, or their camera movements would never
+    // autosave — see `onViewChanged`'s doc comment.
+    for (const cb of this.viewChangeCallbacks) controls.addEventListener("change", cb);
+    const pane: PaneState = { persp, ortho, active: persp, controls, orthoHalfHeight };
+    this.applySpeedCompensation(pane, rect);
+    return pane;
+  }
+
+  /**
+   * Recomputes one pane's projection frusta from its rect's aspect ratio —
+   * the per-pane generalization of what `onResize` did for the single pair.
+   * Ortho `left/right` derive from the pane's own `orthoHalfHeight × aspect`,
+   * so each pane's frustum is independent (a tall pane and a wide pane show
+   * the same vertical extent at the same zoom, as a quad view should).
+   */
+  private applyPaneAspect(index: number): void {
+    const pane = this.panes[index];
+    const rect = this.paneRects[index];
+    const aspect = rect.width / rect.height;
+    pane.persp.aspect = aspect;
+    pane.persp.updateProjectionMatrix();
+    pane.ortho.left = -pane.orthoHalfHeight * aspect;
+    pane.ortho.right = pane.orthoHalfHeight * aspect;
+    pane.ortho.top = pane.orthoHalfHeight;
+    pane.ortho.bottom = -pane.orthoHalfHeight;
+    pane.ortho.updateProjectionMatrix();
+  }
+
+  /**
+   * Compensates OrbitControls' full-canvas sensitivity denominator for a
+   * sub-viewport pane. OrbitControls divides drag deltas by the ELEMENT's
+   * `clientHeight`/`clientWidth` (verified against the installed
+   * `OrbitControls.js` — it has no viewport support, unlike TransformControls),
+   * so a quadrant's drag would rotate/pan ~2× slower than the visual arc
+   * suggests. `rotateSpeed`/`panSpeed` multiply the same terms, so setting
+   * both to `canvasHeight / paneHeight` cancels the denominator exactly.
+   * Exact for the uniform layouts Phase 1 ships (`1×1` → 1, `2×2` → 2) and for
+   * rotation + perspective pan in the 1×2 variants (both divide by
+   * `clientHeight`, which equals the pane height in `1×2` and needs
+   * `canvasHeight/paneHeight` in `2×1`). Stops being exact for **orthographic
+   * pan** in non-square pane layouts: ortho's horizontal pan divides by
+   * `clientWidth` while the factor here only corrects for height. Concretely
+   * `1×2` (half-width, full-height) leaves ortho horizontal pan ~2× slow;
+   * `2×1` (full-width, half-height) leaves it ~2× fast. One `panSpeed` scalar
+   * cannot express per-axis factors, so this height-based factor is kept as the
+   * best single compromise — rotation (the primary interaction) and perspective
+   * pan stay exact.
+   */
+  private applySpeedCompensation(pane: PaneState, rect: PaneRect): void {
+    const canvasHeight = this.renderer.domElement.clientHeight || rect.height;
+    const factor = rect.height >= canvasHeight ? 1 : canvasHeight / rect.height;
+    pane.controls.rotateSpeed = factor;
+    pane.controls.panSpeed = factor;
+  }
+
+  /** Points `TransformControls` at the focused pane: its `.camera` is a
+   * reassignable accessor (verified against the installed three.js source),
+   * and its `viewport` property — a `Vector4` in CSS pixels, bottom-left
+   * origin — is natively honored by its internal `getPointer()` NDC math
+   * (verified against the installed source), which is what makes gizmo
+   * interaction correct inside a scissored sub-viewport with zero hacks. */
+  private syncTransformControlsToFocus(): void {
+    this.transformControls.camera = this.pane.active;
+    const vp = glViewportForPane(this.paneRects[this.focusedPane], this.renderer.domElement.clientHeight);
+    this.transformControls.viewport = new THREE.Vector4(vp.x, vp.y, vp.width, vp.height);
+  }
+
+  /** Moves focus to `index` — retargets the transform gizmo and notifies the
+   * wiring layer (which re-syncs UI that reflects focused-pane state, e.g.
+   * the Persp/Ortho button label). No-op when already focused. */
+  setFocusedPane(index: number): void {
+    if (index === this.focusedPane || index < 0 || index >= this.panes.length) return;
+    this.focusedPane = index;
+    this.syncTransformControlsToFocus();
+    this.onFocusChangedCallback?.(index);
+  }
+
+  private onFocusChangedCallback: ((index: number) => void) | null = null;
+  /** Registers a callback fired when the focused pane changes (a click in a
+   * different pane). `main.ts` uses it to keep the Ortho button's label
+   * truthful — projection is per-pane, so a new focus may need the other
+   * label even though the user clicked no projection control. */
+  onFocusChanged(callback: (index: number) => void): void {
+    this.onFocusChangedCallback = callback;
+  }
+
+  /** The active layout id. */
+  getPaneLayout(): PaneLayoutId {
+    return this.layout;
+  }
+
+  /**
+   * Switches between layouts (Phase 1: `"1x1"` ⇄ `"2x2"`; Phase 2 adds
+   * `"1x2"` (two side-by-side columns) and `"2x1"` (two stacked rows)). The
+   * FOCUSED pane's `PaneState` survives unchanged in both directions —
+   * collapsing keeps exactly what the user was looking at; expanding seeds
+   * every new pane with a copy of the focused view (all panes start
+   * identical, then orbit independently).
+   */
+  setPaneLayout(layout: PaneLayoutId): void {
+    if (layout === this.layout) return;
+    const el = this.renderer.domElement;
+    this.layout = layout;
+    this.paneRects = computePaneRects(layout, el.clientWidth, el.clientHeight);
+    const keep = this.panes[this.focusedPane];
+    for (const pane of this.panes) if (pane !== keep) pane.controls.dispose();
+    this.panes = [keep];
+    this.focusedPane = 0;
+    for (let i = 1; i < paneCount(layout); i++) {
+      const pane = this.makePane(this.paneRects[i]);
+      this.inheritCameraState(pane, keep);
+      this.panes.push(pane);
+    }
+    for (let i = 0; i < this.panes.length; i++) this.applyPaneAspect(i);
+    this.syncTransformControlsToFocus();
+  }
+
+  /** Copies `src`'s full camera state (both projections, up vectors, near/far,
+   * ortho zoom/frustum height, orbit target) into `dst`, then orients dst's
+   * controls. Used when a layout change creates panes — every new pane starts
+   * as an exact copy of the focused view. */
+  private inheritCameraState(dst: PaneState, src: PaneState): void {
+    for (const [d, s] of [
+      [dst.persp, src.persp],
+      [dst.ortho, src.ortho],
+    ] as const) {
+      d.position.copy(s.position);
+      d.up.copy(s.up);
+      d.near = s.near;
+      d.far = s.far;
+    }
+    dst.orthoHalfHeight = src.orthoHalfHeight;
+    dst.ortho.zoom = src.ortho.zoom;
+    dst.active = src.active === src.ortho ? dst.ortho : dst.persp;
+    dst.controls.target.copy(src.controls.target);
+    dst.controls.update();
+  }
+
+  /** Per-pane camera states — one entry per pane of the current layout, row-major. */
+  getPaneViewStates(): PaneViewState[] {
+    return this.panes.map((pane) => ({
+      viewDirection: cam.viewDirection(pane.active, pane.controls.target).toArray() as [number, number, number],
+      cameraUp: pane.active.up.clone().toArray() as [number, number, number],
+      orthographic: pane.active instanceof THREE.OrthographicCamera,
+    }));
+  }
+
+  /**
+   * Applies `state`'s camera direction/up/ortho to pane `index` — the per-pane
+   * primitive `main.ts`'s split-view restore (`applyViewState`) uses. On a
+   * missing model this still records the desired direction/up/ortho (via
+   * `setPaneOrthographic` + up copy), and `framePane` no-ops on the empty box;
+   * the pane's stored state is then correct once a model later loads and
+   * `fitAllPanes`/`framePane` is called with the same direction. Both camera
+   * objects' `up` vectors are written so a later `setOrthographic` toggle
+   * doesn't reveal a stale up on the inactive camera (the trap
+   * `setOrthographic`'s own doc records).
+   */
+  applyPaneCameraState(index: number, state: PaneViewState): void {
+    if (index < 0 || index >= this.panes.length) return;
+    const pane = this.panes[index];
+    const up = new THREE.Vector3(...state.cameraUp);
+    // Keep both cameras' up vectors in sync — the inactive one will be swapped to later.
+    pane.persp.up.copy(up);
+    pane.ortho.up.copy(up);
+    if (state.orthographic !== (pane.active instanceof THREE.OrthographicCamera)) {
+      this.setPaneOrthographic(index, state.orthographic);
+    }
+    // `framePane` derives distance/frustum from the model's bbox, so the
+    // persisted direction alone is sufficient — position/target are recomputed.
+    if (this.model) {
+      this.framePane(index, new THREE.Vector3(...state.viewDirection));
+    } else {
+      // No model yet: ensure the pane's active camera's up matches, even though
+      // framing will happen later once `setModel` provides a box.
+      pane.active.up.copy(up);
+    }
+    // Keep the gizmo pointed at the focused pane's camera; cheap to call even
+    // when the changed pane isn't focused.
+    if (index === this.focusedPane) this.syncTransformControlsToFocus();
+  }
+
+  /** Per-pane projection toggle — the indexed form of {@link setOrthographic}. */
+  private setPaneOrthographic(index: number, enabled: boolean): void {
+    const pane = this.panes[index];
+    const next: ViewerCamera = enabled ? pane.ortho : pane.persp;
+    if (next === pane.active) return;
+    const prev = pane.active;
+    next.position.copy(prev.position);
+    next.near = prev.near;
+    next.far = prev.far;
+    next.up.copy(prev.up);
+    const dir = cam.viewDirection(prev, pane.controls.target);
+    pane.active = next;
+    pane.controls.object = next;
+    if (index === this.focusedPane) this.syncTransformControlsToFocus();
+    if (this.model) this.framePane(index, dir);
   }
 
   /** The currently displayed model, or `null` if none has been loaded yet. */
@@ -293,7 +558,7 @@ export class Viewer {
     this.applyClippingPlane(); // fresh model materials carry no clipping state yet
     this.rebuildClipCap(); // fresh geometry — a no-op if clipping is currently off
     if (this.hasModelEverLoaded) {
-      this.fitView(); // an edit-driven rebuild: preserve the current view direction
+      this.fitAllPanes(); // an edit-driven rebuild: preserve every pane's own view direction
     } else {
       this.hasModelEverLoaded = true;
       // Genuine first load: the caller (`main.ts`'s `applyInitialViewIfNeeded`)
@@ -485,8 +750,16 @@ export class Viewer {
     this.setModelFacesVisible(!meshOverlayShown && !colorFieldShown);
   }
 
-  /** Frames the current model (or the scene) within the view along `direction`. */
-  private frame(direction: THREE.Vector3): void {
+  /**
+   * Frames the current model (or the scene) within pane `index` along
+   * `direction`. The per-pane generalization of the old single-`frame()`: the
+   * camera pair, ortho half-height, frustum aspect (from the PANE's rect, not
+   * the container's) and orbit target it touches are all pane-scoped. The
+   * model-derived helpers (grid/axes scale, pick threshold, point-sprite
+   * scale) stay global — they're functions of the model, identical for every
+   * pane, so re-setting them per pane is idempotent, not a conflict.
+   */
+  private framePane(index: number, direction: THREE.Vector3): void {
     const target = this.model ?? this.scene;
     const box = new THREE.Box3().setFromObject(target);
     if (box.isEmpty()) return;
@@ -509,39 +782,54 @@ export class Viewer {
       }
     });
 
+    const pane = this.panes[index];
+    const camera = pane.active;
     const dir = direction.clone().normalize();
-    if (this.activeCamera instanceof THREE.OrthographicCamera) {
+    if (camera instanceof THREE.OrthographicCamera) {
       // Parallel projection: apparent size comes from the frustum/zoom, not
       // distance — pick a distance just far enough to keep near/far sane, and
       // size the frustum from the model radius with the same 1.5x margin
-      // frame() uses for perspective's fov-based distance.
+      // perspective's fov-based distance uses.
       const distance = radius * 3;
-      this.orthoHalfHeight = radius * 1.5;
-      const aspect = this.container.clientWidth / this.container.clientHeight;
-      this.activeCamera.left = -this.orthoHalfHeight * aspect;
-      this.activeCamera.right = this.orthoHalfHeight * aspect;
-      this.activeCamera.top = this.orthoHalfHeight;
-      this.activeCamera.bottom = -this.orthoHalfHeight;
-      this.activeCamera.zoom = 1;
-      this.activeCamera.position.copy(center).addScaledVector(dir, distance);
-      this.activeCamera.near = distance / 100;
-      this.activeCamera.far = distance * 100;
+      pane.orthoHalfHeight = radius * 1.5;
+      const aspect = this.paneRects[index].width / this.paneRects[index].height;
+      camera.left = -pane.orthoHalfHeight * aspect;
+      camera.right = pane.orthoHalfHeight * aspect;
+      camera.top = pane.orthoHalfHeight;
+      camera.bottom = -pane.orthoHalfHeight;
+      camera.zoom = 1;
+      camera.position.copy(center).addScaledVector(dir, distance);
+      camera.near = distance / 100;
+      camera.far = distance * 100;
     } else {
-      const fov = (this.activeCamera.fov * Math.PI) / 180;
+      const fov = (camera.fov * Math.PI) / 180;
       const distance = (radius / Math.sin(fov / 2)) * 1.5;
-      this.activeCamera.position.copy(center).addScaledVector(dir, distance);
-      this.activeCamera.near = distance / 100;
-      this.activeCamera.far = distance * 100;
+      camera.position.copy(center).addScaledVector(dir, distance);
+      camera.near = distance / 100;
+      camera.far = distance * 100;
     }
-    this.activeCamera.updateProjectionMatrix();
-    this.controls.target.copy(center);
-    this.controls.update();
+    camera.updateProjectionMatrix();
+    pane.controls.target.copy(center);
+    pane.controls.update();
   }
 
-  /** Frames the model keeping the current viewing orientation. */
+  /** Frames the model keeping the focused pane's current viewing orientation. */
   fitView(): void {
-    const dir = this.getViewDirection();
-    this.frame(dir);
+    this.framePane(this.focusedPane, this.getViewDirection());
+  }
+
+  /**
+   * Re-frames EVERY pane along its own current orientation — the split-view
+   * generalization of the edit-driven-rebuild `fitView()` call in
+   * `setModel()`: a model that grew or shrank must stay framed in all panes,
+   * each keeping its own view direction (a quad view where three panes clip
+   * the new bounds would be broken).
+   */
+  private fitAllPanes(): void {
+    for (let i = 0; i < this.panes.length; i++) {
+      const pane = this.panes[i];
+      this.framePane(i, cam.viewDirection(pane.active, pane.controls.target));
+    }
   }
 
   /**
@@ -552,10 +840,10 @@ export class Viewer {
    * direction isn't the camera's current one.
    */
   frameFromDirection(direction: THREE.Vector3): void {
-    this.frame(direction);
+    this.framePane(this.focusedPane, direction);
   }
 
-  /** Resets to the default isometric orientation and frames the model. */
+  /** Resets the FOCUSED pane to the default isometric orientation and frames the model. */
   resetView(): void {
     this.frameFromDirection(new THREE.Vector3(1, 0.8, 1));
   }
@@ -613,18 +901,25 @@ export class Viewer {
   }
 
   /**
-   * Registers a callback for every camera movement — orbit/pan/dolly (drag or
-   * the stepped toolbar buttons), `fitView`/`resetView`/`frameFromDirection`,
-   * `setViewDirection`/`setCameraUp`, and `setOrthographic`'s own re-frame —
-   * since every one of those ends in `this.controls.update()`, which
-   * `OrbitControls` only actually dispatches `"change"` for when the camera
-   * genuinely moved. `main.ts`'s view-state autosave (roadmap "View-state
-   * persistence", closed) is the one caller; it gates on its own
-   * `hasAppliedInitialView` flag so a document's initial framing (restored or
-   * default-isometric) doesn't itself trigger a save.
+   * Registers a callback for every camera movement in ANY pane — orbit/pan/
+   * dolly (drag or the stepped toolbar buttons), `fitView`/`resetView`/
+   * `frameFromDirection`, `setViewDirection`/`setCameraUp`, and
+   * `setOrthographic`'s own re-frame — since every one of those ends in that
+   * pane's `controls.update()`, which `OrbitControls` only actually
+   * dispatches `"change"` for when the camera genuinely moved. The callback
+   * is remembered in {@link viewChangeCallbacks} so panes created by a later
+   * `setPaneLayout` are subscribed too — `main.ts`'s view-state autosave
+   * (roadmap "View-state persistence", closed) registers exactly once at
+   * startup, and without this a drag in a pane created after that point
+   * would silently never autosave. It reads the FOCUSED pane in response,
+   * which makes a non-focused pane's movement a harmless no-change save at
+   * worst (the sidecar's content-compare watcher no-ops on identical
+   * content).
    */
+  private viewChangeCallbacks: (() => void)[] = [];
   onViewChanged(callback: () => void): void {
-    this.controls.addEventListener("change", callback);
+    this.viewChangeCallbacks.push(callback);
+    for (const pane of this.panes) pane.controls.addEventListener("change", callback);
   }
 
   /**
@@ -641,21 +936,43 @@ export class Viewer {
    * (orthographic) correctly — `frame()` already contains that per-type
    * logic, so this reuses it rather than duplicating it.
    */
+  /**
+   * Toggles the FOCUSED pane between perspective and orthographic projection
+   * (per-pane, like direction/up/zoom — the roadmap's own Phase-1 scoping).
+   * NOT a reconstruction — each pane's `ortho` camera is a second object kept
+   * alive the whole session; this only swaps which one is that pane's
+   * `active` (and which one its OrbitControls targets, via `controls.object`
+   * — three.js supports retargeting at runtime, and `OrbitControls`' own
+   * dolly/zoom logic already branches on `camera.isPerspectiveCamera`/
+   * `isOrthographicCamera`, so mouse-wheel zoom keeps working correctly
+   * across the swap with no extra code). Copies position/near/far AND `up`
+   * from the outgoing camera so neither the view nor the roll jumps (the up
+   * copy matters since `setCameraUp` writes only the then-active camera —
+   * without it, a restored orthographic TOP view would swap to a camera
+   * still carrying the default up), then calls `framePane()` along the same
+   * view direction to size the newly-active camera's fov-based distance
+   * (perspective) or frustum/zoom (orthographic) correctly — `framePane()`
+   * already contains that per-type logic, so this reuses it rather than
+   * duplicating it.
+   */
   setOrthographic(enabled: boolean): void {
-    const next: ViewerCamera = enabled ? this.orthoCamera : this.camera;
-    if (next === this.activeCamera) return;
-    const prev = this.activeCamera;
+    const pane = this.pane;
+    const next: ViewerCamera = enabled ? pane.ortho : pane.persp;
+    if (next === pane.active) return;
+    const prev = pane.active;
     next.position.copy(prev.position);
     next.near = prev.near;
     next.far = prev.far;
-    const dir = cam.viewDirection(prev, this.controls.target);
-    this.activeCamera = next;
-    this.controls.object = next;
-    // `TransformControls.camera` is a reassignable accessor (verified against
-    // the live three.js source) — without this, the gizmo would keep
-    // raycasting against the now-stale camera after a perspective/ortho toggle.
-    this.transformControls.camera = next;
-    this.frame(dir);
+    next.up.copy(prev.up);
+    const dir = cam.viewDirection(prev, pane.controls.target);
+    pane.active = next;
+    pane.controls.object = next;
+    // Retarget the transform gizmo (`.camera` is a reassignable accessor, and
+    // `viewport` stays the focused pane's — both verified against the live
+    // three.js source) — without this, the gizmo would keep raycasting
+    // against the now-stale camera after the toggle.
+    this.syncTransformControlsToFocus();
+    this.framePane(this.focusedPane, dir);
   }
 
   /**
@@ -1134,9 +1451,13 @@ export class Viewer {
     return found;
   }
 
-  /** Forces an immediate render of the current frame (used right before a screenshot capture). */
+  /** Forces an immediate render of the current frame (used right before a
+   * screenshot capture). Renders EVERY pane — in split mode a screenshot is
+   * the whole grid (the roadmap's stated reading: the canvas is one surface);
+   * in the default 1×1 layout that is exactly the single full-canvas view
+   * `renderService.ts`'s headless harness captures. */
   render(): void {
-    this.renderer.render(this.scene, this.activeCamera);
+    this.renderFrame();
   }
 
   /** Registers the Markup overlay's canvas so screenshots composite it in —
@@ -1327,12 +1648,14 @@ export class Viewer {
 
   dispose(): void {
     window.removeEventListener("resize", this.onResize);
+    this.renderer.domElement.removeEventListener("pointerdown", this.onGatePointerDown, true);
+    this.renderer.domElement.removeEventListener("wheel", this.onGateWheel, { capture: true });
     this.renderer.domElement.removeEventListener("pointerdown", this.onGizmoPointerDown, true);
     this.renderer.domElement.removeEventListener("pointerdown", this.onSelectPointerDown);
     this.renderer.domElement.removeEventListener("pointerup", this.onSelectPointerUp);
     this.gizmo.dispose();
     this.clearModel();
-    this.controls.dispose();
+    for (const pane of this.panes) pane.controls.dispose();
     this.transformControls.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -1341,48 +1664,121 @@ export class Viewer {
   private onResize = (): void => {
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
-    const aspect = width / height;
-    this.camera.aspect = aspect;
-    this.camera.updateProjectionMatrix();
-    this.orthoCamera.left = -this.orthoHalfHeight * aspect;
-    this.orthoCamera.right = this.orthoHalfHeight * aspect;
-    this.orthoCamera.top = this.orthoHalfHeight;
-    this.orthoCamera.bottom = -this.orthoHalfHeight;
-    this.orthoCamera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    // Per-pane aspects from each pane's own rect (a quadrant's aspect differs
+    // from the container's) — the split-view generalization of the old
+    // single-pair resize. Also refreshes the transform gizmo's viewport,
+    // whose rect moved with the resize.
+    this.paneRects = computePaneRects(this.layout, width, height);
+    for (let i = 0; i < this.panes.length; i++) {
+      this.applyPaneAspect(i);
+      this.applySpeedCompensation(this.panes[i], this.paneRects[i]);
+    }
+    this.syncTransformControlsToFocus();
   };
+
+  /**
+   * The split-view pane gate — a capture-phase `pointerdown`/`wheel` listener
+   * that runs BEFORE OrbitControls' bubble-phase handlers (verified against
+   * the installed `OrbitControls.js`: its `_onPointerDown` first line is
+   * `if (this.enabled === false) return;`, and its listeners are registered
+   * bubble-phase on the canvas). It computes which pane the pointer is over
+   * and enables ONLY that pane's controls before any of them can react, so
+   * N coexisting instances never all drive the same drag; a `pointerdown`
+   * additionally moves focus there. Registered before the cube's own capture
+   * listener so focus is current by the time the cube hit-test runs.
+   */
+  private onGatePointerDown = (event: PointerEvent): void => {
+    this.gateToPane(event.clientX, event.clientY, true);
+  };
+
+  private onGateWheel = (event: WheelEvent): void => {
+    this.gateToPane(event.clientX, event.clientY, false);
+  };
+
+  private gateToPane(clientX: number, clientY: number, updateFocus: boolean): void {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const index = paneAtPoint(this.paneRects, clientX - rect.left, clientY - rect.top);
+    if (index < 0) return;
+    if (updateFocus) this.setFocusedPane(index);
+    for (let i = 0; i < this.panes.length; i++) {
+      this.panes[i].controls.enabled = i === index;
+    }
+  }
 
   private animate = (): void => {
     requestAnimationFrame(this.animate);
-    this.controls.update();
-    if (this.measurementLabel) {
-      // Constant on-screen size regardless of zoom — recomputed every frame
-      // (unlike the point-sprite scale in `frame()`, which only updates on
-      // fit/reset), since a label specifically needs to stay legible while
-      // continuously zooming. Under orthographic projection apparent size is
-      // NOT distance-dependent (unlike perspective), so the scale instead
-      // derives from the current frustum height / zoom.
-      const s = this.activeCamera instanceof THREE.OrthographicCamera
-        ? ((this.activeCamera.top - this.activeCamera.bottom) / this.activeCamera.zoom) * 0.06
-        : this.activeCamera.position.distanceTo(this.measurementLabel.position) * 0.06;
-      this.measurementLabel.scale.set(s, s * 0.25, 1); // 4:1 label aspect ratio
-    }
-    this.renderer.render(this.scene, this.activeCamera);
-    this.renderGizmo();
+    this.renderFrame();
   };
 
-  /** Draws the orientation gizmo into the top-left corner via a scissor viewport. */
+  /**
+   * The one shared frame routine — used by both the animation loop and the
+   * forced `render()` before captures. Draws every pane of the current
+   * layout into its scissored region of the single canvas (the invariant
+   * `orientationCube.ts` established: exactly one WebGL context — panes are
+   * `setViewport`/`setScissor` regions, not contexts), then overlays the
+   * orientation cube into the focused pane's corner. With the scissor test
+   * enabled, each pane's `render()` clears color+depth+STENCIL within its
+   * own region before drawing — which is also what keeps the clip-cap's
+   * stencil marking isolated per pane (a pane's cap evaluation can never see
+   * another pane's stencil values, and the gizmo overlay's depth-only clear
+   * below never disturbs stencil).
+   */
+  private renderFrame(): void {
+    const el = this.renderer.domElement;
+    const cssW = el.clientWidth;
+    const cssH = el.clientHeight;
+    this.renderer.setScissorTest(true);
+    for (let i = 0; i < this.panes.length; i++) {
+      const pane = this.panes[i];
+      pane.controls.update();
+      // The measurement label is ONE shared sprite but its on-screen size is
+      // camera-dependent — rescale it for whichever pane is about to render
+      // (each pass recomputes it; the last pane's value simply lingers until
+      // the next frame, invisible between passes).
+      if (this.measurementLabel) this.rescaleMeasurementLabel(pane.active);
+      const rect = this.paneRects[i];
+      const vp = glViewportForPane(rect, cssH);
+      this.renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
+      this.renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
+      this.renderer.render(this.scene, pane.active);
+    }
+    this.renderGizmo();
+  }
+
+  /** Constant on-screen label size regardless of zoom — recomputed per pane
+   * per frame (unlike the point-sprite scale in `framePane()`, which only
+   * updates on fit/reset), since a label specifically needs to stay legible
+   * while continuously zooming. Under orthographic projection apparent size
+   * is NOT distance-dependent (unlike perspective), so the scale instead
+   * derives from the current frustum height / zoom. */
+  private rescaleMeasurementLabel(camera: ViewerCamera): void {
+    if (!this.measurementLabel) return;
+    const s = camera instanceof THREE.OrthographicCamera
+      ? ((camera.top - camera.bottom) / camera.zoom) * 0.06
+      : camera.position.distanceTo(this.measurementLabel.position) * 0.06;
+    this.measurementLabel.scale.set(s, s * 0.25, 1); // 4:1 label aspect ratio
+  }
+
+  /** Draws the orientation gizmo into the FOCUSED pane's top-left corner via
+   * a scissor viewport. One cube total (not one per pane): its hit-test
+   * (`onGizmoPointerDown`) is scoped to the same focused-pane square, so
+   * what you see and what you can click always agree. */
   private renderGizmo(): void {
     const el = this.renderer.domElement;
     const cssW = el.clientWidth;
     const cssH = el.clientHeight;
     const s = this.gizmoSize;
     const m = this.gizmoMargin;
+    const paneRect = this.paneRects[this.focusedPane];
 
     this.gizmo.syncCamera(this.getViewDirection(), this.getCameraUp());
 
-    const x = m;
-    const y = cssH - m - s; // GL viewport origin is bottom-left → place at top-left.
+    // The cube square's top-left corner, offset inside the focused pane.
+    const x = paneRect.x + m;
+    // GL viewport origin is bottom-left → the pane's top edge is at
+    // cssH - paneRect.y; step down one margin + size from there.
+    const y = cssH - paneRect.y - m - s;
     this.renderer.setViewport(x, y, s, s);
     this.renderer.setScissor(x, y, s, s);
     this.renderer.setScissorTest(true);
@@ -1394,6 +1790,7 @@ export class Viewer {
     this.renderer.autoClear = prevAutoClear;
     this.renderer.setScissorTest(false);
     this.renderer.setViewport(0, 0, cssW, cssH);
+    this.renderer.setScissor(0, 0, cssW, cssH);
   }
 
   private onSelectPointerDown = (event: PointerEvent): void => {
@@ -1410,9 +1807,15 @@ export class Viewer {
     if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
 
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = 1 - ((event.clientY - rect.top) / rect.height) * 2;
-    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.activeCamera);
+    const cssX = event.clientX - rect.left;
+    const cssY = event.clientY - rect.top;
+    // Pick in the pane UNDER THE POINTER (pane-relative NDC, that pane's own
+    // camera) — a click both focuses (the capture gate did that already) and
+    // picks in the same pane, so the two always agree.
+    const index = paneAtPoint(this.paneRects, cssX, cssY);
+    if (index < 0) return;
+    const ndc = ndcInPane(this.paneRects[index], cssX, cssY);
+    this.raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), this.panes[index].active);
     this.raycaster.params.Line.threshold = this.pickThreshold;
 
     // Measurement takes priority for this click over the normal Parts/Edits
@@ -1491,12 +1894,17 @@ export class Viewer {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const cssX = event.clientX - rect.left;
     const cssY = event.clientY - rect.top;
+    // The cube lives in the FOCUSED pane's top-left corner (the same square
+    // `renderGizmo` draws it in) — clicks elsewhere never reach the pick.
+    const paneRect = this.paneRects[this.focusedPane];
     const s = this.gizmoSize;
     const m = this.gizmoMargin;
-    if (cssX < m || cssX > m + s || cssY < m || cssY > m + s) return;
+    const gx = paneRect.x + m;
+    const gy = paneRect.y + m;
+    if (cssX < gx || cssX > gx + s || cssY < gy || cssY > gy + s) return;
 
-    const ndcX = ((cssX - m) / s) * 2 - 1;
-    const ndcY = 1 - ((cssY - m) / s) * 2;
+    const ndcX = ((cssX - gx) / s) * 2 - 1;
+    const ndcY = 1 - ((cssY - gy) / s) * 2;
     this.gizmo.syncCamera(this.getViewDirection(), this.getCameraUp());
     const dir = this.gizmo.pick(ndcX, ndcY);
     if (dir) {

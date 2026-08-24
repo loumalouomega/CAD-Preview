@@ -123,6 +123,11 @@ export function viewerBodyHtml(): string {
     </div>
     <div id="app">
       <canvas id="markup-canvas"></canvas>
+      <!-- Split-view pane separators — pure visual dividers over the single
+           WebGL canvas (pointer-events:none), shown only while a 2×2 layout
+           is active. Below the markup canvas so annotations draw over them. -->
+      <div id="pane-divider-v" class="pane-divider hidden"></div>
+      <div id="pane-divider-h" class="pane-divider hidden"></div>
     </div>
   </div>
   <div id="toolbar">
@@ -138,6 +143,13 @@ export function viewerBodyHtml(): string {
         <div class="tb-sep"></div>
         <button id="snap-grid" role="menuitemcheckbox" aria-checked="false" title="Snap Transform Gizmo drags to a grid spacing">${icon("grid")} Snap to grid</button>
         <button id="snap-points" role="menuitemcheckbox" aria-checked="false" title="Snap Transform Gizmo drags to nearby existing points">${icon("point")} Snap to points</button>
+        <div class="tb-sep"></div>
+        <div id="layout-group" class="tb-row" title="Pane layout — one view or a split of independent cameras over the same scene">
+          <button class="layout-btn active" data-layout="1x1" title="Single view — one camera over the whole canvas">${icon("layout1x1")} 1×1</button>
+          <button class="layout-btn" data-layout="1x2" title="Two side-by-side columns — two independent cameras, vertical split">${icon("layout1x2")} 1×2</button>
+          <button class="layout-btn" data-layout="2x1" title="Two stacked rows — two independent cameras, horizontal split">${icon("layout2x1")} 2×1</button>
+          <button class="layout-btn" data-layout="2x2" title="Quad — four independent cameras on a 2×2 grid">${icon("layout2x2")} 2×2</button>
+        </div>
         <div class="tb-sep"></div>
         <button id="screenshot" role="menuitem" title="Save the current view as a PNG">${icon("screenshot")} Screenshot…</button>
       </div>

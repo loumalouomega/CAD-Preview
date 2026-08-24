@@ -240,7 +240,7 @@ A `sizeMax` of `1e22` is Gmsh's "unbounded" sentinel: it means "no explicit targ
 
 ## View State Sidecar (`<model>.view.json`)
 
-The persisted **camera orientation, display mode, ortho/perspective toggle, and clip plane** (roadmap "View-state persistence", closed) are stored in a **fourth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.view.json`. Like the other three, this never modifies the CAD file. It is read on open (`readViewState()`) and autosaved, debounced (~500 ms, its own timer), on every user-facing view change — camera orbit/pan/zoom/dolly, Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, or the clip axis/offset/toggle — both in `src/viewStateStore.ts`; parse/serialize live in the vscode-free `src/viewStateSidecar.ts` so they are unit-tested.
+The persisted **camera orientation, display mode, ortho/perspective toggle, and clip plane** (roadmap "View-state persistence", closed) are stored in a **fourth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.view.json`. Like the other three, this never modifies the CAD file. It is read on open (`readViewState()`) and autosaved, debounced (~500 ms, its own timer), on every user-facing view change — camera orbit/pan/zoom/dolly, Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, the clip axis/offset/toggle, **or the split-view layout picker / any per-pane camera move** (Phase 2) — both in `src/viewStateStore.ts`; parse/serialize live in the vscode-free `src/viewStateSidecar.ts` so they are unit-tested.
 
 ```json
 {
@@ -252,11 +252,18 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
     "orthographic": false,
     "displayMode": "shaded",
     "clip": null
-  }
+  },
+  "layout": "1x2",
+  "panes": [
+    { "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false },
+    { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }
+  ]
 }
 ```
 
-`viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox (`planeForAxis`'s own convention), not a raw plane constant. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`).
+`layout` (`"1x1"|"1x2"|"2x1"|"2x2"`, Phase 2 — absent/`"1x1"` = single pane) and `panes` (one `PaneViewState` per pane of that layout, row-major) are optional siblings of `view` at the file's top level, never inside `view` itself; a `1×1` session writes neither, so existing single-pane sidecars stay byte-stable. `view` stays the focused/single-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — purely additive, no version bump. Only camera state (`viewDirection`/`cameraUp`/`orthographic`) is per-pane; display mode and clip stay global, matching Phase 1's scoping.
+
+`viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox (`planeForAxis`'s own convention), not a raw plane constant. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`, an unknown `layout` → ignored as `"1x1"`, a bad per-pane entry → falls back to `view`'s own direction/up/ortho for that pane, a short/long `panes` array → padded/truncated to `paneCount(layout)`).
 
 **Deliberately excludes explode-preview state** — that's a session-only interaction preview by design (`src/webview/explodePreview.ts`); the *committed* `explode` edit op already persists correctly via `.edits.json`. **Deliberately excluded from the Preprocess Archive** (below) — unlike parts/edits/mesh options, view state is purely a display/session preference with no effect on computed geometry, mesh output, or anything an MCP agent would need; there is also no MCP tool surface for it at all (same "genuinely a display feature, no headless equivalent" scope this codebase already applies to Markup and interactive Measurement).
 

@@ -100,17 +100,28 @@ A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchore
 ```typescript
 type DisplayMode = 'shaded' | 'wireframe' | 'xray' | 'hiddenLines' | 'flat'
 type ClipAxis = 'x' | 'y' | 'z'
+type PaneLayoutId = '1x1' | '1x2' | '2x1' | '2x2'
+
+interface PaneViewState {
+  viewDirection: [number, number, number]   // target → camera, normalized — per pane
+  cameraUp: [number, number, number]        // per pane
+  orthographic: boolean                      // per pane — projection is per-pane like direction
+}
 
 interface ViewState {
-  viewDirection: [number, number, number]   // target → camera, normalized
-  cameraUp: [number, number, number]
-  orthographic: boolean
-  displayMode: DisplayMode
-  clip: { axis: ClipAxis; offsetFrac: number } | null   // null = clipping off; offsetFrac is a fraction of the model's bbox, not a raw plane constant
+  viewDirection: [number, number, number]   // focused/single-pane direction (target → camera, normalized)
+  cameraUp: [number, number, number]        // focused/single-pane up
+  orthographic: boolean                      // focused/single-pane projection
+  displayMode: DisplayMode                   // global — one value for the whole document
+  clip: { axis: ClipAxis; offsetFrac: number } | null   // global — null = clipping off
+  layout?: PaneLayoutId                      // split-view layout; absent/"1x1" = single pane (Phase 2)
+  panes?: PaneViewState[]                    // one per pane of `layout`, row-major; absent = single pane
 }
 ```
 
 Persisted camera orientation, display mode, ortho/perspective, and clip plane (roadmap "View-state persistence", closed) — see [File Formats](./file-formats.md) for the `<model>.view.json` sidecar. Deliberately does **not** include explode-preview state (session-only by design) or raw camera position/target/distance: `Viewer.frame(direction)` auto-derives both from the model's current bounding box, so a normalized direction + up vector is enough and survives edits that change the model's extents.
+
+Phase 2 (roadmap "Split view", Phase 2) adds `layout` + per-pane camera states. `layout` defaults to `"1x1"` when absent (an older sidecar or a session that never entered split view); `panes` holds one `PaneViewState` per pane of that layout, row-major, and is only meaningful when `layout !== "1x1"`. `view` (the focused direction/up/ortho) stays the single-pane/focused-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — see [File Formats](./file-formats.md). Display mode and clip stay global; only camera state (direction/up/ortho) is per-pane.
 
 ### `EditOp`
 
@@ -503,8 +514,10 @@ Sent once, right after `parts`, once the host has read the mesh-options sidecar 
 Sent once during the `ready` handshake, right after `meshingOptions`, once the host has read the view-state sidecar (`<model>.view.json`) — `view` is `null` when no sidecar exists yet for this document (a genuinely new document, or one never manually reoriented). Also re-sent by the external-change watcher on `.view.json` when another process (an MCP agent, a second tab on the same file) writes it. The webview applies it once BOTH this message and the model geometry (`geometry`/mesh load) have arrived — no deterministic order between the two, same non-deterministic-arrival-order discipline as `viewerDefaults`/`meshingOptions` vs. `geometry` — via `main.ts`'s `applyInitialViewIfNeeded()`, which mirrors `syncMeshSizeSeed()`'s "whichever lands last performs the actual application" idiom. `view: null` applies the default hardcoded isometric (`Viewer.resetView()`) instead. Applied only ONCE per document session: every subsequent model reload (an edit re-tessellating a B-rep source, a mesh edit rebuilding the displayed model) preserves the CURRENT camera direction (`Viewer.fitView()`) rather than re-snapping to the persisted state — camera position used to unconditionally reset on every one of those too, a bigger, more-repeated friction than "resets on reopen" alone.
 
 ```json
-{ "type": "viewState", "view": { "viewDirection": [1, 0.8, 1], "cameraUp": [0, 1, 0], "orthographic": false, "displayMode": "shaded", "clip": null } }
+{ "type": "viewState", "view": { "viewDirection": [1, 0.8, 1], "cameraUp": [0, 1, 0], "orthographic": false, "displayMode": "shaded", "clip": null, "layout": "1x2", "panes": [{ "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false }, { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }] } }
 ```
+
+In Phase 2 (roadmap "Split view", Phase 2) `view` carries optional `layout` + per-pane `panes` alongside the existing focused/single-pane fields — the message shape is unchanged, only the payload is wider. `layout` defaults to `"1x1"` when absent (an older sidecar or a session that never entered split view); `panes` is row-major, one `PaneViewState` per pane. `view` (the focused direction/up/ortho) stays the single-pane/focused-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — tolerant-parse. The headless harness (`renderService.ts`, which posts no layout message) and `capture.mjs`'s `populate()` (which posts `{view: null}`) keep getting single-pane.
 
 ### `meshingResult`
 
@@ -699,10 +712,10 @@ Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) *
 
 ### `viewChanged`
 
-Sent whenever the user changes the view — camera orbit/pan/zoom/dolly (drag or the stepped toolbar buttons), Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, or the clip axis/offset/toggle. Carries the full current `ViewState`, gathered fresh at save time (`viewer.getViewDirection()`/`getCameraUp()`/`isOrthographic()`/`getDisplayMode()` plus the clip controls' own closure state). The host debounces these (~500 ms, on its own timer separate from parts/edits/mesh) and writes `<model>.view.json` via `writeViewState()`. **Not** sent merely from opening a document, including the initial default-isometric framing or a persisted-state restoration — `main.ts` gates on its own `hasAppliedInitialView` flag, becoming true only after that one-time initial application completes, mirroring `syncMeshSizeSeed()`'s `load()`-not-`update()` "opening ≠ a user change" convention for mesh options. The CAD file is never written — only the sidecar. See [`ViewState`](#viewstate).
+Sent whenever the user changes the view — camera orbit/pan/zoom/dolly (drag or the stepped toolbar buttons), Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, the clip axis/offset/toggle, **or the split-view layout picker / any per-pane camera move** (Phase 2). Carries the full current `ViewState`, gathered fresh at save time (`viewer.getViewDirection()`/`getCameraUp()`/`isOrthographic()`/`getDisplayMode()` plus the clip controls' closure, **and `getPaneLayout()`/`getPaneViewStates()` when the layout isn't `"1x1"`**). The host debounces these (~500 ms, on its own timer separate from parts/edits/mesh) and writes `<model>.view.json` via `writeViewState()` — Phase 2's `layout`+`panes` ride as top-level siblings of `view` in the file, see [File Formats](./file-formats.md). **Not** sent merely from opening a document, including the initial default-isometric framing or a persisted-state restoration — `main.ts` gates on its own `hasAppliedInitialView` flag, becoming true only after that one-time initial application completes, mirroring `syncMeshSizeSeed()`'s `load()`-not-`update()` "opening ≠ a user change" convention for mesh options. The CAD file is never written — only the sidecar. See [`ViewState`](#viewstate).
 
 ```json
-{ "type": "viewChanged", "view": { "viewDirection": [0, 0, 1], "cameraUp": [0, 1, 0], "orthographic": true, "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": -0.1 } } }
+{ "type": "viewChanged", "view": { "viewDirection": [0, 0, 1], "cameraUp": [0, 1, 0], "orthographic": true, "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": -0.1 }, "layout": "1x2", "panes": [{ "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false }, { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }] } }
 ```
 
 ### `meshingChanged`

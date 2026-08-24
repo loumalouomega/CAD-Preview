@@ -155,7 +155,10 @@ const SHOTS = [
   ...["view", "select", "measure", "markup"].map((name) => ({
     file: `${name}-menu.png`,
     setup: async (page) => { await populate(page); await page.click(`#${name}-menu`); await sleep(150); },
-    target: { clip: { x: 830, y: 30, width: 530, height: 300 } },
+    // View menu grew by one row in Phase 2 (the layout picker) — a too-short
+    // clip silently cuts the last entry off, the same trap that bumped
+    // file-menu.png 250→285. 300 was tight; 340 leaves margin for future rows.
+    target: { clip: { x: 830, y: 30, width: 530, height: 340 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },
