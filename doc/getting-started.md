@@ -322,7 +322,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | **Linear Pattern** | Select volumes (**Vol** mode); set a **Direction**, a **Spacing**, and a **Count** (total instances, including the original); **Apply** — appends `Count − 1` evenly-spaced copies of each selected volume (all formats) |
 | **Circular Pattern** | Select volumes (**Vol** mode); set an **Axis point** + **Axis direction**, an **Angle** step, and a **Count**; **Apply** — appends `Count − 1` copies arrayed around that axis at equal angular spacing (all formats) |
 
-Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all operations (back to the original model). To remove one specific operation without discarding everything applied after it, hover its row in the history list and click the **✕** that appears — unlike Undo, which only pops the most recent operation, this removes any row directly.
+Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all operations (back to the original model). To remove one specific operation without discarding everything applied after it, hover its row in the history list and click the **✕** that appears — unlike Undo, which only pops the most recent operation, this removes any row directly. The history is also a clickable timeline: undone-but-redoable steps appear as dimmed rows with continued numbering, and clicking **any** row — applied or dimmed — rolls the whole stack straight to that point in one step (clicking a dimmed row re-applies through it).
 
 ![The operation-history list — an ordered, individually-removable stack of applied edits.](/screenshots/edit-history.png)
 

@@ -106,6 +106,11 @@ export interface EditsPanelCallbacks {
   onClear: () => void;
   /** Remove a single op from anywhere in the history list (not just the last one). */
   onRemoveOp: (index: number) => void;
+  /** Jump the op stack straight to timeline position `index` in one splice
+   * (op-history scrubbing, roadmap Tier 2 item 1): applied rows roll the
+   * model back past them, pending-redo rows re-apply through them. Wired
+   * straight to `EditsModel.jumpTo`. */
+  onJumpTo: (index: number) => void;
   /** Apply a transform to the current selection (the wiring supplies targets). */
   onApplyTransform: (draft: TransformDraft) => void;
   /** Capture the current selection as boolean operand A; returns its size. */
@@ -314,22 +319,32 @@ export class EditsPanel {
   }
 
   /**
-   * Renders the applied op history. The optional `opOutcomes` (the most recent
-   * replay's per-op results — see `editOps.ts`'s `OpOutcome`) marks an op that
-   * gracefully skipped: its row gets a ⚠ marker (tooltip = diagnostic + hint)
-   * and a dimmed style, so "the model just didn't change" is at least visible
-   * WHERE it happened rather than silent. Rows with no matching outcome render
-   * unmarked (e.g. before any replay has run).
+   * Renders the op-history timeline: the applied ops, then — when the redo
+   * buffer is non-empty — its ops as additional, visually dimmed pending rows
+   * with continued numbering (op-history scrubbing, roadmap Tier 2 item 1).
+   * Every row (applied or pending) is clickable and jumps the stack straight
+   * to that point in one splice via `onJumpTo`; the ✕ remove button still
+   * works per applied row (it stops propagation so removing never also
+   * jumps). The optional `opOutcomes` (the most recent replay's per-op
+   * results — see `editOps.ts`'s `OpOutcome`) marks an op that gracefully
+   * skipped: its row gets a ⚠ marker (tooltip = diagnostic + hint) and a
+   * dimmed style, so "the model just didn't change" is at least visible
+   * WHERE it happened rather than silent. Rows with no matching outcome
+   * render unmarked (e.g. before any replay has run).
+   *
+   * `redoOps` must be in CHRONOLOGICAL order (`EditsModel.redoList()`), i.e.
+   * the order the pending ops would re-apply — matching the timeline indices
+   * `onJumpTo` receives.
    */
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null): void {
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[]): void {
     this.undoBtn.disabled = !canUndo;
     this.redoBtn.disabled = !canRedo;
-    this.clearBtn.disabled = ops.length === 0;
+    this.clearBtn.disabled = ops.length === 0 && (redoOps?.length ?? 0) === 0;
 
     const outcomeOf = new Map((opOutcomes ?? []).map((o) => [o.index, o]));
 
     this.body.innerHTML = "";
-    if (ops.length === 0) {
+    if (ops.length === 0 && (redoOps?.length ?? 0) === 0) {
       const empty = document.createElement("div");
       empty.className = "edits-empty";
       empty.textContent = "No edits — the source file is shown unchanged.";
@@ -339,10 +354,19 @@ export class EditsPanel {
 
     const ol = document.createElement("ol");
     ol.className = "edits-list";
-    ops.forEach((op, i) => {
+    const row = (
+      op: EditOp,
+      i: number,
+      opts: { pending: boolean; outcome?: OpOutcome }
+    ): void => {
       const li = document.createElement("li");
-      li.className = "edit-row";
-      const outcome = outcomeOf.get(i);
+      li.className = opts.pending ? "edit-row edit-row-pending" : "edit-row";
+      // Any row click scrubs the timeline to that point. Applied rows roll
+      // back past themselves; pending rows re-apply through them. Clicking
+      // the LAST applied row is a natural no-op inside jumpTo.
+      li.title = opts.pending ? "Click to re-apply through this step" : "";
+      li.addEventListener("click", () => this.cb.onJumpTo(i));
+      const outcome = opts.outcome;
       if (outcome && !outcome.applied) {
         li.classList.add("edit-row-skipped");
         li.title = `Did not apply — ${outcome.diagnostic ?? "no reason recorded"}${outcome.hint ? `\nHint: ${outcome.hint}` : ""}`;
@@ -353,24 +377,36 @@ export class EditsPanel {
       const label = document.createElement("span");
       label.className = "edit-label";
       label.textContent = describeOp(op);
-      const del = document.createElement("button");
-      del.className = "edit-remove";
-      del.innerHTML = TOOLBAR_ICONS.close;
-      del.title = "Remove this edit";
-      del.addEventListener("click", () => this.cb.onRemoveOp(i));
       li.appendChild(idx);
       li.appendChild(label);
-      // A skipped op's warning marker sits between the label and the remove
-      // button so it can't be mistaken for a row-level action.
-      if (outcome && !outcome.applied) {
-        const warn = document.createElement("span");
-        warn.className = "edit-skip-warning";
-        warn.textContent = "⚠";
-        li.appendChild(warn);
+      if (!opts.pending) {
+        const del = document.createElement("button");
+        del.className = "edit-remove";
+        del.innerHTML = TOOLBAR_ICONS.close;
+        del.title = "Remove this edit";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation(); // removing must not also jump to this row's position
+          this.cb.onRemoveOp(i);
+        });
+        // A skipped op's warning marker sits between the label and the remove
+        // button so it can't be mistaken for a row-level action.
+        if (outcome && !outcome.applied) {
+          const warn = document.createElement("span");
+          warn.className = "edit-skip-warning";
+          warn.textContent = "⚠";
+          li.appendChild(warn);
+        }
+        li.appendChild(del);
+      } else {
+        const redoMark = document.createElement("span");
+        redoMark.className = "edit-pending-mark";
+        redoMark.textContent = "↷";
+        li.appendChild(redoMark);
       }
-      li.appendChild(del);
       ol.appendChild(li);
-    });
+    };
+    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i) }));
+    (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
   }
 

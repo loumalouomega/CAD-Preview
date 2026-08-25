@@ -1648,6 +1648,21 @@ input[type="range"].meshing-slider:focus {
  * the row dims and carries a ⚠ marker whose tooltip holds the diagnostic +
  * hint. Warning color matches the editor theme's error/warning foreground. */
 .edit-row-skipped .edit-label { opacity: 0.45; }
+
+/* Op-history scrubbing (roadmap Tier 2 item 1): every history row is
+ * clickable and jumps the stack to that point in one splice; rows still in
+ * the redo buffer render dimmed with a ↷ mark and continued numbering, and
+ * re-apply through themselves when clicked. */
+.edit-row { cursor: pointer; }
+.edit-row-pending .edit-label { opacity: 0.4; }
+.edit-row-pending .edit-index { opacity: 0.35; }
+.edit-row-pending:hover .edit-label { opacity: 0.7; }
+.edit-pending-mark {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.45;
+}
 .edit-skip-warning {
   flex-shrink: 0;
   font-size: 11px;

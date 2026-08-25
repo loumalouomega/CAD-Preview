@@ -796,16 +796,20 @@ class EditsModel {
   constructor(onChange: () => void)
   load(ops: EditOp[]): void   // hydrate from sidecar — does NOT fire onChange
   list(): EditOp[]            // deep copies, in order
+  redoList(): EditOp[]        // the redo buffer in CHRONOLOGICAL order (deep copies) — the order pending ops re-apply
   push(op: EditOp): void      // append; clears the redo buffer
   undo(): void                // pop last → redo buffer
   redo(): void                // re-apply most recently undone
   clear(): void               // empty both stacks
   remove(index: number): void // splice out a single op from anywhere in the list; clears the redo buffer
+  jumpTo(index: number): void // op-history scrubbing: move the stack boundary straight to timeline position `index` in ONE splice, firing one onChange (a no-change jump fires none)
   get size(): number
   get canUndo(): boolean
   get canRedo(): boolean
 }
 ```
+
+`jumpTo` addresses the full chronological timeline — applied ops at `0..size-1`, then `redoList()`'s pending ops after them. Clicking timeline position k makes the state "after op k applied": an applied row rolls back past itself; a pending row re-applies through itself. Redo-buffer ORDER is preserved across any jump (demoted ops are prepended reversed so ↷ reapplies them in original order; promoted ops come off the buffer's end in exactly `redo()`'s order) — both orderings are pinned by worked-example tests in `editsModel.test.ts`. Known perf caveat: `loadBRepCached` only reuses its cached replay for a pure append of `previous.ops`, so a backward jump pays a full `applyEditsBRep` replay from the still-cached base shape — fine for click-to-jump; do not build a continuous-drag scrubber on top without revisiting that.
 
 Every mutation fires `onChange`, wired in `main.ts` to the shared `syncEdits()`: resolve the ops against the current variables, post `editsChanged` (resolved ops and variables), render the panels, and (for mesh files) rebuild the displayed model. `load` does **not** fire — it is the initial sidecar load and must not echo back as a write.
 
@@ -870,6 +874,7 @@ class EditsPanel {
 - `onApplyWireframe(WireframeDraft)` — Point/Line/Arc plus the curve family (Polyline/3-Pt Arc/Spline/Bezier/Ellipse Arc/Helix); typed coordinates, B-rep only. Polyline/Spline/Bezier use the panel's **dynamic point-list widget** (`pointListField`): `.point-row`s of vec triples with per-row `−` remove buttons (disabled at the minimum count) and a trailing `+ Add point`; `readPoints()` walks rows in DOM order at emit time.
 - `onBuildSurfaceFromLines()` / `onBuildVolumeFromSurfaces()` — the Build buttons; no capture step — `main.ts` reads the live Line/Surf selection at click time and guards the minimum count (≥3 lines, ≥4 faces).
 - `onRemoveOp(index)` — a small ✕ button on each history row (revealed on row hover), wired straight to `EditsModel.remove(index)`. Unlike **↶ Undo**, which only pops the last op, this splices a single op out of anywhere in the list — the only way to drop one specific op without discarding everything applied after it. Clears the redo buffer, same as `push`; topology-changing ops after the removed one carry the same accepted "entity-id drift" risk as undo/redo (see [File Formats](./file-formats.md#edits-sidecar-modeleditsjson)).
+- `onJumpTo(index)` — clicking ANY history row (applied, or a dimmed pending-redo one; roadmap "Op-history scrubbing", closed) scrubs the stack straight to that timeline position via `EditsModel.jumpTo` in one splice. The ✕ `stopPropagation()`s so removing never also jumps.
 
 **B-rep gating:** every `CatalogEntry.brepOnly` button is pushed into `brepOnlyEls`, plus the whole **2D subtab** (every 2D op is B-rep-only — locked by a catalog test) with a tooltip. `setBRepOnly(false)` also collapses an open B-rep-only form and auto-switches an active 2D subtab to 3D. Elements are held by reference, so the tab re-parenting is transparent to the mechanism.
 

@@ -230,7 +230,12 @@ function renderEditsUi(): void {
   const { values, errors } = evaluateVariables(variablesModel.list());
   const { ops } = resolveEditOps(editsModel.list(), values);
   editsPanel.setVariables(values);
-  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes);
+  // Pending (redo-buffer) ops ride along in chronological order so the history
+  // renders as a full clickable timeline (op-history scrubbing, roadmap Tier
+  // 2 item 1). They are NOT resolved here: they aren't applied yet, and the
+  // resolve-on-read contract re-evaluates them at every future consumption
+  // point anyway.
+  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList());
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
 }
 
@@ -496,6 +501,9 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onRedo: () => editsModel.redo(),
   onClear: () => editsModel.clear(),
   onRemoveOp: (index) => editsModel.remove(index),
+  // One splice + one onChange/editsChanged/re-tessellate round trip per
+  // click — never a looped undo()/redo() sequence (op-history scrubbing).
+  onJumpTo: (index) => editsModel.jumpTo(index),
   onApplyTransform: (draft) => {
     // Transforms act on whole volumes. Use the selected volume ids; require at
     // least one so an edit is never silently a no-op.
