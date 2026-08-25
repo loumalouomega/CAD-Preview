@@ -1325,7 +1325,7 @@ function rebuildMeshModel(): void {
   if (!pristineMesh) return;
   const ops = currentResolvedOps().ops;
   const outcomes: OpOutcome[] = [];
-  const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes);
+  const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model);

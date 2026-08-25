@@ -6,6 +6,25 @@ import { makeFaceMaterial } from "./geometryBuilder";
 /** Single shared CSG evaluator (cheap to keep; avoids re-alloc per boolean). */
 const csg = new Evaluator();
 
+/** Above this many combined triangles, a `three-bvh-csg` boolean/hole would
+ * likely freeze the webview's main thread — degrade to a status message
+ * instead. Tuned empirically against THIS codebase's `Evaluator` (not a
+ * number borrowed from a different boolean engine); see `doc/roadmap.md`'s
+ * Tier 2 item 1 note on why the threshold must come from local timing. */
+export const MESH_CSG_MAX_TRIANGLES = 150_000;
+
+/** Triangle count of a mesh's geometry (indexed or non-indexed). 0 if none. */
+export function meshTriangleCount(mesh: THREE.Object3D | null | undefined): number {
+  const geo = (mesh as THREE.Mesh | null | undefined)?.geometry as
+    | THREE.BufferGeometry
+    | undefined;
+  if (!geo) return 0;
+  const pos = geo.attributes.position as THREE.BufferAttribute | undefined;
+  if (!pos) return 0;
+  const idx = geo.index;
+  return (idx ? idx.count : pos.count) / 3;
+}
+
 /**
  * Webview-side (Three.js) edit engine for mesh formats (STL/OBJ/PLY/glTF), which
  * have no OCCT shape in the host. Folds the replayable op-list over the loaded
@@ -24,7 +43,12 @@ const csg = new Evaluator();
  * Unlike the host, there is no shared shape handle to identity-compare against,
  * so each dispatch site reports explicitly.
  */
-export function applyEditsMesh(root: THREE.Object3D, ops: EditOp[], outcomes?: OpOutcome[]): THREE.Object3D {
+export function applyEditsMesh(
+  root: THREE.Object3D,
+  ops: EditOp[],
+  outcomes?: OpOutcome[],
+  report?: (msg: string) => void
+): THREE.Object3D {
   // Counts only `addX` ops seen so far in THIS fold pass, so `prim-{K}` ids are
   // deterministic by op-list position and stable across repeated replays of the
   // same list (independent of whether a given primitive's mesh build succeeds).
@@ -39,7 +63,7 @@ export function applyEditsMesh(root: THREE.Object3D, ops: EditOp[], outcomes?: O
       outcome.diagnostic = diagnostic;
       if (hint) outcome.hint = hint;
     };
-    applyOneOpMesh(root, op, fail, ctx);
+    applyOneOpMesh(root, op, fail, ctx, report);
     outcomes?.push(outcome);
   }
   return root;
@@ -58,14 +82,20 @@ function applyOneOpMesh(
   root: THREE.Object3D,
   op: EditOp,
   fail: (diagnostic: string, hint?: string) => void,
-  ctx: MeshFoldCtx
+  ctx: MeshFoldCtx,
+  report?: (msg: string) => void
 ): void {
   if (BREP_ONLY_OPS.has(op.op)) {
     fail(`${op.op} is B-rep only — triangle meshes have no sketch/exact topology for it`);
     return; // not meaningful on a triangle mesh
   }
   if (op.op === "boolean") {
-    if (!applyMeshBoolean(root, op)) fail("operand A/B node ids did not resolve to meshes", "re-check node-N ids — load_model/get_state lists them");
+    if (!applyMeshBoolean(root, op, fail, report)) {
+      // Dense guard already called `fail`+`report` inside; first-wins makes
+      // this second `fail` a no-op in that case, and the correct diagnostic
+      // for the unresolved-operand case otherwise.
+      fail("operand A/B node ids did not resolve to meshes", "re-check node-N ids — load_model/get_state lists them");
+    }
     return;
   }
   if (op.op === "explode") {
@@ -88,7 +118,9 @@ function applyOneOpMesh(
   // names also start with "add") — they subtract from an existing target and
   // never produce a `prim-{K}` body, so they don't touch `primCount` either.
   if (op.op === "addHole" || op.op === "addCounterboreHole" || op.op === "addCountersinkHole") {
-    if (!applyMeshHole(root, op)) fail("target node id did not resolve to a mesh", "re-check node-N ids — load_model/get_state lists them");
+    if (!applyMeshHole(root, op, fail, report)) {
+      fail("target node id did not resolve to a mesh", "re-check node-N ids — load_model/get_state lists them");
+    }
     return;
   }
   if (op.op.startsWith("add")) {
@@ -129,10 +161,22 @@ function applyOneOpMesh(
  * host's graceful boolean. Topology changes re-id facets on the next split —
  * accepted id drift.
  */
-function applyMeshBoolean(root: THREE.Object3D, op: Extract<EditOp, { op: "boolean" }>): boolean {
+function applyMeshBoolean(
+  root: THREE.Object3D,
+  op: Extract<EditOp, { op: "boolean" }>,
+  fail?: (diagnostic: string, hint?: string) => void,
+  report?: (msg: string) => void
+): boolean {
   const aMesh = firstMesh(resolveMeshTargets(root, op.a));
   const bMesh = firstMesh(resolveMeshTargets(root, op.b));
   if (!aMesh || !bMesh) return false;
+  const denseTotal = meshTriangleCount(aMesh) + meshTriangleCount(bMesh);
+  if (denseTotal > MESH_CSG_MAX_TRIANGLES) {
+    const msg = "mesh too dense for a boolean here — try Promote to B-rep first";
+    fail?.(msg, "convert via Mesh Health → Promote to B-rep… and re-apply the boolean");
+    report?.(msg);
+    return false;
+  }
 
   const brushA = new Brush(aMesh.geometry);
   aMesh.updateWorldMatrix(true, false);
@@ -170,10 +214,20 @@ function applyMeshBoolean(root: THREE.Object3D, op: Extract<EditOp, { op: "boole
  */
 function applyMeshHole(
   root: THREE.Object3D,
-  op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>
+  op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>,
+  fail?: (diagnostic: string, hint?: string) => void,
+  report?: (msg: string) => void
 ): boolean {
   const targetMesh = firstMesh(resolveMeshTargets(root, op.targets));
   if (!targetMesh) return false;
+  // Holes subtract a small tool (32-segment cylinder/cone) from one target, so
+  // only the target's own density matters — the tool is negligible either way.
+  if (meshTriangleCount(targetMesh) > MESH_CSG_MAX_TRIANGLES) {
+    const msg = "mesh too dense for a hole here — try Promote to B-rep first";
+    fail?.(msg, "convert via Mesh Health → Promote to B-rep… and re-apply the hole");
+    report?.(msg);
+    return false;
+  }
 
   const toolBrush = (geo: THREE.BufferGeometry, height: number): Brush => {
     const b = new Brush(geo);
