@@ -151,6 +151,8 @@ export function viewerBodyHtml(): string {
           <button class="layout-btn" data-layout="2x2" title="Quad — four independent cameras on a 2×2 grid">${icon("layout2x2")} 2×2</button>
         </div>
         <div class="tb-sep"></div>
+        <button id="link-cameras" role="menuitemcheckbox" aria-checked="false" title="Share camera orientation across all open CAD Preview tabs">${icon("view")} Link cameras across tabs</button>
+        <div class="tb-sep"></div>
         <button id="screenshot" role="menuitem" title="Save the current view as a PNG">${icon("screenshot")} Screenshot…</button>
       </div>
     </div>

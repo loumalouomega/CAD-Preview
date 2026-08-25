@@ -317,6 +317,8 @@ type HostToWebview =
   | { type: 'meshHealError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
+  | { type: 'linkedCamera'; camera: LinkedCameraState }
+  | { type: 'camerasLinked'; enabled: boolean }
 ```
 
 ### `geometry`
@@ -647,11 +649,27 @@ Sent in reply to `importSvgRequest` (webview → host, below) — no `requestId`
 { "type": "importSvgError", "message": "Could not read the selected file." }
 ```
 
+### `linkedCamera` / `camerasLinked`
+
+`linkedCamera` is the host relay for split-view Phase 3 (roadmap "Split view", Phase 3): when `camerasLinked` is true, every `viewChanged` fans out a minimal `LinkedCameraState` triple `{viewDirection, cameraUp, orthographic}` to every OTHER open session (`document.uri.toString()`-keyed registry in `provider.ts`; originator skipped). Receiver applies via `setCameraUp`/`applyOrtho`/`frameFromDirection` and reframes from its own bbox — direction + up + ortho only, never distance, so different extents still fill their frame. Loop-suppressed via `applyingLinkedCamera` + `viewSaveTimer` clear and gated on `hasAppliedInitialView`; never routes through `applyViewState`.
+
+`camerasLinked` broadcasts the provider-level flag to every session (including the originator) so all View ▾ checkboxes stay truthful; a newly-opened tab gets it when `camerasLinked` is already true. Both are session-only, never persisted to `.view.json`.
+
+```json
+{ "type": "linkedCamera", "camera": { "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false } }
+```
+
+```json
+{ "type": "camerasLinked", "enabled": true }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
 
 ```typescript
+type LinkedCameraState = { viewDirection: [number, number, number]; cameraUp: [number, number, number]; orthographic: boolean }
+
 type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
@@ -659,6 +677,7 @@ type WebviewToHost =
   | { type: 'annotationsChanged'; annotations: Annotation[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'viewChanged'; view: ViewState }
+  | { type: 'setCamerasLinked'; enabled: boolean }
   | { type: 'openFile' }
   | { type: 'openPath'; path: string }
   | { type: 'saveSidecars' }
@@ -716,6 +735,14 @@ Sent whenever the user changes the view — camera orbit/pan/zoom/dolly (drag or
 
 ```json
 { "type": "viewChanged", "view": { "viewDirection": [0, 0, 1], "cameraUp": [0, 1, 0], "orthographic": true, "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": -0.1 }, "layout": "1x2", "panes": [{ "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false }, { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }] } }
+```
+
+### `setCamerasLinked`
+
+Toggles the provider-level linked-cameras flag (roadmap "Split view", Phase 3). Clicking the View ▾ "Link cameras across tabs" checkbox (`#link-cameras`, `role="menuitemcheckbox"`) flips optimistically then posts this; authoritative state comes back via `camerasLinked` (last host write wins).
+
+```json
+{ "type": "setCamerasLinked", "enabled": true }
 ```
 
 ### `meshingChanged`

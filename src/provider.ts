@@ -96,6 +96,9 @@ interface EditorSession {
   screenshot(): void;
   /** Export a 2D outline (silhouette) of the model as an SVG drawing. */
   exportSvg(): void;
+  /** Post a message to this session's webview — the registry entry for the
+   * linked-cameras relay (roadmap "Split view", Phase 3). */
+  post(msg: HostToWebview): void;
 }
 
 /** Read-only custom document: previews hold no editable state beyond their URI. */
@@ -118,6 +121,17 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
   /** The focused editor, tracked so commands/keybindings can reach it. */
   private activeSession?: EditorSession;
+
+  /** Every open editor session, keyed by `uri.toString()` — the host relay
+   * for linked cameras (roadmap "Split view", Phase 3). Two webviews cannot
+   * talk to each other, so `viewChanged` fans out through this registry;
+   * `activeSession` stays the single "which tab has focus" router for
+   * keybindings, independent of this. */
+  private readonly sessions = new Map<string, EditorSession>();
+
+  /** Provider-level linked-cameras flag — one on/off for all open tabs
+   * (roadmap "Split view", Phase 3). Session-only, not persisted. */
+  private camerasLinked = false;
 
   /**
    * The one kernel-worker child process (+ its request queue) for this whole
@@ -562,7 +576,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       exportSvg: () => {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState);
       },
+      post,
     };
+    this.sessions.set(documentKey, session);
     const track = () => {
       if (webviewPanel.active) this.activeSession = session;
     };
@@ -570,6 +586,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     webviewPanel.onDidChangeViewState(track);
     webviewPanel.onDidDispose(() => {
       if (this.activeSession === session) this.activeSession = undefined;
+      this.sessions.delete(documentKey);
     });
 
     webviewPanel.webview.onDidReceiveMessage(async (msg: WebviewToHost) => {
@@ -604,6 +621,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           post({ type: "viewState", view });
         });
         this.sendViewerDefaults(post);
+        if (this.camerasLinked) {
+          post({ type: "camerasLinked", enabled: true });
+        }
         return;
       }
 
@@ -666,6 +686,25 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             (err) => post({ type: "error", message: `Could not save view state: ${(err as Error).message}` })
           );
         }, PARTS_SAVE_DEBOUNCE_MS);
+        if (this.camerasLinked) {
+          const camera = {
+            viewDirection: msg.view.viewDirection,
+            cameraUp: msg.view.cameraUp,
+            orthographic: msg.view.orthographic,
+          };
+          for (const [key, s] of this.sessions) {
+            if (key === documentKey) continue;
+            s.post({ type: "linkedCamera", camera });
+          }
+        }
+        return;
+      }
+
+      if (msg.type === "setCamerasLinked") {
+        this.camerasLinked = msg.enabled;
+        for (const s of this.sessions.values()) {
+          s.post({ type: "camerasLinked", enabled: msg.enabled });
+        }
         return;
       }
 

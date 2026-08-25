@@ -312,27 +312,41 @@ export type HostToWebview =
   | {
       type: "renderViewRequest";
       /** Deliberately separate from `screenshotRequest`'s requestId
-       * namespace/round trip (`src/renderService.ts`'s headless multi-view
-       * capture, not the interactive single-view Screenshot feature) —
-       * carries camera/visibility/display-mode fields that feature has no
-       * reason to. */
+        * namespace/round trip (`src/renderService.ts`'s headless multi-view
+        * capture, not the interactive single-view Screenshot feature) —
+        * carries camera/visibility/display-mode fields that feature has no
+        * reason to. */
       requestId: string;
       /** Camera direction (target → camera), as consumed by
-       * `Viewer.setViewDirection`. */
+        * `Viewer.setViewDirection`. */
       direction: [number, number, number];
       /** Explicit camera up vector — required in practice for a near-vertical
-       * `direction` (e.g. a top view) to avoid a gimbal-lock-like flip;
-       * optional otherwise (defaults to `[0,1,0]`). */
+        * `direction` (e.g. a top view) to avoid a gimbal-lock-like flip;
+        * optional otherwise (defaults to `[0,1,0]`). */
       up?: [number, number, number];
       /** Burned into the returned PNG (top-left corner). */
       label: string;
       /** Entity ids to isolate to (only these are shown); omitted/empty means
-       * no isolation. */
+        * no isolation. */
       focus?: Array<{ entityType: EntityType; entityId: string }>;
       /** Entity ids to force-hide. */
       hide?: Array<{ entityType: EntityType; entityId: string }>;
       wireframe?: boolean;
-    };
+    }
+  | { type: "linkedCamera"; camera: LinkedCameraState }
+  | { type: "camerasLinked"; enabled: boolean };
+
+/**
+ * Minimal camera triple shared across tabs via the host relay (roadmap "Split
+ * view", Phase 3). Deliberately only direction/up/orthographic — layout,
+ * display mode and clip stay independent per document. Receiver reframes from
+ * its own bbox via `frameFromDirection`/`setCameraUp`/`setOrthographic`.
+ */
+export interface LinkedCameraState {
+  viewDirection: [number, number, number];
+  cameraUp: [number, number, number];
+  orthographic: boolean;
+}
 
 /** One contiguous run of triangles in `meshingResult.indices` belonging to a
  * single part (or, for `name === null`, the trailing ungrouped/default run). */
@@ -386,7 +400,8 @@ export type WebviewToHost =
   | { type: "renderViewResult"; requestId: string; data: string }
   | { type: "renderViewError"; requestId: string; message: string }
   | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
-  | { type: "meshHealRequest"; requestId: string };
+  | { type: "meshHealRequest"; requestId: string }
+  | { type: "setCamerasLinked"; enabled: boolean };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {

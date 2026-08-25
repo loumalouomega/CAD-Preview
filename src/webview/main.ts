@@ -1850,6 +1850,14 @@ function setupViewMenu(): void {
   }
   reflectLayoutPicker(viewer.getPaneLayout());
 
+  const linkBtn = document.getElementById("link-cameras");
+  linkBtn?.addEventListener("click", () => {
+    const enabled = linkBtn.getAttribute("aria-checked") !== "true";
+    // Optimistic reflect — authoritative state comes back via `camerasLinked`.
+    linkBtn.setAttribute("aria-checked", String(enabled));
+    post({ type: "setCamerasLinked", enabled });
+  });
+
   // #edges is owned by setupAppearanceControls() — it holds the visibility
   // flag; this only reflects it. Screenshot is one-shot, so it dismisses.
   document.getElementById("screenshot")?.addEventListener("click", () => menu?.close());
@@ -2305,12 +2313,31 @@ function applyInitialViewIfNeeded(): void {
 const VIEW_SAVE_DEBOUNCE_MS = 500;
 let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
+/** While applying a linked camera from another tab, suppress the echo that
+ * would otherwise relay it back (roadmap "Split view", Phase 3). */
+let applyingLinkedCamera = false;
+
+function applyLinkedCamera(camera: import("../protocol").LinkedCameraState): void {
+  if (viewSaveTimer) clearTimeout(viewSaveTimer);
+  applyingLinkedCamera = true;
+  try {
+    viewer.setCameraUp(new THREE.Vector3(...camera.cameraUp));
+    if (camera.orthographic !== viewer.isOrthographic()) {
+      appearanceControls?.applyOrtho(camera.orthographic);
+    }
+    viewer.frameFromDirection(new THREE.Vector3(...camera.viewDirection));
+    appearanceControls?.reflectOrtho();
+  } finally {
+    applyingLinkedCamera = false;
+  }
+}
+
 /** Debounced autosave, called from every user-facing view change (camera
  * orbit/pan/zoom/fit/reset, the orientation gizmo, ortho/display-mode
  * buttons, the clip controls, and — since Phase 2 — a layout change or any
  * per-pane camera move). */
 function scheduleViewSave(): void {
-  if (!hasAppliedInitialView) return;
+  if (!hasAppliedInitialView || applyingLinkedCamera) return;
   if (viewSaveTimer) clearTimeout(viewSaveTimer);
   viewSaveTimer = setTimeout(() => {
     const dir = viewer.getViewDirection();
@@ -2696,6 +2723,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (sel) sel.value = "";
       break;
     }
+
+    case "linkedCamera":
+      if (hasAppliedInitialView) applyLinkedCamera(msg.camera);
+      break;
+
+    case "camerasLinked":
+      document.getElementById("link-cameras")?.setAttribute("aria-checked", String(msg.enabled));
+      break;
 
     case "meshingResult":
       meshingPanel.setBusy(false);
