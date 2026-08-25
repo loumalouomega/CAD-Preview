@@ -1587,6 +1587,11 @@ input[type="range"].meshing-slider:focus {
   opacity: 1;
 }
 
+.mass-message-warning {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  opacity: 1;
+}
+
 .mesh-health-row {
   display: flex;
   justify-content: space-between;

@@ -1091,7 +1091,9 @@ function setupColorFieldControls(): void {
 // `src/stepUnits.ts`'s doc comment). This only rescales what Mass Properties/
 // Measurement *display*; nothing stored is ever rescaled.
 let currentDisplayUnit: DisplayUnit = "mm";
-let lastRawMassProperties: (LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"] }) | null = null;
+let lastRawMassProperties:
+  | (LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"]; watertight?: boolean | null })
+  | null = null;
 
 /** Sets the display unit, syncs the `<select>`, and live-rescales the
  * currently-shown Mass Properties result (if any) — measurements already on
@@ -1101,13 +1103,22 @@ function setDisplayUnit(unit: DisplayUnit): void {
   currentDisplayUnit = unit;
   const sel = document.getElementById("vc-unit") as HTMLSelectElement | null;
   if (sel) sel.value = unit;
-  if (lastRawMassProperties) massPropertiesPanel.render(convertLengthBasedProperties(lastRawMassProperties, unit), unit);
+  if (lastRawMassProperties)
+    massPropertiesPanel.render(
+      convertLengthBasedProperties(lastRawMassProperties, unit) as MassPropertiesDisplay,
+      unit
+    );
 }
 
 /** Caches the raw (mm) result and renders it converted to `currentDisplayUnit`. */
-function renderMassProperties(raw: LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"] }): void {
+function renderMassProperties(
+  raw: LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"]; watertight?: boolean | null }
+): void {
   lastRawMassProperties = raw;
-  massPropertiesPanel.render(convertLengthBasedProperties(raw, currentDisplayUnit), currentDisplayUnit);
+  massPropertiesPanel.render(
+    convertLengthBasedProperties(raw, currentDisplayUnit) as MassPropertiesDisplay,
+    currentDisplayUnit
+  );
 }
 
 const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mass-panel")!, {
@@ -1202,13 +1213,14 @@ function computeAndRenderMeshMassProperties(target: SelectedEntity | null): void
   }
 
   const isClosedTarget = target === null || target.entityType === "volume";
-  const { volume, area, volumeCentroid, areaCentroid } = computeMeshMassProperties(meshes);
+  const { volume, area, volumeCentroid, areaCentroid, watertight } = computeMeshMassProperties(meshes);
   renderMassProperties({
     volume: isClosedTarget ? volume : null,
     area,
     length: null,
     centerOfMass: isClosedTarget ? volumeCentroid : areaCentroid,
     momentsOfInertia: null,
+    watertight: isClosedTarget ? watertight : null,
   });
 }
 
