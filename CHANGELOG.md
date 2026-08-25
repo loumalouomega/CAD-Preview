@@ -4,6 +4,29 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.5.0] - 2026-08-25
+
+### Added
+
+- **DXF import and export** — the 2D drawing interchange format the CAM/laser-cutting/AutoCAD audience actually uses, at both ends of the pipeline. **File ▾ ▸ Import DXF…** reads a `.dxf` file's model-space `LINE` / `LWPOLYLINE` (bulge arcs sampled) / `POLYLINE` / `CIRCLE` / `ARC` / `SPLINE` entities into the existing sketch edit ops (B-rep sources only; blocks/INSERT/TEXT/DIMENSION/HATCH and paper space are skipped), and a new **File ▾ ▸ Export Silhouette DXF…** writes the silhouette outline as minimal model-space `ENTITIES` (`LWPOLYLINE` chains + `LINE` singletons) over the exact same segment list the SVG exporter serializes — so an SVG and a DXF of one view are geometrically consistent. The `export_svg_silhouette` MCP tool gained an optional `format: "svg" | "dxf"` param (plus `chainCount`/`lineCount` in the response) rather than a second tool.
+- **Split view with per-pane cameras.** View ▾ now offers 1×1 / 1×2 / 2×1 / 2×2 viewport layouts over one scene — each pane its own orbitable camera, the orientation cube and gizmo following focus, selection/display modes/clip planes shared across all panes. Layouts and each pane's camera persist to `<model>.view.json`, so reopening restores exactly what you left.
+- **Linked cameras across tabs** (View ▾): when enabled, orbiting/zooming one open CAD Preview tab drives every other open tab's camera in real time.
+- **Query-based selection filters** (Select ▾): select faces by direction, planarity, area threshold, or largest/smallest N; lines by axis alignment, length, or longest/shortest N — with a seam-exclusion toggle and Select/Add buttons, instead of clicking entities one by one.
+- **OpenFOAM case import** (`.foam` marker files) via the meshio++ bridge, and Kratos MDPA files with non-sequential node ids now load correctly (meshio++ ≥ 9.13).
+- **Op-history scrubbing**: the Edits panel's history is now click-to-jump — applied ops render normally and redo-buffer ops render as dimmed pending rows; clicking any row moves the stack straight to that point in one step.
+
+### Changed
+
+- **Mesh mass properties now warn when a mesh source isn't watertight**, since the computed volume may not be meaningful for an open surface.
+- **Picking ignores hidden geometry** — clicks no longer land on entities hidden via a Part's eye toggle, Isolate, or an active FE-mesh overlay.
+- **Edit replay outcomes are visible**: an op that silently skipped during replay (unresolved operands after an id shift, a fillet radius too large, …) is now marked ⚠ in the Edits history with a diagnostic and hint, surfaced as warnings by the MCP tools instead of looking like a quiet no-op.
+- **Dense-mesh safety guard**: Boolean/hole operations on a webview-side mesh above ~150 k combined triangles are refused with guidance to promote to B-rep first, instead of freezing the UI.
+- **Faster picking on large meshes**: kept-whole meshes (organic scans above the facet limit) build a BVH acceleration structure, turning raycasting from milliseconds to near-zero per move.
+- **Document-derived text is sanitized** — meshio region/data-array names quoted in status lines, MCP warnings, and auto-created Part names are stripped of control/bidi/format characters and truncated, so a hostile file can't smuggle instructions through them.
+- **`inspect` now reports `planeOrigin` for planar faces** (the plane's own origin, usable directly as `planePoint` for Split/Section/Mirror), alongside the existing normal.
+- **Mirror rejects a zero-length `planeNormal` up front** (sidecar parse, MCP, and parametric scripts) instead of silently skipping during replay.
+- Dependency refreshes: `@meshioplusplus/wasm` 10.x (OpenFOAM reader/writer, MDPA id preservation), `js-yaml` 4.3.1, dev-dependency group bumps.
+
 ## [1.4.0] - 2026-08-04
 
 ### Added
@@ -224,6 +247,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.4.1...v1.5.0
 [1.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.2.6...v1.3.0
 [1.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.1.3...v1.2.0

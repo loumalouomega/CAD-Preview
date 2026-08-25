@@ -58,8 +58,8 @@ features:
     details: Convert the open model and save it via a native dialog. B-rep files (STEP/IGES/BREP) can export to each other (true OCCT writers) or to any mesh format; mesh files can export to other mesh formats.
 
   - icon: 📐
-    title: Silhouette SVG Export
-    details: Write a 2D outline of the model as a self-contained SVG — pick the current view or a standard one (Front/Back/Top/Bottom/Left/Right/Iso), pick a unit, save. Works for STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF, and prints 1:1 at 1 SVG user unit per model unit. An outline, not a dimensioned technical drawing — there is no hidden-line removal.
+    title: Silhouette SVG/DXF Export
+    details: Write a 2D outline of the model as a self-contained SVG or a minimal DXF — pick the current view or a standard one (Front/Back/Top/Bottom/Left/Right/Iso), pick a unit, save. Works for STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF, and prints 1:1 at 1 unit per model unit. An outline, not a dimensioned technical drawing — there is no hidden-line removal.
 
   - icon: 🧮
     title: FE Mesh Generation (Gmsh)
@@ -102,7 +102,7 @@ features:
 | PLY    | `.ply`          | Three.js `PLYLoader`                   |
 | glTF   | `.gltf`, `.glb` | Three.js `GLTFLoader`                  |
 
-Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, and OpenFOAM](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-openfoam) via the host-side meshio++ bridge. SVG is not a rendering format but appears at both ends of the pipeline: **Import SVG…** traces a `.svg`'s paths into sketch polylines, and **Export Silhouette SVG…** writes a 2D outline of the model back out.
+Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, and OpenFOAM](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-openfoam) via the host-side meshio++ bridge. SVG and DXF are not rendering formats but appear at both ends of the pipeline: **Import SVG…**/**Import DXF…** trace a 2D drawing's geometry into sketch polylines/profile ops, and **Export Silhouette SVG…/…DXF…** write a 2D outline of the model back out.
 
 ## Badges
 

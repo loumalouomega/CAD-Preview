@@ -309,6 +309,8 @@ type HostToWebview =
   | { type: 'standardPartsInsertError'; requestId: string; message: string }
   | { type: 'importSvgResult'; text: string }
   | { type: 'importSvgError'; message: string }
+  | { type: 'importDxfResult'; text: string }
+  | { type: 'importDxfError'; message: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
@@ -649,6 +651,18 @@ Sent in reply to `importSvgRequest` (webview → host, below) — no `requestId`
 { "type": "importSvgError", "message": "Could not read the selected file." }
 ```
 
+### `importDxfResult` / `importDxfError`
+
+Sent in reply to `importDxfRequest` (webview → host, below) — the DXF sibling of `importSvgResult`/`importSvgError`, with the identical no-`requestId` modal-dialog rationale. `text` is the picked `.dxf` file's raw ASCII contents, read host-side with no parsing — parsing (`src/dxfImport.ts`, model-space `ENTITIES` only) happens in the webview, where the resulting `addLine`/`addPolyline`/`addCircleProfile`/`addArc`/`addSpline` ops are pushed onto `EditsModel`. A dismissed dialog is a quiet no-op.
+
+```json
+{ "type": "importDxfResult", "text": "0\nSECTION\n2\nENTITIES\n..." }
+```
+
+```json
+{ "type": "importDxfError", "message": "Could not read the selected file." }
+```
+
 ### `linkedCamera` / `camerasLinked`
 
 `linkedCamera` is the host relay for split-view Phase 3 (roadmap "Split view", Phase 3): when `camerasLinked` is true, every `viewChanged` fans out a minimal `LinkedCameraState` triple `{viewDirection, cameraUp, orthographic}` to every OTHER open session (`document.uri.toString()`-keyed registry in `provider.ts`; originator skipped). Receiver applies via `setCameraUp`/`applyOrtho`/`frameFromDirection` and reframes from its own bbox — direction + up + ortho only, never distance, so different extents still fill their frame. Loop-suppressed via `applyingLinkedCamera` + `viewSaveTimer` clear and gated on `hasAppliedInitialView`; never routes through `applyViewState`.
@@ -699,6 +713,8 @@ type WebviewToHost =
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
   | { type: 'importSvgRequest' }
+  | { type: 'importDxfRequest' }
+  | { type: 'exportDxfRequest' }
 ```
 
 ### `partsChanged`
@@ -829,6 +845,14 @@ Deliberately **not** folded into `exportRequest`: an `"svg"` member of `CadForma
 { "type": "exportSvgRequest" }
 ```
 
+### `exportDxfRequest`
+
+The DXF sibling of `exportSvgRequest`, sent by **File ▸ Export Silhouette DXF…** (`#menu-export-dxf`) or the `cad-preview.exportDxf` command: the identical host-owned flow (view pick → unit pick → save dialog → kernel-worker `exportSvgSilhouette` call), differing only in the serializer used and the save-dialog filter/default extension (`.dxf`). Same no-`requestId`/no-result-message shape, same generic `status`/`error` feedback.
+
+```json
+{ "type": "exportDxfRequest" }
+```
+
 ### `exportResult` / `exportError`
 
 Sent in reply to `exportMesh`. `data` is base64 when `binary` is `true`, plain text otherwise — the same convention as `EncodedMesh`'s buffers, just generalized to a whole file. The host correlates the reply to its pending request via `requestId` and writes the decoded bytes to the path chosen in the save dialog.
@@ -923,6 +947,14 @@ Sent when **File ▾ → Import SVG…** is clicked. No parameters — the host 
 
 ```json
 { "type": "importSvgRequest" }
+```
+
+### `importDxfRequest`
+
+Sent when **File ▾ → Import DXF…** is clicked. No parameters — the host shows its own `showOpenDialog` filtered to `.dxf`; see `importDxfResult`/`importDxfError` above. Same B-rep-only gate as SVG import: on a mesh-format source the webview shows an explanatory status instead of parsing.
+
+```json
+{ "type": "importDxfRequest" }
 ```
 
 ---

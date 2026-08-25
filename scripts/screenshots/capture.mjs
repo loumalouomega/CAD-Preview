@@ -145,8 +145,9 @@ const SHOTS = [
     setup: async (page) => { await populate(page); await page.click("#file-menu"); await sleep(150); },
     // Height must cover every item in the dropdown — it grew by one row when
     // "Export Silhouette SVG…" was added, and a too-short clip silently cuts
-    // the last entry off rather than failing the run.
-    target: { clip: { x: 0, y: 0, width: 320, height: 285 } },
+    // the last entry off rather than failing the run. Two more rows landed
+    // with Import/Export DXF (285 → 342).
+    target: { clip: { x: 0, y: 0, width: 320, height: 342 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the
@@ -158,8 +159,12 @@ const SHOTS = [
     // Select menu grew two rows in Phase 1 of selection filters — the
     // shared clip must cover the tallest dropdown (now select-menu, not
     // view-menu). Silent-cut trap as before (file-menu.png 250→285, view-menu
-    // 300→340). 340 was tight for select-menu; 400 leaves margin.
-    target: { clip: { x: 830, y: 30, width: 530, height: 400 } },
+    // 300→340). 400 then cut BOTH edges of view-menu after "Hide smooth
+    // edges" + the layout picker + "Link cameras across tabs" landed: the
+    // picker row made the panel wider (left-clipped at x=830) and the new
+    // rows made it taller (Screenshot… half-cut at height 400) — now
+    // x 830→770 / height 400→470.
+    target: { clip: { x: 770, y: 30, width: 590, height: 470 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },

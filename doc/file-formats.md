@@ -333,9 +333,9 @@ The source format is never offered as its own export target (moot for the meshio
 
 glTF export always produces a binary `.glb` file (not a text `.gltf` with embedded base64 buffers) — a single portable file, no separate buffer references to manage.
 
-### Silhouette SVG Export
+### Silhouette SVG/DXF Export
 
-**File ▸ Export Silhouette SVG…** (or the `CAD Preview: Export Silhouette SVG…` command) is a **third** export case, deliberately outside the Export… quick-pick above: it writes a 2D **outline drawing** rather than a 3D model, so it is neither a B-rep target nor a mesh target and never appears in `exportTargetsFor()`'s list. Flow: a view quick-pick (**Current view** — the angle you are currently looking at — then Front/Back/Top/Bottom/Left/Right/Iso), then the same export-unit quick-pick every other export shows, then a save dialog. Pressing Escape on the *view* pick cancels the export (it is the primary choice); Escape on the *unit* pick still exports at native mm, matching the existing convention.
+**File ▸ Export Silhouette SVG…** / **File ▸ Export Silhouette DXF…** (or the matching `CAD Preview: Export Silhouette …` commands) are a **third** export case, deliberately outside the Export… quick-pick above: they write a 2D **outline drawing** rather than a 3D model, so this is neither a B-rep target nor a mesh target and never appears in `exportTargetsFor()`'s list. The two menu items share one flow — a view quick-pick (**Current view** — the angle you are currently looking at — then Front/Back/Top/Bottom/Left/Right/Iso), then the same export-unit quick-pick every other export shows, then a save dialog — differing only in the serializer used (`src/svgSilhouette.ts` vs `src/dxfSilhouette.ts`, over the *same* segment list, so an SVG and a DXF of one view are geometrically consistent). Pressing Escape on the *view* pick cancels the export (it is the primary choice); Escape on the *unit* pick still exports at native mm, matching the existing convention.
 
 > **It is an outline, not a dimensioned 2D technical drawing. There is no hidden-line removal.** Back-facing geometry is not drawn, but neither are interior feature edges that do not lie on a silhouette. OCCT's `HLRBRep_*` hidden-line machinery is entirely unavailable in this WASM build, and `HLRAppli_ReflectLines` — the one surviving green alternative — was probed against the live kernel and produced a strictly *worse* drawing (missing the part's holes and interior cutout), so the outline is derived from **triangle adjacency** instead: an edge is kept where its two adjacent triangles disagree about facing the viewer. That choice is also why this works for mesh sources and not just B-rep. Treat the result as a review/illustration artifact; use the Measurement tools for any dimension you need to be sure of.
 
@@ -345,11 +345,15 @@ glTF export always produces a binary `.glb` file (not a text `.gltf` with embedd
 | STL / OBJ / PLY / glTF | the raw file bytes, **edits not baked in** (there is no host-side mesh edit engine — same limitation Compare Models has) |
 | meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) | rejected — those formats never expose a triangle array back to JS |
 
-The output is a single self-contained `<path>` — no `<style>`, no script, no external references — so it embeds anywhere. **1 SVG user unit = 1 model unit**, with the document's physical `width`/`height` given in millimetres, so a drawing exported from a native (mm) model prints 1:1 in any vector tool. Choosing a non-mm unit applies the same real coordinate scale every other export in this codebase uses, before projection.
+The output is a single self-contained `<path>` — no `<style>`, no script, no external references — so it embeds anywhere. **1 SVG user unit = 1 model unit**, with the document's physical `width`/`height` given in millimetres, so a drawing exported from a native (mm) model prints 1:1 in any vector tool. Choosing a non-mm unit applies the same real coordinate scale every other export in this codebase uses, before projection. The DXF variant is minimal model-space `ENTITIES` only: chained collinear runs become `LWPOLYLINE`s and unmatched singletons stay independent `LINE`s, at 1 DXF drawing unit = 1 model unit.
 
 **Limitation — triangle winding.** The facing test depends on consistent triangle winding across the mesh. A mesh with mixed winding (some triangles clockwise, some counter-clockwise, as some exporters and hand-edited files produce) yields spurious interior lines, because the test flips with the winding. There is no cheap, reliable way to repair winding for an arbitrary open mesh, so this is documented rather than worked around.
 
-The same capability is available headlessly as the MCP server's `export_svg_silhouette` tool — see [MCP Server](./mcp-server.md).
+The same capability is available headlessly as the MCP server's `export_svg_silhouette` tool (its `format` param selects `"svg"` or `"dxf"`) — see [MCP Server](./mcp-server.md).
+
+### DXF Import
+
+**File ▸ Import DXF…** reads a `.dxf` file's model-space `ENTITIES` section and converts each supported entity into an existing parametric profile/curve edit op — genuinely no new geometry kernel surface. Handled: `LINE`, `LWPOLYLINE` (bulge arcs sampled), `POLYLINE`/`VERTEX`, `CIRCLE`, `ARC`, and `SPLINE` (control points); everything else (blocks, INSERT, TEXT/MTEXT, DIMENSION, HATCH, paper space) is skipped. Like SVG import, it is **B-rep sources only** — mesh files have no sketch topology to receive the imported ops — and placement follows the same simple defaults: flat in the XY plane at z=0, 1 DXF drawing unit = 1 mm, Y-up native (DXF needs no flip, unlike SVG). A poorly-scaled source is adjusted afterward with the ordinary `scale`/`translate`/`rotate` ops.
 
 ## File Size Guidance
 
