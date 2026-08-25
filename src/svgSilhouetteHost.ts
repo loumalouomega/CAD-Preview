@@ -35,6 +35,7 @@ import { parsePly } from "./plyParser";
 import { parseGltf } from "./gltfParser";
 import { silhouetteEdges } from "./silhouetteEdges";
 import { silhouetteSvg, scalePositions, type Vec3 } from "./svgSilhouette";
+import { silhouetteDxf, polylinesDxf } from "./dxfSilhouette";
 import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import type { CompareSource } from "./modelDiffHost";
 
@@ -53,16 +54,24 @@ export interface SvgSilhouetteOptions {
    * shading or normals to hide faceting the way a rendered view does.
    */
   quality?: TessellationQuality;
+  /** Output format — SVG (default) or DXF. DXF chains segments into
+   * LWPOLYLINE (with bulges for arcs) plus LINE singletons. */
+  format?: "svg" | "dxf";
 }
 
 export interface SvgSilhouetteResult {
   svg: string;
+  /** DXF text when format === "dxf" (alias `svg` holds "" in that case). */
+  dxf?: string;
   segmentCount: number;
   /** Triangles the silhouette was derived from — a useful sanity signal for a
    * caller deciding whether an empty drawing means "nothing to draw" or
    * "nothing parsed". */
   triangleCount: number;
   warnings: string[];
+  /** DXF-specific chain/singleton counts when format === "dxf". */
+  chainCount?: number;
+  lineCount?: number;
 }
 
 /** Flattens every tessellated face into one unindexed triangle soup, then
@@ -126,11 +135,19 @@ export async function exportSvgSilhouette(
   const render = (mesh: WeldedMesh): SvgSilhouetteResult => {
     const positions = scalePositions(mesh.positions, factor);
     const edges = silhouetteEdges(positions, mesh.indices, options.direction);
+    const triangleCount = Math.floor(mesh.indices.length / 3);
+    if (options.format === "dxf") {
+      const { dxf, segmentCount, chainCount, lineCount } = silhouetteDxf(positions, edges, { direction: options.direction, up: options.up }, {
+        title: options.title,
+      });
+      if (triangleCount === 0) warnings.push("The source produced no triangles — the drawing is empty.");
+      else if (segmentCount === 0) warnings.push("No silhouette edges were found for this view direction — the drawing is empty.");
+      return { svg: dxf, dxf, segmentCount, triangleCount, warnings, chainCount, lineCount };
+    }
     const { svg, segmentCount } = silhouetteSvg(positions, edges, { direction: options.direction, up: options.up }, {
       strokeWidth: options.strokeWidth,
       title: options.title,
     });
-    const triangleCount = Math.floor(mesh.indices.length / 3);
     if (triangleCount === 0) warnings.push("The source produced no triangles — the drawing is empty.");
     else if (segmentCount === 0) warnings.push("No silhouette edges were found for this view direction — the drawing is empty.");
     return { svg, segmentCount, triangleCount, warnings };

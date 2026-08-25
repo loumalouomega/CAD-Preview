@@ -394,19 +394,20 @@ server.registerTool(
   "export_svg_silhouette",
   {
     description:
-      "Write a 2D OUTLINE (silhouette) of a model to an .svg file. OUTLINE ONLY -- there is NO hidden-line removal, so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 SVG user unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does.",
+      "Write a 2D OUTLINE (silhouette) of a model to an .svg or .dxf file. OUTLINE ONLY -- there is NO hidden-line removal, so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 output unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does. Output format is \"svg\" (default) or \"dxf\" — DXF chains silhouette segments into LWPOLYLINEs (with bulges for arcs where detected) plus singleton LINEs.",
     inputSchema: {
       path: modelPath,
-      outputPath: z.string().describe("Absolute path to write the .svg to (must not be the source path)"),
+      outputPath: z.string().describe("Absolute path to write the .svg/.dxf to (must not be the source path)"),
       view: z.string().optional().describe("Named view: FRONT | BACK | TOP | BOTTOM | LEFT | RIGHT | ISO (default FRONT)"),
       direction: z.array(z.number()).optional().describe("Explicit view direction [x,y,z] (model -> camera); overrides view"),
       up: z.array(z.number()).optional().describe("Explicit up vector [x,y,z]"),
       unit: z.string().optional().describe("Output unit: mm | cm | m | in | ft (default mm, no conversion)"),
-      strokeWidth: z.number().optional().describe("Stroke width in output units (default: proportional to the drawing's size)"),
+      strokeWidth: z.number().optional().describe("SVG only: stroke width in output units (default: proportional to the drawing's size)"),
       tessellationQuality: z.string().optional().describe("B-rep sources only: draft | standard | fine (default fine)"),
+      format: z.enum(["svg", "dxf"]).optional().describe("Output format: svg (default) or dxf"),
     },
   },
-  wrap((args: { path: string; outputPath: string; view?: string; direction?: number[]; up?: number[]; unit?: string; strokeWidth?: number; tessellationQuality?: string }) =>
+  wrap((args: { path: string; outputPath: string; view?: string; direction?: number[]; up?: number[]; unit?: string; strokeWidth?: number; tessellationQuality?: string; format?: string }) =>
     exportSvgSilhouetteTool(ctx, args)
   )
 );

@@ -96,6 +96,8 @@ interface EditorSession {
   screenshot(): void;
   /** Export a 2D outline (silhouette) of the model as an SVG drawing. */
   exportSvg(): void;
+  /** Export a 2D outline (silhouette) of the model as a DXF drawing. */
+  exportDxf(): void;
   /** Post a message to this session's webview — the registry entry for the
    * linked-cameras relay (roadmap "Split view", Phase 3). */
   post(msg: HostToWebview): void;
@@ -185,6 +187,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
       vscode.commands.registerCommand("cad-preview.exportSvg", withSession((s) => s.exportSvg())),
+      vscode.commands.registerCommand("cad-preview.exportDxf", withSession((s) => s.exportDxf())),
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
@@ -574,7 +577,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         void this.handleScreenshot(document.uri, post, pending);
       },
       exportSvg: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg");
+      },
+      exportDxf: () => {
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf");
       },
       post,
     };
@@ -994,7 +1000,29 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "exportSvgRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg");
+        return;
+      }
+
+      if (msg.type === "importDxfRequest") {
+        try {
+          const dxfUris = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            openLabel: "Import DXF",
+            filters: { "DXF files": ["dxf"] },
+          });
+          const dxfUri = dxfUris?.[0];
+          if (!dxfUri) return;
+          const bytes = await vscode.workspace.fs.readFile(dxfUri);
+          post({ type: "importDxfResult", text: Buffer.from(bytes).toString("utf8") });
+        } catch (err) {
+          post({ type: "importDxfError", message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "exportDxfRequest") {
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf");
         return;
       }
 
@@ -1512,10 +1540,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     route: FileRoute,
     post: (msg: HostToWebview) => void,
     ops: EditOp[],
-    viewState: ViewState | undefined
+    viewState: ViewState | undefined,
+    format: "svg" | "dxf" = "svg"
   ): Promise<void> {
     if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
-      post({ type: "error", message: "Silhouette SVG export requires a STEP/IGES/BREP or STL/OBJ/PLY/glTF source." });
+      const label = format.toUpperCase();
+      post({ type: "error", message: `Silhouette ${label} export requires a STEP/IGES/BREP or STL/OBJ/PLY/glTF source.` });
       return;
     }
 
@@ -1537,11 +1567,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     if (!picked) return; // the primary choice — Escape cancels the export
 
     const unit = await this.pickExportUnit();
+    const ext = format;
+    const filterLabel = format === "dxf" ? "DXF Drawing" : "SVG Drawing";
 
     await this.promptSaveAndWrite(
       uri,
-      "svg",
-      "SVG Drawing",
+      ext,
+      filterLabel,
       async () => {
         const bytes = await vscode.workspace.fs.readFile(uri);
         const source: CompareSource =
@@ -1555,9 +1587,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           up: picked.up,
           unit,
           title: `${uri.path.slice(uri.path.lastIndexOf("/") + 1)} — ${picked.label}`,
+          format,
         });
         for (const warning of result.warnings) post({ type: "status", text: warning });
-        return Buffer.from(result.svg, "utf8");
+        const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;
+        return Buffer.from(content, "utf8");
       },
       post
     );

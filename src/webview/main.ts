@@ -7,6 +7,7 @@ import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildC
 import { viridisCssGradientStops } from "./colorMap";
 import { splitMeshesIntoFacets } from "./meshFacets";
 import { parseSvgPaths } from "../svgImport";
+import { parseDxf } from "../dxfImport";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
@@ -1916,6 +1917,31 @@ function pointsEqual(a: [number, number, number], b: [number, number, number]): 
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 }
 
+/**
+ * Converts a DXF file's entities into standalone sketch ops (roadmap Tier 2
+ * #1 Phase 1). `parseDxf` already returns validated `EditOp`s (one per
+ * LINE/CIRCLE/ARC, per-vertex arcs/lines for LWPOLYLINE/POLYLINE with bulges,
+ * otherwise a single closed/open addPolyline/spline) — this just pushes them.
+ * Flat XY at z=0, Y-up native, 1 DXF unit = 1mm, same as SVG placement but
+ * without the Y-negation (DXF is already Y-up).
+ */
+function importDxfPaths(dxfText: string): void {
+  if (sourceKind === "mesh") {
+    setStatus("DXF import builds sketch primitives, which are B-rep only — open a STEP/IGES/BREP file to use it.", true);
+    return;
+  }
+  const { ops, warnings } = parseDxf(dxfText);
+  if (ops.length === 0) {
+    // Surface parse warnings (e.g. no ENTITIES) if any, otherwise generic
+    const hint = warnings[0] ?? "No usable entities found (supported: LINE, LWPOLYLINE, POLYLINE, CIRCLE, ARC, SPLINE).";
+    setStatus(hint, true);
+    return;
+  }
+  for (const op of ops) editsModel.push(op);
+  const suffix = warnings.length > 0 ? ` (${warnings.join("; ")})` : "";
+  setStatus(`Imported ${ops.length} entit${ops.length === 1 ? "y" : "ies"} from DXF as sketch primitives.${suffix}`);
+}
+
 function setupFileMenu(): void {
   const menu = setupDropdown("file-menu", "file-dropdown");
   if (!menu) return;
@@ -1933,7 +1959,9 @@ function setupFileMenu(): void {
   item("menu-save-preprocess", () => post({ type: "savePreprocessRequest" }));
   item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
   item("menu-import-svg", () => post({ type: "importSvgRequest" }));
+  item("menu-import-dxf", () => post({ type: "importDxfRequest" }));
   item("menu-export-svg", () => post({ type: "exportSvgRequest" }));
+  item("menu-export-dxf", () => post({ type: "exportDxfRequest" }));
 }
 
 /**
@@ -2810,6 +2838,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "importSvgError":
       setStatus(`SVG import failed: ${msg.message}`, true);
+      break;
+
+    case "importDxfResult":
+      importDxfPaths(msg.text);
+      break;
+
+    case "importDxfError":
+      setStatus(`DXF import failed: ${msg.message}`, true);
       break;
 
     case "measureExactResult": {

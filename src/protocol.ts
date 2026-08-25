@@ -292,6 +292,8 @@ export type HostToWebview =
    * blocks further requests), so there's nothing to disambiguate. */
   | { type: "importSvgResult"; text: string }
   | { type: "importSvgError"; message: string }
+  | { type: "importDxfResult"; text: string }
+  | { type: "importDxfError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
@@ -384,11 +386,13 @@ export type WebviewToHost =
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
   | { type: "importSvgRequest" }
-  /** File ▸ Export Silhouette SVG… — like `exportRequest`, the host owns the
-   * whole flow from here (view quick-pick → unit quick-pick → save dialog), so
-   * there is nothing to correlate and no result message: success/failure come
+  | { type: "importDxfRequest" }
+  /** File ▸ Export Silhouette SVG/DXF… — like `exportRequest`, the host owns
+   * the whole flow from here (view quick-pick → unit quick-pick → save dialog),
+   * so there is nothing to correlate and no result message: success/failure come
    * back through the generic `status`/`error` messages. */
   | { type: "exportSvgRequest" }
+  | { type: "exportDxfRequest" }
   | {
       type: "measureExactRequest";
       requestId: string;

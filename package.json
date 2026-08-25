@@ -123,6 +123,10 @@
         "title": "CAD Preview: Export Silhouette SVG…"
       },
       {
+        "command": "cad-preview.exportDxf",
+        "title": "CAD Preview: Export Silhouette DXF…"
+      },
+      {
         "command": "cad-preview.compareModels",
         "title": "CAD Preview: Compare Models…"
       }
@@ -195,6 +199,10 @@
         },
         {
           "command": "cad-preview.exportSvg",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.exportDxf",
           "when": "activeCustomEditorId == 'cad-preview.mesh'"
         }
       ]

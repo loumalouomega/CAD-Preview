@@ -2228,8 +2228,9 @@ export async function exportSvgSilhouetteTool(
     unit?: string;
     strokeWidth?: number;
     tessellationQuality?: string;
+    format?: string;
   }
-): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[] }> {
+): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
@@ -2278,6 +2279,10 @@ export async function exportSvgSilhouetteTool(
   }
 
   const quality = normalizeTessellationQuality(params.tessellationQuality ?? "fine");
+  const format = params.format === "dxf" ? "dxf" as const : "svg" as const;
+  if (params.format != null && params.format !== "svg" && params.format !== "dxf") {
+    warnings.push(`Unknown format "${params.format}" — valid: svg, dxf. Falling back to "svg".`);
+  }
 
   const bytes = await readModelBytes(modelPath);
   const { ops } = await readEdits(modelPath);
@@ -2303,17 +2308,21 @@ export async function exportSvgSilhouetteTool(
     strokeWidth: params.strokeWidth,
     quality,
     title: `${path.basename(modelPath)} — ${viewName}`,
+    format,
   });
-  await fs.writeFile(outputPath, result.svg, "utf8");
+  const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;
+  await fs.writeFile(outputPath, content, "utf8");
 
   return {
     written: outputPath,
-    bytes: Buffer.byteLength(result.svg, "utf8"),
+    bytes: Buffer.byteLength(content, "utf8"),
     view: viewName,
     segmentCount: result.segmentCount,
     triangleCount: result.triangleCount,
     unit,
     warnings: [...warnings, ...result.warnings],
+    format,
+    ...(format === "dxf" ? { chainCount: result.chainCount, lineCount: result.lineCount } : {}),
   };
 }
 
