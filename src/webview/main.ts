@@ -32,6 +32,15 @@ import type { MeshSizePreset } from "../viewerDefaults";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import { VisibilityState } from "./visibilityState";
+import { collectTargets } from "./picking";
+import {
+  FACE_FILTERS,
+  LINE_FILTERS,
+  applyFaceFilter,
+  applyLineFilter,
+  type FaceFilterId,
+  type LineFilterId,
+} from "./selectFilters";
 import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
 import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, snapTranslateDelta, nearestSnapPoint, type TransformBase } from "./gizmoTransform";
 import { planeForAxis, type ClipAxis } from "./clipping";
@@ -1402,8 +1411,114 @@ function setupSelectionControls(): void {
       modeBtns.forEach((b) => b.classList.toggle("active", b === btn));
       if (selecting) apply();
       reflect();
+      syncFilterUi();
     });
   }
+
+  // ── Geometric selection filters (roadmap Tier 2 item 1, Phase 1) ──────────
+  // One registry-driven predicate dropdown + numeric field + seam toggle, run
+  // against `collectTargets(viewer.getModel(), selectMode)` and bulk-injected
+  // into `SelectionSet`. Pure predicates live in `selectFilters.ts`.
+  const filterGroup = document.getElementById("filter-group") as HTMLElement | null;
+  const filterPred = document.getElementById("filter-pred") as HTMLSelectElement | null;
+  const filterArg = document.getElementById("filter-arg") as HTMLInputElement | null;
+  const filterExcludeSmooth = document.getElementById("filter-exclude-smooth") as HTMLInputElement | null;
+  const filterReplace = document.getElementById("filter-replace") as HTMLButtonElement | null;
+  const filterAdd = document.getElementById("filter-add") as HTMLButtonElement | null;
+
+  const filterSupportsMode = (m: EntityType) => m === "surface" || m === "line";
+
+  // Keep the predicate dropdown in sync with the active pick mode — the
+  // option list is registry-driven (`FACE_FILTERS`/`LINE_FILTERS`), so this
+  // populates the `<select>` whenever the mode changes (including the
+  // `setSelectableModes` mesh-source path, via the exposed `__syncFilterUi`).
+  let lastFilterMode: EntityType | null = null;
+  const syncFilterUi = () => {
+    if (filterPred && lastFilterMode !== selectMode) {
+      const wantLine = selectMode === "line";
+      const wantSurface = selectMode === "surface";
+      const opts = wantLine ? LINE_FILTERS : wantSurface ? FACE_FILTERS : [];
+      const prevVal = filterPred.value;
+      filterPred.innerHTML = "";
+      for (const o of opts) {
+        const el = document.createElement("option");
+        el.value = o.id;
+        el.textContent = o.label;
+        filterPred.appendChild(el);
+      }
+      // Preserve previous selection if it still exists in the new mode.
+      if (opts.some((o) => o.id === prevVal)) filterPred.value = prevVal;
+      lastFilterMode = selectMode;
+    }
+    const supported = filterSupportsMode(selectMode);
+    const opts = selectMode === "line" ? LINE_FILTERS : selectMode === "surface" ? FACE_FILTERS : [];
+    const cur = filterPred ? (opts.find((o) => o.id === filterPred.value) ?? opts[0]) : undefined;
+    const needsArg = cur ? cur.argKind !== "none" : false;
+    if (filterPred) filterPred.disabled = !supported;
+    if (filterArg) {
+      filterArg.disabled = !supported || !needsArg;
+      filterArg.placeholder = needsArg ? (cur?.argKind === "count" ? "N" : "value") : "—";
+    }
+    if (filterExcludeSmooth) filterExcludeSmooth.disabled = selectMode !== "line";
+    if (filterReplace) filterReplace.disabled = !supported;
+    if (filterAdd) filterAdd.disabled = !supported;
+    if (filterGroup) filterGroup.style.opacity = supported ? "" : "0.45";
+  };
+
+  const runFilter = (replace: boolean) => {
+    const model = viewer.getModel();
+    if (!model) {
+      setStatus("No model loaded.", true);
+      return;
+    }
+    if (!filterSupportsMode(selectMode)) {
+      setStatus(`Filters are not available in ${selectMode} mode — switch to Surf or Line.`, true);
+      return;
+    }
+    if (!filterPred) return;
+    const filterId = filterPred.value;
+    const argRaw = filterArg?.value.trim() ?? "";
+    const cur =
+      (selectMode === "line" ? (LINE_FILTERS as readonly { id: string; argKind: string }[]) : (FACE_FILTERS as readonly { id: string; argKind: string }[])).find(
+        (o) => o.id === filterId
+      ) ?? null;
+    let arg = 0;
+    if (cur && cur.argKind !== "none") {
+      if (argRaw === "") {
+        setStatus(cur.argKind === "count" ? "Enter a count N (e.g. 5)." : "Enter a threshold value.", true);
+        return;
+      }
+      arg = Number(argRaw);
+      if (!Number.isFinite(arg)) {
+        setStatus(`"${argRaw}" is not a number.`, true);
+        return;
+      }
+      if (cur.argKind === "count" && (!Number.isInteger(arg) || arg <= 0)) {
+        setStatus("Count must be a positive integer.", true);
+        return;
+      }
+    }
+    const targets = collectTargets(model, selectMode);
+    const excludeSmooth = !!filterExcludeSmooth?.checked;
+    const result =
+      selectMode === "line"
+        ? applyLineFilter(targets, filterId as LineFilterId, arg, excludeSmooth)
+        : applyFaceFilter(targets, filterId as FaceFilterId, arg);
+    if (replace) selection.clear();
+    for (const e of result) selection.add(e);
+    renderHighlight();
+    setStatus(result.length === 0 ? "Filter matched nothing." : `Filter matched ${result.length} of ${targets.length} ${selectMode === "line" ? "edges" : "faces"}.`);
+  };
+
+  filterPred?.addEventListener("change", syncFilterUi);
+  filterReplace?.addEventListener("click", () => runFilter(true));
+  filterAdd?.addEventListener("click", () => runFilter(false));
+
+  // Expose the sync helper so `setSelectableModes` (outside this closure) can
+  // keep the filter form's disabled state in sync when mesh sources restrict
+  // the available pick modes.
+  (globalThis as unknown as { __syncFilterUi?: () => void }).__syncFilterUi = syncFilterUi;
+  syncFilterUi();
 }
 
 /** Restricts pickable entity kinds (mesh formats expose only whole "volumes"). */
@@ -1420,6 +1535,10 @@ function setSelectableModes(modes: EntityType[]): void {
     document.querySelectorAll(".sel-mode").forEach((b) => b.classList.toggle("active", b === active));
     if (selecting) viewer.setSelectionMode(selectMode);
   }
+  // Keep the geometric filter form's disabled state in sync when mesh
+  // sources restrict the available pick modes (the filter UI lives inside
+  // `setupSelectionControls`'s closure, so bounce through the exposed sync).
+  (globalThis as unknown as { __syncFilterUi?: () => void }).__syncFilterUi?.();
 }
 
 // ── Measurement toolbar (distance/edge length/angle/radius) ────────────────

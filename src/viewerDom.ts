@@ -166,6 +166,20 @@ export function viewerBodyHtml(): string {
           <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">${icon("surface")} Surf</button>
           <button class="sel-mode" data-mode="line" title="Pick lines (edges)">${icon("line")} Line</button>
         </div>
+        <div class="tb-sep"></div>
+        <div id="filter-group" class="tb-filter" title="Geometric filter — select entities by shape predicates">
+          <div class="tb-row">
+            <select id="filter-pred" title="Filter predicate"></select>
+            <input id="filter-arg" type="text" inputmode="decimal" placeholder="value" title="Threshold / count for the selected filter">
+          </div>
+          <div class="tb-row">
+            <label class="tb-check" for="filter-exclude-smooth" title="When set, edge filters skip tangent seam edges (patch seams on what is logically one curved surface)">
+              <input type="checkbox" id="filter-exclude-smooth"> No seams
+            </label>
+            <button id="filter-replace" title="Replace the current selection with the filtered result">Select</button>
+            <button id="filter-add" title="Add the filtered result to the current selection">Add</button>
+          </div>
+        </div>
       </div>
     </div>
     <div class="tb-menu-wrap">

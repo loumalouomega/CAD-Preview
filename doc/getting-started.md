@@ -138,7 +138,7 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 
 ![The Select menu: Selection mode plus the Point/Vol/Surf/Line pick modes.](/screenshots/select-menu.png)
 
-**Selection mode** toggles entity picking; the **Point · Vol · Surf · Line** row chooses what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). Pick modes a given file format can't offer are greyed out.
+**Selection mode** toggles entity picking; the **Point · Vol · Surf · Line** row chooses what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). Pick modes a given file format can't offer are greyed out, and a filter form below the row lets you **select by shape instead of by clicking**: faces — `Normal ±X/±Y/±Z`, `Planar`, `Area ≥/≤`, `Largest/Smallest N`; lines — `Along X/Y/Z`, `Length ≥/≤`, `Longest/Shortest N` — plus a `No seams` toggle that skips tangent seam edges. `Vol`/`Point` modes grey the whole form (a volume-level predicate would need group deduplication deferred with Phase 2). **Select** replaces the current selection; **Add** unions into it.
 
 **Measure ▾**
 

@@ -815,6 +815,15 @@ Every mutation fires `onChange`, wired in `main.ts` to the shared `syncEdits()`:
 
 **Resolve-on-read:** `EditsModel` itself is deliberately not variables-aware. `main.ts`'s `currentResolvedOps()` re-runs `resolveEditOps` (`src/editVariables.ts`) over `list()` at every consumption point, so ops sitting in the redo buffer can never resurface with stale numbers — no eager patch pass could reach them.
 
+## `src/webview/selectFilters.ts`
+
+A registry-driven geometric filter vocabulary for **Select ▾** (roadmap Tier 2 item 1, Phase 1, client-side). Pure, THREE-yes/DOM-no, unit-tested in `selectFilters.test.ts`.
+
+- `FilterOption {id, label, argKind: "none"|"value"|"count"}` — `FACE_FILTERS`/`LINE_FILTERS` drive both the dropdown contents and the arg-field enable/disable. Volume/point modes show no options (the form is greyed — volume-level predicates need the group-dedupe asymmetry deferred with Phase 2).
+- Face predicates: `Normal ±X/±Y/±Z` (area-weighted mean normal within `DIRECTION_TOLERANCE_DEG = 5°`), `Planar` (every triangle normal within the tolerance of the mean), `Area ≥/≤`, `Largest/Smallest N`.
+- Line predicates: `Along X/Y/Z` (chord direction, sign-insensitive), `Length ≥/≤`, `Longest/Shortest N`, plus a `No seams` toggle (`userData.smooth === true` lines dropped before any other test).
+- `faceArea`, `faceNormal`, `faceIsPlanar`, `edgeLength`, `edgeDirection` helpers; `applyFaceFilter(targets, id, arg)` / `applyLineFilter(targets, id, arg, excludeSmooth)` return `SelectedEntity[]` ready for bulk injection into `SelectionSet`. `collectTargets` already `traverseVisible`s hidden-subtree exclusion, so a filter never matches a hidden part. Deliberately the curated vocabulary future items must reuse — item 10's context-menu entry point and Tier 4's selector-synthesis predicate AST are both specified to reuse this vocabulary rather than invent a second.
+
 ## `src/webview/variablesModel.ts`, `src/webview/variablesPanel.ts`
 
 `VariablesModel` mirrors `PartsModel`/`EditsModel` (pure data, `onChange` on every mutation, `load()` silent): `add()` (auto-names `L1, L2, …`, expr `"0"`), `rename(i, name)` (returns `false` for an invalid/duplicate name so the panel restores the input), `setExpr(i, expr)`, `remove(i)`, `list()` (clones). Variable mutations are **not** undoable ops — they live outside the `EditsModel` stack; undone/redone ops re-resolve against the current values.

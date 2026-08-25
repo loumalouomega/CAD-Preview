@@ -377,6 +377,35 @@ body {
   font-size: 12px;
 }
 
+/* Geometric selection filters (roadmap Tier 2 item 1, Phase 1) — a predicate
+ * dropdown + numeric field + seam toggle inside the Select ▾ panel. Reuses
+ * the `.tb-row` flex container so nothing bespoke is needed for layout; only
+ * the native `<select>`/`<input>` appearance needs a small, non-button reset
+ * (otherwise `#toolbar button`'s blue background would win — it targets the
+ *  tag, not these two, so no specificity trap here). */
+#toolbar .tb-dropdown .tb-filter select,
+#toolbar .tb-dropdown .tb-filter input[type="text"] {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+}
+#toolbar .tb-dropdown .tb-filter select:disabled,
+#toolbar .tb-dropdown .tb-filter input:disabled {
+  opacity: 0.45;
+}
+#toolbar .tb-dropdown .tb-filter .tb-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
 .tb-sep {
   height: 1px;
   margin: 4px 6px;
