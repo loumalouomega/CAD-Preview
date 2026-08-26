@@ -370,6 +370,17 @@ setDisplayMode(mode: DisplayMode): void
 - **flat**: swaps `mesh.material` to a lazily-built, cached unlit `MeshBasicMaterial` (`userData.flatMaterial`) — a genuine material-class swap, the one exception to this codebase's "materials built once, only properties mutated" convention. Since `MeshBasicMaterial` has no `.emissive`, `renderSelection()`'s face branch falls back to a direct `.color` swap (the same technique edges/points already use) when `"emissive" in mat` is false. **Callers MUST call `setEntityColors()` + `renderSelection()` (or `main.ts`'s `refreshColors()`, which does both) right after `setDisplayMode()`** — the newly-active material starts at its default colour/no highlight, since colours/selection aren't tracked per-material internally.
 - **hiddenLines**: builds/tears down `hiddenLineGhosts`, a `THREE.Group` of dimmed, `depthTest:false`/`depthWrite:false`, `transparent:true` copies of every edge line (sharing geometry with the real edge, never disposing it) — a scene sibling of `model` like `meshOverlay`, so `collectTargets` (which only ever traverses `model`) never picks them. The layering trick needs no per-pixel occlusion logic: `transparent:true` objects always render in a pass strictly after every opaque object (faces + the real, depth-tested edges), so a ghost paints faintly everywhere its line passes regardless of true depth, while the real edge — drawn first, depth-tested — already painted full-strength wherever it's genuinely visible, staying visually dominant there even though the ghost technically also draws a faint tint on top.
 
+**Live operation preview (`setOpPreview`)**:
+
+`setOpPreview(group: THREE.Group | null): void`
+
+Replaces the current model with a live preview of the in-progress edit operation, rendering the preview group as a scene sibling of `model` (never a child). While a preview is active, the model is hidden (`model.visible = false`). The preview group carries an intent tint via material lerp: green for additive ops (fuse/add*), red for subtractive ops (cut/holes/shell/split), blue for wire/reference ops (profiles/curves/section/surface-from-lines), and neutral (no tint) for transforms/fillet/chamfer — per kind, documented below. The preview respects `baseOpacity` composition convention, so it never overrides the existing dimming from `highlightGroup()`. Callers must ensure the preview group is properly disposed when the operation is applied or cancelled — `main.ts` handles this via `cancelGizmoPreview()` before every real op commit and on selection/model rebuild. The preview is **not** persisted across document reloads; it resets on every new model load.
+
+- **green** (additive): fuse, add*, feature modeling, patterns
+- **red** (subtractive): cut, hole, shell, split
+- **blue** (wire/reference): profile, curve, section, surface-from-lines
+- **neutral** (transforms/fillet/chamfer): untinted, per-band deferred per roadmap design question
+
 **Appearance (session-only, never persisted — mirrors `toggleGrid`'s "always wins once set"):**
 
 ```typescript

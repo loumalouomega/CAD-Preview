@@ -724,9 +724,11 @@ type WebviewToHost =
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
   | { type: 'importSvgRequest' }
   | { type: 'importDxfRequest' }
-  | { type: 'exportDxfRequest' }
+| { type: 'exportDxfRequest' }
+  | { type: 'opPreviewRequest'; requestId: string }
+  | { type: 'opPreviewResult'; requestId: string; groupId: string; outcomes: OpOutcome[] }
+  | { type: 'opPreviewError'; requestId: string; message: string }
 ```
-
 ### `partsChanged`
 
 Sent whenever the user mutates parts (create / rename / recolour / delete / assign / remove entity). The host debounces these (~500 ms) and writes the full part list to the `<model>.parts.json` sidecar via `writeParts()`. The CAD file itself is never written — only the sidecar.

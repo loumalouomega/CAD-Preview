@@ -962,6 +962,12 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     setStatus("");
   },
   onFormChanged: updateGizmoForForm,
+  onPreviewDraftChanged: () => {
+    // no-op at the host level; the panel's own wiring schedules the preview.
+  },
+  onPreviewCancel: () => {
+    // no-op at the host level; the panel's own wiring discards the preview.
+  }
 });
 
 // ── Meshing (GMSH FE-mesh generation) ────────────────────────────────────
