@@ -14,7 +14,8 @@ import { PartsPanel } from "./partsPanel";
 import { AnnotationsModel } from "./annotationsModel";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
-import { EditsPanel } from "./editsPanel";
+import { EditsPanel, type TransformDraft, type FeatureDraft, type ModifyDraft, type PrimitiveDraft, type HoleDraft, type ProfileDraft, type WireframeDraft, type AlignDraft, type PatternDraft } from "./editsPanel";
+import { OpPreviewScheduler } from "./opPreviewScheduler";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
@@ -56,6 +57,7 @@ import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
 import type { OpOutcome } from "../editOps";
+import { validateEditOp } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -522,85 +524,43 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   // click — never a looped undo()/redo() sequence (op-history scrubbing).
   onJumpTo: (index) => editsModel.jumpTo(index),
   onApplyTransform: (draft) => {
-    // Transforms act on whole volumes. Use the selected volume ids; require at
-    // least one so an edit is never silently a no-op.
-    const targets = selectedVolumes();
-    if (targets.length === 0) {
-      setStatus("Select one or more volumes (Vol mode) before applying a transform.", true);
-      return;
-    }
-    let op: EditOp;
-    switch (draft.kind) {
-      case "translate": op = { op: "translate", targets, vec: draft.vec }; break;
-      case "rotate": op = { op: "rotate", targets, axisPoint: draft.axisPoint, axisDir: draft.axisDir, angleDeg: draft.angleDeg }; break;
-      case "scale": op = { op: "scale", targets, center: draft.center, factors: draft.factors }; break;
-      case "mirror": op = { op: "mirror", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal }; break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
+    const id = draft.kind === "translate" ? "translate" : draft.kind === "rotate" ? "rotate" : draft.kind === "scale" ? "scale" : "mirror";
+    const resolved = buildOpForPanel(id, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this transform.", true); return; }
     cancelGizmoPreview(); // discard the live preview — the real op replay rebuilds everything
-    editsModel.push(op);
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onCaptureBooleanA: () => {
     booleanA = selectedVolumes();
     if (booleanA.length === 0) setStatus("Select volumes for operand A before Set A.", true);
+    // Capturing A changes the boolean form's preview inputs — refresh it.
+    scheduleOpPreview();
     return booleanA.length;
   },
   onApplyBoolean: (kind) => {
-    const b = selectedVolumes();
-    if (booleanA.length === 0) { setStatus("Set operand A first (select volumes → Set A).", true); return; }
-    if (b.length === 0) { setStatus("Select operand B volumes before applying.", true); return; }
-    if (b.some((id) => booleanA.includes(id))) {
-      setStatus("Operands A and B must be different volumes.", true);
-      return;
-    }
-    editsModel.push({ op: "boolean", kind, a: booleanA, b });
+    const resolved = buildOpForPanel(kind === "union" ? "booleanUnion" : kind === "subtract" ? "booleanSubtract" : "booleanIntersect", {});
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this boolean.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     booleanA = [];
     selection.clear();
     renderHighlight();
     setStatus("");
   },
   onApplyFillet: (kind, amount, exprs) => {
-    // Fillet/chamfer act on selected edges (Line mode), B-rep only.
-    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
-    if (edges.length === 0) {
-      setStatus("Select one or more edges (Line mode) before applying a fillet/chamfer.", true);
-      return;
-    }
-    if (amount <= 0) { setStatus("Enter a positive radius / setback.", true); return; }
-    const op: EditOp =
-      kind === "fillet" ? { op: "fillet", edges, radius: amount } : { op: "chamfer", edges, distance: amount };
-    // The panel's shared field is named `amount`; remap onto the op's real field.
-    if (exprs?.amount) op.exprs = { [kind === "fillet" ? "radius" : "distance"]: exprs.amount };
-    editsModel.push(op);
+    const resolved = buildOpForPanel(kind, { amount, exprs: exprs?.amount ? { amount: exprs.amount } : undefined });
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyFeature: (draft) => {
-    // Feature modeling builds a new body from selected profile faces (Surf mode)
-    // and, for sweep, a path edge (Line mode). B-rep only.
-    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
-    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
-    let op: EditOp | null = null;
-    switch (draft.kind) {
-      case "extrude":
-        if (!faces[0]) { setStatus("Select a profile face (Surf mode) to extrude.", true); return; }
-        op = { op: "extrude", profile: faces[0], dir: draft.dir, length: draft.length };
-        break;
-      case "revolve":
-        if (!faces[0]) { setStatus("Select a profile face (Surf mode) to revolve.", true); return; }
-        op = { op: "revolve", profile: faces[0], axisPoint: draft.axisPoint, axisDir: draft.axisDir, angleDeg: draft.angleDeg };
-        break;
-      case "sweep":
-        if (!faces[0] || !edges[0]) { setStatus("Select a profile face and a path edge for sweep.", true); return; }
-        op = { op: "sweep", profile: faces[0], path: edges[0] };
-        break;
-      case "loft":
-        if (faces.length < 2) { setStatus("Select 2+ profile faces (Surf mode) to loft.", true); return; }
-        op = { op: "loft", profiles: faces };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this feature.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyExplode: (factor, exprs) => {
@@ -618,327 +578,62 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   },
   onExplodePreviewCancel: cancelExplodePreview,
   onApplyMate: () => {
-    // Mate aligns the first selected face onto the second (Surf mode), B-rep only.
-    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
-    if (faces.length < 2) {
-      setStatus("Select two faces (Surf mode): face A first, then face B, to mate.", true);
-      return;
-    }
-    editsModel.push({ op: "mate", faceA: faces[0], faceB: faces[1] });
+    const resolved = buildOpForPanel("mate", {});
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot mate.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyAlign: (draft) => {
-    const targets = selectedVolumes();
-    if (targets.length === 0) {
-      setStatus("Select one or more volumes (Vol mode) before aligning.", true);
-      return;
-    }
-    const op: EditOp = { op: "align", targets, axis: draft.axis, extent: draft.extent, to: draft.to };
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel("align", draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot align.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyPattern: (draft) => {
-    const targets = selectedVolumes();
-    if (targets.length === 0) {
-      setStatus("Select one or more volumes (Vol mode) before patterning.", true);
-      return;
-    }
-    if (!Number.isInteger(draft.count) || draft.count < 2) {
-      setStatus("Count must be an integer ≥ 2.", true);
-      return;
-    }
-    let op: EditOp;
-    switch (draft.kind) {
-      case "patternLinear":
-        if (!draft.direction.some((v) => v !== 0)) { setStatus("Direction must be non-zero.", true); return; }
-        if (draft.spacing === 0) { setStatus("Spacing must be non-zero.", true); return; }
-        op = { op: "patternLinear", targets, direction: draft.direction, spacing: draft.spacing, count: draft.count };
-        break;
-      case "patternCircular":
-        if (!draft.axisDir.some((v) => v !== 0)) { setStatus("Axis must be non-zero.", true); return; }
-        op = {
-          op: "patternCircular", targets, axisPoint: draft.axisPoint,
-          axisDir: draft.axisDir, angleDeg: draft.angleDeg, count: draft.count,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this pattern.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyModify: (draft) => {
     // Shell takes its opening faces from the Surf selection; split/section take
     // their target volumes from the Vol selection. B-rep only.
-    let op: EditOp;
-    switch (draft.kind) {
-      case "shell": {
-        const openingFaces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
-        if (openingFaces.length === 0) {
-          setStatus("Select the opening face(s) (Surf mode) before shelling.", true);
-          return;
-        }
-        if (draft.thickness === 0) { setStatus("Thickness must be non-zero.", true); return; }
-        op = { op: "shell", thickness: draft.thickness, openingFaces };
-        break;
-      }
-      case "splitByPlane": {
-        const targets = selectedVolumes();
-        if (targets.length === 0) { setStatus("Select one or more volumes (Vol mode) to split.", true); return; }
-        if (!draft.planeNormal.some((v) => v !== 0)) { setStatus("Plane normal must be non-zero.", true); return; }
-        op = {
-          op: "splitByPlane", targets, planePoint: draft.planePoint,
-          planeNormal: draft.planeNormal, keep: draft.keep,
-        };
-        break;
-      }
-      case "section": {
-        const targets = selectedVolumes();
-        if (targets.length === 0) { setStatus("Select one or more volumes (Vol mode) to section.", true); return; }
-        if (!draft.planeNormal.some((v) => v !== 0)) { setStatus("Plane normal must be non-zero.", true); return; }
-        op = { op: "section", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal };
-        break;
-      }
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this modify op.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyPrimitive: (draft) => {
-    // Primitives are self-contained placements — no selection/operand needed.
-    // A light client-side guard avoids silently pushing an op that
-    // validateEditOp would later drop on reload (non-positive dimensions).
-    let op: EditOp;
-    switch (draft.kind) {
-      case "addBox":
-        if (draft.size.some((s) => s <= 0)) { setStatus("Box size must be positive.", true); return; }
-        op = { op: "addBox", center: draft.center, size: draft.size };
-        break;
-      case "addSphere":
-        if (draft.radius <= 0) { setStatus("Sphere radius must be positive.", true); return; }
-        op = { op: "addSphere", center: draft.center, radius: draft.radius };
-        break;
-      case "addCylinder":
-        if (draft.radius <= 0 || draft.height <= 0) { setStatus("Radius and height must be positive.", true); return; }
-        op = { op: "addCylinder", center: draft.center, axis: draft.axis, radius: draft.radius, height: draft.height };
-        break;
-      case "addCone":
-        if (draft.radius1 <= 0 && draft.radius2 <= 0) { setStatus("At least one cone radius must be positive.", true); return; }
-        if (draft.height <= 0) { setStatus("Height must be positive.", true); return; }
-        op = {
-          op: "addCone", center: draft.center, axis: draft.axis,
-          radius1: draft.radius1, radius2: draft.radius2, height: draft.height,
-        };
-        break;
-      case "addTorus":
-        if (draft.majorRadius <= 0 || draft.minorRadius <= 0 || draft.minorRadius >= draft.majorRadius) {
-          setStatus("Torus needs 0 < minor radius < major radius.", true);
-          return;
-        }
-        op = {
-          op: "addTorus", center: draft.center, axis: draft.axis,
-          majorRadius: draft.majorRadius, minorRadius: draft.minorRadius,
-        };
-        break;
-      case "addPrism":
-        if (draft.radius <= 0 || draft.height <= 0) { setStatus("Radius and height must be positive.", true); return; }
-        if (!Number.isInteger(draft.sides) || draft.sides < 3) { setStatus("Sides must be an integer ≥ 3.", true); return; }
-        op = {
-          op: "addPrism", center: draft.center, axis: draft.axis,
-          radius: draft.radius, sides: draft.sides, height: draft.height,
-        };
-        break;
-      case "addWedge":
-        if (draft.dx <= 0 || draft.dy <= 0 || draft.dz <= 0) { setStatus("Wedge sizes must be positive.", true); return; }
-        if (draft.ltx < 0) { setStatus("Top X extent must be ≥ 0.", true); return; }
-        if (!nonParallel(draft.axis, draft.up)) { setStatus("Up must not be parallel to Axis.", true); return; }
-        op = {
-          op: "addWedge", center: draft.center, axis: draft.axis, up: draft.up,
-          dx: draft.dx, dy: draft.dy, dz: draft.dz, ltx: draft.ltx,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot add this primitive.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyHole: (draft) => {
-    // Holes are subtractive: they cut into the selected volumes, so a target
-    // selection is required (unlike the self-contained primitives above).
-    const targets = selectedVolumes();
-    if (targets.length === 0) {
-      setStatus("Select one or more volumes (Vol mode) to cut the hole into.", true);
-      return;
-    }
-    if (draft.radius <= 0 || draft.depth <= 0) { setStatus("Radius and depth must be positive.", true); return; }
-    let op: EditOp;
-    switch (draft.kind) {
-      case "addHole":
-        op = { op: "addHole", targets, position: draft.position, axis: draft.axis, radius: draft.radius, depth: draft.depth };
-        break;
-      case "addCounterboreHole":
-        if (draft.cbRadius <= draft.radius) { setStatus("Counterbore radius must exceed the hole radius.", true); return; }
-        if (draft.cbDepth <= 0 || draft.cbDepth >= draft.depth) { setStatus("Counterbore depth must satisfy 0 < depth < hole depth.", true); return; }
-        op = {
-          op: "addCounterboreHole", targets, position: draft.position, axis: draft.axis,
-          radius: draft.radius, depth: draft.depth, cbRadius: draft.cbRadius, cbDepth: draft.cbDepth,
-        };
-        break;
-      case "addCountersinkHole":
-        if (draft.csRadius <= draft.radius) { setStatus("Countersink radius must exceed the hole radius.", true); return; }
-        if (draft.csAngleDeg <= 0 || draft.csAngleDeg >= 180) { setStatus("Countersink angle must be between 0° and 180°.", true); return; }
-        op = {
-          op: "addCountersinkHole", targets, position: draft.position, axis: draft.axis,
-          radius: draft.radius, depth: draft.depth, csRadius: draft.csRadius, csAngleDeg: draft.csAngleDeg,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot cut this hole.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyProfile: (draft) => {
     // 2D profiles are self-contained placements — no selection/operand needed.
-    // Sketched now, picked (Surf mode) and used as an extrude/revolve/sweep/loft
-    // profile later. A light client-side guard mirrors validateEditOp's checks.
-    let op: EditOp;
-    switch (draft.kind) {
-      case "addCircleProfile":
-        if (draft.radius <= 0) { setStatus("Circle radius must be positive.", true); return; }
-        op = { op: "addCircleProfile", center: draft.center, normal: draft.normal, radius: draft.radius };
-        break;
-      case "addRectangleProfile":
-        if (draft.width <= 0 || draft.height <= 0) { setStatus("Width and height must be positive.", true); return; }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addRectangleProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, width: draft.width, height: draft.height,
-        };
-        break;
-      case "addPolygonProfile":
-        if (draft.radius <= 0) { setStatus("Radius must be positive.", true); return; }
-        if (!Number.isInteger(draft.sides) || draft.sides < 3) { setStatus("Sides must be an integer ≥ 3.", true); return; }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addPolygonProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, radius: draft.radius, sides: draft.sides,
-        };
-        break;
-      case "addEllipseProfile":
-        if (draft.radiusX <= 0 || draft.radiusY <= 0) { setStatus("Both radii must be positive.", true); return; }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addEllipseProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, radiusX: draft.radiusX, radiusY: draft.radiusY,
-        };
-        break;
-      case "addRoundedRectangleProfile":
-        if (draft.width <= 0 || draft.height <= 0) { setStatus("Width and height must be positive.", true); return; }
-        if (draft.cornerRadius <= 0 || 2 * draft.cornerRadius >= Math.min(draft.width, draft.height)) {
-          setStatus("Corner radius must satisfy 0 < 2·r < min(width, height).", true);
-          return;
-        }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addRoundedRectangleProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, width: draft.width, height: draft.height, cornerRadius: draft.cornerRadius,
-        };
-        break;
-      case "addSlotProfile":
-        if (draft.width <= 0 || draft.length <= draft.width) {
-          setStatus("Slot needs length > width > 0.", true);
-          return;
-        }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addSlotProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, length: draft.length, width: draft.width,
-        };
-        break;
-      case "addTrapezoidProfile":
-        if (draft.bottomWidth <= 0 || draft.topWidth <= 0 || draft.height <= 0) {
-          setStatus("Trapezoid widths and height must be positive.", true);
-          return;
-        }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addTrapezoidProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, bottomWidth: draft.bottomWidth, topWidth: draft.topWidth, height: draft.height,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot sketch this profile.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyWireframe: (draft) => {
-    // Point/Line/Arc are self-contained placements — no selection needed.
-    let op: EditOp;
-    switch (draft.kind) {
-      case "addPoint":
-        op = { op: "addPoint", position: draft.position };
-        break;
-      case "addLine":
-        if (draft.start.every((v, i) => v === draft.end[i])) {
-          setStatus("Start and end must differ.", true);
-          return;
-        }
-        op = { op: "addLine", start: draft.start, end: draft.end };
-        break;
-      case "addArc":
-        if (draft.radius <= 0) { setStatus("Arc radius must be positive.", true); return; }
-        if (draft.startAngleDeg === draft.endAngleDeg) { setStatus("Start and end angle must differ.", true); return; }
-        op = {
-          op: "addArc", center: draft.center, normal: draft.normal, radius: draft.radius,
-          startAngleDeg: draft.startAngleDeg, endAngleDeg: draft.endAngleDeg,
-        };
-        break;
-      case "addPolyline": {
-        const min = draft.closed ? 3 : 2;
-        if (draft.points.length < min) { setStatus(`A ${draft.closed ? "closed " : ""}polyline needs ${min}+ points.`, true); return; }
-        if (hasRepeatedConsecutive(draft.points)) { setStatus("Consecutive points must differ.", true); return; }
-        op = { op: "addPolyline", points: draft.points, closed: draft.closed };
-        break;
-      }
-      case "addThreePointArc": {
-        const { p1, p2, p3 } = draft;
-        const same = (a: number[], b: number[]) => a.every((v, i) => v === b[i]);
-        if (same(p1, p2) || same(p2, p3) || same(p1, p3)) { setStatus("The three points must be distinct.", true); return; }
-        op = { op: "addThreePointArc", p1, p2, p3 };
-        break;
-      }
-      case "addSpline":
-        if (draft.points.length < 2) { setStatus("A spline needs 2+ points.", true); return; }
-        if (hasRepeatedConsecutive(draft.points)) { setStatus("Consecutive points must differ.", true); return; }
-        op = { op: "addSpline", points: draft.points };
-        break;
-      case "addBezier":
-        if (draft.controlPoints.length < 2) { setStatus("A Bézier needs 2+ control points.", true); return; }
-        op = { op: "addBezier", controlPoints: draft.controlPoints };
-        break;
-      case "addEllipseArc":
-        if (draft.radiusX <= 0 || draft.radiusY <= 0) { setStatus("Both radii must be positive.", true); return; }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        if (draft.startAngleDeg === draft.endAngleDeg) { setStatus("Start and end angle must differ.", true); return; }
-        op = {
-          op: "addEllipseArc", center: draft.center, normal: draft.normal, up: draft.up,
-          radiusX: draft.radiusX, radiusY: draft.radiusY,
-          startAngleDeg: draft.startAngleDeg, endAngleDeg: draft.endAngleDeg,
-        };
-        break;
-      case "addHelix":
-        if (draft.radius <= 0 || draft.pitch <= 0 || draft.turns <= 0) {
-          setStatus("Helix radius, pitch, and turns must all be positive.", true);
-          return;
-        }
-        op = {
-          op: "addHelix", center: draft.center, axis: draft.axis,
-          radius: draft.radius, pitch: draft.pitch, turns: draft.turns,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot add this curve.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onBuildSurfaceFromLines: () => {
@@ -962,12 +657,8 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     setStatus("");
   },
   onFormChanged: updateGizmoForForm,
-  onPreviewDraftChanged: () => {
-    // no-op at the host level; the panel's own wiring schedules the preview.
-  },
-  onPreviewCancel: () => {
-    // no-op at the host level; the panel's own wiring discards the preview.
-  }
+  onPreviewDraftChanged: () => scheduleOpPreview(),
+  onPreviewCancel: () => cancelOpPreview()
 });
 
 // ── Meshing (GMSH FE-mesh generation) ────────────────────────────────────
@@ -1312,6 +1003,400 @@ function renderHighlight(): void {
     previewPartIndex !== null ? partsModel.entitiesOf(previewPartIndex) : selection.list();
   viewer.renderSelection(entities);
   refreshGizmoAttachment(); // no-op unless a translate/rotate/scale form is open
+  // A selection change re-aims every selection-dependent op (boolean B,
+  // fillet edges, feature profiles, mate faces, build-surface loops) — cancel
+  // the stale preview and reschedule from the still-open form. Roadmap trap
+  // #2: without this, switching selection strands an orphaned preview built
+  // from operands that no longer exist. The gizmo forms never schedule a
+  // preview at all (the Transform Gizmo IS their live preview), so this is a
+  // cheap no-op while one of those is open.
+  if (opPreviewEligible()) {
+    opPreviewScheduler.cancel();
+    viewer.setOpPreview(null);
+    scheduleOpPreview();
+  }
+}
+
+// ── Live operation preview (roadmap item, closed) ─────────────────────────
+// One debounced speculative replay of [...currentOps, draftOp] rendered as a
+// translucent intent-tinted stand-in for the model. The webview owns ALL of
+// it: nothing here ever touches EditsModel or posts anything but the
+// read-only opPreviewRequest — a preview must never enter the op stack
+// (roadmap trap #1: it would become undoable/persistable/wrong).
+
+const OP_PREVIEW_DEBOUNCE_MS = 250;
+let opPreviewRequestId = 0;
+const opPreviewScheduler = new OpPreviewScheduler<{ id: PanelOpId; draft: Record<string, unknown> }>(runOpPreview, OP_PREVIEW_DEBOUNCE_MS);
+
+/** The panel forms whose live preview this engine renders. Deliberately NOT
+ * previewed: `"explode"` (its own slider preview owns that op) and
+ * `"translate"`/`"rotate"`/`"scale"` (the Transform Gizmo already previews
+ * them by dragging — stacking a second preview under the gizmo's hidden-model
+ * window would fight it). Everything else previews uniformly. */
+function opPreviewEligible(): boolean {
+  const open = editsPanel.openOpId();
+  return open !== null && open !== "explode" && open !== "translate" && open !== "rotate" && open !== "scale";
+}
+
+/** Intent colour for a previewed op kind — green adds material, red removes
+ * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
+ * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
+function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
+  switch (id) {
+    case "booleanUnion":
+    case "addBox":
+    case "addSphere":
+    case "addCylinder":
+    case "addCone":
+    case "addTorus":
+    case "addPrism":
+    case "addWedge":
+    case "extrude":
+    case "revolve":
+    case "sweep":
+    case "loft":
+    case "patternLinear":
+    case "patternCircular":
+      return "add";
+    case "booleanSubtract":
+    case "booleanIntersect":
+    case "addHole":
+    case "addCounterboreHole":
+    case "addCountersinkHole":
+    case "shell":
+    case "splitByPlane":
+      return "cut";
+    case "addCircleProfile":
+    case "addRectangleProfile":
+    case "addPolygonProfile":
+    case "addEllipseProfile":
+    case "addRoundedRectangleProfile":
+    case "addSlotProfile":
+    case "addTrapezoidProfile":
+    case "addPoint":
+    case "addLine":
+    case "addArc":
+    case "addPolyline":
+    case "addThreePointArc":
+    case "addSpline":
+    case "addBezier":
+    case "addEllipseArc":
+    case "addHelix":
+    case "section":
+    case "buildSurface":
+    case "buildVolume":
+      return "ref";
+    default:
+      return undefined; // mirror, align, fillet, chamfer — neutral
+  }
+}
+
+/**
+ * THE single draft→EditOp mapping, shared verbatim by every Apply button AND
+ * by the live preview — the structural guarantee that a preview can never
+ * disagree with what Apply would commit (same guards, same field reads, same
+ * construction). Each Apply callback below is a thin shell around this:
+ * resolve → surface the error → push. Returns `{error}` (never throws) when
+ * an operand selection is missing/invalid or a client-side guard fails;
+ * `validateEditOp` remains the authoritative gate downstream either way.
+ */
+function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op?: EditOp; error?: string } {
+  const d = rawDraft as Record<string, any> & { exprs?: Record<string, string> };
+  const withExprs = (op: EditOp): EditOp => {
+    if (d.exprs && Object.keys(d.exprs).length > 0) op.exprs = d.exprs;
+    return op;
+  };
+  const selVolumes = selectedVolumes();
+  const selFaces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+  const selEdges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+
+  switch (id) {
+    // ── transforms ──
+    case "translate": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
+      return { op: withExprs({ op: "translate", targets: selVolumes, vec: d.vec }) };
+    }
+    case "rotate": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
+      return { op: withExprs({ op: "rotate", targets: selVolumes, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg }) };
+    }
+    case "scale": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
+      return { op: withExprs({ op: "scale", targets: selVolumes, center: d.center, factors: d.factors }) };
+    }
+    case "mirror": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
+      return { op: withExprs({ op: "mirror", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal }) };
+    }
+
+    // ── booleans (A captured via Set A, B = live Vol selection) ──
+    case "booleanUnion":
+    case "booleanSubtract":
+    case "booleanIntersect": {
+      const kind = id === "booleanUnion" ? "union" : id === "booleanSubtract" ? "subtract" : "intersect";
+      if (booleanA.length === 0) return { error: "Set operand A first (select volumes → Set A)." };
+      if (selVolumes.length === 0) return { error: "Select operand B volumes before applying." };
+      if (selVolumes.some((v) => booleanA.includes(v))) return { error: "Operands A and B must be different volumes." };
+      return { op: { op: "boolean", kind, a: booleanA, b: selVolumes } };
+    }
+
+    // ── refine ──
+    case "fillet":
+    case "chamfer": {
+      if (selEdges.length === 0) return { error: `Select one or more edges (Line mode) before applying a ${id}.` };
+      if (d.amount <= 0) return { error: "Enter a positive radius / setback." };
+      const op: EditOp = id === "fillet"
+        ? { op: "fillet", edges: selEdges, radius: d.amount }
+        : { op: "chamfer", edges: selEdges, distance: d.amount };
+      if (d.exprs?.amount) op.exprs = { [id === "fillet" ? "radius" : "distance"]: d.exprs.amount };
+      return { op };
+    }
+
+    // ── feature modeling ──
+    case "extrude":
+      if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to extrude." };
+      return { op: withExprs({ op: "extrude", profile: selFaces[0], dir: d.dir, length: d.length }) };
+    case "revolve":
+      if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to revolve." };
+      return { op: withExprs({ op: "revolve", profile: selFaces[0], axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg }) };
+    case "sweep":
+      if (!selFaces[0] || !selEdges[0]) return { error: "Select a profile face and a path edge for sweep." };
+      return { op: withExprs({ op: "sweep", profile: selFaces[0], path: selEdges[0] }) };
+    case "loft":
+      if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft." };
+      return { op: withExprs({ op: "loft", profiles: selFaces }) };
+
+    // ── assembly ──
+    case "mate":
+      if (selFaces.length < 2) return { error: "Select two faces (Surf mode): face A first, then face B, to mate." };
+      return { op: { op: "mate", faceA: selFaces[0], faceB: selFaces[1] } };
+    case "align":
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before aligning." };
+      return { op: withExprs({ op: "align", targets: selVolumes, axis: d.axis, extent: d.extent, to: d.to }) };
+    case "patternLinear":
+    case "patternCircular": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before patterning." };
+      if (!Number.isInteger(d.count) || d.count < 2) return { error: "Count must be an integer ≥ 2." };
+      if (id === "patternLinear") {
+        if (!d.direction.some((v: number) => v !== 0)) return { error: "Direction must be non-zero." };
+        if (d.spacing === 0) return { error: "Spacing must be non-zero." };
+        return { op: withExprs({ op: "patternLinear", targets: selVolumes, direction: d.direction, spacing: d.spacing, count: d.count }) };
+      }
+      if (!d.axisDir.some((v: number) => v !== 0)) return { error: "Axis must be non-zero." };
+      return { op: withExprs({ op: "patternCircular", targets: selVolumes, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, count: d.count }) };
+    }
+
+    // ── modify ──
+    case "shell": {
+      if (selFaces.length === 0) return { error: "Select the opening face(s) (Surf mode) before shelling." };
+      if (d.thickness === 0) return { error: "Thickness must be non-zero." };
+      return { op: withExprs({ op: "shell", thickness: d.thickness, openingFaces: selFaces }) };
+    }
+    case "splitByPlane":
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to split." };
+      if (!d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
+      return { op: withExprs({ op: "splitByPlane", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal, keep: d.keep }) };
+    case "section":
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to section." };
+      if (!d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
+      return { op: withExprs({ op: "section", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal }) };
+
+    // ── holes ──
+    case "addHole":
+    case "addCounterboreHole":
+    case "addCountersinkHole": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to cut the hole into." };
+      if (d.radius <= 0 || d.depth <= 0) return { error: "Radius and depth must be positive." };
+      if (id === "addCounterboreHole") {
+        if (d.cbRadius <= d.radius) return { error: "Counterbore radius must exceed the hole radius." };
+        if (d.cbDepth <= 0 || d.cbDepth >= d.depth) return { error: "Counterbore depth must satisfy 0 < depth < hole depth." };
+        return { op: withExprs({ op: id, targets: selVolumes, position: d.position, axis: d.axis, radius: d.radius, depth: d.depth, cbRadius: d.cbRadius, cbDepth: d.cbDepth }) };
+      }
+      if (id === "addCountersinkHole") {
+        if (d.csRadius <= d.radius) return { error: "Countersink radius must exceed the hole radius." };
+        if (d.csAngleDeg <= 0 || d.csAngleDeg >= 180) return { error: "Countersink angle must be between 0° and 180°." };
+        return { op: withExprs({ op: id, targets: selVolumes, position: d.position, axis: d.axis, radius: d.radius, depth: d.depth, csRadius: d.csRadius, csAngleDeg: d.csAngleDeg }) };
+      }
+      return { op: withExprs({ op: id, targets: selVolumes, position: d.position, axis: d.axis, radius: d.radius, depth: d.depth }) };
+    }
+
+    // ── 2D profiles ──
+    case "addCircleProfile":
+      if (d.radius <= 0) return { error: "Circle radius must be positive." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius }) };
+    case "addRectangleProfile":
+      if (d.width <= 0 || d.height <= 0) return { error: "Width and height must be positive." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, width: d.width, height: d.height }) };
+    case "addPolygonProfile":
+      if (d.radius <= 0) return { error: "Radius must be positive." };
+      if (!Number.isInteger(d.sides) || d.sides < 3) return { error: "Sides must be an integer ≥ 3." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radius: d.radius, sides: d.sides }) };
+    case "addEllipseProfile":
+      if (d.radiusX <= 0 || d.radiusY <= 0) return { error: "Both radii must be positive." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radiusX: d.radiusX, radiusY: d.radiusY }) };
+    case "addRoundedRectangleProfile":
+      if (d.width <= 0 || d.height <= 0) return { error: "Width and height must be positive." };
+      if (d.cornerRadius <= 0 || 2 * d.cornerRadius >= Math.min(d.width, d.height)) return { error: "Corner radius must satisfy 0 < 2·r < min(width, height)." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, width: d.width, height: d.height, cornerRadius: d.cornerRadius }) };
+    case "addSlotProfile":
+      if (d.width <= 0 || d.length <= d.width) return { error: "Slot needs length > width > 0." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, length: d.length, width: d.width }) };
+    case "addTrapezoidProfile":
+      if (d.bottomWidth <= 0 || d.topWidth <= 0 || d.height <= 0) return { error: "Trapezoid widths and height must be positive." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, bottomWidth: d.bottomWidth, topWidth: d.topWidth, height: d.height }) };
+
+    // ── wireframe curves/points ──
+    case "addPoint":
+      return { op: withExprs({ op: id, position: d.position }) };
+    case "addLine":
+      if (d.start.every((v: number, i: number) => v === d.end[i])) return { error: "Start and end must differ." };
+      return { op: withExprs({ op: id, start: d.start, end: d.end }) };
+    case "addArc":
+      if (d.radius <= 0) return { error: "Arc radius must be positive." };
+      if (d.startAngleDeg === d.endAngleDeg) return { error: "Start and end angle must differ." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg }) };
+    case "addPolyline": {
+      const min = d.closed ? 3 : 2;
+      if (d.points.length < min) return { error: `A ${d.closed ? "closed " : ""}polyline needs ${min}+ points.` };
+      if (hasRepeatedConsecutive(d.points)) return { error: "Consecutive points must differ." };
+      return { op: withExprs({ op: id, points: d.points, closed: d.closed }) };
+    }
+    case "addThreePointArc": {
+      const same = (a: number[], b: number[]) => a.every((v, i) => v === b[i]);
+      if (same(d.p1, d.p2) || same(d.p2, d.p3) || same(d.p1, d.p3)) return { error: "The three points must be distinct." };
+      return { op: withExprs({ op: id, p1: d.p1, p2: d.p2, p3: d.p3 }) };
+    }
+    case "addSpline":
+      if (d.points.length < 2) return { error: "A spline needs 2+ points." };
+      if (hasRepeatedConsecutive(d.points)) return { error: "Consecutive points must differ." };
+      return { op: withExprs({ op: id, points: d.points }) };
+    case "addBezier":
+      if (d.controlPoints.length < 2) return { error: "A Bézier needs 2+ control points." };
+      return { op: withExprs({ op: id, controlPoints: d.controlPoints }) };
+    case "addEllipseArc":
+      if (d.radiusX <= 0 || d.radiusY <= 0) return { error: "Both radii must be positive." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      if (d.startAngleDeg === d.endAngleDeg) return { error: "Start and end angle must differ." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radiusX: d.radiusX, radiusY: d.radiusY, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg }) };
+    case "addHelix":
+      if (d.radius <= 0 || d.pitch <= 0 || d.turns <= 0) return { error: "Helix radius, pitch, and turns must all be positive." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, pitch: d.pitch, turns: d.turns }) };
+
+    // ── primitives (guards transcribed from onApplyPrimitive's cases) ──
+    case "addBox": {
+      if (d.size.some((v: number) => v <= 0)) return { error: "Box sizes must all be positive." };
+      return { op: withExprs({ op: id, center: d.center, size: d.size }) };
+    }
+    case "addSphere":
+      if (d.radius <= 0) return { error: "Sphere radius must be positive." };
+      return { op: withExprs({ op: id, center: d.center, radius: d.radius }) };
+    case "addCylinder":
+      if (d.radius <= 0 || d.height <= 0) return { error: "Cylinder radius and height must be positive." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, height: d.height }) };
+    case "addCone":
+      if (!(d.radius1 > 0 || d.radius2 > 0)) return { error: "At least one cone radius must be positive." };
+      if (d.height <= 0) return { error: "Height must be positive." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius1: d.radius1, radius2: d.radius2, height: d.height }) };
+    case "addTorus":
+      if (d.majorRadius <= 0 || d.minorRadius <= 0 || d.minorRadius >= d.majorRadius) return { error: "Torus needs 0 < minor radius < major radius." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, majorRadius: d.majorRadius, minorRadius: d.minorRadius }) };
+    case "addPrism":
+      if (d.radius <= 0 || d.height <= 0) return { error: "Radius and height must be positive." };
+      if (!Number.isInteger(d.sides) || d.sides < 3) return { error: "Sides must be an integer ≥ 3." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, sides: d.sides, height: d.height }) };
+    case "addWedge":
+      if (d.dx <= 0 || d.dy <= 0 || d.dz <= 0) return { error: "Wedge sizes must be positive." };
+      if (d.ltx < 0) return { error: "Top X extent must be ≥ 0." };
+      if (!nonParallel(d.axis, d.up)) return { error: "Up must not be parallel to Axis." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, up: d.up, dx: d.dx, dy: d.dy, dz: d.dz, ltx: d.ltx }) };
+
+    // ── build from selection ──
+    case "buildSurface":
+      if (selEdges.length < 3) return { error: "Select 3+ lines (Line mode) forming a closed loop." };
+      return { op: { op: "addSurfaceFromLines", edges: selEdges } };
+    case "buildVolume":
+      if (selFaces.length < 4) return { error: "Select 4+ surfaces (Surf mode) forming a closed shell." };
+      return { op: { op: "addVolumeFromSurfaces", faces: selFaces } };
+
+    default:
+      return { error: "This op has no live preview." };
+  }
+}
+
+/** Reads the open form's CURRENT draft through the panel (the same readers
+ * Apply uses) and schedules a debounced preview run. No-op when no
+ * previewable form is open or the draft's expressions currently fail to
+ * evaluate (`currentDraft()` returns null — skip silently, never flash the
+ * inline Apply-time error mid-typing). */
+function scheduleOpPreview(): void {
+  if (!opPreviewEligible()) return;
+  const current = editsPanel.currentDraft();
+  if (!current) {
+    viewer.setOpPreview(null);
+    return;
+  }
+  opPreviewScheduler.schedule(current);
+}
+
+/** Cancels any pending/in-flight preview and clears the overlay. */
+function cancelOpPreview(): void {
+  opPreviewScheduler.cancel();
+  viewer.setOpPreview(null);
+}
+
+/** The scheduler's runner: resolve → validate → replay speculatively. Mesh
+ * sources stay entirely client-side (applyEditsMesh over a fresh pristine
+ * clone — the host round trip would need an STL snapshot for zero benefit);
+ * B-rep sources post `opPreviewRequest` and render from `opPreviewResult`. */
+async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknown> }, generation: number): Promise<void> {
+  const resolved = buildOpForPanel(entry.id, entry.draft);
+  if (resolved.error || !resolved.op) {
+    viewer.setOpPreview(null);
+    setStatus(resolved.error ?? "Cannot preview this op.", true);
+    return;
+  }
+  const clean = validateEditOp(resolved.op);
+  if (!clean) {
+    viewer.setOpPreview(null);
+    setStatus("The drafted operation is invalid and cannot be previewed.", true);
+    return;
+  }
+  const tint = tintForPanelOp(entry.id);
+  if (sourceKind === "mesh") {
+    if (!pristineMesh) return;
+    const clone = pristineMesh.clone(true);
+    applyEditsMesh(clone, [...currentResolvedOps().ops, clean]);
+    viewer.setOpPreview(clone, tint);
+    return;
+  }
+  const requestId = `oppreview-${++opPreviewRequestId}`;
+  pendingOpPreviewGeneration.set(requestId, generation);
+  post({ type: "opPreviewRequest", requestId, op: clean });
+}
+
+/** Generation guard for in-flight preview requests: a response is rendered
+ * only if its request was the latest scheduled run AND no cancel has fired
+ * since (form switch / selection change / Apply / model rebuild all bump the
+ * scheduler's generation via `cancel()`). */
+const pendingOpPreviewGeneration = new Map<string, number>();
+
+function handleOpPreviewResult(msg: Extract<HostToWebview, { type: "opPreviewResult" }>): void {
+  const gen = pendingOpPreviewGeneration.get(msg.requestId);
+  pendingOpPreviewGeneration.delete(msg.requestId);
+  if (gen === undefined || !opPreviewScheduler.isCurrent(gen)) return; // stale — silently discarded
+  const draftOutcome = msg.opOutcomes?.[msg.opOutcomes.length - 1];
+  if (draftOutcome && !draftOutcome.applied) {
+    viewer.setOpPreview(null);
+    setStatus(`Preview skipped: ${draftOutcome.diagnostic ?? "the operation produced no change"}${draftOutcome.hint ? ` — ${draftOutcome.hint}` : ""}`, true);
+    return;
+  }
+  viewer.setOpPreview(buildGroupFromEncoded(msg.meshes, msg.edges, msg.points), tintForPanelOp(editsPanel.openOpId() as PanelOpId));
 }
 
 // The pristine, tagged-but-unedited loaded object for mesh formats. Mesh edits
@@ -1355,6 +1440,7 @@ function rebuildMeshModel(): void {
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model);
+  cancelOpPreview(); // setModel() already cleared the overlay; this also kills any pending/in-flight preview request
   explodePreviewBases = null; // stale references to the just-replaced model's objects
   gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
   viewer.detachTransformGizmo();
@@ -2648,6 +2734,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         setStatus("Building geometry…");
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group);
+        cancelOpPreview(); // setModel() cleared the overlay; kill any pending/in-flight preview too
         explodePreviewBases = null; // stale references to the just-replaced model's objects
         gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
         lastRawMassProperties = null; // stale — refers to the just-replaced model
@@ -2930,6 +3017,19 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== meshHealRequestId) break;
       meshHealthPanel.renderMessage(msg.message, true);
       break;
+
+    case "opPreviewResult":
+      handleOpPreviewResult(msg);
+      break;
+
+    case "opPreviewError": {
+      const gen = pendingOpPreviewGeneration.get(msg.requestId);
+      pendingOpPreviewGeneration.delete(msg.requestId);
+      if (gen === undefined || !opPreviewScheduler.isCurrent(gen)) break; // stale
+      viewer.setOpPreview(null);
+      setStatus(`Preview unavailable: ${msg.message}`, true);
+      break;
+    }
 
     case "colorFieldResult": {
       if (msg.requestId !== colorFieldRequestId) break; // stale — a newer selection/Clear/edit superseded it

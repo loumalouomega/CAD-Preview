@@ -327,6 +327,8 @@ type HostToWebview =
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
+  | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
   | { type: 'linkedCamera'; camera: LinkedCameraState }
@@ -613,6 +615,22 @@ Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh �
 { "type": "meshHealError", "requestId": "1234-0.56", "message": "Mesh healability check requires an STL/OBJ/PLY source." }
 ```
 
+### `opPreviewResult` / `opPreviewError`
+
+Sent in reply to `opPreviewRequest` (webview → host, below) — roadmap "Live operation preview", closed. The payload is the SAME encoded shape the `"geometry"` message carries (`meshes`/`edges`/`points`), computed from a speculative replay of `[...currentOps, draftOp]` against the document's cached base shape — so the webview builds the preview group with the exact same `buildGroupFromEncoded()` path it uses for real geometry, and preview can never render something Apply would not produce. **B-rep sources only** — mesh sources never send the request (their preview is entirely client-side via `applyEditsMesh`). The host persists nothing: the replay runs under a separate cache key (`<documentKey>::oppreview`) so it never evicts the real document's cache, no sidecar is touched, and the CAD file stays read-only as ever.
+
+`opOutcomes` carries the per-op replay outcomes; when the draft op itself gracefully skipped (an unresolvable operand id after id drift, a builder throw), the webview degrades to no overlay and surfaces the diagnostic in its status line instead — never a silently-wrong preview.
+
+Stale responses (a result arriving after a newer keystroke, a form switch, or a model rebuild) are discarded by the webview's generation guard — same discipline as `measureExactRequest`.
+
+```json
+{ "type": "opPreviewResult", "requestId": "1234-0.56", "meshes": [], "edges": [], "points": [] }
+```
+
+```json
+{ "type": "opPreviewError", "requestId": "1234-0.56", "message": "…" }
+```
+
 ### `colorFieldResult` / `colorFieldError`
 
 Sent in reply to `colorFieldRequest` (webview → host, below) — **meshio++-imported sources only** (`src/meshioService.ts`'s `readMeshioFieldValues`, called from `provider.ts`'s new `colorFieldRequest` handler). `values` is a base64 `Float32Array`, one entry per triangle CORNER in the SAME order as the currently-loaded model's own triangle soup (i.e. `pristineMesh`'s position attribute) — the webview builds a vertex-coloured overlay directly from it with no further reordering (`src/webview/geometryBuilder.ts`'s `buildColorFieldOverlay`). `min`/`max` seed the legend's gradient bar and are NOT length-dimensioned (no unit conversion/suffix — unlike `measureExactResult`, a scalar field like temperature or stress has no length unit to convert).
@@ -724,10 +742,8 @@ type WebviewToHost =
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
   | { type: 'importSvgRequest' }
   | { type: 'importDxfRequest' }
-| { type: 'exportDxfRequest' }
-  | { type: 'opPreviewRequest'; requestId: string }
-  | { type: 'opPreviewResult'; requestId: string; groupId: string; outcomes: OpOutcome[] }
-  | { type: 'opPreviewError'; requestId: string; message: string }
+  | { type: 'exportDxfRequest' }
+  | { type: 'opPreviewRequest'; requestId: string; op: EditOp }
 ```
 ### `partsChanged`
 
@@ -924,6 +940,14 @@ Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep sourc
 ### `meshHealRequest`
 
 Sent when the Mesh Health panel's **Check Healability** button is clicked — only reachable for a native `.stl`/`.obj`/`.ply`/`.gltf`/`.glb` file on disk (a meshio-converted document hides the panel entirely, mirroring `check_mesh_health`'s own MCP-tool gate; see `meshHealResult`/`meshHealError` above). No parameters beyond `requestId` — the host re-reads the currently-open document's own bytes.
+
+### `opPreviewRequest`
+
+Sent whenever a field in the open Edits-panel op form changes (and once when the form opens, from its default values) — roadmap "Live operation preview", closed. Debounced ~250 ms webview-side; only the latest draft ever runs. `op` is the **fully-built** draft edit op, produced by the exact same builder function the form's Apply button uses — so preview and commit share one mapping and can never disagree. The host replays `[...currentOps, op]` speculatively (see `opPreviewResult` above). Never posted for mesh sources (client-side preview), for the Explode form (which keeps its own dedicated slider preview), or while any expression field currently fails to evaluate (the preview skips silently rather than flashing the Apply-time inline error).
+
+```json
+{ "type": "opPreviewRequest", "requestId": "1234-0.56", "op": { "op": "addBox", "center": [0, 0, 0], "size": [10, 10, 10] } }
+```
 
 ```json
 { "type": "meshHealRequest", "requestId": "1234-0.56" }

@@ -16,6 +16,7 @@ import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
+import { validateEditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri } from "./meshOptionsStore";
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
@@ -558,8 +559,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       // Fire-and-forget — nothing depends on this settling before the tab
       // finishes closing (matches every other fire-and-forget cleanup in
       // this method); frees this document's cached OCCT handles inside the
-      // shared kernel-worker child.
+      // shared kernel-worker child, plus the live-operation-preview's
+      // separate `::oppreview` entry (same key prefix + suffix convention
+      // `handleOpPreview` replays under).
       void this.pipeline.disposeBRepCacheForDocument(documentKey);
+      void this.pipeline.disposeBRepCacheForDocument(`${documentKey}::oppreview`);
     });
 
     // Track this editor as the active one while it is focused, so the
@@ -1048,6 +1052,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "opPreviewRequest") {
+        void this.handleOpPreview(document.uri, route, post, currentEdits, documentKey, msg.requestId, msg.op);
+        return;
+      }
+
       if (msg.type === "colorFieldRequest") {
         try {
           if (!route || route.strategy !== "meshio") {
@@ -1177,6 +1186,87 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       // on a thrown error there), so this method has nothing left to clean
       // up on failure beyond reporting it.
       post({ type: "error", message: `${format.toUpperCase()} error: ${(err as Error).message}` });
+    }
+  }
+
+  /**
+   * Live operation preview (roadmap item, closed) — replays the document's
+   * current ops PLUS the webview's not-yet-committed draft op and posts the
+   * resulting geometry back as `opPreviewResult`, for a tinted overlay in
+   * front of the unchanged model. Purely speculative, on every axis:
+   *
+   * - **Separate cache key** (`documentKey + "::oppreview"`): the preview's
+   *   replays never evict or interleave with the real document's
+   *   `loadBRepCachedForDocument` entry; both live independently inside the
+   *   kernel-worker child. The preview entry is disposed alongside the real
+   *   one when the tab closes (see `onDidDispose`).
+   * - **Nothing is persisted** — no sidecar write, no op-stack mutation; the
+   *   draft op exists only inside this replay. The CAD file stays read-only.
+   * - **B-rep sources only** — mesh sources never send this request at all;
+   *   their preview is entirely client-side (`applyEditsMesh` over a clone of
+   *   the pristine mesh). The gate here is defensive: an unexpected sender
+   *   gets a clear `opPreviewError`, never a silent misroute.
+   * - The draft op re-runs through `validateEditOp` host-side (the single
+   *   tolerance gate — the webview already validated its own copy, but this
+   *   module trusts no wire input), and a rejected op is reported back rather
+   *   than replayed.
+   *
+   * Stale-result discarding is the WEBVIEW's job here (requestId + generation
+   * guard around typing bursts — see main.ts's scheduler), so unlike
+   * `handleBRep` there is no `brepLoadGeneration` check: whichever request
+   * the webview still considers current renders, and it ignores the rest.
+   */
+  private async handleOpPreview(
+    uri: vscode.Uri,
+    route: FileRoute | undefined,
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[],
+    documentKey: string,
+    requestId: string,
+    draftOp: EditOp
+  ): Promise<void> {
+    try {
+      if (!route || route.strategy !== "occt") {
+        throw new Error("Live preview requires a B-rep source; mesh sources preview client-side and never send this request.");
+      }
+      const clean = validateEditOp(draftOp);
+      if (!clean) throw new Error("The drafted operation is invalid and cannot be previewed.");
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const quality = normalizeTessellationQuality(
+        vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
+      );
+      const result = await this.pipeline.loadBRepCachedForDocument(
+        `${documentKey}::oppreview`,
+        this.context.extensionPath,
+        bytes,
+        route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+        [...ops, clean],
+        tessellationParamsFor(quality)
+      );
+      post({
+        type: "opPreviewResult",
+        requestId,
+        meshes: result.groups.flatMap((g) =>
+          g.faces.map((f) => ({
+            positions: encodeBuffer(f.buffers.positions),
+            indices: encodeBuffer(f.buffers.indices),
+            groupId: g.id,
+            faceId: f.faceId,
+          }))
+        ),
+        edges: result.edges.map((e) => ({
+          positions: encodeBuffer(e.positions),
+          edgeId: e.edgeId,
+          smooth: e.smooth,
+        })),
+        points: result.points.map((p) => ({
+          position: encodeBuffer(new Float32Array(p.position)),
+          pointId: p.pointId,
+        })),
+        opOutcomes: result.opOutcomes,
+      });
+    } catch (err) {
+      post({ type: "opPreviewError", requestId, message: (err as Error).message });
     }
   }
 

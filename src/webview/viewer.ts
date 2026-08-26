@@ -120,6 +120,19 @@ export class Viewer {
   /** The "colour by scalar field" overlay (if any, meshio++ sources only) —
    * a scene sibling of `model`/`meshOverlay`. See `setColorFieldOverlay`. */
   private colorFieldOverlay: THREE.Object3D | null = null;
+
+  /**
+   * Live operation preview (roadmap item, closed): a detached stand-in for
+   * `model` showing what the open Edits form WOULD produce — a scene sibling,
+   * same dispose/replace pattern as every other overlay here. While shown,
+   * the real model's ROOT is hidden entirely (the preview replaces it
+   * visually; leaving edges/points of the old state visible under a changed
+   * topology would read as wrong geometry). Cleared by `setModel()` like the
+   * other overlays (a preview computed from the old geometry must not linger)
+   * and by main.ts at every cancel site (form switch, selection change,
+   * Apply, external reconciliation).
+   */
+  private opPreview: THREE.Object3D | null = null;
   private wireframe = false;
   private readonly raycaster = new THREE.Raycaster();
   /** World-space half-thickness for picking thin edge lines; scaled per model. */
@@ -546,6 +559,7 @@ export class Viewer {
     this.setMeshOverlay(null);
     this.setWorstElementsOverlay(null);
     this.setColorFieldOverlay(null);
+    this.setOpPreview(null); // a preview computed from the OLD geometry must not linger over the new model
     this.clearMeasurementOverlay();
     this.clearModel();
     this.model = object;
@@ -725,6 +739,71 @@ export class Viewer {
   setWorstElementsOverlayVisible(visible: boolean): void {
     if (!this.worstElementsOverlay) return;
     this.worstElementsOverlay.visible = visible;
+  }
+
+  /**
+   * Replaces/clears the live operation preview (roadmap item, closed). Same
+   * dispose/replace discipline as `setMeshOverlay`; the tint is applied ONCE
+   * here, at set-time, so repeated renders cost nothing and the preview
+   * group's fresh materials are safe to mutate (they were built for this
+   * detached group alone and are disposed with it).
+   *
+   * Intent colours, per the roadmap item's framing: green where the op adds
+   * material (`"add"` — fuse/primitives/features/patterns), red where it
+   * removes (`"cut"` — subtract/holes/shell/split), blue for wire/reference
+   * results (`"ref"` — profiles/curves/section/surface-from-lines), and NO
+   * tint for transforms/fillet/chamfer (per-band colouring — one fillet band
+   * adding on a concave edge while another removes on a convex one — is
+   * explicitly deferred; neutral reads honestly as "shape changes, material
+   * intent unknown"). Either way the overlay is translucent (opacity ×0.75,
+   * folded into each material's `baseOpacity` so a user-set Appearance
+   * opacity composes rather than being clobbered) — the FluidCAD comparison's
+   * own read-unambiguously-as-"not committed yet" treatment.
+   */
+  setOpPreview(obj: THREE.Object3D | null, tint?: "add" | "cut" | "ref"): void {
+    this.disposeOpPreview();
+    if (!obj) return;
+    const tints: Record<"add" | "cut" | "ref", number> = { add: 0x2fbf4f, cut: 0xe23b3b, ref: 0x3b82f6 };
+    const target = tint ? new THREE.Color(tints[tint]) : null;
+    obj.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats as THREE.MeshStandardMaterial[]) {
+        // Color lerp toward the intent colour; no tint leaves the geometry's
+        // own colours untouched (neutral band).
+        if (target) m.color.lerp(target, 0.65);
+        // Translucent overlay composed through baseOpacity — never a raw
+        // opacity assignment (the one-writer convention highlightGroup
+        // established).
+        const base = (m.userData.baseOpacity as number | undefined) ?? 1;
+        m.opacity = base * 0.75;
+        m.transparent = true;
+        m.needsUpdate = true;
+      }
+    });
+    this.opPreview = obj;
+    this.scene.add(obj);
+    this.applyClippingPlane(); // fresh materials carry no clipping state yet
+    // The preview replaces the model visually — hide its ROOT (edges and
+    // points too: a changed topology under old feature lines reads as wrong
+    // geometry). Child visibility state (Parts hide/isolate) is untouched;
+    // clearing restores just the root.
+    if (this.model) this.model.visible = false;
+  }
+
+  /** Shared teardown for `setOpPreview(null)` and `setModel()`'s stale-clear. */
+  private disposeOpPreview(): void {
+    if (!this.opPreview) return;
+    this.scene.remove(this.opPreview);
+    this.opPreview.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+      const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else if (mat) mat.dispose();
+    });
+    this.opPreview = null;
+    if (this.model) this.model.visible = true;
   }
 
   /** Shows/hides the model's shaded face meshes (`entityType === "surface"`), leaving edges/points untouched. */
@@ -1188,6 +1267,7 @@ export class Viewer {
     this.worstElementsOverlay?.traverse(apply);
     this.hiddenLineGhosts?.traverse(apply);
     this.colorFieldOverlay?.traverse(apply);
+    this.opPreview?.traverse(apply); // a clipped model clips its preview the same way
   }
 
   /**

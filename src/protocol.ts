@@ -310,6 +310,20 @@ export type HostToWebview =
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
   | { type: "meshHealError"; requestId: string; message: string }
+  /** Live operation preview result — the same encoded payload `"geometry"`
+   * carries, but for the speculative ops+draft replay. The webview builds a
+   * detached group from it (never `viewer.setModel`) and tints it by intent;
+   * `opOutcomes` lets the overlay degrade to nothing when the draft op
+   * gracefully skipped, with the reason available for the status line. */
+  | {
+      type: "opPreviewResult";
+      requestId: string;
+      meshes: EncodedMesh[];
+      edges: EncodedEdge[];
+      points: EncodedPoint[];
+      opOutcomes?: import("./editOps").OpOutcome[];
+    }
+  | { type: "opPreviewError"; requestId: string; message: string }
   | {
       type: "colorFieldResult";
       requestId: string;
@@ -403,6 +417,18 @@ export type WebviewToHost =
    * back through the generic `status`/`error` messages. */
   | { type: "exportSvgRequest" }
   | { type: "exportDxfRequest" }
+  /** Live operation preview (roadmap item, closed): the webview's open Edits
+   * form changed — replay the current ops PLUS this not-yet-committed draft
+   * op and post the resulting geometry back for a tinted overlay. The webview
+   * builds `op` through the exact same builder the Apply button uses, so
+   * preview and commit can never disagree; the host treats it as purely
+   * speculative (separate cache key, nothing persisted, no sidecar write).
+   * Never posted for mesh sources — their preview is entirely client-side. */
+  | {
+      type: "opPreviewRequest";
+      requestId: string;
+      op: import("./editOps").EditOp;
+    }
   | {
       type: "measureExactRequest";
       requestId: string;

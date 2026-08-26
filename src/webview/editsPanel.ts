@@ -1064,6 +1064,12 @@ export class EditsPanel {
    */
   private draftReader: (() => unknown) | null = null;
 
+  /** The currently-open op button's id, or `null` when no form is open — the
+   * preview engine's eligibility check and tint lookup read this. */
+  openOpId(): PanelOpId | null {
+    return this.activeOp;
+  }
+
   /**
    * The open form's current draft, for the live operation preview. Re-reads
    * the fields fresh on every call (the same readers the Apply button uses,
