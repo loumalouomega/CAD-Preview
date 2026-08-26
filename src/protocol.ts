@@ -180,6 +180,16 @@ export type HostToWebview =
        * Absent for mesh sources (their replay is client-side, in
        * `rebuildMeshModel`, which reports outcomes directly). */
       opOutcomes?: import("./editOps").OpOutcome[];
+      /**
+       * When `false`, the viewer must always re-frame the new model, even if
+       * its bounds would otherwise be considered contained by the last framing
+       * (roadmap "Render on demand"). A genuine file load / file swap must
+       * always show the new file framed, even when it happens to be smaller
+       * than the document it replaced — without this hint a contained swap
+       * would silently keep the old framing and look mis-framed. Absent/`true`
+       * (the edit-driven rebuild path) is containment-eligible.
+       */
+      autoFit?: boolean;
     }
   | {
       type: "tree";

@@ -349,6 +349,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       } else {
         const format = route.format as Extract<CadFormat, "step" | "iges" | "brep">;
         const generation = ++brepLoadGeneration.current;
+        const autoFit = !showProgress;
         if (showProgress) {
           void vscode.window.withProgress(
             {
@@ -379,11 +380,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
                 // just this one — an accepted trade-off of one shared child.
                 this.pipeline.cancelCurrent();
               });
-              await this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration, progress);
+              await this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration, autoFit, progress);
             }
           );
         } else {
-          void this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration);
+          void this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration, autoFit);
         }
       }
     };
@@ -1119,7 +1120,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * `progress &&` since it's `undefined` on a routine, no-notification edit
    * re-tessellation.
    */
-  private async handleBRep(
+   private async handleBRep(
     uri: vscode.Uri,
     format: Extract<CadFormat, "step" | "iges" | "brep">,
     post: (msg: HostToWebview) => void,
@@ -1127,6 +1128,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     documentKey: string,
     generation: number,
     genHolder: { current: number },
+    autoFit = true,
     progress?: vscode.Progress<{ message?: string }>
   ): Promise<void> {
     try {
@@ -1156,6 +1158,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const { groups, edges, points, tree, opOutcomes } = result;
       post({
         type: "geometry",
+        autoFit,
         opOutcomes,
         meshes: groups.flatMap((g) =>
           g.faces.map((f) => ({

@@ -31,6 +31,8 @@ import {
 import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
+import { createRenderScheduler, type FrameTick } from "./renderScheduler";
+import { shouldSkipAutoReframe, type FitSphere } from "./reframePolicy";
 
 /** Emissive tint applied to the transiently-selected entities. */
 const SELECTION_COLOR = 0x3b82f6;
@@ -143,6 +145,9 @@ export class Viewer {
   private onEntityPick: ((r: PickResult, additive: boolean) => void) | null = null;
   private onEmptyPick: (() => void) | null = null;
   private pointerDownPos: { x: number; y: number } | null = null;
+  private renderDirty = false;
+  private lastFitSphere: FitSphere | null = null;
+  private renderScheduler!: ReturnType<typeof createRenderScheduler>;
   /** Measurement is a parallel interaction mode, deliberately independent of
    * `selectionMode`/`SelectionSet` — see `setMeasureMode`. */
   private measureMode = false;
@@ -287,7 +292,41 @@ export class Viewer {
     this.renderer.domElement.addEventListener("pointerdown", this.onSelectPointerDown);
     this.renderer.domElement.addEventListener("pointerup", this.onSelectPointerUp);
     window.addEventListener("resize", this.onResize);
-    this.animate();
+
+    this.renderScheduler = createRenderScheduler(
+      () => this.tick(),
+      (cb) => requestAnimationFrame(cb) as unknown as number,
+      (h) => cancelAnimationFrame(h as unknown as number)
+    );
+    // Any OrbitControls movement (drag or damping settle) re-renders.
+    // `onViewChanged` covers orbit/pan/dolly/fit/reset/frame/orthographic
+    // toggles — all end in controls.update() → "change". TransformControls
+    // has its own "change" event not routed through OrbitControls.
+    this.onViewChanged(() => this.requestRender());
+    this.transformControls.addEventListener("change", () => this.requestRender());
+
+    // Initial paint for the empty scene (grid/axes).
+    this.requestRender();
+  }
+
+  /** Marks dirty and schedules a frame if none is queued. */
+  requestRender(): void {
+    this.renderDirty = true;
+    this.renderScheduler.request();
+  }
+
+  /** Runs one scheduled frame; returns true to keep looping (damping). */
+  private tick(): boolean {
+    let moving = false;
+    for (const pane of this.panes) {
+      if (pane.controls.update()) moving = true;
+    }
+    const shouldDraw = moving || this.renderDirty;
+    if (shouldDraw) {
+      this.renderDirty = false;
+      this.renderFrame();
+    }
+    return moving;
   }
 
   // ── Split-view pane management (roadmap "Split view", Phase 1) ──────────
@@ -403,6 +442,7 @@ export class Viewer {
     this.focusedPane = index;
     this.syncTransformControlsToFocus();
     this.onFocusChangedCallback?.(index);
+    this.requestRender();
   }
 
   private onFocusChangedCallback: ((index: number) => void) | null = null;
@@ -443,6 +483,7 @@ export class Viewer {
     }
     for (let i = 0; i < this.panes.length; i++) this.applyPaneAspect(i);
     this.syncTransformControlsToFocus();
+    this.requestRender();
   }
 
   /** Copies `src`'s full camera state (both projections, up vectors, near/far,
@@ -508,6 +549,7 @@ export class Viewer {
     // Keep the gizmo pointed at the focused pane's camera; cheap to call even
     // when the changed pane isn't focused.
     if (index === this.focusedPane) this.syncTransformControlsToFocus();
+    this.requestRender();
   }
 
   /** Per-pane projection toggle — the indexed form of {@link setOrthographic}. */
@@ -550,8 +592,17 @@ export class Viewer {
     };
   }
 
-  /** Replaces the current model with `object`, recenters and fits the camera to it. */
-  setModel(object: THREE.Object3D): void {
+  /**
+   * Replaces the current model with `object`, recenters and fits the camera to
+   * it. `opts.autoFit` controls the edit-driven auto-reframe containment gate:
+   * when `false` (a genuine file load / file swap) the model is always
+   * re-framed; when `true` or omitted (an edit-driven rebuild) the reframe is
+   * skipped when the new bounds already fit inside the last padded fit sphere,
+   * so a series of small edits stops twitching the camera on every rebuild
+   * (roadmap "Render on demand"). Explicit Fit/Reset paths bypass this entirely
+   * and frame unconditionally.
+   */
+  setModel(object: THREE.Object3D, opts?: { autoFit?: boolean }): void {
     // A previously-generated FE mesh overlay was computed from the OLD geometry;
     // it's now stale and must not linger looking valid over the new model. Any
     // in-progress/completed measurement is equally stale (its points refer to
@@ -573,7 +624,14 @@ export class Viewer {
     this.applyClippingPlane(); // fresh model materials carry no clipping state yet
     this.rebuildClipCap(); // fresh geometry — a no-op if clipping is currently off
     if (this.hasModelEverLoaded) {
-      this.fitAllPanes(); // an edit-driven rebuild: preserve every pane's own view direction
+      const force = opts?.autoFit === false;
+      if (!force && this.shouldSkipAutoReframe()) {
+        // New bounds fit inside the last framing — keep the current camera and
+        // just ensure the new geometry gets painted.
+        this.requestRender();
+      } else {
+        this.fitAllPanes(); // an edit-driven rebuild: preserve every pane's own view direction
+      }
     } else {
       this.hasModelEverLoaded = true;
       // Genuine first load: the caller (`main.ts`'s `applyInitialViewIfNeeded`)
@@ -581,7 +639,18 @@ export class Viewer {
       // once the "viewState" sidecar message has arrived — no
       // resetView()/fitView() call here, so a persisted direction is never
       // framed-then-immediately-reframed.
+      this.requestRender();
     }
+  }
+
+  private shouldSkipAutoReframe(): boolean {
+    if (!this.lastFitSphere || !this.model) return false;
+    const box = new THREE.Box3().setFromObject(this.model);
+    if (box.isEmpty()) return false;
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const rawRadius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
+    return shouldSkipAutoReframe(this.lastFitSphere, [center.x, center.y, center.z], rawRadius);
   }
 
   /**
@@ -597,6 +666,7 @@ export class Viewer {
     this.grid.visible = d.showGridAndAxes;
     this.axes.visible = d.showGridAndAxes;
     this.upAxis = d.upAxis;
+    this.requestRender();
   }
 
   private clearModel(): void {
@@ -653,6 +723,7 @@ export class Viewer {
     // touches geometry.
     this.refreshModelFacesVisibility();
     this.rebuildClipCap(); // overlay content/visibility changed — a no-op if clipping is off
+    this.requestRender();
   }
 
   /**
@@ -668,6 +739,7 @@ export class Viewer {
     this.meshOverlay.visible = visible;
     this.refreshModelFacesVisibility();
     this.rebuildClipCap(); // which content is capped just flipped — a no-op if clipping is off
+    this.requestRender();
   }
 
   /**
@@ -700,6 +772,7 @@ export class Viewer {
     }
     this.refreshModelFacesVisibility();
     this.rebuildClipCap();
+    this.requestRender();
   }
 
   /**
@@ -730,6 +803,7 @@ export class Viewer {
       this.worstElementsOverlay = obj;
       this.scene.add(obj);
       this.applyClippingPlane(); // fresh overlay material carries no clipping state yet
+      this.requestRender();
     }
   }
 
@@ -739,6 +813,7 @@ export class Viewer {
   setWorstElementsOverlayVisible(visible: boolean): void {
     if (!this.worstElementsOverlay) return;
     this.worstElementsOverlay.visible = visible;
+    this.requestRender();
   }
 
   /**
@@ -789,6 +864,7 @@ export class Viewer {
     // geometry). Child visibility state (Parts hide/isolate) is untouched;
     // clearing restores just the root.
     if (this.model) this.model.visible = false;
+    this.requestRender();
   }
 
   /** Shared teardown for `setOpPreview(null)` and `setModel()`'s stale-clear. */
@@ -804,6 +880,7 @@ export class Viewer {
     });
     this.opPreview = null;
     if (this.model) this.model.visible = true;
+    this.requestRender();
   }
 
   /** Shows/hides the model's shaded face meshes (`entityType === "surface"`), leaving edges/points untouched. */
@@ -891,6 +968,9 @@ export class Viewer {
     camera.updateProjectionMatrix();
     pane.controls.target.copy(center);
     pane.controls.update();
+    // Record the padded framing sphere so a later edit-driven rebuild can
+    // decide to skip its auto-reframe when the new bounds are contained.
+    this.lastFitSphere = { center: [center.x, center.y, center.z], radius: radius * 1.5 };
   }
 
   /** Frames the model keeping the focused pane's current viewing orientation. */
@@ -1078,12 +1158,14 @@ export class Viewer {
       mat.transparent = mat.opacity < 1;
       mat.needsUpdate = true;
     });
+    this.requestRender();
   }
 
   /** Live, session-only background override — same "always wins once set"
    * precedent as `toggleGrid()` vs. `applyDefaults()`'s `showGridAndAxes`. */
   setBackground(hex: string): void {
     this.scene.background = new THREE.Color(hex);
+    this.requestRender();
   }
 
   /** The two edge-visibility toggles compose here rather than each writing
@@ -1110,6 +1192,7 @@ export class Viewer {
   setEdgesVisible(visible: boolean): void {
     this.edgesVisible = visible;
     this.applyEdgeVisibility();
+    this.requestRender();
   }
 
   /**
@@ -1124,6 +1207,7 @@ export class Viewer {
   setSmoothEdgesVisible(visible: boolean): void {
     this.smoothEdgesHidden = !visible;
     this.applyEdgeVisibility();
+    this.requestRender();
   }
 
   /**
@@ -1136,6 +1220,7 @@ export class Viewer {
     this.modelOpacity = value;
     this.applyOpacityBaseline();
     this.highlightGroup(this.highlightedGroupId);
+    this.requestRender();
   }
 
   /** Writes `modelOpacity` onto every current face material's `userData.baseOpacity`. */
@@ -1170,6 +1255,7 @@ export class Viewer {
     this.applyClippingPlane();
     if (plane && this.clipCap && this.clipCapPlane) this.updateClipCapPlane(plane);
     else this.rebuildClipCap();
+    this.requestRender();
   }
 
   /**
@@ -1281,6 +1367,7 @@ export class Viewer {
     this.model?.traverse((obj) => {
       if (obj.userData.groupId === groupId) obj.visible = visible;
     });
+    this.requestRender();
   }
 
   /**
@@ -1316,6 +1403,7 @@ export class Viewer {
       const owns = (set: Set<string>) => (key !== null && set.has(key)) || (groupKey !== null && set.has(groupKey));
       obj.visible = isolateKeys ? owns(isolateKeys) : !owns(hideKeys);
     });
+    this.requestRender();
   }
 
   // ── Entity selection & per-part colouring ──────────────────────────────
@@ -1361,11 +1449,13 @@ export class Viewer {
     this.gizmoBasePosition.copy(pivot);
     this.transformControls.setMode(mode);
     this.transformControls.attach(this.gizmoProxy);
+    this.requestRender();
   }
 
   /** Detaches the gizmo, hiding it. Safe to call even when nothing is attached. */
   detachTransformGizmo(): void {
     this.transformControls.detach();
+    this.requestRender();
   }
 
   /** True while the gizmo is actively being dragged — `onSelectPointerDown`/
@@ -1424,6 +1514,7 @@ export class Viewer {
     marker.scale.setScalar(this.pointSpriteScale * 3.0);
     this.measurementOverlay = marker;
     this.scene.add(marker);
+    this.requestRender();
   }
 
   /**
@@ -1455,6 +1546,7 @@ export class Viewer {
     this.measurementOverlay = group;
     this.measurementLabel = label;
     this.scene.add(group);
+    this.requestRender();
   }
 
   /** Disposes and removes the current measurement overlay (marker or line+label), if any. */
@@ -1464,6 +1556,7 @@ export class Viewer {
     disposeMeasureObject(this.measurementOverlay);
     this.measurementOverlay = null;
     this.measurementLabel = null;
+    this.requestRender();
   }
 
   /**
@@ -1492,6 +1585,7 @@ export class Viewer {
         (obj.material as THREE.SpriteMaterial).color.copy(color);
       }
     });
+    this.requestRender();
   }
 
   /** Highlights the transiently-selected entities over their base colours. */
@@ -1521,6 +1615,7 @@ export class Viewer {
         mat.color.setHex(keys.has(`point:${ud.entityId}`) ? SELECTION_COLOR : base);
       }
     });
+    this.requestRender();
   }
 
   /**
@@ -1590,6 +1685,7 @@ export class Viewer {
   setWireframe(on: boolean): void {
     this.wireframe = on;
     this.applyWireframe();
+    this.requestRender();
   }
 
   /** Flips the grid + axis helpers, returning their new visibility so callers
@@ -1597,6 +1693,7 @@ export class Viewer {
   toggleGrid(): boolean {
     this.grid.visible = !this.grid.visible;
     this.axes.visible = this.grid.visible;
+    this.requestRender();
     return this.grid.visible;
   }
 
@@ -1631,6 +1728,7 @@ export class Viewer {
   setDisplayMode(mode: DisplayMode): void {
     this.displayMode = mode;
     this.applyDisplayMode();
+    this.requestRender();
   }
 
   /**
@@ -1745,6 +1843,7 @@ export class Viewer {
     this.renderer.domElement.removeEventListener("pointerdown", this.onGizmoPointerDown, true);
     this.renderer.domElement.removeEventListener("pointerdown", this.onSelectPointerDown);
     this.renderer.domElement.removeEventListener("pointerup", this.onSelectPointerUp);
+    this.renderScheduler.cancel();
     this.gizmo.dispose();
     this.clearModel();
     for (const pane of this.panes) pane.controls.dispose();
@@ -1767,6 +1866,7 @@ export class Viewer {
       this.applySpeedCompensation(this.panes[i], this.paneRects[i]);
     }
     this.syncTransformControlsToFocus();
+    this.requestRender();
   };
 
   /**
@@ -1797,11 +1897,6 @@ export class Viewer {
       this.panes[i].controls.enabled = i === index;
     }
   }
-
-  private animate = (): void => {
-    requestAnimationFrame(this.animate);
-    this.renderFrame();
-  };
 
   /**
    * The one shared frame routine — used by both the animation loop and the

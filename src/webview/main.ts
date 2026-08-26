@@ -311,7 +311,10 @@ let clearMarkupOverlay: (() => void) | null = null;
 function cancelExplodePreview(): void {
   if (!explodePreviewBases) return;
   const model = viewer.getModel();
-  if (model) resetExplodePreview(explodePreviewBases);
+  if (model) {
+    resetExplodePreview(explodePreviewBases);
+    viewer.requestRender();
+  }
   explodePreviewBases = null;
 }
 
@@ -424,6 +427,7 @@ function cancelGizmoPreview(): void {
       t.object.quaternion.copy(t.baseQuaternion);
       t.object.scale.copy(t.baseScale);
     }
+    viewer.requestRender();
   }
   gizmoTargets = null;
 }
@@ -476,6 +480,7 @@ viewer.setGizmoHandlers(
         t.object.scale.copy(s.scale);
       }
     }
+    viewer.requestRender();
     // Push the live-dragged values into the open form's fields — the answer
     // to "what happens when a drag overwrites a field the user had typed an
     // expression into" (see `EditsPanel.setVecField`'s doc comment): the
@@ -575,6 +580,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     if (!model) return;
     if (!explodePreviewBases) explodePreviewBases = captureExplodeBase(model);
     applyExplodePreview(explodePreviewBases, factor);
+    viewer.requestRender();
   },
   onExplodePreviewCancel: cancelExplodePreview,
   onApplyMate: () => {
@@ -1432,14 +1438,14 @@ function pristineMeshPositions(): Float32Array | null {
 let importedRegionInfo: { triangleRegion: Int32Array } | null = null;
 
 /** Rebuilds the displayed mesh model: clone pristine → apply resolved ops → facet-split. */
-function rebuildMeshModel(): void {
+function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   if (!pristineMesh) return;
   const ops = currentResolvedOps().ops;
   const outcomes: OpOutcome[] = [];
   const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
-  viewer.setModel(model);
+  viewer.setModel(model, opts);
   cancelOpPreview(); // setModel() already cleared the overlay; this also kills any pending/in-flight preview request
   explodePreviewBases = null; // stale references to the just-replaced model's objects
   gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
@@ -2733,7 +2739,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       try {
         setStatus("Building geometry…");
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
-        viewer.setModel(group);
+        viewer.setModel(group, { autoFit: msg.autoFit });
         cancelOpPreview(); // setModel() cleared the overlay; kill any pending/in-flight preview too
         explodePreviewBases = null; // stale references to the just-replaced model's objects
         gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
@@ -3151,7 +3157,7 @@ async function loadMeshObjectFromUrl(
     // Cache the pristine object; the displayed model is rebuilt from it with
     // the current edits applied (no-op when there are none).
     pristineMesh = object;
-    rebuildMeshModel();
+    rebuildMeshModel({ autoFit: false });
     // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
     setSelectableModes(["volume", "surface"]);
     editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
