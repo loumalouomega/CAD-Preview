@@ -267,6 +267,8 @@ An inserted part opens as its own document rather than merging into whatever mod
 
 The **Edits** panel (below the Parts panel) applies non-destructive **edit operations** to the model. Edits never touch the CAD file — they are saved as an ordered, replayable op-list in a `<model>.edits.json` sidecar and re-applied each time you open the file.
 
+Every parameter form previews **live**: while a form is open, the viewer shows what that op *would* produce as a translucent overlay, re-computed as you type (~250 ms debounce) and coloured by intent — green where material is added, red where it is removed, blue for wire/reference results (points, lines, sketch faces), neutral for transforms and fillet/chamfer. Switching forms or changing the selection cancels the preview; only **Apply** commits anything to the history.
+
 The panel is organised into two top-level tabs — **GEOMETRY** (create new entities) and **EDIT** (modify existing ones) — sharing one undo/redo/Clear header and one operation-history list. The GEOMETRY tab is further split into **2D** (points, lines, curves, sketch profiles) and **3D** (solid primitives, holes) subtabs. Each tab shows a grid of operation buttons (icon + name); clicking a button opens its parameter form below the grid, and clicking it again collapses the form. For mesh sources the whole **2D** subtab and every other B-rep-only button grey out.
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">

@@ -220,23 +220,6 @@ Users define named **parts** (FEM sub-model-parts) by clicking volumes/surfaces/
 - VS Code webviews **block `prompt()`/`alert()`** — the Parts panel renames via an inline `<input>`, not a dialog.
 
 ## Geometry editing (operations)
-## Live operation preview (roadmap item, closed)
-
-*Admission*: shows the result of an in-progress edit before it is applied, coloured by intent (green additive, red subtractive, blue wire/reference, neutral for transforms/fillet/chamfer), with per-operation cancellation. Reuses existing `loadBRepCachedForDocument` with separate `::oppreview` cache key; mesh preview entirely client-side via `applyEditsMesh` on a pristine clone. No new kernel surface — the B-rep preview is a speculative replay of `loadBRepCached(..., [...currentOps, draftOp])` on the existing debounce, discarded rather than persisted. The intent colouring is per-op-kind (a `cut`/`shell`/`split` result renders red, an additive one green), with per-band colouring flagged as a design question for future work. Two discipline questions from shipped features are inherited: a preview must never enter the op stack (the webview owns that stack, and an uncommitted preview would be undoable, persistable, and wrong), and it must be cancelled on *selection* change as well as form change — the Transform Gizmo shipped with exactly that bug, where switching selection left an orphaned preview stranded with nothing to reset it.
-
-**Verification**: `tsc --noEmit` clean; `npx vitest run` 1177/1177 pass; `npm run build` clean; `npm run mcp:smoke` progresses through all operations (timeout due to script duration, not errors); `opPreviewScheduler.test.ts` 7/7 pass. Standing F5-only caveat for the rendering — the genuinely testable piece is the debounce/cancel state machine following `explodePreview.ts`'s precedent.
-
-Key files modified:
-- `src/webview/editsPanel.ts` — draftReader machinery, `currentDraft()`, delegated input/click listeners; `selectOp()` fires `onPreviewCancel()` + `onPreviewDraftChanged()`; explode deliberately excluded from preview wiring.
-- `src/webview/main.ts` — `buildOpForPanel` shared draft→EditOp resolver for ALL op kinds; `onPreviewDraftChanged`/`onPreviewCancel` wired to panel stubs; cancel sites: form switch, selection change (renderHighlight hook), Apply push (before `editsModel.push`), model rebuild, external reconciliation; `setOpPreview` integration; preview eligibility excludes `explode`/`translate`/`rotate`/`scale` (gizmo-owned). All `onApplyX` callbacks refactored to delegate to `buildOpForPanel`.
-- `src/provider.ts` — `handleOpPreview` added: posts `opPreviewRequest` with separate `::oppreview` cache key, reads `loadBRepCachedForDocument`, returns `opPreviewResult` + `opOutcomes` diagnostic; mesh preview client-side only via `applyEditsMesh` on clone; cache entry disposed on panel close.
-- `src/protocol.ts` — `opPreviewRequest`/`opPreviewResult`/`opPreviewError` message types added (requestId, op, meshes/edges/points/outcomes).
-- `src/webview/viewer.ts` — `setOpPreview(group | null, tint?)` with scene sibling, model hidden while shown, intent tint via material lerp + baseOpacity×0.75 translucency, unpickable (`collectTargets` traverses `model` only). `disposeOpPreview()`/refreshModelFacesVisibility integration. `applyClippingPlane` includes `opPreview`.
-- `src/webview/opPreviewScheduler.ts` — pure debounce/cancel/generation scheduler with injectable timers; 7/7 vitest tests pass.
-
-**Constraints**: No perf guard in v1 (base-cache reuse + debounce only, documented caveat); explode excluded from new mechanism; per-band colouring deferred; panel `openOpId()` added.
-
-This feature closes roadmap item 1 "Live operation preview — show the result before Apply, coloured by intent" (M).
 
 Users apply **edit operations** (transforms, booleans, feature modeling, assembly) on top of the source model. Non-negotiable invariants:
 
@@ -275,6 +258,24 @@ Users apply **edit operations** (transforms, booleans, feature modeling, assembl
   - **Orientation is user-controlled, unlike the 3D primitives.** Rectangle/ polygon take an explicit `up: Vec3` (in addition to `normal`) — `up` must not be (anti-)parallel to `normal` (`validateEditOp` rejects that). `inPlaneBasis (normal, up)` projects `up` off `normal` and normalizes it for the width axis `u`, then `v = normal × u` for the height axis — this is deliberately *different* from `planeBasis()` (used by the 3D N-gon prism), which picks an arbitrary perpendicular since a solid of revolution mostly doesn't care about polygon phase; a flat rectangle very much does. Verified end-to-end: a rectangle with `normal:[0,0,1], up:[1,0,0], width:10, height:6` produces the exact bbox `x:±5, y:±3, z:0`.
   - **Extruding a profile consumes it — no orphan duplicate.** `BRepPrimAPI_ MakePrism_1(face, vec, false, true)`'s `Copy=false` means OCCT reuses the *original* face object as the resulting solid's base cap rather than copying it; after `addCircleProfile` → `extrude`, the free-face pass finds nothing left over (the circle face is now "claimed" by the new solid it became part of) — confirmed against the live WASM, not assumed.
   - A profile whose builder throws is skipped, same graceful-degradation rule.
+
+## Live operation preview (roadmap item, closed)
+
+*Admission*: shows the result of an in-progress edit before it is applied, coloured by intent (green additive, red subtractive, blue wire/reference, neutral for transforms/fillet/chamfer), with per-operation cancellation. Reuses existing `loadBRepCachedForDocument` with separate `::oppreview` cache key; mesh preview entirely client-side via `applyEditsMesh` on a pristine clone. No new kernel surface — the B-rep preview is a speculative replay of `loadBRepCached(..., [...currentOps, draftOp])` on the existing debounce, discarded rather than persisted. The intent colouring is per-op-kind (a `cut`/`shell`/`split` result renders red, an additive one green), with per-band colouring flagged as a design question for future work. Two discipline questions from shipped features are inherited: a preview must never enter the op stack (the webview owns that stack, and an uncommitted preview would be undoable, persistable, and wrong), and it must be cancelled on *selection* change as well as form change — the Transform Gizmo shipped with exactly that bug, where switching selection left an orphaned preview stranded with nothing to reset it.
+
+**Verification**: `tsc --noEmit` clean; `npx vitest run` 1177/1177 pass; `npm run build` clean; `npm run mcp:smoke` progresses through all operations (timeout due to script duration, not errors); `opPreviewScheduler.test.ts` 7/7 pass. Standing F5-only caveat for the rendering — the genuinely testable piece is the debounce/cancel state machine following `explodePreview.ts`'s precedent.
+
+Key files modified:
+- `src/webview/editsPanel.ts` — draftReader machinery, `currentDraft()`, delegated input/click listeners; `selectOp()` fires `onPreviewCancel()` + `onPreviewDraftChanged()`; explode deliberately excluded from preview wiring.
+- `src/webview/main.ts` — `buildOpForPanel` shared draft→EditOp resolver for ALL op kinds; `onPreviewDraftChanged`/`onPreviewCancel` wired to panel stubs; cancel sites: form switch, selection change (renderHighlight hook), Apply push (before `editsModel.push`), model rebuild, external reconciliation; `setOpPreview` integration; preview eligibility excludes `explode`/`translate`/`rotate`/`scale` (gizmo-owned). All `onApplyX` callbacks refactored to delegate to `buildOpForPanel`.
+- `src/provider.ts` — `handleOpPreview` added: posts `opPreviewRequest` with separate `::oppreview` cache key, reads `loadBRepCachedForDocument`, returns `opPreviewResult` + `opOutcomes` diagnostic; mesh preview client-side only via `applyEditsMesh` on clone; cache entry disposed on panel close.
+- `src/protocol.ts` — `opPreviewRequest`/`opPreviewResult`/`opPreviewError` message types added (requestId, op, meshes/edges/points/outcomes).
+- `src/webview/viewer.ts` — `setOpPreview(group | null, tint?)` with scene sibling, model hidden while shown, intent tint via material lerp + baseOpacity×0.75 translucency, unpickable (`collectTargets` traverses `model` only). `disposeOpPreview()`/refreshModelFacesVisibility integration. `applyClippingPlane` includes `opPreview`.
+- `src/webview/opPreviewScheduler.ts` — pure debounce/cancel/generation scheduler with injectable timers; 7/7 vitest tests pass.
+
+**Constraints**: No perf guard in v1 (base-cache reuse + debounce only, documented caveat); explode excluded from new mechanism; per-band colouring deferred; panel `openOpId()` added.
+
+This feature closes roadmap item 1 "Live operation preview — show the result before Apply, coloured by intent" (M).
 
 ## Bottom-up wireframe modeling (Points, Lines, Arcs → Surfaces → Volumes)
 
