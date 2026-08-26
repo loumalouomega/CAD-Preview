@@ -34,7 +34,7 @@ import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
 import { parseGltf } from "./gltfParser";
 import { silhouetteEdges } from "./silhouetteEdges";
-import { silhouetteSvg, scalePositions, type Vec3 } from "./svgSilhouette";
+import { silhouetteSvg, scalePositions, type Vec3, type DimensionSource } from "./svgSilhouette";
 import { silhouetteDxf, polylinesDxf } from "./dxfSilhouette";
 import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import type { CompareSource } from "./modelDiffHost";
@@ -57,6 +57,13 @@ export interface SvgSilhouetteOptions {
   /** Output format — SVG (default) or DXF. DXF chains segments into
    * LWPOLYLINE (with bulges for arcs) plus LINE singletons. */
   format?: "svg" | "dxf";
+  /**
+   * Pinned annotations to bake into the drawing as dimension glyphs
+   * (roadmap "Dimension-style rendering", Phase 2) — extension lines,
+   * arrowheads, and the frozen value label, projected through this export's
+   * own view basis. Optional; absent = a plain outline exactly as before.
+   */
+  annotations?: DimensionSource[];
 }
 
 export interface SvgSilhouetteResult {
@@ -72,6 +79,8 @@ export interface SvgSilhouetteResult {
   /** DXF-specific chain/singleton counts when format === "dxf". */
   chainCount?: number;
   lineCount?: number;
+  /** Annotations whose dimension glyphs were rendered (absent when none were supplied). */
+  dimensionCount?: number;
 }
 
 /** Flattens every tessellated face into one unindexed triangle soup, then
@@ -112,6 +121,21 @@ function meshFromSource(source: CompareSource): WeldedMesh {
   }
 }
 
+/** Bbox diagonal of a flat position soup — the glyph-sizing reference. */
+function diagonalOf(positions: Float32Array): number {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  if (!Number.isFinite(minX)) return 0;
+  return Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+}
+
 /**
  * Renders one view of a model as an SVG outline.
  *
@@ -136,21 +160,33 @@ export async function exportSvgSilhouette(
     const positions = scalePositions(mesh.positions, factor);
     const edges = silhouetteEdges(positions, mesh.indices, options.direction);
     const triangleCount = Math.floor(mesh.indices.length / 3);
+    // Glyph sizing reference: the model bbox diagonal in OUTPUT units (the
+    // same converted space the projection runs in).
+    const dimensionScaleHint = options.annotations?.length ? diagonalOf(positions) : undefined;
     if (options.format === "dxf") {
-      const { dxf, segmentCount, chainCount, lineCount } = silhouetteDxf(positions, edges, { direction: options.direction, up: options.up }, {
-        title: options.title,
-      });
+      const { dxf, segmentCount, chainCount, lineCount, dimensionCount } = silhouetteDxf(
+        positions,
+        edges,
+        { direction: options.direction, up: options.up },
+        {
+          title: options.title,
+          annotations: options.annotations,
+          dimensionScaleHint,
+        }
+      );
       if (triangleCount === 0) warnings.push("The source produced no triangles — the drawing is empty.");
-      else if (segmentCount === 0) warnings.push("No silhouette edges were found for this view direction — the drawing is empty.");
-      return { svg: dxf, dxf, segmentCount, triangleCount, warnings, chainCount, lineCount };
+      else if (segmentCount === 0 && !dimensionCount) warnings.push("No silhouette edges were found for this view direction — the drawing is empty.");
+      return { svg: dxf, dxf, segmentCount, triangleCount, warnings, chainCount, lineCount, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
     }
-    const { svg, segmentCount } = silhouetteSvg(positions, edges, { direction: options.direction, up: options.up }, {
+    const { svg, segmentCount, dimensionCount } = silhouetteSvg(positions, edges, { direction: options.direction, up: options.up }, {
       strokeWidth: options.strokeWidth,
       title: options.title,
+      annotations: options.annotations,
+      dimensionScaleHint,
     });
     if (triangleCount === 0) warnings.push("The source produced no triangles — the drawing is empty.");
-    else if (segmentCount === 0) warnings.push("No silhouette edges were found for this view direction — the drawing is empty.");
-    return { svg, segmentCount, triangleCount, warnings };
+    else if (segmentCount === 0 && !dimensionCount) warnings.push("No silhouette edges were found for this view direction — the drawing is empty.");
+    return { svg, segmentCount, triangleCount, warnings, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
   };
 
   if (source.kind !== "brep") return render(meshFromSource(source));

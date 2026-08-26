@@ -69,6 +69,7 @@ import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import { evaluateToleranceBand } from "./toleranceBand";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { normalizeTessellationQuality } from "./tessellationQuality";
@@ -691,6 +692,91 @@ export async function measureExactTool(
     params.entityIdB
   );
   return { format: route.format, supported: true, ...result, warnings: [] };
+}
+
+// ---------------------------------------------------------------------------
+// check_tolerance
+
+export interface ToleranceCheckParams {
+  path: string;
+  kind: ExactMeasureKind;
+  entityIdA: string;
+  entityIdB?: string;
+  /** Nominal (target) value, same unit as the measurement (mm / degrees). */
+  nominal: number;
+  /** Allowed deviation above nominal (≥ 0). */
+  tolerancePlus: number;
+  /** Allowed deviation below nominal (≥ 0); defaults to `tolerancePlus`
+   * (symmetric ±) when omitted. */
+  toleranceMinus?: number;
+}
+
+export interface ToleranceCheckResult {
+  format: CadFormat;
+  supported: boolean;
+  warnings: string[];
+  /** The exact measurement the band was evaluated against — verbatim from
+   * the same pipeline call `measure_exact` makes (`value` present on a
+   * successful measurement). */
+  measurement: Partial<ExactMeasureResult>;
+  /** The band as evaluated (with the defaulted `minus` filled in). */
+  tolerance: { nominal: number; plus: number; minus: number };
+  /** `measured − nominal` — signed. Absent when the measurement itself came
+   * back `supported: false`. */
+  deviation?: number;
+  /** True when `−minus ≤ deviation ≤ plus`. A FACT about where the value
+   * sits relative to the caller's band, never a pass/fail verdict. */
+  withinTolerance?: boolean;
+}
+
+/**
+ * Tolerance-band fact check on top of the existing exact-measurement
+ * pipeline (roadmap item "Tolerance-band fact checks on exact measurements").
+ * Pure arithmetic over {@link measureExactTool}'s result — no new kernel
+ * surface, no second OCCT round trip beyond the measurement itself.
+ */
+export async function checkToleranceTool(ctx: ToolContext, params: ToleranceCheckParams): Promise<ToleranceCheckResult> {
+  const { nominal, tolerancePlus } = params;
+  const toleranceMinus = params.toleranceMinus ?? tolerancePlus;
+  if (![nominal, tolerancePlus, toleranceMinus].every((v) => typeof v === "number" && Number.isFinite(v))) {
+    throw new Error("check_tolerance needs finite numbers for nominal/tolerancePlus/toleranceMinus.");
+  }
+  if (tolerancePlus < 0 || toleranceMinus < 0) {
+    throw new Error("check_tolerance allowances must be ≥ 0 (give the deviation magnitude, not a signed value).");
+  }
+
+  const base = await measureExactTool(ctx, {
+    path: params.path,
+    kind: params.kind,
+    entityIdA: params.entityIdA,
+    entityIdB: params.entityIdB,
+  });
+  if (!base.supported || base.value === undefined) {
+    // The measurement itself degraded (mesh-format source etc.) — surface
+    // that shape verbatim; there is no value to compare a band against.
+    return {
+      format: base.format,
+      supported: false,
+      warnings: base.warnings,
+      measurement: base,
+      tolerance: { nominal, plus: tolerancePlus, minus: toleranceMinus },
+    };
+  }
+  const evaluation = evaluateToleranceBand(base.value, { nominal, plus: tolerancePlus, minus: toleranceMinus });
+  if (!evaluation) {
+    // Unreachable after the validation above (every input was finite), but
+    // never fabricate a comparison if that ever changes.
+    throw new Error("check_tolerance could not evaluate the band against the measured value.");
+  }
+  return {
+    format: base.format,
+    supported: true,
+    warnings: base.warnings,
+    measurement: base,
+    tolerance: { nominal, plus: tolerancePlus, minus: toleranceMinus },
+    deviation: evaluation.deviation,
+    withinTolerance: evaluation.withinTolerance,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2230,7 +2316,7 @@ export async function exportSvgSilhouetteTool(
     tessellationQuality?: string;
     format?: string;
   }
-): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number }> {
+): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number; dimensionCount?: number }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
@@ -2284,6 +2370,18 @@ export async function exportSvgSilhouetteTool(
     warnings.push(`Unknown format "${params.format}" — valid: svg, dxf. Falling back to "svg".`);
   }
 
+  // Pinned annotations ride the same drawing (roadmap "Dimension-style
+  // rendering", Phase 2): their frozen world-space facts are projected
+  // through this export's own view basis and baked in as dimension glyphs.
+  // Absent sidecar = a plain outline exactly as before this existed.
+  const pinnedAnnotations = await readAnnotations(modelPath);
+  const annotations = pinnedAnnotations.map((a) => ({
+    anchorPoint: a.anchorPoint,
+    linePoints: a.linePoints,
+    text: a.text,
+    ...(a.tolerance ? { tolerance: a.tolerance } : {}),
+  }));
+
   const bytes = await readModelBytes(modelPath);
   const { ops } = await readEdits(modelPath);
   let source: CompareSource;
@@ -2309,6 +2407,7 @@ export async function exportSvgSilhouetteTool(
     quality,
     title: `${path.basename(modelPath)} — ${viewName}`,
     format,
+    annotations,
   });
   const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;
   await fs.writeFile(outputPath, content, "utf8");
@@ -2320,9 +2419,16 @@ export async function exportSvgSilhouetteTool(
     segmentCount: result.segmentCount,
     triangleCount: result.triangleCount,
     unit,
-    warnings: [...warnings, ...result.warnings],
+    warnings: [
+      ...warnings,
+      ...(annotations.length > 0 && !result.dimensionCount
+        ? [`${annotations.length} pinned annotation(s) could not be projected into this view (all anchors off-plane or degenerate) and were skipped.`]
+        : []),
+      ...result.warnings,
+    ],
     format,
     ...(format === "dxf" ? { chainCount: result.chainCount, lineCount: result.lineCount } : {}),
+    ...(result.dimensionCount !== undefined ? { dimensionCount: result.dimensionCount } : {}),
   };
 }
 

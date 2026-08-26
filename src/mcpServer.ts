@@ -32,6 +32,7 @@ import {
   inspectEntity,
   measureTool,
   measureExactTool,
+  checkToleranceTool,
   checkInterferenceTool,
   checkInterferenceAllTool,
   renderSnapshotTool,
@@ -247,6 +248,29 @@ server.registerTool(
   },
   wrap((args: { path: string; kind: "distance" | "edgeLength" | "radius"; entityIdA: string; entityIdB?: string }) =>
     measureExactTool(ctx, args)
+  )
+);
+
+server.registerTool(
+  "check_tolerance",
+  {
+    description:
+      "Tolerance-band fact check on top of an exact measurement: runs the SAME exact measurement measure_exact performs (B-rep precision, same kind/entityId rules), then reports the measured value alongside deviation = measured − nominal and withinTolerance (true when −toleranceMinus ≤ deviation ≤ tolerancePlus). toleranceMinus defaults to tolerancePlus (symmetric ±) when omitted. withinTolerance is a FACT about where the value sits relative to the band you supplied — never a pass/fail verdict; you render the judgment. No new geometry is computed and nothing is persisted.",
+    inputSchema: {
+      path: modelPath,
+      kind: z.enum(["distance", "edgeLength", "radius"]),
+      entityIdA: z.string().describe("solid-N / face-N / edge-N / point-N id"),
+      entityIdB: z.string().optional().describe("solid-N / face-N / edge-N / point-N id — required for kind='distance'"),
+      nominal: z.number().describe("Nominal (target) value, same unit as the measurement (mm for distance/edgeLength/radius)"),
+      tolerancePlus: z.number().describe("Allowed deviation above nominal (≥ 0)"),
+      toleranceMinus: z
+        .number()
+        .optional()
+        .describe("Allowed deviation below nominal (≥ 0); omitted = symmetric ± with tolerancePlus"),
+    },
+  },
+  wrap((args: { path: string; kind: "distance" | "edgeLength" | "radius"; entityIdA: string; entityIdB?: string; nominal: number; tolerancePlus: number; toleranceMinus?: number }) =>
+    checkToleranceTool(ctx, args)
   )
 );
 

@@ -21,7 +21,8 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
 | `src/webview/measurement.ts` | Pure distance/length/angle/radius math over plain tuples (unit-tested) |
 | `src/webview/measurementState.ts` | 0–2-pick buffer for the in-progress measurement, DOM-free (unit-tested) |
-| `src/webview/measurementOverlay.ts` | Lazily-built marker/line/label Three.js objects for the measurement overlay |
+| `src/webview/measurementOverlay.ts` | Lazily-built marker/dimension-glyph/label Three.js objects for the measurement overlay |
+| `src/webview/dimensionGlyph.ts` | Pure dimension-glyph math — arrowheads, witness/extension lines, value formatting (shared with the SVG/DXF export path) |
 | `src/webview/annotationsModel.ts` | Persisted, topology-anchored annotations (pinned measurements) data model, DOM-free (unit-tested) |
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
 | `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
@@ -411,11 +412,11 @@ Full cleanup: disposes model, renderer, and removes the resize observer.
 setMeasureMode(on: boolean): void
 setOnMeasurePick(onPick: ((pick: MeasurementPick) => void) | null): void
 showMeasurementMarker(point: THREE.Vector3): void
-showMeasurementOverlay(linePoints: THREE.Vector3[], anchor: THREE.Vector3, text: string): void
+showMeasurementOverlay(linePoints: THREE.Vector3[], anchor: THREE.Vector3, text: string, opts?: { tone?: "normal" | "fail" }): void
 clearMeasurementOverlay(): void
 ```
 
-`measureMode` is a **parallel interaction mode**, deliberately independent of `selectionMode`/`SelectionSet` — a click takes measurement priority over the normal Parts/Edits pick when both happen to be active (`onSelectPointerUp`). On a measure-mode hit, `buildMeasurementPick()` (private) assembles a `MeasurementPick` (`src/webview/measurementState.ts`) from the raycast intersection: the world-space hit point (available in the hit loop but normally discarded — the ordinary `onEntityPick` path only forwards the resolved `{entityType, entityId}`), a world-space direction for a `surface`/`line` hit (face normal via the intersection's local `face.normal` + normal matrix, or edge tangent from the two polyline points straddling the hit — used by the "angle" tool), and the picked edge's full world-space polyline (used by "edgeLength"/"radius"). `showMeasurementMarker`/ `showMeasurementOverlay`/`clearMeasurementOverlay` manage a `measurementOverlay` scene-sibling `THREE.Object3D` (same pattern as `meshOverlay`), built via `measurementOverlay.ts`'s `makeMeasureMarkerSprite`/`buildMeasureLine`/ `makeMeasureLabelSprite`. The overlay's label sprite is rescaled every `animate()` frame (`distance-to-camera × 0.06`) to stay a constant on-screen size while zooming — unlike the point-sprite scale in `frame()`, which only updates on fit/reset. `setModel()` clears any measurement overlay, same as it clears the FE-mesh overlay — both refer to geometry that's about to be replaced.
+`measureMode` is a **parallel interaction mode**, deliberately independent of `selectionMode`/`SelectionSet` — a click takes measurement priority over the normal Parts/Edits pick when both happen to be active (`onSelectPointerUp`). On a measure-mode hit, `buildMeasurementPick()` (private) assembles a `MeasurementPick` (`src/webview/measurementState.ts`) from the raycast intersection: the world-space hit point (available in the hit loop but normally discarded — the ordinary `onEntityPick` path only forwards the resolved `{entityType, entityId}`), a world-space direction for a `surface`/`line` hit (face normal via the intersection's local `face.normal` + normal matrix, or edge tangent from the two polyline points straddling the hit — used by the "angle" tool), and the picked edge's full world-space polyline (used by "edgeLength"/"radius"). `showMeasurementMarker`/ `showMeasurementOverlay`/`clearMeasurementOverlay` manage a `measurementOverlay` scene-sibling `THREE.Object3D` (same pattern as `meshOverlay`); a 2-point `linePoints` input builds the dimension-glyph group (arrowheads + witness stubs via `buildMeasureDimensionGroup`, sized off `getModelExtents()?.diagonal`) instead of the old bare line. The overlay's label sprite is rescaled every `animate()` frame (`distance-to-camera × 0.06`) to stay a constant on-screen size while zooming — unlike the point-sprite scale in `frame()`, which only updates on fit/reset. `setModel()` clears any measurement overlay, same as it clears the FE-mesh overlay — both refer to geometry that's about to be replaced. `tone: "fail"` recolors the label frame for an out-of-tolerance toleranced pin — a presentation choice derived at render time from the annotation's frozen facts (see [Protocol](./protocol.md)'s `Annotation.tolerance`).
 
 **Transform Gizmo (live drag preview for Move/Rotate/Scale, never itself an edit op):**
 
@@ -1156,13 +1157,26 @@ Required pick counts: `distance`/`angle` need 2, `edgeLength`/`radius` need 1 (s
 **`measurementOverlay.ts`** — lazily-built Three.js objects:
 
 ```typescript
-function makeMeasureLabelSprite(text: string): THREE.Sprite
+function makeMeasureLabelSprite(text: string, accent?: number): THREE.Sprite   // accent recolors the frame (out-of-tolerance pins pass MEASURE_FAIL_COLOR)
 function makeMeasureMarkerSprite(): THREE.Sprite
-function buildMeasureLine(a: THREE.Vector3, b: THREE.Vector3): THREE.Line
+function buildMeasureDimensionGroup(p0: THREE.Vector3, p1: THREE.Vector3, scale: number): THREE.Group
 function disposeMeasureObject(obj: THREE.Object3D): void
 ```
 
 Follows `geometryBuilder.ts`'s `dotTexture()` lazy-build discipline exactly — canvases are built on first *call*, never at module load, since this module is reachable from pure-function tests with zero DOM/jsdom available (a module-scope `document.createElement("canvas")` already broke tests once in this codebase, per the Points feature's history). Only one measurement overlay is ever live at a time (a new pick or mode toggle disposes the previous one first), so repainting the single shared label canvas and wrapping it in a fresh `CanvasTexture` per call is safe.
+
+`buildMeasureDimensionGroup` renders a 2-point measurement as an actual **dimension glyph** (roadmap "Dimension-style rendering for pinned measurements", Phase 1): the measured line plus outward-pointing arrowhead cones and short perpendicular witness stubs, all geometry from the pure `dimensionGlyph.ts` math below. Arrowheads are oriented via `Quaternion.setFromUnitVectors(+Y → axis)` (the same alignment precedent `meshEdits.ts`'s primitive placement established) with tips exactly at the measured endpoints; everything uses `depthTest: false` + high `renderOrder`, matching the overlay's always-on-top convention. Deliberately **view-independent** (on-segment style): a pinned annotation's glyph must stay put while the camera orbits, so no screen-facing offset is computed — the classic offset-dimension drafting look belongs to the fixed-view SVG/DXF export path, which runs the SAME math with an offset direction.
+
+**`dimensionGlyph.ts`** — pure dimension-glyph math (no DOM/THREE; unit-tested headless):
+
+```typescript
+interface ArrowheadSpec { tip: Vec3; axis: Vec3; length: number; halfWidth: number }
+interface DimensionGlyph { line: [Vec3, Vec3]; extensionLines: Array<[Vec3, Vec3]>; witnesses: Array<[Vec3, Vec3]>; arrowheads: ArrowheadSpec[] }
+function computeDistanceGlyph(p0: Vec3, p1: Vec3, options: { scale: number; offsetDir?: Vec3; upHint?: Vec3 }): DimensionGlyph
+function formatMeasureValue(value: number): string
+```
+
+All sizes derive from `options.scale` (the model bbox diagonal) capped against the measured segment's own length, so two opposing arrowheads can never overlap on a short measurement. Degenerate input (coincident points, non-finite coordinates) yields a valid empty-bodied glyph — never NaN geometry. Passing `offsetDir` switches to the offset style (displaced dimension line + perpendicular extension lines overshooting it, per drafting convention) that the SVG/DXF export path uses. The same function also powers `svgSilhouette.ts`'s `dimensionDrawings()`, which projects pinned annotations into the export view basis and computes their glyphs IN PROJECTED 2D — one implementation shared by both renderers, so they cannot drift.
 
 `main.ts`'s `setupMeasureControls()` wires the `#measure-dropdown` toolbar (toggle/tool `<select>`/Clear/readout span), dispatches completed picks to `measurement.ts`'s functions via `computeMeasurementResult()`, and calls `Viewer.showMeasurementMarker`/`showMeasurementOverlay`/`clearMeasurementOverlay` to display the result.
 

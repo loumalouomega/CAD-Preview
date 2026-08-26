@@ -16,6 +16,7 @@ import {
   inspectEntity,
   measureTool,
   measureExactTool,
+  checkToleranceTool,
   checkInterferenceTool,
   checkInterferenceAllTool,
   renderSnapshotTool,
@@ -688,6 +689,71 @@ describe("measure_exact", () => {
       })
     );
     await expect(measureExactTool(c, { path: stpModel, kind: "distance", entityIdA: "solid-0" })).rejects.toThrow(/entityIdB/);
+  });
+});
+
+describe("check_tolerance", () => {
+  it("evaluates the band against the pipeline's exact measurement and reports facts", async () => {
+    const c = ctx();
+    const result = await checkToleranceTool(c, {
+      path: stpModel,
+      kind: "distance",
+      entityIdA: "solid-0",
+      entityIdB: "solid-1",
+      nominal: 5.01,
+      tolerancePlus: 0.05,
+      toleranceMinus: 0.05,
+    });
+    // One measurement round trip — no second kernel call for the band math.
+    expect(c.pipeline.measureExact).toHaveBeenCalledTimes(1);
+    expect(result.supported).toBe(true);
+    expect(result.measurement).toMatchObject({ kind: "distance", value: 5 });
+    expect(result.tolerance).toEqual({ nominal: 5.01, plus: 0.05, minus: 0.05 });
+    expect(result.deviation).toBeCloseTo(-0.01, 12);
+    expect(result.withinTolerance).toBe(true);
+  });
+
+  it("reports an out-of-band measurement as a fact without refusing the call", async () => {
+    const c = ctx();
+    const result = await checkToleranceTool(c, {
+      path: stpModel,
+      kind: "distance",
+      entityIdA: "solid-0",
+      entityIdB: "solid-1",
+      nominal: 4,
+      tolerancePlus: 0.1,
+    });
+    expect(result.measurement.value).toBe(5);
+    expect(result.deviation).toBeCloseTo(1, 12);
+    expect(result.withinTolerance).toBe(false);
+    expect(result.tolerance.minus).toBe(0.1); // minus defaulted to plus (symmetric ±)
+  });
+
+  it("rejects non-finite or negative allowances up front, without touching WASM", async () => {
+    const c = ctx();
+    await expect(
+      checkToleranceTool(c, { path: stpModel, kind: "radius", entityIdA: "edge-0", nominal: 3, tolerancePlus: -1 })
+    ).rejects.toThrow(/≥ 0/);
+    await expect(
+      checkToleranceTool(c, { path: stpModel, kind: "radius", entityIdA: "edge-0", nominal: NaN, tolerancePlus: 1 })
+    ).rejects.toThrow(/finite/);
+    expect(c.pipeline.measureExact).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a mesh source's supported:false without a fabricated comparison", async () => {
+    const c = ctx();
+    const result = await checkToleranceTool(c, {
+      path: stlModel,
+      kind: "distance",
+      entityIdA: "node-0",
+      entityIdB: "node-1",
+      nominal: 10,
+      tolerancePlus: 0.1,
+    });
+    expect(c.pipeline.measureExact).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.deviation).toBeUndefined();
+    expect(result.warnings[0]).toMatch(/headless/i);
   });
 });
 

@@ -1,21 +1,13 @@
 import * as THREE from "three";
-import {
-  computeExtensionLinePositions,
-  computeArrowheadVertices,
-  computeWitnessMarks,
-  formatMeasureValue,
-} from "./dimensionGlyph";
+import { computeDistanceGlyph, type ArrowheadSpec } from "./dimensionGlyph";
 
 /** Accent color for measurement overlays — matches the selection highlight (`viewer.ts`'s `SELECTION_COLOR`). */
 const MEASURE_COLOR = 0x3b82f6;
 
-/** How far extension lines stop short of the model edge, as a factor of the bbox diagonal. Used by the glyph renderer. */
-const GAP_FACTOR = 0.02;
-
-/** How far arrowheads extend past the endpoint, as a factor of the segment length. */
-const ARROW_TIP_LENGTH_FACTOR = 0.15;
-/** Arrowhead "spike" length relative to the segment (fraction of segment length). */
-const ARROW_BASE_WIDTH_FACTOR = 0.3;
+/** Accent used for an OUT-of-tolerance toleranced pin — a presentation choice
+ * derived at render time from the annotation's frozen facts (the annotation
+ * itself stores facts only). */
+export const MEASURE_FAIL_COLOR = 0xe5484d;
 
 /** Label canvas size in px — a 4:1 aspect ratio the sprite scale below preserves. */
 const LABEL_W = 256;
@@ -66,15 +58,20 @@ function markerCanvas(): HTMLCanvasElement {
  * coexist. `depthTest: false` keeps the label legible in front of the model
  * regardless of what's behind it, matching the overlay's "annotation, not
  * scene geometry" role.
+ *
+ * `accent` recolors the frame for a derived tone (an out-of-tolerance
+ * toleranced pin passes {@link MEASURE_FAIL_COLOR}); it never changes the
+ * stored measurement text, which stays a frozen fact.
  */
-export function makeMeasureLabelSprite(text: string): THREE.Sprite {
+export function makeMeasureLabelSprite(text: string, accent?: number): THREE.Sprite {
+  const accentHex = "#" + (accent ?? MEASURE_COLOR).toString(16).padStart(6, "0");
   const canvas = labelCanvas();
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "rgba(20, 20, 24, 0.85)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.lineWidth = 3;
-  ctx.strokeStyle = "#" + MEASURE_COLOR.toString(16).padStart(6, "0");
+  ctx.strokeStyle = accentHex;
   ctx.strokeRect(1.5, 1.5, canvas.width - 3, canvas.height - 3);
   ctx.font = "bold 30px sans-serif";
   ctx.fillStyle = "#ffffff";
@@ -87,7 +84,7 @@ export function makeMeasureLabelSprite(text: string): THREE.Sprite {
   const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, depthWrite: false });
   const sprite = new THREE.Sprite(material);
   sprite.userData.isMeasureLabel = true;
-  sprite.renderOrder = 999;
+  sprite.renderOrder = 1001;
   return sprite;
 }
 
@@ -100,130 +97,54 @@ export function makeMeasureMarkerSprite(): THREE.Sprite {
 }
 
 /** A straight line between two picked points (e.g. the distance/angle overlay). */
-export function buildMeasureLine(a: THREE.Vector3, b: THREE.Vector3): THREE.Line {
+function buildGlyphLine(a: THREE.Vector3, b: THREE.Vector3, color: number, renderOrder: number): THREE.Line {
   const geometry = new THREE.BufferGeometry().setFromPoints([a, b]);
-  const material = new THREE.LineBasicMaterial({ color: MEASURE_COLOR, depthTest: false });
+  const material = new THREE.LineBasicMaterial({ color, depthTest: false });
   const line = new THREE.Line(geometry, material);
-  line.renderOrder = 999;
+  line.renderOrder = renderOrder;
   return line;
 }
 
-/** Create a THREE.Line for an extension line, stopping short of the model edge. */
-export function buildMeasureExtensionLine(start: THREE.Vector3, end: THREE.Vector3, gap: number): THREE.Line {
-  const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-  const material = new THREE.LineBasicMaterial({ color: MEASURE_COLOR, depthTest: false });
-  const line = new THREE.Line(geometry, material);
-  line.renderOrder = 998; // behind the main measurement line
-  return line;
+/** One arrowhead cone: tip EXACTLY at `spec.tip`, axis along `spec.axis`.
+ * `ConeGeometry`'s apex sits at +Y·height/2 in local space, so the mesh is
+ * oriented by rotating +Y onto the spec axis and backing off half the height
+ * along it. Same quaternion-alignment precedent as `meshEdits.ts`'s
+ * primitive placement. */
+function buildArrowhead(spec: ArrowheadSpec): THREE.Mesh {
+  const geometry = new THREE.ConeGeometry(spec.halfWidth, spec.length, 12, 1, true);
+  const material = new THREE.MeshBasicMaterial({ color: MEASURE_COLOR, depthTest: false, depthWrite: false });
+  const cone = new THREE.Mesh(geometry, material);
+  const axis = new THREE.Vector3(...spec.axis);
+  cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+  cone.position.copy(new THREE.Vector3(...spec.tip)).addScaledVector(axis, -spec.length / 2);
+  cone.renderOrder = 999;
+  return cone;
 }
 
-/** Build a full dimension-glyph group for a 2-point measurement (distance).
- *  Includes the measurement line, extension lines, arrowheads, and a value label.
+/**
+ * Builds the dimension-glyph group for a completed 2-point measurement:
+ * the measured line, outward-pointing arrowheads at both ends, and short
+ * perpendicular witness stubs. Geometry comes entirely from the pure,
+ * unit-tested `dimensionGlyph.ts`; sizes derive from `scale` (the model's
+ * bbox diagonal) and are capped against the segment length there.
  *
- * @param p0 first pick position (world space)
- * @param p1 second pick position (world space)
- * @param bboxDiagonal model bbox diagonal, for gap scaling
- * @returns a THREE.Group with all glyph components, or null if the measurement
- * is not a valid 2-point distance measurement
+ * Deliberately view-independent (on-segment style): a pinned annotation's
+ * glyph must stay put while the camera orbits, so no screen-facing offset is
+ * computed. The classic offset-dimension look belongs to the fixed-view SVG/
+ * DXF export path, which runs the SAME math with an `offsetDir`.
  */
-export function buildMeasureGlyphGroup(
-  p0: THREE.Vector3,
-  p1: THREE.Vector3,
-  bboxDiagonal: number,
-): THREE.Group | null {
-  const gap = Math.max(1e-3, bboxDiagonal * GAP_FACTOR);
-
-  // Compute extension line positions using the dimensionGlyph module
-  // (returns { extensionLine0, extensionLine1, gap }) and convert to THREE.Vector3
-  const { extensionLine0, extensionLine1 } = computeExtensionLinePositions(
-    [p0.x, p0.y, p0.z],
-    [p1.x, p1.y, p1.z],
-    bboxDiagonal,
-  );
-  // extensionLine0/1 are offset positions from each pick; the extension line
-  // goes from the pick to that offset point.
-  const extLine0 = new THREE.Vector3(extensionLine0[0], extensionLine0[1], extensionLine0[2]);
-  const extLine1 = new THREE.Vector3(extensionLine1[0], extensionLine1[1], extensionLine1[2]);
-
-  // Create the measurement line between the two picks
-  const lineGeometry = new THREE.BufferGeometry().setFromPoints([p0, p1]);
-  const lineMaterial = new THREE.LineBasicMaterial({ color: MEASURE_COLOR, depthTest: false });
-  const measurementLine = new THREE.Line(lineGeometry, lineMaterial);
-  measurementLine.renderOrder = 999;
-
-  // Create extension lines (from pick to offset position)
-  const extGeom0 = new THREE.BufferGeometry().setFromPoints([p0, extLine0]);
-  const extMat0 = new THREE.LineBasicMaterial({ color: MEASURE_COLOR, depthTest: false });
-  const lineEx0 = new THREE.Line(extGeom0, extMat0);
-  lineEx0.renderOrder = 998;
-
-  const extGeom1 = new THREE.BufferGeometry().setFromPoints([p1, extLine1]);
-  const extMat1 = new THREE.LineBasicMaterial({ color: MEASURE_COLOR, depthTest: false });
-  const lineEx1 = new THREE.Line(extGeom1, extMat1);
-  lineEx1.renderOrder = 998;
-
-  // Compute arrowhead positions using dimensionGlyph
-  const segX = p1.x - p0.x;
-  const segY = p1.y - p0.y;
-  const segLen = Math.hypot(segX, segY);
-  const safeSegLen = segLen > 0 ? segLen : 1;
-  const tipLen = Math.max(1, segLen * ARROW_TIP_LENGTH_FACTOR);
-
-  const arrowTip0 = computeArrowheadVertices([p0.x, p0.y, p0.z], [p1.x, p1.y, p1.z], tipLen);
-  const arrowTip1 = computeArrowheadVertices([p1.x, p1.y, p1.z], [p0.x, p0.y, p0.z], tipLen);
-
-  // Arrowhead at p1
-  const arrow1 = new THREE.Mesh(
-    new THREE.ConeGeometry(tipLen * 0.4, tipLen, 8, 1, true),
-    new THREE.MeshBasicMaterial({ color: MEASURE_COLOR, depthTest: false }),
-  );
-  arrow1.position.set(arrowTip1.p[0], arrowTip1.p[1]); // 2D arrowhead, z dropped
-  // Rotate to align with segment direction
-  const unitDir1 = new THREE.Vector3(segX / safeSegLen, segY / safeSegLen, 0);
-  const up1 = new THREE.Vector3(0, 0, 1);
-  const cross1 = new THREE.Vector3().crossVectors(unitDir1, up1);
-  if (cross1.lengthSq() > 0) {
-    cross1.normalize();
-    const dot1 = unitDir1.dot(up1);
-    const angle1 = Math.acos(Math.min(1, Math.max(-1, dot1))) * (Math.sign(cross1.z) || 1);
-    arrow1.rotation.z = angle1; // rotate around Z axis for 2D rendering
-  }
-
-  // Arrowhead at p0 (use the first computed arrow tip, from p0→p1 direction)
-  const arrow0 = new THREE.Mesh(
-    new THREE.ConeGeometry(tipLen * 0.4, tipLen, 8, 1, true),
-    new THREE.MeshBasicMaterial({ color: MEASURE_COLOR, depthTest: false }),
-  );
-  arrow0.position.set(arrowTip0.p[0], arrowTip0.p[1]); // 2D arrowhead, z dropped
-  // Rotate to align with segment direction (reversed)
-  const unitDir0 = new THREE.Vector3(-segX / safeSegLen, -segY / safeSegLen, 0);
-  const up0 = new THREE.Vector3(0, 0, 1);
-  const cross0 = new THREE.Vector3().crossVectors(unitDir0, up0);
-  if (cross0.lengthSq() > 0) {
-    cross0.normalize();
-    const dot0 = unitDir0.dot(up0);
-    const angle0 = Math.acos(Math.min(1, Math.max(-1, dot0))) * (Math.sign(cross0.z) || 1);
-    arrow0.rotation.z = angle0; // simplify: rotate around Z axis
-  }
-
-  // Create the value label at the midpoint
-  const midX = (p0.x + p1.x) / 2;
-  const midY = (p0.y + p1.y) / 2;
-  const value = Math.hypot(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
-  const labelText = formatMeasureValue(value);
-  const labelSprite = makeMeasureLabelSprite(labelText);
-  labelSprite.position.set(midX, midY, 0);
-  labelSprite.renderOrder = 1000; // in front of lines/arrows
-
-  // Build the group
+export function buildMeasureDimensionGroup(p0: THREE.Vector3, p1: THREE.Vector3, scale: number): THREE.Group {
   const group = new THREE.Group();
-  group.add(measurementLine);
-  group.add(lineEx0);
-  group.add(lineEx1);
-  group.add(arrow0);
-  group.add(arrow1);
-  group.add(labelSprite);
-
+  const glyph = computeDistanceGlyph([p0.x, p0.y, p0.z], [p1.x, p1.y, p1.z], { scale });
+  if (glyph.line[0].some(Number.isFinite) && glyph.line[1].some(Number.isFinite)) {
+    group.add(buildGlyphLine(new THREE.Vector3(...glyph.line[0]), new THREE.Vector3(...glyph.line[1]), MEASURE_COLOR, 999));
+  }
+  for (const stub of glyph.witnesses) {
+    group.add(buildGlyphLine(new THREE.Vector3(...stub[0]), new THREE.Vector3(...stub[1]), MEASURE_COLOR, 998));
+  }
+  for (const head of glyph.arrowheads) {
+    group.add(buildArrowhead(head));
+  }
   return group;
 }
 
@@ -232,7 +153,7 @@ export function disposeMeasureObject(obj: THREE.Object3D): void {
   obj.traverse((o) => {
     const geometry = (o as THREE.Line).geometry;
     if (geometry) geometry.dispose();
-    const material = (o as THREE.Sprite | THREE.Line).material as
+    const material = (o as THREE.Sprite | THREE.Line | THREE.Mesh).material as
       | THREE.Material
       | THREE.Material[]
       | undefined;

@@ -225,6 +225,11 @@ export function viewerBodyHtml(): string {
   <div id="measure-readout-row">
     <span id="measure-readout"></span>
     <button id="measure-exact-btn" title="Recompute at exact B-rep precision (a host round trip, vs. the instant triangulated approximation above)" hidden>${icon("generate")} Exact</button>
+    <span id="measure-tol-group" hidden>
+      <label class="measure-tol-field">nom <input type="text" inputmode="decimal" id="measure-tol-nominal" placeholder="nominal" title="Nominal value for a tolerance band on the pinned annotation (same unit as the readout; leave blank to pin without a band)"></label>
+      <label class="measure-tol-field">+ <input type="text" inputmode="decimal" id="measure-tol-plus" placeholder="+" title="Allowed deviation above nominal (defaults symmetric when − is blank)"></label>
+      <label class="measure-tol-field">− <input type="text" inputmode="decimal" id="measure-tol-minus" placeholder="−" title="Allowed deviation below nominal (blank = same as +)"></label>
+    </span>
     <button id="measure-pin-btn" title="Pin this measurement as a persisted annotation — survives closing the file, re-anchored across edits" hidden>${icon("save")} Pin</button>
   </div>
   <div id="view-controls">

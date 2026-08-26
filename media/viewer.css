@@ -2040,6 +2040,46 @@ input[type="range"].meshing-slider:focus {
   cursor: default;
 }
 
+/* ── Tolerance-band fields (roadmap "Tolerance-band fact checks") — three
+ * tiny inline inputs shown next to 📌 Pin whenever a pinnable measurement is
+ * showing. Nominal + one allowance is the minimum for a band; − blank means
+ * symmetric ±. ─────────────────────────────────────────────────────────── */
+
+#measure-tol-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* An author `display` rule overrides the `hidden` attribute's default
+ * `display: none` — re-state it explicitly or the group leaks into view
+ * whenever no pinnable measurement is showing (caught by visually inspecting
+ * the regenerated measure-menu screenshot, not by any test). */
+#measure-tol-group[hidden] {
+  display: none;
+}
+.measure-tol-field {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--vscode-foreground, #ccc);
+  opacity: 0.9;
+}
+.measure-tol-field input {
+  width: 52px;
+  padding: 1px 4px;
+  font-size: 11px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, rgba(30, 30, 30, 0.85));
+  border: 1px solid var(--vscode-widget-border, #3c3c3c);
+  border-radius: 3px;
+}
+/* An out-of-tolerance toleranced pin's list row — same derived-tone idea the
+ * overlay label uses (the annotation stores facts; this is presentation). */
+.annotation-row .annotation-out-of-tolerance {
+  color: var(--vscode-errorForeground, #f48771);
+}
+
 /* ── Saved annotations (roadmap "Persisted, topology-anchored annotations",
  * closed) — the pinned-measurement list under the Measure ▾ panel. ─────── */
 

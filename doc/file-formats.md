@@ -285,13 +285,16 @@ User-**pinned measurements** (roadmap "Persisted, topology-anchored annotations"
       "volumes": [],
       "surfaces": ["face-1", "face-4"],
       "lines": [],
-      "points": []
+      "points": [],
+      "tolerance": { "nominal": 12, "plus": 0.1, "minus": 0.05, "measured": 12.5 }
     }
   ]
 }
 ```
 
-Entity ids in `volumes`/`surfaces`/`lines`/`points` are the same stable topological ids `Part` uses, and are rebound through the identical best-effort geometric matching a topology-changing edit already applies to Parts (`src/entityFacts.ts`'s `rebindPartsAcrossOps`, extended to also rebind annotations via the same shape-diff pass at no extra cost) — an anchor that can't be confidently re-matched is dropped from these arrays, the same graceful-degradation contract unresolved Part ids already have. `text`/`anchorPoint`/`linePoints` are a **frozen** snapshot of the measurement result at pin time; they are never recomputed on reopen or after an edit — only whether the annotation is "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Parsing is tolerant like the other four sidecars: a missing/malformed field drops that one annotation entry, not the whole file. **Included in the Preprocess Archive** (below), alongside parts/edits/mesh options (roadmap "Archive integrity", closed).
+Entity ids in `volumes`/`surfaces`/`lines`/`points` are the same stable topological ids `Part` uses, and are rebound through the identical best-effort geometric matching a topology-changing edit already applies to Parts (`src/entityFacts.ts`'s `rebindPartsAcrossOps`, extended to also rebind annotations via the same shape-diff pass at no extra cost) — an anchor that can't be confidently re-matched is dropped from these arrays, the same graceful-degradation contract unresolved Part ids already have. `text`/`anchorPoint`/`linePoints` are a **frozen** snapshot of the measurement result at pin time; they are never recomputed on reopen or after an edit — only whether the annotation is "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Parsing is tolerant like the other four sidecars: a missing/malformed field drops that one annotation entry, not the whole file.
+
+The optional `tolerance` object (roadmap "Tolerance-band fact checks on exact measurements") records a nominal-plus-band intent from the Measure panel's inline fields: `nominal`/`plus`/`minus` are the band (a symmetric ± when `plus === minus`; both allowances ≥ 0), and `measured` is the raw numeric value frozen at pin time so the in/out-of-band colour can be re-derived on redisplay without parsing formatted text back into a number. Facts only — nothing stores a verdict; `src/toleranceBand.ts`'s shared `evaluateToleranceBand` computes it at render time (the same pure module the MCP `check_tolerance` tool uses). A malformed band drops the BAND only — the annotation survives as a plain untoleranced pin. A toleranced pin's label reads `"<text> [nominal ±band]"`, and it appears decorated the same way in SVG/DXF silhouette-export dimension glyphs. **Included in the Preprocess Archive** (below), alongside parts/edits/mesh options (roadmap "Archive integrity", closed).
 
 ## Preprocess Archive (`.zip`)
 

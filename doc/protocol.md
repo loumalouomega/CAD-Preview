@@ -79,6 +79,13 @@ A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the 
 ```typescript
 type MeasureTool = 'distance' | 'edgeLength' | 'angle' | 'radius'
 
+interface AnnotationTolerance {
+  nominal: number    // target value, same unit as the measurement (mm / degrees)
+  plus: number       // allowed deviation above nominal (>= 0)
+  minus: number      // allowed deviation below nominal (>= 0); symmetric ± when equal to plus
+  measured: number   // raw numeric measurement frozen at pin time
+}
+
 interface Annotation {
   id: string
   tool: MeasureTool
@@ -90,10 +97,13 @@ interface Annotation {
   surfaces: string[]
   lines: string[]
   points: string[]
+  tolerance?: AnnotationTolerance           // optional tolerance band, recorded at pin time
 }
 ```
 
 A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchored annotations", closed) — a "pinned" result from the interactive Measure tool that survives closing the file, unlike the tool's own session-only overlay. Structurally shaped like `Part` (same four `EntityType`-keyed id buckets) so it can be rebound across topology-changing edits with the identical machinery `Part` already uses — see `src/entityRebind.ts`'s `remapPartEntityIds`. `text`/`anchorPoint`/`linePoints` are a frozen snapshot of the result at pin time, never recomputed on redisplay; only "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Persisted in `<model>.annotations.json` — see [File Formats](./file-formats.md).
+
+The optional `tolerance` field (roadmap "Tolerance-band fact checks on exact measurements") records a nominal-plus-band intent captured from the Measure panel's inline fields at pin time. `measured` is the raw numeric value frozen alongside the band, so the webview can re-derive the in/out-of-band label colour on every redisplay without parsing the formatted `text` back into a number. Facts only: nothing stores a pass/fail verdict — `src/toleranceBand.ts`'s shared `evaluateToleranceBand` computes it at render time (the same pure module the MCP `check_tolerance` tool uses, so headless and interactive math cannot drift). A malformed band is dropped tolerantly by the sidecar parser (band only — the annotation survives). A toleranced pin renders as `"<text> [nominal ±tol]"`, with an out-of-band pin's label frame and Saved-list row coloured by the derived tone; its dimension glyph in SVG/DXF silhouette exports carries the same decorated label.
 
 ### `ViewState`
 

@@ -20,6 +20,7 @@ import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
 import { evaluateVariables, resolveEditOps } from "../editVariables";
 import { extractIdentifiers } from "../paramExpr";
+import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } from "../toleranceBand";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
@@ -160,14 +161,19 @@ function renderAnnotationsList(): void {
   for (const a of annotationsModel.list()) {
     const entities = AnnotationsModel.entitiesOf(a);
     const detached = entities.length === 0 || !entities.some((e) => viewer.hasEntity(e.entityType, e.entityId));
-    const label = a.label ? `${a.label}: ${a.text}` : a.text;
+    // The band decoration + in/out-of-band colour are derived at render time
+    // from the annotation's frozen facts — never stored.
+    const evaluation = a.tolerance ? evaluateToleranceBand(a.tolerance.measured, a.tolerance) : null;
+    const outOfBand = evaluation !== null && !evaluation.withinTolerance;
+    const displayText = annotatedLabelText(a.text, a.tolerance);
+    const label = a.label ? `${a.label}: ${displayText}` : displayText;
 
     const row = document.createElement("div");
     row.className = detached ? "annotation-row detached" : "annotation-row";
 
     const text = document.createElement("span");
-    text.className = "annotation-row-text";
-    text.textContent = label;
+    text.className = outOfBand ? "annotation-row-text annotation-out-of-tolerance" : "annotation-row-text";
+    text.textContent = outOfBand ? `${label} — outside tolerance` : label;
     text.title = detached
       ? "Detached — the anchored entity no longer resolves (removed, or couldn't be re-matched across an edit)."
       : label;
@@ -181,7 +187,8 @@ function renderAnnotationsList(): void {
       viewer.showMeasurementOverlay(
         a.linePoints.map((p) => new THREE.Vector3(...p)),
         new THREE.Vector3(...a.anchorPoint),
-        a.text
+        displayText,
+        { tone: outOfBand ? "fail" : "normal" }
       );
       setMeasureReadout(label);
     });
@@ -1560,6 +1567,11 @@ function setSelectableModes(modes: EntityType[]): void {
 
 interface MeasurementResult {
   text: string;
+  /** Raw numeric measurement in the readout's own unit (mm for length tools,
+   * degrees for angle) — what a tolerance-bearing pin freezes as
+   * `tolerance.measured`, so the in/out-of-band colour can be re-derived on
+   * redisplay without parsing the formatted `text` back into a number. */
+  value: number;
   anchor: Vec3;
   /** 2 points to connect with a line (distance/angle), or none (edgeLength/radius). */
   linePoints: Vec3[];
@@ -1589,19 +1601,21 @@ function computeMeasurementResult(tool: MeasureTool, picks: MeasurementPick[]): 
   if (tool === "distance") {
     const [a, b] = picks;
     if (!a || !b) return null;
-    return { text: formatMeasureLength(pointDistance(a.point, b.point)), anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+    const value = pointDistance(a.point, b.point);
+    return { text: formatMeasureLength(value), value, anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
   }
   if (tool === "edgeLength") {
     const [a] = picks;
     if (!a?.polyline) return null;
-    return { text: `L = ${formatMeasureLength(polylineLength(a.polyline))}`, anchor: a.point, linePoints: [] };
+    const value = polylineLength(a.polyline);
+    return { text: `L = ${formatMeasureLength(value)}`, value, anchor: a.point, linePoints: [] };
   }
   if (tool === "angle") {
     const [a, b] = picks;
     if (!a?.direction || !b?.direction) return null;
     const deg = angleBetweenVectors(a.direction, b.direction);
     if (Number.isNaN(deg)) return null;
-    return { text: `${formatMeasure(deg)}°`, anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+    return { text: `${formatMeasure(deg)}°`, value: deg, anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
   }
   if (tool === "radius") {
     const [a] = picks;
@@ -1612,7 +1626,7 @@ function computeMeasurementResult(tool: MeasureTool, picks: MeasurementPick[]): 
       polylinePointAt(a.polyline, Math.floor(n / 2)),
       polylinePointAt(a.polyline, n - 1)
     );
-    return r === null ? null : { text: `R = ${formatMeasureLength(r)}`, anchor: a.point, linePoints: [] };
+    return r === null ? null : { text: `R = ${formatMeasureLength(r)}`, value: r, anchor: a.point, linePoints: [] };
   }
   return null;
 }
@@ -1644,13 +1658,48 @@ let measureExactRequestId: string | null = null;
 
 /** Shows/hides `#measure-pin-btn` — available whenever there's a completed
  * measurement with at least one resolved entity id, on ANY source kind
- * (unlike `#measure-exact-btn`, which is B-rep only). */
+ * (unlike `#measure-exact-btn`, which is B-rep only). The tolerance-band
+ * fields ride along: they're only meaningful when there's something to pin. */
 function refreshPinButton(): void {
   const btn = document.getElementById("measure-pin-btn") as HTMLButtonElement | null;
   if (!btn) return;
   const available = !!lastMeasurement?.picks.some((p) => p.entityId);
   btn.hidden = !available;
   btn.disabled = !available;
+  const tolGroup = document.getElementById("measure-tol-group");
+  if (tolGroup) tolGroup.hidden = !available;
+}
+
+/**
+ * Reads one tolerance field as a finite number; `null` when blank or
+ * unparseable — the same tolerant-input convention every other numeric
+ * webview field uses (bad keystrokes fall back to "not provided", never
+ * throw).
+ */
+function readTolField(id: string): number | null {
+  const raw = (document.getElementById(id) as HTMLInputElement | null)?.value?.trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Reads the three inline tolerance fields next to 📌 Pin into an
+ * {@link AnnotatedTolerance}. A band needs at least Nominal AND +; − defaults
+ * to + (symmetric ±). Returns `{ band: undefined, incomplete: true }` when
+ * only Nominal was filled so the caller can say so instead of silently
+ * ignoring the user's intent.
+ */
+function readToleranceFields(): { band?: AnnotatedTolerance; incomplete: boolean } {
+  const nominal = readTolField("measure-tol-nominal");
+  if (nominal === null) return { incomplete: false };
+  const plus = readTolField("measure-tol-plus");
+  if (plus === null || plus < 0) {
+    return { incomplete: true };
+  }
+  const minus = readTolField("measure-tol-minus") ?? plus;
+  if (minus < 0 || !lastMeasurement) return { incomplete: true };
+  return { band: { nominal, plus, minus, measured: lastMeasurement.result.value }, incomplete: false };
 }
 
 let annotationIdCounter = 0;
@@ -1683,6 +1732,7 @@ function annotationFromLastMeasurement(): Annotation | null {
     surfaces,
     lines,
     points,
+    tolerance: readToleranceFields().band,
   };
 }
 
@@ -1788,8 +1838,11 @@ function setupMeasureControls(): void {
   pinBtn?.addEventListener("click", () => {
     const annotation = annotationFromLastMeasurement();
     if (!annotation) return;
+    // A half-filled band (Nominal without +) still pins — but says so rather
+    // than silently dropping the user's intent.
+    const { incomplete } = readToleranceFields();
     annotationsModel.push(annotation);
-    setStatus("Pinned measurement");
+    setStatus(incomplete && !annotation.tolerance ? "Pinned without a tolerance band — fill Nominal and +" : "Pinned measurement");
   });
 
   exactBtn?.addEventListener("click", () => {

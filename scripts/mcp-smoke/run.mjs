@@ -218,8 +218,8 @@ try {
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 30, `tools/list exposes 30 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix"]) {
+  assert(tools.length === 31, `tools/list exposes 31 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -599,6 +599,48 @@ try {
   assert(
     neitherOperand.error && /'a'.*'partA'/.test(neitherOperand.error),
     `check_interference requires either 'a' or 'partA' for operand A (got: ${neitherOperand.error})`
+  );
+
+  // check_tolerance (roadmap "Tolerance-band fact checks"): pure arithmetic
+  // over the SAME exact measurement measure_exact performs. Fixture geometry:
+  // solid-1 spans x:[-5,5], solid-3 (the far 1×1×1 box at [100,0,0]) spans
+  // x:[99.5,100.5] — the true minimum distance is exactly 94.5.
+  const tolIn = await call("check_tolerance", {
+    path: clashModel,
+    kind: "distance",
+    entityIdA: "solid-1",
+    entityIdB: "solid-3",
+    nominal: 94.5,
+    tolerancePlus: 0.01,
+    toleranceMinus: 0.01,
+  });
+  assert(
+    tolIn.supported === true && Math.abs(tolIn.measurement.value - 94.5) < 1e-6 && Math.abs(tolIn.deviation) < 1e-6 && tolIn.withinTolerance === true,
+    `check_tolerance reports deviation ~0 and withinTolerance for a nominal matching the exact 94.5 gap (got value=${tolIn.measurement?.value}, deviation=${tolIn.deviation})`
+  );
+  const tolOut = await call("check_tolerance", {
+    path: clashModel,
+    kind: "distance",
+    entityIdA: "solid-1",
+    entityIdB: "solid-3",
+    nominal: 90,
+    tolerancePlus: 1,
+  });
+  assert(
+    tolOut.supported === true && Math.abs(tolOut.deviation - 4.5) < 1e-6 && tolOut.withinTolerance === false && tolOut.tolerance.minus === 1,
+    `check_tolerance reports the out-of-band case as a fact (deviation ≈ +4.5, withinTolerance=false, minus defaulted to plus; got ${JSON.stringify({ deviation: tolOut.deviation, within: tolOut.withinTolerance })})`
+  );
+  const tolBad = await callTolerant("check_tolerance", {
+    path: clashModel,
+    kind: "distance",
+    entityIdA: "solid-1",
+    entityIdB: "solid-3",
+    nominal: 90,
+    tolerancePlus: -1,
+  });
+  assert(
+    tolBad.error && /≥ 0/.test(tolBad.error),
+    `check_tolerance rejects a negative allowance up front without touching WASM (got: ${tolBad.error})`
   );
 
   const clashMesh = await call("check_interference", { path: path.join(ROOT, "examples", "STL", "cube.stl"), a: ["node-0"], b: ["node-0"] });
@@ -1244,6 +1286,51 @@ try {
     Math.abs(cubeViewBox[2] / inViewBox[2] - 25.4) < 1e-3,
     `export_svg_silhouette(unit:"in") scales the drawing by exactly 1/25.4 (got ratio ${cubeViewBox[2] / inViewBox[2]})`
   );
+  // No annotations sidecar → no dimensionCount key at all (not even []).
+  assert(
+    svgCubeResult.dimensionCount === undefined,
+    "export_svg_silhouette without an annotations sidecar reports no dimensionCount"
+  );
+
+  // Pinned annotations bake into the drawing as dimension glyphs (roadmap
+  // "Dimension-style rendering", Phase 2) — SVG and DXF both, riding the SAME
+  // export_svg_silhouette tool (no new tool). The sidecar carries a frozen
+  // distance across the cube's bottom edge (world y=0) plus its tolerance
+  // band, so the label must read "10 mm [10 ±0.05]".
+  const dimModel = path.join(dir, "cube-for-dim.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), dimModel);
+  fs.writeFileSync(
+    `${dimModel}.annotations.json`,
+    JSON.stringify({
+      version: 1,
+      source: "cube-for-dim.stl",
+      annotations: [
+        {
+          id: "ann-smoke-1",
+          tool: "distance",
+          text: "10 mm",
+          anchorPoint: [5, 0, 5],
+          linePoints: [[0, 0, 0], [10, 0, 0]],
+          volumes: [],
+          surfaces: [],
+          lines: [],
+          points: [],
+          tolerance: { nominal: 10, plus: 0.05, minus: 0.05, measured: 10.02 },
+        },
+      ],
+    })
+  );
+  const svgDim = path.join(dir, "cube-dim.svg");
+  const svgDimResult = await call("export_svg_silhouette", { path: dimModel, outputPath: svgDim, view: "FRONT" });
+  assert(svgDimResult.dimensionCount === 1, `export_svg_silhouette bakes the pinned annotation as a dimension (got ${JSON.stringify(svgDimResult.dimensionCount)})`);
+  const svgDimText = fs.readFileSync(svgDim, "utf8");
+  assert(svgDimText.includes("<text") && svgDimText.includes("10 mm [10 ±0.05]"), "export_svg_silhouette's dimension label shows the measured value plus its tolerance band");
+  assert(!/NaN|Infinity/.test(svgDimText), "dimension baking never emits NaN/Infinity");
+  const dxfDim = path.join(dir, "cube-dim.dxf");
+  const dxfDimResult = await call("export_svg_silhouette", { path: dimModel, outputPath: dxfDim, view: "FRONT", format: "dxf" });
+  assert(dxfDimResult.dimensionCount === 1, `export_svg_silhouette(format:"dxf") bakes dimensions too (got ${dxfDimResult.dimensionCount})`);
+  const dxfDimText = fs.readFileSync(dxfDim, "utf8");
+  assert(dxfDimText.includes("DIMENSIONS") && dxfDimText.includes("TEXT") && dxfDimText.includes("10 mm [10 ±0.05]"), "the DXF drawing carries DIMENSIONS-layer TEXT entities with the toleranced label");
 
   // An unknown view name falls back with a warning rather than throwing —
   // the same never-fail-on-ambiguous-input convention `unit` uses.

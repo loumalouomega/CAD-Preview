@@ -100,3 +100,65 @@ describe("silhouetteDxf / polylinesDxf", () => {
     expect(result.dxf.match(/LINE/g)?.length).toBe(2);
   });
 });
+
+describe("dimension glyphs in DXF export", () => {
+  /** A 10×10 square in the z=0 plane, viewed down +Z. */
+  function squareDxf(options: Parameters<typeof silhouetteDxf>[3]) {
+    const positions = new Float32Array([0,0,0, 10,0,0, 10,10,0, 0,10,0]);
+    const edges: Array<[number, number]> = [[0,1],[1,2],[2,3],[3,0]];
+    return silhouetteDxf(positions, edges, { direction: [0, 0, 1] }, options);
+  }
+
+  it("emits DIMENSIONS-layer LINE/LWPOLYLINE/TEXT entities for a pinned annotation", () => {
+    const result = squareDxf({
+      annotations: [{ anchorPoint: [5, 0, 10], linePoints: [[0, 0, 0], [10, 0, 0]], text: "10 mm" }],
+      dimensionScaleHint: 14.2,
+    });
+    expect(result.dimensionCount).toBe(1);
+    expect(result.dxf).toContain("DIMENSIONS");
+    expect(result.dxf).toContain("TEXT");
+    expect(result.dxf).toContain("10 mm");
+    // Arrowheads are closed 3-vertex LWPOLYLINEs on the dimensions layer.
+    expect(result.dxf).toMatch(/LWPOLYLINE\n8\nDIMENSIONS/);
+    // Outline geometry stays on layer "0".
+    expect(result.dxf).toContain("LWPOLYLINE\n8\n0");
+    expect(result.segmentCount).toBe(4);
+  });
+
+  it("round-trips through the repo's own DXF reader without warnings", () => {
+    const result = squareDxf({
+      annotations: [{ anchorPoint: [5, 0, 10], linePoints: [[0, 0, 0], [10, 0, 0]], text: "10 mm" }],
+      dimensionScaleHint: 14.2,
+    });
+    const parsed = parseDxf(result.dxf);
+    expect(parsed.ops.length).toBeGreaterThan(0);
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it("decorates toleranced labels and escapes XML-hostile text", () => {
+    const result = squareDxf({
+      annotations: [{ anchorPoint: [5, 0, 10], linePoints: [[0, 0, 0], [10, 0, 0]], text: "10 mm", tolerance: { nominal: 10, plus: 0.1, minus: 0.02, measured: 10.05 } }],
+      dimensionScaleHint: 14.2,
+    });
+    expect(result.dxf).toContain("[10 +0.1/−0.02]");
+  });
+
+  it("renders a lineless pin as a bare TEXT label at its anchor", () => {
+    const result = squareDxf({
+      annotations: [{ anchorPoint: [20, 20, 0], linePoints: [], text: "R = 5 mm" }],
+      dimensionScaleHint: 14.2,
+    });
+    expect(result.dimensionCount).toBe(1);
+    expect(result.dxf).toContain("R = 5 mm");
+    expect(result.dxf).not.toMatch(/LINE\n8\nDIMENSIONS/);
+  });
+
+  it("degenerate pins are skipped — no NaN ever reaches the file", () => {
+    const result = squareDxf({
+      annotations: [{ anchorPoint: [NaN, 0, 0], linePoints: [[0, 0, 0], [0, 0, 0]], text: "?" }],
+      dimensionScaleHint: 14.2,
+    });
+    expect(result.dimensionCount).toBeUndefined();
+    expect(result.dxf).not.toMatch(/NaN|Infinity/);
+  });
+});

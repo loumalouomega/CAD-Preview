@@ -577,10 +577,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         void this.handleScreenshot(document.uri, post, pending);
       },
       exportSvg: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg");
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations);
       },
       exportDxf: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf");
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations);
       },
       post,
     };
@@ -1000,7 +1000,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "exportSvgRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg");
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations);
         return;
       }
 
@@ -1022,7 +1022,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "exportDxfRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf");
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations);
         return;
       }
 
@@ -1541,7 +1541,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     post: (msg: HostToWebview) => void,
     ops: EditOp[],
     viewState: ViewState | undefined,
-    format: "svg" | "dxf" = "svg"
+    format: "svg" | "dxf" = "svg",
+    annotations: Annotation[] = []
   ): Promise<void> {
     if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
       const label = format.toUpperCase();
@@ -1588,6 +1589,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           unit,
           title: `${uri.path.slice(uri.path.lastIndexOf("/") + 1)} — ${picked.label}`,
           format,
+          annotations,
         });
         for (const warning of result.warnings) post({ type: "status", text: warning });
         const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;

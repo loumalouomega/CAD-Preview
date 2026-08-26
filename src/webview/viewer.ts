@@ -11,7 +11,8 @@ import { buildClipCap, repositionClipCap, disposeClipCap } from "./clipCap";
 import {
   makeMeasureLabelSprite,
   makeMeasureMarkerSprite,
-  buildMeasureLine,
+  buildMeasureDimensionGroup,
+  MEASURE_FAIL_COLOR,
   disposeMeasureObject,
 } from "./measurementOverlay";
 import type { MeasurementPick } from "./measurementState";
@@ -1346,18 +1347,29 @@ export class Viewer {
   }
 
   /**
-   * Shows the completed measurement: an optional line between `linePoints`
-   * (2 points — omit for a single-pick tool like edge length/radius, which
-   * has nothing to connect) plus a text label at `anchor`. Replaces (disposes)
-   * whatever marker/overlay was showing before.
+   * Shows the completed measurement: an optional dimension-glyph group
+   * between `linePoints` (2 points — distance/angle; arrowheads + witness
+   * stubs from the pure `dimensionGlyph.ts` math, sized off the model's bbox
+   * diagonal) plus a text label at `anchor`. Replaces (disposes) whatever
+   * marker/overlay was showing before.
+   *
+   * `tone: "fail"` recolors the label frame — used by an out-of-tolerance
+   * toleranced pin, whose stored facts stay untouched (the colour is a
+   * presentation choice derived at render time).
    */
-  showMeasurementOverlay(linePoints: THREE.Vector3[], anchor: THREE.Vector3, text: string): void {
+  showMeasurementOverlay(
+    linePoints: THREE.Vector3[],
+    anchor: THREE.Vector3,
+    text: string,
+    opts?: { tone?: "normal" | "fail" }
+  ): void {
     this.clearMeasurementOverlay();
     const group = new THREE.Group();
     if (linePoints.length === 2) {
-      group.add(buildMeasureLine(linePoints[0], linePoints[1]));
+      const scale = this.getModelExtents()?.diagonal ?? linePoints[0].distanceTo(linePoints[1]);
+      group.add(buildMeasureDimensionGroup(linePoints[0], linePoints[1], scale));
     }
-    const label = makeMeasureLabelSprite(text);
+    const label = makeMeasureLabelSprite(text, opts?.tone === "fail" ? MEASURE_FAIL_COLOR : undefined);
     label.position.copy(anchor);
     group.add(label);
     this.measurementOverlay = group;

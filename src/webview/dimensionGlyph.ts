@@ -1,195 +1,200 @@
 /**
- * Pure dimension-glyph math: extension-line positioning, arrowhead/witness-mark
- * computation, and numeric-value placement — no DOM, no Three.js (imported only
- * in the runtime `measurementOverlay.ts` consumer). Unit-testable headless,
- * matching the `measurement.ts`/`measurementState.ts` conventions of this
- * codebase.
+ * Pure dimension-glyph math (roadmap item "Dimension-style rendering for
+ * pinned measurements", Phase 1) — extension/witness-line positioning,
+ * arrowhead construction, and numeric-value formatting. No DOM, no Three.js;
+ * the runtime consumer is `measurementOverlay.ts`, which converts these plain
+ * tuples into scene objects. Unit-tested headless.
  *
- * All angles are in degrees; all vectors are `[x,y,z]` tuples.  Values are
- * formatted with `toPrecision(6)` so a 10 mm edge shows as `"10"` and a
- * 0.034 mm edge shows as `"0.034"` — no fixed‑decimal formatter that would
- * quantise to one or two digits.
+ * Two layout styles share one implementation, selected by whether
+ * {@link DistanceGlyphOptions.offsetDir} is given:
  *
- * The glyph layout follows the same visual conventions as mainstream CAD
- * packages: extension lines stop short of the model edge by a gap proportional
- * to the model's bbox diagonal, arrowheads are symmetric 60° / 10° spikes, and
- * the value label is centred above the measurement segment with a short
- * vertical offset.
+ * - **On-segment** (no `offsetDir`) — the 3D-view default. The dimension line
+ *   IS the measured segment; each endpoint gets an outward-pointing arrowhead
+ *   plus a short witness stub perpendicular to the segment. Deliberately
+ *   view-independent: a pinned annotation's glyph must not re-orient every
+ *   frame while the camera orbits, so no screen-facing offset is computed.
+ * - **Offset** (`offsetDir` given) — the classic drafting look, affordable
+ *   only where the view basis is fixed (the SVG/DXF export path). The
+ *   dimension line is displaced from the measured points along `offsetDir`,
+ *   and true perpendicular extension lines connect each measured point to it,
+ *   overshooting the dimension line slightly the way a drafted dimension does.
+ *
+ * All sizes derive from `options.scale` (the model bbox diagonal in world
+ * units) so a 3 m frame and a 5 mm screw get proportionate glyphs, capped at
+ * a fraction of the measured segment's own length so two arrowheads can never
+ * overlap mid-line on a short measurement.
  */
+
 export type Vec3 = [number, number, number];
 
-/** Gap between extension-line endpoint and the model surface, as a factor of the bbox diagonal. */
-const DEFAULT_GAP_FACTOR = 0.02;
+/** One arrowhead. `tip` sits exactly ON the endpoint being marked; `axis` is
+ * the UNIT direction the head points (outward, i.e. away from the segment's
+ * interior). */
+export interface ArrowheadSpec {
+  tip: Vec3;
+  axis: Vec3;
+  length: number;
+  halfWidth: number;
+}
 
-/**
- * Compute the 2D-projected positions of extension lines for a measurement,
- * given the world-space pick positions and the model's bbox diagonal (for
- * gap scaling).  The returned object can be consumed by `measurementOverlay.ts`
- * to draw sprites/lines.
- *
- * @param p0 first pick position (world space)
- * @param p1 second pick position (world space)
- * @param bboxDiagonal the model's bounding‑box diagonal, used to scale the gap
- * @returns {extensionLine0, extensionLine1, gap} — positions offset from each
- * pick, and the gap used (for possible per‑measurement overrides)
- */
-export function computeExtensionLinePositions(
-  p0: [number, number, number],
-  p1: [number, number, number],
-  bboxDiagonal: number,
-): {
-  extensionLine0: [number, number, number];
-  extensionLine1: [number, number, number];
-  gap: number;
-} {
-  const gap = Math.max(1e-3, bboxDiagonal * DEFAULT_GAP_FACTOR);
+/** Everything an overlay/export renderer needs to draw one 2-point dimension. */
+export interface DimensionGlyph {
+  /** The dimension line (on-segment style: the measured segment itself). */
+  line: [Vec3, Vec3];
+  /** Measured point → dimension line connectors (offset style only). */
+  extensionLines: Array<[Vec3, Vec3]>;
+  /** Short perpendicular witness stubs at each endpoint (on-segment style only). */
+  witnesses: Array<[Vec3, Vec3]>;
+  arrowheads: ArrowheadSpec[];
+}
 
-  // Project to 2D by discarding z (the measurement plane is XY; z offset is
-  // handled by the canvas depthTest:false rendering).  The extension lines
-  // simply stop short of the model edge.
-  const dir = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-  const len = Math.hypot(dir[0], dir[1], dir[2]);
-  const safeLen = len > 0 ? len : 1;
+export interface DistanceGlyphOptions {
+  /** Model-scale reference (bbox diagonal, world units) — sizes everything. */
+  scale: number;
+  /** Enables offset style: displaces the dimension line along this direction. */
+  offsetDir?: Vec3;
+  /** Which perpendicular direction witness stubs run along (default `[0,1,0]`). */
+  upHint?: Vec3;
+}
 
-  // Unit direction, dropping z for the 2D projection
-  const ux = dir[0] / safeLen;
-  const uy = dir[1] / safeLen;
+/** Arrowhead length, as a factor of the scale reference. */
+const ARROW_LENGTH_FRAC = 0.04;
+/** An arrowhead may never exceed this fraction of the measured segment, so
+ * two opposing heads can never overlap on a short measurement. */
+const ARROW_MAX_SEGMENT_FRACTION = 1 / 3;
+/** Total included angle of the head is twice this half-angle (slender, like
+ * mainstream drafting arrowheads). */
+const ARROW_HALF_ANGLE_DEG = 15;
+/** Witness stub length relative to the matching arrowhead. */
+const WITNESS_VS_ARROW = 1.25;
+/** Offset-style displacement of the dimension line, as a factor of scale. */
+const OFFSET_FRACTION = 0.08;
+/** How far an extension line overshoots past the dimension line (offset
+ * style), relative to the arrowhead length — standard drafting convention. */
+const EXTENSION_OVERSHOOT_VS_ARROW = 0.5;
 
-  // Offset each endpoint away from the segment by the gap distance
-  const ex0 = [p0[0] - ux * gap, p0[1] - uy * gap, p0[2]] as [number, number, number];
-  const ex1 = [p1[0] + ux * gap, p1[1] + uy * gap, p1[2]] as [number, number, number];
+function isFiniteVec(v: Vec3): boolean {
+  return v.every((c) => Number.isFinite(c));
+}
 
-  return { extensionLine0: ex0, extensionLine1: ex1, gap };
+function sub(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+function add(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+}
+
+function scaled(a: Vec3, f: number): Vec3 {
+  // `+ 0` folds −0 into +0 (negation is the only −0 producer here) so the
+  // returned tuples compare structurally equal to plain zeros.
+  return [a[0] * f + 0, a[1] * f + 0, a[2] * f + 0];
+}
+
+function dot(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function lengthOf(v: Vec3): number {
+  return Math.hypot(v[0], v[1], v[2]);
+}
+
+function normalized(v: Vec3): Vec3 | null {
+  const n = lengthOf(v);
+  // Component-wise division (not scaling by 1/n): keeps axis-aligned inputs
+  // exact (100/100 === 1), so arrowhead axes on an axis-aligned measurement
+  // are exact unit vectors rather than 1±ε.
+  return n > 1e-12 ? [v[0] / n, v[1] / n, v[2] / n] : null;
 }
 
 /**
- * Compute symmetric arrowhead vertices for a measurement segment, given the
- * segment direction and a tip-to-base length.  The arrowhead is an isosceles
- * triangle with a 60° total angle at the tip; the two side edges fan out at
- * 30° from the segment direction.
- *
- * @param p0 start point
- * @param p1 end point
- * @param tipLength distance from tip to arrowhead base (along the segment)
- * @returns { p: [number, number]; cp: [number, number]; cn: [number, number] } —
- * three arrowhead vertex positions in 2D (z dropped), ordered tip‑first‑clockwise
+ * A unit vector perpendicular to `dir`, lying in the plane spanned by `dir`
+ * and the `upHint` — i.e. `upHint` projected off `dir` and normalized. Falls
+ * back through fixed hints when the projection degenerates (`upHint` parallel
+ * to `dir`), so the result is always deterministic for a given input.
  */
-export function computeArrowheadVertices(
-  p0: [number, number, number],
-  p1: [number, number, number],
-  tipLength: number,
-): { p: [number, number]; cp: [number, number]; cn: [number, number] } {
-  const dx = p1[0] - p0[0];
-  const dy = p1[1] - p0[1];
-  const segLen = Math.hypot(dx, dy);
-  const safeSegLen = segLen > 0 ? segLen : 1;
-
-  // Tip position (slightly inward from p1 so the arrow doesn't overshoot)
-  const tipX = p1[0] - (dx / safeSegLen) * tipLength;
-  const tipY = p1[1] - (dy / safeSegLen) * tipLength;
-
-  // Perpendicular direction (rotated 90° CCW)
-  const px = -dy / safeSegLen;
-  const py = dx / safeSegLen;
-
-  // Arrowhead half-angle is 30° (total 60°)
-  const ha = (Math.PI / 180) * 30;
-  const cosHa = Math.cos(ha);
-  const sinHa = Math.sin(ha);
-
-  // Base vertices: from tip, go sideways ±30° at tipLength distance
-  const cpX = tipX + px * tipLength * cosHa - py * tipLength * sinHa;
-  const cpY = tipY + py * tipLength * cosHa + px * tipLength * sinHa;
-  const cnX = tipX + px * tipLength * cosHa + py * tipLength * sinHa;
-  const cnY = tipY + py * tipLength * cosHa - px * tipLength * sinHa;
-
-  return { p: [tipX, tipY], cp: [cpX, cpY], cn: [cnX, cnY] };
+function perpendicularInPlane(dir: Vec3, upHint: Vec3): Vec3 {
+  const candidates: Vec3[] = [upHint, [0, 0, 1], [1, 0, 0]];
+  for (const hint of candidates) {
+    if (!isFiniteVec(hint)) continue;
+    const t = normalized(sub(hint, scaled(dir, dot(hint, dir))));
+    if (t) return t;
+  }
+  return [0, 1, 0]; // unreachable in practice: some fixed hint is never parallel to a unit dir
 }
 
 /**
- * Compute a witness‑mark gap for an angular measurement: a short perpendicular
- * line at each pick point that the value label can "rest" on, keeping the
- * label from overlapping the measurement segment.
+ * Computes the complete glyph spec for a 2-point distance dimension.
  *
- * @param p0 first pick position
- * @param p1 second pick position
- * @param gap factor of the model bbox diagonal (same scale as extension lines)
- * @returns witness0, witness1 — 2D offset positions from each pick (as [x,y,z] tuples for compatibility)
+ * Degenerate input (non-finite coordinates, or the two points effectively
+ * coincident) yields a VALID empty-bodied glyph — the measured line only, no
+ * arrowheads/stubs — never `NaN` geometry, so callers can still attach a
+ * value label without special-casing.
  */
-export function computeWitnessMarks(
-  p0: [number, number, number],
-  p1: [number, number, number],
-  gap: number,
-): { witness0: [number, number, number]; witness1: [number, number, number] } {
-  const dx = p1[0] - p0[0];
-  const dy = p1[1] - p0[1];
-  const segLen = Math.hypot(dx, dy);
-  const safeSegLen = segLen > 0 ? segLen : 1;
+export function computeDistanceGlyph(p0: Vec3, p1: Vec3, options: DistanceGlyphOptions): DimensionGlyph {
+  const empty: DimensionGlyph = { line: [[...p0], [...p1]], extensionLines: [], witnesses: [], arrowheads: [] };
+  if (!isFiniteVec(p0) || !isFiniteVec(p1) || !(options.scale > 0) || !Number.isFinite(options.scale)) return empty;
 
-  // Unit direction (2D, dropping z)
-  const ux = dx / safeSegLen;
-  const uy = dy / safeSegLen;
+  const seg = sub(p1, p0);
+  const segLength = lengthOf(seg);
+  if (!(segLength > 1e-9)) return empty;
+  const dir = scaled(seg, 1 / segLength);
 
-  // Perpendicular unit (90° CCW)
-  const px = -uy;
-  const py = ux;
+  const arrowLength = Math.max(1e-6, Math.min(options.scale * ARROW_LENGTH_FRAC, segLength * ARROW_MAX_SEGMENT_FRACTION));
+  const halfWidth = arrowLength * Math.tan((ARROW_HALF_ANGLE_DEG * Math.PI) / 180);
+  const witnessHalf = (arrowLength * WITNESS_VS_ARROW) / 2;
+  const arrowheads: ArrowheadSpec[] = [
+    { tip: [...p0], axis: scaled(dir, -1), length: arrowLength, halfWidth },
+    { tip: [...p1], axis: [...dir], length: arrowLength, halfWidth },
+  ];
 
-  // Offset each pick point perpendicular to the segment by the gap distance
-  const witness0 = [p0[0] + px * gap, p0[1] + py * gap, p0[2]] as [number, number, number];
-  const witness1 = [p1[0] - px * gap, p1[1] - py * gap, p1[2]] as [number, number, number];
+  const offsetDir = options.offsetDir ? normalized(options.offsetDir) : null;
+  if (!offsetDir) {
+    // On-segment style: dimension line IS the segment; witness stubs mark the endpoints.
+    const perp = perpendicularInPlane(dir, options.upHint ?? [0, 1, 0]);
+    return {
+      line: [[...p0], [...p1]],
+      extensionLines: [],
+      witnesses: [
+        [add(p0, scaled(perp, -witnessHalf)), add(p0, scaled(perp, witnessHalf))],
+        [add(p1, scaled(perp, -witnessHalf)), add(p1, scaled(perp, witnessHalf))],
+      ],
+      arrowheads,
+    };
+  }
 
-  return { witness0, witness1 };
+  // Offset style: displace the dimension line, connect with perpendicular
+  // extension lines that overshoot past it (drafting convention).
+  const offset = options.scale * OFFSET_FRACTION;
+  const q0 = add(p0, scaled(offsetDir, offset));
+  const q1 = add(p1, scaled(offsetDir, offset));
+  const overshoot = arrowLength * EXTENSION_OVERSHOOT_VS_ARROW;
+  return {
+    line: [q0, q1],
+    extensionLines: [
+      [p0, add(q0, scaled(offsetDir, overshoot))],
+      [p1, add(q1, scaled(offsetDir, overshoot))],
+    ],
+    witnesses: [],
+    arrowheads: [
+      { tip: q0, axis: scaled(dir, -1), length: arrowLength, halfWidth },
+      { tip: q1, axis: [...dir], length: arrowLength, halfWidth },
+    ],
+  };
 }
 
 /**
- * Format a numeric value for display in a measurement label, using enough
- * significant digits to stay readable across scales (1e-4 → "0.0001", 10 → "10",
- * 1000 → "1000") without a fixed‑decimal formatter that would quantise
- * inconveniently.
- *
- * @param value the numeric value (may be negative)
- * @returns a plain string suitable for `CanvasTexture.fillText`
+ * Formats a numeric measurement value for a dimension label — enough
+ * significant figures to stay readable across scales, never exponential
+ * notation for everyday magnitudes, never a fixed-decimal formatter that
+ * quantizes a small-unit value into one or two significant digits (the exact
+ * defect `svgSilhouette.ts`'s adaptive-precision work fixed for coordinates).
  */
 export function formatMeasureValue(value: number): string {
-  // `toPrecision(6)` gives 6 significant figures; for values < 1e-4 it may
-  // produce exponential notation which we want to avoid for a label, so cap
-  // the magnitude and fall back to a fixed‑precision string.
-  if (isNaN(value) || !isFinite(value)) return "-";
-  if (Math.abs(value) < 1e-4) return value.toFixed(4);
-  if (Math.abs(value) >= 1e6) return value.toExponential(3);
-  return value.toPrecision(6);
-}
-
-/**
- * Position a numeric label above a measurement segment, given the segment
- * endpoints and the previously computed extension‑line/gap geometry.  The
- * returned 2D position (x, y, z dropped) can be used as the canvas text
- * baseline for `makeMeasureLabelSprite`.
- *
- * @param p0 first pick position (world space)
- * @param p1 second pick position (world space)
- * @param bboxDiagonal model bbox diagonal, used for gap scaling
- * @returns {labelPos: [number, number]} — 2D position for the label baseline,
- * and {gap, arrowHead} for the overlay consumer
- */
-export function computeLabelPosition(
-  p0: Vec3,
-  p1: Vec3,
-  bboxDiagonal: number,
-): {
-  labelPos: [number, number];
-  gap: number;
-} {
-  const { extensionLine0, extensionLine1, gap } = computeExtensionLinePositions(
-    p0,
-    p1,
-    bboxDiagonal,
-  );
-
-  // Midpoint between the two extension-line endpoints, elevated slightly above
-  // the segment so the label doesn't sit on the model surface
-  const midX = (extensionLine0[0] + extensionLine1[0]) / 2;
-  const midY = (extensionLine0[1] + extensionLine1[1]) / 2;
-  const labelPos = [midX, midY + gap * 0.5]; // small vertical offset
-  return { labelPos: labelPos as [number, number], gap };
+  if (Number.isNaN(value) || !Number.isFinite(value)) return "—";
+  if (value === 0) return "0";
+  const abs = Math.abs(value);
+  if (abs >= 1e7 || abs < 1e-6) return value.toExponential(3);
+  // `Number(...)` strips `toPrecision`'s trailing zeros: 10 → "10", not "10.0000".
+  return String(Number(value.toPrecision(6)));
 }

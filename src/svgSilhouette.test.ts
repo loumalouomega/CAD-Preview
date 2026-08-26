@@ -204,3 +204,83 @@ describe("scalePositions", () => {
     expect(Array.from(scalePositions(new Float32Array([1, 2, 3]), 2))).toEqual([2, 4, 6]);
   });
 });
+
+describe("dimension glyphs baked into SVG export", () => {
+  const annotated = {
+    anchorPoint: [5, 0, 10] as const,
+    linePoints: [
+      [0, 0, 0],
+      [10, 0, 0],
+    ] as const,
+    text: "10 mm",
+  };
+
+  function frontViewWith(annotations: Parameters<typeof silhouetteSvg>[3] extends infer O ? O extends { annotations?: infer A } ? A : never : never) {
+    const { positions, indices } = bigCube();
+    const edges = silhouetteEdges(positions, indices, [0, 0, 1]);
+    return silhouetteSvg(positions, edges, { direction: [0, 0, 1] }, { annotations, dimensionScaleHint: 17.4 });
+  }
+
+  it("renders a pinned distance as glyph lines, filled arrowheads, and a value label", () => {
+    const { svg, segmentCount, dimensionCount } = frontViewWith([annotated]);
+    expect(dimensionCount).toBe(1);
+    // The measured fact appears verbatim in a <text> label.
+    expect(svg).toContain("<text");
+    expect(svg).toContain("10 mm");
+    // Arrowheads render as filled triangles (a fill-without-stroke path).
+    expect(svg).toMatch(/fill="#000000" stroke="none"/);
+    // Glyph lines are a separate path with a thinner stroke than the outline.
+    expect(svg.match(/stroke-width=/g)?.length).toBeGreaterThanOrEqual(2);
+    // Outline untouched.
+    expect(segmentCount).toBe(4);
+  });
+
+  it("decorates a toleranced annotation's label with its band", () => {
+    const { svg } = frontViewWith([
+      { ...annotated, tolerance: { nominal: 10, plus: 0.05, minus: 0.05, measured: 10.02 } },
+    ]);
+    expect(svg).toContain("[10 ±0.05]");
+  });
+
+  it("escapes XML-hostile text in labels", () => {
+    const { svg } = frontViewWith([{ ...annotated, text: "a<b&c" }]);
+    expect(svg).toContain("a&lt;b&amp;c");
+    expect(svg).not.toContain("a<b&c</text>");
+  });
+
+  it("grows the viewBox to include a dimension displaced outside the outline", () => {
+    const { positions, indices } = bigCube();
+    const edges = silhouetteEdges(positions, indices, [0, 0, 1]);
+    const plain = silhouetteSvg(positions, edges, { direction: [0, 0, 1] });
+    // A measurement floating ABOVE the cube (world +Y) — its dimension glyph
+    // must expand the drawing rather than be clipped by it.
+    const decorated = silhouetteSvg(positions, edges, { direction: [0, 0, 1] }, {
+      annotations: [{ anchorPoint: [5, 30, 0] as const, linePoints: [[0, 30, 0], [10, 30, 0]] as const, text: "10 mm" }],
+      dimensionScaleHint: 17.4,
+    });
+    const vb = (s: string): number[] =>
+      s
+        .match(/viewBox="([^"]+)"/)![1]
+        .split(" ")
+        .map(Number);
+    const [, py, , ph] = vb(plain.svg);
+    const [, dy2, , dh] = vb(decorated.svg);
+    expect(dy2).toBeLessThan(py);
+    expect(dh).toBeGreaterThan(ph);
+  });
+
+  it("renders a radius pin (no measurable line) as a bare anchor label", () => {
+    const { svg, dimensionCount } = frontViewWith([{ anchorPoint: [5, 0, 10] as const, linePoints: [] as const, text: "R = 5 mm" }]);
+    expect(dimensionCount).toBe(1);
+    expect(svg).toContain("R = 5 mm");
+    expect(svg).not.toMatch(/stroke-width="[^"]*" stroke-linecap="round" d="M [^"]*"[^>]*\/><path fill="#000000"/);
+  });
+
+  it("skips a degenerate pin entirely rather than emitting NaN geometry", () => {
+    const { svg, dimensionCount } = frontViewWith([
+      { anchorPoint: [NaN, 0, 0] as const, linePoints: [[0, 0, 0], [0, 0, 0]] as const, text: "?" },
+    ]);
+    expect(dimensionCount).toBeUndefined();
+    expect(svg).not.toMatch(/NaN|Infinity/);
+  });
+});

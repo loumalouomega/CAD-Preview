@@ -64,6 +64,23 @@ describe("parseAnnotationsJson", () => {
       [4, 5, 6],
     ]);
   });
+
+  it("keeps a well-formed tolerance band and drops a malformed one (band only — the annotation survives)", () => {
+    const good = { nominal: 10, plus: 0.05, minus: 0.05, measured: 12.5 };
+    const text = JSON.stringify({
+      annotations: [
+        { ...BASE, id: "ann-tol", tolerance: good },
+        { ...BASE, id: "ann-neg", tolerance: { nominal: 10, plus: -1, minus: 0.05, measured: 9 } }, // negative allowance
+        { ...BASE, id: "ann-partial", tolerance: { nominal: 10, plus: 0.05 } }, // missing fields
+        { ...BASE, id: "ann-nonnum", tolerance: { nominal: "10", plus: 1, minus: 1, measured: 9 } }, // non-numeric
+        { ...BASE, id: "ann-plain" }, // absent -> undefined
+      ],
+    });
+    const parsed = parseAnnotationsJson(text);
+    expect(parsed.map((a) => a.id)).toEqual(["ann-tol", "ann-neg", "ann-partial", "ann-nonnum", "ann-plain"]);
+    expect(parsed[0].tolerance).toEqual(good);
+    for (const a of parsed.slice(1)) expect(a.tolerance).toBeUndefined();
+  });
 });
 
 describe("serializeAnnotationsJson", () => {
@@ -78,6 +95,15 @@ describe("serializeAnnotationsJson", () => {
 
   it("round-trips an annotation with a label and an empty linePoints (radius/edgeLength tools)", () => {
     const a: Annotation = { ...BASE, tool: "radius", label: "rim", linePoints: [], surfaces: [], lines: ["edge-3"] };
+    const text = serializeAnnotationsJson("model.step", [a]);
+    expect(parseAnnotationsJson(text)).toEqual([a]);
+  });
+
+  it("round-trips a toleranced annotation", () => {
+    const a: Annotation = {
+      ...BASE,
+      tolerance: { nominal: 12, plus: 0.1, minus: 0.05, measured: 12.5 },
+    };
     const text = serializeAnnotationsJson("model.step", [a]);
     expect(parseAnnotationsJson(text)).toEqual([a]);
   });

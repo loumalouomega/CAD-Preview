@@ -146,7 +146,7 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 
 ![The Measure menu: Measure mode, the four tools, and Clear measurement.](/screenshots/measure-menu.png)
 
-**Measure mode** toggles measurement picking; the tool row selects **Distance**, **Length**, **Angle**, or **Radius**, and **Clear measurement** discards the current one (see [Measuring](#measuring)). The result appears on its own line just below the toolbar, so it stays readable with the menu closed. A **Saved** list at the bottom of the panel shows any pinned annotations (📌, see [Pinning a measurement](#pinning-a-measurement) below) — screenshot not yet regenerated for this row, see `doc/development.md`.
+**Measure mode** toggles measurement picking; the tool row selects **Distance**, **Length**, **Angle**, or **Radius**, and **Clear measurement** discards the current one (see [Measuring](#measuring)). The result appears on its own line just below the toolbar, so it stays readable with the menu closed. A **Saved** list at the bottom of the panel shows any pinned annotations (📌, see [Pinning a measurement](#pinning-a-measurement) below).
 
 **Markup ▾**
 
@@ -223,7 +223,9 @@ For a STEP/IGES/BREP model, a **⟟ Exact** button appears next to a completed D
 
 #### Pinning a measurement
 
-A **📌 Pin** button appears next to a completed measurement result on any source kind (unlike **⟟ Exact**, which is B-rep only). Clicking it saves the result as a persisted **annotation** — a "Saved" list at the bottom of the **Measure ▾** panel shows every pinned measurement, with a **Show** action (re-displays that overlay, no recompute) and a **✕** to delete it. Annotations survive closing the file, saved to a `<model>.annotations.json` sidecar next to the CAD source (the CAD file itself is still never touched).
+A **📌 Pin** button appears next to a completed measurement result on any source kind (unlike **⟟ Exact**, which is B-rep only). Beside it sit three small optional tolerance fields — **nom**, **+**, and **−**. Fill at least **nom** and **+** (leave **−** blank for a symmetric ± band) and the pinned annotation records that tolerance band alongside the measured value; pinning with only **nom** filled still pins, but tells you no band was recorded. Clicking **Pin** saves the result as a persisted **annotation** — a "Saved" list at the bottom of the **Measure ▾** panel shows every pinned measurement, with a **Show** action (re-displays that overlay, no recompute) and a **✕** to delete it. Annotations survive closing the file, saved to a `<model>.annotations.json` sidecar next to the CAD source (the CAD file itself is still never touched).
+
+A completed 2-point measurement (Distance or Angle) now renders as an actual **dimension**: arrowheads at both measured points, short witness marks, and the value label — not just a bare line. A toleranced pin shows its band in the label (`12.5 mm [10 ±0.05]`), and if the frozen measurement falls outside its own band, both the re-displayed label frame and its Saved-list row are coloured red — a presentation choice derived from the stored facts; nothing stores a pass/fail verdict. Pinned annotations also appear as dimension glyphs (extension lines, arrowheads, value labels) in **File ▾ → Export Silhouette SVG/DXF…** drawings.
 
 Unlike Markup strokes (screen-space pixels with no 3D anchoring at all), a pinned annotation stays attached to the actual entity it measured — a geometric best-effort match runs automatically whenever you apply a topology-changing edit elsewhere on the model, the same matching that already keeps Parts assigned correctly across edits. If the specific entity an annotation anchored to is later removed or fused away (a boolean, for example), the annotation degrades honestly: its row in the Saved list goes struck-through and **Show** disables, rather than silently pointing at the wrong geometry.
 

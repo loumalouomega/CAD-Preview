@@ -13,6 +13,7 @@ import type { ClipAxis } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
+import type { AnnotatedTolerance } from "./toleranceBand";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -108,6 +109,15 @@ export interface Annotation {
   surfaces: string[]; // anchored face ids
   lines: string[]; // anchored edge ids
   points: string[]; // anchored point (vertex) ids
+  /**
+   * Optional tolerance band (roadmap "Tolerance-band fact checks"), recorded
+   * at pin time from the Measure panel's inline fields. `measured` is the raw
+   * numeric measurement frozen alongside the band, so the in/out-of-band
+   * colour can be re-derived on redisplay without parsing the formatted
+   * `text` back into a number. Facts only — the within/outside judgment is
+   * rendered by the viewer, never stored.
+   */
+  tolerance?: AnnotatedTolerance;
 }
 
 /**

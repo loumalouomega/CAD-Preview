@@ -20,12 +20,30 @@
  * correctly, so a future arc-aware source can reuse them with no format change.
  */
 
-import { viewBasis, type Vec3, type ViewSpec } from "./svgSilhouette";
+import { viewBasis, dimensionDrawings, type Vec3, type ViewSpec, type DimensionSource, type DimensionDrawing } from "./svgSilhouette";
 
 export interface DxfOptions {
   /** Optional DXF header title (written as a comment, not a formal header var). */
   title?: string;
+  /**
+   * Precomputed 2D dimension glyphs (from `svgSilhouette.ts`'s
+   * {@link dimensionDrawings}) baked into the ENTITIES section — `LINE`s for
+   * glyph/extension lines, closed 3-vertex `LWPOLYLINE`s for arrowheads, and
+   * centered `TEXT` for value labels, all on the `DIMENSIONS` layer so a CAD
+   * user can toggle them independently of the outline.
+   */
+  dimensions?: { drawings: DimensionDrawing[]; textHeight: number };
+  /**
+   * Pinned annotations to render as dimension glyphs (see
+   * {@link dimensionDrawings}). Computed against this export's own view basis;
+   * `dimensionScaleHint` sizes the glyphs (model bbox diagonal, drawing units).
+   */
+  annotations?: ReadonlyArray<DimensionSource>;
+  dimensionScaleHint?: number;
 }
+
+/** The annotation subset the export path consumes. */
+export type { DimensionSource };
 
 export interface DxfResult {
   dxf: string;
@@ -35,6 +53,8 @@ export interface DxfResult {
   chainCount: number;
   /** Singleton LINE count. */
   lineCount: number;
+  /** Annotations whose dimension glyphs were rendered (absent when none were supplied). */
+  dimensionCount?: number;
 }
 
 function dot(a: Vec3, b: Vec3): number {
@@ -145,7 +165,12 @@ export function segmentsToPolylines(segments: Array<[[number, number], [number, 
   return chains;
 }
 
-function serializeDxf(chains: Array<{ points: Array<[number, number]>; closed: boolean; bulges?: number[] }>, singleLines: Array<[[number, number], [number, number]]>, options: DxfOptions): string {
+function serializeDxf(
+  chains: Array<{ points: Array<[number, number]>; closed: boolean; bulges?: number[] }>,
+  singleLines: Array<[[number, number], [number, number]]>,
+  options: DxfOptions,
+  dims?: { drawings: DimensionDrawing[]; textHeight: number }
+): { dxf: string; dimensionCount?: number } {
   const lines: string[] = [];
   const push = (code: number, value: string) => { lines.push(String(code)); lines.push(value); };
   // Minimal HEADER
@@ -194,9 +219,62 @@ function serializeDxf(chains: Array<{ points: Array<[number, number]>; closed: b
     push(31, "0");
   }
 
+  // Dimension glyphs — a separate layer so a CAD user can toggle them
+  // independently of the outline geometry.
+  let dimensionCount: number | undefined;
+  if (dims && dims.drawings.length > 0) {
+    dimensionCount = dims.drawings.length;
+    for (const drawing of dims.drawings) {
+      for (const [a, b] of drawing.lines) {
+        push(0, "LINE");
+        push(8, "DIMENSIONS");
+        push(10, fmt(a[0]));
+        push(20, fmt(a[1]));
+        push(30, "0");
+        push(11, fmt(b[0]));
+        push(21, fmt(b[1]));
+        push(31, "0");
+      }
+      for (const t of drawing.triangles) {
+        push(0, "LWPOLYLINE");
+        push(8, "DIMENSIONS");
+        push(90, "3");
+        push(70, "1"); // closed
+        for (const p of t) {
+          push(10, fmt(p[0]));
+          push(20, fmt(p[1]));
+        }
+      }
+      for (const l of drawing.labels) {
+        push(0, "TEXT");
+        push(8, "DIMENSIONS");
+        push(10, fmt(l.x)); // insertion point (ignored when justified)
+        push(20, fmt(l.y));
+        push(30, "0");
+        push(40, fmt(dims.textHeight));
+        push(1, l.text);
+        push(72, "1"); // horizontal: center
+        push(73, "2"); // vertical: middle
+        push(11, fmt(l.x)); // alignment point (used because 72/73 are set)
+        push(21, fmt(l.y));
+        push(31, "0");
+      }
+    }
+  }
+
   push(0, "ENDSEC");
   push(0, "EOF");
-  return lines.join("\n") + "\n";
+  return { dxf: lines.join("\n") + "\n", ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
+}
+
+/** Computes the dimensions payload for a view, shared by both DXF entry points. */
+function computeDimensions(
+  annotations: ReadonlyArray<DimensionSource> | undefined,
+  view: ViewSpec,
+  scaleHint: number | undefined
+): { drawings: DimensionDrawing[]; textHeight: number } | undefined {
+  if (!annotations || annotations.length === 0) return undefined;
+  return dimensionDrawings(annotations, view, scaleHint ?? 100);
 }
 
 /**
@@ -204,6 +282,7 @@ function serializeDxf(chains: Array<{ points: Array<[number, number]>; closed: b
  */
 export function polylinesDxf(polylines: Float32Array[], view: ViewSpec, options: DxfOptions = {}): DxfResult {
   const basis = viewBasis(view.direction, view.up);
+  const dims = computeDimensions(options.annotations, view, options.dimensionScaleHint);
   const segs: Array<[[number, number], [number, number]]> = [];
   for (const polyline of polylines) {
     const n = Math.floor(polyline.length / 3);
@@ -217,7 +296,10 @@ export function polylinesDxf(polylines: Float32Array[], view: ViewSpec, options:
     }
   }
   if (segs.length === 0) {
-    return { dxf: serializeDxf([], [], options), segmentCount: 0, chainCount: 0, lineCount: 0 };
+    // Even with no outline geometry, dimensions alone still make a valid
+    // drawing — a pinned annotation on an empty view is worth writing.
+    const { dxf, dimensionCount } = serializeDxf([], [], options, dims);
+    return { dxf, segmentCount: 0, chainCount: 0, lineCount: 0, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
   }
   const chains = segmentsToPolylines(segs);
   // Per finalized plan "Both: LINE + LWPOLYLINE" — chains of length >=2 become
@@ -239,8 +321,8 @@ export function polylinesDxf(polylines: Float32Array[], view: ViewSpec, options:
       polyChains.push(ch);
     }
   }
-  const dxf = serializeDxf(polyChains, singleLines, options);
-  return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length };
+  const { dxf, dimensionCount } = serializeDxf(polyChains, singleLines, options, dims);
+  return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
 }
 
 /**
@@ -253,6 +335,7 @@ export function silhouetteDxf(
   options: DxfOptions = {}
 ): DxfResult {
   const basis = viewBasis(view.direction, view.up);
+  const dims = computeDimensions(options.annotations, view, options.dimensionScaleHint);
   const segs: Array<[[number, number], [number, number]]> = [];
   for (const [a, b] of edges) {
     const pa: Vec3 = [positions[a * 3], positions[a * 3 + 1], positions[a * 3 + 2]];
@@ -263,7 +346,8 @@ export function silhouetteDxf(
     segs.push([projA, projB]);
   }
   if (segs.length === 0) {
-    return { dxf: serializeDxf([], [], options), segmentCount: 0, chainCount: 0, lineCount: 0 };
+    const { dxf, dimensionCount } = serializeDxf([], [], options, dims);
+    return { dxf, segmentCount: 0, chainCount: 0, lineCount: 0, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
   }
   const chains = segmentsToPolylines(segs);
   const polyChains: Array<{ points: Array<[number, number]>; closed: boolean }> = [];
@@ -272,6 +356,6 @@ export function silhouetteDxf(
     if (!ch.closed && ch.points.length === 2) singleLines.push([ch.points[0], ch.points[1]]);
     else polyChains.push(ch);
   }
-  const dxf = serializeDxf(polyChains, singleLines, options);
-  return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length };
+  const { dxf, dimensionCount } = serializeDxf(polyChains, singleLines, options, dims);
+  return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
 }
