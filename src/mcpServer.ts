@@ -18,7 +18,7 @@ console.debug = console.error.bind(console);
 /* eslint-enable no-console */
 
 import * as path from "path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
@@ -26,6 +26,8 @@ import { z } from "zod";
 import { createKernelClient } from "./kernelClient";
 import {
   describeCapabilities,
+  OP_PARAM_DOCS,
+  allOpKinds,
   loadModel,
   getMassProperties,
   generateBomTool,
@@ -83,7 +85,53 @@ const ctx: ToolContext = {
   pipeline: createKernelClient(extensionPath),
 };
 
-const server = new McpServer({ name: "cad-preview", version: "1.0.0" });
+const INSTRUCTIONS = [
+  "CAD-Preview — headless CAD modeling via sidecar-persisted edit ops.",
+  "Every path/outputPath is absolute. The CAD source file is never written — edits, parts, annotations and mesh options live in sidecars next to it (<model>.edits.json etc.) and are replayed on open in VS Code.",
+  "Tools report facts (numbers, entity inventories, images, warnings) — you render the verdict. A supported:false response or a tool/network failure is need-more-info, never a silent pass or fail.",
+  "Call describe_capabilities first (or read cad-preview://capabilities) for the full op catalog with per-kind parameter docs, B-rep-only/topology-changing flags, entity-id scheme and headless limitations. Prefer the resource if your client auto-attaches it. Pass ops as raw JSON with an op kind field — they are validated by the same tolerant gate the extension uses.",
+  "render_snapshot images (and compare_models includeSnapshots ones) are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
+].join(" ");
+
+const server = new McpServer({ name: "cad-preview", version: "1.0.0" }, { instructions: INSTRUCTIONS });
+
+server.registerResource(
+  "capabilities",
+  "cad-preview://capabilities",
+  {
+    title: "CAD-Preview capabilities",
+    description: "Full op catalog with per-kind parameter docs, entity-id scheme and headless limitations. Same content as the describe_capabilities tool, same source.",
+    mimeType: "application/json",
+  },
+  async (uri) => ({
+    contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(describeCapabilities(), null, 2) }],
+  })
+);
+
+server.registerResource(
+  "op",
+  new ResourceTemplate("cad-preview://op/{kind}", {
+    list: async () => ({
+      resources: allOpKinds().map((kind) => ({
+        uri: `cad-preview://op/${kind}`,
+        name: kind,
+        description: OP_PARAM_DOCS[kind as keyof typeof OP_PARAM_DOCS] ?? kind,
+        mimeType: "application/json",
+      })),
+    }),
+  }),
+  {
+    title: "CAD-Preview op",
+    description: "Parameters for one EditOp kind. Same source as describe_capabilities.",
+    mimeType: "application/json",
+  },
+  async (uri, { kind }) => {
+    const caps = describeCapabilities();
+    const op = (caps.ops as Array<{ op: string }>).find((o) => o.op === kind);
+    if (!op) throw new Error(`Unknown op kind: ${kind} (see cad-preview://capabilities for the full catalog)`);
+    return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(op, null, 2) }] };
+  }
+);
 
 type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 type ToolResult = { content: ToolContent[]; isError?: boolean };

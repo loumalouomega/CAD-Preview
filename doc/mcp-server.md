@@ -57,9 +57,22 @@ or in a project's `.mcp.json`:
 
 The server locates the WASM binaries relative to its own bundle (`<bundle dir>/../dist/*.wasm`, i.e. the repo root or an installed extension directory works as-is); set the `CAD_PREVIEW_ROOT` environment variable to point at a directory containing `dist/opencascade.wasm.wasm` + `dist/gmsh-core.wasm` for unusual layouts. The third WASM module, `@meshioplusplus/wasm`, is **not** copied into `dist/` (unlike the other two) — it's loaded straight from `node_modules/@meshioplusplus/wasm/` at runtime (a dynamic `import()`, since it's ESM-only — see `meshioService.ts`), so `node_modules` must be present alongside `dist/mcp-server.js` for meshio-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) to work; everything else in this server works without it.
 
+## Server instructions and resources
+
+The server advertises an `instructions` string (visible in the `initialize` response) covering the invariants agents otherwise discover by trial: every `path` is absolute, the CAD source is never written, tools report facts never verdicts, and `supported: false` is need-more-info never a silent pass/fail. Conforming clients inject this before any tool call.
+
+The same capability catalog `describe_capabilities` returns is also available as read-only MCP resources — no tool call needed for clients that auto-attach resources:
+
+- `cad-preview://capabilities` — the full `describe_capabilities` JSON (op catalog with per-kind `params`/`brepOnly`/`topologyChanging`, entity-id scheme, export matrices, mesh option defaults, headless limitations). Same JSON from the same function.
+- `cad-preview://op/{kind}` — one resource per op kind (e.g. `cad-preview://op/fillet`), each returning that kind's `{op, params, brepOnly, topologyChanging}` entry. The template's `list` enumerates every kind.
+
+Both surfaces call the same `describeCapabilities()` source — there is no second hand-maintained copy to drift.
+
+A distributable agent skill lives at `skills/CAD-Preview/SKILL.md` (triggered on tool availability `mcp__cad-preview__*`). It mirrors the instructions plus workflow guidance — plan in generic CAD vocabulary before mapping to ops, a snapshot-cost calculus, sub-agents-read-they-never-build, and volume-as-regression-check. See `doc/roadmap.md` item 5 for the full rationale.
+
 ## Tools
 
-Every tool takes an absolute `path` to the model file, and every result carries a `warnings` array reporting graceful degradations. Call `describe_capabilities` first — it returns the full op catalog with per-kind parameter documentation.
+Every tool takes an absolute `path` to the model file, and every result carries a `warnings` array reporting graceful degradations. Call `describe_capabilities` first — it returns the full op catalog with per-kind parameter documentation. If your client auto-attaches resources, the same catalog is already available at `cad-preview://capabilities` (and per-op at `cad-preview://op/{kind}`) without spending a tool call.
 
 | Tool | What it does |
 | --- | --- |
