@@ -216,6 +216,19 @@ try {
   });
   notify("notifications/initialized");
   assert(init.serverInfo.name === "cad-preview", "initialize handshake");
+  assert(typeof init.instructions === "string" && init.instructions.length > 100, `initialize carries instructions (${typeof init.instructions === "string" ? init.instructions.length : 0} chars)`);
+  assert(/Every path.*absolute/i.test(init.instructions) && /never written/i.test(init.instructions), "instructions state absolute-path and sidecar-only invariants");
+
+  // resources: static capabilities + 47 per-op resources (same source as describe_capabilities, no drift)
+  const listed = await request("resources/list", {});
+  const uris = (listed.resources ?? []).map((r) => r.uri).sort();
+  assert(uris.includes("cad-preview://capabilities"), "resources/list exposes cad-preview://capabilities");
+  assert(uris.filter((u) => u.startsWith("cad-preview://op/")).length >= 40, `resources/list exposes per-op resources (got ${uris.filter((u) => u.startsWith("cad-preview://op/")).length})`);
+  assert(uris.length >= 41, `resources/list exposes ${uris.length} resource(s) total`);
+
+  const capsRes = await request("resources/read", { uri: "cad-preview://capabilities" });
+  const capsText = capsRes.contents?.[0]?.text ?? "";
+  assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
   assert(tools.length === 31, `tools/list exposes 31 tools (got ${tools.length}: ${tools.join(", ")})`);
@@ -225,6 +238,19 @@ try {
 
   const caps = await call("describe_capabilities", {});
   assert(caps.ops.length >= 40 && caps.meshExportFormats.length >= 10, "describe_capabilities catalog populated");
+  assert(
+    JSON.stringify(JSON.parse(capsText)) === JSON.stringify(caps),
+    "resources/read cad-preview://capabilities equals describe_capabilities (same source, no drift)"
+  );
+  {
+    const oneOp = caps.ops[0]?.op ?? "addBox";
+    const opRead = await request("resources/read", { uri: `cad-preview://op/${oneOp}` });
+    const opText = opRead.contents?.[0]?.text ?? "";
+    assert(opText.length > 20, `resources/read cad-preview://op/${oneOp} returns JSON`);
+    const opJson = JSON.parse(opText);
+    const expected = caps.ops.find((o) => o.op === oneOp);
+    assert(JSON.stringify(opJson) === JSON.stringify(expected), `per-op resource cad-preview://op/${oneOp} matches describe_capabilities entry`);
+  }
 
   const loaded = await call("load_model", { path: model });
   assert(loaded.solids.length === 1 && loaded.solids[0].faceIds.length > 10, "load_model tessellates bull.stp");

@@ -4,6 +4,12 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.6.0] - 2026-08-27
+
+### Added
+
+- **Agent-facing MCP doc surfaces.** The MCP server now sends an `instructions` string (invariants: absolute paths, CAD source never written, tools report facts not verdicts, `supported:false` is need-more-info not pass/fail), exposes read-only resources `cad-preview://capabilities` and `cad-preview://op/{kind}` (same content as `describe_capabilities`, no second copy to drift), and ships `skills/CAD-Preview/SKILL.md` — a skill that triggers on tool availability and coaches generic-CAD planning, snapshot-cost calculus, sub-agent discipline, and volume-as-regression.
+
 ## [1.5.0] - 2026-08-25
 
 ### Added
@@ -247,6 +253,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.6.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.4.1...v1.5.0
 [1.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.2.6...v1.3.0
