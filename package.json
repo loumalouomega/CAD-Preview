@@ -11,7 +11,7 @@
     "url": "https://github.com/loumalouomega/CAD-Preview.git"
   },
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.134.0"
   },
   "categories": [
     "Visualization",
