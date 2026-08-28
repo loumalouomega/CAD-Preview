@@ -315,6 +315,134 @@ test("render-on-demand: frames are flat while idle, and resume on interaction", 
 });
 
 /**
+ * H. Mesh-target export — the half the VS Code host harness structurally cannot
+ * reach.
+ *
+ * STL/OBJ/PLY/glTF are serialized by `meshExporters.ts` IN THE WEBVIEW and
+ * posted back; the integration harness runs a VS Code with WebGL2 blocklisted,
+ * so it has no Three.js scene to serialize and a mesh export never completes
+ * there. This harness has working WebGL (SwiftShader), so it is the only place
+ * that path can be exercised.
+ *
+ * Driven by posting the host's own `exportMesh` message rather than clicking
+ * the FE Mesh panel's Export button: that button serializes via
+ * `currentStlIfMeshSource()`, which requires `pristineMesh` (set only on the
+ * mesh-loading path, not by this harness's B-rep `geometry` fixture), and it
+ * only ever produces STL. The message route uses `viewer.getModel()` — which
+ * the geometry fixture does set — and reaches all four formats.
+ */
+test("mesh export: every target serializes real geometry from the live scene", async (page) => {
+  await populate(page);
+
+  // STL is exported BINARY (`STLExporter().parse(target, {binary: true})`), so
+  // it gets a structural check rather than a substring one: bytes 80..83 are the
+  // triangle count and the file must be exactly 84 + count*50 bytes. That
+  // verifies real triangle data, which a length check alone would not.
+  const targets = [
+    {
+      format: "stl",
+      binary: true,
+      check: (buf) => {
+        const tris = buf.readUInt32LE(80);
+        return { ok: tris > 0 && buf.length === 84 + tris * 50, detail: `${tris} triangles, ${buf.length} bytes` };
+      },
+    },
+    { format: "obj", binary: false, check: (b) => ({ ok: b.toString("latin1").includes("\nf "), detail: "has f-lines" }) },
+    { format: "ply", binary: false, check: (b) => ({ ok: b.toString("latin1").startsWith("ply"), detail: "ply header" }) },
+    { format: "gltf", binary: true, check: (b) => ({ ok: b.toString("latin1", 0, 4) === "glTF", detail: "GLB magic" }) },
+  ];
+
+  for (const { format, binary, check } of targets) {
+    const requestId = `t-${format}`;
+    await post(page, { type: "exportMesh", requestId, format });
+    const result = await page
+      .waitForFunction(
+        (rid) => window.__sent?.find((m) => m.requestId === rid && (m.type === "exportResult" || m.type === "exportError")) ?? null,
+        requestId,
+        { timeout: 30000 }
+      )
+      .then((h) => h.jsonValue())
+      .catch(() => null);
+
+    assert(result?.type === "exportResult", `${format}: the webview answers with exportResult (got ${result?.type ?? "nothing"})`);
+    if (result?.type !== "exportResult") continue;
+    assert(result.binary === binary, `${format}: the binary flag is ${binary} (got ${result.binary})`);
+
+    // Length alone is a weak check — an empty but well-formed export (a bare
+    // `solid`/`endsolid`, or a zero-triangle binary STL header) is exactly the
+    // failure mode that would otherwise pass. Each format is checked for real
+    // geometry instead.
+    const buf = Buffer.from(result.data, result.binary ? "base64" : "utf8");
+    assert(buf.length > 200, `${format}: the payload is not empty (${buf.length} bytes)`);
+    const { ok, detail } = check(buf);
+    assert(ok, `${format}: the payload contains real geometry (${detail})`);
+  }
+});
+
+/**
+ * I. Framing invariants — the automated half of "visual correctness is nobody's
+ * job".
+ *
+ * Deliberately NOT a baseline-image diff. `capture.mjs` settles on fixed
+ * `sleep()` calls rather than waiting for a render-quiescent state, and the FE
+ * mesh fixture comes from a real Gmsh run, so a byte/perceptual baseline has no
+ * reason to be stable and a gate that cries wolf gets switched off.
+ *
+ * What IS stable is the invariant that was actually violated when every 3D shot
+ * silently became a giant misframed close-up: the model has to occupy a sane
+ * fraction of the viewport. The scene background is a known constant
+ * (`viewer.ts`'s `0x1e1e1e`), so "model pixels" is just "not the background" —
+ * and the screenshot is decoded IN-PAGE via an Image + a 2D canvas, so this
+ * needs no PNG decoder and no new dependency.
+ */
+test("framing: the model occupies a sane fraction of the viewport", async (page) => {
+  await populate(page);
+
+  // Turn the grid off so the measurement is the model, not the helper.
+  await page.click("#view-menu");
+  await page.click("#grid");
+  await page.keyboard.press("Escape");
+  await sleep(400);
+
+  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const stats = await page.evaluate(
+    async (b64) =>
+      new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("decode failed"));
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          const { data } = ctx.getImageData(0, 0, c.width, c.height);
+          const isBg = (i) => Math.abs(data[i] - 0x1e) < 6 && Math.abs(data[i + 1] - 0x1e) < 6 && Math.abs(data[i + 2] - 0x1e) < 6;
+          let model = 0;
+          for (let i = 0; i < data.length; i += 4) if (!isBg(i)) model++;
+          // A centre patch: the default framing centres the model, so an empty
+          // centre means it is framed off-screen entirely.
+          let centre = 0;
+          const cx = (c.width / 2) | 0, cy = (c.height / 2) | 0, r = 40;
+          for (let y = cy - r; y < cy + r; y++) {
+            for (let x = cx - r; x < cx + r; x++) {
+              if (!isBg((y * c.width + x) * 4)) centre++;
+            }
+          }
+          resolve({ fraction: model / (c.width * c.height), centre, w: c.width, h: c.height });
+        };
+        img.src = `data:image/png;base64,${b64}`;
+      }),
+    shot
+  );
+
+  assert(stats.w > 0 && stats.h > 0, `the viewport screenshot decoded (${stats.w}x${stats.h})`);
+  assert(stats.fraction > 0.02, `the viewport is not blank — a failed render or an off-screen model (fraction ${stats.fraction.toFixed(3)})`);
+  assert(stats.fraction < 0.80, `the model is not a full-bleed close-up — the documented misframing regression (fraction ${stats.fraction.toFixed(3)})`);
+  assert(stats.centre > 0, "the centre of the viewport contains model pixels");
+});
+
+/**
  * G. Dropdown menus — both of these are previously-FIXED real bugs with no
  * regression test, recorded in `CLAUDE.md`'s "Toolbar dropdown menus":
  *  1. The containment test used `e.target !== btn`, but every trigger wraps its

@@ -163,15 +163,60 @@ test("a .post.msh opens through the real provider, and routes to GiD not Gmsh", 
   await closeAll();
 });
 
-// NOTE — the FE Mesh panel's export (and therefore the GiD `.post.msh` +
-// `.post.res` pair) is NOT covered here, and cannot be without a production
-// change. It is driven purely by the webview posting a `meshingExport` message
-// (`provider.ts:801`); there is no command for it, and an integration test
-// cannot post into another extension's webview. So GiD manual item (a) stays
-// manual. The pieces around it ARE covered — `companionSaveName`'s
-// compound-extension strip by unit tests, the picker containing `gid` by the
-// webview harness — but the end-to-end join is genuinely untested. Adding a
-// session-gated command for it is the obvious follow-up.
+/**
+ * The GiD export chain, end to end — this is what `cad-preview.exportMesh`
+ * exists to make reachable. FE-mesh export used to be driven only by the
+ * webview's own Export button, and a test cannot post into another extension's
+ * webview, so this flow was the last of the GiD manual-verification debt.
+ *
+ * The sibling MUST be `<stem>.post.res`. A last-segment strip — rather than
+ * `companionSaveName`'s full compound-extension strip — would yield
+ * `<stem>.post.post.res`, which is the specific bug this pins.
+ */
+test("Export FE Mesh… → GiD writes the .post.msh AND its .post.res sibling", async () => {
+  const staged = stage(STEP_FIXTURE);
+  const out = path.join(path.dirname(staged), "beam.post.msh");
+  const sibling = path.join(path.dirname(staged), "beam.post.res");
+  const sourceBefore = fs.readFileSync(staged);
+  assert(await openDocument(staged), "the STEP fixture opens");
+
+  const record = await withModals([pick("GiD Postprocess"), pick("Native"), save(out)], async () => {
+    await vscode.commands.executeCommand("cad-preview.exportMesh");
+    await waitForFile(out, 120000); // a real Gmsh generate runs first
+  });
+
+  const offered = record.quickPicks[0]?.labels ?? [];
+  assert(offered.includes("GiD Postprocess (.post.msh)"), `the FE-mesh picker offers GiD (offered ${offered.length} formats)`);
+  assert(offered[0] === "Kratos MDPA — Elements + Conditions (.mdpa)", "the picker preserves the registry's order");
+  assert(fs.existsSync(out) && fs.statSync(out).size > 0, "the .post.msh geometry file is written");
+  assert(await waitForFile(sibling, 20000), "the .post.res sibling is written beside it");
+  assert(
+    !fs.existsSync(path.join(path.dirname(staged), "beam.post.post.res")),
+    "the sibling's stem strips the FULL compound extension (not beam.post.post.res)"
+  );
+  assert(fs.readFileSync(out, "utf8").includes("MESH"), "the .post.msh is a real GiD mesh document");
+  assert(Buffer.compare(sourceBefore, fs.readFileSync(staged)) === 0, "the CAD source is untouched");
+  await closeAll();
+});
+
+test("Export FE Mesh… explains itself rather than failing silently on a mesh source", async () => {
+  // A mesh-format source's geometry lives in the webview; the host has no mesh
+  // engine on this path, so the command must say which control to use.
+  const staged = stage(GID_FIXTURE, [GID_SIBLING]);
+  assert(await openDocument(staged), "the GiD (mesh-route) fixture opens");
+  const session = installModalStubs([]); // any modal opened here would throw — none should
+  let threw = false;
+  try {
+    await vscode.commands.executeCommand("cad-preview.exportMesh");
+    await sleep(1500);
+  } catch {
+    threw = true;
+  } finally {
+    session.restore();
+  }
+  assert(!threw, "a mesh source opens no quick-pick — it reports the limitation instead");
+  await closeAll();
+});
 
 test("Export… offers the real export targets and writes the chosen one", async () => {
   const staged = stage(STEP_FIXTURE);

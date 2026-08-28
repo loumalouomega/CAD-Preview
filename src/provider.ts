@@ -24,7 +24,7 @@ import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUr
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
 import type { MeshGenerationInput } from "./gmshService";
 import type { MeshioMetadataSummary } from "./meshioService";
-import { meshExportFormat, companionSaveName } from "./meshExportFormats";
+import { meshExportFormat, companionSaveName, MESH_EXPORT_FORMATS, type MeshExportFormatId } from "./meshExportFormats";
 import { applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
@@ -127,6 +127,8 @@ interface EditorSession {
   exportSvg(): void;
   /** Export a 2D outline (silhouette) of the model as a DXF drawing. */
   exportDxf(): void;
+  /** Generate and export an FE mesh (format + unit quick-picks, then a save dialog). */
+  exportMesh(): void;
   /** Post a message to this session's webview — the registry entry for the
    * linked-cameras relay (roadmap "Split view", Phase 3). */
   post(msg: HostToWebview): void;
@@ -236,6 +238,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
       vscode.commands.registerCommand("cad-preview.exportSvg", withSession((s) => s.exportSvg())),
       vscode.commands.registerCommand("cad-preview.exportDxf", withSession((s) => s.exportDxf())),
+      vscode.commands.registerCommand("cad-preview.exportMesh", withSession((s) => s.exportMesh())),
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
@@ -638,6 +641,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       exportSvg: () => {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations);
       },
+      exportMesh: () => {
+        void this.handleExportMesh(document.uri, route, currentEdits, currentMeshOptions, post);
+      },
       exportDxf: () => {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations);
       },
@@ -821,123 +827,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "meshingExport") {
-        try {
-          const unit = msg.unit ?? "mm";
-          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, unit);
-          if (!input) {
-            post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
-            return;
-          }
-          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options, unit);
-          if (msg.target === "msh") {
-            const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
-            await this.promptSaveAndWrite(
-              document.uri,
-              "msh",
-              "GMSH Mesh",
-              async () => Buffer.from(result.mshText, "utf8"),
-              post
-            );
-          } else if (msg.target === "geoUnrolled") {
-            const geo = await this.pipeline.exportGeoUnrolled(this.context.extensionPath, input, options, parts);
-            await this.promptSaveAndWrite(
-              document.uri,
-              "geo_unrolled",
-              "GMSH Unrolled Geometry",
-              async (saveUri) => {
-                if (!geo.xao) return Buffer.from(geo.text, "utf8");
-                // B-rep geometry can't be textually unrolled — gmsh.write() emitted a
-                // `Merge "<memfs path>.xao";` stub. Write the real content (the XAO
-                // companion) as a sibling of the saved file and fix the reference up
-                // to a relative name so it actually resolves when reopened.
-                const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
-                const xaoName = `${saveName}.xao`;
-                const xaoUri = vscode.Uri.joinPath(saveUri, "..", xaoName);
-                await vscode.workspace.fs.writeFile(xaoUri, geo.xao);
-                const fixedText = geo.text.replace(/Merge "[^"]*\.xao";/, `Merge "${xaoName}";`);
-                return Buffer.from(fixedText, "utf8");
-              },
-              post
-            );
-          } else if (msg.target === "mdpaElements" || msg.target === "mdpaGeometries") {
-            // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
-            // exportMdpa's doc comment), unlike every other format below.
-            const format = meshExportFormat(msg.target)!;
-            const text = await this.pipeline.exportMdpa(
-              this.context.extensionPath,
-              input,
-              options,
-              parts,
-              msg.target === "mdpaElements" ? "elements" : "geometries"
-            );
-            await this.promptSaveAndWrite(
-              document.uri,
-              format.extension,
-              format.filterLabel,
-              async () => Buffer.from(text, "utf8"),
-              post
-            );
-          } else if (meshExportFormat(msg.target)?.via === "meshio") {
-            // meshio++ bridge — registry-driven (`meshExportFormats.ts`'s
-            // `via` field), covering every id Gmsh's own writers can't
-            // produce (originally just MED/CGNS/XDMF, now also VTU/HMF/AVS
-            // UCD/Mphtxt/Netgen/FLAC3D/WKT/Flux — see that file's doc
-            // comment for the live-WASM verification each addition needed).
-            // Re-encodes via `meshioService.ts`'s exportViaMeshio(), fed
-            // generateMesh()'s own MSH 4.1 mshText directly (meshio++ 9.7.0+
-            // reads 4.1 natively, physical groups included — see
-            // exportViaMeshio's doc comment).
-            const format = meshExportFormat(msg.target)!;
-            const meshed = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
-            const sourceName = document.uri.path.slice(document.uri.path.lastIndexOf("/") + 1);
-            const { bytes, companion } = await this.pipeline.exportViaMeshio(meshed.mshText, msg.target, {
-              extension: format.extension,
-              companionExtension: format.companion?.extension,
-              // Omitted rather than fabricated if the document somehow has no
-              // route — an unknown origin is better left unrecorded than
-              // recorded as a guess.
-              source: route ? { name: sourceName, format: route.format } : undefined,
-            });
-            await this.promptSaveAndWrite(
-              document.uri,
-              format.extension,
-              format.filterLabel,
-              async (saveUri) => {
-                if (!companion) return Buffer.from(bytes);
-                // Companion file — written beside the chosen save path under
-                // the matching stem. Whether the primary also needs editing is
-                // the registry's `linkage` call, not a per-format branch here:
-                // XDMF names its `.h5` in its own <DataItem> elements, so that
-                // reference is rewritten to the real saved name; GiD's
-                // `.post.res` is found by stem convention alone, so its primary
-                // must be left byte-for-byte untouched.
-                const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
-                const companionName = companionSaveName(saveName, format)!;
-                const companionUri = vscode.Uri.joinPath(saveUri, "..", companionName);
-                await vscode.workspace.fs.writeFile(companionUri, companion.bytes);
-                if (format.companion?.linkage === "sibling") return Buffer.from(bytes);
-                const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(companionName);
-                return Buffer.from(fixedText, "utf8");
-              },
-              post
-            );
-          } else {
-            // Every other registered format (VTK/UNV/Abaqus/Nastran/SU2/etc.) — a
-            // plain generate-then-write with no companion file, see `exportMeshFormat`.
-            const format = meshExportFormat(msg.target);
-            if (!format) throw new Error(`Unknown mesh export format: ${msg.target}`);
-            const text = await this.pipeline.exportMeshFormat(this.context.extensionPath, input, options, parts, msg.target);
-            await this.promptSaveAndWrite(
-              document.uri,
-              format.extension,
-              format.filterLabel,
-              async () => Buffer.from(text, "utf8"),
-              post
-            );
-          }
-        } catch (err) {
-          post({ type: "error", message: `Export failed: ${(err as Error).message}` });
-        }
+        await this.runMeshExport(document.uri, route, currentEdits, msg.target, msg.options, msg.stl, msg.unit ?? "mm", post);
         return;
       }
 
@@ -1836,6 +1726,189 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       },
       post
     );
+  }
+
+  /**
+   * The FE-mesh export pipeline, shared by the webview's Export button (the
+   * `meshingExport` message) and the `cad-preview.exportMesh` command.
+   *
+   * Extracted so the command is not a second copy of the
+   * generate → `via` dispatch → `promptSaveAndWrite` chain. `stl` is the
+   * webview-serialized geometry, needed ONLY for mesh-format sources: for a
+   * B-rep source `resolveMeshInput` re-exports the live OCCT shape itself and
+   * ignores this argument entirely, which is what lets the command call in with
+   * `undefined`.
+   */
+  private async runMeshExport(
+    uri: vscode.Uri,
+    route: FileRoute | undefined,
+    ops: EditOp[],
+    target: MeshExportFormatId,
+    meshOptions: MeshOptions,
+    stl: string | undefined,
+    unit: DisplayUnit,
+    post: (msg: HostToWebview) => void
+  ): Promise<void> {
+      try {
+        const input = await this.resolveMeshInput(uri, route, ops, stl, unit);
+        if (!input) {
+          post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
+          return;
+        }
+        const { parts, options } = await this.resolveMeshPartsAndOptions(uri, input, meshOptions, unit);
+        if (target === "msh") {
+          const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
+          await this.promptSaveAndWrite(
+            uri,
+            "msh",
+            "GMSH Mesh",
+            async () => Buffer.from(result.mshText, "utf8"),
+            post
+          );
+        } else if (target === "geoUnrolled") {
+          const geo = await this.pipeline.exportGeoUnrolled(this.context.extensionPath, input, options, parts);
+          await this.promptSaveAndWrite(
+            uri,
+            "geo_unrolled",
+            "GMSH Unrolled Geometry",
+            async (saveUri) => {
+              if (!geo.xao) return Buffer.from(geo.text, "utf8");
+              // B-rep geometry can't be textually unrolled — gmsh.write() emitted a
+              // `Merge "<memfs path>.xao";` stub. Write the real content (the XAO
+              // companion) as a sibling of the saved file and fix the reference up
+              // to a relative name so it actually resolves when reopened.
+              const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
+              const xaoName = `${saveName}.xao`;
+              const xaoUri = vscode.Uri.joinPath(saveUri, "..", xaoName);
+              await vscode.workspace.fs.writeFile(xaoUri, geo.xao);
+              const fixedText = geo.text.replace(/Merge "[^"]*\.xao";/, `Merge "${xaoName}";`);
+              return Buffer.from(fixedText, "utf8");
+            },
+            post
+          );
+        } else if (target === "mdpaElements" || target === "mdpaGeometries") {
+          // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
+          // exportMdpa's doc comment), unlike every other format below.
+          const format = meshExportFormat(target)!;
+          const text = await this.pipeline.exportMdpa(
+            this.context.extensionPath,
+            input,
+            options,
+            parts,
+            target === "mdpaElements" ? "elements" : "geometries"
+          );
+          await this.promptSaveAndWrite(
+            uri,
+            format.extension,
+            format.filterLabel,
+            async () => Buffer.from(text, "utf8"),
+            post
+          );
+        } else if (meshExportFormat(target)?.via === "meshio") {
+          // meshio++ bridge — registry-driven (`meshExportFormats.ts`'s
+          // `via` field), covering every id Gmsh's own writers can't
+          // produce (originally just MED/CGNS/XDMF, now also VTU/HMF/AVS
+          // UCD/Mphtxt/Netgen/FLAC3D/WKT/Flux — see that file's doc
+          // comment for the live-WASM verification each addition needed).
+          // Re-encodes via `meshioService.ts`'s exportViaMeshio(), fed
+          // generateMesh()'s own MSH 4.1 mshText directly (meshio++ 9.7.0+
+          // reads 4.1 natively, physical groups included — see
+          // exportViaMeshio's doc comment).
+          const format = meshExportFormat(target)!;
+          const meshed = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
+          const sourceName = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+          const { bytes, companion } = await this.pipeline.exportViaMeshio(meshed.mshText, target, {
+            extension: format.extension,
+            companionExtension: format.companion?.extension,
+            // Omitted rather than fabricated if the document somehow has no
+            // route — an unknown origin is better left unrecorded than
+            // recorded as a guess.
+            source: route ? { name: sourceName, format: route.format } : undefined,
+          });
+          await this.promptSaveAndWrite(
+            uri,
+            format.extension,
+            format.filterLabel,
+            async (saveUri) => {
+              if (!companion) return Buffer.from(bytes);
+              // Companion file — written beside the chosen save path under
+              // the matching stem. Whether the primary also needs editing is
+              // the registry's `linkage` call, not a per-format branch here:
+              // XDMF names its `.h5` in its own <DataItem> elements, so that
+              // reference is rewritten to the real saved name; GiD's
+              // `.post.res` is found by stem convention alone, so its primary
+              // must be left byte-for-byte untouched.
+              const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
+              const companionName = companionSaveName(saveName, format)!;
+              const companionUri = vscode.Uri.joinPath(saveUri, "..", companionName);
+              await vscode.workspace.fs.writeFile(companionUri, companion.bytes);
+              if (format.companion?.linkage === "sibling") return Buffer.from(bytes);
+              const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(companionName);
+              return Buffer.from(fixedText, "utf8");
+            },
+            post
+          );
+        } else {
+          // Every other registered format (VTK/UNV/Abaqus/Nastran/SU2/etc.) — a
+          // plain generate-then-write with no companion file, see `exportMeshFormat`.
+          const format = meshExportFormat(target);
+          if (!format) throw new Error(`Unknown mesh export format: ${target}`);
+          const text = await this.pipeline.exportMeshFormat(this.context.extensionPath, input, options, parts, target);
+          await this.promptSaveAndWrite(
+            uri,
+            format.extension,
+            format.filterLabel,
+            async () => Buffer.from(text, "utf8"),
+            post
+          );
+        }
+      } catch (err) {
+        post({ type: "error", message: `Export failed: ${(err as Error).message}` });
+      }
+  }
+
+  /**
+   * `cad-preview.exportMesh` — generate and export an FE mesh from the focused
+   * document.
+   *
+   * Fills a real command-coverage gap: Export, Export Silhouette SVG/DXF,
+   * Screenshot and Save/Load Preprocess all have commands, but FE-mesh export
+   * was reachable only by clicking the FE Mesh panel's own Export button. That
+   * also made it the one export flow the integration suite could not reach,
+   * since a test cannot post into a webview.
+   *
+   * **B-rep sources only.** A mesh-format source's geometry lives in the
+   * webview (the panel's button sends it as a serialized STL), and the host has
+   * no mesh engine of its own on this path — so rather than fail opaquely, say
+   * which control to use. (`mcpTools.ts`'s `resolveMeshInputHeadless` does
+   * resolve mesh sources host-side; reusing it here needs that resolver lifted
+   * out of the MCP layer, which is a separate refactor.)
+   */
+  private async handleExportMesh(
+    uri: vscode.Uri,
+    route: FileRoute | undefined,
+    ops: EditOp[],
+    meshOptions: MeshOptions | undefined,
+    post: (msg: HostToWebview) => void
+  ): Promise<void> {
+    if (!route || route.strategy !== "occt") {
+      post({
+        type: "status",
+        text: "FE mesh export from the Command Palette needs a B-rep source (STEP/IGES/BREP) — use the FE Mesh panel's Export button for this document.",
+      });
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      MESH_EXPORT_FORMATS.map((f) => ({ label: f.label, id: f.id })),
+      { placeHolder: "Export FE mesh as…" }
+    );
+    if (!picked) return;
+    const unit = await this.pickExportUnit();
+    // The closure copy is kept in sync (hydrated on `ready`, updated on every
+    // `meshingChanged`), but a document whose panel was never touched may not
+    // have one yet — fall back to the sidecar, same source the panel reads.
+    const options = meshOptions ?? (await readMeshOptions(uri));
+    await this.runMeshExport(uri, route, ops, picked.id as MeshExportFormatId, options, undefined, unit, post);
   }
 
   /**
