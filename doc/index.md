@@ -102,7 +102,7 @@ features:
 | PLY    | `.ply`          | Three.js `PLYLoader`                   |
 | glTF   | `.gltf`, `.glb` | Three.js `GLTFLoader`                  |
 
-Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, OpenFOAM, Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, and INRIA Medit](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-openfoam-and-more) via the host-side meshio++ bridge — the last five close a real export/import asymmetry (this codebase's own FE Meshing panel wrote them but couldn't reopen them). SVG and DXF are not rendering formats but appear at both ends of the pipeline: **Import SVG…**/**Import DXF…** trace a 2D drawing's geometry into sketch polylines/profile ops, and **Export Silhouette SVG…/…DXF…** write a 2D outline of the model back out.
+Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, OpenFOAM, Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, INRIA Medit, and GiD Postprocess](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-openfoam-and-more) via the host-side meshio++ bridge — the last five close a real export/import asymmetry (this codebase's own FE Meshing panel wrote them but couldn't reopen them). SVG and DXF are not rendering formats but appear at both ends of the pipeline: **Import SVG…**/**Import DXF…** trace a 2D drawing's geometry into sketch polylines/profile ops, and **Export Silhouette SVG…/…DXF…** write a 2D outline of the model back out.
 
 ## Badges
 

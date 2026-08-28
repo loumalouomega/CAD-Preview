@@ -1,8 +1,8 @@
 // meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM
 // singleton alongside OCCT (occtService.ts) and Gmsh (gmshService.ts), used to
-// import mesh-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) as
+// import mesh-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/GiD) as
 // viewable documents and to export generated FE meshes to formats Gmsh's own
-// writers cannot produce (MED, CGNS).
+// writers cannot produce (MED, CGNS, GiD, …).
 //
 // UNLIKE gmsh-wasm/opencascade.js, this package is loaded with a DYNAMIC
 // `await import(...)`, not a static top-of-file `import` — verified against
@@ -37,8 +37,13 @@
 // writes — so `mcpServer.ts`'s existing top-of-file stdout rebinding already
 // covers it; no new suppression code is needed here.
 //
-// Re-confirmed against the 10.9.0 glue on the dependency bump: still exactly
-// one console.log + one console.error, zero raw fd writes.
+// Re-confirmed against the 10.20.2 glue on the dependency bump: still exactly
+// one console.log + one console.error, zero raw fd writes — and still exactly
+// three `import.meta.url` self-locations, so the package must keep being
+// shipped as real files under node_modules (.vscodeignore carve-out) rather
+// than copied into dist/ the way OCCT's and Gmsh's `.wasm` binaries are.
+// `resolveVariant()` is byte-identical across that bump too, so `{variant:
+// "seq"}` below remains load-bearing, not vestigial.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -153,7 +158,7 @@ export interface MeshioCompanion {
  * always written under its own real/referenced basename, never renamed.
  *
  * **Fixes ONLY the missing-companion failure, not every XDMF re-import** —
- * a SEPARATE, pre-existing meshio++ 10.14.0 bug means an XDMF whose mesh
+ * a SEPARATE, pre-existing meshio++ 10.20.2 bug means an XDMF whose mesh
  * mixes cell types (points/lines/triangles/tets — exactly what this
  * codebase's own `generate_mesh` always produces, since `Mesh.SaveAll=1` is
  * forced unconditionally) still fails to re-import, with a DIFFERENT error
@@ -785,31 +790,77 @@ function boundaryTrianglesToAsciiStl(
  * filename's* basename and rewrite the embedded reference to match —
  * `provider.ts`'s `meshingExport` handler does this the same way it already
  * rewrites `.geo_unrolled`'s `Merge "...xao"` stub.
+ *
+ * **`extension` and `companionExtension` come from `meshExportFormats.ts`'s
+ * registry entry, not from `outMeshioFormat`.** For most formats the two
+ * coincide, which is why this used to derive the MEMFS path as
+ * `/out.${outMeshioFormat}` — but GiD breaks that assumption twice over: its
+ * format name is `gid` while its extension is the COMPOUND `post.msh`, and its
+ * ascii writer emits a `.post.res` results sibling rather than XDMF's `.h5`.
+ * Both are now registry-supplied, so a future companion-bearing format needs no
+ * edit here at all. `companionExtension` is looked up best-effort — a format
+ * whose companion is conditional (XDMF's `.h5` exists only for the `"HDF"` data
+ * format, not `"XML"`/`"Binary"`) simply reports none when the file isn't there.
+ *
+ * **Provenance (`source`) is recorded via an explicit scope** — `withProvenance`
+ * rather than the raw `provenanceBegin`/`provenanceEnd` pair, since it closes
+ * the scope even if the body throws. Without a scope meshio++ writes only a
+ * one-line credit; with one it also records where the mesh came from, what was
+ * written, and any conversion assumptions raised along the way. **This is a
+ * no-op for MED/CGNS/XDMF** — verified by inspecting raw output bytes, not just
+ * `readProvenance`: those three (and `hmf`/`wkt`) embed nothing at all, because
+ * their containers have no header slot meshio++ renders a provenance block
+ * into. It genuinely lands for `vtu`/`avsucd`/`mphtxt`/`netgen`/`flac3d`/`flux`
+ * and the new `gid`. Passing `source` is therefore harmless everywhere and
+ * useful for most of the registry — but the coverage split must not be
+ * described as universal.
  */
+
+export interface MeshioExportOptions {
+  /** MEMFS write extension, from the registry entry. Defaults to `outMeshioFormat`. */
+  extension?: string;
+  /** Extension of the second file this format's writer emits, if any. */
+  companionExtension?: string;
+  /** Origin recorded in the written file's provenance block, where the format has one. */
+  source?: { name: string; format: string };
+}
 
 export async function exportViaMeshio(
   gmshMshText: string,
-  outMeshioFormat: string
+  outMeshioFormat: string,
+  options: MeshioExportOptions = {}
 ): Promise<{ bytes: Uint8Array; companion?: { name: string; bytes: Uint8Array } }> {
   const m = await getMeshio();
+  const extension = options.extension || outMeshioFormat;
   const inPath = "/in.msh";
-  const outPath = `/out.${outMeshioFormat}`;
-  const companionPath = "/out.h5";
+  const outPath = `/out.${extension}`;
+  const companionName = options.companionExtension ? `out.${options.companionExtension}` : undefined;
+  const companionPath = companionName ? `/${companionName}` : undefined;
   m.FS.writeFile(inPath, Buffer.from(gmshMshText, "utf8"));
   try {
-    m.convert(inPath, outPath, { inFormat: "gmsh", outFormat: outMeshioFormat });
+    const convert = () => m.convert(inPath, outPath, { inFormat: "gmsh", outFormat: outMeshioFormat });
+    if (options.source) {
+      const { name, format } = options.source;
+      m.withProvenance(1, () => {
+        m.provenanceSetSource(name, format);
+        m.provenanceSetTarget(outMeshioFormat);
+        convert();
+      });
+    } else {
+      convert();
+    }
     const bytes = m.FS.readFile(outPath);
-    if (outMeshioFormat !== "xdmf") return { bytes };
+    if (!companionPath || !companionName) return { bytes };
     try {
-      return { bytes, companion: { name: "out.h5", bytes: m.FS.readFile(companionPath) } };
+      return { bytes, companion: { name: companionName, bytes: m.FS.readFile(companionPath) } };
     } catch {
-      return { bytes }; // the "Binary"/"XML" data formats have no HDF companion — only "HDF" does
+      return { bytes }; // a conditional companion this write didn't produce (e.g. XDMF's "XML"/"Binary" data formats)
     }
   } catch (err) {
     throw wrapMeshioFault(err);
   } finally {
     try { m.FS.unlink(inPath); } catch { /* ignore */ }
     try { m.FS.unlink(outPath); } catch { /* ignore */ }
-    try { m.FS.unlink(companionPath); } catch { /* ignore */ }
+    if (companionPath) { try { m.FS.unlink(companionPath); } catch { /* ignore */ } }
   }
 }

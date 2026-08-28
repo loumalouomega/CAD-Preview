@@ -1932,7 +1932,18 @@ describe("export_mesh", () => {
     const result = await exportMeshTool(c, { path: stpModel, format: "med", outputPath: out });
     // meshio++ 9.7.0 reads MSH 4.1 natively — the bridge takes generateMesh's
     // own mshText directly, no legacy msh2 re-export detour.
-    expect(vi.mocked(c.pipeline.exportViaMeshio).mock.lastCall).toEqual([FAKE_MESH_RESULT.mshText, "med"]);
+    // The trailing options object is registry-supplied: the MEMFS write
+    // extension, this format's companion extension (none for med), and the
+    // provenance origin.
+    expect(vi.mocked(c.pipeline.exportViaMeshio).mock.lastCall).toEqual([
+      FAKE_MESH_RESULT.mshText,
+      "med",
+      {
+        extension: "med",
+        companionExtension: undefined,
+        source: { name: path.basename(stpModel), format: "step" },
+      },
+    ]);
     expect(c.pipeline.exportMeshFormat).not.toHaveBeenCalled();
     expect(await fs.readFile(out, "utf8")).toBe("fake-meshio-bytes");
     expect(result.written.map((w) => w.path)).toEqual([out]);

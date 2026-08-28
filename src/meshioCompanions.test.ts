@@ -22,6 +22,16 @@ describe("stemCompanionCandidates", () => {
     expect(stemCompanionCandidates("v1.2.node", "tetgen")).toEqual(["v1.2.ele"]);
   });
 
+  it("returns the GiD results sibling for a .post.msh primary", () => {
+    // The `.post` segment travels inside the stem — only the final segment is
+    // swapped, which is exactly GiD's own convention.
+    expect(stemCompanionCandidates("beam.post.msh", "gid")).toEqual(["beam.post.res"]);
+  });
+
+  it("returns the GiD geometry sibling for a .post.res primary", () => {
+    expect(stemCompanionCandidates("beam.post.res", "gid")).toEqual(["beam.post.msh"]);
+  });
+
   it("returns [] for a format with no stem-sibling convention", () => {
     expect(stemCompanionCandidates("model.vtk", "vtk")).toEqual([]);
     expect(stemCompanionCandidates("model.xdmf", "xdmf")).toEqual([]);

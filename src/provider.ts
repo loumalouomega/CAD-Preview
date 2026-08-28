@@ -9,7 +9,7 @@ import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
-import { COMPARABLE_MESH_FORMATS, AMBIGUOUS_MESHIO_EXTENSIONS } from "./fileRouter";
+import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
@@ -24,7 +24,7 @@ import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUr
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
 import type { MeshGenerationInput } from "./gmshService";
 import type { MeshioMetadataSummary } from "./meshioService";
-import { meshExportFormat } from "./meshExportFormats";
+import { meshExportFormat, companionSaveName } from "./meshExportFormats";
 import { applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
@@ -229,9 +229,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       canSelectMany: false,
       openLabel: "Open in CAD Preview",
       filters: {
+        // Mirrors `fileRouter.ts`'s EXTENSION_MAP. VS Code matches these against
+        // the final dot-segment only, so GiD's compound `post.msh` is covered by
+        // the plain `msh` entry — a separate "post.msh" entry would never match.
         "CAD / Mesh": [
           "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep",
           "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam",
+          "msh", "msh2", "inp", "unv", "su2", "mesh",
         ],
       },
     });
@@ -863,21 +867,34 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // exportViaMeshio's doc comment).
             const format = meshExportFormat(msg.target)!;
             const meshed = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
-            const { bytes, companion } = await this.pipeline.exportViaMeshio(meshed.mshText, msg.target);
+            const sourceName = document.uri.path.slice(document.uri.path.lastIndexOf("/") + 1);
+            const { bytes, companion } = await this.pipeline.exportViaMeshio(meshed.mshText, msg.target, {
+              extension: format.extension,
+              companionExtension: format.companion?.extension,
+              // Omitted rather than fabricated if the document somehow has no
+              // route — an unknown origin is better left unrecorded than
+              // recorded as a guess.
+              source: route ? { name: sourceName, format: route.format } : undefined,
+            });
             await this.promptSaveAndWrite(
               document.uri,
               format.extension,
               format.filterLabel,
               async (saveUri) => {
                 if (!companion) return Buffer.from(bytes);
-                // xdmf's HDF5 companion — same "write beside the chosen save
-                // path + rewrite the embedded reference" pattern geoUnrolled's
-                // .xao companion uses just below.
+                // Companion file — written beside the chosen save path under
+                // the matching stem. Whether the primary also needs editing is
+                // the registry's `linkage` call, not a per-format branch here:
+                // XDMF names its `.h5` in its own <DataItem> elements, so that
+                // reference is rewritten to the real saved name; GiD's
+                // `.post.res` is found by stem convention alone, so its primary
+                // must be left byte-for-byte untouched.
                 const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
-                const h5Name = saveName.replace(/\.[^.]+$/, ".h5");
-                const h5Uri = vscode.Uri.joinPath(saveUri, "..", h5Name);
-                await vscode.workspace.fs.writeFile(h5Uri, companion.bytes);
-                const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(h5Name);
+                const companionName = companionSaveName(saveName, format)!;
+                const companionUri = vscode.Uri.joinPath(saveUri, "..", companionName);
+                await vscode.workspace.fs.writeFile(companionUri, companion.bytes);
+                if (format.companion?.linkage === "sibling") return Buffer.from(bytes);
+                const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(companionName);
                 return Buffer.from(fixedText, "utf8");
               },
               post
@@ -1337,8 +1354,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const isFoam = format === "openfoam";
       const basename = uri.path.slice(uri.path.lastIndexOf("/") + 1);
       if (!isFoam) {
-        const ext = basename.slice(basename.lastIndexOf(".") + 1).toLowerCase();
-        const ambiguityCaveat = AMBIGUOUS_MESHIO_EXTENSIONS.get(ext);
+        const ambiguityCaveat = ambiguityCaveatFor(basename);
         if (ambiguityCaveat) post({ type: "status", text: ambiguityCaveat });
       }
       const bytes = isFoam ? undefined : await vscode.workspace.fs.readFile(uri);

@@ -25,7 +25,7 @@ import {
 } from "./editOps";
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { compileParametricScript } from "./parametricScript";
-import { routeFile, COMPARABLE_MESH_FORMATS, MESHIO_FORMATS, AMBIGUOUS_MESHIO_EXTENSIONS, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
+import { routeFile, COMPARABLE_MESH_FORMATS, MESHIO_FORMATS, ambiguityCaveatFor, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION } from "./exportTargets";
 import {
@@ -39,7 +39,7 @@ import {
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
 import { envelope } from "./untrustedText";
-import { MESH_EXPORT_FORMATS, meshExportFormat } from "./meshExportFormats";
+import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part, Annotation } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
@@ -282,7 +282,7 @@ export function describeCapabilities() {
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups, same as .stl. Still not exportable headless as a SOURCE DOCUMENT (export_brep/export_mesh always target a B-rep or a generated FE mesh, never these formats' own native representation) — edit ops can still be written to the sidecar for the extension to replay.",
-      ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
+      ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written; edits/parts/annotations/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .mesh.json sidecars the extension reads on open.",
       "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
     ],
@@ -300,7 +300,7 @@ function requireRoute(modelPath: string): FileRoute {
   const route = routeFile(modelPath);
   if (!route) {
     throw new Error(
-      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam)`
+      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam, msh/msh2, inp, unv, su2, mesh, post.msh)`
     );
   }
   return route;
@@ -478,7 +478,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
           warnings,
         };
       }
-      const ambiguityCaveat = AMBIGUOUS_MESHIO_EXTENSIONS.get(path.extname(modelPath).slice(1).toLowerCase());
+      const ambiguityCaveat = ambiguityCaveatFor(modelPath);
       if (ambiguityCaveat) warnings.push(ambiguityCaveat);
       const bytes = await readModelBytes(modelPath);
       const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
@@ -2320,22 +2320,34 @@ export async function exportMeshTool(
     // takes generateMesh()'s own MSH 4.1 mshText directly (meshio++ 9.7.0+
     // reads 4.1 natively — see its doc comment).
     const meshed = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
-    const { bytes, companion } = await ctx.pipeline.exportViaMeshio(meshed.mshText, format.id);
+    const { bytes, companion } = await ctx.pipeline.exportViaMeshio(meshed.mshText, format.id, {
+      extension: format.extension,
+      companionExtension: format.companion?.extension,
+      source: { name: path.basename(modelPath), format: route.format },
+    });
     if (!companion) {
       await fs.writeFile(outputPath, bytes);
       written.push(outputPath);
     } else {
-      // xdmf's embedded <DataItem> references are rewritten to match the
-      // companion's real filename — same "write beside + fix the reference"
-      // pattern as .geo_unrolled's .xao companion.
-      const h5Name = `${path.basename(outputPath).replace(/\.[^.]+$/, "")}.h5`;
-      const h5Path = path.join(path.dirname(outputPath), h5Name);
-      assertNotSourcePath(modelPath, h5Path);
-      const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(h5Name);
-      await fs.writeFile(outputPath, fixedText, "utf8");
-      await fs.writeFile(h5Path, companion.bytes);
-      written.push(outputPath, h5Path);
-      warnings.push("The .xdmf references its .h5 companion (HDF5 data) — keep the two files together.");
+      // Companion file — written beside the output under the matching stem.
+      // `linkage` (from the registry) decides whether the primary also needs
+      // editing: XDMF names its `.h5` in its own <DataItem> elements, so that
+      // reference is rewritten to the real filename; GiD's `.post.res` is found
+      // by stem convention, so its primary is written untouched.
+      const companionName = companionSaveName(path.basename(outputPath), format)!;
+      const companionPath = path.join(path.dirname(outputPath), companionName);
+      assertNotSourcePath(modelPath, companionPath);
+      if (format.companion?.linkage === "sibling") {
+        await fs.writeFile(outputPath, bytes);
+      } else {
+        const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(companionName);
+        await fs.writeFile(outputPath, fixedText, "utf8");
+      }
+      await fs.writeFile(companionPath, companion.bytes);
+      written.push(outputPath, companionPath);
+      warnings.push(
+        `The .${format.extension} needs its .${format.companion!.extension} companion — keep the two files together.`
+      );
     }
   } else {
     const text = await ctx.pipeline.exportMeshFormat(

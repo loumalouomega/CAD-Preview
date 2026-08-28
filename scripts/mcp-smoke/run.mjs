@@ -1749,7 +1749,7 @@ try {
   // genuinely re-openable and meshable.
   const xdmfLoaded = await call("load_model", { path: xdmfOut });
   assert(xdmfLoaded.strategy === "meshio" && xdmfLoaded.format === "xdmf", "load_model re-opens the extension's own exported .xdmf");
-  // A SECOND, independent, pre-existing meshio++ 10.14.0 defect was found
+  // A SECOND, independent, pre-existing meshio++ 10.20.2 defect was found
   // while verifying the .h5-companion fix above, not caused by it: this
   // codebase's own generate_mesh always forces Mesh.SaveAll=1 (CLAUDE.md's
   // "Meshing (GMSH-JS)" section), which includes 0-D vertex elements for
@@ -1829,6 +1829,88 @@ try {
       writerResult.written.length === 1 && fs.statSync(writerOut).size > 0,
       `export_mesh ${id} (meshio-only writer) writes a non-empty file`
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // GiD postprocess (meshio++ 10.18.0 write / 10.19.0 read) — the one export
+  // target with a COMPOUND extension and a stem-convention companion, and
+  // the one that clears a bar XDMF does not (see below).
+  {
+    const gidOut = path.join(dir, "gid-export.post.msh");
+    const gidRes = path.join(dir, "gid-export.post.res");
+    const gidResult = await call("export_mesh", { path: vtkModel, format: "gid", outputPath: gidOut, options: { sizeMax: 0.5 } });
+    assert(
+      gidResult.written.length === 2 && fs.existsSync(gidOut) && fs.existsSync(gidRes),
+      "export_mesh gid writes BOTH the .post.msh and its .post.res sibling"
+    );
+    assert(
+      gidResult.written.some((w) => w.path === gidRes),
+      "export_mesh gid reports the .post.res companion in `written`"
+    );
+    // The sibling's name is derived by stripping the COMPOUND extension — a
+    // last-segment strip would have produced "gid-export.post.post.res".
+    assert(!fs.existsSync(path.join(dir, "gid-export.post.post.res")), "the .post.res stem strips the full compound extension");
+    assert(
+      gidResult.warnings.some((w) => w.includes("post.res")),
+      "export_mesh gid warns that the two files must travel together"
+    );
+
+    // Re-read through a SEPARATE load_model call — proving the pair is a real,
+    // openable document, not merely that the export call didn't throw. This is
+    // where GiD beats XDMF: fed the same `Mesh.SaveAll`-shaped mixed-topology
+    // mesh, XDMF cannot be re-read at all (see the Mixed-topology block above).
+    const gidReloaded = await call("load_model", { path: gidOut });
+    assert(gidReloaded.strategy === "meshio", "load_model routes the exported .post.msh through meshio");
+    assert(gidReloaded.format === "gid", `load_model resolves .post.msh to gid, not gmsh (got ${gidReloaded.format})`);
+    const gidRemeshed = await call("generate_mesh", { path: gidOut, options: { sizeMax: 0.5 } });
+    assert(gidRemeshed.elementCount > 0, "generate_mesh on the re-imported GiD pair produces real elements");
+
+    // The committed fixture opens too — the `.post.res` sibling beside it is
+    // staged by meshioCompanions.ts, the same way XDMF's .h5 is. Copied into
+    // the temp dir (with its sibling) rather than read in place, matching the
+    // MED fixture's own precedent: a smoke run never touches the repo.
+    const gidFixture = path.join(dir, "two-tets.post.msh");
+    for (const name of ["two-tets.post.msh", "two-tets.post.res"]) {
+      fs.copyFileSync(path.join(ROOT, "examples", "GiD", name), path.join(dir, name));
+    }
+    const fixtureLoaded = await call("load_model", { path: gidFixture });
+    assert(fixtureLoaded.format === "gid", "the committed examples/GiD fixture routes to gid");
+
+    // A .post.msh must NOT inherit .msh's "assumed to be a Gmsh mesh" caveat —
+    // it resolved to gid, so that warning would be actively wrong.
+    assert(
+      !fixtureLoaded.warnings.some((w) => w.includes("Gmsh mesh")),
+      "a .post.msh does not inherit the ambiguous-.msh Gmsh caveat"
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Provenance (meshio++ 10.17.0 default-on / 10.20.1 leak fix). exportViaMeshio
+  // opens an explicit scope recording the true source document. Coverage is
+  // deliberately NOT universal and this pins the split rather than assuming it:
+  // a provenance block only lands where the container has a header slot
+  // meshio++ renders one into. Verified by inspecting raw bytes — MED/CGNS/XDMF
+  // embed nothing at all, so claiming blanket coverage would be false.
+  {
+    const provenanceCarrying = [["vtu", "vtu"], ["gid", "post.msh"]];
+    for (const [id, ext] of provenanceCarrying) {
+      const out = path.join(dir, `prov.${ext}`);
+      await call("export_mesh", { path: vtkModel, format: id, outputPath: out, options: { sizeMax: 0.5 } });
+      const text = fs.readFileSync(out, "latin1");
+      assert(text.includes("Written by meshio++"), `${id} export embeds the meshio++ provenance credit`);
+      assert(
+        text.includes(path.basename(vtkModel)),
+        `${id} export records the true SOURCE document, not the /in.msh intermediate`
+      );
+    }
+    for (const [id, ext] of [["med", "med"], ["cgns", "cgns"]]) {
+      const out = path.join(dir, `noprov.${ext}`);
+      await call("export_mesh", { path: vtkModel, format: id, outputPath: out, options: { sizeMax: 0.5 } });
+      assert(
+        !fs.readFileSync(out, "latin1").includes("Written by meshio++"),
+        `${id} embeds no provenance block — the documented coverage gap, pinned so a future meshio++ release that closes it is noticed`
+      );
+    }
   }
 
   // Richer meshio++ import visibility (roadmap item, closed): a real MED
