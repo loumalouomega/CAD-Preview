@@ -44,6 +44,7 @@ import {
   downloadStandardPartTool,
   compareModelsTool,
   checkMeshHealthTool,
+  transformMeshTool,
   promoteMeshToBrepTool,
   repairMeshTool,
   exportSvgSilhouetteTool,
@@ -436,6 +437,22 @@ server.registerTool(
     inputSchema: { pathA: modelPath, pathB: modelPath, includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)") },
   },
   wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean }) => compareModelsTool(ctx, args))
+);
+
+server.registerTool(
+  "transform_mesh",
+  {
+    description:
+      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
+    inputSchema: {
+      path: modelPath,
+      ops: z
+        .array(z.record(z.string(), z.unknown()))
+        .describe('Ordered operations, e.g. [{"op":"clean"},{"op":"decimate","ratio":0.25}]'),
+      outputPath: z.string().describe("Destination file path; its extension selects the output format"),
+    },
+  },
+  wrap((args: { path: string; ops: unknown[]; outputPath: string }) => transformMeshTool(ctx, args))
 );
 
 server.registerTool(

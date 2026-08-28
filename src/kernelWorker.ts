@@ -39,6 +39,7 @@ import {
   exportViaMeshio,
   readMeshioMetadata,
   readMeshioDataInfo,
+  runMeshioOps,
   readMeshioFieldValues,
 } from "./meshioService";
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
@@ -124,6 +125,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   exportViaMeshio: exportViaMeshio as Handler,
   readMeshioMetadata: readMeshioMetadata as Handler,
   readMeshioDataInfo: readMeshioDataInfo as Handler,
+  runMeshioOps: runMeshioOps as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,

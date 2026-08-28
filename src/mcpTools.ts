@@ -67,7 +67,7 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo, runMeshioOps } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { evaluateToleranceBand } from "./toleranceBand";
 import { meshioCompanionCandidates } from "./meshioCompanions";
@@ -140,6 +140,7 @@ export interface Pipeline {
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
   readMeshioDataInfo: typeof readMeshioDataInfo;
+  runMeshioOps: typeof runMeshioOps;
   checkMeshHealth: typeof checkMeshHealth;
   promoteMeshToBrep: typeof promoteMeshToBrep;
   repairMesh: typeof repairMesh;
@@ -1282,6 +1283,66 @@ export async function compareModelsTool(
  * glTF/meshio-only formats (no host-side triangle-soup parser) return
  * `supported: false`.
  */
+/**
+ * `transform_mesh` — run a declarative list of meshio++ mesh operations and
+ * write the result.
+ *
+ * ONE tool for the whole family rather than one per operation, mirroring
+ * `run_parametric_script`'s precedent: a declarative document, a single call,
+ * and a per-step report so the caller can see which steps actually did
+ * something. A step that cannot run is reported and skipped, never silent.
+ *
+ * meshio-readable sources only — the ops act on meshio++'s own mesh model. A
+ * B-rep source has exact geometry and should be edited through `apply_edit_ops`
+ * instead; the mesh-parser formats (stl/obj/ply/gltf) are not staged into
+ * meshio++'s filesystem by this path.
+ */
+export async function transformMeshTool(
+  ctx: ToolContext,
+  params: { path: string; ops: unknown[]; outputPath: string }
+): Promise<{
+  format: CadFormat;
+  supported: boolean;
+  written?: string;
+  steps?: Array<{ op: string; applied: boolean; detail: string }>;
+  warnings: string[];
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "meshio") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [
+        `transform_mesh operates on meshio++-readable sources (${MESHIO_FORMATS.join("/")}); ` +
+          `${route.format} is not one. A B-rep source has exact geometry — use apply_edit_ops instead.`,
+      ],
+    };
+  }
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(modelPath, outputPath);
+  const outExtension = path.basename(outputPath).split(".").slice(1).join(".") || route.format;
+
+  const bytes = await readModelBytes(modelPath);
+  const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
+  const result = await ctx.pipeline.runMeshioOps(
+    bytes,
+    route.format,
+    params.ops as Parameters<typeof runMeshioOps>[2],
+    outExtension,
+    path.basename(modelPath),
+    companions
+  );
+  await fs.writeFile(outputPath, result.bytes);
+  return {
+    format: route.format,
+    supported: true,
+    written: outputPath,
+    steps: result.steps,
+    warnings: result.warnings,
+  };
+}
+
 export async function checkMeshHealthTool(
   ctx: ToolContext,
   params: { path: string }

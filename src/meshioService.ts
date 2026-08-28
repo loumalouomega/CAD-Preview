@@ -320,6 +320,125 @@ export async function readMeshioDataInfo(
   }
 }
 
+/** One declarative step in a {@link runMeshioOps} pipeline. */
+export interface MeshioOpSpec {
+  op: "clean" | "decimate" | "smooth" | "subdivide" | "refine" | "agglomerate" | "convertCells";
+  /** `decimate`: fraction of faces to KEEP, in (0, 1]. */
+  ratio?: number;
+  /** `smooth`/`refine`: iteration / subdivision count. */
+  iterations?: number;
+  levels?: number;
+  /** `smooth`: `"taubin"` (default, shrink-free) or `"laplacian"`. */
+  method?: string;
+  /** `convertCells`: `"linearize" | "simplexify" | "elevate"`. */
+  mode?: string;
+  /** `agglomerate`: target cells per group. */
+  targetGroupSize?: number;
+}
+
+export interface MeshioOpsResult {
+  bytes: Uint8Array;
+  /** One entry per requested step, in order — including the ones that did nothing. */
+  steps: Array<{ op: string; applied: boolean; detail: string }>;
+  warnings: string[];
+}
+
+/**
+ * Runs a declarative list of meshio++ mesh operations over a source file and
+ * writes the result.
+ *
+ * **One entry point for the whole family, not one per operation** — the same
+ * shape `run_parametric_script` established: a declarative document, a single
+ * call, and a per-step report so a caller can see which steps actually did
+ * something. A step that fails is recorded and skipped rather than aborting
+ * the pipeline, matching this codebase's standing graceful-degradation rule
+ * for op replay.
+ *
+ * **Built over the per-op functions, not meshio++'s own `runPipeline`.** That
+ * one takes an undocumented settings object (it rejects the obvious `mesh`
+ * key), so driving it would mean reverse-engineering a schema for no gain;
+ * the per-op calls are simple positional functions whose shapes are verified.
+ *
+ * Throws (via `wrapMeshioFault`) rather than degrading: unlike the read-side
+ * diagnostics in this file, this one PRODUCES a file, and silently writing an
+ * unmodified mesh would be worse than an error.
+ */
+export async function runMeshioOps(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  ops: readonly MeshioOpSpec[],
+  outExtension: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<MeshioOpsResult> {
+  const m = await getMeshio();
+  const outPath = `/ops.${outExtension}`;
+  let allPaths: string[] = [];
+  const steps: MeshioOpsResult["steps"] = [];
+  const warnings: string[] = [];
+  try {
+    const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+    allPaths = staged.allPaths;
+    let mesh = m.readMesh(staged.primaryPath, meshioFormat);
+
+    for (const spec of ops) {
+      try {
+        switch (spec.op) {
+          case "clean": {
+            const r = m.clean(mesh);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `welded ${r.pointsWelded}, dropped ${r.cellsDroppedDegenerate} degenerate / ${r.cellsDroppedDuplicate} duplicate` });
+            break;
+          }
+          case "decimate": {
+            const r = m.decimate(mesh, spec.ratio ?? 0.5);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `removed ${r.facesRemoved} faces, ${r.pointsRemoved} points` });
+            break;
+          }
+          case "smooth": {
+            const r = m.smooth(mesh, spec.method ?? "taubin", spec.iterations ?? 1);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `moved ${r.numNodesMoved} nodes, max displacement ${r.maxDisplacement}` });
+            break;
+          }
+          case "subdivide":
+            mesh = m.subdivide(mesh, false);
+            steps.push({ op: spec.op, applied: true, detail: "subdivided once" });
+            break;
+          case "refine":
+            mesh = m.refine(mesh, spec.levels ?? 1, false);
+            steps.push({ op: spec.op, applied: true, detail: `refined ${spec.levels ?? 1} level(s)` });
+            break;
+          case "agglomerate":
+            mesh = m.agglomerate(mesh, spec.targetGroupSize);
+            steps.push({ op: spec.op, applied: true, detail: "agglomerated" });
+            break;
+          case "convertCells":
+            mesh = m.convertCells(mesh, spec.mode ?? "simplexify", false);
+            steps.push({ op: spec.op, applied: true, detail: `mode ${spec.mode ?? "simplexify"}` });
+            break;
+          default:
+            steps.push({ op: String(spec.op), applied: false, detail: "unknown operation — skipped" });
+            warnings.push(`Unknown operation "${String(spec.op)}" was skipped.`);
+        }
+      } catch (err) {
+        // A step that cannot run is reported and skipped, never silent.
+        const detail = (err as Error)?.message ?? String(err);
+        steps.push({ op: spec.op, applied: false, detail });
+        warnings.push(`Operation "${spec.op}" was skipped: ${detail}`);
+      }
+    }
+
+    m.writeMesh(outPath, mesh);
+    return { bytes: m.FS.readFile(outPath), steps, warnings };
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    unstageMeshioSource(m, allPaths, [outPath]);
+  }
+}
+
 export interface MeshioRegionSummary {
   name: string;
   /** `"point"` | `"cell"` | `"side"` — see `@meshioplusplus/wasm`'s `Region.kind`. */
@@ -468,9 +587,28 @@ export async function convertToStlBoundaryWithRegions(
     const cellRegions = ((mesh.regions ?? []) as any[]).filter((r) => r.kind === "cell");
     if (cellRegions.length === 0) return fallback();
 
-    const boundary = m.extractSurface(mesh, true);
+    // **The triangle-only gate is now a triangulation step, not a bail-out.**
+    // A hexahedral volume's boundary is quads, which is why this used to fall
+    // back to the plain path and silently lose region→Parts correlation for
+    // every hex/quad-boundary mesh. `convertCells(…, "simplexify", true)` splits
+    // those into triangles AND — verified against the live WASM — preserves the
+    // `surface:parent_cell` provenance array the correlation below depends on
+    // (a hexahedron's `quadx6` boundary becomes `trianglex12` with the array
+    // intact). Only run when something is actually non-triangular, so the
+    // already-triangular path stays byte-for-byte what it was.
+    let boundary = m.extractSurface(mesh, true);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const blocks = boundary.cells as any[];
+    let blocks = boundary.cells as any[];
+    if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
+      try {
+        boundary = m.convertCells(boundary, "simplexify", true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        blocks = boundary.cells as any[];
+      } catch (err) {
+        resetMeshioIfAbort(err);
+        return fallback();
+      }
+    }
     if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) return fallback();
     const parentCellBlocks: Float64Array[] | undefined = boundary.cell_data?.["surface:parent_cell"];
     if (!parentCellBlocks) return fallback();

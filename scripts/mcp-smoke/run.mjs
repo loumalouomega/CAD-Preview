@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 32, `tools/list exposes 32 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 33, `tools/list exposes 33 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -1088,6 +1088,66 @@ try {
   assert(
     cleanComponent.quality && Math.abs(cleanComponent.quality.min - 0.75) < 1e-6,
     `check_mesh_health(cube.stl): triangle quality is normalized min-angle — a cube's 45-45-90 triangles give exactly 45/60 (got ${JSON.stringify(cleanComponent.quality)})`
+  );
+
+  // ── meshio++ capability surface, phase C ────────────────────────────────
+  // (a) The triangle-only gate is closed. A hexahedral volume's boundary is
+  // QUADS, which convertToStlBoundaryWithRegions used to bail on — silently
+  // losing region->Parts correlation for every hex/quad-boundary mesh.
+  // convertCells(..., "simplexify") splits them while preserving the
+  // surface:parent_cell provenance the correlation depends on.
+  const hexMed = path.join(dir, "two-region-hexes.med");
+  fs.copyFileSync(path.join(ROOT, "examples", "MED", "two-region-hexes.med"), hexMed);
+  const hexLoaded = await call("load_model", { path: hexMed });
+  assert(hexLoaded.strategy === "meshio", "the quad-boundary hex fixture loads through meshio");
+  const hexState = await call("get_state", { path: hexMed });
+  const hexPartNames = (hexState.parts ?? []).map((p) => p.name).sort();
+  assert(
+    hexPartNames.length === 2 && hexPartNames[0] === "Lower" && hexPartNames[1] === "Upper",
+    `a QUAD-boundary mesh now auto-creates one Part per region — the gate this phase closed (got ${JSON.stringify(hexPartNames)})`
+  );
+
+  // (b) transform_mesh — one declarative tool for the whole op family.
+  const decimated = path.join(dir, "decimated.med");
+  const transformed = await call("transform_mesh", {
+    path: hexMed,
+    ops: [{ op: "clean" }, { op: "convertCells", mode: "simplexify" }],
+    outputPath: decimated,
+  });
+  assert(transformed.supported === true, "transform_mesh accepts a meshio source");
+  assert(
+    transformed.steps.length === 2 && transformed.steps.every((st) => st.applied),
+    `transform_mesh reports one entry per step, all applied (got ${JSON.stringify(transformed.steps)})`
+  );
+  assert(fs.existsSync(decimated) && fs.statSync(decimated).size > 0, "transform_mesh writes the result file");
+  const reloaded = await call("load_model", { path: decimated });
+  assert(reloaded.strategy === "meshio", "the transformed mesh re-opens as an ordinary document");
+
+  // A step that cannot run is REPORTED and skipped, never silent — decimate
+  // refuses a volume mesh by design ("extract the surface first").
+  const skipOut = path.join(dir, "skipped.med");
+  const skipped = await call("transform_mesh", {
+    path: hexMed,
+    ops: [{ op: "decimate", ratio: 0.5 }, { op: "clean" }],
+    outputPath: skipOut,
+  });
+  assert(
+    skipped.steps[0].applied === false && skipped.steps[1].applied === true,
+    `a failing step is reported and the pipeline continues (got ${JSON.stringify(skipped.steps)})`
+  );
+  assert(
+    skipped.warnings.some((w) => w.includes("decimate")),
+    "the skipped step names itself in warnings"
+  );
+
+  const transformBrepRejected = await call("transform_mesh", {
+    path: model,
+    ops: [{ op: "clean" }],
+    outputPath: path.join(dir, "nope.med"),
+  });
+  assert(
+    transformBrepRejected.supported === false,
+    "transform_mesh rejects a B-rep source (apply_edit_ops is the right tool there)"
   );
 
   // The ONE signal meshTopology.ts structurally cannot produce: it keys edges
