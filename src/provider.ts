@@ -951,6 +951,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "repairMeshButtonClicked") {
+        if (route) void this.handleRepairMesh(document.uri, route, post);
+        return;
+      }
+
       if (msg.type === "screenshotResult" || msg.type === "screenshotError") {
         const p = pending.get(msg.requestId);
         if (!p) return;
@@ -1639,6 +1644,45 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           await resolveGltfBuffersFor(uri, meshFormat, sourceBytes)
         );
         return result.bytes;
+      },
+      post
+    );
+  }
+
+  /**
+   * "Robust volumetric meshing from a skin mesh", Phase 3 (roadmap item,
+   * closed) — the Mesh Health panel's **Repair (robust)** button. Writes a
+   * NEW watertight STL file at a save-dialog-chosen path by tetrahedralizing
+   * the source mesh with fTetWild and taking the resulting volume mesh's own
+   * boundary — watertight/manifold by construction regardless of how broken
+   * the input was, closing the exact gap `check_mesh_health`'s report
+   * surfaces and `promote_mesh_to_brep` then fails on. Mirrors
+   * `handlePromoteToBrep`'s structure but simpler — always an STL, no
+   * format/unit quick-picks — and the natural next step is re-running Check
+   * Healability / Promote to B-rep on the repaired output (not automated
+   * here; the user reviews the repair first, same "review before acting on
+   * it" precedent every other Mesh Health action follows).
+   */
+  private async handleRepairMesh(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void): Promise<void> {
+    if (route.strategy !== "three") {
+      post({ type: "error", message: "Repair (robust) requires an STL/OBJ/PLY/glTF source." });
+      return;
+    }
+    const meshFormat = route.format as MeshParseFormat;
+
+    await this.promptSaveAndWrite(
+      uri,
+      "stl",
+      "STL",
+      async (_saveUri) => {
+        const sourceBytes = await vscode.workspace.fs.readFile(uri);
+        const result = await this.pipeline.repairMesh(
+          this.context.extensionPath,
+          sourceBytes,
+          meshFormat,
+          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes)
+        );
+        return result.stlBytes;
       },
       post
     );

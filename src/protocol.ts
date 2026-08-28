@@ -414,6 +414,7 @@ export type WebviewToHost =
   | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: "screenshotButtonClicked" }
   | { type: "promoteToBrepButtonClicked" }
+  | { type: "repairMeshButtonClicked" }
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }

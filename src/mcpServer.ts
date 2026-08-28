@@ -45,6 +45,7 @@ import {
   compareModelsTool,
   checkMeshHealthTool,
   promoteMeshToBrepTool,
+  repairMeshTool,
   exportSvgSilhouetteTool,
   getState,
   applyEditOps,
@@ -460,6 +461,19 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; outputPath: string; targetFormat?: string; unit?: string }) => promoteMeshToBrepTool(ctx, args))
+);
+
+server.registerTool(
+  "repair_mesh",
+  {
+    description:
+      "Repairs a dirty STL/OBJ/PLY/glTF mesh (holes, self-intersections, non-manifold edges -- exactly what check_mesh_health diagnoses) into a NEW watertight STL file at outputPath, via fTetWild: tetrahedralizes the mesh, then takes the resulting volume mesh's own boundary -- watertight and manifold BY CONSTRUCTION regardless of how broken the input was, since fTetWild is built specifically to survive that input class where Gmsh's own classifySurfaces path throws or silently produces no elements (see generate_mesh's engine:'ftetwild' option). This is a ONE-SHOT EXPORT, not an in-place reclassification -- the original mesh source is left completely untouched. The natural next step is re-running check_mesh_health or promote_mesh_to_brep on the repaired output, which now typically closes where the original could not. B-rep sources return an error (nothing to repair); meshio-only formats return an error (no host-side triangle-soup parser). No triangle-count ceiling is imposed (unlike check_mesh_health/promote_mesh_to_brep's 50000-triangle cap, a property of their different, per-triangle OCCT sewing approach) -- a very large or very slow mesh may hit this server's own per-call timeout instead.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write the repaired STL file to (must not be the source path)"),
+    },
+  },
+  wrap((args: { path: string; outputPath: string }) => repairMeshTool(ctx, args))
 );
 
 server.registerTool(

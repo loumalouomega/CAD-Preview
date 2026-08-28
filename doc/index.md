@@ -63,7 +63,7 @@ features:
 
   - icon: 🧮
     title: FE Mesh Generation (Gmsh)
-    details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry, alongside a quality summary (min/mean element quality plus a histogram). Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as hand-written Kratos MDPA (the default, preserving named Parts as SubModelParts) or any Gmsh format the panel offers (.msh, .msh2, .geo_unrolled, VTK, I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF). The CAD file stays read-only.
+    details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry, alongside a quality summary (min/mean element quality plus a histogram). Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as hand-written Kratos MDPA (the default, preserving named Parts as SubModelParts) or any Gmsh format the panel offers (.msh, .msh2, .geo_unrolled, VTK, I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF). For a dirty mesh-format source Gmsh's own meshing rejects, an Engine choice switches to fTetWild, a tetrahedralizer built to survive holes/self-intersections/non-manifold edges. The CAD file stays read-only.
 
   - icon: 🤖
     title: MCP Server for AI Agents

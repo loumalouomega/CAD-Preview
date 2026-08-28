@@ -26,7 +26,7 @@ console.debug = console.error.bind(console);
 /* eslint-enable no-console */
 
 import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, type BRepCacheEntry, type BRepResult } from "./occtService";
-import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
+import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled, repairMesh } from "./gmshService";
 import { computeMassProperties, computeBom } from "./massProperties";
 import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
@@ -127,6 +127,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   readMeshioFieldValues: readMeshioFieldValues as Handler,
   checkMeshHealth: checkMeshHealth as Handler,
   promoteMeshToBrep: promoteMeshToBrep as Handler,
+  repairMesh: repairMesh as Handler,
   exportSvgSilhouette: exportSvgSilhouette as Handler,
 };
 

@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 31, `tools/list exposes 31 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 32, `tools/list exposes 32 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -2135,6 +2135,148 @@ try {
   assert(
     doomedReload.warnings.some((w) => /did NOT apply during replay/.test(w) && /fillet/.test(w)),
     "load_model warns about the persisted op that silently skips on replay"
+  );
+
+  // fTetWild robust volume meshing (roadmap "Robust volumetric meshing from
+  // a skin mesh", closed via a route the item never originally considered —
+  // see CLAUDE.md). engine:"ftetwild" is an opt-in alternative to Gmsh's own
+  // classifySurfaces/createGeometry/addSurfaceLoop/addVolume path for
+  // mesh-format 3D sources, built specifically to survive the dirty
+  // boundaries (holes, self-intersections, non-manifold edges) that make
+  // Gmsh's own path throw or silently produce zero elements.
+  const cleanCubeStl = path.join(dir, "ftetwild-cube.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), cleanCubeStl);
+  const holedCubeStl = path.join(dir, "ftetwild-holed-cube.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "holed-cube.stl"), holedCubeStl);
+
+  // 1. The motivating defect, pinned as a regression: Gmsh's own
+  // classifySurfaces path on a one-facet-missing cube does NOT throw — it
+  // silently produces a mesh with zero elements (a real, live-discovered
+  // failure signature, not the thrown error a first guess might expect). A
+  // future Gmsh fix flipping this to a genuine element count is the signal
+  // this assertion exists to catch, not a regression to silently tolerate.
+  const gmshOnHoled = await call("generate_mesh", { path: holedCubeStl, options: { engine: "gmsh", sizeMax: 2 } });
+  assert(
+    gmshOnHoled.elementCount === 0,
+    `generate_mesh(engine:"gmsh") on a one-facet-holed cube produces zero elements — the motivating defect fTetWild closes (got elementCount=${gmshOnHoled.elementCount})`
+  );
+
+  // 2. The fix: the identical dirty file, engine:"ftetwild", succeeds.
+  const ftwOnHoled = await call("generate_mesh", { path: holedCubeStl, options: { engine: "ftetwild", ftetwildEpsRel: 5e-3 } });
+  assert(
+    ftwOnHoled.nodeCount > 0 && ftwOnHoled.elementCount > 0 && ftwOnHoled.engineUsed === "ftetwild",
+    `generate_mesh(engine:"ftetwild") tetrahedralizes the same holed cube: ${ftwOnHoled.nodeCount} nodes, ${ftwOnHoled.elementCount} elements, engineUsed=${ftwOnHoled.engineUsed}`
+  );
+  assert(
+    ftwOnHoled.quality && ftwOnHoled.quality.min > -1e-6,
+    `generate_mesh(engine:"ftetwild") produces correctly-wound (non-inverted) elements — min quality should be a real, non-degenerate minSICN value (got ${JSON.stringify(ftwOnHoled.quality)})`
+  );
+
+  // 3. A CLEAN cube under both engines — both succeed, and fTetWild's own
+  // tet-boundary mesh is a real, non-trivial tetrahedralization (not just
+  // "some elements came back").
+  const gmshOnClean = await call("generate_mesh", { path: cleanCubeStl, options: { engine: "gmsh", sizeMax: 3 } });
+  assert(
+    gmshOnClean.nodeCount > 0 && gmshOnClean.elementCount > 0 && gmshOnClean.engineUsed === "gmsh",
+    `generate_mesh(engine:"gmsh") on a clean cube: ${gmshOnClean.nodeCount} nodes, ${gmshOnClean.elementCount} elements`
+  );
+  const ftwOnClean = await call("generate_mesh", { path: cleanCubeStl, options: { engine: "ftetwild" } });
+  assert(
+    ftwOnClean.nodeCount > 20 && ftwOnClean.elementCount > 20 && ftwOnClean.engineUsed === "ftetwild",
+    `generate_mesh(engine:"ftetwild") on a clean cube produces a non-trivial tetrahedralization: ${ftwOnClean.nodeCount} nodes, ${ftwOnClean.elementCount} elements`
+  );
+
+  // 4. A genuinely pathological (non-manifold, 3 triangles fanning from one
+  // shared edge) fixture must not crash the kernel — success or a clean
+  // rejection are both acceptable, an unhandled crash/protocol-pollution is
+  // not (and would already fail the harness's own stdout-purity check).
+  const nonManifoldFtw = path.join(dir, "ftetwild-non-manifold.stl");
+  fs.writeFileSync(
+    nonManifoldFtw,
+    [
+      "solid t",
+      "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 -1 0", "endloop", "endfacet",
+      "facet normal 0 1 0", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 1", "endloop", "endfacet",
+      "endsolid t",
+    ].join("\n")
+  );
+  const nonManifoldResult = await callTolerant("generate_mesh", { path: nonManifoldFtw, options: { engine: "ftetwild" } });
+  assert(
+    nonManifoldResult.value !== undefined || typeof nonManifoldResult.error === "string",
+    `generate_mesh(engine:"ftetwild") on a non-manifold fixture degrades gracefully, no crash (got: ${JSON.stringify(nonManifoldResult).slice(0, 200)})`
+  );
+
+  // 5. engine:"ftetwild" requested on a B-rep source silently (but visibly,
+  // via warnings) falls back to Gmsh — fTetWild only helps with dirty
+  // triangle meshes, and a B-rep source already has exact geometry.
+  const ftwOnBrep = await call("generate_mesh", { path: model, options: { engine: "ftetwild", sizeMax: bbox.diagonal / 15 } });
+  assert(
+    ftwOnBrep.engineUsed === "gmsh" && ftwOnBrep.warnings.some((w) => /ftetwild.*was requested/i.test(w)),
+    `generate_mesh(engine:"ftetwild") on a B-rep source falls back to gmsh with an explanatory warning (got engineUsed=${ftwOnBrep.engineUsed}, warnings=${JSON.stringify(ftwOnBrep.warnings)})`
+  );
+
+  // 6. export_mesh under engine:"ftetwild" — proves the merge-into-gmsh
+  // reuse holds end to end for BOTH a via:"gmsh" format (msh) and a
+  // via:"meshio" one (med), not just the display-only Generate path.
+  const ftwMshOut = path.join(dir, "ftetwild.msh");
+  await call("export_mesh", { path: cleanCubeStl, format: "msh", outputPath: ftwMshOut, options: { engine: "ftetwild" } });
+  assert(fs.statSync(ftwMshOut).size > 0, "export_mesh msh succeeds under engine:\"ftetwild\"");
+  const ftwMedOut = path.join(dir, "ftetwild.med");
+  await call("export_mesh", { path: cleanCubeStl, format: "med", outputPath: ftwMedOut, options: { engine: "ftetwild" } });
+  assert(fs.statSync(ftwMedOut).size > 0, "export_mesh med (via meshio++) succeeds under engine:\"ftetwild\"");
+
+  // 7. .geo_unrolled has nothing to represent for an fTetWild-meshed
+  // document (no Gmsh geometry-import step ever ran) — a clean, actionable
+  // rejection, not a silent Gmsh-geometry fallback that would misrepresent
+  // what actually happened.
+  const geoUnrolledResult = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: cleanCubeStl, format: "geoUnrolled", outputPath: path.join(dir, "ftetwild.geo_unrolled"), options: { engine: "ftetwild" } },
+  });
+  assert(
+    geoUnrolledResult.isError === true && /ftetwild/i.test(geoUnrolledResult.content?.[0]?.text ?? ""),
+    `export_mesh geoUnrolled rejects engine:"ftetwild" with a specific, actionable error (got: ${(geoUnrolledResult.content?.[0]?.text ?? "").slice(0, 160)})`
+  );
+
+  // repair_mesh (roadmap "Robust volumetric meshing", Phase 3 — closes the
+  // item's own originally-scoped "repair, then reuse the existing mesher"
+  // shape, via fTetWild instead of the item's original SDF/MMG routes).
+  // check_mesh_health(holed-cube) reports 3 free edges and requiredTolerance
+  // null (this exact expectation is already pinned in CLAUDE.md's own
+  // description of this fixture) -> repair_mesh writes a new watertight STL
+  // -> check_mesh_health on THAT reports 0 free edges and a real
+  // requiredTolerance -> promote_mesh_to_brep, which previously had nothing
+  // closeable to promote, now succeeds.
+  const preRepairHealth = await call("check_mesh_health", { path: holedCubeStl });
+  assert(
+    preRepairHealth.components[0].freeEdgeCount === 3 && preRepairHealth.components[0].requiredTolerance === null,
+    `check_mesh_health(holed-cube.stl) before repair: 3 free edges, never closed (got: ${JSON.stringify(preRepairHealth.components[0])})`
+  );
+  const repairedStl = path.join(dir, "repaired-cube.stl");
+  const repairResult = await call("repair_mesh", { path: holedCubeStl, outputPath: repairedStl });
+  assert(
+    repairResult.nodeCount > 0 && repairResult.elementCount > 0 && fs.statSync(repairedStl).size > 0,
+    `repair_mesh writes a non-empty repaired STL: ${repairResult.nodeCount} nodes, ${repairResult.elementCount} elements (got path size ${fs.statSync(repairedStl).size})`
+  );
+  const postRepairHealth = await call("check_mesh_health", { path: repairedStl });
+  assert(
+    postRepairHealth.components[0].freeEdgeCount === 0 && postRepairHealth.components[0].requiredTolerance !== null,
+    `check_mesh_health(repaired-cube.stl) after repair: watertight, closes at a real tolerance (got: ${JSON.stringify(postRepairHealth.components[0])})`
+  );
+  const promoteAfterRepair = await call("promote_mesh_to_brep", {
+    path: repairedStl,
+    outputPath: path.join(dir, "repaired-cube.step"),
+  });
+  assert(
+    promoteAfterRepair.promotedComponents.length === 1 && promoteAfterRepair.skippedComponents.length === 0,
+    `promote_mesh_to_brep succeeds on the repaired mesh where the original could not (got: ${JSON.stringify(promoteAfterRepair)})`
+  );
+  // repair_mesh rejects the same source classes generate_mesh(engine:"ftetwild") does.
+  const repairOnBrep = await callTolerant("repair_mesh", { path: model, outputPath: path.join(dir, "x.stl") });
+  assert(
+    typeof repairOnBrep.error === "string" && /already a B-rep source/i.test(repairOnBrep.error),
+    `repair_mesh rejects a B-rep source with a clear message (got: ${JSON.stringify(repairOnBrep)})`
   );
 
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");

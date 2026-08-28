@@ -205,3 +205,48 @@ export function areaOfTriangles(positions: Float32Array, indices: Uint32Array, t
   }
   return sum;
 }
+
+/**
+ * Serializes a welded (indexed) mesh to ASCII STL bytes — the natural
+ * inverse of `weldTriangleSoup` above. Written for `mcpTools.ts`'s
+ * `resolveMeshInputHeadless`, which needs to feed an OBJ/PLY/glTF source
+ * (host-side parsed via `meshHeal.ts`'s `parseToWeldedMesh` into exactly
+ * this shape) into `MeshGenerationInput`'s `kind: "stl"` branch — the only
+ * shape `gmshService.ts`'s meshing pipeline (both engines) accepts for a
+ * mesh-format source. Facet normals are always recomputed from the
+ * triangle's own winding, never trusted from any prior source — the same
+ * convention `stlParser.ts`'s `scaleStlBytes` already established for the
+ * identical reason (an indexed mesh carries no per-facet normal at all to
+ * begin with).
+ */
+export function weldedMeshToStlBytes(mesh: WeldedMesh): Uint8Array {
+  const { positions, indices } = mesh;
+  const triangleCount = Math.floor(indices.length / 3);
+  const lines: string[] = ["solid mesh"];
+  for (let t = 0; t < triangleCount; t++) {
+    const i0 = indices[t * 3] * 3;
+    const i1 = indices[t * 3 + 1] * 3;
+    const i2 = indices[t * 3 + 2] * 3;
+    const v0: [number, number, number] = [positions[i0], positions[i0 + 1], positions[i0 + 2]];
+    const v1: [number, number, number] = [positions[i1], positions[i1 + 1], positions[i1 + 2]];
+    const v2: [number, number, number] = [positions[i2], positions[i2 + 1], positions[i2 + 2]];
+    const ux = v1[0] - v0[0], uy = v1[1] - v0[1], uz = v1[2] - v0[2];
+    const wx = v2[0] - v0[0], wy = v2[1] - v0[1], wz = v2[2] - v0[2];
+    let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nx /= len;
+    ny /= len;
+    nz /= len;
+    lines.push(
+      `facet normal ${nx} ${ny} ${nz}`,
+      "outer loop",
+      `vertex ${v0[0]} ${v0[1]} ${v0[2]}`,
+      `vertex ${v1[0]} ${v1[1]} ${v1[2]}`,
+      `vertex ${v2[0]} ${v2[1]} ${v2[2]}`,
+      "endloop",
+      "endfacet"
+    );
+  }
+  lines.push("endsolid mesh");
+  return Buffer.from(lines.join("\n"), "utf8");
+}

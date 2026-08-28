@@ -871,6 +871,10 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
     if (!meshHealthEligibleFormat) return;
     post({ type: "promoteToBrepButtonClicked" });
   },
+  onRepair: () => {
+    if (!meshHealthEligibleFormat) return;
+    post({ type: "repairMeshButtonClicked" });
+  },
 });
 
 function setMeshHealthEligibility(format: MeshParseFormat | null): void {

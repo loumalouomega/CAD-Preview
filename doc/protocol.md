@@ -734,6 +734,7 @@ type WebviewToHost =
   | { type: 'meshingExport'; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: 'screenshotButtonClicked' }
   | { type: 'promoteToBrepButtonClicked' }
+  | { type: 'repairMeshButtonClicked' }
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
@@ -921,6 +922,14 @@ Sent when the Mesh Health panel's **Promote to B-rep…** button is clicked ("Me
 
 ```json
 { "type": "screenshotError", "requestId": "1234-0.56", "message": "No model loaded" }
+```
+
+### `repairMeshButtonClicked`
+
+Sent when the Mesh Health panel's **Repair (robust)…** button is clicked (roadmap "Robust volumetric meshing from a skin mesh", Phase 3) — only reachable once a report shows at least one component that did NOT close (the opposite gate from `promoteToBrepButtonClicked` above — a mesh that already closes has nothing to repair). Same shape as `promoteToBrepButtonClicked`: the host runs the entire flow itself (a save dialog defaulting to `.stl`, then `repairMesh` — tetrahedralize with fTetWild, keep the resulting volume mesh's own boundary) and reports success/failure through the generic `"status"`/`"error"` messages. No format/unit quick-picks — the repaired output is always STL, at the source's native scale.
+
+```json
+{ "type": "repairMeshButtonClicked" }
 ```
 
 ### `massPropertiesRequest`

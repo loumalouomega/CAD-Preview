@@ -13,6 +13,7 @@ import {
   compareModelsTool,
   checkMeshHealthTool,
   promoteMeshToBrepTool,
+  repairMeshTool,
   inspectEntity,
   measureTool,
   measureExactTool,
@@ -171,6 +172,8 @@ const FAKE_MESH_RESULT: MeshResult = {
   nodeCount: 42,
   elementCount: 99,
   mshText: "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n",
+  engineUsed: "gmsh",
+  warnings: [],
 };
 
 const FAKE_MASS_PROPERTIES: MassProperties = {
@@ -296,6 +299,12 @@ const FAKE_PROMOTE_RESULT: PromoteMeshResult = {
   warnings: [],
 };
 
+const FAKE_REPAIR_RESULT = {
+  stlBytes: new TextEncoder().encode("solid repaired\nendsolid repaired"),
+  nodeCount: 42,
+  elementCount: 99,
+};
+
 function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   return {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
@@ -346,6 +355,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     checkMeshHealth: vi.fn(async () => FAKE_MESH_HEALTH_REPORT),
     promoteMeshToBrep: vi.fn(async () => FAKE_PROMOTE_RESULT),
+    repairMesh: vi.fn(async () => FAKE_REPAIR_RESULT),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
     convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
@@ -1273,6 +1283,67 @@ describe("promote_mesh_to_brep", () => {
   });
 });
 
+describe("repair_mesh", () => {
+  it("repairs an STL source and writes the pipeline's STL bytes", async () => {
+    const c = ctx();
+    const outputPath = path.join(dir, "repaired.stl");
+    const result = await repairMeshTool(c, { path: stlModel, outputPath });
+    expect(c.pipeline.repairMesh).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", undefined);
+    expect(result).toMatchObject({
+      written: outputPath,
+      nodeCount: FAKE_REPAIR_RESULT.nodeCount,
+      elementCount: FAKE_REPAIR_RESULT.elementCount,
+      warnings: [],
+    });
+    expect(await fs.readFile(outputPath)).toEqual(Buffer.from(FAKE_REPAIR_RESULT.stlBytes));
+  });
+
+  it("repairs OBJ/PLY sources too", async () => {
+    const c = ctx();
+    await repairMeshTool(c, { path: objModel, outputPath: path.join(dir, "repaired-obj.stl") });
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", undefined);
+
+    await repairMeshTool(c, { path: plyModel, outputPath: path.join(dir, "repaired-ply.stl") });
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", undefined);
+  });
+
+  it("repairs a glTF source, passing its resolved external buffers", async () => {
+    const c = ctx();
+    await repairMeshTool(c, { path: gltfModel, outputPath: path.join(dir, "repaired-gltf.stl") });
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "gltf", {});
+  });
+
+  it("throws for a B-rep source (nothing to repair), without touching WASM", async () => {
+    const c = ctx();
+    await expect(
+      repairMeshTool(c, { path: stpModel, outputPath: path.join(dir, "x.stl") })
+    ).rejects.toThrow(/already a B-rep source/i);
+    expect(c.pipeline.repairMesh).not.toHaveBeenCalled();
+  });
+
+  it("throws for a meshio-only format (.vtk, no host-side triangle-soup parser)", async () => {
+    const c = ctx();
+    await expect(
+      repairMeshTool(c, { path: vtkModel, outputPath: path.join(dir, "x.stl") })
+    ).rejects.toThrow(/no host-side triangle-soup parser/i);
+    expect(c.pipeline.repairMesh).not.toHaveBeenCalled();
+  });
+
+  it("warns (but still repairs the raw file) when the mesh source has pending edits that can't be baked in", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await repairMeshTool(c, { path: stlModel, outputPath: path.join(dir, "x.stl") });
+    expect(result.warnings.some((w) => /not baked in/i.test(w))).toBe(true);
+    expect(c.pipeline.repairMesh).toHaveBeenCalled();
+  });
+
+  it("rejects writing to the source path itself", async () => {
+    const c = ctx();
+    await expect(repairMeshTool(c, { path: stlModel, outputPath: stlModel })).rejects.toThrow();
+    expect(c.pipeline.repairMesh).not.toHaveBeenCalled();
+  });
+});
+
 describe("apply_edit_ops", () => {
   it("appends valid ops and reports rejects with reasons", async () => {
     const result = await applyEditOps(ctx(), {
@@ -1776,8 +1847,15 @@ describe("generate_mesh", () => {
     expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
   });
 
-  it("rejects obj/ply/gltf sources with a clear message", async () => {
-    await expect(generateMeshTool(ctx(), { path: objModel })).rejects.toThrow(/webview/i);
+  it("meshes obj/ply/gltf sources via a host-side welded-mesh-to-STL conversion, with no webview involved", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: objModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await generateMeshTool(c, { path: objModel });
+    const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
+    expect(genCall[1].kind).toBe("stl");
+    expect(genCall[3]).toEqual([]); // parts dropped, same as raw STL
+    expect(result.warnings.some((w) => w.includes("NOT baked"))).toBe(true);
+    expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
   });
 
   it("meshes meshio++-only sources via a host-side STL boundary conversion, with no webview involved", async () => {

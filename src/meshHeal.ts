@@ -116,7 +116,14 @@ export interface MeshHealthReport {
  */
 export const MAX_HEALABLE_TRIANGLES = 50_000;
 
-function parseToWeldedMesh(bytes: Uint8Array, format: MeshParseFormat, external?: GltfExternalBuffers): WeldedMesh {
+/**
+ * Parses any of the four dirty-mesh formats into a welded `{positions,
+ * indices}` triangle soup, entirely host-side, no WASM. Exported (was
+ * module-private) for `ftetwildService.ts`'s tetrahedralization path — it
+ * needs exactly this shape as fTetWild's `tetrahedralize()` input, and this
+ * is the one place all four formats already funnel into it uniformly.
+ */
+export function parseToWeldedMesh(bytes: Uint8Array, format: MeshParseFormat, external?: GltfExternalBuffers): WeldedMesh {
   if (format === "stl") return weldTriangleSoup(parseStl(bytes));
   if (format === "obj") return parseObj(bytes);
   if (format === "gltf") return parseGltf(bytes, external); // already welded internally

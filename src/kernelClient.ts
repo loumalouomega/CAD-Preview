@@ -205,6 +205,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     readMeshioFieldValues: (...args) => callKernel("readMeshioFieldValues", args) as ReturnType<typeof readMeshioFieldValues>,
     checkMeshHealth: (...args) => callKernel("checkMeshHealth", args) as ReturnType<Pipeline["checkMeshHealth"]>,
     promoteMeshToBrep: (...args) => callKernel("promoteMeshToBrep", args) as ReturnType<Pipeline["promoteMeshToBrep"]>,
+    repairMesh: (...args) => callKernel("repairMesh", args) as ReturnType<Pipeline["repairMesh"]>,
     exportSvgSilhouette: (...args) => callKernel("exportSvgSilhouette", args) as ReturnType<Pipeline["exportSvgSilhouette"]>,
     cancelCurrent: killCurrentChild,
   };

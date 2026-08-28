@@ -7,7 +7,9 @@ import {
   boundsDiagonal,
   volumeOfTriangles,
   areaOfTriangles,
+  weldedMeshToStlBytes,
 } from "./meshComponents";
+import { parseStl } from "./stlParser";
 
 /** Builds a flat, ungrouped triangle-soup Float32Array (matching
  * `stlParser.ts`'s output shape) for an axis-aligned box from `min` to
@@ -170,5 +172,32 @@ describe("areaOfTriangles", () => {
 
   it("returns 0 for an empty triangle list", () => {
     expect(areaOfTriangles(new Float32Array(), new Uint32Array(), [])).toBe(0);
+  });
+});
+
+describe("weldedMeshToStlBytes", () => {
+  it("round-trips a welded box through ASCII STL with the same triangle count and volume", () => {
+    const soup = boxSoup([0, 0, 0], [2, 3, 4]);
+    const welded = weldTriangleSoup(soup);
+    const stlBytes = weldedMeshToStlBytes(welded);
+    const text = Buffer.from(stlBytes).toString("utf8");
+    expect(text.startsWith("solid ")).toBe(true);
+    expect(text.trim().endsWith("endsolid mesh")).toBe(true);
+
+    const reparsed = parseStl(stlBytes);
+    const triangleCount = reparsed.length / 9;
+    expect(triangleCount).toBe(soup.length / 9);
+
+    const reWelded = weldTriangleSoup(reparsed);
+    const all = Array.from({ length: reWelded.indices.length / 3 }, (_, i) => i);
+    expect(volumeOfTriangles(reWelded.positions, reWelded.indices, all)).toBeCloseTo(2 * 3 * 4, 4);
+    expect(areaOfTriangles(reWelded.positions, reWelded.indices, all)).toBeCloseTo(52, 4);
+  });
+
+  it("emits a valid, empty STL for a mesh with no triangles", () => {
+    const stlBytes = weldedMeshToStlBytes({ positions: new Float32Array(), indices: new Uint32Array() });
+    const text = Buffer.from(stlBytes).toString("utf8");
+    expect(text).toBe("solid mesh\nendsolid mesh");
+    expect(parseStl(stlBytes).length).toBe(0);
   });
 });

@@ -73,6 +73,8 @@ import { evaluateToleranceBand } from "./toleranceBand";
 import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
+import { parseToWeldedMesh } from "./meshHeal";
+import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { normalizeTessellationQuality } from "./tessellationQuality";
 import { SVG_VIEWS } from "./svgSilhouette";
@@ -81,6 +83,7 @@ import type {
   exportMeshFormat,
   exportMdpa,
   exportGeoUnrolled,
+  repairMesh,
   MeshGenerationInput,
 } from "./gmshService";
 import {
@@ -138,6 +141,7 @@ export interface Pipeline {
   readMeshioMetadata: typeof readMeshioMetadata;
   checkMeshHealth: typeof checkMeshHealth;
   promoteMeshToBrep: typeof promoteMeshToBrep;
+  repairMesh: typeof repairMesh;
   exportSvgSilhouette: typeof exportSvgSilhouette;
 }
 
@@ -256,6 +260,7 @@ export function describeCapabilities() {
         'elementShape "simplex" = triangles/tetrahedra, "subdivided" = all-quad/all-hex, "hexDominant" = mixed tet/hex (3D only, RTree recombiner) — NOT exportable to Kratos MDPA (export_mesh throws a clear error; other formats like msh/vtk are unaffected). elementOrder 2 adds mid-side nodes (quadratic).',
         "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
         "A part's meshSize gives local refinement (B-rep sources only).",
+        'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction) and ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. generate_mesh\'s response reports engineUsed and any fallback warnings.',
       ],
     },
     headlessLimitations: [
@@ -268,6 +273,7 @@ export function describeCapabilities() {
       "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
       "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
       "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Decimate first if you hit it.",
+      "repair_mesh (STL/OBJ/PLY/glTF sources only) writes a NEW watertight STL file at outputPath by tetrahedralizing the mesh with fTetWild and taking the resulting volume mesh's own boundary — watertight/manifold by construction regardless of how broken the input was, since fTetWild survives holes/self-intersections/non-manifold edges Gmsh's own classifySurfaces path rejects. A one-shot export (the source is untouched); the natural next step is re-running check_mesh_health/promote_mesh_to_brep on the repaired output. Unlike those two, it has no triangle-count ceiling (a different cost profile than the per-triangle OCCT sewing pipeline) — a very large/slow mesh may instead hit this server's own per-call timeout.",
       "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). On documents with many Parts, pass an explicit parts subset.",
       "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
@@ -275,7 +281,7 @@ export function describeCapabilities() {
       "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
-      ".obj/.ply/.gltf/.glb sources: not meshable or exportable headless (the extension serializes them via the webview's Three.js); edit ops can still be written to the sidecar for the extension to replay. They ARE readable headless for geometry-only purposes — compare_models, check_mesh_health and promote_mesh_to_brep all work on them via dedicated host-side parsers.",
+      ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups, same as .stl. Still not exportable headless as a SOURCE DOCUMENT (export_brep/export_mesh always target a B-rep or a generated FE mesh, never these formats' own native representation) — edit ops can still be written to the sidecar for the extension to replay.",
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written; edits/parts/annotations/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .mesh.json sidecars the extension reads on open.",
       "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
@@ -1374,6 +1380,59 @@ export async function promoteMeshToBrepTool(
 }
 
 // ---------------------------------------------------------------------------
+// repair_mesh
+
+/**
+ * Repairs a dirty STL/OBJ/PLY/glTF mesh (holes, self-intersections,
+ * non-manifold edges — exactly what `check_mesh_health` diagnoses and
+ * `promote_mesh_to_brep` then fails to close) into a new, watertight STL
+ * file via fTetWild — see `gmshService.ts`'s `repairMesh` doc comment for
+ * the mechanism (tetrahedralize, take the volume mesh's own boundary). Same
+ * B-rep-source/meshio-only-source gates as `check_mesh_health`/
+ * `promote_mesh_to_brep`, and the same one-shot-export shape (never mutates
+ * the source; `outputPath` must differ from it) — the natural next step
+ * after this call is re-running `check_mesh_health`/`promote_mesh_to_brep`
+ * on the repaired output.
+ */
+export async function repairMeshTool(
+  ctx: ToolContext,
+  params: { path: string; outputPath: string }
+): Promise<{ written: string; bytes: number; nodeCount: number; elementCount: number; warnings: string[] }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy === "occt") {
+    throw new Error(`${route.format} is already a B-rep source — nothing to repair.`);
+  }
+  if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+    throw new Error(`${route.format} has no host-side triangle-soup parser (only stl/obj/ply/gltf are supported) — cannot repair headless.`);
+  }
+
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(modelPath, outputPath);
+  const warnings: string[] = [];
+
+  const { ops } = await readEdits(modelPath);
+  if (ops.length > 0) {
+    warnings.push(`${modelPath}: pending edits are NOT baked in — ${route.format.toUpperCase()} sources have no host-side edit engine; repairing the raw file only.`);
+  }
+
+  const bytes = await readModelBytes(modelPath);
+  const sourceFormat = route.format as MeshParseFormat;
+  const external = sourceFormat === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const result = await ctx.pipeline.repairMesh(ctx.extensionPath, bytes, sourceFormat, external);
+  await fs.writeFile(outputPath, result.stlBytes);
+
+  return {
+    written: outputPath,
+    bytes: result.stlBytes.byteLength,
+    nodeCount: result.nodeCount,
+    elementCount: result.elementCount,
+    warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // get_state
 
 export async function getState(params: { path: string }) {
@@ -2039,6 +2098,30 @@ async function resolveMeshInputHeadless(
     }
     return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
   }
+  if (route.format === "obj" || route.format === "ply" || route.format === "gltf") {
+    // Closes a real headless gap (roadmap "fTetWild robust volume meshing",
+    // closed — see CLAUDE.md): OBJ/PLY/glTF sources used to be meshable ONLY
+    // interactively (the extension serializes the webview's THREE.Object3D
+    // to STL). `parseToWeldedMesh` — already used by `check_mesh_health`/
+    // `promote_mesh_to_brep` for these exact three formats — gives a
+    // host-side, WASM-free `{positions, indices}` mesh with no browser
+    // involved; `weldedMeshToStlBytes` re-serializes it as ASCII STL, the
+    // one shape `MeshGenerationInput`'s "stl" branch (and both meshing
+    // engines) accept. Edits are NOT baked in, same caveat as the raw `.stl`
+    // branch above and the same reason (no host-side mesh edit engine).
+    const { ops } = await readEdits(modelPath);
+    if (ops.length > 0) {
+      warnings.push(
+        `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file bytes are meshed.`
+      );
+    }
+    const bytes = await readModelBytes(modelPath);
+    const format = route.format as MeshParseFormat;
+    const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+    const welded = parseToWeldedMesh(bytes, format, external);
+    const stlBytes = weldedMeshToStlBytes(welded);
+    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
+  }
   throw new Error(
     `${route.format} sources cannot be meshed headless — the extension serializes them to STL via the webview's Three.js scene. Convert to STL first (e.g. via the extension's Export).`
   );
@@ -2135,12 +2218,18 @@ export async function generateMeshTool(
   const started = Date.now();
   const result = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
   onProgress?.({ progress: 1, total: 1, message: "Done" });
+  warnings.push(...result.warnings);
   return {
     nodeCount: result.nodeCount,
     elementCount: result.elementCount,
     elapsedMs: Date.now() - started,
     elementGroups: result.elementGroups.map((g) => ({ name: g.name, color: g.color })),
     quality: result.quality ?? null,
+    // Which volume mesher actually ran — see MeshOptions.engine/effectiveEngine
+    // in gmshService.ts. May differ from what `options.engine` requested (a
+    // B-rep source or non-3D dimension silently downgrades "ftetwild" to
+    // "gmsh" — the reason is in `warnings` above, never a silent surprise).
+    engineUsed: result.engineUsed,
     // Counts only — the triangle-index buffer itself is display geometry an
     // agent has no renderer for; the counts are the actionable fact ("N
     // elements need attention"), same rationale as `render_snapshot`'s

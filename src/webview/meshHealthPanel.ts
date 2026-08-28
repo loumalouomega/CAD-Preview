@@ -23,6 +23,7 @@ export interface MeshHealthDisplay {
 export interface MeshHealthPanelCallbacks {
   onCheck: () => void;
   onPromote: () => void;
+  onRepair: () => void;
 }
 
 function formatPct(n: number): string {
@@ -47,19 +48,31 @@ function formatTolerance(t: number): string {
  * comment for why promotion is a one-shot export, never an in-place
  * reclassification) — the host owns the whole format/unit/save-dialog flow
  * from there via a single parameter-free `promoteToBrepButtonClicked`
- * message.
+ * message. The **Repair (robust)** button (roadmap "Robust volumetric
+ * meshing", Phase 3, closed) is the opposite gate — enabled only once a
+ * report shows at least one component that did NOT close
+ * (`requiredTolerance === null`), since a mesh that already closes has
+ * nothing to repair; it writes a NEW watertight STL via fTetWild
+ * (`repairMeshButtonClicked`, same parameter-free/host-owns-the-flow shape),
+ * never applied to the current document either. Deliberately does NOT
+ * auto-chain into Check Healability / Promote on the result — the user
+ * reviews the repair (by re-running Check Healability on the new file
+ * themselves) before acting on it further.
  */
 export class MeshHealthPanel {
   private readonly panel: HTMLElement;
   private readonly body: HTMLElement;
   private readonly promoteButton: HTMLButtonElement | null;
+  private readonly repairButton: HTMLButtonElement | null;
 
   constructor(panel: HTMLElement, cb: MeshHealthPanelCallbacks) {
     this.panel = panel;
     this.body = panel.querySelector("#mesh-health-body")!;
     this.promoteButton = panel.querySelector("#mesh-health-promote");
+    this.repairButton = panel.querySelector("#mesh-health-repair");
     panel.querySelector("#mesh-health-check")?.addEventListener("click", () => cb.onCheck());
     this.promoteButton?.addEventListener("click", () => cb.onPromote());
+    this.repairButton?.addEventListener("click", () => cb.onRepair());
   }
 
   /** Shows or hides the whole panel — only a native STL/OBJ/PLY source has a
@@ -69,12 +82,14 @@ export class MeshHealthPanel {
   setEligible(eligible: boolean): void {
     this.panel.hidden = !eligible;
     if (this.promoteButton) this.promoteButton.disabled = true; // no report yet (or a new document) — nothing to promote
+    if (this.repairButton) this.repairButton.disabled = true; // no report yet — nothing known to need repair
     if (eligible) this.renderMessage("Click Check Healability to run the diagnostic.");
   }
 
   renderMessage(text: string, isError = false): void {
     this.body.innerHTML = "";
     if (this.promoteButton) this.promoteButton.disabled = true;
+    if (this.repairButton) this.repairButton.disabled = true;
     const p = document.createElement("div");
     p.className = isError ? "mesh-health-message mesh-health-message-error" : "mesh-health-message";
     p.textContent = text;
@@ -84,6 +99,7 @@ export class MeshHealthPanel {
   render(report: MeshHealthDisplay): void {
     this.body.innerHTML = "";
     if (this.promoteButton) this.promoteButton.disabled = !report.components.some((c) => c.requiredTolerance != null);
+    if (this.repairButton) this.repairButton.disabled = !report.components.some((c) => c.requiredTolerance == null);
     if (report.components.length === 0) {
       this.renderMessage("No triangles found.");
       return;

@@ -30,6 +30,22 @@ import type { Part } from "./protocol";
  */
 export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
 
+/**
+ * Which volume mesher `generateMesh`/`exportMeshFormat`/`exportMdpa` use for
+ * a mesh-format ("skin mesh") source. `"gmsh"` (the default) is the existing
+ * `classifySurfaces`/`createGeometry`/`addSurfaceLoop`/`addVolume` path —
+ * fast, but needs a watertight/manifold/well-oriented boundary. `"ftetwild"`
+ * is `src/ftetwildService.ts`'s fTetWild tetrahedralizer — built specifically
+ * to survive the dirty triangle soups (holes, self-intersections,
+ * non-manifold edges) that make the Gmsh path throw "STL classification
+ * produced no surfaces" or worse. Meaningless for a B-rep source (Gmsh
+ * already has exact geometry there — nothing to be robust against) or for
+ * `dimension !== 3` (fTetWild is a volume mesher only); both degrade to
+ * `"gmsh"` with a warning rather than erroring — see `populateMeshedModel`'s
+ * doc comment in `gmshService.ts`.
+ */
+export type MeshEngine = "gmsh" | "ftetwild";
+
 export interface MeshOptions {
   dimension: 1 | 2 | 3;
   sizeMin: number;
@@ -40,6 +56,15 @@ export interface MeshOptions {
   elementShape: MeshElementShape;
   optimize: boolean;
   stlAngle: number; // classifySurfaces angle, degrees
+  engine: MeshEngine;
+  /** fTetWild's envelope size, as a fraction of the input's bounding-box
+   * diagonal — smaller means more faithful to the input surface, and
+   * slower. Only meaningful when `engine === "ftetwild"`. Gmsh's own
+   * `idealEdgeLengthRel` equivalent is derived from `sizeMax` at call time
+   * (see `populateMeshedModel`), not stored separately here, so the
+   * existing size slider/presets keep working under either engine with no
+   * new sizing UI. */
+  ftetwildEpsRel: number;
 }
 
 /**
@@ -61,6 +86,8 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   elementShape: "simplex",
   optimize: true,
   stlAngle: 40,
+  engine: "gmsh",
+  ftetwildEpsRel: 1e-3, // fTetWild's own default
 };
 
 /**
@@ -141,7 +168,26 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
 
-  return { dimension, sizeMin, sizeMax, algorithm2D, algorithm3D, elementOrder, elementShape, optimize, stlAngle };
+  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
+
+  const ftetwildEpsRel =
+    isFiniteNumber(o.ftetwildEpsRel) && o.ftetwildEpsRel > 0
+      ? o.ftetwildEpsRel
+      : DEFAULT_MESH_OPTIONS.ftetwildEpsRel;
+
+  return {
+    dimension,
+    sizeMin,
+    sizeMax,
+    algorithm2D,
+    algorithm3D,
+    elementOrder,
+    elementShape,
+    optimize,
+    stlAngle,
+    engine,
+    ftetwildEpsRel,
+  };
 }
 
 /**
