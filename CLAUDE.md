@@ -1061,7 +1061,7 @@ npm run mcp:smoke  # build + real-WASM end-to-end MCP server test over stdio (bu
 npm run perf        # build + performance regression benchmark over stdio (graded STEP fixtures)
 ```
 
-- Integration tests need a display server; CI runs them under `xvfb-run` on Linux.
+- **There are NO integration tests, and CI does not run any.** This line previously claimed "Integration tests need a display server; CI runs them under `xvfb-run` on Linux" — that describes infrastructure which does not exist. `.github/workflows/ci.yml` builds, runs `npm test`, and packages the `.vsix`, carrying a standing `NOTE: @vscode/test-electron integration tests are added in a later milestone`. So the honest coverage picture is: unit tests + `npm run mcp:smoke` cover the pure modules and the whole host/MCP pipeline well; **the webview and the VS Code host API have zero automated coverage**, which is what every feature section's "not exercised in a real Extension Development Host session" caveat actually means. See `doc/roadmap.md`'s Tier 1 for the item that closes this.
 
 ## Verify a change
 
