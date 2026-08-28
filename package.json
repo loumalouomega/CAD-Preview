@@ -264,7 +264,7 @@
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.3.0",
-    "@meshioplusplus/wasm": "^10.0.0",
+    "@meshioplusplus/wasm": "^10.14.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "fflate": "^0.8.3",
     "opencascade.js": "^1.1.1",
