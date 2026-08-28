@@ -150,6 +150,25 @@ class CadDocument implements vscode.CustomDocument {
 export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocument> {
   public static readonly viewType = "cad-preview.mesh";
 
+  /**
+   * Fires for every host→webview message, so the integration suite can observe
+   * flows whose only effect is a `postMessage`.
+   *
+   * This exists for exactly one reason: the six external-change file watchers
+   * (`watchForExternalChange` below) reconcile by posting to the webview and
+   * nothing else — no return value, no disk write, no output channel, and the
+   * callbacks are fire-and-forget — so without this they are unobservable and
+   * therefore untestable from the host side.
+   *
+   * **Inert in production.** `extension.ts` only surfaces it when
+   * `context.extensionMode === vscode.ExtensionMode.Test`; nothing subscribes
+   * otherwise, and an `EventEmitter` with no listeners costs a function call
+   * per posted message. It is deliberately NOT part of the extension's public
+   * API surface.
+   */
+  private static readonly postedEmitter = new vscode.EventEmitter<HostToWebview>();
+  public static readonly onDidPostMessage = CadPreviewProvider.postedEmitter.event;
+
   /** The focused editor, tracked so commands/keybindings can reach it. */
   private activeSession?: EditorSession;
 
@@ -265,7 +284,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       localResourceRoots: [this.context.extensionUri, fileDir],
     };
 
-    const post = (msg: HostToWebview) => webviewPanel.webview.postMessage(msg);
+    const post = (msg: HostToWebview) => {
+      CadPreviewProvider.postedEmitter.fire(msg); // test-only observer; see the emitter's doc comment
+      return webviewPanel.webview.postMessage(msg);
+    };
     const pending = new Map<string, PendingExport>();
     let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let annotationsSaveTimer: ReturnType<typeof setTimeout> | undefined;
