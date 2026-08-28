@@ -2298,3 +2298,23 @@ input[type="range"].meshing-slider:focus {
   opacity: 0.7;
   font-style: italic;
 }
+
+/* Selection-groups context menu. Reuses `.tb-dropdown`'s look (background,
+ * border, radius, shadow, padding) — only positioning differs: this one is
+ * cursor-anchored inside #app rather than hung under a toolbar trigger. */
+#context-menu {
+  position: absolute;
+  min-width: 190px;
+}
+
+#context-menu .ctx-count {
+  opacity: 0.6;
+  margin-left: 10px;
+}
+
+#context-menu .ctx-empty {
+  padding: 4px 8px;
+  opacity: 0.7;
+  font-style: italic;
+  font-size: 11px;
+}

@@ -3,6 +3,7 @@ import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
 import { buildEntityReferenceIndex } from "./opCatalog";
 import { hoverContent, inspectorContent } from "./entityExplain";
+import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
@@ -1847,6 +1848,110 @@ function setupSelectionControls(): void {
   // the available pick modes.
   (globalThis as unknown as { __syncFilterUi?: () => void }).__syncFilterUi = syncFilterUi;
   syncFilterUi();
+
+  // ── Selection-groups context menu ───────────────────────────────────────
+  // The same predicates as the filter form above, reached by right-click
+  // instead of by composing a query — and the clicked entity supplies the
+  // argument the form makes you type. Lives inside this closure because it
+  // needs `selectMode`/`selecting` and the same bulk-inject path `runFilter`
+  // uses; that is also why `runFilter` was never lifted out.
+  const ctxMenu = document.getElementById("context-menu");
+  let previewingGroup = false;
+
+  const closeMenu = (): void => {
+    ctxMenu?.classList.add("hidden");
+    if (previewingGroup) {
+      previewingGroup = false;
+      renderHighlight(); // drop the hover preview, restore the real selection
+    }
+  };
+
+  // Registered ONCE, not per open: adding it inside the open handler would
+  // accumulate a listener on every right-click.
+  ctxMenu?.addEventListener("pointerleave", () => {
+    if (previewingGroup) {
+      previewingGroup = false;
+      renderHighlight();
+    }
+  });
+
+  const applyGroup = (entities: SelectedEntity[], replace: boolean): void => {
+    previewingGroup = false; // this IS the commit; renderHighlight below is authoritative
+    if (replace) selection.clear();
+    for (const e of entities) selection.add(e);
+    renderHighlight();
+    setStatus(`Selected ${entities.length} ${selectMode === "line" ? "edges" : "faces"}.`);
+  };
+
+  viewer.setContextMenuHandler((result, cssX, cssY) => {
+    if (!ctxMenu) return;
+    closeMenu();
+    const model = viewer.getModel();
+    if (!model || !selecting) return;
+
+    const groups = selectionGroupsFor(collectTargets(model, selectMode), selectMode, result.entityId);
+    ctxMenu.textContent = "";
+
+    if (groups.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "ctx-empty";
+      // Volume/point have no predicate vocabulary — the same gate the filter
+      // form applies. Say which case it is rather than showing a blank menu.
+      empty.textContent =
+        selectMode === "surface" || selectMode === "line"
+          ? "No groups match beyond this one."
+          : "Selection groups apply to Surf and Line modes.";
+      ctxMenu.append(empty);
+    } else {
+      for (const g of groups) {
+        const btn = document.createElement("button");
+        btn.setAttribute("role", "menuitem");
+        btn.textContent = g.label;
+        const count = document.createElement("span");
+        count.className = "ctx-count";
+        count.textContent = `${g.entities.length}`;
+        btn.append(count);
+        // Hovering previews exactly what clicking would select — drawn through
+        // renderSelection directly, never into the SelectionSet, so moving away
+        // restores the real selection with no bookkeeping to undo.
+        btn.addEventListener("pointerenter", () => {
+          previewingGroup = true;
+          viewer.renderSelection(g.entities);
+        });
+        btn.addEventListener("click", (e) => {
+          applyGroup(g.entities, !e.shiftKey); // shift-click unions, as elsewhere
+          closeMenu();
+        });
+        ctxMenu.append(btn);
+      }
+    }
+
+    ctxMenu.classList.remove("hidden");
+    // Keep it inside #app: flip to the other side of the cursor near an edge.
+    const host = ctxMenu.parentElement;
+    const left = cssX + ctxMenu.offsetWidth > (host?.clientWidth ?? 0) ? Math.max(0, cssX - ctxMenu.offsetWidth) : cssX;
+    const top = cssY + ctxMenu.offsetHeight > (host?.clientHeight ?? 0) ? Math.max(0, cssY - ctxMenu.offsetHeight) : cssY;
+    ctxMenu.style.left = `${left}px`;
+    ctxMenu.style.top = `${top}px`;
+  });
+
+  // Capture phase, mirroring `dropdownMenu.ts`'s own dismissal discipline: the
+  // click that closes the ctxMenu must not also reach the canvas underneath and
+  // change the selection.
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!ctxMenu || ctxMenu.classList.contains("hidden")) return;
+      if (ctxMenu.contains(e.target as Node)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+    },
+    true
+  );
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMenu();
+  });
 }
 
 /** Restricts pickable entity kinds (mesh formats expose only whole "volumes"). */

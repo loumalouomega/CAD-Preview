@@ -165,6 +165,8 @@ export class Viewer {
   /** Last reported entity, so an unchanged hover reports nothing. */
   private lastHoverKey: string | null = null;
   private lastHoverAt = 0;
+  /** Right-click reporting; `null` until `setContextMenuHandler` registers one. */
+  private onContextMenu: ((r: PickResult, cssX: number, cssY: number) => void) | null = null;
   private onEmptyPick: (() => void) | null = null;
   private pointerDownPos: { x: number; y: number } | null = null;
   private renderDirty = false;
@@ -1465,6 +1467,47 @@ export class Viewer {
     this.onEntityHover = onHover;
   }
 
+  /**
+   * Registers a right-click handler, called with the entity under the cursor
+   * and the pointer's position **relative to the canvas** (so the caller can
+   * place a menu inside `#app` with no offset arithmetic).
+   *
+   * Registering one also suppresses the browser's own context menu over the
+   * canvas. Right-click over empty space is deliberately NOT reported: there is
+   * no entity to compute groups from, and swallowing the default menu there
+   * would remove a capability without offering one.
+   */
+  setContextMenuHandler(onMenu: (r: PickResult, cssX: number, cssY: number) => void): void {
+    if (!this.onContextMenu) {
+      this.renderer.domElement.addEventListener("contextmenu", this.onCanvasContextMenu);
+    }
+    this.onContextMenu = onMenu;
+  }
+
+  private onCanvasContextMenu = (event: MouseEvent): void => {
+    if (!this.onContextMenu || this.selectionMode === null || !this.model) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const cssX = event.clientX - rect.left;
+    const cssY = event.clientY - rect.top;
+    const index = paneAtPoint(this.paneRects, cssX, cssY);
+    if (index < 0) return;
+    const ndc = ndcInPane(this.paneRects[index], cssX, cssY);
+    this.raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), this.panes[index].active);
+    this.raycaster.params.Line.threshold = this.pickThreshold;
+
+    const targets = collectTargets(this.model, this.selectionMode);
+    for (const h of this.raycaster.intersectObjects(targets, false)) {
+      const r = resolvePick(h.object.userData, this.selectionMode);
+      if (r) {
+        // Only suppress the browser menu once we actually have something to
+        // replace it with.
+        event.preventDefault();
+        this.onContextMenu(r, cssX, cssY);
+        return;
+      }
+    }
+  };
+
   private onHoverPointerLeave = (): void => {
     if (this.lastHoverKey !== null) {
       this.lastHoverKey = null;
@@ -2017,6 +2060,7 @@ export class Viewer {
     this.renderer.domElement.removeEventListener("pointerup", this.onSelectPointerUp);
     this.renderer.domElement.removeEventListener("pointermove", this.onHoverPointerMove);
     this.renderer.domElement.removeEventListener("pointerleave", this.onHoverPointerLeave);
+    this.renderer.domElement.removeEventListener("contextmenu", this.onCanvasContextMenu);
     this.renderScheduler.cancel();
     this.gizmo.dispose();
     this.clearModel();

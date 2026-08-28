@@ -16,6 +16,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/geometryBuilder.ts` | Decode and build per-face meshes + per-edge lines from encoded buffers |
 | `src/webview/palette.ts` | The 3D scene's theme-reactive colour palette, read from `--cad-*` CSS custom properties (unit-tested) |
 | `src/webview/entityExplain.ts` | Pure content for the hover tooltip and the geometry inspector card — which fields a classification gives meaning to (unit-tested) |
+| `src/webview/selectionGroups.ts` | Pure computed selection groups for the right-click menu, composed from `selectFilters.ts`'s predicates (unit-tested) |
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
@@ -698,6 +699,51 @@ mirroring `describeOp`'s, over the eleven operand field names (`targets`, `a`, `
 `faces`, `profile`, `profiles`, `path`, `faceA`, `faceB`, `openingFaces`). A new `EditOpKind`
 becomes a compile error there rather than silently reporting no references — verified by removing
 a case and confirming `tsc` raises TS2366.
+
+## `src/webview/selectionGroups.ts`
+
+Computed "select everything like this one" groups for the right-click context menu.
+
+```typescript
+interface SelectionGroup { id: string; label: string; entities: SelectedEntity[] }
+function selectionGroupsFor(targets: Object3D[], mode: EntityType, entityId: string, toleranceDeg?): SelectionGroup[];
+function facesWithNormalLike(targets: Object3D[], reference: THREE.Vector3, toleranceDeg?): SelectedEntity[];
+function edgesParallelTo(targets: Object3D[], reference: THREE.Vector3, toleranceDeg?): SelectedEntity[];
+```
+
+**The reuse of the query-filter vocabulary is exact, and the interesting part is
+where the argument comes from.** "Area ≥ this" is literally `applyFaceFilter(targets, "areaGte", …)`
+with the **clicked face's own area** as the threshold — the number the filter form otherwise makes
+you type. Same for "Length ≥/≤ this" over `applyLineFilter`. No second predicate vocabulary was
+introduced, which is what the roadmap required.
+
+`facesWithNormalLike`/`edgesParallelTo` are the two that could not come from the registry directly:
+"same as the one under the cursor" takes a **reference entity**, which `FilterOption`'s
+`argKind: "none" | "value" | "count"` cannot express. They are composed from `selectFilters.ts`'s
+own exported `faceNormal`/`edgeDirection` plus its `DEFAULT_DIRECTION_TOLERANCE_DEG`, so they stay
+inside that module's vocabulary rather than forking it. Note the deliberate asymmetry: face
+matching is sign-**sensitive** (the far side of a box points the other way and is not "the same
+facing"), edge matching is sign-**insensitive** (an edge drawn end-to-start is still parallel),
+matching the registry's own `alongX/Y/Z` convention.
+
+A group matching only the clicked entity is dropped — a row reading "(1)" offers nothing a click
+has not already done. Volume and point modes return `[]`, the same gate the filter form applies via
+`filterSupportsMode`; `main.ts` renders that as an explanatory row rather than a blank menu.
+
+### Wiring
+
+`Viewer.setContextMenuHandler(cb)` reports the entity under a right-click plus the pointer's
+**canvas-relative** position, and registering one is also what attaches the `contextmenu` listener
+(there was none anywhere before this). `preventDefault()` is called **only once an entity actually
+resolves** — right-click over empty space keeps the browser's own menu, since suppressing it there
+would remove a capability without offering one.
+
+The menu lives inside `setupSelectionControls`'s closure because it needs `selectMode`/`selecting`
+and the same bulk-inject path `runFilter` uses — the same reason `runFilter` was never lifted out.
+Hovering a row previews through `viewer.renderSelection()` **directly, never into the
+`SelectionSet`**, so moving away restores the real selection with no bookkeeping to undo. Dismissal
+is a capture-phase `pointerdown` that `preventDefault()`s, mirroring `dropdownMenu.ts`'s own
+discipline: the click that closes the menu must not also reach the canvas and change the selection.
 
 ## `src/webview/palette.ts`
 

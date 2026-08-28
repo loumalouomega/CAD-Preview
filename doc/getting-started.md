@@ -212,6 +212,17 @@ The card needs the CAD kernel, so it is **B-rep only** (STEP/IGES/BREP) and appe
 rather than on hover — a triangle mesh has no analytic surface type to report, and a fine-faceted
 prism is indistinguishable from a cylinder in triangles.
 
+**Right-clicking** an entity offers computed selection groups with their member counts — "Same
+facing (3)", "Planar faces (19)", "Area ≤ this (36)" for a face; "Parallel to this", "Length ≥/≤
+this" for an edge. Hovering a row previews exactly what choosing it would select; clicking replaces
+the selection, and shift-clicking adds to it.
+
+These are the same predicates as the **Select ▾** panel's filter form, with one difference that
+makes them worth reaching for: **the entity you right-clicked supplies the number**. "Area ≤ this"
+is the filter form's *Area ≤* with the threshold already filled in. Groups are offered for Surf and
+Line modes only — the same modes the filter form supports — and a group that would select only the
+entity you clicked is not offered at all.
+
 ### Theme
 
 The 3D scene follows VS Code's active colour theme. Switching between a light, dark, or

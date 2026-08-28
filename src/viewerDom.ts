@@ -141,6 +141,11 @@ export function viewerBodyHtml(): string {
            round trip, and getEntityFacts has no shape cache — every call
            re-reads the source bytes and replays the whole op list. -->
       <div id="inspector-card" class="hidden"></div>
+      <!-- Selection-groups context menu: right-click an entity to select
+           everything like it. Reuses the query-filter predicates rather than
+           inventing a second vocabulary; the clicked entity supplies the
+           argument the filter form would make you type. -->
+      <div id="context-menu" class="tb-dropdown hidden" role="menu"></div>
     </div>
   </div>
   <div id="toolbar">

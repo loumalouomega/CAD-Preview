@@ -779,6 +779,102 @@ test("inspector card: selection requests facts, and the reply renders per classi
   );
 });
 
+/** Turns picking on in the given mode and closes the dropdown behind it. */
+async function enablePicking(page, mode) {
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click(`.sel-mode[data-mode="${mode}"]`);
+  await page.click("#select-menu");
+  await sleep(150);
+}
+
+/**
+ * N. Selection-groups context menu — the query-filter predicates reached by
+ * right-click instead of by composing a query.
+ */
+test("context menu: right-clicking geometry offers groups with member counts", async (page) => {
+  await populate(page);
+  await enablePicking(page, "surface");
+
+  const menuShown = () =>
+    page.evaluate(() => document.getElementById("context-menu")?.offsetParent !== null);
+  assert((await menuShown()) === false, "the context menu is not rendered before a right-click");
+
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await sleep(250);
+
+  assert((await menuShown()) === true, "right-clicking a face opens the context menu");
+
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll("#context-menu button")].map((b) => b.textContent)
+  );
+  assert(rows.length > 0, `the menu offers at least one group (got ${JSON.stringify(rows)})`);
+  assert(
+    rows.every((r) => /\d+$/.test(r ?? "")),
+    `every group row carries a member count (got ${JSON.stringify(rows)})`
+  );
+  // The counts are what make the menu worth having over the filter form: a
+  // group of one would be indistinguishable from the click itself.
+  assert(
+    rows.every((r) => Number((r ?? "").match(/(\d+)$/)?.[1] ?? "0") > 1),
+    `no group offers a count of 1 (got ${JSON.stringify(rows)})`
+  );
+
+  // Escape dismisses without selecting.
+  await page.keyboard.press("Escape");
+  await sleep(150);
+  assert((await menuShown()) === false, "Escape closes the context menu");
+});
+
+test("context menu: choosing a group selects exactly the members it advertised", async (page) => {
+  await populate(page);
+  await enablePicking(page, "surface");
+
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await sleep(250);
+
+  const advertised = await page.evaluate(() => {
+    const b = document.querySelector("#context-menu button");
+    return b ? Number(b.textContent.match(/(\d+)$/)?.[1] ?? "0") : null;
+  });
+  assert(advertised !== null && advertised > 1, `the first group advertises a count (got ${advertised})`);
+
+  await page.evaluate(() => document.querySelector("#context-menu button")?.click());
+  await sleep(300);
+
+  // The status line reports what was actually selected — it must agree with
+  // the count the row promised, or the preview is lying about the outcome.
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(
+    status.includes(`Selected ${advertised}`),
+    `selecting the group selects exactly the advertised ${advertised} (status: ${JSON.stringify(status)})`
+  );
+  const closed = await page.evaluate(() => document.getElementById("context-menu")?.offsetParent === null);
+  assert(closed, "choosing a group closes the menu");
+});
+
+test("context menu: volume mode says why it has no groups instead of showing a blank menu", async (page) => {
+  // Volume/point have no predicate vocabulary — the same gate the filter form
+  // applies. An empty menu would read as a bug.
+  await populate(page);
+  await enablePicking(page, "volume");
+
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await sleep(250);
+
+  const text = await page.evaluate(() => {
+    const el = document.getElementById("context-menu");
+    return el && el.offsetParent !== null ? el.textContent : null;
+  });
+  assert(
+    text !== null && /Surf and Line/.test(text),
+    `volume mode explains that groups apply to Surf/Line (got ${JSON.stringify(text)})`
+  );
+});
+
 // ── Runner ────────────────────────────────────────────────────────────────
 async function main() {
   if (!nodeSupportsPlaywright()) {
