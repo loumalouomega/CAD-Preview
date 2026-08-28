@@ -283,6 +283,7 @@ interface EntityFacts {
   normal: Vec3 | null       // planar face only
   planeOrigin: Vec3 | null  // planar face only — OCCT's own plane origin (gp_Pln.Location()), a point ON the plane; usable as planePoint for section/splitByPlane/mirror
   surfaceType: SurfaceType | null   // face only
+  curveType: CurveType | null       // edge only
 }
 
 async function getEntityFacts(
@@ -319,7 +320,7 @@ async function measureExact(
 ): Promise<ExactMeasureResult>
 ```
 
-**`getEntityFacts`/`measureEntities`** are both deliberately bbox-centre-based (`bboxCenter`, `occtOperations.ts`) — for an asymmetric shape this is a *different* point than `get_mass_properties`' area/volume-weighted `centerOfMass`; use `inspect`/`measure` for "where roughly is X" and `get_mass_properties` when the mass-weighted centroid itself is the thing being asked about. `EntityFacts.surfaceType`'s `GeomAbs_SurfaceType` mapping was verified against the live WASM the same way `massProperties.ts`'s `BRepGProp` calls were — see the type's doc comment in `entityFacts.ts` for the full brute-force-probing trail (`GeomAbs_Plane=0` … `GeomAbs_Torus=4`, confirmed by building one of each primitive and reading `BRepAdaptor_Surface_2(face,true).GetType().value`).
+**`getEntityFacts`/`measureEntities`** are both deliberately bbox-centre-based (`bboxCenter`, `occtOperations.ts`) — for an asymmetric shape this is a *different* point than `get_mass_properties`' area/volume-weighted `centerOfMass`; use `inspect`/`measure` for "where roughly is X" and `get_mass_properties` when the mass-weighted centroid itself is the thing being asked about. `EntityFacts.surfaceType`'s `GeomAbs_SurfaceType` mapping was verified against the live WASM the same way `massProperties.ts`'s `BRepGProp` calls were — see the type's doc comment in `entityFacts.ts` for the full brute-force-probing trail (`GeomAbs_Plane=0` … `GeomAbs_Torus=4`, confirmed by building one of each primitive and reading `BRepAdaptor_Surface_2(face,true).GetType().value`). **`EntityFacts.curveType`** (roadmap "Explain the geometry under the cursor") is its edge-side counterpart — `"line" | "circle" | "ellipse" | "hyperbola" | "parabola" | "bezier" | "bspline" | "other"`, from `BRepAdaptor_Curve_2(edge).GetType()`. That is the SAME call `measureExact`'s `"radius"` kind already exercises against the live WASM, so it needed no new probing; it is a new field on an existing function, not new kernel surface. Verified in `npm run mcp:smoke`: a cylinder rim whose exact radius `measure_exact` just resolved classifies as `"circle"`, a `bull.stp` edge as `"bspline"`, and the two tools agree about which edges are circular.
 
 **`measureExact`** is the opt-in true-OCCT-precision sibling to the always- available, instant, but only *approximate* triangulated measurement (client- side, `src/webview/measurement.ts`, tied to `meshExtract.ts`'s 0.1 tessellation deflection) — a host round trip an agent or the interactive Measure tool's "⟟ Exact" button opts into per pick, not the default. Every call shape below is **verified against the live WASM**, not assumed from upstream OCCT docs (same brute-force overload-probing convention as every other OCCT call in this codebase):
 

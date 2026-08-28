@@ -7,7 +7,7 @@ import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
-import type { ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
+import type { EntityFacts, ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipAxis } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
@@ -335,6 +335,13 @@ export type HostToWebview =
   | { type: "importDxfError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
+  /** Analytic classification of one entity, for the inspector card. Carries
+   * `EntityFacts` verbatim from the existing `getEntityFacts` pipeline
+   * function — the card is a new protocol pair over existing kernel surface,
+   * not new geometry work. B-rep sources only (a mesh has no analytic
+   * surface type), so the host answers with `entityFactsError` otherwise. */
+  | { type: "entityFactsResult"; requestId: string; facts: EntityFacts }
+  | { type: "entityFactsError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
@@ -437,6 +444,8 @@ export type WebviewToHost =
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
+  /** Inspector card: classify the entity the user just selected. */
+  | { type: "entityFactsRequest"; requestId: string; entityId: string }
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
   | { type: "importSvgRequest" }

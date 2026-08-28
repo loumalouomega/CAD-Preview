@@ -323,6 +323,8 @@ type HostToWebview =
   | { type: 'importDxfError'; message: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
+  | { type: 'entityFactsResult'; requestId: string; facts: EntityFacts }
+  | { type: 'entityFactsError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
@@ -593,6 +595,22 @@ Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh source
 { "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
 ```
 
+### `entityFactsResult` / `entityFactsError`
+
+Sent in reply to `entityFactsRequest` — **B-rep sources only** (a triangle mesh has no analytic surface type; a fine-faceted prism and a cylinder are identical in triangles), same gate as `massPropertiesResult`. Carries `EntityFacts` verbatim from the existing `getEntityFacts` pipeline function — the interactive geometry inspector card is a new protocol pair over existing kernel surface, not new geometry work; the same function backs the `inspect` MCP tool.
+
+Driven by **selection, not hover**: `getEntityFacts` has no shape cache, so every call re-reads the source bytes and replays the whole op list. The hover tooltip is deliberately pure-webview for the same reason.
+
+```json
+{ "type": "entityFactsResult", "requestId": "1234-0.56", "facts": { "entityId": "face-3", "kind": "face", "bbox": { "min": [0, 0, 0], "max": [10, 10, 0], "diagonal": 14.142 }, "center": [5, 5, 0], "area": 100, "length": null, "normal": [0, 0, 1], "planeOrigin": [0, 0, 0], "surfaceType": "plane", "curveType": null } }
+```
+
+```json
+{ "type": "entityFactsError", "requestId": "1234-0.56", "message": "Geometry classification requires a B-rep source; a mesh has no analytic surface type." }
+```
+
+`curveType` is the edge-side counterpart of `surfaceType`, which had no analogue before this: `"line" | "circle" | "ellipse" | "hyperbola" | "parabola" | "bezier" | "bspline" | "other"`, set only for an edge. It uses the same `BRepAdaptor_Curve_2(edge).GetType()` call `measure_exact`'s `"radius"` kind already exercises against the live WASM, so it needed no new probing — and `inspect` gets it for free.
+
 ### `measureExactResult` / `measureExactError`
 
 Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as `massPropertiesResult`. A genuine host round trip via live OCCT geometry (`BRepExtrema_DistShapeShape` for `kind: "distance"`, `BRepGProp` for `"edgeLength"`, the edge's own curve for `"radius"`), distinct from both the interactive Measure tool's default instant triangulated-approximation result and `measure`'s bbox-centre-to-bbox-centre convention. See [Extension Host API](./extension-host-api.md#src-entityfacts-ts)'s verified call sequence for each `kind`.
@@ -738,6 +756,7 @@ type WebviewToHost =
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
+  | { type: 'entityFactsRequest'; requestId: string; entityId: string }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }

@@ -194,6 +194,7 @@ const FAKE_ENTITY_FACTS: EntityFacts = {
   normal: null,
   planeOrigin: null,
   surfaceType: null,
+  curveType: null,
 };
 
 const FAKE_MEASURE_RESULT: MeasureResult = {

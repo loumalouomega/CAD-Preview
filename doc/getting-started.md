@@ -192,6 +192,26 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 
 **The camera direction/up vector, Persp/Ortho, Display mode, and the Clip plane are all saved automatically** to a `<model>.view.json` sidecar and restored the next time you open the same file, so reopening a large assembly picks up right where you left off instead of always resetting to the default isometric — see [View State Sidecar](./file-formats.md#view-state-sidecar-modelviewjson) for the format. Applying an edit reframes in your CURRENT direction rather than snapping back to the saved (or default) one. Background colour, opacity, the Units dropdown, and Colour by field remain purely session-only, as does explode-preview state (the *committed* `explode` op itself is saved in `.edits.json` like any other edit).
 
+### Explaining the geometry under the cursor
+
+With a pick mode active (**Select ▾**), two things explain what you are pointing at.
+
+**Hovering** shows a small tooltip with the entity's id (`face-12`, `edge-3`, `solid-0`) and which
+of your applied ops mention that id. This is the quickest way to read your own `.edits.json`: the
+ids in the sidecar are exactly the ids under your cursor. It says *mentions*, not *acts on*,
+deliberately — ids are positional, so the same `face-12` in two different ops can refer to
+different geometry once an op in between renumbers things.
+
+**Clicking** additionally opens an inspector card in the bottom-left corner, classifying the entity
+analytically: a planar / cylindrical / conical / spherical / toroidal face, or a straight /
+circular / elliptical / spline edge. It lists **only the measurements that classification gives
+meaning to** — a plane gets its area, normal, and a point on its plane; a cylinder gets no normal
+at all, because a curved face has no single one.
+
+The card needs the CAD kernel, so it is **B-rep only** (STEP/IGES/BREP) and appears on selection
+rather than on hover — a triangle mesh has no analytic surface type to report, and a fine-faceted
+prism is indistinguishable from a cylinder in triangles.
+
 ### Theme
 
 The 3D scene follows VS Code's active colour theme. Switching between a light, dark, or

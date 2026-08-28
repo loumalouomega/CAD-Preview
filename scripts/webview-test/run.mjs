@@ -634,6 +634,151 @@ test("theme: the default entity colour itself tracks the palette", async (page) 
   assert(hc !== dark && hc !== "", `high contrast defines a different --cad-face (got ${hc})`);
 });
 
+/**
+ * M. Explain the geometry under the cursor.
+ *
+ * The hover tooltip is pure webview and fully checkable here. The inspector
+ * card's host round trip is faked by posting `entityFactsResult` directly —
+ * the real `getEntityFacts` is covered against live OCCT in `npm run mcp:smoke`
+ * via `inspect`, so what needs checking here is the RENDERING decision: only
+ * the fields that apply to the classification.
+ */
+test("hover: moving over geometry shows the entity id and which ops mention it", async (page) => {
+  await populate(page);
+  await page.click("#select-menu");
+  await page.click("#sel-toggle"); // picking is a separate enable switch from the mode buttons
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.click("#select-menu"); // close, or its capture-phase dismissal eats the next canvas event
+  await sleep(150);
+
+  const box = await viewportBox(page);
+  // Checks RENDERED visibility (offsetParent is null for a display:none
+  // element), not `classList.contains("hidden")`. There is no global `.hidden`
+  // rule in viewer.css — each consumer defines its own — so a class-only
+  // assertion passes while the element is plainly visible on screen. That
+  // exact bug shipped here once and was caught only by inspecting a screenshot.
+  const tipText = async () =>
+    page.evaluate(() => {
+      const el = document.getElementById("hover-tip");
+      return el && el.offsetParent !== null ? el.textContent : null;
+    });
+
+  assert((await tipText()) === null, "no tooltip before the pointer enters the model");
+
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(250);
+  const overModel = await tipText();
+  assert(
+    overModel !== null && /^(face|edge|point|solid)-\d+/.test(overModel),
+    `hovering geometry shows its entity id (got ${JSON.stringify(overModel)})`
+  );
+  assert(
+    overModel !== null && /mention/.test(overModel),
+    `the tooltip states op MENTIONS, not "acts on" — ids are positional (got ${JSON.stringify(overModel)})`
+  );
+
+  // Leaving the canvas must retract it, or it strands over the UI.
+  await page.mouse.move(box.x + box.width / 2, box.y - 40);
+  await sleep(250);
+  assert((await tipText()) === null, "leaving the viewport hides the tooltip");
+
+  // The fixture's third op is `translate targets:["solid-0"]`, so Vol mode
+  // exercises the branch that actually matters — and pins the numbering as
+  // 1-based op POSITIONS, not 0-based indices.
+  await page.click("#select-menu");
+  await page.click('.sel-mode[data-mode="volume"]');
+  await page.click("#select-menu");
+  await sleep(150);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(250);
+  const overSolid = await tipText();
+  assert(
+    overSolid === "solid-0\nmentioned by op 3",
+    `a referenced entity lists the 1-based op positions mentioning it (got ${JSON.stringify(overSolid)})`
+  );
+});
+
+test("hover: the tooltip never intercepts a click meant for the geometry", async (page) => {
+  // It tracks the cursor, so without pointer-events:none it would sit directly
+  // under the pointer and swallow the very click it is describing.
+  await populate(page);
+  const pe = await page.evaluate(() => {
+    const el = document.getElementById("hover-tip");
+    return el ? getComputedStyle(el).pointerEvents : null;
+  });
+  assert(pe === "none", `#hover-tip is pointer-events:none (got ${pe})`);
+});
+
+test("inspector card: selection requests facts, and the reply renders per classification", async (page) => {
+  await populate(page);
+  await sleep(200);
+
+  // Rendered-visibility check, for the same reason as the tooltip's above.
+  const cardShown = () =>
+    page.evaluate(() => document.getElementById("inspector-card")?.offsetParent !== null);
+  assert((await cardShown()) === false, "the inspector card is genuinely not rendered before any selection");
+
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.click("#select-menu");
+  await sleep(150);
+
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+
+  // The request is a real host round trip, so it shows up on the harness's
+  // recorded outbound-message list — which is also where its requestId lives.
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "entityFactsRequest").at(-1) ?? null
+  );
+  assert(req !== null, "clicking a face posts an entityFactsRequest");
+  assert((await cardShown()) === true, "selecting a face renders the inspector card");
+  assert(
+    req !== null && typeof req.requestId === "string" && /^(face|solid)-\d+$/.test(req.entityId),
+    `the request carries a requestId and the picked entity id (got ${JSON.stringify(req)})`
+  );
+
+  const cardKeys = () =>
+    page.evaluate(() => [...document.querySelectorAll("#inspector-card .insp-key")].map((e) => e.textContent));
+  const cardTitle = () =>
+    page.evaluate(() => document.querySelector("#inspector-card .insp-title span")?.textContent ?? null);
+
+  const reply = (facts, requestId) =>
+    page.evaluate(
+      ({ f, id }) => window.postMessage({ type: "entityFactsResult", requestId: id, facts: f }, "*"),
+      { f: facts, id: requestId }
+    );
+
+  const planar = {
+    entityId: req.entityId, kind: "face",
+    bbox: { min: [0, 0, 0], max: [1, 1, 0], diagonal: Math.SQRT2 },
+    center: [0.5, 0.5, 0], area: 1, length: null,
+    normal: [0, 0, 1], planeOrigin: [0, 0, 0], surfaceType: "plane", curveType: null,
+  };
+  await reply(planar, req.requestId);
+  await sleep(120);
+  assert((await cardTitle()) === "Planar face", `a plane renders as "Planar face" (got ${await cardTitle()})`);
+  assert((await cardKeys()).includes("Normal"), "a planar face shows its Normal row");
+
+  // A cylinder has no single normal — EntityFacts returns null and the row must
+  // be ABSENT, not blank. This is the whole point of the card.
+  await reply({ ...planar, surfaceType: "cylinder", normal: null, planeOrigin: null }, req.requestId);
+  await sleep(120);
+  assert((await cardTitle()) === "Cylindrical face", `a cylinder renders as "Cylindrical face" (got ${await cardTitle()})`);
+  assert(!(await cardKeys()).includes("Normal"), "a curved face shows NO Normal row");
+
+  // Stale replies must be dropped, or a slow answer for a previous selection
+  // would overwrite the current one.
+  await reply({ ...planar, surfaceType: "torus" }, "a-stale-request-id");
+  await sleep(120);
+  assert(
+    (await cardTitle()) === "Cylindrical face",
+    `a reply with a stale requestId is ignored (got ${await cardTitle()})`
+  );
+});
+
 // ── Runner ────────────────────────────────────────────────────────────────
 async function main() {
   if (!nodeSupportsPlaywright()) {

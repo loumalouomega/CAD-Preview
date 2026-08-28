@@ -15,6 +15,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
 | `src/webview/geometryBuilder.ts` | Decode and build per-face meshes + per-edge lines from encoded buffers |
 | `src/webview/palette.ts` | The 3D scene's theme-reactive colour palette, read from `--cad-*` CSS custom properties (unit-tested) |
+| `src/webview/entityExplain.ts` | Pure content for the hover tooltip and the geometry inspector card — which fields a classification gives meaning to (unit-tested) |
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
@@ -652,6 +653,51 @@ function makeLabelTexture(text: string): THREE.CanvasTexture
 Draws `text` centered on a 64×64 `<canvas>` with a colored background matching the axis color convention (red for X, green for Y, blue for Z, grey for opposite faces). Returns a `THREE.CanvasTexture`.
 
 ---
+
+## `src/webview/entityExplain.ts`
+
+Pure, DOM-free content for the two "what am I pointing at?" affordances; `main.ts` owns the
+elements (`#hover-tip`, `#inspector-card`, both inside `#app`).
+
+```typescript
+function inspectorContent(facts: EntityFacts): { title: string; entityId: string; rows: InspectorRow[] };
+function hoverContent(entityId: string, opPositions: readonly number[] | undefined): { id: string; ops: string };
+function num(v: number): string;
+```
+
+`inspectorContent` is the interesting half: it maps a classification to a title ("Cylindrical
+face", "Circular edge") and emits **only the rows that classification gives meaning to**. A planar
+face gets `Normal` and `On plane`; a cylindrical one gets neither, because `EntityFacts` returns
+`null` for both — this is where that null becomes an absent row rather than a blank one. A vertex's
+bbox diagonal is dropped too, since it is always 0.
+
+`hoverContent` says **"mentioned by op N"**, never "used by". Entity ids are positional, so the
+same string in two ops can denote different topology once an intervening op renumbers; claiming
+otherwise would be unsupportable. Positions are 1-based op numbers, matching the Edits history.
+
+### Wiring
+
+`Viewer.setEntityHoverHandler(cb)` is a hover pick path parallel to
+`setEntityPickHandler` — registering one is also what attaches the `pointermove`/`pointerleave`
+listeners (there was no `pointermove` on the canvas at all before this). It reuses the click path's
+exact pane-relative NDC resolution, so hover and click can never disagree about what is under the
+cursor, and is suppressed entirely while a drag owns the pointer (`pointerDownPos` set, or
+`transformControls.dragging`) so it neither fights OrbitControls nor disturbs
+`onSelectPointerUp`'s 4px drag tolerance. It reports only a *change* of entity, throttled to
+roughly one raycast per frame.
+
+**The split between the two affordances is by cost, not preference.** `getEntityFacts` has no
+shape cache — every call re-reads the source bytes and replays the whole op list — so hover stays
+pure-webview and the host round trip is driven by selection. `opCatalog.ts`'s
+`buildEntityReferenceIndex(ops)` is rebuilt in `renderEditsUi()` (the one choke point every
+op-list change funnels through: hydration, an edit, undo/redo/jump, external reconciliation) rather
+than per hover event, because `EditsModel.list()` deep-clones on every call.
+
+`opCatalog.ts` also gained `referencedEntities(op)`, an exhaustive `switch` with no `default`
+mirroring `describeOp`'s, over the eleven operand field names (`targets`, `a`, `b`, `edges`,
+`faces`, `profile`, `profiles`, `path`, `faceA`, `faceB`, `openingFaces`). A new `EditOpKind`
+becomes a compile error there rather than silently reporting no references — verified by removing
+a case and confirming `tsc` raises TS2366.
 
 ## `src/webview/palette.ts`
 

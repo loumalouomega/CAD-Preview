@@ -2203,3 +2203,98 @@ input[type="range"].meshing-slider:focus {
   flex: 0 0 auto;
   padding: 2px 6px !important;
 }
+
+/* ── Hover tooltip + inspector card (roadmap "Explain the geometry under the
+ *    cursor") ───────────────────────────────────────────────────────────────
+ *
+ * Both live inside #app, which is the positioning context the WebGL canvas
+ * shares — so the tooltip's left/top can be set straight from canvas-relative
+ * pointer coordinates with no offset arithmetic.
+ *
+ * z-index sits above #view-controls (10) and the markup canvas (5) but below
+ * #toolbar (15), so neither can cover the controls. */
+#hover-tip {
+  position: absolute;
+  z-index: 13;
+  /* Never eats a click meant for the geometry underneath — the tooltip tracks
+   * the cursor, so without this it would sit directly under the pointer. */
+  pointer-events: none;
+  padding: 3px 7px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.72));
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+}
+
+/* There is NO global `.hidden` rule in this file — each consumer defines its
+ * own (`.pane-divider.hidden`, `.tb-dropdown.hidden`). Omitting these two
+ * rendered both elements as empty bordered boxes over the viewport, which the
+ * webview tests could not catch: they asserted `classList.contains("hidden")`,
+ * which was true the whole time. Only inspecting the screenshots found it. */
+#hover-tip.hidden,
+#inspector-card.hidden {
+  display: none;
+}
+
+#hover-tip .hover-id {
+  font-weight: 600;
+}
+
+#hover-tip .hover-ops {
+  opacity: 0.75;
+}
+
+#inspector-card {
+  position: absolute;
+  z-index: 12;
+  left: 8px;
+  bottom: 8px;
+  min-width: 168px;
+  max-width: min(34vw, 320px);
+  padding: 6px 9px;
+  border-radius: 4px;
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: 11px;
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.72));
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+}
+
+#inspector-card .insp-title {
+  font-weight: 600;
+  margin-bottom: 3px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#inspector-card .insp-id {
+  font-family: var(--vscode-editor-font-family, monospace);
+  opacity: 0.7;
+  font-weight: 400;
+}
+
+#inspector-card .insp-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#inspector-card .insp-key {
+  opacity: 0.7;
+}
+
+#inspector-card .insp-val {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+#inspector-card .insp-note {
+  opacity: 0.7;
+  font-style: italic;
+}

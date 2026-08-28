@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
+import { buildEntityReferenceIndex } from "./opCatalog";
+import { hoverContent, inspectorContent } from "./entityExplain";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
@@ -51,7 +53,7 @@ import { planeForAxis, type ClipAxis } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
-import type { ExactMeasureKind } from "../entityFacts";
+import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
@@ -252,6 +254,12 @@ function variableUsage(): Map<string, number> {
 
 /** Re-renders the Edits + Variables panels from the models (no host post). */
 function renderEditsUi(): void {
+  // The one choke point every op-list change funnels through — sidecar
+  // hydration, a user edit, an undo/redo/jump, and an external reconciliation.
+  // Rebuilding the hover tooltip's reverse index here (rather than per hover
+  // event) is what keeps `EditsModel.list()`'s deep clone off the pointermove
+  // path.
+  rebuildEntityRefIndex();
   const { values, errors } = evaluateVariables(variablesModel.list());
   const { ops } = resolveEditOps(editsModel.list(), values);
   editsPanel.setVariables(values);
@@ -1520,6 +1528,8 @@ function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   explodePreviewBases = null; // stale references to the just-replaced model's objects
   gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
   viewer.detachTransformGizmo();
+  hideInspectorCard(); // its facts describe the pre-edit shape, and ids may have been renumbered
+  hideHoverTip();
   resetColorFieldSelection(); // any edit invalidates the field values' triangle correlation, same as importedRegionInfo above
   refreshColors();
   renderAnnotationsList(); // detached status may have changed
@@ -1546,13 +1556,143 @@ viewer.setEntityPickHandler(
       selection.add(result);
     }
     renderHighlight();
+    requestEntityFacts(result.entityId);
   },
   () => {
     previewPartIndex = null;
     selection.clear();
     renderHighlight();
+    hideInspectorCard();
   }
 );
+
+// ── Explain the geometry under the cursor ─────────────────────────────────
+// Two affordances over one pick path, split by COST, not by preference:
+// hovering is pure webview and instant, while the inspector card needs a host
+// round trip and `getEntityFacts` has no shape cache (every call re-reads the
+// source bytes and replays the whole op list). So hover drives the tooltip and
+// SELECTION drives the card — a hover-driven round trip would re-parse the
+// model on every mouse move.
+
+const hoverTipEl = document.getElementById("hover-tip");
+const inspectorEl = document.getElementById("inspector-card");
+
+/** `entityId -> 1-based op positions mentioning it`. Rebuilt on op-list change,
+ * never per hover event: `EditsModel.list()` deep-clones the whole list. */
+let entityRefIndex = new Map<string, number[]>();
+function rebuildEntityRefIndex(): void {
+  entityRefIndex = buildEntityReferenceIndex(editsModel.list());
+}
+
+function hideHoverTip(): void {
+  hoverTipEl?.classList.add("hidden");
+}
+
+function showHoverTip(entityId: string, x: number, y: number): void {
+  if (!hoverTipEl) return;
+  const { id, ops } = hoverContent(entityId, entityRefIndex.get(entityId));
+  hoverTipEl.textContent = "";
+  const idEl = document.createElement("span");
+  idEl.className = "hover-id";
+  idEl.textContent = id;
+  const opsEl = document.createElement("span");
+  opsEl.className = "hover-ops";
+  opsEl.textContent = `\n${ops}`;
+  hoverTipEl.append(idEl, opsEl);
+  hoverTipEl.classList.remove("hidden");
+
+  // Keep the tip inside #app: near the right/bottom edge, flip it to the other
+  // side of the cursor rather than letting it overflow the viewport.
+  const host = hoverTipEl.parentElement;
+  const hostW = host?.clientWidth ?? 0;
+  const hostH = host?.clientHeight ?? 0;
+  const w = hoverTipEl.offsetWidth;
+  const h = hoverTipEl.offsetHeight;
+  const left = x + 14 + w > hostW ? Math.max(0, x - 14 - w) : x + 14;
+  const top = y + 14 + h > hostH ? Math.max(0, y - 14 - h) : y + 14;
+  hoverTipEl.style.left = `${left}px`;
+  hoverTipEl.style.top = `${top}px`;
+}
+
+let lastHoverPointer = { x: 0, y: 0 };
+document.getElementById("app")?.addEventListener("pointermove", (e) => {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  lastHoverPointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+});
+
+viewer.setEntityHoverHandler((result) => {
+  if (!result) {
+    hideHoverTip();
+    return;
+  }
+  showHoverTip(result.entityId, lastHoverPointer.x, lastHoverPointer.y);
+});
+
+function hideInspectorCard(): void {
+  entityFactsRequestId = null; // a newer/cleared selection supersedes any in-flight reply
+  inspectorEl?.classList.add("hidden");
+}
+
+/** Latched so a slow reply for a superseded selection is discarded — the same
+ * requestId stale-response idiom `massPropertiesRequest`/`measureExactRequest`
+ * already use. */
+let entityFactsRequestId: string | null = null;
+
+function requestEntityFacts(entityId: string): void {
+  if (!inspectorEl) return;
+  // Mesh sources have no analytic surface type at all; the host would only
+  // answer with an error, so don't ask.
+  if (sourceKind !== "brep") {
+    hideInspectorCard();
+    return;
+  }
+  const requestId = `${Date.now()}-${Math.random()}`;
+  entityFactsRequestId = requestId;
+  renderInspectorCard(entityId, null);
+  post({ type: "entityFactsRequest", requestId, entityId });
+}
+
+/** `facts === null` renders the pending state, keeping the card's position
+ * stable instead of having it appear only once the round trip lands. */
+function renderInspectorCard(entityId: string, facts: EntityFacts | null, error?: string): void {
+  if (!inspectorEl) return;
+  inspectorEl.textContent = "";
+
+  const title = document.createElement("div");
+  title.className = "insp-title";
+  const name = document.createElement("span");
+  const id = document.createElement("span");
+  id.className = "insp-id";
+  id.textContent = entityId;
+  title.append(name, id);
+  inspectorEl.append(title);
+
+  if (error) {
+    name.textContent = "Unavailable";
+    const note = document.createElement("div");
+    note.className = "insp-note";
+    note.textContent = error;
+    inspectorEl.append(note);
+  } else if (!facts) {
+    name.textContent = "Inspecting…";
+  } else {
+    const content = inspectorContent(facts);
+    name.textContent = content.title;
+    for (const row of content.rows) {
+      const line = document.createElement("div");
+      line.className = "insp-row";
+      const k = document.createElement("span");
+      k.className = "insp-key";
+      k.textContent = row.key;
+      const v = document.createElement("span");
+      v.className = "insp-val";
+      v.textContent = row.value;
+      line.append(k, v);
+      inspectorEl.append(line);
+    }
+  }
+  inspectorEl.classList.remove("hidden");
+}
 
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
@@ -2816,6 +2956,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
         lastRawMassProperties = null; // stale — refers to the just-replaced model
         lastMeasurement = null; // stale entity ids — refer to the just-replaced model
+        hideInspectorCard(); // ditto — its facts describe the just-replaced shape
+        hideHoverTip();
         lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
         clearMarkupOverlay?.();
@@ -3026,6 +3168,17 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "massPropertiesError":
       if (msg.requestId !== massPropertiesRequestId) break;
       massPropertiesPanel.renderMessage(msg.message, true);
+      break;
+
+    case "entityFactsResult":
+      if (msg.requestId !== entityFactsRequestId) break; // stale — a newer selection superseded it
+      renderInspectorCard(msg.facts.entityId, msg.facts);
+      break;
+
+    case "entityFactsError":
+      if (msg.requestId !== entityFactsRequestId) break;
+      // Keep the card, showing why — silently vanishing would read as a bug.
+      renderInspectorCard(selection.list()[0]?.entityId ?? "", null, msg.message);
       break;
 
     case "standardPartsSearchResult":

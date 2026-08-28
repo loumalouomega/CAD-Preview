@@ -40,6 +40,10 @@ import { shouldSkipAutoReframe, type FitSphere } from "./reframePolicy";
  * `renderSelection()`, which `main.ts`'s `refreshColors()` already runs. */
 const selectionColor = (): number => paletteColor("accent");
 
+/** Hover raycasts are throttled to roughly one per frame — `pointermove` can
+ * fire far more often than that, and each raycast re-collects targets. */
+const HOVER_THROTTLE_MS = 16;
+
 /**
  * One split-view pane's private state (roadmap "Split view", Phase 1): its
  * own perspective/orthographic camera pair (swapped per-pane by the
@@ -155,6 +159,12 @@ export class Viewer {
   private pointSpriteScale = 0.02;
   private selectionMode: EntityType | null = null;
   private onEntityPick: ((r: PickResult, additive: boolean) => void) | null = null;
+  /** Hover reporting. `null` until `setEntityHoverHandler` registers one, which
+   * is also what attaches the pointermove listener. */
+  private onEntityHover: ((r: PickResult | null) => void) | null = null;
+  /** Last reported entity, so an unchanged hover reports nothing. */
+  private lastHoverKey: string | null = null;
+  private lastHoverAt = 0;
   private onEmptyPick: (() => void) | null = null;
   private pointerDownPos: { x: number; y: number } | null = null;
   private renderDirty = false;
@@ -1436,6 +1446,77 @@ export class Viewer {
     this.onEmptyPick = onEmpty;
   }
 
+  /**
+   * Registers a hover callback, invoked with the entity under the pointer or
+   * `null` over empty space. Registering one also starts listening; there was
+   * no `pointermove` on the canvas at all before this.
+   *
+   * Independent of {@link setEntityPickHandler} on purpose: hovering must never
+   * select, and this must not disturb `onSelectPointerUp`'s 4px drag tolerance.
+   * Suppressed entirely while a gizmo drag or an orbit drag is in progress —
+   * a tooltip chasing the cursor mid-drag is noise, and the raycast would be
+   * wasted work on every frame of the drag.
+   */
+  setEntityHoverHandler(onHover: (r: PickResult | null) => void): void {
+    if (!this.onEntityHover) {
+      this.renderer.domElement.addEventListener("pointermove", this.onHoverPointerMove);
+      this.renderer.domElement.addEventListener("pointerleave", this.onHoverPointerLeave);
+    }
+    this.onEntityHover = onHover;
+  }
+
+  private onHoverPointerLeave = (): void => {
+    if (this.lastHoverKey !== null) {
+      this.lastHoverKey = null;
+      this.onEntityHover?.(null);
+    }
+  };
+
+  private onHoverPointerMove = (event: PointerEvent): void => {
+    if (!this.onEntityHover) return;
+    // A drag in progress owns the pointer — orbit, pan, or a gizmo handle.
+    if (this.pointerDownPos || this.transformControls.dragging) return;
+    if (this.selectionMode === null || !this.model) {
+      this.onHoverPointerLeave();
+      return;
+    }
+
+    const now = performance.now();
+    if (now - this.lastHoverAt < HOVER_THROTTLE_MS) return;
+    this.lastHoverAt = now;
+
+    // Same pane-relative resolution the click path uses, so hover and click
+    // can never disagree about what is under the cursor.
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const cssX = event.clientX - rect.left;
+    const cssY = event.clientY - rect.top;
+    const index = paneAtPoint(this.paneRects, cssX, cssY);
+    if (index < 0) {
+      this.onHoverPointerLeave();
+      return;
+    }
+    const ndc = ndcInPane(this.paneRects[index], cssX, cssY);
+    this.raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), this.panes[index].active);
+    this.raycaster.params.Line.threshold = this.pickThreshold;
+
+    const targets = collectTargets(this.model, this.selectionMode);
+    const hits = this.raycaster.intersectObjects(targets, false);
+    for (const h of hits) {
+      const r = resolvePick(h.object.userData, this.selectionMode);
+      if (r) {
+        // Only report a CHANGE of entity: a tooltip re-render per mouse move
+        // over one unchanged face is pure churn.
+        const key = `${r.entityType}:${r.entityId}`;
+        if (key !== this.lastHoverKey) {
+          this.lastHoverKey = key;
+          this.onEntityHover(r);
+        }
+        return;
+      }
+    }
+    this.onHoverPointerLeave();
+  };
+
   // ── Transform gizmo (roadmap "Transform gizmo", closed) ─────────────────
   // Thin wrapper over three.js's own `TransformControls`, not hand-rolled
   // drag math. The gizmo is always attached to `this.gizmoProxy` — an
@@ -1934,6 +2015,8 @@ export class Viewer {
     this.renderer.domElement.removeEventListener("pointerdown", this.onGizmoPointerDown, true);
     this.renderer.domElement.removeEventListener("pointerdown", this.onSelectPointerDown);
     this.renderer.domElement.removeEventListener("pointerup", this.onSelectPointerUp);
+    this.renderer.domElement.removeEventListener("pointermove", this.onHoverPointerMove);
+    this.renderer.domElement.removeEventListener("pointerleave", this.onHoverPointerLeave);
     this.renderScheduler.cancel();
     this.gizmo.dispose();
     this.clearModel();

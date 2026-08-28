@@ -915,6 +915,26 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "entityFactsRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Geometry classification requires a B-rep source; a mesh has no analytic surface type.");
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const facts = await this.pipeline.getEntityFacts(
+            this.context.extensionPath,
+            bytes,
+            route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+            currentEdits,
+            msg.entityId
+          );
+          post({ type: "entityFactsResult", requestId: msg.requestId, facts });
+        } catch (err) {
+          post({ type: "entityFactsError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
       if (msg.type === "standardPartsSearchRequest") {
         try {
           const result = await this.pipeline.searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });

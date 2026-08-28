@@ -46,6 +46,23 @@ const SURFACE_TYPE_BY_VALUE: Record<number, SurfaceType> = {
   4: "torus",
 };
 
+/** Analytic curve classification of an edge — the edge-side counterpart of
+ * {@link SurfaceType}, which had no analogue before. */
+export type CurveType = "line" | "circle" | "ellipse" | "hyperbola" | "parabola" | "bezier" | "bspline" | "other";
+
+/** `GeomAbs_CurveType` ordinals. Read symbolically at runtime (never
+ * hardcoded) — see {@link curveTypeOf}; this table only names the ordinals
+ * OCCT's own enum defines, in its declared order. */
+const CURVE_TYPE_BY_VALUE: Record<number, CurveType> = {
+  0: "line",
+  1: "circle",
+  2: "ellipse",
+  3: "hyperbola",
+  4: "parabola",
+  5: "bezier",
+  6: "bspline",
+};
+
 export interface EntityFacts {
   entityId: string;
   kind: "solid" | "face" | "edge" | "point";
@@ -72,6 +89,12 @@ export interface EntityFacts {
   planeOrigin: Vec3 | null;
   /** Set only for a face. */
   surfaceType: SurfaceType | null;
+  /** Set only for an edge; null for every other kind. Uses the same
+   * `BRepAdaptor_Curve_2(edge).GetType()` call `measureExact`'s `"radius"`
+   * kind already exercises against the live WASM, so this needed no new
+   * probing — it is a new field on an existing function, not new kernel
+   * surface. */
+  curveType: CurveType | null;
 }
 
 export type ExactMeasureKind = "distance" | "edgeLength" | "radius";
@@ -232,6 +255,7 @@ export async function getEntityFacts(
     let normal: Vec3 | null = null;
     let planeOrigin: Vec3 | null = null;
     let surfaceType: SurfaceType | null = null;
+    let curveType: CurveType | null = null;
 
     if (kind === "solid" || kind === "face") {
       const props = new oc.GProp_GProps_1();
@@ -245,6 +269,9 @@ export async function getEntityFacts(
       cleanup.push(props);
       oc.BRepGProp.LinearProperties(handle, props, false, false);
       length = props.Mass();
+      const curve = new oc.BRepAdaptor_Curve_2(handle);
+      cleanup.push(curve);
+      curveType = CURVE_TYPE_BY_VALUE[curve.GetType().value] ?? "other";
     }
 
     if (kind === "face") {
@@ -256,7 +283,7 @@ export async function getEntityFacts(
       surfaceType = SURFACE_TYPE_BY_VALUE[surf.GetType().value] ?? "other";
     }
 
-    return { entityId, kind, bbox, center, area, length, normal, planeOrigin, surfaceType };
+    return { entityId, kind, bbox, center, area, length, normal, planeOrigin, surfaceType, curveType };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

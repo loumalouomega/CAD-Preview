@@ -534,6 +534,19 @@ try {
     const r = await callTolerant("measure_exact", { path: radiusTestModel, kind: "radius", entityIdA: `edge-${i}` });
     if (r.error || Math.abs(r.value.value - knownRadius) > 1e-6) continue;
     cylinderRadiusFound = r.value;
+    // curveType (roadmap "Explain the geometry under the cursor"): the edge
+    // analogue of surfaceType, which EntityFacts had no counterpart for. This
+    // edge is a KNOWN circle — measure_exact just resolved its exact radius —
+    // so inspect must classify it as one, and must NOT claim a surfaceType.
+    const rim = await call("inspect", { path: radiusTestModel, entityId: `edge-${i}` });
+    assert(
+      rim.kind === "edge" && rim.curveType === "circle",
+      `inspect classifies the cylinder's rim as a circular edge (got ${rim.curveType})`
+    );
+    assert(
+      rim.surfaceType === null && rim.normal === null,
+      "inspect reports no surfaceType/normal for an edge — fields a curve gives no meaning to"
+    );
     const len = await call("measure_exact", { path: radiusTestModel, kind: "edgeLength", entityIdA: `edge-${i}` });
     assert(
       Math.abs(len.value - 2 * Math.PI * knownRadius) < 1e-6,
@@ -552,6 +565,15 @@ try {
     distanceWithoutB.error && /entityIdB/.test(distanceWithoutB.error),
     "measure_exact distance without entityIdB fails with a clear, actionable error"
   );
+  // The same edge measure_exact rejects as non-circular must classify as
+  // something OTHER than "circle" — the two must agree, or one of them is wrong.
+  {
+    const straight = await call("inspect", { path: model, entityId: "edge-0" });
+    assert(
+      straight.kind === "edge" && straight.curveType !== null && straight.curveType !== "circle",
+      `inspect classifies a non-circular edge as a non-circle (got ${straight.curveType})`
+    );
+  }
   const nonCircular = await callTolerant("measure_exact", { path: model, kind: "radius", entityIdA: "edge-0" });
   assert(
     nonCircular.error && /not a circular arc/.test(nonCircular.error),

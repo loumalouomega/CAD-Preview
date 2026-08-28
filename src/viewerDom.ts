@@ -131,6 +131,16 @@ export function viewerBodyHtml(): string {
            is active. Below the markup canvas so annotations draw over them. -->
       <div id="pane-divider-v" class="pane-divider hidden"></div>
       <div id="pane-divider-h" class="pane-divider hidden"></div>
+      <!-- Hover "teach" tooltip: the entity id under the cursor and which ops
+           MENTION it. Cursor-anchored, so it lives inside #app (whose box the
+           canvas shares) and is pointer-events:none — it must never eat a
+           click meant for the geometry beneath it. -->
+      <div id="hover-tip" class="hidden"></div>
+      <!-- Inspector card: analytic classification of the SELECTED entity.
+           Selection-driven rather than hover-driven because it costs a host
+           round trip, and getEntityFacts has no shape cache — every call
+           re-reads the source bytes and replays the whole op list. -->
+      <div id="inspector-card" class="hidden"></div>
     </div>
   </div>
   <div id="toolbar">
