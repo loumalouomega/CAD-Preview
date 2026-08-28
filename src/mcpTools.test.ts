@@ -1786,7 +1786,7 @@ describe("generate_mesh", () => {
     await fs.writeFile(vtkModel, "not real vtk content, mocked pipeline doesn't parse it", "utf8");
     await applyEditOps(c, { path: vtkModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
     const result = await generateMeshTool(c, { path: vtkModel });
-    expect(c.pipeline.convertToStlBoundary).toHaveBeenCalledWith(expect.any(Uint8Array), "vtk");
+    expect(c.pipeline.convertToStlBoundary).toHaveBeenCalledWith(expect.any(Uint8Array), "vtk", "model.vtk", []);
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(genCall[1].kind).toBe("stl");
     expect(result.warnings.some((w) => w.includes("NOT baked"))).toBe(true);

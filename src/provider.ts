@@ -5,9 +5,11 @@ import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellat
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import { meshioCompanionCandidates } from "./meshioCompanions";
+import type { MeshioCompanion } from "./meshioService";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
-import { COMPARABLE_MESH_FORMATS } from "./fileRouter";
+import { COMPARABLE_MESH_FORMATS, AMBIGUOUS_MESHIO_EXTENSIONS } from "./fileRouter";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
@@ -73,6 +75,32 @@ async function resolveGltfBuffersFor(uri: vscode.Uri, format: CadFormat, bytes: 
       return undefined;
     }
   });
+}
+
+/**
+ * Reads whatever sibling files a meshio++ multi-file/companion format needs
+ * beside `uri` — the same "candidate list is pure, disk I/O is per-consumer"
+ * split `resolveGltfBuffersFor` above already established for glTF's
+ * external buffers. `meshioCompanionCandidates` (pure, `meshioCompanions.ts`)
+ * decides WHICH basenames to look for; a missing one is silently skipped
+ * (`try { readFile } catch { undefined }`, filtered out below) — a
+ * self-contained source (an XDMF using the "XML"/"Binary" data formats, or
+ * any single-file format) correctly yields `[]` with no wasted round trip.
+ */
+async function resolveMeshioCompanionsFor(uri: vscode.Uri, basename: string, meshioFormat: string, bytes: Uint8Array): Promise<MeshioCompanion[]> {
+  const primaryText = meshioFormat === "xdmf" ? Buffer.from(bytes).toString("utf8") : undefined;
+  const candidates = meshioCompanionCandidates(basename, meshioFormat, primaryText);
+  if (candidates.length === 0) return [];
+  const resolved = await Promise.all(
+    candidates.map(async (name): Promise<MeshioCompanion | undefined> => {
+      try {
+        return { name, bytes: await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, "..", name)) };
+      } catch {
+        return undefined;
+      }
+    })
+  );
+  return resolved.filter((c): c is MeshioCompanion => c !== undefined);
 }
 
 interface PendingExport {
@@ -823,14 +851,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
               async () => Buffer.from(text, "utf8"),
               post
             );
-          } else if (msg.target === "med" || msg.target === "cgns" || msg.target === "xdmf") {
-            // meshio++ bridge — Gmsh's own writers can't produce these (no
-            // CGNS/MED support in this build); re-encode via
-            // `meshioService.ts`'s exportViaMeshio(), fed generateMesh()'s
-            // own MSH 4.1 mshText directly (meshio++ 9.7.0 reads 4.1
-            // natively, physical groups included — see exportViaMeshio's doc
-            // comment; before 9.7.0 this needed a legacy MSH 2.2 detour).
-            // See `meshExportFormats.ts`'s doc comment for the MED/CGNS caveats.
+          } else if (meshExportFormat(msg.target)?.via === "meshio") {
+            // meshio++ bridge — registry-driven (`meshExportFormats.ts`'s
+            // `via` field), covering every id Gmsh's own writers can't
+            // produce (originally just MED/CGNS/XDMF, now also VTU/HMF/AVS
+            // UCD/Mphtxt/Netgen/FLAC3D/WKT/Flux — see that file's doc
+            // comment for the live-WASM verification each addition needed).
+            // Re-encodes via `meshioService.ts`'s exportViaMeshio(), fed
+            // generateMesh()'s own MSH 4.1 mshText directly (meshio++ 9.7.0+
+            // reads 4.1 natively, physical groups included — see
+            // exportViaMeshio's doc comment).
             const format = meshExportFormat(msg.target)!;
             const meshed = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
             const { bytes, companion } = await this.pipeline.exportViaMeshio(meshed.mshText, msg.target);
@@ -1300,7 +1330,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()}…` });
       const isFoam = format === "openfoam";
+      const basename = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+      if (!isFoam) {
+        const ext = basename.slice(basename.lastIndexOf(".") + 1).toLowerCase();
+        const ambiguityCaveat = AMBIGUOUS_MESHIO_EXTENSIONS.get(ext);
+        if (ambiguityCaveat) post({ type: "status", text: ambiguityCaveat });
+      }
       const bytes = isFoam ? undefined : await vscode.workspace.fs.readFile(uri);
+      const companions = isFoam ? undefined : await resolveMeshioCompanionsFor(uri, basename, format, bytes!);
       const [boundary, metadata, existingParts] = await Promise.all([
         // OpenFOAM is the one format that is NOT a single file — a `.foam`
         // marker's real mesh lives in sibling files under
@@ -1311,8 +1348,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // correlation below cannot fire for it by construction.
         isFoam
           ? this.pipeline.convertFoamCaseToStlBoundary(uri.fsPath).then((stlBytes) => ({ stlBytes, regions: undefined }))
-          : this.pipeline.convertToStlBoundaryWithRegions(bytes!, format),
-        isFoam ? EMPTY_MESHIO_METADATA : this.pipeline.readMeshioMetadata(bytes!, format),
+          : this.pipeline.convertToStlBoundaryWithRegions(bytes!, format, basename, companions!),
+        isFoam ? EMPTY_MESHIO_METADATA : this.pipeline.readMeshioMetadata(bytes!, format, basename, companions!),
         readParts(uri),
       ]);
       let parts = existingParts;

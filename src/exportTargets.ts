@@ -75,6 +75,11 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   xdmf: "xdmf",
   mdpa: "mdpa",
   openfoam: "foam",
+  gmsh: "msh",
+  abaqus: "inp",
+  unv: "unv",
+  su2: "su2",
+  medit: "mesh",
 };
 
 /** Human-readable label for a format, used in the export quick-pick. */
@@ -95,4 +100,9 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   xdmf: "XDMF",
   mdpa: "MDPA",
   openfoam: "OpenFOAM",
+  gmsh: "Gmsh Mesh",
+  abaqus: "Abaqus",
+  unv: "I-DEAS Universal",
+  su2: "SU2",
+  medit: "INRIA Medit",
 };

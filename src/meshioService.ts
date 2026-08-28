@@ -119,6 +119,81 @@ function wrapMeshioFault(err: unknown): Error {
   return new Error(`meshio++ crashed (${raw || "WASM abort"}) — the kernel has been reset; try the operation again.`);
 }
 
+/** One sibling file a multi-file format's reader needs beside the primary —
+ * see `meshioCompanions.ts` for how a caller discovers which ones. */
+export interface MeshioCompanion {
+  /** The sibling's own basename (e.g. `"model.h5"`, `"mesh.ele"`) — the
+   * EXACT name the primary file's reader will look it up by, whether that's
+   * a static stem convention (tetgen/triangle/ensight) or the primary
+   * file's own content (XDMF's `<DataItem>` references). */
+  name: string;
+  bytes: Uint8Array;
+}
+
+/**
+ * Stages `sourceBytes` (and every companion) into meshio++'s MEMFS for one
+ * call, and returns the primary's path plus the full list of paths written
+ * (for `unstageMeshioSource` to clean up in `finally`).
+ *
+ * **Fixes a real, verified import defect**: every entry point below used to
+ * write ONLY the primary's bytes, under a synthetic renamed path
+ * (`/in.<meshioFormat>`) — so a multi-file source (most concretely, the
+ * `.xdmf` + `.h5` pair `exportViaMeshio()` itself produces) could never be
+ * read back. Confirmed live against the WASM: reading a written `.xdmf`
+ * with its `.h5` sibling deleted throws `HDF5: could not open file
+ * /model.h5` — HDF5 companion resolution is relative to the READING file's
+ * own MEMFS directory, and (separately confirmed) so is a stem-convention
+ * reader's sibling lookup (tetgen `.node`→`.ele`, etc.). A flat MEMFS root
+ * is that directory for every file staged here, so no subdirectory
+ * juggling is needed for either convention — the primary keeps its
+ * synthetic path when `sourceName` is omitted (preserving every existing
+ * caller's behavior byte-for-byte) or its real basename when given one
+ * (required for a stem-convention format, whose reader discovers its
+ * sibling by swapping the PRIMARY's own extension); every companion is
+ * always written under its own real/referenced basename, never renamed.
+ *
+ * **Fixes ONLY the missing-companion failure, not every XDMF re-import** —
+ * a SEPARATE, pre-existing meshio++ 10.14.0 bug means an XDMF whose mesh
+ * mixes cell types (points/lines/triangles/tets — exactly what this
+ * codebase's own `generate_mesh` always produces, since `Mesh.SaveAll=1` is
+ * forced unconditionally) still fails to re-import, with a DIFFERENT error
+ * (`"XDMF: unknown mixed topology index"`) than the one this function
+ * fixes. Verified these are two independent, ordered failures, not one
+ * masking the other: the same Mixed-topology fixture with its `.h5` deleted
+ * fails with the ORIGINAL `"HDF5: could not open file"` error instead — the
+ * companion lookup this function performs runs first and succeeds; only
+ * then does meshio++'s own topology parsing fail. See
+ * `doc/gmsh-integration.md`'s "The meshio++ bridge" section.
+ */
+function stageMeshioSource(
+  m: MeshioApi,
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName: string | undefined,
+  companions: readonly MeshioCompanion[] | undefined
+): { primaryPath: string; allPaths: string[] } {
+  const primaryPath = `/${sourceName || `in.${meshioFormat}`}`;
+  const allPaths = [primaryPath];
+  m.FS.writeFile(primaryPath, sourceBytes);
+  for (const companion of companions ?? []) {
+    const path = `/${companion.name}`;
+    m.FS.writeFile(path, companion.bytes);
+    allPaths.push(path);
+  }
+  return { primaryPath, allPaths };
+}
+
+/** Unlinks every MEMFS path `stageMeshioSource` wrote, plus any extra
+ * output/scratch paths a caller also wants cleaned up — each unlink is
+ * independently best-effort (a path that was never written, e.g. because an
+ * earlier step threw, is silently skipped), matching every other
+ * `try{unlink}catch{}` cleanup already in this file. */
+function unstageMeshioSource(m: MeshioApi, paths: readonly string[], extra: readonly string[] = []): void {
+  for (const path of [...paths, ...extra]) {
+    try { m.FS.unlink(path); } catch { /* ignore */ }
+  }
+}
+
 /**
  * Converts `sourceBytes` (a `meshioFormat`-format file) to an ASCII STL
  * boundary surface — the "funnel every meshio-only import through STL"
@@ -133,20 +208,28 @@ function wrapMeshioFault(err: unknown): Error {
  * format-native richness (regions, point/cell scalar data, multi-material
  * grouping) for a small, low-risk v1 — an explicit scope decision, not an
  * oversight; see CLAUDE.md's "meshio++ integration" section.
+ *
+ * `sourceName`/`companions` are optional, additive parameters (every
+ * pre-existing call site omitting them keeps today's exact behavior —
+ * a synthetic `/in.<meshioFormat>` path, no companions) — see
+ * `stageMeshioSource`'s doc comment for why they exist and what they fix.
  */
-export async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat: string): Promise<Uint8Array> {
+export async function convertToStlBoundary(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<Uint8Array> {
   const m = await getMeshio();
-  const inPath = `/in.${meshioFormat}`;
+  const { primaryPath, allPaths } = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
   const outPath = "/out.stl";
-  m.FS.writeFile(inPath, sourceBytes);
   try {
-    m.convertSurface(inPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
+    m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
     return m.FS.readFile(outPath);
   } catch (err) {
     throw wrapMeshioFault(err);
   } finally {
-    try { m.FS.unlink(inPath); } catch { /* ignore */ }
-    try { m.FS.unlink(outPath); } catch { /* ignore */ }
+    unstageMeshioSource(m, allPaths, [outPath]);
   }
 }
 
@@ -183,16 +266,23 @@ export interface MeshioMetadataSummary {
  * genuinely unreadable file degrades to every field empty, since this is
  * pure supplementary information and must never block or fail an import
  * `convertToStlBoundary` might otherwise handle fine.
+ *
+ * `sourceName`/`companions` are the same optional, additive pair every
+ * other entry point in this file now takes — see `stageMeshioSource`.
  */
-export async function readMeshioMetadata(sourceBytes: Uint8Array, meshioFormat: string): Promise<MeshioMetadataSummary> {
+export async function readMeshioMetadata(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<MeshioMetadataSummary> {
   const empty: MeshioMetadataSummary = { regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] };
   try {
     const m = await getMeshio();
-    const inPath = `/meta.${meshioFormat}`;
-    m.FS.writeFile(inPath, sourceBytes);
+    const { primaryPath, allPaths } = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const meta = m.readMetadata(inPath, meshioFormat) as any;
+      const meta = m.readMetadata(primaryPath, meshioFormat) as any;
       return {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         regions: (meta.regions ?? []).map((r: any) => ({ name: r.name, kind: r.kind, numEntries: r.numEntries })),
@@ -201,7 +291,7 @@ export async function readMeshioMetadata(sourceBytes: Uint8Array, meshioFormat: 
         fieldDataNames: meta.fieldDataNames ?? [],
       };
     } finally {
-      try { m.FS.unlink(inPath); } catch { /* ignore */ }
+      unstageMeshioSource(m, allPaths);
     }
   } catch (err) {
     resetMeshioIfAbort(err);
@@ -264,22 +354,28 @@ export interface MeshioBoundaryResult {
  * empty. Never throws — errors degrade to the plain STL boundary, since a
  * failed region correlation must never block an import `convertToStlBoundary`
  * alone would otherwise handle fine.
+ *
+ * `sourceName`/`companions` are the same optional, additive pair every
+ * other entry point in this file now takes — see `stageMeshioSource`.
  */
 export async function convertToStlBoundaryWithRegions(
   sourceBytes: Uint8Array,
-  meshioFormat: string
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
 ): Promise<MeshioBoundaryResult> {
-  const fallback = async (): Promise<MeshioBoundaryResult> => ({ stlBytes: await convertToStlBoundary(sourceBytes, meshioFormat) });
+  const fallback = async (): Promise<MeshioBoundaryResult> => ({
+    stlBytes: await convertToStlBoundary(sourceBytes, meshioFormat, sourceName, companions),
+  });
   try {
     const m = await getMeshio();
-    const inPath = `/regions-in.${meshioFormat}`;
-    m.FS.writeFile(inPath, sourceBytes);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let mesh: any;
+    const { primaryPath, allPaths } = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
     try {
-      mesh = m.readMesh(inPath, meshioFormat);
+      mesh = m.readMesh(primaryPath, meshioFormat);
     } finally {
-      try { m.FS.unlink(inPath); } catch { /* ignore */ }
+      unstageMeshioSource(m, allPaths);
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cellRegions = ((mesh.regions ?? []) as any[]).filter((r) => r.kind === "cell");
@@ -392,23 +488,27 @@ export interface MeshioFieldValues {
  * uses — then each boundary triangle's parent-cell value is looked up and
  * broadcast to its 3 corners (a cell-data field is constant across a whole
  * original cell, hence across every boundary face descended from it).
+ *
+ * `sourceName`/`companions` are the same optional, additive pair every
+ * other entry point in this file now takes — see `stageMeshioSource`.
  */
 export async function readMeshioFieldValues(
   sourceBytes: Uint8Array,
   meshioFormat: string,
   fieldName: string,
-  kind: "point" | "cell"
+  kind: "point" | "cell",
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
 ): Promise<MeshioFieldValues | null> {
   try {
     const m = await getMeshio();
-    const inPath = `/field-in.${meshioFormat}`;
-    m.FS.writeFile(inPath, sourceBytes);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let mesh: any;
+    const { primaryPath, allPaths } = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
     try {
-      mesh = m.readMesh(inPath, meshioFormat);
+      mesh = m.readMesh(primaryPath, meshioFormat);
     } finally {
-      try { m.FS.unlink(inPath); } catch { /* ignore */ }
+      unstageMeshioSource(m, allPaths);
     }
 
     const boundary = m.extractSurface(mesh, true);
@@ -686,6 +786,7 @@ function boundaryTrianglesToAsciiStl(
  * `provider.ts`'s `meshingExport` handler does this the same way it already
  * rewrites `.geo_unrolled`'s `Merge "...xao"` stub.
  */
+
 export async function exportViaMeshio(
   gmshMshText: string,
   outMeshioFormat: string
