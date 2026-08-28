@@ -45,7 +45,7 @@ describe("tetsToMsh41", () => {
     expect(nodes.slice(6, 10)).toEqual(["0 0 0", "1 0 0", "0 1 0", "0 0 1"]);
   });
 
-  it("writes one element entity block, tet4 (type 4), 1-based node references offset from 0-based input, with the 3rd/4th node swapped to correct fTetWild's winding", () => {
+  it("writes one element entity block, tet4 (type 4), 1-based node references offset from 0-based input, with NO node reordering (float-tetwild-wasm v0.2.0+ already emits the positive-volume convention)", () => {
     const vertices = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1];
     const msh = tetsToMsh41(vertices, [0, 1, 2, 3]);
     const elements = sections(msh)["Elements"];
@@ -54,8 +54,8 @@ describe("tetsToMsh41", () => {
     // entity block: dim tag elementType numElementsInBlock — type 4 = tet4
     expect(elements[1]).toBe("3 1 4 1");
     // element: tag n1 n2 n3 n4 — 0-based [0,1,2,3] becomes 1-based [1,2,3,4],
-    // then nodes 3 and 4 (the input's c/d) are swapped: "1 1 2 4 3".
-    expect(elements[2]).toBe("1 1 2 4 3");
+    // with no reordering: "1 1 2 3 4".
+    expect(elements[2]).toBe("1 1 2 3 4");
   });
 
   it("handles multiple tetrahedra with correctly incrementing element tags and node references", () => {
@@ -70,9 +70,9 @@ describe("tetsToMsh41", () => {
     expect(s["Nodes"][0]).toBe("1 8 1 8");
     const elements = s["Elements"];
     expect(elements[0]).toBe("1 2 1 2");
-    // c/d swapped per tet: [1,2,3,4] -> "1 2 4 3", [5,6,7,8] -> "5 6 8 7".
-    expect(elements[2]).toBe("1 1 2 4 3");
-    expect(elements[3]).toBe("2 5 6 8 7");
+    // No reordering: [1,2,3,4] -> "1 2 3 4", [5,6,7,8] -> "5 6 7 8".
+    expect(elements[2]).toBe("1 1 2 3 4");
+    expect(elements[3]).toBe("2 5 6 7 8");
   });
 
   it("produces a structurally valid, empty MSH for a zero-tet result rather than a malformed tag range", () => {

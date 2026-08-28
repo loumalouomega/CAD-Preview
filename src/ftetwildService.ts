@@ -10,42 +10,45 @@
 // UNLIKE gmsh-wasm, loaded with a DYNAMIC `await import(...)`, not a static
 // top-of-file `import` — verified against the live package
 // (`node_modules/float-tetwild-wasm/package.json`): `"type": "module"`,
-// `exports: {".": "./index.js"}` (a bare string, no conditions map at all),
-// so `require("float-tetwild-wasm")` throws `ERR_REQUIRE_ESM`. Same reason,
+// `exports: {".": {"types": "./index.d.ts", "default": "./index.js"}}` (no
+// `require` condition, in either v0.1.0 or v0.2.0), so
+// `require("float-tetwild-wasm")` throws `ERR_REQUIRE_ESM`. Same reason,
 // same mechanism as `meshioService.ts`'s `getMeshio()`. Must stay `external`
 // in esbuild.mjs for the identical two reasons gmsh-wasm/meshio++ must:
 // nothing statically imports its `.wasm` (it self-locates via
 // `import.meta.url`, and `Module.wasmBinary` is NOT honored by the glue —
-// verified live, so real files on disk are mandatory, not an optimization),
-// and its threaded variant has the same eager-worker-spawn risk.
+// verified live against both v0.1.0 and v0.2.0, so real files on disk are
+// mandatory, not an optimization), and its threaded variant has the same
+// eager-worker-spawn risk.
 //
 // Loaded with `{ threads: false }` explicitly — NEVER the default
 // (`threads` omitted). The package's own `threadsSupported()` helper
 // (`node_modules/float-tetwild-wasm/index.js`) returns `true`
 // UNCONDITIONALLY under Node (it never checks `crossOriginIsolated` there,
-// unlike the browser branch) — so leaving it unset always picks the
+// unlike the browser branch) — STILL true as of v0.2.0, byte-identical to
+// v0.1.0's own implementation — so leaving it unset always picks the
 // threaded build, which (a) needs a `libtbb.so.12.16` side-module loaded via
-// dynamic linking, (b) spawns a 4-worker pthread pool that keeps Node's
+// dynamic linking and (b) spawns a 4-worker pthread pool that keeps Node's
 // event loop alive (the package's own smoke test calls `process.exit(0)`
-// explicitly, apparently for this reason), and, worst of all, (c) routes
-// `std::cout`/`std::cerr` through a raw `fs.writeSync(1/2, ...)` in its
-// Node glue rather than `console.log`/`console.error` — bypassing
-// `mcpServer.ts`'s stdout rebinding entirely and corrupting the MCP
-// JSON-RPC stream the instant a tetrahedralization runs. The serial build
-// has none of this: verified live, zero `worker_threads`/`SharedArrayBuffer`
-// references in its glue.
+// explicitly, apparently for this reason). v0.2.0 DID fix a third reason
+// this used to matter — the threaded build's Node glue used to route
+// `std::cout`/`std::cerr` through a raw `fs.writeSync(1/2, ...)` instead of
+// `console.log`/`console.error`, bypassing `mcpServer.ts`'s stdout
+// rebinding; `index.js` now defaults BOTH builds' Node stdio through
+// `console.log`/`console.error` — but (a)/(b) alone are still enough reason
+// to keep forcing the serial build.
 //
-// `moduleArgs.print` is NOT optional — verified against the live WASM.
-// fTetWild's own `Parameters::init()` (C++) writes 9 unconditional
-// `std::cout` lines per call (`bbox_diag_length = ...`, `eps = ...`, ...),
-// NOT gated by `is_quiet`, plus more from its simplification pass
-// ("collapsing ...", "swapping ..."). Confirmed empirically: a probe run
-// with no `print` override emitted 1181 bytes of this text straight onto
-// real stdout per tetrahedralize() call; the identical call with
-// `moduleArgs.print` set as below produced zero bytes on stdout. Both
-// builds honor `Module["print"]`/`Module["printErr"]` (assigned during
-// module init, before any export is callable), so this is a complete fix
-// with no package patching needed.
+// `moduleArgs.print`/`printErr` overrides are NO LONGER NEEDED as of
+// v0.2.0 — a real, verified fix, not a workaround kept defensively.
+// fTetWild's own `Parameters::init()` (C++) used to write 9 unconditional
+// `std::cout` lines per call (`bbox_diag_length = ...`, `eps = ...`, ...)
+// regardless of `is_quiet`, plus more from its simplification pass
+// ("collapsing ...", "swapping ..."); v0.1.0's own binding hardcoded
+// `is_quiet = true` but that flag had no effect on any of these prints.
+// v0.2.0 gates every one of them behind `if (!is_quiet)` at the source
+// (`src/Parameters.h`/`src/Simplification.cpp` and others in the fTetWild
+// checkout), so with `is_quiet` forced `true` by `Bindings.cpp`, a call now
+// produces zero bytes on stdout/stderr with no override needed at all.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type FtetwildApi = any;
@@ -64,20 +67,10 @@ export function getFtetwild(): Promise<FtetwildApi> {
   if (!_ftetwildPromise) {
     _ftetwildPromise = (async () => {
       const { loadFloatTetwild } = await import("float-tetwild-wasm");
-      return loadFloatTetwild({
-        threads: false,
-        moduleArgs: {
-          // Swallows Parameters::init()'s unconditional std::cout lines —
-          // see this file's top-of-file comment. Deliberately a no-op, not
-          // routed to console.error: this is normal per-call diagnostic
-          // chatter (bbox/epsilon values), not an error, and would otherwise
-          // spam stderr on every single generate.
-          print: () => {
-            /* intentionally silent — see top-of-file comment */
-          },
-          printErr: (...args: unknown[]) => console.error(...args),
-        },
-      });
+      // `threads: false` is still load-bearing as of v0.2.0 — see the
+      // top-of-file comment for why. No `moduleArgs` override needed
+      // anymore: v0.2.0 is quiet by default (see top-of-file comment).
+      return loadFloatTetwild({ threads: false });
     })().catch((err) => {
       _ftetwildPromise = null;
       throw err;
@@ -132,11 +125,14 @@ function wrapFtetwildFault(err: unknown): Error {
 }
 
 /** Optional tuning params for {@link tetrahedralize} — mirrors
- * `float-tetwild-wasm`'s own `tetrahedralize()` JSDoc exactly (v0.1.0's
- * binding exposes only these four of fTetWild's ~20 CLI parameters; the
- * rest — `disable_filtering`, `coarsen`, `manifold_surface`, `num_threads`,
- * a sizing field — are hardcoded in the package's own `Bindings.cpp` and
- * unreachable from JS as of this version). */
+ * `float-tetwild-wasm`'s own shipped `TetParams` JSDoc (`index.d.ts`)
+ * exactly. v0.1.0's binding exposed only the first four of these; v0.2.0
+ * additionally exposes `disableFiltering`/`coarsen`/`manifoldSurface`/
+ * `numThreads`, which used to be hardcoded in the package's own
+ * `Bindings.cpp` and unreachable from JS. None of the four new fields are
+ * currently threaded through by any caller in this codebase — they're
+ * available for a future, measured use (e.g. `manifoldSurface` for the
+ * mesh-repair path) rather than wired in speculatively. */
 export interface FtetwildParams {
   /** Envelope size, as a fraction of the input's bounding-box diagonal.
    * Smaller = more faithful to the input surface, slower. Default `1e-3`. */
@@ -148,6 +144,16 @@ export interface FtetwildParams {
   stopEnergy?: number;
   /** Max optimization iterations. Default `80`. */
   maxIts?: number;
+  /** Skip winding-number/flood-fill interior-exterior filtering, returning
+   * the raw (unfiltered) tetrahedralization. Default `false`. */
+  disableFiltering?: boolean;
+  /** Coarsen the output mesh after optimization. Default `false`. */
+  coarsen?: boolean;
+  /** Force the output boundary to be manifold. Default `false`. */
+  manifoldSurface?: boolean;
+  /** Max TBB threads to use (0 = library default). No effect on the serial
+   * build this codebase always loads. Default `0`. */
+  numThreads?: number;
 }
 
 export interface FtetwildResult {
@@ -162,23 +168,31 @@ export interface FtetwildResult {
  * the dirty input Gmsh's `classifySurfaces` rejects (holes, self-
  * intersections, non-manifold edges), since that robustness against exactly
  * that input class is fTetWild's whole reason for existing here. Always
- * produces the INTERIOR volume mesh (fTetWild's own default winding-number
- * filtering, unconditional in this binding — there is no "disable
- * filtering" option reachable from JS in v0.1.0) — never a surface, never
- * the unfiltered convex hull.
+ * produces the INTERIOR volume mesh by default (fTetWild's own winding-
+ * number filtering) — never a surface. As of v0.2.0 the unfiltered
+ * convex-hull tetrahedralization IS reachable via `params.disableFiltering`
+ * (see {@link FtetwildParams}), unlike v0.1.0, but this function's callers
+ * don't currently set it.
  *
- * `vertices`/`indices` are handed to the WASM binding directly (not copied
- * to plain arrays first) — the package's own glue iterates them with a
- * plain `for...of`, which typed arrays support natively.
+ * Calls the package's `tetrahedralizeTyped()` entry point (v0.2.0+), not
+ * `tetrahedralize()` — the plain-array entry point's shipped types accept
+ * only `number[] | Float64Array` for vertices and `number[] | Int32Array`
+ * for faces, neither of which matches this function's actual inputs
+ * (`Float32Array` positions, `Uint32Array` indices); `tetrahedralizeTyped`
+ * accepts both and returns `Float64Array`/`Uint32Array` directly (a
+ * zero-copy heap-view path, per the package's own README: ~49x faster
+ * input marshaling and ~9x faster output unmarshaling than the old
+ * per-element embind-vector loop on an ~82k-triangle mesh), which already
+ * matches {@link FtetwildResult} with no conversion needed.
  */
 export async function tetrahedralize(
   mesh: { positions: Float32Array; indices: Uint32Array },
   params: FtetwildParams = {}
 ): Promise<FtetwildResult> {
   const ft = await getFtetwild();
-  let result: { status: number; vertices: number[]; tets: number[] };
+  let result: { status: number; vertices: Float64Array; tets: Uint32Array };
   try {
-    result = ft.tetrahedralize(mesh.positions, mesh.indices, params);
+    result = ft.tetrahedralizeTyped(mesh.positions, mesh.indices, params);
   } catch (err) {
     throw wrapFtetwildFault(err);
   }
@@ -190,10 +204,7 @@ export async function tetrahedralize(
       `fTetWild could not tetrahedralize this mesh (status=${result.status}, produced ${result.tets.length / 4} tetrahedra) — the input may be empty, degenerate, or too small relative to its own envelope size.`
     );
   }
-  return {
-    vertices: Float64Array.from(result.vertices),
-    tets: Uint32Array.from(result.tets),
-  };
+  return { vertices: result.vertices, tets: result.tets };
 }
 
 /**
@@ -220,22 +231,21 @@ export async function tetrahedralize(
  * itself already rejects a genuinely empty result before this is ever
  * called with one, but this function stays correct on its own regardless.
  *
- * **The 3rd and 4th node of every tet are swapped relative to fTetWild's own
- * output order — a real, empirically-found winding mismatch, not a
- * stylistic choice.** Verified live: tetrahedralizing `examples/STL/cube.stl`
- * and computing each returned tet's signed volume via the standard
- * `(v1×v2)·v3` formula against fTetWild's raw `[a,b,c,d]` order gave
- * **negative volume for every single tet** (3393 of 3393 in one run); the
- * identical computation against `[a,b,c,d]` reordered to `[a,b,d,c]` gave
- * **positive volume for every tet** (3626 of 3626 in a second run) — i.e.
- * fTetWild's own tet node order is consistently the OPPOSITE of the
- * right-handed `(b-a)×(c-a)·(d-a) > 0` convention MSH `tet4`/Gmsh's own
- * `getElementQualities("minSICN")` expect. Left unswapped, every element
- * reads as inverted (`minSICN` comes back uniformly and severely negative —
- * confirmed: mean ≈ −0.87 on an otherwise perfectly ordinary cube
- * tetrahedralization) even though the geometry itself is completely
- * correct; swapping fixes it with no effect on which points/cells exist,
- * only their node ORDER within each element.
+ * **No node reordering is applied — as of `float-tetwild-wasm` v0.2.0,
+ * `tets` already uses the standard positive-signed-volume convention MSH
+ * `tet4`/VTK_TETRA/Gmsh's `getElementQualities("minSICN")` expect.** This
+ * WAS not true in v0.1.0: this function used to swap each tet's 3rd/4th
+ * node to compensate for a real, empirically-found winding bug (every
+ * returned tet had negative signed volume — confirmed live at the time via
+ * `(b-a)×(c-a)·(d-a)`, `minSICN` mean ≈ −0.87 on an otherwise ordinary
+ * cube). fTetWild fixed the bug at its source in v0.2.0
+ * (`src/MeshIO.cpp`'s `extract_volume_mesh` now ends with
+ * `T.col(2).swap(T.col(3))`, applying exactly the reorder this function
+ * used to do by hand) and ships a `assertPositiveWinding()` smoke check in
+ * its own CI gating publication — so re-applying the old swap here would
+ * silently re-invert every element. Re-verified against the live WASM
+ * post-upgrade via `scripts/mcp-smoke/run.mjs`'s `quality.min > -1e-6`
+ * assertion on `engine:"ftetwild"`.
  */
 export function tetsToMsh41(vertices: ArrayLike<number>, tets: ArrayLike<number>): string {
   const nodeCount = Math.floor(vertices.length / 3);
@@ -262,10 +272,8 @@ export function tetsToMsh41(vertices: ArrayLike<number>, tets: ArrayLike<number>
     for (let i = 0; i < tetCount; i++) {
       const a = tets[i * 4] + 1;
       const b = tets[i * 4 + 1] + 1;
-      // c/d swapped relative to fTetWild's own [a,b,c,d] order — see this
-      // function's doc comment for the live-verified winding finding.
-      const c = tets[i * 4 + 3] + 1;
-      const d = tets[i * 4 + 2] + 1;
+      const c = tets[i * 4 + 2] + 1;
+      const d = tets[i * 4 + 3] + 1;
       lines.push(`${i + 1} ${a} ${b} ${c} ${d}`);
     }
   } else {
