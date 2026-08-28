@@ -47,9 +47,15 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { summarizeQuality, type QualitySummary } from "./meshQuality";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MeshioApi = any;
+
+/** The subset of meshio++'s `Mesh` this module builds by hand (see
+ * `analyzeMeshioSurfaces`) — the full type lives in the package's own `.d.ts`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MeshioMesh = any;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _meshioPromise: Promise<MeshioApi> | null = null;
@@ -89,7 +95,7 @@ export function resetMeshio(): void {
  * each kernel's fault handling staying self-contained in its own service file.
  */
 function isMeshioWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table/i.test(message);
 }
 
 /**
@@ -554,6 +560,132 @@ export async function readMeshioFieldValues(
     resetMeshioIfAbort(err);
     return null;
   }
+}
+
+/**
+ * Per-component surface diagnostics from meshio++, complementing the OCCT
+ * sewing report `meshHeal.ts` already produces.
+ *
+ * **The genuinely new signal is `inconsistentPairCount`.** `meshTopology.ts`
+ * keys every edge through `edgeKey(a, b)`, which SORTS the pair — so
+ * orientation is discarded before counting and two adjacent triangles wound
+ * oppositely still register as a clean manifold edge. Verified against a
+ * hand-built tetrahedron with one face reversed: meshio reports
+ * `inconsistentPairs: 3` while boundary and non-manifold edges are both 0,
+ * i.e. geometry the existing analyzer calls perfectly clean.
+ *
+ * `boundaryEdgeCount`/`nonManifoldEdgeCount`/`degenerateTriangleCount`
+ * deliberately overlap with fields `meshTopology.ts` already computes. That
+ * overlap is the point: two independent implementations agreeing is a
+ * cross-check (`cube.stl` → 0, `holed-cube.stl` → 3 from both), and a
+ * disagreement is a finding rather than noise.
+ *
+ * **No MEMFS staging.** Unlike every other entry point in this file, this one
+ * takes an already-parsed welded soup and hands meshio++ a `Mesh` built in JS.
+ * Verified to work: these three functions accept a plain object literal, so
+ * there is no file to write, no `readMesh` to run and no re-serialization —
+ * and it can therefore run per connected component, matching
+ * `MeshHealthReport`'s existing per-component shape.
+ *
+ * **Never throws**, per this file's convention for supplementary information
+ * (`readMeshioMetadata`, `readMeshioFieldValues`): a component that meshio++
+ * cannot analyze degrades to `null` rather than failing a `check_mesh_health`
+ * that works today. Diagnostics about possibly-broken meshes are the input
+ * class most likely to trip a WASM abort, so the catch still calls
+ * `resetMeshioIfAbort` — leaving a corrupt singleton in place would silently
+ * degrade every later meshio call in the window.
+ */
+export interface MeshioSurfaceAnalysis {
+  boundaryEdgeCount: number;
+  nonManifoldEdgeCount: number;
+  /** Adjacent triangles wound in opposite directions — the signal `meshTopology.ts` cannot produce. */
+  inconsistentPairCount: number;
+  degenerateTriangleCount: number;
+  watertight: boolean;
+  /** meshio++'s own area, independent of `areaOfTriangles`. */
+  area: number;
+  /** Cells whose orientation is flipped relative to the rest. */
+  invertedCellCount: number;
+  /**
+   * Triangle-shape quality, folded through the SAME `summarizeQuality` the
+   * FE-mesh panel uses, as **normalized minimum angle** (`min_angle / 60`):
+   * 1.0 is equilateral, →0 is a sliver. That matches `summarizeQuality`'s
+   * documented "1 is perfect, <= 0 is degenerate" convention and its [0,1]
+   * bucketing exactly.
+   *
+   * NOT scaled-Jacobian, which the roadmap originally suggested: verified
+   * against the live WASM that `quality:scaled_jacobian` — along with
+   * `skewness`, `warpage` and both dihedral metrics — is **NaN for every
+   * triangle cell**, because those apply to volume cells only. Since every
+   * mesh this path analyzes is a surface, using it would have summarized
+   * nothing at all. `aspect_ratio` does apply but is unbounded above and
+   * inverted (1 = best, higher = worse), so it would clamp into
+   * `summarizeQuality`'s last bucket rather than spreading.
+   */
+  quality: QualitySummary | null;
+}
+
+/** Builds a meshio++ `Mesh` holding only `triangles`, with points compacted and reindexed. */
+function componentMesh(positions: Float32Array, indices: Uint32Array, triangles: readonly number[]): MeshioMesh {
+  const remap = new Map<number, number>();
+  const points: number[] = [];
+  const data = new Int32Array(triangles.length * 3);
+  let w = 0;
+  for (const t of triangles) {
+    for (let k = 0; k < 3; k++) {
+      const original = indices[t * 3 + k];
+      let mapped = remap.get(original);
+      if (mapped === undefined) {
+        mapped = remap.size;
+        remap.set(original, mapped);
+        points.push(positions[original * 3], positions[original * 3 + 1], positions[original * 3 + 2]);
+      }
+      data[w++] = mapped;
+    }
+  }
+  return { points: new Float64Array(points), dim: 3, cells: [{ type: "triangle", nodesPerCell: 3, data }] };
+}
+
+export async function analyzeMeshioSurfaces(
+  positions: Float32Array,
+  indices: Uint32Array,
+  components: readonly (readonly number[])[]
+): Promise<Array<MeshioSurfaceAnalysis | null>> {
+  let m: MeshioApi;
+  try {
+    m = await getMeshio();
+  } catch {
+    return components.map(() => null);
+  }
+
+  return components.map((triangles) => {
+    try {
+      const mesh = componentMesh(positions, indices, triangles);
+      const check = m.surfaceWatertightCheck(mesh);
+      const stats = m.stats(mesh);
+      // meshio++ reports NaN where a metric does not apply to a cell type, and
+      // `summarizeQuality` compares with `<` and accumulates a mean — a single
+      // NaN would poison the mean and land in bucket 0 via its clamp. Filter
+      // first; an all-NaN array yields `null` rather than a fabricated summary.
+      // (That guard is not theoretical: it is what caught scaled-Jacobian being
+      // entirely NaN on triangles — see `quality`'s doc comment.)
+      const raw: number[] = Array.from(m.attachQuality(mesh).cell_data?.["quality:min_angle"]?.[0] ?? []);
+      const finite = raw.filter((v) => Number.isFinite(v)).map((deg) => deg / 60);
+      return {
+        boundaryEdgeCount: check.boundaryEdges,
+        nonManifoldEdgeCount: check.nonManifoldEdges,
+        inconsistentPairCount: check.inconsistentPairs,
+        degenerateTriangleCount: check.degenerateTriangles,
+        watertight: check.watertight,
+        area: typeof stats.totalArea === "number" ? stats.totalArea : 0,
+        invertedCellCount: typeof stats.numInverted === "number" ? stats.numInverted : 0,
+        quality: finite.length > 0 ? summarizeQuality(finite) : null,
+      };
+    } catch (err) {
+      resetMeshioIfAbort(err);
+      return null;
+    }
+  });
 }
 
 /**

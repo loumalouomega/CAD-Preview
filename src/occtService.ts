@@ -56,9 +56,19 @@ export function resetOcct(): void {
  * reason, kept as its own local copy here rather than shared, matching this
  * codebase's convention of each kernel's fault handling staying self-
  * contained in its own service file.
+ *
+ * **`function table` was added to this vocabulary after a real miss.** A live
+ * `apply_edit_ops` abort surfaced as
+ * `WebAssembly.Table.get(): invalid index 9893720 into function table`, which
+ * the `table index` alternative does NOT match — the words are in the opposite
+ * order. The consequence was silent and compounding: the abort went undetected,
+ * so the singleton was never reset, no "kernel has been reset" message was
+ * produced, and `scripts/mcp-smoke/run.mjs`'s `callWithCleanRetry` (which keys
+ * on exactly that phrase) could not recover either. All four kernel services
+ * carry an identical copy of this regex, so all four were fixed together.
  */
 function isOcctWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table/i.test(message);
 }
 
 /**

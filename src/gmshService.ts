@@ -119,7 +119,7 @@ export function resetGmsh(): void {
  * be turned into an actionable message instead of the raw "memory access out of
  * bounds" that reaches the panel today. */
 function isWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table/i.test(message);
 }
 
 /**

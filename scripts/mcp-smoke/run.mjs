@@ -1077,6 +1077,35 @@ try {
     cleanComponent.requiredTolerance === 1e-6,
     `check_mesh_health(cube.stl) closes at the tightest ladder rung (got requiredTolerance=${cleanComponent.requiredTolerance})`
   );
+  // meshio++ signals (roadmap "capability surface", phase A). boundaryEdges
+  // deliberately duplicates what meshTopology.ts already computes — two
+  // independent implementations agreeing is the cross-check; a disagreement
+  // would be a finding, not noise.
+  assert(
+    cleanComponent.inconsistentPairCount === 0 && cleanComponent.invertedCellCount === 0,
+    `check_mesh_health(cube.stl): meshio++ agrees it is consistently wound (got inconsistent=${cleanComponent.inconsistentPairCount}, inverted=${cleanComponent.invertedCellCount})`
+  );
+  assert(
+    cleanComponent.quality && Math.abs(cleanComponent.quality.min - 0.75) < 1e-6,
+    `check_mesh_health(cube.stl): triangle quality is normalized min-angle — a cube's 45-45-90 triangles give exactly 45/60 (got ${JSON.stringify(cleanComponent.quality)})`
+  );
+
+  // The ONE signal meshTopology.ts structurally cannot produce: it keys edges
+  // through a SORTED pair, discarding orientation, so an oppositely-wound
+  // neighbour still counts as a clean manifold edge. This fixture is a
+  // tetrahedron with one face reversed — edge-perfect, orientation-broken.
+  const flippedStl = path.join(dir, "flipped-winding-tet.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "flipped-winding-tet.stl"), flippedStl);
+  const flippedHealth = await call("check_mesh_health", { path: flippedStl });
+  const flippedComponent = flippedHealth.components[0];
+  assert(
+    flippedComponent.freeEdgeCount === 0 && flippedComponent.nonManifoldEdgeCount === 0,
+    `flipped-winding fixture is edge-perfect — the existing analyzer sees nothing wrong (got free=${flippedComponent.freeEdgeCount}, nonManifold=${flippedComponent.nonManifoldEdgeCount})`
+  );
+  assert(
+    flippedComponent.inconsistentPairCount === 3,
+    `...but meshio++ reports 3 inconsistently-wound pairs — the gap this phase closes (got ${flippedComponent.inconsistentPairCount})`
+  );
   assert(
     Math.abs(cleanComponent.healedVolume - 1000) < 1e-3 && Math.abs(cleanComponent.volumeDeltaPct) < 1e-6,
     `check_mesh_health(cube.stl) reports the exact healed volume with ~0 delta (got: ${JSON.stringify(cleanComponent)})`

@@ -288,6 +288,9 @@ const FAKE_MESH_HEALTH_REPORT: MeshHealthReport = {
       healedVolume: 1,
       areaDeltaPct: 0,
       volumeDeltaPct: 0,
+      inconsistentPairCount: 0,
+      invertedCellCount: 0,
+      quality: null,
     },
   ],
 };

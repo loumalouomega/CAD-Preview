@@ -62,6 +62,8 @@ import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
 import type { MeshParseFormat } from "./fileRouter";
 import { weldTriangleSoup, connectedComponents, areaOfTriangles, volumeOfTriangles, type WeldedMesh } from "./meshComponents";
 import { analyzeMeshTopology } from "./meshTopology";
+import { analyzeMeshioSurfaces } from "./meshioService";
+import type { QualitySummary } from "./meshQuality";
 import { patchStepUnitDeclaration } from "./stepUnitPatch";
 import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import type { BRepFormat } from "./massProperties";
@@ -92,6 +94,26 @@ export interface ComponentHealthReport {
   areaDeltaPct: number | null;
   /** `(healedVolume - rawVolume) / rawVolume * 100` — `null` unless it closed. */
   volumeDeltaPct: number | null;
+  /**
+   * Adjacent triangles wound in opposite directions, from meshio++'s
+   * `surfaceWatertightCheck` — `null` if meshio++ could not analyze this
+   * component.
+   *
+   * This is the one health signal `meshTopology.ts` structurally CANNOT
+   * produce: it keys edges through `edgeKey(a, b)`, which sorts the pair, so
+   * orientation is discarded before counting and an oppositely-wound
+   * neighbour still registers as a clean manifold edge. A component can score
+   * 0 free edges and 0 non-manifold edges here and still be inconsistently
+   * wound.
+   */
+  inconsistentPairCount: number | null;
+  /** Cells whose orientation is flipped relative to the rest (meshio++ `stats`). */
+  invertedCellCount: number | null;
+  /** Triangle-shape quality (meshio++ `attachQuality`) as normalized minimum
+   * angle — 1.0 equilateral, →0 a sliver — folded through the same
+   * `summarizeQuality` the FE-mesh panel renders. Scaled-Jacobian is NOT used:
+   * it is NaN for every triangle cell (see `MeshioSurfaceAnalysis.quality`). */
+  quality: QualitySummary | null;
 }
 
 export interface MeshHealthReport {
@@ -266,6 +288,11 @@ export async function checkMeshHealth(
   const { positions, indices } = parseToWeldedMesh(bytes, format, external);
   assertHealableSize(indices);
   const componentTriangles = connectedComponents(indices);
+  // Supplementary meshio++ diagnostics, one per component. Never throws — a
+  // component meshio++ cannot analyze yields `null` and the OCCT-derived
+  // fields below are unaffected. Computed up front because the map is
+  // synchronous (it holds live OCCT handles) and this is async.
+  const meshioAnalyses = await analyzeMeshioSurfaces(positions, indices, componentTriangles);
 
   const cleanup: Array<{ delete(): void }> = [];
   try {
@@ -293,6 +320,9 @@ export async function checkMeshHealth(
         healedVolume: solidProps?.volume ?? null,
         areaDeltaPct: solidProps && rawArea > 0 ? ((solidProps.area - rawArea) / rawArea) * 100 : null,
         volumeDeltaPct: solidProps && rawVolume > 0 ? ((solidProps.volume - rawVolume) / rawVolume) * 100 : null,
+        inconsistentPairCount: meshioAnalyses[index]?.inconsistentPairCount ?? null,
+        invertedCellCount: meshioAnalyses[index]?.invertedCellCount ?? null,
+        quality: meshioAnalyses[index]?.quality ?? null,
       };
     });
 

@@ -13,6 +13,10 @@ export interface ComponentHealthDisplay {
   requiredTolerance: number | null;
   areaDeltaPct: number | null;
   volumeDeltaPct: number | null;
+  /** meshio++ signals — `null` when meshio++ could not analyze the component. */
+  inconsistentPairCount?: number | null;
+  invertedCellCount?: number | null;
+  quality?: { min: number; mean: number } | null;
 }
 
 export interface MeshHealthDisplay {
@@ -119,6 +123,18 @@ export class MeshHealthPanel {
         ["Degenerate faces", String(c.degenerateFaceCount)],
         ["Required sewing tolerance", c.requiredTolerance != null ? formatTolerance(c.requiredTolerance) : "did not close"],
       ];
+      // meshio++ signals, shown only when it could analyze the component.
+      // Inconsistent winding is the one a mesh can fail while scoring 0 on
+      // every row above — the existing topology analyzer discards orientation.
+      if (c.inconsistentPairCount != null) {
+        rows.push(["Inconsistently wound pairs", String(c.inconsistentPairCount)]);
+      }
+      if (c.invertedCellCount != null && c.invertedCellCount > 0) {
+        rows.push(["Inverted faces", String(c.invertedCellCount)]);
+      }
+      if (c.quality) {
+        rows.push(["Triangle quality (min / mean)", `${c.quality.min.toFixed(2)} / ${c.quality.mean.toFixed(2)}`]);
+      }
       if (c.requiredTolerance != null) {
         rows.push(["Area delta", c.areaDeltaPct != null ? formatPct(c.areaDeltaPct) : "—"]);
         rows.push(["Volume delta", c.volumeDeltaPct != null ? formatPct(c.volumeDeltaPct) : "—"]);
