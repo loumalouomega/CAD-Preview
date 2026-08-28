@@ -102,4 +102,61 @@ describe("marshal/unmarshal", () => {
     const decoded = unmarshal(JSON.parse(JSON.stringify(marshal(args)))) as unknown[];
     expect(withDefault(...(decoded as [string]))).toBe("a/default");
   });
+
+  it("round-trips a Float64Array unchanged, including fractional values — meshio++'s own native array type", () => {
+    const src = new Float64Array([0, -1.5, Math.PI, 1e300]);
+    const out = unmarshal(marshal(src)) as Float64Array;
+    expect(out).toBeInstanceOf(Float64Array);
+    expect(Array.from(out)).toEqual(Array.from(src));
+  });
+
+  it("round-trips a Float64Array nested inside a plain object, distinct from an equal-length Float32Array at another key", () => {
+    const src = { points: new Float64Array([1.1, 2.2, 3.3]), tags: new Int32Array([1, 2, 3]) };
+    const out = unmarshal(marshal(src)) as typeof src;
+    expect(out.points).toBeInstanceOf(Float64Array);
+    expect(Array.from(out.points)).toEqual([1.1, 2.2, 3.3]);
+    expect(out.tags).toBeInstanceOf(Int32Array);
+  });
+
+  it("throws, rather than silently degrading to Uint8Array, for an ArrayBufferView type it doesn't recognize", () => {
+    // A real, previously-silent hazard: before this fix, ctorNameOf's
+    // default branch would happily accept ANY ArrayBufferView (e.g. a
+    // Uint8ClampedArray, or any future typed-array kind) and tag it
+    // "Uint8Array" — the wrong element width, corrupting every value on
+    // unmarshal without ever throwing. A loud failure at the boundary is
+    // the fix.
+    const clamped = new Uint8ClampedArray([10, 20, 30]);
+    expect(() => marshal(clamped)).toThrow(/unrecognized ArrayBufferView/);
+  });
+
+  it("round-trips NaN and +/-Infinity as scalar OBJECT PROPERTY values, distinct from null", () => {
+    // meshio++'s dataInfo()/dataIntegrate() legitimately return NaN (e.g. a
+    // field's min/max when every value is itself NaN, or a mean whose
+    // denominator is zero) -- plain JSON.stringify would silently degrade
+    // all three to null, indistinguishable from a genuinely-absent value.
+    const src = { min: NaN, max: Infinity, mean: -Infinity, ok: 42 };
+    const wire = JSON.parse(JSON.stringify(marshal(src)));
+    const out = unmarshal(wire) as typeof src;
+    expect(Number.isNaN(out.min)).toBe(true);
+    expect(out.max).toBe(Infinity);
+    expect(out.mean).toBe(-Infinity);
+    expect(out.ok).toBe(42);
+  });
+
+  it("round-trips NaN as an ARRAY ELEMENT too, not just an object property", () => {
+    const src = [1, NaN, Infinity, -Infinity, 5];
+    const wire = JSON.parse(JSON.stringify(marshal(src)));
+    const out = unmarshal(wire) as number[];
+    expect(out[0]).toBe(1);
+    expect(Number.isNaN(out[1])).toBe(true);
+    expect(out[2]).toBe(Infinity);
+    expect(out[3]).toBe(-Infinity);
+    expect(out[4]).toBe(5);
+  });
+
+  it("leaves an ordinary finite number untouched (no wrapper object introduced)", () => {
+    expect(marshal(42)).toBe(42);
+    expect(marshal(-3.5)).toBe(-3.5);
+    expect(marshal(0)).toBe(0);
+  });
 });

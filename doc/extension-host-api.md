@@ -451,7 +451,7 @@ class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocum
 
 **`rebindPartsOnChange(previousOps, newOps)`** (renamed from `rebindPartsOnAppend`, roadmap item closed — generalized beyond append-only) — A `const` closure inside `resolveCustomEditor` (per-document, like `flushSidecars`/`loadModel` above), not a class method. Called from the `"editsChanged"` handler with the op list as of the PREVIOUS message and the just-received one. Gates only on the document having Parts OR annotations and `previousOps`/`newOps` actually differing (`JSON.stringify` inequality) — no longer requires a strict append-prefix match, since `entityFacts.ts`'s `rebindPartsAcrossOps()` now handles append, undo/redo/Clear (pure truncation), and a middle removal (e.g. `remove_edit_op` from the webview's own op-list ✕ button) all correctly on its own (see that function's doc above for the incremental-vs-direct-match dispatch). Calls `rebindPartsAcrossOps()` with the full `previousOps`/`newOps` lists AND `currentAnnotations`; independently, on a real change to `result.parts` (`!== currentParts`) updates `currentParts` + writes + posts `"parts"`, and on a real change to `result.annotations` (`!== currentAnnotations`, roadmap "Persisted, topology-anchored annotations", closed) updates `currentAnnotations` + writes `<model>.annotations.json` + posts `"annotations"` — both immediately (not the debounced `partsChanged`/`annotationsChanged` timers — host-initiated and correctness-critical), so the webview's `PartsModel.load()`/`AnnotationsModel.load()` (both silent, no `onChange` echo) pick up the new ids — the exact mechanism the initial `ready` hydration's own `"parts"`/`"annotations"` messages already use, so no webview-side code changes were needed beyond the new model itself. Posts `"error"` on failure rather than throwing.
 
-**`handleMeshio(uri, format, post)`** — Private method, `loadModel()`'s sibling branch for `route.strategy === "meshio"` (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA). Reads the raw file bytes, then in parallel: `convertToStlBoundaryWithRegions()` (region-correlated STL, falling back to the plain boundary when correlation isn't possible), `readMeshioMetadata()`, and `readParts()` (the existing sidecar). When the source's regions correlated AND the sidecar is still empty, calls `src/meshioRegionParts.ts`'s `buildPartsFromMeshioRegions()` and, if it found any, persists them via `writeParts()` immediately. Posts `"loadMeshBytes"` (`sourceFormat` + base64 STL bytes + an optional `meshioMetadata` + an optional `regionAssignment`, sent whenever correlation succeeded regardless of whether Parts were freshly created — the webview needs it every open to reproduce matching facet ids) — no `"geometry"`/`"tree"` messages, since the webview builds its own component tree from the loaded `THREE.Object3D` hierarchy exactly like a native `.stl` open. Then posts `"parts"` itself (the parts actually in effect — auto-created or the pre-existing sidecar), returning that same array so the `"ready"` handler's caller can keep the closure's `currentParts` in sync (see `sendParts` below — this route deliberately does NOT also call the generic one, to avoid double-posting `"parts"`). Posts `"error"` on failure (a malformed source file, an unsupported meshio conversion, etc.).
+**`handleMeshio(uri, format, post)`** — Private method, `loadModel()`'s sibling branch for `route.strategy === "meshio"` (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit). Computes the basename + extension, posts a one-line status caveat when the extension is in `fileRouter.ts`'s `AMBIGUOUS_MESHIO_EXTENSIONS` (`.msh`/`.inp`), reads the raw file bytes, resolves whatever companion files the source needs via `resolveMeshioCompanionsFor()`, then in parallel: `convertToStlBoundaryWithRegions(bytes, format, basename, companions)` (region-correlated STL, falling back to the plain boundary when correlation isn't possible), `readMeshioMetadata(bytes, format, basename, companions)`, and `readParts()` (the existing sidecar). When the source's regions correlated AND the sidecar is still empty, calls `src/meshioRegionParts.ts`'s `buildPartsFromMeshioRegions()` and, if it found any, persists them via `writeParts()` immediately. Posts `"loadMeshBytes"` (`sourceFormat` + base64 STL bytes + an optional `meshioMetadata` + an optional `regionAssignment`, sent whenever correlation succeeded regardless of whether Parts were freshly created — the webview needs it every open to reproduce matching facet ids) — no `"geometry"`/`"tree"` messages, since the webview builds its own component tree from the loaded `THREE.Object3D` hierarchy exactly like a native `.stl` open. Then posts `"parts"` itself (the parts actually in effect — auto-created or the pre-existing sidecar), returning that same array so the `"ready"` handler's caller can keep the closure's `currentParts` in sync (see `sendParts` below — this route deliberately does NOT also call the generic one, to avoid double-posting `"parts"`). Posts `"error"` on failure (a malformed source file, an unsupported meshio conversion, etc.).
 
 **`sendParts(uri, post)`** — Private method. Reads the parts sidecar via `readParts()`, posts a `"parts"` message (empty array when no sidecar exists), and returns the parts it sent — the `"ready"` handler assigns this onto the closure's `currentParts` (skipped for the `"meshio"` route, which `handleMeshio` above already handles) so an immediate Save, before any user edit, flushes the sidecar's actual current content rather than a stale empty array.
 
@@ -510,8 +510,10 @@ type RenderStrategy = 'occt' | 'three' | 'meshio'
 type CadFormat =
   | 'step' | 'iges' | 'brep' | 'stl' | 'obj' | 'ply' | 'gltf'
   | 'vtk' | 'vtu' | 'med' | 'cgns' | 'exodus' | 'xdmf' | 'mdpa'
+  | 'gmsh' | 'abaqus' | 'unv' | 'su2' | 'medit'
 interface FileRoute { strategy: RenderStrategy; format: CadFormat }
-const MESHIO_FORMATS: readonly CadFormat[]  // the 7 meshio-routed CadFormat members, one source of truth
+const MESHIO_FORMATS: readonly CadFormat[]  // the 12 meshio-routed CadFormat members, one source of truth
+const AMBIGUOUS_MESHIO_EXTENSIONS: ReadonlyMap<string, string>  // extension -> caveat message; "msh" (also ANSYS/FreeFem) and "inp" (also ANSYS APDL) default to this codebase's own Gmsh/Abaqus output, surfaced as a status/warning on open
 type MeshParseFormat = 'stl' | 'obj' | 'ply' | 'gltf'
 const COMPARABLE_MESH_FORMATS: ReadonlySet<CadFormat>  // = {stl, obj, ply, gltf}
 ```
@@ -558,7 +560,14 @@ The meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM s
 ```typescript
 function getMeshio(): Promise<MeshioApi>
 function resetMeshio(): void
-async function convertToStlBoundary(sourceBytes: Uint8Array, meshioFormat: string): Promise<Uint8Array>
+
+interface MeshioCompanion { name: string; bytes: Uint8Array }
+async function convertToStlBoundary(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<Uint8Array>
 async function exportViaMeshio(
   gmshMshText: string,
   outMeshioFormat: string
@@ -569,13 +578,20 @@ interface MeshioMetadataSummary {
   regions: MeshioRegionSummary[]
   pointDataNames: string[]; cellDataNames: string[]; fieldDataNames: string[]
 }
-async function readMeshioMetadata(sourceBytes: Uint8Array, meshioFormat: string): Promise<MeshioMetadataSummary>
+async function readMeshioMetadata(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<MeshioMetadataSummary>
 
 interface MeshioRegionAssignment { regionNames: string[]; triangleRegion: Int32Array }
 interface MeshioBoundaryResult { stlBytes: Uint8Array; regions?: MeshioRegionAssignment }
 async function convertToStlBoundaryWithRegions(
   sourceBytes: Uint8Array,
-  meshioFormat: string
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
 ): Promise<MeshioBoundaryResult>
 
 interface MeshioFieldValues { values: Float32Array; min: number; max: number }
@@ -583,17 +599,25 @@ async function readMeshioFieldValues(
   sourceBytes: Uint8Array,
   meshioFormat: string,
   fieldName: string,
-  kind: "point" | "cell"
+  kind: "point" | "cell",
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
 ): Promise<MeshioFieldValues | null>
 ```
 
-`getMeshio()` always loads with `{ variant: "seq" }` — never `"auto"`, which would pick the threaded (pthread) build under Node every time (verified: the package's own `resolveVariant()` treats `crossOriginIsolated === undefined`, always true under Node, as "pick threaded"), eagerly spawning worker threads with the same hang/crash risk gmsh-wasm's own worker pool already taught this codebase to avoid. `convertToStlBoundary()` powers document import (`provider.ts`'s `handleMeshio`); `exportViaMeshio()` powers the FE Mesh panel's MED/CGNS/XDMF export options (`provider.ts`'s `meshingExport` handler and `mcpTools.ts`'s `exportMeshTool`) — its input is `generateMesh()`'s own modern MSH 4.1 `mshText` (readable by meshio++ since 9.7.0, physical groups included; before that a legacy MSH 2.2 detour was required — see `doc/gmsh-integration.md` for the history). MED exports preserve parts/physical groups as **named MED groups** via the merge+regions path documented there.
+`getMeshio()` always loads with `{ variant: "seq" }` — never `"auto"`, which would pick the threaded (pthread) build under Node every time (verified: the package's own `resolveVariant()` treats `crossOriginIsolated === undefined`, always true under Node, as "pick threaded"), eagerly spawning worker threads with the same hang/crash risk gmsh-wasm's own worker pool already taught this codebase to avoid. `convertToStlBoundary()` powers document import (`provider.ts`'s `handleMeshio`); `exportViaMeshio()` powers the FE Mesh panel's meshio-bridged export options (`provider.ts`'s `meshingExport` handler and `mcpTools.ts`'s `exportMeshTool`, dispatched via `meshExportFormats.ts`'s `via` field) — its input is `generateMesh()`'s own modern MSH 4.1 `mshText` (readable by meshio++ since 9.7.0, physical groups included; before that a legacy MSH 2.2 detour was required — see `doc/gmsh-integration.md` for the history). MED exports preserve parts/physical groups as **named MED groups** via the merge+regions path documented there.
+
+**`sourceName`/`companions` are optional, additive parameters every entry point now takes** (roadmap "Format coverage", closed — see CLAUDE.md's "meshio++ integration" section) — every pre-existing call site omitting them keeps its exact prior behavior (a synthetic `/in.<meshioFormat>` MEMFS path, no companion staged). A private `stageMeshioSource`/`unstageMeshioSource` pair writes the primary under its real basename (when given one) and every companion under ITS OWN real/referenced basename, flat in MEMFS root — this is what fixes a real, verified defect: a multi-file source (most concretely, the `.xdmf`+`.h5` pair `exportViaMeshio()` itself produces) previously could never be read back at all (`HDF5: could not open file`), since only the primary's bytes were ever staged. `src/meshioCompanions.ts` (pure) supplies the "which companion basenames to look for" half; `provider.ts`'s `resolveMeshioCompanionsFor`/`mcpTools.ts`'s `resolveMeshioCompanions` do the actual disk I/O, mirroring `resolveGltfBuffers`' existing precedent for glTF's external `.bin` buffers.
 
 `readMeshioMetadata()` is a cheap, read-only sibling to `convertToStlBoundary()` — via `readMetadata()` (explicitly documented as loading a file's shape without its heavy geometry/ data arrays), it reports the region names and point/cell/field data array names a source file declares. Never throws (a malformed/unreadable file degrades to every field empty — this is purely supplementary information, must never block or fail an import `convertToStlBoundary` would otherwise handle fine). Used for the metadata-only status line/warning; the actual region→Parts correlation below is a separate function.
 
 `convertToStlBoundaryWithRegions()` (roadmap "Richer meshio++ import", closed) is what actually turns a region into a Part. It `readMesh()`s the full `Mesh` (not the cheap `readMetadata()`) and calls `extractSurface(mesh, recordParentIds=true)`, whose `cell_data["surface:parent_cell"]` gives each boundary triangle the global, block-major index of its original parent cell — exactly what a `kind: "cell"` `Region.entries` indexes, so membership is a plain `Set.has()` test. Builds the returned STL bytes directly from `extractSurface`'s own boundary mesh (not from a second `convertSurface` call) so the geometry/region-index correspondence is correct by construction, not by an assumed match between two independently-callable APIs. Falls back to the plain `convertToStlBoundary()` result (`regions` omitted) whenever the boundary isn't pure `"triangle"` blocks (e.g. a hexahedral volume's quad boundary), there are no `kind: "cell"` regions, or nothing correlates — never throws. `provider.ts`'s `handleMeshio()` (interactively) and `mcpTools.ts`'s `loadModel()` (headlessly, via the injected `Pipeline`) both call it and, when the parts sidecar is still empty, feed the result to `src/meshioRegionParts.ts`'s `buildPartsFromMeshioRegions()` to auto-create one Part per region. See CLAUDE.md's "meshio++ integration" section for the full write-up.
 
 `readMeshioFieldValues()` (roadmap "Colour-by-scalar-field for meshio++ imports", closed) reads one named field's actual VALUES, on demand — called only once the webview's "Colour by field" selector picks a field (`provider.ts`'s `colorFieldRequest` handler), not eagerly like `readMeshioMetadata()`. Reuses the identical `readMesh()` → `extractSurface(mesh, recordParentIds=true)` sequence as `convertToStlBoundaryWithRegions()`, so its output correlates onto the same boundary triangle soup (verified deterministic — identical input bytes always produce byte-identical boundary geometry/order). `kind: "point"` needs no correlation math at all: `extractSurface` already subsets AND reorders `point_data` to match its own output `points` (verified with a deliberately interior point excluded from the boundary — its value is correctly dropped, not just truncated), so `boundary.point_data[fieldName]` is read directly and expanded from per-point to per-corner via each triangle's own point indices. `kind: "cell"` reuses `cell_data["surface:parent_cell"]` exactly as region correlation does: the original mesh's `cell_data[fieldName]` is flattened block-major and each triangle's parent-cell value is broadcast to its 3 corners. Returns `null` (never throws) for a missing field, a non-scalar (multi-component) field, or a non-pure-triangle boundary.
+
+## `src/meshioCompanions.ts`
+
+Pure (vscode/WASM-free), unit-tested. `extractXdmfHdfReferences(xdmfText: string): string[]` scans an XDMF document's `Format="HDF"` `<DataItem>` elements for referenced `.h5` filenames (a plain regex — this codebase has no XML parser available headless, the same constraint `svgImport.ts` documents for its own inbound parser). `stemCompanionCandidates(basename: string, meshioFormat: string): string[]` returns the sibling basenames a stem-convention format's reader would need (tetgen/triangle/ensight — wired into the registry, but not yet used by any registered format). `meshioCompanionCandidates(basename, meshioFormat, xdmfText?)` dispatches between the two — the one function `provider.ts`/`mcpTools.ts` actually call before doing the disk I/O to fetch whatever it names.
 
 ## `src/meshioRegionParts.ts`
 

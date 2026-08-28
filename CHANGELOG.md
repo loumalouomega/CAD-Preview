@@ -4,6 +4,21 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.5.0] - 2026-08-28
+
+### Added
+
+- **5 new importable formats, closing a real export/import asymmetry**: Gmsh Mesh (`.msh`/`.msh2`), Abaqus (`.inp`), I-DEAS Universal (`.unv`), SU2 (`.su2`), and INRIA Medit (`.mesh`). The FE Mesh panel already wrote all five via Gmsh's own writer, but there was no way to reopen any of them — each is now round-trip-verified against the live meshio++ WASM. `.msh`/`.inp` are ambiguous extensions (also used by ANSYS/FreeFem) — CAD Preview assumes its own output format and shows a one-line status caveat on open.
+- **8 new mesh export formats** reachable from the FE Mesh panel's export dropdown and the `export_mesh` MCP tool, none of which Gmsh's bundled writer can produce at all: VTK XML Unstructured (`.vtu`), HDF Mesh Format (`.hmf`), AVS UCD (`.avs`), COMSOL Mphtxt (`.mphtxt`), Netgen (`.vol`), FLAC3D (`.f3grid`), Well-Known Text (`.wkt`), and Flux (`.pf3`) — all bridged through meshio++, the same way MED/CGNS/XDMF already were.
+
+### Fixed
+
+- **A `.xdmf` file exported by CAD Preview could never be reopened.** The host used to stage only a source file's own bytes into meshio++'s virtual filesystem, so an XDMF's `.h5` companion (needed by the default "HDF" data format) was never found on import, always failing with `HDF5: could not open file`. Opening an `.xdmf` now locates and stages its referenced `.h5` sibling automatically. (A separate, pre-existing meshio++ limitation was found while fixing this — an XDMF whose mesh mixes cell types, which this extension's own meshing always produces, still can't be re-meshed after reimport; the file opens normally, only re-meshing it fails, with a clear error. This is upstream meshio++ behavior, not something this extension controls.)
+
+### Changed
+
+- **`kernelIpc.ts`'s host↔worker IPC wire format hardened.** An unrecognized typed-array type crossing the boundary (e.g. a `Float64Array`, meshio++'s own native array type) used to silently mismarshal as a `Uint8Array` of the wrong length instead of failing loudly; it now throws a clear error at the boundary. `NaN`/`Infinity`/`-Infinity` values now round-trip correctly instead of silently becoming `null`.
+
 ## [1.4.0] - 2026-08-04
 
 ### Added
@@ -224,6 +239,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.4.1...v1.5.0
 [1.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.2.6...v1.3.0
 [1.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.1.3...v1.2.0

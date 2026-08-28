@@ -24,7 +24,7 @@ import {
 } from "./editOps";
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { compileParametricScript } from "./parametricScript";
-import { routeFile, COMPARABLE_MESH_FORMATS, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
+import { routeFile, COMPARABLE_MESH_FORMATS, AMBIGUOUS_MESHIO_EXTENSIONS, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION } from "./exportTargets";
 import {
@@ -65,6 +65,8 @@ import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, convertToStlBoundaryWithRegions, exportViaMeshio, readMeshioMetadata } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import { meshioCompanionCandidates } from "./meshioCompanions";
+import type { MeshioCompanion } from "./meshioService";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { normalizeTessellationQuality } from "./tessellationQuality";
@@ -286,6 +288,34 @@ async function readModelBytes(modelPath: string): Promise<Uint8Array> {
   return new Uint8Array(await fs.readFile(modelPath));
 }
 
+/**
+ * Reads whatever sibling files a meshio++ multi-file/companion format needs
+ * beside `modelPath` — the headless-side twin of `provider.ts`'s
+ * `resolveMeshioCompanionsFor` (same "candidate list is pure, disk I/O is
+ * per-consumer" split `resolveGltfBuffers` above already established for
+ * glTF's external buffers, just over `node:fs` instead of `vscode.workspace.fs`).
+ * A missing candidate is silently skipped, so a self-contained source (an
+ * XDMF using the "XML"/"Binary" data formats, or any single-file format)
+ * correctly yields `[]` with no wasted I/O.
+ */
+async function resolveMeshioCompanions(modelPath: string, meshioFormat: string, bytes: Uint8Array): Promise<MeshioCompanion[]> {
+  const basename = path.basename(modelPath);
+  const dir = path.dirname(path.resolve(modelPath));
+  const primaryText = meshioFormat === "xdmf" ? Buffer.from(bytes).toString("utf8") : undefined;
+  const candidates = meshioCompanionCandidates(basename, meshioFormat, primaryText);
+  if (candidates.length === 0) return [];
+  const resolved = await Promise.all(
+    candidates.map(async (name): Promise<MeshioCompanion | undefined> => {
+      try {
+        return { name, bytes: new Uint8Array(await fs.readFile(path.resolve(dir, name))) };
+      } catch {
+        return undefined;
+      }
+    })
+  );
+  return resolved.filter((c): c is MeshioCompanion => c !== undefined);
+}
+
 interface Bbox {
   min: [number, number, number];
   max: [number, number, number];
@@ -359,7 +389,8 @@ async function maybeAutoCreateMeshioParts(ctx: ToolContext, modelPath: string, b
   try {
     const existing = await readParts(modelPath);
     if (existing.length > 0) return 0;
-    const boundary = await ctx.pipeline.convertToStlBoundaryWithRegions(bytes, format);
+    const companions = await resolveMeshioCompanions(modelPath, format, bytes);
+    const boundary = await ctx.pipeline.convertToStlBoundaryWithRegions(bytes, format, path.basename(modelPath), companions);
     if (!boundary.regions) return 0;
     const parts = buildPartsFromMeshioRegions(boundary.stlBytes, boundary.regions);
     if (parts.length === 0) return 0;
@@ -383,9 +414,12 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
           : "."),
     ];
     if (route.strategy === "meshio") {
+      const ambiguityCaveat = AMBIGUOUS_MESHIO_EXTENSIONS.get(path.extname(modelPath).slice(1).toLowerCase());
+      if (ambiguityCaveat) warnings.push(ambiguityCaveat);
       const bytes = await readModelBytes(modelPath);
+      const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
       const [meta, createdCount] = await Promise.all([
-        ctx.pipeline.readMeshioMetadata(bytes, route.format),
+        ctx.pipeline.readMeshioMetadata(bytes, route.format, path.basename(modelPath), companions),
         maybeAutoCreateMeshioParts(ctx, modelPath, bytes, route.format),
       ]);
       const dataNames = [...meta.pointDataNames, ...meta.cellDataNames, ...meta.fieldDataNames];
@@ -1423,7 +1457,8 @@ async function resolveMeshInputHeadless(
       );
     }
     const bytes = await readModelBytes(modelPath);
-    const stlBytes = await ctx.pipeline.convertToStlBoundary(bytes, route.format);
+    const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
+    const stlBytes = await ctx.pipeline.convertToStlBoundary(bytes, route.format, path.basename(modelPath), companions);
     return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
   }
   throw new Error(
@@ -1611,11 +1646,12 @@ export async function exportMeshTool(
     );
     await fs.writeFile(outputPath, text, "utf8");
     written.push(outputPath);
-  } else if (format.id === "med" || format.id === "cgns" || format.id === "xdmf") {
-    // meshio++ bridge — see meshExportFormats.ts's doc comment (no CGNS/MED
-    // writer in this gmsh-wasm build) and provider.ts's mirrored branch.
-    // exportViaMeshio takes generateMesh()'s own MSH 4.1 mshText directly
-    // (meshio++ 9.7.0 reads 4.1 natively — see its doc comment).
+  } else if (format.via === "meshio") {
+    // meshio++ bridge — registry-driven (`meshExportFormats.ts`'s `via`
+    // field, mirroring provider.ts's identical branch); see that file's doc
+    // comment for the full id list and how each was verified. exportViaMeshio
+    // takes generateMesh()'s own MSH 4.1 mshText directly (meshio++ 9.7.0+
+    // reads 4.1 natively — see its doc comment).
     const meshed = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
     const { bytes, companion } = await ctx.pipeline.exportViaMeshio(meshed.mshText, format.id);
     if (!companion) {

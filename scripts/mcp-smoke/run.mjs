@@ -1398,6 +1398,103 @@ try {
   const xdmfText = fs.readFileSync(xdmfOut, "utf8");
   assert(xdmfText.includes("tet.h5"), "xdmf's embedded HDF references are rewritten to the companion's real filename");
 
+  // Regression test for a real, verified import defect (meshio++ integration
+  // hardening): meshioService.ts used to write ONLY the primary file's bytes
+  // into MEMFS, under a synthetic renamed path — so a written .xdmf (which
+  // always has an .h5 companion, per the pair above) could never be read
+  // back, throwing "HDF5: could not open file /model.h5" the moment anything
+  // tried to actually parse it (readMetadata()-based visibility degrades
+  // silently on failure, so `load_model` alone can't prove the fix — a
+  // meaningful assertion needs a call that genuinely THROWS on a missing
+  // companion, which `generate_mesh`'s underlying `convertToStlBoundary`
+  // does). `load_model` now stages the .h5 sibling alongside the .xdmf under
+  // its real, referenced basename (meshioCompanions.ts's
+  // extractXdmfHdfReferences), so the extension's OWN exported .xdmf is
+  // genuinely re-openable and meshable.
+  const xdmfLoaded = await call("load_model", { path: xdmfOut });
+  assert(xdmfLoaded.strategy === "meshio" && xdmfLoaded.format === "xdmf", "load_model re-opens the extension's own exported .xdmf");
+  // A SECOND, independent, pre-existing meshio++ 10.14.0 defect was found
+  // while verifying the .h5-companion fix above, not caused by it: this
+  // codebase's own generate_mesh always forces Mesh.SaveAll=1 (CLAUDE.md's
+  // "Meshing (GMSH-JS)" section), which includes 0-D vertex elements for
+  // the model's geometric points alongside the volume mesh — XDMF encodes
+  // that heterogeneous cell-type mix as a single "Mixed" topology block, and
+  // meshio++'s OWN reader cannot parse its OWN writer's Mixed-topology
+  // output ("XDMF: unknown mixed topology index" — reproduced with a bare
+  // hand-built vertex+line+triangle+tetra mesh, zero CAD-Preview code
+  // involved, so this is not fixable here). Proven to be a SEPARATE,
+  // LATER-stage failure than the companion defect (not a masked symptom of
+  // it): the identical mixed-topology fixture with its .h5 DELETED fails
+  // with the ORIGINAL "HDF5: could not open file" error instead — confirming
+  // the .h5 lookup happens first, succeeds, and only THEN does topology
+  // parsing fail. `callTolerant` (not `call`) because this failure is
+  // EXPECTED today; asserting the exact message means a future meshio++
+  // upgrade that fixes it flips this from "expected error" to "unexpected
+  // success", which is exactly the signal to go update this test/the docs.
+  const xdmfReimport = await callTolerant("generate_mesh", { path: xdmfOut, options: { sizeMax: 0.5 } });
+  assert(
+    xdmfReimport.error?.includes("mixed topology"),
+    `generate_mesh on the re-imported .xdmf hits the KNOWN, separate meshio++ Mixed-topology limitation, not the .h5-companion one (got: ${JSON.stringify(xdmfReimport)})`
+  );
+
+  // Format-coverage roadmap item (Tier 2 #6 successor): CAD-Preview's own FE
+  // Mesh panel writes .msh/.inp/.unv/.su2/.mesh via Gmsh's own writer — until
+  // now it had no way to re-open ANY of them. Each new MESHIO_FORMATS/
+  // EXTENSION_MAP entry (fileRouter.ts) is round-tripped here for real:
+  // export via generate_mesh's own pipeline, then load_model on the output,
+  // confirming the SAME extension this codebase writes is genuinely
+  // openable, not just "meshio++ claims to read this format".
+  //
+  // Deliberately does NOT also assert `generate_mesh` succeeds on the
+  // reimported file (unlike the vtk/inp-writer round trips below, which
+  // start from a genuinely fresh, never-meshed source). A real, live-caught
+  // finding: re-meshing bull.stp's re-imported .msh failed with Gmsh's own
+  // `classifySurfaces: Wrong topology of boundary mesh for parametrization`
+  // — plausible because this is a SECOND meshing pass over the re-extracted
+  // boundary of an ALREADY-tetrahedralized mesh (far more, and far more
+  // irregular, small triangles than the original CAD tessellation), a
+  // meaningfully harder case for Gmsh's STL-reclassification algorithm than
+  // a normal mesh import. Not traced further (it's Gmsh's own classifier on
+  // an aggressive double-meshing scenario, not a companion-staging or
+  // format-routing bug this codebase's own code could fix) — `load_model`
+  // succeeding is the real, load-bearing claim this format-coverage item
+  // makes ("you can reopen/view what you exported"), not "you can re-mesh a
+  // re-extracted boundary of an already-meshed volume a second time".
+  for (const [id, ext] of [
+    ["msh", "msh"],
+    ["inp", "inp"],
+    ["unv", "unv"],
+    ["su2", "su2"],
+    ["mesh", "mesh"],
+  ]) {
+    const roundTripOut = path.join(dir, `roundtrip.${ext}`);
+    await call("export_mesh", { path: model, format: id, outputPath: roundTripOut, options: { sizeMax: bbox.diagonal / 8 } });
+    const reloaded = await call("load_model", { path: roundTripOut });
+    assert(reloaded.strategy === "meshio", `load_model routes the re-exported .${ext} through meshio (id: ${id})`);
+  }
+
+  // The 8 new meshio-only (non-bridge) export writers verified in
+  // meshExportFormats.ts's doc comment — each write-then-read-back through
+  // meshio++'s OWN reader for the same format, on the real vtkModel tet
+  // fixture already meshed above.
+  for (const [id, ext] of [
+    ["vtu", "vtu"],
+    ["hmf", "hmf"],
+    ["avsucd", "avs"],
+    ["mphtxt", "mphtxt"],
+    ["netgen", "vol"],
+    ["flac3d", "f3grid"],
+    ["wkt", "wkt"],
+    ["flux", "pf3"],
+  ]) {
+    const writerOut = path.join(dir, `writer-check.${ext}`);
+    const writerResult = await call("export_mesh", { path: vtkModel, format: id, outputPath: writerOut, options: { sizeMax: 0.5 } });
+    assert(
+      writerResult.written.length === 1 && fs.statSync(writerOut).size > 0,
+      `export_mesh ${id} (meshio-only writer) writes a non-empty file`
+    );
+  }
+
   // Richer meshio++ import visibility (roadmap item, closed): a real MED
   // file (examples/MED/two-material-tets.med — two tetrahedra, each its own
   // named cell region "MaterialA"/"MaterialB", plus a "Temperature"
