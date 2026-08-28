@@ -48,3 +48,7 @@ icons/build-icon/
 # doc/public/screenshots/ ARE committed; only these intermediates are ignored)
 scripts/screenshots/fixtures/
 scripts/screenshots/.build/
+
+# Integration-test bundle output (the downloaded VS Code itself lands in
+# .vscode-test/, already ignored above).
+test/integration/.build/

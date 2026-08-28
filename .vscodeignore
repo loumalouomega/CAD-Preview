@@ -56,6 +56,7 @@ icons/**
 scripts/screenshots/**
 scripts/mcp-smoke/**
 scripts/perf/**
+scripts/webview-test/**
 **/*.ts
 **/*.map
 esbuild.mjs

@@ -1061,9 +1061,55 @@ npm run mcp:smoke  # build + real-WASM end-to-end MCP server test over stdio (bu
 npm run perf        # build + performance regression benchmark over stdio (graded STEP fixtures)
 ```
 
-- **There are NO integration tests, and CI does not run any.** This line previously claimed "Integration tests need a display server; CI runs them under `xvfb-run` on Linux" — that describes infrastructure which does not exist. `.github/workflows/ci.yml` builds, runs `npm test`, and packages the `.vsix`, carrying a standing `NOTE: @vscode/test-electron integration tests are added in a later milestone`. So the honest coverage picture is: unit tests + `npm run mcp:smoke` cover the pure modules and the whole host/MCP pipeline well; **the webview and the VS Code host API have zero automated coverage**, which is what every feature section's "not exercised in a real Extension Development Host session" caveat actually means. See `doc/roadmap.md`'s Tier 1 for the item that closes this.
+```bash
+npm run test:webview      # build + fixtures + Playwright assertions over the real viewer bundle
+npm run test:integration  # build + a real VS Code (Electron) running the host-side suite
+```
+
+- **Both of the above need a display server on Linux** — the first launches headless Chromium, the second a real VS Code. CI runs each under `xvfb-run -a`; locally, run them from a normal desktop session. First run only: `npx playwright install chromium` (the integration harness downloads its own VS Code into the git-ignored `.vscode-test/`).
+- **This line used to claim the opposite and was wrong for a long time**, asserting "Integration tests need a display server; CI runs them under `xvfb-run` on Linux" while `ci.yml` in fact carried a standing `NOTE: @vscode/test-electron integration tests are added in a later milestone` and no such test existed. Recorded because the false claim made the verification story look materially better than it was. See "Webview and host-side test harnesses" below for what the two harnesses do and do not cover.
+
+## Webview and host-side test harnesses (roadmap Tier 1, Phase 2a + first gate of 2b, closed)
+
+`npm test` (vitest) and `npm run mcp:smoke` cover the pure modules and the whole host/MCP pipeline well. Until this work the **webview and the VS Code host API had zero automated coverage** — every webview feature's write-up in this file ends with "has NOT been exercised in a real Extension Development Host session", and nothing existed to change that. Two harnesses now do, and both run in CI.
+
+### `npm run test:webview` — assertions over the REAL viewer bundle
+
+`scripts/webview-test/run.mjs` drives the same headless-Chromium harness the screenshot pipeline uses (`media/viewer.js` + `viewerDom.ts`'s own markup + real OCCT/Gmsh fixtures) and **asserts** against it. `capture.mjs` had driven that harness for a long time while asserting *nothing*, which is exactly how an exit-0 run could coexist with every 3D shot being silently misframed.
+
+- **`scripts/screenshots/harness.mjs` is now shared** by `capture.mjs` and the assertion runner — deliberately breaking this repo's usual "don't factor between `scripts/*` entries" rule. That rule holds for `mcp-smoke` vs `perf`, which share only a trivial JSON-RPC client; here the shared thing is `populate()`'s **load-bearing message ordering**, which has already drifted between copies twice (`renderService.ts` was missed by the `viewState` fix that landed in `capture.mjs`). A third copy would have repeated a bug this codebase already paid for. `renderService.ts` is deliberately NOT folded in: it is TypeScript, ships in `dist/mcp-server.js`, and feeds geometry in-process.
+- **`window.__sent` is the whole assertion surface** — the harness's `acquireVsCodeApi` stub already queued every webview→host message; nothing new was needed to read them.
+- **The idle-frame probe needs no production hook.** `renderScheduler.ts` takes an *injectable* frame source that `viewer.ts` resolves to the global `requestAnimationFrame`, so a Playwright `addInitScript` that wraps `requestAnimationFrame` counts exactly the frames the scheduler asked for. Idle must be ~0; a drag must advance it.
+- **Coverage is chosen from documented bug history, not for its own sake**: panels present *and* populated; the export `<select>` deep-equal to the real `MESH_EXPORT_FORMATS` (via a new `fixtures/registry.json` that `fixtures-entry.ts` emits, so the list is never hand-copied); picking resolving to a real `face-N`; **hidden geometry not pickable** (the closed `traverseVisible` fix, which had no end-to-end coverage); the FE Mesh toggle staying truthful about the overlay; and the two previously-fixed dropdown bugs (icon-click dismissal, and dismissing over the markup canvas without drawing a stroke). `page.on("pageerror")` fails the run on any uncaught webview exception — free coverage the screenshot harness never had.
+
+**Verified by deliberate bug injection, not by a green run** — the standard this repo learned from the misframed screenshots, and the same discipline as `gltfParser`'s `byteStride` oracle check. Each was injected, confirmed to fail, and reverted: `traverseVisible` → `traverse` made hidden geometry pickable again (`["face-0"]`); renaming the `gid` registry id failed 3 picker assertions; forcing an unconditional `request()` in the scheduler took idle frames 0 → **63** (the assertion's own message predicts "~60"); renaming a panel id failed the inventory, the populated check, *and* surfaced an uncaught `pageerror`.
+
+**Two real bugs in the harness itself were found this way, both of which made assertions pass for the wrong reason** — worth recording because they are the exact failure mode this work exists to prevent:
+1. Reading entity ids across **all** Parts rather than the newly-created one. The `parts` fixture pre-creates three Parts already referencing real `face-N` ids, so the picking assertion passed whether or not the click selected anything.
+2. Never clicking `#sel-toggle`. It is a **separate enable switch** from the `.sel-mode` buttons (`main.ts`'s `apply()` is `setSelectionMode(selecting ? selectMode : null)`), so picking was off entirely — which made "hidden geometry selects nothing" trivially true.
+
+### `npm run test:integration` — a real VS Code host
+
+`test/integration/` launches an actual VS Code via `@vscode/test-electron` (MIT, devDependency, never bundled) and runs a suite **inside** it, reaching what Playwright structurally cannot: extension activation, command registration, the custom-editor provider, and eventually quick-picks/save dialogs/`workspace.fs`/watchers.
+
+- **No mocha.** `@vscode/test-electron` only needs a module exporting `run(): Promise<void>` that rejects on failure, so the suite uses the same hand-rolled `assert`/`fail` convention as `mcp-smoke`/`perf` rather than adding a second test framework beside vitest.
+- Built with the **`make-fixtures.mjs` recipe** (esbuild-bundle-then-`spawnSync`), the in-repo precedent for TypeScript that imports from `src/` but runs outside the extension.
+- **The first gate deliberately opens `examples/GiD/two-tets.post.msh`** — `.post.msh` is a compound extension whose tail (`.msh`) is registered to a *different* format, so this is the first exercise of `routeFile`'s longest-suffix matching through the REAL provider rather than a unit test. That automates half of the GiD manual-verification debt.
+- **`ELECTRON_RUN_AS_NODE` must be stripped from the child's env** (`run.mjs` does this). VS Code's own integrated terminal exports it, and with it set the downloaded VS Code starts as **plain Node**, so every VS Code CLI flag becomes an unknown Node option — the launch dies with `bad option: --extensionTestsPath=…` (exit 9), or, with a positional workspace path, `MODULE_NOT_FOUND` on that folder. Both look like argument bugs and are not. This cost real debugging time; a run from an ordinary terminal never reproduces it.
+
+### What is still F5-only
+
+These harnesses do **not** cover: the actual quick-pick/save-dialog flows (Phase 2b's first gate stops at "a document opens"), anything needing a real user gesture through VS Code chrome, and visual correctness of the 3D render (the screenshot pipeline captures it; a human still has to look). The manual GiD checklist in "Verify a change" below remains outstanding.
 
 ## Verify a change
+
+**Run the two automated harnesses first — they now cover a lot of what this section used to ask you to click through by hand.** `npm run test:webview` (panels, the export picker, picking incl. hidden geometry, overlays, idle-frame behaviour, dropdown dismissal) and `npm run test:integration` (extension activation, command registration, a document opening through the real provider). What follows is what they still cannot reach.
+
+**Outstanding manual debt — the GiD surfaces (roadmap Tier 1, Phase 1).** These shipped verified headless (332 `mcp:smoke` checks) and are now partly covered automatically, but the two *interactive* flows have still never been run:
+
+1. **FE Mesh panel → export a GiD pair.** Open any model, open the **FE Mesh** panel, click **▶ Generate**, choose **GiD Postprocess (.post.msh)** in the export `<select>`, click **📤 Export**, and save as `beam.post.msh`. Confirm **two** files land beside each other — `beam.post.msh` *and* `beam.post.res` — and specifically that the sibling is **not** named `beam.post.post.res` (the compound-extension stem trap `companionSaveName()` exists to avoid; unit-tested, never yet seen through a real save dialog). Reopen the saved `.post.msh` and confirm it displays.
+2. **Open a `.post.msh` document.** Open `examples/GiD/two-tets.post.msh` — confirm it loads as two tetrahedra, that the Components tree names the source format **GiD**, and that the status line does **not** show the `.msh` "assumed to be a Gmsh mesh" caveat (it routes to `gid`, so that warning would be actively wrong). Then delete/rename the `.post.res` sibling and reopen: it should still open (the results file is optional), not error.
+
 
 Press **F5** to launch the Extension Development Host. Open `examples/STP/bull.stp` (B-rep) and `examples/STL/cube.stl` (mesh); confirm orbit/pan/zoom, fit-to-view, wireframe toggle. Exercise the view-manipulation panel (stepped rotate/pan/zoom, Fit vs Ctr), the orientation cube (faces snap the view), and the **⌄ / ⌃** hide/show toggle. Open/close repeatedly and watch extension-host memory stay flat (leak check). Additional fixtures: `examples/OBJ/cube.obj`, `examples/PLY/cube.ply`, `examples/GLTF/cube.gltf`.
 

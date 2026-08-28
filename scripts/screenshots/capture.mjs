@@ -11,113 +11,16 @@
  * npm script chains build → fixtures → this). See scripts/screenshots/README.md.
  */
 import { chromium } from "playwright";
-import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
-import { fileURLToPath } from "url";
+// The server, harness page, Chromium flags and the load-bearing `populate()`
+// ordering live in `harness.mjs`, shared with `../webview-test/run.mjs` — see
+// that module's header for why this one is factored out when `mcp-smoke`/`perf`
+// deliberately are not.
+import { ROOT, LAUNCH_ARGS, fixture, sleep, startServer, openHarness, post, populate } from "./harness.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(HERE, "..", "..");
-const FIX = path.join(HERE, "fixtures");
 const OUT = path.join(ROOT, "doc", "public", "screenshots");
 const IMAGES = path.join(ROOT, "images");
-
-const fixture = (name) => JSON.parse(fs.readFileSync(path.join(FIX, `${name}.json`), "utf8"));
-
-// ── Tiny static server: serves the repo tree + a generated harness page ────
-const CTYPE = {
-  ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm",
-  ".json": "application/json", ".map": "application/json", ".html": "text/html",
-  ".stl": "model/stl", ".obj": "text/plain", ".ply": "application/octet-stream",
-  ".gltf": "model/gltf+json", ".glb": "model/gltf-binary", ".svg": "image/svg+xml",
-};
-
-function harnessHtml() {
-  const body = fs.readFileSync(path.join(FIX, "body.html"), "utf8");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
-<link rel="stylesheet" href="/media/viewer.css" />
-<style>
-  /* Polish over viewer.css's built-in --vscode-* fallbacks: a VS Code Dark+ feel. */
-  :root {
-    --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Ubuntu", sans-serif;
-    --vscode-foreground: #cccccc;
-    --vscode-sideBar-background: #252526;
-    --vscode-editorWidget-background: #252526;
-    --vscode-button-background: #0e639c;
-    --vscode-button-foreground: #ffffff;
-    --vscode-button-hoverBackground: #1177bb;
-    --vscode-focusBorder: #007fd4;
-    --vscode-input-background: #3c3c3c;
-    --vscode-input-foreground: #cccccc;
-    --vscode-input-border: #3c3c3c;
-    --vscode-list-activeSelectionBackground: #094771;
-    --vscode-list-hoverBackground: rgba(255,255,255,0.06);
-  }
-  html, body { margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; background: #1e1e1e; }
-</style></head><body>
-<script>
-  window.acquireVsCodeApi = function () {
-    return { postMessage: function (m) { (window.__sent = window.__sent || []).push(m); },
-             getState: function () {}, setState: function () {} };
-  };
-  window.__post = function (m) { window.postMessage(m, "*"); };
-</script>
-${body}
-<script src="/media/viewer.js"></script>
-</body></html>`;
-}
-
-function startServer() {
-  return new Promise((resolve) => {
-    const server = http.createServer((req, res) => {
-      const url = decodeURIComponent(req.url.split("?")[0]);
-      if (url === "/__harness") {
-        res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(harnessHtml());
-        return;
-      }
-      const filePath = path.join(ROOT, path.normalize(url));
-      if (!filePath.startsWith(ROOT) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-        res.writeHead(404); res.end("not found"); return;
-      }
-      res.writeHead(200, { "Content-Type": CTYPE[path.extname(filePath)] ?? "application/octet-stream" });
-      fs.createReadStream(filePath).pipe(res);
-    });
-    server.listen(0, "127.0.0.1", () => resolve(server));
-  });
-}
-
-// ── Page helpers ───────────────────────────────────────────────────────────
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function openHarness(page, base) {
-  await page.goto(`${base}/__harness`, { waitUntil: "load" });
-  // Wait until the webview finished setup (it posts a `ready` message).
-  await page.waitForFunction(() => window.__sent && window.__sent.some((m) => m.type === "ready"), null, { timeout: 20000 });
-  await page.waitForSelector("#app canvas", { timeout: 20000 });
-}
-
-const post = (page, msg) => page.evaluate((m) => window.__post(m), msg);
-
-/** Post the full set of fixtures so every panel is populated, then settle. */
-async function populate(page) {
-  await post(page, fixture("geometry"));
-  // The webview only frames the camera on first load once BOTH geometry and
-  // a "viewState" message have arrived (`main.ts`'s `applyInitialViewIfNeeded`,
-  // added by the "View-state persistence" feature — real documents always get
-  // a real viewState post from provider.ts, even `{view: null}` for a
-  // document with no persisted view yet, so this harness must send the same
-  // to avoid leaving the camera at its unframed default position). Without
-  // this, every shot renders a giant, wildly misframed close-up instead of
-  // the actual model.
-  await post(page, { type: "viewState", view: null });
-  await sleep(700); // OCCT geometry decode + first frame
-  await post(page, fixture("tree"));
-  await post(page, fixture("meshingOptions"));
-  await post(page, fixture("parts"));
-  await post(page, fixture("edits"));
-  await sleep(700);
-}
 
 async function shoot(page, target, file) {
   const outPath = path.join(OUT, file);
@@ -288,10 +191,7 @@ async function main() {
   const base = `http://127.0.0.1:${server.address().port}`;
   console.log(`Harness server: ${base}`);
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
-  });
+  const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
   const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, deviceScaleFactor: 2 });
 
   let failures = 0;
