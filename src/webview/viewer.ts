@@ -5,14 +5,14 @@ import * as cam from "./cameraControls";
 import type { ViewerCamera } from "./cameraControls";
 import { OrientationCube } from "./orientationCube";
 import { collectTargets, resolvePick, collectMeasureTargets, resolveMeasurePick, type PickResult } from "./picking";
-import { DEFAULT_EDGE_COLOR, DEFAULT_FACE_COLOR, DEFAULT_POINT_COLOR } from "./geometryBuilder";
+import { defaultEdgeColor, defaultFaceColor, defaultPointColor } from "./geometryBuilder";
 import { capCenterAndSize } from "./clipping";
 import { buildClipCap, repositionClipCap, disposeClipCap } from "./clipCap";
 import {
   makeMeasureLabelSprite,
   makeMeasureMarkerSprite,
   buildMeasureDimensionGroup,
-  MEASURE_FAIL_COLOR,
+  measureFailColor,
   disposeMeasureObject,
 } from "./measurementOverlay";
 import type { MeasurementPick } from "./measurementState";
@@ -32,10 +32,13 @@ import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
 import { createRenderScheduler, type FrameTick } from "./renderScheduler";
+import { paletteColor, refreshPalette } from "./palette";
 import { shouldSkipAutoReframe, type FitSphere } from "./reframePolicy";
 
-/** Emissive tint applied to the transiently-selected entities. */
-const SELECTION_COLOR = 0x3b82f6;
+/** Emissive tint applied to the transiently-selected entities. Theme-reactive
+ * (`palette.ts`); resolved per call so a theme change takes effect on the next
+ * `renderSelection()`, which `main.ts`'s `refreshColors()` already runs. */
+const selectionColor = (): number => paletteColor("accent");
 
 /**
  * One split-view pane's private state (roadmap "Split view", Phase 1): its
@@ -106,8 +109,17 @@ export class Viewer {
   private readonly gizmoBasePosition = new THREE.Vector3();
   private onGizmoChange: (() => void) | null = null;
   private onGizmoDraggingChanged: ((dragging: boolean) => void) | null = null;
-  private readonly grid: THREE.GridHelper;
+  /** Not `readonly`: a theme change REBUILDS the grid rather than setting a
+   * material colour, because `GridHelper` bakes its two colours into a vertex
+   * colour buffer at construction. */
+  private grid: THREE.GridHelper;
   private readonly axes: THREE.AxesHelper;
+  private readonly hemiLight: THREE.HemisphereLight;
+  private readonly keyLight: THREE.DirectionalLight;
+  /** Set once the user drags the Appearance background swatch. A theme change
+   * must not clobber a manual override — the same "always wins once set"
+   * precedent `setBackground()` documents against `applyDefaults()`. */
+  private backgroundOverridden = false;
   private readonly gizmo = new OrientationCube();
   private readonly gizmoSize = 96;
   private readonly gizmoMargin = 10;
@@ -226,7 +238,7 @@ export class Viewer {
     const width = container.clientWidth;
     const height = container.clientHeight;
 
-    this.scene.background = new THREE.Color(0x1e1e1e);
+    this.scene.background = new THREE.Color(paletteColor("background"));
 
     // `stencil: true` is required for the clip-cap technique (`clipCap.ts`) —
     // this three.js version's WebGLRenderer defaults it to `false`, unlike
@@ -271,12 +283,16 @@ export class Viewer {
     this.scene.add(this.gizmoProxy);
     this.syncTransformControlsToFocus();
 
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.0));
-    const dir = new THREE.DirectionalLight(0xffffff, 1.5);
-    dir.position.set(1, 1, 1);
-    this.scene.add(dir);
+    // Held as fields (they used to be added to the scene with no reference
+    // kept) so `applyTheme()` can re-tint them — reachability, not the colour
+    // values, was the real blocker for theming these.
+    this.hemiLight = new THREE.HemisphereLight(paletteColor("lightSky"), paletteColor("lightGround"), 1.0);
+    this.scene.add(this.hemiLight);
+    this.keyLight = new THREE.DirectionalLight(paletteColor("lightKey"), 1.5);
+    this.keyLight.position.set(1, 1, 1);
+    this.scene.add(this.keyLight);
 
-    this.grid = new THREE.GridHelper(10, 10, 0x888888, 0x444444);
+    this.grid = this.makeGrid();
     this.scene.add(this.grid);
     this.axes = new THREE.AxesHelper(1);
     this.scene.add(this.axes);
@@ -1164,6 +1180,7 @@ export class Viewer {
   /** Live, session-only background override — same "always wins once set"
    * precedent as `toggleGrid()` vs. `applyDefaults()`'s `showGridAndAxes`. */
   setBackground(hex: string): void {
+    this.backgroundOverridden = true;
     this.scene.background = new THREE.Color(hex);
     this.requestRender();
   }
@@ -1314,7 +1331,7 @@ export class Viewer {
     this.clipCapPlane = this.activeClippingPlane.clone();
     this.clipCapBox = box;
     const { center, size } = capCenterAndSize(this.clipCapPlane, box);
-    this.clipCap = buildClipCap(targets, this.clipCapPlane, center, size, DEFAULT_FACE_COLOR);
+    this.clipCap = buildClipCap(targets, this.clipCapPlane, center, size, defaultFaceColor());
     this.scene.add(this.clipCap);
   }
 
@@ -1540,7 +1557,7 @@ export class Viewer {
       const scale = this.getModelExtents()?.diagonal ?? linePoints[0].distanceTo(linePoints[1]);
       group.add(buildMeasureDimensionGroup(linePoints[0], linePoints[1], scale));
     }
-    const label = makeMeasureLabelSprite(text, opts?.tone === "fail" ? MEASURE_FAIL_COLOR : undefined);
+    const label = makeMeasureLabelSprite(text, opts?.tone === "fail" ? measureFailColor() : undefined);
     label.position.copy(anchor);
     group.add(label);
     this.measurementOverlay = group;
@@ -1570,17 +1587,17 @@ export class Viewer {
       const ud = obj.userData;
       if (obj instanceof THREE.Mesh && ud.entityType === "surface") {
         const hex = map.faces.get(ud.entityId) ?? map.solids.get(ud.groupId);
-        const color = hex ? new THREE.Color(hex) : new THREE.Color(DEFAULT_FACE_COLOR);
+        const color = hex ? new THREE.Color(hex) : new THREE.Color(defaultFaceColor());
         ud.baseColor = color.getHex();
         (obj.material as THREE.MeshStandardMaterial).color.copy(color);
       } else if (obj instanceof THREE.Line && ud.entityType === "line") {
         const hex = map.edges.get(ud.entityId);
-        const color = hex ? new THREE.Color(hex) : new THREE.Color(DEFAULT_EDGE_COLOR);
+        const color = hex ? new THREE.Color(hex) : new THREE.Color(defaultEdgeColor());
         ud.baseColor = color.getHex();
         (obj.material as THREE.LineBasicMaterial).color.copy(color);
       } else if (obj instanceof THREE.Sprite && ud.entityType === "point") {
         const hex = map.points.get(ud.entityId);
-        const color = hex ? new THREE.Color(hex) : new THREE.Color(DEFAULT_POINT_COLOR);
+        const color = hex ? new THREE.Color(hex) : new THREE.Color(defaultPointColor());
         ud.baseColor = color.getHex();
         (obj.material as THREE.SpriteMaterial).color.copy(color);
       }
@@ -1600,19 +1617,19 @@ export class Viewer {
         // standard shaded material) — fall back to the same direct-colour
         // swap technique edges/points already use for selection.
         if ("emissive" in mat) {
-          (mat as THREE.MeshStandardMaterial).emissive.setHex(on ? SELECTION_COLOR : 0x000000);
+          (mat as THREE.MeshStandardMaterial).emissive.setHex(on ? selectionColor() : 0x000000);
         } else {
-          const base = (ud.baseColor as number | undefined) ?? DEFAULT_FACE_COLOR;
-          (mat as THREE.MeshBasicMaterial).color.setHex(on ? SELECTION_COLOR : base);
+          const base = (ud.baseColor as number | undefined) ?? defaultFaceColor();
+          (mat as THREE.MeshBasicMaterial).color.setHex(on ? selectionColor() : base);
         }
       } else if (obj instanceof THREE.Line && ud.entityType === "line") {
         const mat = obj.material as THREE.LineBasicMaterial;
-        const base = (ud.baseColor as number | undefined) ?? DEFAULT_EDGE_COLOR;
-        mat.color.setHex(keys.has(`line:${ud.entityId}`) ? SELECTION_COLOR : base);
+        const base = (ud.baseColor as number | undefined) ?? defaultEdgeColor();
+        mat.color.setHex(keys.has(`line:${ud.entityId}`) ? selectionColor() : base);
       } else if (obj instanceof THREE.Sprite && ud.entityType === "point") {
         const mat = obj.material as THREE.SpriteMaterial;
-        const base = (ud.baseColor as number | undefined) ?? DEFAULT_POINT_COLOR;
-        mat.color.setHex(keys.has(`point:${ud.entityId}`) ? SELECTION_COLOR : base);
+        const base = (ud.baseColor as number | undefined) ?? defaultPointColor();
+        mat.color.setHex(keys.has(`point:${ud.entityId}`) ? selectionColor() : base);
       }
     });
     this.requestRender();
@@ -1695,6 +1712,80 @@ export class Viewer {
     this.axes.visible = this.grid.visible;
     this.requestRender();
     return this.grid.visible;
+  }
+
+  /** A grid at the current palette. Separate from the constructor because a
+   * theme change must REBUILD it — `GridHelper` bakes its centre/division
+   * colours into a vertex colour buffer, so there is no material colour to set. */
+  private makeGrid(): THREE.GridHelper {
+    return new THREE.GridHelper(10, 10, paletteColor("gridCenter"), paletteColor("gridDivision"));
+  }
+
+  /**
+   * Re-reads the CSS palette and re-applies it to every scene surface that has
+   * no other re-apply path. **The caller must follow this with
+   * `main.ts`'s `refreshColors()`** — the same contract `setDisplayMode()`
+   * already documents — which re-themes faces/edges/points/selection through
+   * `setEntityColors()`/`renderSelection()` and, critically, leaves per-Part
+   * colour swatches untouched (they win over the default by construction).
+   *
+   * Never re-theme by traversing materials and writing `mat.color` directly:
+   * that WOULD overwrite a user's Part swatch.
+   *
+   * Deliberately does not re-tint the op-preview (`setOpPreview` lerps its tint
+   * destructively at set-time, so the pre-tint colour is unrecoverable — and a
+   * preview is transient, rebuilt on the next draft change) or the orientation
+   * cube's R/G/B axis arrows (a universal CAD convention, not chrome).
+   */
+  applyTheme(): void {
+    refreshPalette();
+
+    if (!this.backgroundOverridden) {
+      this.scene.background = new THREE.Color(paletteColor("background"));
+    }
+
+    this.hemiLight.color.setHex(paletteColor("lightSky"));
+    this.hemiLight.groundColor.setHex(paletteColor("lightGround"));
+    this.keyLight.color.setHex(paletteColor("lightKey"));
+
+    // Rebuild, preserving the state `applyDefaults`/`toggleGrid`/`frame` own.
+    const gridVisible = this.grid.visible;
+    const gridScale = this.grid.scale.x;
+    this.scene.remove(this.grid);
+    this.grid.geometry.dispose();
+    (this.grid.material as THREE.Material).dispose();
+    this.grid = this.makeGrid();
+    this.grid.visible = gridVisible;
+    this.grid.scale.setScalar(gridScale);
+    this.scene.add(this.grid);
+
+    // Overlays built once at construction with no re-apply path of their own.
+    this.meshOverlay?.traverse((obj) => {
+      if (obj instanceof THREE.LineSegments) {
+        (obj.material as THREE.LineBasicMaterial).color.setHex(paletteColor("meshWire"));
+      } else if (obj instanceof THREE.Mesh) {
+        // Multi-material, one entry per part group: only the trailing ungrouped
+        // range uses the default colour, and `MeshElementGroup.color` is a real
+        // per-part colour that must not be overwritten — so this repaints only
+        // the materials still sitting at the OLD default.
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const m of mats) {
+          const mat = m as THREE.MeshBasicMaterial;
+          if (mat.userData.themedDefault !== false) mat.color.setHex(paletteColor("mesh"));
+        }
+      }
+    });
+    this.worstElementsOverlay?.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        (obj.material as THREE.MeshBasicMaterial).color.setHex(paletteColor("worstElement"));
+      }
+    });
+
+    // Ghost lines and the clip cap are cheap, idempotent rebuilds.
+    if (this.displayMode === "hiddenLines") this.buildHiddenLineGhosts();
+    if (this.clipCap) this.rebuildClipCap();
+
+    this.requestRender();
   }
 
   isGridVisible(): boolean {
@@ -1811,7 +1902,7 @@ export class Viewer {
     this.model.traverse((obj) => {
       if (obj instanceof THREE.Line && obj.userData.entityType === "line") {
         const ghostMaterial = new THREE.LineBasicMaterial({
-          color: 0x8fa8c9,
+          color: paletteColor("hiddenLineGhost"),
           transparent: true,
           opacity: 0.35,
           depthTest: false,
@@ -2109,7 +2200,7 @@ export function meshFromGeometry(geometry: THREE.BufferGeometry): THREE.Mesh {
     geometry.computeVertexNormals();
   }
   const material = new THREE.MeshStandardMaterial({
-    color: 0xc0c4cc,
+    color: defaultFaceColor(),
     metalness: 0.1,
     roughness: 0.7,
     side: THREE.DoubleSide,

@@ -192,6 +192,22 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 
 **The camera direction/up vector, Persp/Ortho, Display mode, and the Clip plane are all saved automatically** to a `<model>.view.json` sidecar and restored the next time you open the same file, so reopening a large assembly picks up right where you left off instead of always resetting to the default isometric — see [View State Sidecar](./file-formats.md#view-state-sidecar-modelviewjson) for the format. Applying an edit reframes in your CURRENT direction rather than snapping back to the saved (or default) one. Background colour, opacity, the Units dropdown, and Colour by field remain purely session-only, as does explode-preview state (the *committed* `explode` op itself is saved in `.edits.json` like any other edit).
 
+### Theme
+
+The 3D scene follows VS Code's active colour theme. Switching between a light, dark, or
+high-contrast theme repaints the background, the default face/edge/point colours, the grid, the
+scene lighting, and the FE mesh overlay immediately — no reload, and nothing is written to any
+sidecar.
+
+**Colours you chose yourself are never re-tinted.** A Part's colour swatch, and a per-part FE mesh
+colour, are your data: they win over the themed default, so a theme switch leaves them exactly as
+you set them. The same applies to a background you picked by hand in the Appearance group — once
+you drag that swatch, your choice wins for the rest of the session.
+
+Two things deliberately do *not* follow the theme: the orientation cube's red/green/blue axis
+arrows (an axis-colour convention shared across CAD tools, not a theme detail), and a live
+operation preview's intent tint, which is regenerated whenever the draft changes anyway.
+
 ### Units
 
 CAD Preview always keeps geometry internally in one consistent unit (millimetres) — for STEP files this is automatic: the OCCT reader converts every shape to millimetres at load time regardless of what unit the file was authored in (inches, centimetres, …), so numbers are always consistent no matter the source. The **Units** dropdown in the view-controls Appearance group is purely a *display* preference on top of that: it rescales how Mass Properties and Measurement results are shown (with a unit suffix, e.g. `12.700 mm` or `0.500 in`) — nothing stored (edit-op parameters, sidecars, mesh-size options) is ever rescaled, and FE Mesh panel size fields always show plain millimetres regardless of this setting, since that's Gmsh's own working unit. Opening a STEP file whose `DATA` section declares a length unit (e.g. `INCH`), or an IGES file whose Global section declares one (its own, differently-structured way of recording a unit), seeds the dropdown to that unit automatically; opening a file with no declared/recognized unit, or a mesh format (which has no unit metadata at all), always starts from `mm`. Moments of inertia in the Mass Properties panel are intentionally never rescaled by this setting. The selection is session-only — it resets on every new file open and is never written to a sidecar.

@@ -1,13 +1,18 @@
 import * as THREE from "three";
 import { computeDistanceGlyph, type ArrowheadSpec } from "./dimensionGlyph";
+import { paletteColor } from "./palette";
 
-/** Accent color for measurement overlays — matches the selection highlight (`viewer.ts`'s `SELECTION_COLOR`). */
-const MEASURE_COLOR = 0x3b82f6;
+/** Accent color for measurement overlays. Shares ONE palette entry with the
+ * selection highlight (`viewer.ts`'s `selectionColor()`) — these were two
+ * constants holding the same value in two files, the second commented as
+ * "matches the selection highlight", which is exactly the drift a shared
+ * palette removes. */
+const measureColor = (): number => paletteColor("accent");
 
 /** Accent used for an OUT-of-tolerance toleranced pin — a presentation choice
  * derived at render time from the annotation's frozen facts (the annotation
  * itself stores facts only). */
-export const MEASURE_FAIL_COLOR = 0xe5484d;
+export const measureFailColor = (): number => paletteColor("accentFail");
 
 /** Label canvas size in px — a 4:1 aspect ratio the sprite scale below preserves. */
 const LABEL_W = 256;
@@ -30,21 +35,32 @@ function labelCanvas(): HTMLCanvasElement {
   return _labelCanvas;
 }
 
+/**
+ * The marker bakes its accent into PIXELS, unlike `geometryBuilder.ts`'s
+ * `dotTexture()` (white-filled and tinted per instance via `SpriteMaterial.color`,
+ * so that one is theme-safe for free). Memoizing it therefore has to be keyed on
+ * the colour it was drawn with, or a theme change would keep serving a stale
+ * bitmap — invalidating a cache, not swapping a material.
+ */
 let _markerCanvas: HTMLCanvasElement | null = null;
+let _markerCanvasColor: number | null = null;
 function markerCanvas(): HTMLCanvasElement {
-  if (!_markerCanvas) {
+  const color = measureColor();
+  if (!_markerCanvas || _markerCanvasColor !== color) {
     const s = 32;
-    _markerCanvas = document.createElement("canvas");
+    _markerCanvas ??= document.createElement("canvas");
     _markerCanvas.width = s;
     _markerCanvas.height = s;
     const ctx = _markerCanvas.getContext("2d")!;
+    ctx.clearRect(0, 0, s, s);
     ctx.beginPath();
     ctx.arc(s / 2, s / 2, s / 2 - 3, 0, Math.PI * 2);
     ctx.fillStyle = "#ffffff";
     ctx.fill();
     ctx.lineWidth = 3;
-    ctx.strokeStyle = "#" + MEASURE_COLOR.toString(16).padStart(6, "0");
+    ctx.strokeStyle = "#" + color.toString(16).padStart(6, "0");
     ctx.stroke();
+    _markerCanvasColor = color;
   }
   return _markerCanvas;
 }
@@ -60,11 +76,11 @@ function markerCanvas(): HTMLCanvasElement {
  * scene geometry" role.
  *
  * `accent` recolors the frame for a derived tone (an out-of-tolerance
- * toleranced pin passes {@link MEASURE_FAIL_COLOR}); it never changes the
+ * toleranced pin passes {@link measureFailColor}); it never changes the
  * stored measurement text, which stays a frozen fact.
  */
 export function makeMeasureLabelSprite(text: string, accent?: number): THREE.Sprite {
-  const accentHex = "#" + (accent ?? MEASURE_COLOR).toString(16).padStart(6, "0");
+  const accentHex = "#" + (accent ?? measureColor()).toString(16).padStart(6, "0");
   const canvas = labelCanvas();
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -112,7 +128,7 @@ function buildGlyphLine(a: THREE.Vector3, b: THREE.Vector3, color: number, rende
  * primitive placement. */
 function buildArrowhead(spec: ArrowheadSpec): THREE.Mesh {
   const geometry = new THREE.ConeGeometry(spec.halfWidth, spec.length, 12, 1, true);
-  const material = new THREE.MeshBasicMaterial({ color: MEASURE_COLOR, depthTest: false, depthWrite: false });
+  const material = new THREE.MeshBasicMaterial({ color: measureColor(), depthTest: false, depthWrite: false });
   const cone = new THREE.Mesh(geometry, material);
   const axis = new THREE.Vector3(...spec.axis);
   cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
@@ -137,10 +153,10 @@ export function buildMeasureDimensionGroup(p0: THREE.Vector3, p1: THREE.Vector3,
   const group = new THREE.Group();
   const glyph = computeDistanceGlyph([p0.x, p0.y, p0.z], [p1.x, p1.y, p1.z], { scale });
   if (glyph.line[0].some(Number.isFinite) && glyph.line[1].some(Number.isFinite)) {
-    group.add(buildGlyphLine(new THREE.Vector3(...glyph.line[0]), new THREE.Vector3(...glyph.line[1]), MEASURE_COLOR, 999));
+    group.add(buildGlyphLine(new THREE.Vector3(...glyph.line[0]), new THREE.Vector3(...glyph.line[1]), measureColor(), 999));
   }
   for (const stub of glyph.witnesses) {
-    group.add(buildGlyphLine(new THREE.Vector3(...stub[0]), new THREE.Vector3(...stub[1]), MEASURE_COLOR, 998));
+    group.add(buildGlyphLine(new THREE.Vector3(...stub[0]), new THREE.Vector3(...stub[1]), measureColor(), 998));
   }
   for (const head of glyph.arrowheads) {
     group.add(buildArrowhead(head));

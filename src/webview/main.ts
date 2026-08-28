@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
+import { refreshPalette } from "./palette";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
@@ -79,6 +80,11 @@ const statusEl = document.getElementById("status")!;
 const sideEl = document.getElementById("side")!;
 const panelEl = document.getElementById("tree-panel")!;
 const toggleBtn = document.getElementById("tree-toggle") as HTMLButtonElement;
+
+// Resolve the CSS palette BEFORE the Viewer is constructed — its constructor
+// builds the background, lights and grid from it, and every material built
+// during the first model load reads it too.
+refreshPalette();
 
 const viewer = new Viewer(app);
 
@@ -1024,6 +1030,32 @@ function refreshColors(): void {
   viewer.setEntityColors(partsModel.colorMap());
   renderHighlight();
   applyVisibilityState();
+}
+
+/**
+ * Keeps the 3D scene in step with VS Code's active theme.
+ *
+ * VS Code signals a theme change by rewriting `<body>`'s class
+ * (`vscode-light`/`vscode-dark`/`vscode-high-contrast*`) and the `--vscode-*`
+ * custom properties — there is no message for it, so a `MutationObserver` is
+ * the detection, and no host round trip is involved at all.
+ *
+ * `applyTheme()` re-reads the palette and handles the surfaces with no other
+ * re-apply path (background, lights, grid, overlays, ghost lines, clip cap);
+ * `refreshColors()` then re-themes faces/edges/points/selection through the
+ * existing colour path — which is what leaves per-Part swatches untouched.
+ * This is the same "a material-affecting change must be followed by
+ * refreshColors()" contract `setDisplayMode()` already documents.
+ */
+function setupThemeReactivity(): void {
+  const observer = new MutationObserver(() => {
+    viewer.applyTheme();
+    refreshColors();
+  });
+  observer.observe(document.body, {
+    attributes: true,
+    attributeFilter: ["class", "data-vscode-theme-kind"],
+  });
 }
 
 /** Re-applies both the Parts hide/isolate state and the Tree per-node hide
@@ -2588,6 +2620,7 @@ try {
   clippingControls = setupClippingControls();
   setupMarkupControls();
   setupColorFieldControls();
+  setupThemeReactivity();
   // Split view: when the focused pane changes (a click in another pane), UI
   // that mirrors FOCUSED-pane state must re-read it — projection is per-pane,
   // so the Persp/Ortho button can need the other label even though the user

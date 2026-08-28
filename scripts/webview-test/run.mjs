@@ -492,6 +492,148 @@ test("dropdowns: dismissing a menu over the markup canvas draws no stroke", asyn
   assert(drew === false, `the dismissing click drew no markup stroke (got ${JSON.stringify(drew)})`);
 });
 
+/**
+ * Dominant rendered colours in the viewport, most-frequent first.
+ *
+ * Screenshots through Playwright's compositor rather than reading the WebGL
+ * canvas back with `getImageData`: the renderer is created without
+ * `preserveDrawingBuffer`, so a direct readback returns all-black. (Confirmed
+ * the hard way while building this — a first attempt reported a uniform
+ * `0,0,0` histogram for a scene that was plainly rendering.)
+ */
+async function dominantColors(page, topN = 6) {
+  const box = await viewportBox(page);
+  const shot = await page.screenshot({
+    clip: { x: box.x + 8, y: box.y + 8, width: box.width - 16, height: box.height - 16 },
+  });
+  return page.evaluate(
+    async ({ b64, topN }) => {
+      const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
+      const bmp = await createImageBitmap(blob);
+      const c = document.createElement("canvas");
+      c.width = bmp.width;
+      c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+      const hist = new Map();
+      for (let i = 0; i < data.length; i += 4) {
+        const k = `${data[i]},${data[i + 1]},${data[i + 2]}`;
+        hist.set(k, (hist.get(k) ?? 0) + 1);
+      }
+      return [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN);
+    },
+    { b64: shot.toString("base64"), topN }
+  );
+}
+
+/** Sets the body theme class the way VS Code does, and lets the observer run. */
+async function setTheme(page, cls) {
+  await page.evaluate((c) => {
+    document.body.className = c;
+    document.body.setAttribute("data-vscode-theme-kind", c);
+  }, cls);
+  await sleep(400);
+}
+
+/**
+ * L. Theme-reactive scene colours.
+ *
+ * The screenshot suite CANNOT cover this on its own: every visible face in the
+ * fixture is Part-assigned, so the default face colour is never reached there
+ * (verified by histogram — the model renders in Part swatch colours). That is
+ * the "Part swatches win over the default" property working correctly, but it
+ * makes the fixture blind to `--cad-face`. Hence the explicit checks below,
+ * which drive the palette directly rather than through a Part-covered model.
+ */
+test("theme: the scene background follows the active theme class", async (page) => {
+  await populate(page);
+  await sleep(300);
+
+  const dark = await dominantColors(page, 1);
+  assert(dark[0][0] === "30,30,30", `dark theme renders the #1e1e1e background (got ${dark[0][0]})`);
+
+  await setTheme(page, "vscode-light");
+  const light = await dominantColors(page, 1);
+  assert(
+    light[0][0] === "243,243,243",
+    `switching to vscode-light repaints the background to #f3f3f3 (got ${light[0][0]})`
+  );
+
+  await setTheme(page, "vscode-high-contrast");
+  const hc = await dominantColors(page, 1);
+  assert(hc[0][0] === "0,0,0", `high contrast renders a pure black background (got ${hc[0][0]})`);
+
+  await setTheme(page, "vscode-dark");
+  const back = await dominantColors(page, 1);
+  assert(back[0][0] === "30,30,30", `switching back restores the dark background (got ${back[0][0]})`);
+});
+
+test("theme: changing the default face colour cannot repaint Part-assigned faces", async (page) => {
+  // The invariant that matters: `setEntityColors` resolves a Part swatch in the
+  // `map.faces.get(...) ?? default` branch, so a default-colour change is
+  // structurally unable to reach a Part-assigned face. Every visible face in
+  // this fixture IS Part-assigned, which makes the model a precise probe.
+  //
+  // Asserts on the rendered image rather than material colours because the
+  // viewer is deliberately not exposed on `window` (production code should not
+  // grow test-only surface). Note this asserts PIXELS are unchanged, which is
+  // only meaningful while nothing else in the render changes — hence the
+  // default-colour swap below rather than a full theme switch, which also
+  // re-tints the lights and so legitimately shifts every shaded pixel.
+  await populate(page);
+  await sleep(300);
+  const before = await dominantColors(page, 8);
+
+  // An inline custom property on <body> outranks both `:root` and the theme
+  // class rules, and re-stamping the class is what makes the MutationObserver
+  // re-read the palette.
+  await page.evaluate(() => document.body.style.setProperty("--cad-face", "#cc4444"));
+  await setTheme(page, "vscode-dark");
+  const afterFaceChange = await dominantColors(page, 8);
+
+  assert(
+    eq(before, afterFaceChange),
+    "a wildly different --cad-face leaves the Part-covered render pixel-identical"
+  );
+
+  // Control: the same mechanism DOES repaint when it reaches something no Part
+  // covers. Without this, the assertion above would also pass if the palette
+  // were simply never read at all.
+  await page.evaluate(() => document.body.style.setProperty("--cad-background", "#6a1e5e"));
+  await setTheme(page, "vscode-dark");
+  const afterBgChange = await dominantColors(page, 1);
+  assert(
+    afterBgChange[0][0] === "106,30,94",
+    `the same path DOES repaint the unassigned background (got ${afterBgChange[0][0]})`
+  );
+
+  await page.evaluate(() => {
+    document.body.style.removeProperty("--cad-face");
+    document.body.style.removeProperty("--cad-background");
+  });
+  await setTheme(page, "vscode-dark");
+});
+
+test("theme: the default entity colour itself tracks the palette", async (page) => {
+  // Drives the palette module directly — the one path the Part-covered fixture
+  // cannot exercise. Asserts the CSS variable resolves per theme AND that the
+  // module reads it, so a stylesheet/module mismatch is caught either way.
+  const read = () =>
+    page.evaluate(() => getComputedStyle(document.body).getPropertyValue("--cad-face").trim());
+
+  await setTheme(page, "vscode-dark");
+  const dark = await read();
+  await setTheme(page, "vscode-light");
+  const light = await read();
+  await setTheme(page, "vscode-high-contrast");
+  const hc = await read();
+  await setTheme(page, "vscode-dark");
+
+  assert(dark === "#c0c4cc", `dark --cad-face equals the pre-theming constant (got ${dark})`);
+  assert(light !== dark && light !== "", `light theme defines a different --cad-face (got ${light})`);
+  assert(hc !== dark && hc !== "", `high contrast defines a different --cad-face (got ${hc})`);
+});
+
 // ── Runner ────────────────────────────────────────────────────────────────
 async function main() {
   if (!nodeSupportsPlaywright()) {

@@ -1,3 +1,89 @@
+/* ── 3D scene palette ───────────────────────────────────────────────────
+ *
+ * Read by `src/webview/palette.ts` via `getComputedStyle(document.body)` and
+ * fed to THREE materials — the WebGL surface is not styled by CSS, so these
+ * are data for JS, not style rules.
+ *
+ * `:root`'s values MUST stay byte-identical to `palette.ts`'s
+ * `PALETTE_FALLBACKS` (the pre-theming constants). Two things depend on that:
+ * the default dark theme must render exactly as it did before theming existed,
+ * and the screenshot harness sets no body theme class, so it resolves here.
+ *
+ * Only the theme-class blocks below override. Values are explicit literals
+ * rather than `var(--vscode-*)` derivations — the harness defines only 12 of
+ * the 43 `--vscode-*` variables this file consumes, so keying a scene colour
+ * off an unset one would silently diverge between harness and real session.
+ *
+ * The theme class lives on <body>, so these must be readable from body. */
+:root {
+  --cad-face: #c0c4cc;
+  --cad-edge: #303338;
+  --cad-point: #ffcc00;
+  --cad-accent: #3b82f6;
+  --cad-accent-fail: #e5484d;
+  --cad-mesh: #4ea1ff;
+  --cad-mesh-wire: #1a3d66;
+  --cad-worst-element: #ff3b30;
+  --cad-hidden-line-ghost: #8fa8c9;
+  --cad-background: #1e1e1e;
+  --cad-grid-center: #888888;
+  --cad-grid-division: #444444;
+  --cad-light-sky: #ffffff;
+  --cad-light-ground: #404040;
+  --cad-light-key: #ffffff;
+}
+
+/* Light themes: darken the fills/edges so they read against a light ground,
+ * lift the grid, and warm the ground bounce (a near-black bounce under a light
+ * background reads as grime). The accent hues are kept — they are recognisable
+ * UI signals, and both pass contrast against either background. */
+body.vscode-light {
+  --cad-face: #b8bcc4;
+  --cad-edge: #5a5f68;
+  --cad-point: #b07d00;
+  --cad-mesh: #1f6fd0;
+  --cad-mesh-wire: #9dc2ee;
+  --cad-hidden-line-ghost: #6b7d96;
+  --cad-background: #f3f3f3;
+  --cad-grid-center: #9a9a9a;
+  --cad-grid-division: #c8c8c8;
+  --cad-light-ground: #b0b0b0;
+}
+
+/* High contrast: maximum separation, no mid-tones. */
+body.vscode-high-contrast {
+  --cad-face: #d4d4d4;
+  --cad-edge: #ffffff;
+  --cad-point: #ffff00;
+  --cad-accent: #1aebff;
+  --cad-accent-fail: #ff4a4a;
+  --cad-mesh: #6fc3ff;
+  --cad-mesh-wire: #ffffff;
+  --cad-hidden-line-ghost: #c0c0c0;
+  --cad-background: #000000;
+  --cad-grid-center: #ffffff;
+  --cad-grid-division: #767676;
+  --cad-light-ground: #202020;
+}
+
+/* MUST stay after `.vscode-high-contrast`: VS Code can set both classes on the
+ * body for a high-contrast LIGHT theme, and these have equal specificity — so
+ * source order is what makes the light variant win. */
+body.vscode-high-contrast-light {
+  --cad-face: #3b3b3b;
+  --cad-edge: #000000;
+  --cad-point: #6b4a00;
+  --cad-accent: #0f4a9c;
+  --cad-accent-fail: #b5121b;
+  --cad-mesh: #0f4a9c;
+  --cad-mesh-wire: #000000;
+  --cad-hidden-line-ghost: #3b3b3b;
+  --cad-background: #ffffff;
+  --cad-grid-center: #000000;
+  --cad-grid-division: #949494;
+  --cad-light-ground: #d0d0d0;
+}
+
 html,
 body {
   margin: 0;

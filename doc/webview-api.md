@@ -14,6 +14,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/gizmoTransform.ts` | Pure per-target delta math (translate/rotate-about-pivot/scale-about-pivot, axis-angle decomposition, grid/point snapping) for the Transform Gizmo (unit-tested) |
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
 | `src/webview/geometryBuilder.ts` | Decode and build per-face meshes + per-edge lines from encoded buffers |
+| `src/webview/palette.ts` | The 3D scene's theme-reactive colour palette, read from `--cad-*` CSS custom properties (unit-tested) |
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
@@ -652,9 +653,86 @@ Draws `text` centered on a 64×64 `<canvas>` with a colored background matching 
 
 ---
 
+## `src/webview/palette.ts`
+
+The 3D scene's colour palette, so the scene tracks VS Code's active theme instead of being
+hardcoded for a dark one.
+
+```typescript
+interface Palette { face; edge; point; accent; accentFail; mesh; meshWire; worstElement;
+                    hiddenLineGhost; background; gridCenter; gridDivision;
+                    lightSky; lightGround; lightKey: number }
+
+const PALETTE_FALLBACKS: Readonly<Palette>;
+function parseCssColor(raw: string): number | null;
+function refreshPalette(): Palette;   // re-reads every --cad-* off document.body
+function palette(): Readonly<Palette>;
+function paletteColor(key: keyof Palette): number;
+```
+
+Each key is backed by a `--cad-*` custom property declared in `media/viewer.css`. **`:root`'s
+values must stay byte-identical to `PALETTE_FALLBACKS`** (the pre-theming constants): the default
+dark theme has to render exactly as it did before theming existed, and the screenshot harness sets
+no body theme class, so it resolves against `:root`. Only `.vscode-light` /
+`.vscode-high-contrast*` override — and `.vscode-high-contrast-light` must stay *after*
+`.vscode-high-contrast` in the file, since VS Code can set both classes and they have equal
+specificity.
+
+Values are explicit literals per theme rather than `var(--vscode-*)` derivations: the screenshot
+harness defines only 12 of the 43 `--vscode-*` variables `viewer.css` consumes, so keying a scene
+colour off an unset one would silently diverge between harness and real session.
+
+`refreshPalette()` reads from `document.body`, not `documentElement`, because VS Code puts the
+theme class on the body. It never throws — with no DOM (headless unit tests import this module
+transitively via `geometryBuilder`/`viewer`) every key keeps its fallback. `paletteColor()` is a
+plain field read, cheap enough to call per material or inside a `traverse`.
+
+`accent` is deliberately **one** entry shared by the selection highlight and the measurement
+overlay. Those were two constants holding the same value in two files, the second commented as
+"matches the selection highlight" — exactly the drift a shared palette removes.
+
+### Applying a theme change
+
+`main.ts`'s `setupThemeReactivity()` observes `<body>`'s `class`/`data-vscode-theme-kind` with a
+`MutationObserver` — VS Code signals a theme change by rewriting those and the `--vscode-*`
+properties, with no message for it, so this is entirely webview-side with no host round trip.
+
+On a change it calls `Viewer.applyTheme()` and then `refreshColors()`. That split matters:
+
+- `applyTheme()` re-reads the palette and handles the surfaces with **no other re-apply path** —
+  background (unless the user overrode it via the Appearance swatch, which always wins once set),
+  the hemisphere/key lights (now held as fields; they used to be added to the scene with no
+  reference kept, which was the real blocker for theming them), the grid (**rebuilt**, because
+  `GridHelper` bakes its colours into a vertex buffer — there is no material colour to set), the
+  FE mesh and worst-element overlays, the hidden-line ghosts, and the clip cap.
+- `refreshColors()` re-themes faces/edges/points/selection through the existing
+  `setEntityColors()`/`renderSelection()` path. This is the same "a material-affecting change must
+  be followed by `refreshColors()`" contract `setDisplayMode()` already documents.
+
+**Never re-theme by traversing materials and writing `mat.color` directly.** Going through
+`setEntityColors()` is what makes a per-Part colour swatch structurally immune: it resolves
+`map.faces.get(id) ?? map.solids.get(groupId) ?? default`, so a themed default is only ever
+reached in the `else` branch. The FE mesh overlay applies the same rule via
+`material.userData.themedDefault`, set false for any material built from a real
+`MeshElementGroup.color`.
+
+Two surfaces are deliberately excluded: `setOpPreview`'s intent tint (lerped destructively at
+set-time, so the pre-tint colour is unrecoverable — and a preview is rebuilt on the next draft
+change anyway) and `orientationCube.ts`'s R/G/B axis arrows (a cross-tool CAD convention, not
+chrome).
+
+`measurementOverlay.ts`'s marker canvas is memoized **keyed on the colour it was drawn with**,
+because it bakes the accent into pixels — a theme change there invalidates a cache rather than
+swapping a material. `geometryBuilder.ts`'s `dotTexture()` needs no such treatment: it is
+white-filled and tinted per instance via `SpriteMaterial.color`.
+
 ## `src/webview/geometryBuilder.ts`
 
 Decodes base64-encoded geometry from the host and builds a `THREE.Group`.
+
+`defaultFaceColor()` / `defaultEdgeColor()` / `defaultPointColor()` are **functions**, not the
+constants they replaced (`DEFAULT_FACE_COLOR` etc.): a constant is captured at module load and can
+never track a theme change. See `palette.ts` above.
 
 ```typescript
 function buildGroupFromEncoded(
