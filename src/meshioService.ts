@@ -244,6 +244,82 @@ export async function convertToStlBoundary(
   }
 }
 
+/**
+ * Per-array facts about a source's point/cell data — what `readMeshioMetadata`
+ * cannot supply.
+ *
+ * `readMetadata` (the cheap call that reads a file's *shape* without its heavy
+ * arrays) returns names only. Component width lives on the full `Mesh`, so
+ * knowing whether an array is a plain scalar requires `dataInfo`, which
+ * requires a real `readMesh`. That is why this is a SEPARATE entry point rather
+ * than a widening of `readMeshioMetadata`: `provider.ts` and `mcpTools.ts` both
+ * call that one on every document open and depend on its cost.
+ *
+ * The payoff is a real UI wart. Today the colour-by-field picker offers every
+ * declared array, and a multi-component one fails only *after* the click —
+ * having read the whole file and run a full `readMesh` + `extractSurface` — so
+ * the user sees the dropdown snap back to "None" with a message that names
+ * three possible causes because the failure carried no discriminator. With
+ * `numComponents` known up front, the entry is disabled with a stated reason.
+ */
+export interface MeshioDataArrayInfo {
+  name: string;
+  location: "point" | "cell";
+  numComponents: number;
+  /** Over FINITE values only — meshio++'s own convention. */
+  min: number;
+  max: number;
+  numNan: number;
+  /** False when a multi-block array disagrees with itself about width. */
+  consistent: boolean;
+}
+
+/**
+ * Reads per-array info for a meshio source. **Never throws** — the same
+ * supplementary-information contract as `readMeshioMetadata`; an unreadable
+ * file yields `[]` and the caller simply falls back to name-only behaviour.
+ */
+export async function readMeshioDataInfo(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<MeshioDataArrayInfo[]> {
+  let m: MeshioApi;
+  try {
+    m = await getMeshio();
+  } catch {
+    return [];
+  }
+  let allPaths: string[] = [];
+  try {
+    const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+    allPaths = staged.allPaths;
+    const mesh = m.readMesh(staged.primaryPath, meshioFormat);
+    const infos = m.dataInfo(mesh) as Array<Record<string, unknown>>;
+    const out: MeshioDataArrayInfo[] = [];
+    for (const info of infos) {
+      const location = info.location === "point_data" ? "point" : info.location === "cell_data" ? "cell" : null;
+      if (!location) continue; // field_data is not colourable — it is not per-entity
+      out.push({
+        name: String(info.name),
+        location,
+        numComponents: Number(info.numComponents ?? 1),
+        min: Number(info.min ?? 0),
+        max: Number(info.max ?? 0),
+        numNan: Number(info.numNan ?? 0),
+        consistent: info.inconsistentBlocks !== true,
+      });
+    }
+    return out;
+  } catch (err) {
+    resetMeshioIfAbort(err);
+    return [];
+  } finally {
+    unstageMeshioSource(m, allPaths);
+  }
+}
+
 export interface MeshioRegionSummary {
   name: string;
   /** `"point"` | `"cell"` | `"side"` — see `@meshioplusplus/wasm`'s `Region.kind`. */
@@ -457,6 +533,49 @@ export async function convertToStlBoundaryWithRegions(
   }
 }
 
+/**
+ * Why a field could not be read, so the caller can say which thing went wrong.
+ *
+ * This used to be a bare `null` shared by "field not found", "not a plain
+ * scalar", "boundary isn't pure triangles" and "the WASM aborted" — so
+ * `provider.ts` reconstituted a three-way *guess* and showed it to the user as
+ * a fact. The reason now travels with the failure.
+ */
+export type MeshioFieldFailureReason =
+  | "not-found"
+  | "not-scalar"
+  | "boundary-not-triangles"
+  | "no-finite-values"
+  | "empty"
+  | "kernel-fault";
+
+export interface MeshioFieldFailure {
+  reason: MeshioFieldFailureReason;
+}
+
+/** True when the result is a failure rather than values. */
+export function isMeshioFieldFailure(r: MeshioFieldValues | MeshioFieldFailure): r is MeshioFieldFailure {
+  return (r as MeshioFieldFailure).reason !== undefined;
+}
+
+/** A user-facing sentence for each reason — one cause, never a disjunction. */
+export function describeMeshioFieldFailure(reason: MeshioFieldFailureReason, field: string): string {
+  switch (reason) {
+    case "not-found":
+      return `Field "${field}" is not present in this file.`;
+    case "not-scalar":
+      return `Field "${field}" is not a plain scalar (it has multiple components per entity), so it cannot be mapped to a colour ramp.`;
+    case "boundary-not-triangles":
+      return `Colour-by-field needs a purely triangular boundary; this model's boundary contains other cell types.`;
+    case "no-finite-values":
+      return `Field "${field}" contains no finite values (all NaN or infinite).`;
+    case "empty":
+      return `Field "${field}" produced no values for this model's boundary.`;
+    case "kernel-fault":
+      return `Reading field "${field}" failed inside meshio++; the kernel has been reset — try again.`;
+  }
+}
+
 export interface MeshioFieldValues {
   /** One value per triangle CORNER, in the SAME file order as
    * `convertToStlBoundaryWithRegions`'s STL bytes (one entry per vertex of
@@ -510,7 +629,7 @@ export async function readMeshioFieldValues(
   kind: "point" | "cell",
   sourceName?: string,
   companions?: readonly MeshioCompanion[]
-): Promise<MeshioFieldValues | null> {
+): Promise<MeshioFieldValues | MeshioFieldFailure> {
   try {
     const m = await getMeshio();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -525,21 +644,23 @@ export async function readMeshioFieldValues(
     const boundary = m.extractSurface(mesh, true);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const blocks = boundary.cells as any[];
-    if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) return null;
+    if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
+      return { reason: "boundary-not-triangles" };
+    }
 
     const perCorner: number[] = [];
     if (kind === "point") {
       const arr: Float64Array | undefined = boundary.point_data?.[fieldName];
-      if (!arr) return null;
-      if ((boundary.point_data_components?.[fieldName] ?? 1) !== 1) return null; // not a plain scalar
+      if (!arr) return { reason: "not-found" };
+      if ((boundary.point_data_components?.[fieldName] ?? 1) !== 1) return { reason: "not-scalar" };
       for (const block of blocks) {
         for (let i = 0; i < block.data.length; i++) perCorner.push(arr[block.data[i]]);
       }
     } else {
       const cellArrBlocks: Float64Array[] | undefined = mesh.cell_data?.[fieldName];
       const parentCellBlocks: Float64Array[] | undefined = boundary.cell_data?.["surface:parent_cell"];
-      if (!cellArrBlocks || !parentCellBlocks) return null;
-      if ((mesh.cell_data_components?.[fieldName] ?? 1) !== 1) return null; // not a plain scalar
+      if (!cellArrBlocks || !parentCellBlocks) return { reason: "not-found" };
+      if ((mesh.cell_data_components?.[fieldName] ?? 1) !== 1) return { reason: "not-scalar" };
       const flat: number[] = [];
       for (const blockArr of cellArrBlocks) for (let i = 0; i < blockArr.length; i++) flat.push(blockArr[i]);
       for (let b = 0; b < blocks.length; b++) {
@@ -552,13 +673,17 @@ export async function readMeshioFieldValues(
         }
       }
     }
-    if (perCorner.length === 0) return null;
+    if (perCorner.length === 0) return { reason: "empty" };
+    // Over FINITE values only, matching meshio++'s own `dataInfo` convention.
+    // A single NaN previously poisoned both bounds, which then made every
+    // colour in the legend meaningless.
     let min = Infinity, max = -Infinity;
-    for (const v of perCorner) { if (v < min) min = v; if (v > max) max = v; }
+    for (const v of perCorner) { if (!Number.isFinite(v)) continue; if (v < min) min = v; if (v > max) max = v; }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return { reason: "no-finite-values" };
     return { values: Float32Array.from(perCorner), min, max };
   } catch (err) {
     resetMeshioIfAbort(err);
-    return null;
+    return { reason: "kernel-fault" };
   }
 }
 

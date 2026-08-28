@@ -10,6 +10,7 @@ import type { MeshioCompanion } from "./meshioService";
 import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
+import { isMeshioFieldFailure, describeMeshioFieldFailure } from "./meshioService";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
@@ -1029,7 +1030,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
           const result = await this.pipeline.readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
-          if (!result) throw new Error(`Field "${msg.field}" not found, not a plain scalar, or the boundary isn't pure triangles.`);
+          // The failure now carries WHY, so the user gets the one real cause
+          // instead of the three-way disjunction this used to guess at.
+          if (isMeshioFieldFailure(result)) throw new Error(describeMeshioFieldFailure(result.reason, msg.field));
           post({ type: "colorFieldResult", requestId: msg.requestId, values: encodeBuffer(result.values), min: result.min, max: result.max });
         } catch (err) {
           post({ type: "colorFieldError", requestId: msg.requestId, message: (err as Error).message });
@@ -1304,11 +1307,19 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         metadata.pointDataNames.length > 0 ||
         metadata.cellDataNames.length > 0 ||
         metadata.fieldDataNames.length > 0;
+      // Per-array facts, ONLY when the source declares point/cell arrays.
+      // `dataInfo` needs a full `readMesh`, so a document with no fields must
+      // not pay for one — and a document that has them would have paid the
+      // same read on the first colour-by-field click anyway. Never throws.
+      const hasDataArrays = metadata.pointDataNames.length > 0 || metadata.cellDataNames.length > 0;
+      const arrays = hasDataArrays && !isFoam
+        ? await this.pipeline.readMeshioDataInfo(bytes!, format, basename, companions!)
+        : [];
       post({
         type: "loadMeshBytes",
         sourceFormat: format,
         dataBase64: Buffer.from(boundary.stlBytes).toString("base64"),
-        meshioMetadata: hasMetadata ? metadata : undefined,
+        meshioMetadata: hasMetadata ? { ...metadata, arrays: arrays.length > 0 ? arrays : undefined } : undefined,
         regionAssignment: boundary.regions
           ? { regionNames: boundary.regions.regionNames, triangleRegionIndex: encodeBuffer(boundary.regions.triangleRegion) }
           : undefined,

@@ -200,6 +200,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
       callKernel("convertFoamCaseToStlBoundary", args) as ReturnType<Pipeline["convertFoamCaseToStlBoundary"]>,
     exportViaMeshio: (...args) => callKernel("exportViaMeshio", args) as ReturnType<Pipeline["exportViaMeshio"]>,
     readMeshioMetadata: (...args) => callKernel("readMeshioMetadata", args) as ReturnType<Pipeline["readMeshioMetadata"]>,
+    readMeshioDataInfo: (...args) => callKernel("readMeshioDataInfo", args) as ReturnType<Pipeline["readMeshioDataInfo"]>,
     loadBRepCachedForDocument: (...args) => callKernel("loadBRepCachedForDocument", args) as Promise<BRepResult>,
     disposeBRepCacheForDocument: (...args) => callKernel("disposeBRepCacheForDocument", args) as Promise<void>,
     readMeshioFieldValues: (...args) => callKernel("readMeshioFieldValues", args) as ReturnType<typeof readMeshioFieldValues>,

@@ -38,6 +38,7 @@ import {
   convertFoamCaseToStlBoundary,
   exportViaMeshio,
   readMeshioMetadata,
+  readMeshioDataInfo,
   readMeshioFieldValues,
 } from "./meshioService";
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
@@ -122,6 +123,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   convertFoamCaseToStlBoundary: convertFoamCaseToStlBoundary as Handler,
   exportViaMeshio: exportViaMeshio as Handler,
   readMeshioMetadata: readMeshioMetadata as Handler,
+  readMeshioDataInfo: readMeshioDataInfo as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,

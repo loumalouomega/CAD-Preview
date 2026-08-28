@@ -227,6 +227,25 @@ export type HostToWebview =
         pointDataNames: string[];
         cellDataNames: string[];
         fieldDataNames: string[];
+        /**
+         * Per-array facts (meshio++ `dataInfo`) for the point/cell arrays
+         * above, when the host could read them. Additive and optional: an
+         * older payload without it still renders, the picker just falls back
+         * to offering every name and discovering a non-scalar after the click.
+         *
+         * Present only when the source actually declares data arrays — it
+         * costs a full `readMesh`, which a document with no fields should not
+         * pay on open.
+         */
+        arrays?: Array<{
+          name: string;
+          location: "point" | "cell";
+          numComponents: number;
+          min: number;
+          max: number;
+          numNan: number;
+          consistent: boolean;
+        }>;
       };
       /** Per-boundary-triangle region correlation (`src/meshioService.ts`'s
        * `convertToStlBoundaryWithRegions`) — present whenever the source's

@@ -67,7 +67,7 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { evaluateToleranceBand } from "./toleranceBand";
 import { meshioCompanionCandidates } from "./meshioCompanions";
@@ -139,6 +139,7 @@ export interface Pipeline {
   convertFoamCaseToStlBoundary: typeof convertFoamCaseToStlBoundary;
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
+  readMeshioDataInfo: typeof readMeshioDataInfo;
   checkMeshHealth: typeof checkMeshHealth;
   promoteMeshToBrep: typeof promoteMeshToBrep;
   repairMesh: typeof repairMesh;

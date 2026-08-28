@@ -739,7 +739,31 @@ let colorFieldRequestId: string | null = null;
  * source file's declared point/cell data array names — called once per
  * `loadMeshBytes` (never for a native mesh open, which has no meshio
  * metadata at all, so the group stays hidden). */
-function applyAvailableColorFields(fields: { pointDataNames: string[]; cellDataNames: string[] } | undefined): void {
+type ColorFieldArrayInfo = {
+  name: string;
+  location: "point" | "cell";
+  numComponents: number;
+  min: number;
+  max: number;
+  numNan: number;
+  consistent: boolean;
+};
+
+/**
+ * Populates the colour-by-field picker.
+ *
+ * **A field that cannot be coloured is disabled here, with the reason in its
+ * label and tooltip** — rather than being offered and failing after the click.
+ * Previously every declared array became an enabled option, and a
+ * multi-component one only failed once the host had read the whole file and run
+ * a full `readMesh` + `extractSurface`; the user saw the dropdown snap back to
+ * "None" after a delay. `arrays` (meshio++ `dataInfo`) carries `numComponents`
+ * up front. It is optional: without it the picker behaves exactly as before,
+ * so an older host payload still works.
+ */
+function applyAvailableColorFields(
+  fields: { pointDataNames: string[]; cellDataNames: string[]; arrays?: ColorFieldArrayInfo[] } | undefined
+): void {
   availableColorFields = fields && fields.pointDataNames.length + fields.cellDataNames.length > 0 ? fields : null;
   const group = document.getElementById("vc-colorfield-group");
   const sel = document.getElementById("vc-colorfield-select") as HTMLSelectElement | null;
@@ -747,18 +771,28 @@ function applyAvailableColorFields(fields: { pointDataNames: string[]; cellDataN
   group.hidden = availableColorFields === null;
   sel.innerHTML = '<option value="">None</option>';
   if (!availableColorFields) return;
-  for (const name of availableColorFields.pointDataNames) {
+
+  const infoFor = (name: string, location: "point" | "cell"): ColorFieldArrayInfo | undefined =>
+    fields?.arrays?.find((a) => a.name === name && a.location === location);
+
+  const addOption = (name: string, location: "point" | "cell"): void => {
     const opt = document.createElement("option");
-    opt.value = `point:${name}`;
-    opt.textContent = `${name} (point)`;
+    opt.value = `${location}:${name}`;
+    const info = infoFor(name, location);
+    if (info && info.numComponents !== 1) {
+      opt.disabled = true;
+      opt.textContent = `${name} (${location}) — ${info.numComponents} components`;
+      opt.title = `Not colourable: a colour ramp maps one scalar per entity, and this array has ${info.numComponents} components each.`;
+    } else {
+      opt.textContent = `${name} (${location})`;
+      // Range up front, before any values are fetched.
+      if (info) opt.title = `Range ${formatMeasure(info.min)} … ${formatMeasure(info.max)}${info.numNan > 0 ? ` · ${info.numNan} NaN` : ""}`;
+    }
     sel.appendChild(opt);
-  }
-  for (const name of availableColorFields.cellDataNames) {
-    const opt = document.createElement("option");
-    opt.value = `cell:${name}`;
-    opt.textContent = `${name} (cell)`;
-    sel.appendChild(opt);
-  }
+  };
+
+  for (const name of availableColorFields.pointDataNames) addOption(name, "point");
+  for (const name of availableColorFields.cellDataNames) addOption(name, "cell");
 }
 
 /** Resets the selector to "None", hides the legend, and clears any active
@@ -3062,9 +3096,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "colorFieldError": {
       if (msg.requestId !== colorFieldRequestId) break;
+      // Clear the overlay and legend, not just the <select>. Previously this
+      // only reset the dropdown, so after a failed pick the viewport kept
+      // showing the PREVIOUS field's colours and its legend range while the
+      // dropdown read "None" — the colours on screen no longer corresponded to
+      // anything selected, which is worse than showing nothing.
+      resetColorFieldSelection();
       setStatus(msg.message, true);
-      const sel = document.getElementById("vc-colorfield-select") as HTMLSelectElement | null;
-      if (sel) sel.value = "";
       break;
     }
 
