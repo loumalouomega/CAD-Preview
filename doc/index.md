@@ -27,7 +27,7 @@ features:
 
   - icon: 🧭
     title: Orientation Cube & View Controls
-    details: A labeled orientation gizmo mirrors the current camera direction. Click any face to snap to that standard view. The collapsible view-controls panel lets you step-rotate, pan, zoom, fit, or reset the view without touching the mouse — plus a live uncapped clipping plane, a background/opacity Appearance group, and a perspective/orthographic toggle.
+    details: A labeled orientation gizmo mirrors the current camera direction. Click any face to snap to that standard view. The collapsible view-controls panel lets you step-rotate, pan, zoom, fit, or reset the view without touching the mouse — plus a live, solid-capped clipping plane along an axis or any face-derived normal, a background/opacity Appearance group, and a perspective/orthographic toggle.
 
   - icon: 🌲
     title: Component Tree Panel

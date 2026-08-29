@@ -110,6 +110,12 @@ The optional `tolerance` field (roadmap "Tolerance-band fact checks on exact mea
 ```typescript
 type DisplayMode = 'shaded' | 'wireframe' | 'xray' | 'hiddenLines' | 'flat'
 type ClipAxis = 'x' | 'y' | 'z'
+
+interface ClipPlaneState {
+  axis: ClipAxis                             // preset; ALWAYS present, even beside `normal`
+  offsetFrac: number                         // -1..1 across the bbox extent ALONG the active normal
+  normal?: [number, number, number]          // optional explicit unit normal; WINS over `axis`
+}
 type PaneLayoutId = '1x1' | '1x2' | '2x1' | '2x2'
 
 interface PaneViewState {
@@ -123,7 +129,7 @@ interface ViewState {
   cameraUp: [number, number, number]        // focused/single-pane up
   orthographic: boolean                      // focused/single-pane projection
   displayMode: DisplayMode                   // global — one value for the whole document
-  clip: { axis: ClipAxis; offsetFrac: number } | null   // global — null = clipping off
+  clip: ClipPlaneState | null                // global — null = clipping off
   layout?: PaneLayoutId                      // split-view layout; absent/"1x1" = single pane (Phase 2)
   panes?: PaneViewState[]                    // one per pane of `layout`, row-major; absent = single pane
 }
@@ -132,6 +138,8 @@ interface ViewState {
 Persisted camera orientation, display mode, ortho/perspective, and clip plane (roadmap "View-state persistence", closed) — see [File Formats](./file-formats.md) for the `<model>.view.json` sidecar. Deliberately does **not** include explode-preview state (session-only by design) or raw camera position/target/distance: `Viewer.frame(direction)` auto-derives both from the model's current bounding box, so a normalized direction + up vector is enough and survives edits that change the model's extents.
 
 Phase 2 (roadmap "Split view", Phase 2) adds `layout` + per-pane camera states. `layout` defaults to `"1x1"` when absent (an older sidecar or a session that never entered split view); `panes` holds one `PaneViewState` per pane of that layout, row-major, and is only meaningful when `layout !== "1x1"`. `view` (the focused direction/up/ortho) stays the single-pane/focused-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — see [File Formats](./file-formats.md). Display mode and clip stay global; only camera state (direction/up/ortho) is per-pane.
+
+`clip` carries an optional explicit `normal` (roadmap "Arbitrary and reusable construction planes", Phases 1+2) that wins over the `axis` preset when present. `axis` is written **regardless**, set to the custom normal's dominant axis — so an older build, which only knows the axis form, restores a sensible neighbouring clip rather than failing its axis check and silently switching clipping off entirely. `offsetFrac` is measured along whichever normal is active.
 
 ### `EditOp`
 
@@ -612,6 +620,8 @@ The saved-macro library for the document's folder (`cad-preview-macros.json` —
 ### `entityFactsResult` / `entityFactsError`
 
 Sent in reply to `entityFactsRequest` — **B-rep sources only** (a triangle mesh has no analytic surface type; a fine-faceted prism and a cylinder are identical in triangles), same gate as `massPropertiesResult`. Carries `EntityFacts` verbatim from the existing `getEntityFacts` pipeline function — the interactive geometry inspector card is a new protocol pair over existing kernel surface, not new geometry work; the same function backs the `inspect` MCP tool.
+
+**Two consumers share this round trip**, each latched on its own request id: the inspector card, and the view-controls **Clip ▸ Face** button, which reads the reply's `normal` + `planeOrigin` to derive an arbitrary clip plane. The clip path issues its own request rather than reusing the card's last result — group/query selection never triggers a card fetch, so that cache can be empty or stale for a face selected that way.
 
 Driven by **selection, not hover**: `getEntityFacts` has no shape cache, so every call re-reads the source bytes and replays the whole op list. The hover tooltip is deliberately pure-webview for the same reason.
 

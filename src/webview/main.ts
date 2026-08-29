@@ -51,7 +51,14 @@ import {
 } from "./selectFilters";
 import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
 import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, snapTranslateDelta, nearestSnapPoint, type TransformBase } from "./gizmoTransform";
-import { planeForAxis, type ClipAxis } from "./clipping";
+import {
+  planeForClip,
+  orientTowardBulk,
+  planeFromThreePoints,
+  dominantAxis,
+  type ClipAxis,
+  type ClipPlaneState,
+} from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
@@ -386,9 +393,27 @@ let gridSnapSize = 1;
  * and a hidden Part's points must not attract gizmo drags either (three's
  * Raycaster ignores `.visible`; this traversal must not). */
 function collectSnapPoints(): THREE.Vector3[] {
-  const points: THREE.Vector3[] = [];
+  return [...collectPointEntities().values()];
+}
+
+/**
+ * Every visible `point-N` entity, by id, in WORLD space — shared by gizmo
+ * snapping and Clip ▸ 3 Pts.
+ *
+ * **`getWorldPosition`, not `.position`.** This used to read the local
+ * position while being described as world-space; the two diverge whenever an
+ * ancestor carries a transform, which for these sprites means during an
+ * explode preview (the preview moves the top-level `groupId` groups). Identical
+ * whenever no ancestor transform exists, so this is a strict improvement — but
+ * it does change where a gizmo drag snaps mid-explode-preview, which is a real
+ * if narrow behaviour change rather than a pure refactor.
+ */
+function collectPointEntities(): Map<string, THREE.Vector3> {
+  const points = new Map<string, THREE.Vector3>();
   viewer.getModel()?.traverseVisible((o) => {
-    if (o instanceof THREE.Sprite && o.userData.entityType === "point") points.push(o.position.clone());
+    if (o instanceof THREE.Sprite && o.userData.entityType === "point") {
+      points.set(String(o.userData.entityId), o.getWorldPosition(new THREE.Vector3()));
+    }
   });
   return points;
 }
@@ -1095,6 +1120,7 @@ function renderHighlight(): void {
     previewPartIndex !== null ? partsModel.entitiesOf(previewPartIndex) : selection.list();
   viewer.renderSelection(entities);
   refreshGizmoAttachment(); // no-op unless a translate/rotate/scale form is open
+  clippingControls?.reflectSelection(); // Clip ▸ Face / 3 Pts gate on the selection
   // A selection change re-aims every selection-dependent op (boolean B,
   // fillet edges, feature profiles, mate faces, build-surface loops) — cancel
   // the stale preview and reschedule from the still-open form. Roadmap trap
@@ -2663,16 +2689,23 @@ function setupAppearanceControls(): AppearanceControlsHandle {
 }
 
 /** `null` clip state means clipping is off (mirrors `ViewState.clip`). */
-type ClipState = { axis: ClipAxis; offsetFrac: number } | null;
+type ClipState = ClipPlaneState | null;
 
 /** Handle returned by {@link setupClippingControls}, letting persisted view
  * state restore the clip plane through the same code the toolbar uses, and
  * letting the view-state save gather the clip plane's current settings
- * (`clipAxis`/`clipEnabled`/`offsetSlider.value` are this function's own
- * closure state, with no other way to read them from outside). */
+ * (`clipAxis`/`clipEnabled`/`offsetFrac` are this function's own closure
+ * state, with no other way to read them from outside). */
 interface ClippingControlsHandle {
   applyState(state: ClipState): void;
   getState(): ClipState;
+  /** Enables/disables the two derive buttons for the current selection.
+   * Called from `renderHighlight()`, the single choke point every selection
+   * mutation already funnels through. */
+  reflectSelection(): void;
+  /** Applies a plane derived from picked geometry: orients it toward the bulk
+   * of the model, stores it as the custom normal, and turns clipping on. */
+  applyDerivedPlane(normal: THREE.Vector3, throughPoint: THREE.Vector3, label: string): void;
 }
 
 /**
@@ -2687,57 +2720,225 @@ interface ClippingControlsHandle {
 function setupClippingControls(): ClippingControlsHandle {
   let clipAxis: ClipAxis = "x";
   let clipEnabled = false;
-  const axisBtns = [...document.querySelectorAll<HTMLButtonElement>(".clip-axis")];
+  /** The custom normal, or `null` while an axis preset is active. Kept even
+   * while a preset is selected, so the `N` segment can switch back to it
+   * without the user re-picking the geometry. */
+  let customNormal: THREE.Vector3 | null = null;
+  let customLabel = "";
+  let usingCustom = false;
+  /**
+   * The source of truth for the cut position. The slider is a VIEW of this,
+   * not the other way round: its integer -100..100 range quantizes to 0.01,
+   * which used to silently round `offsetFrac` on every restore (0.333 → 0.33,
+   * rewriting the sidecar). Harmless for a hand-dragged axis clip; a real
+   * correctness problem for "clip exactly at this face", where 0.5% of the
+   * bbox extent is enough to leave a visible sliver of the face behind.
+   */
+  let offsetFrac = 0;
+
+  const allSegments = [...document.querySelectorAll<HTMLButtonElement>(".clip-axis")];
+  const customBtn = document.getElementById("clip-custom") as HTMLButtonElement | null;
+  const axisBtns = allSegments.filter((b) => b.dataset.axis !== undefined);
   const offsetSlider = document.getElementById("clip-offset") as HTMLInputElement | null;
   const toggleBtn = document.getElementById("clip-toggle");
+  const faceBtn = document.getElementById("clip-from-face") as HTMLButtonElement | null;
+  const pointsBtn = document.getElementById("clip-from-points") as HTMLButtonElement | null;
+
+  const modelBox = (): THREE.Box3 | null => {
+    const model = viewer.getModel();
+    if (!model) return null;
+    const box = new THREE.Box3().setFromObject(model);
+    return box.isEmpty() ? null : box;
+  };
+
+  const currentState = (): ClipPlaneState => ({
+    axis: clipAxis,
+    offsetFrac,
+    ...(usingCustom && customNormal ? { normal: customNormal.toArray() as [number, number, number] } : {}),
+  });
 
   const applyClip = () => {
-    if (!clipEnabled || !offsetSlider) {
-      viewer.setClippingPlane(null);
-      return;
+    const box = clipEnabled ? modelBox() : null;
+    viewer.setClippingPlane(box ? planeForClip(currentState(), box) : null);
+  };
+
+  /** Keeps the four segments, the slider and the toggle showing the truth. */
+  const reflectUi = () => {
+    axisBtns.forEach((b) => b.classList.toggle("active", !usingCustom && b.dataset.axis === clipAxis));
+    if (customBtn) {
+      customBtn.hidden = customNormal === null;
+      customBtn.classList.toggle("active", usingCustom);
+      if (customNormal) {
+        const n = customNormal.toArray().map((c) => c.toFixed(3)).join(", ");
+        customBtn.title = customLabel ? `Custom normal (${n}) — from ${customLabel}` : `Custom normal (${n})`;
+      }
     }
-    const model = viewer.getModel();
-    const box = model ? new THREE.Box3().setFromObject(model) : null;
-    if (!box || box.isEmpty()) {
-      viewer.setClippingPlane(null);
-      return;
+    if (offsetSlider) offsetSlider.value = String(Math.round(offsetFrac * 100));
+    if (toggleBtn) {
+      toggleBtn.classList.toggle("active", clipEnabled);
+      toggleBtn.textContent = clipEnabled ? "On" : "Off";
     }
-    viewer.setClippingPlane(planeForAxis(clipAxis, Number(offsetSlider.value) / 100, box));
   };
 
   for (const btn of axisBtns) {
     btn.addEventListener("click", () => {
       clipAxis = btn.dataset.axis as ClipAxis;
-      axisBtns.forEach((b) => b.classList.toggle("active", b === btn));
+      usingCustom = false;
+      reflectUi();
       applyClip();
       scheduleViewSave();
     });
   }
+  // Re-selects the stored custom normal, so X/Y/Z/N is a genuine four-way
+  // control — flip to an axis, look at something, flip back without re-picking.
+  customBtn?.addEventListener("click", () => {
+    if (!customNormal) return;
+    usingCustom = true;
+    reflectUi();
+    applyClip();
+    scheduleViewSave();
+  });
   offsetSlider?.addEventListener("change", scheduleViewSave); // commit on release, not every drag tick
-  offsetSlider?.addEventListener("input", applyClip);
+  offsetSlider?.addEventListener("input", () => {
+    offsetFrac = Number(offsetSlider.value) / 100;
+    applyClip();
+  });
   toggleBtn?.addEventListener("click", () => {
     clipEnabled = !clipEnabled;
-    toggleBtn.classList.toggle("active", clipEnabled);
-    toggleBtn.textContent = clipEnabled ? "On" : "Off";
+    reflectUi();
     applyClip();
     scheduleViewSave();
   });
 
+  const applyDerivedPlane = (normal: THREE.Vector3, throughPoint: THREE.Vector3, label: string) => {
+    const box = modelBox();
+    if (!box) {
+      setStatus("No model to clip.", true);
+      return;
+    }
+    // Orient toward the bulk, or a face's own outward normal would keep the
+    // EMPTY half and the model would appear to vanish.
+    const oriented = orientTowardBulk(normal, throughPoint, box);
+    customNormal = oriented.normal;
+    customLabel = label;
+    usingCustom = true;
+    clipAxis = dominantAxis(oriented.normal);
+    offsetFrac = oriented.offsetFrac;
+    // Turning clipping on is part of the action: clicking "Face" while clipping
+    // is off and seeing nothing happen is a bug-shaped experience.
+    clipEnabled = true;
+    reflectUi();
+    applyClip();
+    scheduleViewSave();
+    setStatus(
+      offsetFrac <= -0.999
+        ? `Clip normal from ${label} — drag the offset slider to cut.`
+        : `Clipping along ${label}.`
+    );
+  };
+
+  const reflectSelection = () => {
+    const picked = selection.list();
+    const faces = picked.filter((e) => e.entityType === "surface");
+    const points = picked.filter((e) => e.entityType === "point");
+    if (faceBtn) {
+      // Mesh sources have no analytic surface, so the host can only answer the
+      // facts request with an error — don't offer the button at all.
+      const ok = sourceKind === "brep" && faces.length === 1 && picked.length === 1;
+      faceBtn.disabled = !ok;
+      faceBtn.title = ok
+        ? `Clip along ${faces[0].entityId}`
+        : sourceKind === "brep"
+          ? "Select exactly one planar face to clip along it"
+          : "Clipping along a face needs a B-rep source";
+    }
+    if (pointsBtn) {
+      // Self-gating for mesh sources: they build no `point-N` sprites at all.
+      const ok = points.length === 3 && picked.length === 3;
+      pointsBtn.disabled = !ok;
+      pointsBtn.title = ok ? "Clip through the three selected points" : "Select exactly three points";
+    }
+  };
+
+  faceBtn?.addEventListener("click", () => requestClipFromFace());
+  pointsBtn?.addEventListener("click", () => applyClipFromPoints());
+  reflectSelection();
+
   const applyState = (state: ClipState) => {
     clipEnabled = state !== null;
-    clipAxis = state?.axis ?? clipAxis;
-    axisBtns.forEach((b) => b.classList.toggle("active", b.dataset.axis === clipAxis));
-    if (offsetSlider && state) offsetSlider.value = String(Math.round(state.offsetFrac * 100));
-    if (toggleBtn) {
-      toggleBtn.classList.toggle("active", clipEnabled);
-      toggleBtn.textContent = clipEnabled ? "On" : "Off";
+    if (state) {
+      clipAxis = state.axis;
+      offsetFrac = state.offsetFrac;
+      if (state.normal) {
+        customNormal = new THREE.Vector3(...state.normal);
+        customLabel = customLabel || "the saved view";
+        usingCustom = true;
+      } else {
+        usingCustom = false;
+      }
     }
+    reflectUi();
     applyClip();
   };
-  const getState = (): ClipState =>
-    clipEnabled && offsetSlider ? { axis: clipAxis, offsetFrac: Number(offsetSlider.value) / 100 } : null;
+  const getState = (): ClipState => (clipEnabled ? currentState() : null);
 
-  return { applyState, getState };
+  return { applyState, getState, reflectSelection, applyDerivedPlane };
+}
+
+/**
+ * Clip ▸ Face. Issues its OWN `entityFactsRequest` rather than reusing whatever
+ * the inspector card last fetched: group/query selection never calls
+ * `requestEntityFacts` at all, so that cache is empty or stale for a face
+ * selected that way, and reusing it would also race a click that lands before
+ * an in-flight reply. The two request-id latches are independent, so neither
+ * consumer can steal the other's response.
+ */
+let clipFaceFactsRequestId: string | null = null;
+
+function requestClipFromFace(): void {
+  const face = selection.list().find((e) => e.entityType === "surface");
+  if (!face) return;
+  clipFaceFactsRequestId = `clipface-${Date.now()}-${Math.random()}`;
+  post({ type: "entityFactsRequest", requestId: clipFaceFactsRequestId, entityId: face.entityId });
+}
+
+/** Applies a clip plane from a completed Clip ▸ Face round trip. */
+function applyClipFromFaceFacts(facts: EntityFacts): void {
+  // `EntityFacts` sets BOTH of these only for a planar face, so this one check
+  // covers every non-planar surface type.
+  if (!facts.normal || !facts.planeOrigin) {
+    setStatus(
+      `${facts.entityId} is ${facts.surfaceType ? `a ${facts.surfaceType} face` : "not planar"} — pick a planar face.`,
+      true
+    );
+    return;
+  }
+  // `planeOrigin` genuinely lies ON the face's plane; `center` is the bbox
+  // centre, which for an annular or concave face need not.
+  clippingControls?.applyDerivedPlane(
+    new THREE.Vector3(...facts.normal),
+    new THREE.Vector3(...facts.planeOrigin),
+    facts.entityId
+  );
+}
+
+/** Clip ▸ 3 Pts — entirely webview-side; the sprite positions are already here. */
+function applyClipFromPoints(): void {
+  const ids = selection.list().filter((e) => e.entityType === "point");
+  if (ids.length !== 3) return;
+  const byId = collectPointEntities();
+  const pts = ids.map((e) => byId.get(e.entityId));
+  if (pts.some((p) => !p)) {
+    setStatus("Those points are no longer in the model.", true);
+    return;
+  }
+  const [a, b, c] = pts as THREE.Vector3[];
+  const plane = planeFromThreePoints(a, b, c);
+  if (!plane) {
+    setStatus("Those three points are collinear — no plane.", true);
+    return;
+  }
+  clippingControls?.applyDerivedPlane(plane.normal, plane.point, `${ids.map((e) => e.entityId).join(", ")}`);
 }
 
 /**
@@ -3303,11 +3504,24 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "entityFactsResult":
+      // Clip ▸ Face shares this round trip with the inspector card, latched on
+      // its own request id — checked first so a clip reply is never mistaken
+      // for a card reply, and vice versa.
+      if (msg.requestId === clipFaceFactsRequestId) {
+        clipFaceFactsRequestId = null;
+        applyClipFromFaceFacts(msg.facts);
+        break;
+      }
       if (msg.requestId !== entityFactsRequestId) break; // stale — a newer selection superseded it
       renderInspectorCard(msg.facts.entityId, msg.facts);
       break;
 
     case "entityFactsError":
+      if (msg.requestId === clipFaceFactsRequestId) {
+        clipFaceFactsRequestId = null;
+        setStatus(msg.message, true);
+        break;
+      }
       if (msg.requestId !== entityFactsRequestId) break;
       // Keep the card, showing why — silently vanishing would read as a bug.
       renderInspectorCard(selection.list()[0]?.entityId ?? "", null, msg.message);

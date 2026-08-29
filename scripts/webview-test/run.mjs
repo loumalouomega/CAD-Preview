@@ -876,6 +876,463 @@ test("context menu: volume mode says why it has no groups instead of showing a b
 });
 
 // ── Runner ────────────────────────────────────────────────────────────────
+
+// ── Clip plane and the stencil clip cap ───────────────────────────────────
+//
+// `clipCap.ts` had NO test of any kind and a documented SILENT failure mode:
+// get the stencil state wrong and the model simply renders uncapped, with no
+// error anywhere. These cases close that, and they gate the arbitrary-normal
+// work (roadmap item 7) — everything below `Viewer.setClippingPlane` was
+// "already plane-generic", but that was an inference from reading the code.
+//
+// The lever is `main.ts`'s `case "viewState"`, which re-applies a posted view
+// state after hydration straight into `clippingControls.applyState`. That
+// drives the whole sidecar-shape → UI → `planeForClip` → `setClippingPlane`
+// path with NO test-only production surface.
+//
+// TWO non-obvious things, both established empirically here rather than
+// assumed, because each produced a confidently wrong result first:
+//
+//  1. **The camera must sit on the CLIPPED-AWAY side to see the cut.** A
+//     three.js clipping plane keeps the half its normal points INTO, so
+//     viewing along `+normal` shows the outside of the surviving half with
+//     the cut facing away — no cap is visible and everything looks broken.
+//     Every case below therefore views along `-normal`. Verified against a
+//     standalone three.js scene: flipping the plane's normal is exactly what
+//     turns "no cap" into "cap".
+//  2. **The cap is LIT** (`MeshStandardMaterial`), so it never renders as the
+//     raw `--cad-face` value, and its shade changes with orientation. Colour
+//     matching is therefore by HUE, not by proximity to a fixed RGB.
+
+const CLIP_SETTLE = 1600;
+
+/** A `ViewState` with clipping configured. Orthographic throughout: it removes
+ *  perspective-dependent cross-section area from every measurement. */
+const clipView = (clip, viewDirection, cameraUp = [0, 1, 0]) => ({
+  type: "viewState",
+  view: { viewDirection, cameraUp, orthographic: true, displayMode: "shaded", clip },
+});
+
+/** Turns the grid off so a measurement is of the model, not the helper. */
+async function hideGrid(page) {
+  await page.click("#view-menu");
+  await page.click("#grid");
+  await page.keyboard.press("Escape");
+  await sleep(300);
+}
+
+/**
+ * Hides the view-controls panel for the duration of a pixel comparison.
+ *
+ * **Required for any exact comparison, and the reason is a real trap:**
+ * Playwright's element screenshot captures the VIEWPORT REGION the element
+ * occupies, so an absolutely-positioned sibling painted over `#app` — which
+ * `#view-controls` is — lands in the shot. Deriving a clip plane reveals the
+ * `N` segment, and that button alone accounted for a reproducible 816-pixel
+ * difference that looked exactly like a rendering discrepancy.
+ */
+const setPanelHidden = (page, hidden) =>
+  page.evaluate((h) => {
+    const el = document.getElementById("view-controls");
+    if (el) el.style.display = h ? "none" : "";
+  }, hidden);
+
+/**
+ * A full-frame signature: an FNV-1a hash over every RGB byte, plus the
+ * non-background pixel count.
+ *
+ * `dominantColors` is too weak to support a pixel-IDENTITY claim — two
+ * genuinely different renders can share a top-N histogram. Decoded in-page
+ * via createImageBitmap, the same path `dominantColors` uses (a direct WebGL
+ * readback returns all-black without `preserveDrawingBuffer`).
+ */
+async function frameSignature(page) {
+  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  return page.evaluate(async (b64) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = document.createElement("canvas");
+    c.width = bmp.width;
+    c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+    let hash = 0x811c9dc5;
+    let nonBg = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      for (let k = 0; k < 3; k++) {
+        hash ^= data[i + k];
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      const bg =
+        Math.abs(data[i] - 0x1e) < 6 && Math.abs(data[i + 1] - 0x1e) < 6 && Math.abs(data[i + 2] - 0x1e) < 6;
+      if (!bg) nonBg++;
+    }
+    return { hash, nonBg };
+  }, shot);
+}
+
+/**
+ * The fraction of the viewport that is magenta-HUED.
+ *
+ * Hue rather than a fixed RGB because the cap is lit: with `--cad-face` set to
+ * `#ff00ff` it renders around `(219,31,219)` head-on and `(173,17,173)` at a
+ * shallower angle. The predicate (`r` and `b` both high, `g` far below both)
+ * accepts every such shade and — checked against this fixture's actual
+ * histogram — rejects all of its Part swatches (`195,106,50`, `52,93,171`,
+ * `14,99,156`), the background, and every grey.
+ */
+async function magentaFraction(page) {
+  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  return page.evaluate(async (b64) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = document.createElement("canvas");
+    c.width = bmp.width;
+    c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+    let hits = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      if (r > 60 && b > 60 && g < 0.5 * Math.min(r, b)) hits++;
+    }
+    return hits / (c.width * c.height);
+  }, shot);
+}
+
+/**
+ * Floor for "a real cap is present", as a fraction of the viewport.
+ *
+ * Calibrated against the ACTUAL measured cross-sections rather than guessed:
+ * the tilted cut covers ~0.04 and the axis-aligned one ~0.016 of a 1000x800
+ * viewport (~9,700 px) — both inspected visually as solid, correctly-shaped
+ * cross-sections. 0.008 (~4,800 px) sits well below either and far above any
+ * stray antialiasing, and every case also checks the value against its own
+ * clipping-off control, so the floor alone is never what carries an assertion.
+ */
+const CAP_FLOOR = 0.008;
+
+/**
+ * P2's OWN, tighter floor for the tilted case — deliberately separate from
+ * `CAP_FLOOR`, because a real bug injection showed the shared floor isn't
+ * enough here. Breaking `repositionClipCap`'s reorientation (so the cap stays
+ * at its default identity orientation, facing +Z, instead of the tilted
+ * normal) produced a visibly WRONG, misaligned cap — but its magenta area
+ * (0.0126) still cleared `CAP_FLOOR` (0.008), because a misoriented flat cap
+ * still has plausible area, just the wrong shape/position. Measured the
+ * CORRECT cap across a full offset sweep (-0.4..0.4): 0.024-0.038, comfortably
+ * above the broken 0.0126. P3's axis-z case doesn't need this: an identity
+ * quaternion IS the correct orientation for a +Z normal, so a broken
+ * `repositionClipCap` wouldn't even manifest as a defect there.
+ */
+const TILTED_CAP_FLOOR = 0.02;
+
+/** Tags the cap by making `--cad-face` magenta. Sound because every visible
+ *  face in this fixture is Part-assigned (established by the palette case
+ *  above), so `--cad-face` reaches the cap and nothing else. */
+async function tagCapColour(page) {
+  await page.evaluate(() => document.body.style.setProperty("--cad-face", "#ff00ff"));
+  await setTheme(page, "vscode-dark"); // re-stamp -> palette re-read -> cap rebuilt
+}
+
+/**
+ * P0 — determinism control. MUST come before P1.
+ *
+ * Without it a passing P1 proves nothing (the comparison could be vacuous)
+ * and a failing P1 is unattributable — a genuine widened-path bug looks
+ * exactly like SwiftShader nondeterminism or an unsettled camera. Posting a
+ * view state re-frames the camera, and at short settle times the captured
+ * frame is genuinely path-dependent (measured: 16k differing pixels at 600ms,
+ * 0 at 1600ms), which is why CLIP_SETTLE is as generous as it is.
+ */
+test("clip P0: the same posted view state renders identically twice", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await setPanelHidden(page, true);
+
+  const dir = [-1, -0.8, -1];
+  await post(page, clipView({ axis: "x", offsetFrac: 0.2 }, dir));
+  await sleep(CLIP_SETTLE);
+  const a = await frameSignature(page);
+  await post(page, clipView({ axis: "y", offsetFrac: -0.4 }, dir)); // force a real change between
+  await sleep(CLIP_SETTLE);
+  await post(page, clipView({ axis: "x", offsetFrac: 0.2 }, dir));
+  await sleep(CLIP_SETTLE);
+  const b = await frameSignature(page);
+
+  assert(a.nonBg > 0, `the clipped render is not blank (${a.nonBg} model px)`);
+  assert(
+    a.hash === b.hash,
+    `rendering returns to an identical frame, so P1 can assert exact identity (${a.hash} vs ${b.hash})`
+  );
+  await setPanelHidden(page, false);
+});
+
+/**
+ * P1 — behaviour preservation, EXACT.
+ *
+ * An explicit `[1,0,0]` normal must render pixel-identically to the `"x"`
+ * preset. Exact rather than tolerant is justified: the generalized offset
+ * formula reduces bit-for-bit to the original for a unit axis normal, pinned
+ * independently by `clipping.test.ts`'s `toBe` assertion on the plane
+ * constant.
+ *
+ * Division of labour worth keeping straight: `clipping.test.ts` pins the
+ * ABSOLUTE position of the axis planes; this pins that the custom-normal
+ * branch AGREES with them. Neither alone is sufficient.
+ */
+test("clip P1: an explicit axis normal renders identically to the axis preset", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await setPanelHidden(page, true);
+
+  const cases = [
+    ["x", [1, 0, 0], [-1, -0.8, -1]],
+    ["z", [0, 0, 1], [0, 0, -1]],
+  ];
+  for (const [axis, normal, dir] of cases) {
+    await post(page, clipView({ axis, offsetFrac: 0.2 }, dir));
+    await sleep(CLIP_SETTLE);
+    const preset = await frameSignature(page);
+    await post(page, clipView({ axis, offsetFrac: 0.2, normal }, dir));
+    await sleep(CLIP_SETTLE);
+    const explicit = await frameSignature(page);
+
+    assert(
+      preset.hash === explicit.hash,
+      `an explicit [${normal}] normal is pixel-identical to the "${axis}" preset (${preset.hash} vs ${explicit.hash})`
+    );
+  }
+  await setPanelHidden(page, false);
+});
+
+/**
+ * P2 — a tilted normal genuinely CAPS. The crux of the whole feature.
+ */
+test("clip P2: a tilted clip normal produces a real stencil cap", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await tagCapColour(page);
+
+  const k = 0.5773502691896258;
+  const normal = [k, k, k];
+  const facing = [-k, -k, -k]; // on the clipped-away side, looking AT the cut
+
+  // Control: with clipping off there must be no cap colour at all. Without
+  // this the case would pass if --cad-face leaked onto any ordinary face.
+  await post(page, clipView(null, facing));
+  await sleep(CLIP_SETTLE);
+  const off = await magentaFraction(page);
+  assert(off < 0.002, `no cap-coloured pixels while clipping is off (got ${off.toFixed(4)})`);
+
+  await post(page, clipView({ axis: "x", offsetFrac: 0, normal }, facing));
+  await sleep(CLIP_SETTLE);
+  const on = await magentaFraction(page);
+
+  // A BAND, not a floor. A floor alone would pass for `stencilFunc: Always`,
+  // where the cap paints over the entire viewport (measured at ~0.42 when the
+  // stencil test is disabled, so 0.5 genuinely separates the two).
+  assert(on > TILTED_CAP_FLOOR, `a tilted clip is capped, not see-through/misoriented (got ${on.toFixed(4)})`);
+  assert(on > off * 5, `the cap appears because of the clip, not the colour tag (${on.toFixed(4)} vs ${off.toFixed(4)})`);
+  assert(on < 0.35, `the cap is bounded by the solid, not painted everywhere (got ${on.toFixed(4)})`);
+
+  // Edge-on: the cap plane is now parallel to the view direction, so it
+  // projects to a thin line. This is the ONLY assertion that catches a broken
+  // `repositionClipCap` quaternion — the one function in clipCap.ts the
+  // arbitrary-normal work actually depends on. A cap left facing +Z would
+  // still show a large, plausible blob head-on.
+  await post(page, clipView({ axis: "x", offsetFrac: 0, normal }, [1, -1, 0]));
+  await sleep(CLIP_SETTLE);
+  const edge = await magentaFraction(page);
+  assert(
+    edge < on / 5,
+    `the cap is oriented to its plane — edge-on it nearly vanishes (${edge.toFixed(4)} vs ${on.toFixed(4)})`
+  );
+
+  await page.evaluate(() => document.body.style.removeProperty("--cad-face"));
+});
+
+/**
+ * P3 — the PRE-EXISTING axis-aligned cap, which this codebase has never had a
+ * regression test for. Also disambiguates a P2 failure: P3 green + P2 red
+ * means the new arbitrary-normal path is at fault; both red means the cap is
+ * broken generally.
+ */
+test("clip P3: an axis-aligned clip is capped too", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await tagCapColour(page);
+
+  const facing = [0, 0, -1]; // +Z normal keeps the +Z half; view it from -Z
+  await post(page, clipView(null, facing));
+  await sleep(CLIP_SETTLE);
+  const off = await magentaFraction(page);
+
+  await post(page, clipView({ axis: "z", offsetFrac: 0 }, facing));
+  await sleep(CLIP_SETTLE);
+  const on = await magentaFraction(page);
+
+  assert(off < 0.002, `no cap colour before clipping (got ${off.toFixed(4)})`);
+  assert(on > CAP_FLOOR, `the axis-aligned clip is capped (got ${on.toFixed(4)})`);
+  assert(on > off * 5, `the cap appears because of the clip, not the colour tag (${on.toFixed(4)} vs ${off.toFixed(4)})`);
+  assert(on < 0.35, `the axis cap is bounded by the solid (got ${on.toFixed(4)})`);
+
+  await page.evaluate(() => document.body.style.removeProperty("--cad-face"));
+});
+
+/**
+ * P4 — the widened persisted shape survives the webview round trip.
+ *
+ * `getState()`'s widened output is otherwise untested anywhere: the sidecar
+ * parser is covered by vitest, but nothing checks that the webview actually
+ * GATHERS a custom normal back out for saving.
+ */
+test("clip P4: a custom normal round-trips back out through viewChanged", async (page) => {
+  await populate(page);
+  const k = 0.5773502691896258;
+
+  await page.evaluate(() => (window.__sent.length = 0));
+  await post(page, clipView({ axis: "x", offsetFrac: -0.25, normal: [k, k, k] }, [-k, -k, -k]));
+  await sleep(900); // past VIEW_SAVE_DEBOUNCE_MS (500)
+
+  const saved = await page.evaluate(() => {
+    const msgs = (window.__sent || []).filter((m) => m.type === "viewChanged");
+    return msgs.length ? msgs[msgs.length - 1].view : null;
+  });
+
+  assert(saved !== null, "the webview posted a viewChanged after the clip was applied");
+  const n = saved?.clip?.normal;
+  assert(Array.isArray(n) && n.length === 3, `the saved clip carries a normal (got ${JSON.stringify(n)})`);
+  if (Array.isArray(n)) {
+    const len = Math.hypot(n[0], n[1], n[2]);
+    assert(Math.abs(len - 1) < 1e-6, `the saved normal is unit length (got ${len.toFixed(6)})`);
+    // `axis` is written BESIDE the normal so an OLDER build reading this
+    // sidecar restores a sensible neighbouring clip instead of none at all.
+    assert(saved.clip.axis === "x", `the dominant axis is stored beside it (got ${saved.clip.axis})`);
+  }
+});
+
+/**
+ * P5 — the derive buttons' gating. Deliberately NOT a click-three-of-64-point-
+ * sprites test: positional clicks on sprites would be fragile, and an
+ * intermittently-red suite is worse than no test. The 3-point maths is covered
+ * exhaustively in `clipping.test.ts`; only the gate is a DOM concern.
+ */
+test("clip P5: the derive buttons gate on the selection", async (page) => {
+  await populate(page);
+
+  const state = () =>
+    page.evaluate(() => ({
+      face: document.getElementById("clip-from-face")?.disabled,
+      pts: document.getElementById("clip-from-points")?.disabled,
+      customHidden: document.getElementById("clip-custom")?.hidden,
+    }));
+
+  const initial = await state();
+  assert(initial.face === true, "Clip ▸ Face is disabled with nothing selected");
+  assert(initial.pts === true, "Clip ▸ 3 Pts is disabled with nothing selected");
+  assert(initial.customHidden === true, "the custom-normal segment is hidden until one is derived");
+
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.keyboard.press("Escape");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+
+  const afterPick = await state();
+  assert(afterPick.face === false, "Clip ▸ Face enables once exactly one face is selected");
+  assert(afterPick.pts === true, "Clip ▸ 3 Pts stays disabled for a face selection");
+});
+
+/**
+ * P6 — Clip ▸ Face end to end, driven by a SYNTHETIC reply.
+ *
+ * Reuses the established shape: click, read the real request off
+ * `window.__sent` so the reply carries a genuine request id, then post the
+ * reply. Covers the non-planar branch too — the one most likely to be written
+ * wrong, and it must leave clipping untouched rather than applying a garbage
+ * plane.
+ */
+test("clip P6: Clip ▸ Face applies a plane, and refuses a non-planar face", async (page) => {
+  await populate(page);
+
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.keyboard.press("Escape");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+
+  const facts = (over) => ({
+    entityId: "face-7",
+    kind: "face",
+    bbox: null,
+    center: [0, 0, 0],
+    area: 1,
+    length: null,
+    normal: null,
+    planeOrigin: null,
+    surfaceType: "plane",
+    curveType: null,
+    ...over,
+  });
+  const clickAndReply = async (over) => {
+    await page.evaluate(() => (window.__sent.length = 0));
+    await page.click("#clip-from-face");
+    await sleep(250);
+    const requestId = await page.evaluate(() => {
+      const r = window.__sent.filter((m) => m.type === "entityFactsRequest");
+      return r.length ? r[r.length - 1].requestId : null;
+    });
+    if (typeof requestId !== "string") return null;
+    await post(page, { type: "entityFactsResult", requestId, facts: facts(over) });
+    await sleep(900);
+    return requestId;
+  };
+
+  // Non-planar first: a cylindrical face reports normal/planeOrigin as null.
+  const id1 = await clickAndReply({ surfaceType: "cylinder" });
+  assert(typeof id1 === "string", "clicking Face issues its own entityFactsRequest");
+  const afterNonPlanar = await page.evaluate(() => ({
+    hidden: document.getElementById("clip-custom")?.hidden,
+    toggle: document.getElementById("clip-toggle")?.textContent,
+  }));
+  assert(afterNonPlanar.hidden === true, "a non-planar face derives no custom normal");
+  assert(
+    afterNonPlanar.toggle === "Off",
+    "a non-planar face leaves clipping off rather than applying a garbage plane"
+  );
+
+  // Now a planar reply, with the face's genuine OUTWARD normal.
+  await clickAndReply({ normal: [0, 1, 0], planeOrigin: [0, 1000, 0] });
+  const applied = await page.evaluate(() => {
+    const msgs = (window.__sent || []).filter((m) => m.type === "viewChanged");
+    return {
+      hidden: document.getElementById("clip-custom")?.hidden,
+      toggle: document.getElementById("clip-toggle")?.textContent,
+      clip: msgs.length ? msgs[msgs.length - 1].view.clip : null,
+    };
+  });
+  assert(applied.hidden === false, "a planar face reveals the custom-normal segment");
+  assert(applied.toggle === "On", "deriving a plane turns clipping on, so the click visibly does something");
+  assert(applied.clip?.axis === "y", `the derived plane stores its dominant axis (got ${applied.clip?.axis})`);
+  // The invariant that stops the model vanishing: an outward normal at the
+  // model's extreme must come back oriented so the plane keeps the bulk.
+  assert(
+    typeof applied.clip?.offsetFrac === "number" && applied.clip.offsetFrac <= 0,
+    `the derived plane keeps at least half the model (offsetFrac ${applied.clip?.offsetFrac})`
+  );
+  assert(
+    Array.isArray(applied.clip?.normal) && applied.clip.normal[1] < 0,
+    `a normal pointing off the top of the model is flipped inward (got ${JSON.stringify(applied.clip?.normal)})`
+  );
+});
+
+
+
 async function main() {
   if (!nodeSupportsPlaywright()) {
     // Not a failure: playwright-core would `process.exit(1)` at module load, so

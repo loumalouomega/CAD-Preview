@@ -302,8 +302,13 @@ export function viewerBodyHtml(): string {
         <button class="clip-axis active" data-axis="x">X</button>
         <button class="clip-axis" data-axis="y">Y</button>
         <button class="clip-axis" data-axis="z">Z</button>
+        <button class="clip-axis" id="clip-custom" hidden title="Custom clip normal">N</button>
       </div>
-      <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset">
+      <div class="vc-row">
+        <button id="clip-from-face" title="Clip along the selected planar face">Face</button>
+        <button id="clip-from-points" title="Clip through three selected points">3 Pts</button>
+      </div>
+      <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset along the active normal">
       <button id="clip-toggle" title="Toggle clipping">Off</button>
     </div>
     <div class="vc-group">

@@ -9,7 +9,7 @@ import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
 import type { EntityFacts, ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
-import type { ClipAxis } from "./webview/clipping";
+import type { ClipPlaneState } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
@@ -167,8 +167,10 @@ export interface ViewState {
   cameraUp: [number, number, number];
   orthographic: boolean;
   displayMode: DisplayMode;
-  /** `null` when clipping is off. */
-  clip: { axis: ClipAxis; offsetFrac: number } | null;
+  /** `null` when clipping is off. See {@link ClipPlaneState} for why an
+   * arbitrary `normal` is stored BESIDE the axis preset rather than instead
+   * of it. */
+  clip: ClipPlaneState | null;
   /** Split-view layout — absent/`"1x1"` means single pane. See {@link PaneViewState}. */
   layout?: PaneLayoutId;
   /** Per-pane camera states, one per pane of {@link ViewState.layout}, row-major. */

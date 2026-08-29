@@ -740,6 +740,14 @@ input[type="range"]#clip-offset.meshing-slider {
   padding: 5px 9px;
 }
 
+/* Without this a disabled derive button (Clip ▸ Face / 3 Pts) looks exactly
+   like an enabled one — the panel had no :disabled rule of its own at all.
+   Matches #parts-isolate:disabled. */
+#view-controls .vc-row button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 #vc-background {
   flex-shrink: 0;
   width: 22px;

@@ -1,4 +1,7 @@
 import type { PaneViewState, ViewState } from "./protocol";
+// TYPE-ONLY, and that is load-bearing: `webview/clipping.ts` has a top-level
+// `import * as THREE from "three"`, so turning this into a value import (e.g.
+// to share `CLIP_AXES`) would pull three.js into the extension-host bundle.
 import type { ClipAxis } from "./webview/clipping";
 import { DISPLAY_MODES } from "./webview/displayMode";
 import { PANE_LAYOUTS, paneCount, type PaneLayoutId } from "./webview/viewerPanes";
@@ -75,6 +78,16 @@ export function parseViewStateJson(text: string): ViewState | null {
       Number.isFinite(c.offsetFrac)
     ) {
       clip = { axis: c.axis as ClipAxis, offsetFrac: Math.max(-1, Math.min(1, c.offsetFrac)) };
+      // A bad `normal` degrades only ITSELF, leaving the axis-form clip intact —
+      // deliberately unlike a bad `axis`, which still drops the whole `clip`
+      // (the pre-existing behaviour, locked by this module's own tests and left
+      // exactly as it was). Normalized on read so every consumer downstream can
+      // assume a unit vector.
+      const n = asVec3(c.normal);
+      if (n) {
+        const len = Math.hypot(n[0], n[1], n[2]);
+        if (len > 1e-9) clip.normal = [n[0] / len, n[1] / len, n[2] / len];
+      }
     }
   }
 
