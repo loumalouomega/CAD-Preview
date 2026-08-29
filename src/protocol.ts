@@ -409,6 +409,10 @@ export type HostToWebview =
       /** Entity ids to force-hide. */
       hide?: Array<{ entityType: EntityType; entityId: string }>;
       wireframe?: boolean;
+      /** World-space box to frame INSTEAD of the whole model
+       *  (`screenshot_shape`). Framing only — must never drive the
+       *  model-scoped pick threshold / helper scales. */
+      frameBox?: { min: [number, number, number]; max: [number, number, number] };
     }
   | { type: "linkedCamera"; camera: LinkedCameraState }
   | { type: "camerasLinked"; enabled: boolean };

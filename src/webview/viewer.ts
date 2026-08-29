@@ -967,13 +967,34 @@ export class Viewer {
       }
     });
 
+    this.placeCamera(index, center, radius, direction);
+    // Record the padded framing sphere so a later edit-driven rebuild can
+    // decide to skip its auto-reframe when the new bounds are contained.
+    this.lastFitSphere = { center: [center.x, center.y, center.z], radius: radius * 1.5 };
+  }
+
+  /**
+   * Points a pane's camera at `center` from `direction`, far enough back to
+   * frame a sphere of `radius`.
+   *
+   * Extracted from {@link framePane} so {@link frameBox} can reuse the exact
+   * same placement rather than keeping a second copy of it — the 1.5x margin
+   * and the ortho/perspective split would otherwise drift apart the first time
+   * anyone touched either.
+   *
+   * Deliberately does NOT touch the model-scoped state `framePane` owns
+   * (`pickThreshold`, `pointSpriteScale`, grid/axes scale, `lastFitSphere`):
+   * those describe the MODEL, and driving them from a zoomed-in subset would
+   * shrink the pick threshold and poison the auto-reframe containment gate.
+   */
+  private placeCamera(index: number, center: THREE.Vector3, radius: number, direction: THREE.Vector3): void {
     const pane = this.panes[index];
     const camera = pane.active;
     const dir = direction.clone().normalize();
     if (camera instanceof THREE.OrthographicCamera) {
       // Parallel projection: apparent size comes from the frustum/zoom, not
       // distance — pick a distance just far enough to keep near/far sane, and
-      // size the frustum from the model radius with the same 1.5x margin
+      // size the frustum from the radius with the same 1.5x margin
       // perspective's fov-based distance uses.
       const distance = radius * 3;
       pane.orthoHalfHeight = radius * 1.5;
@@ -996,9 +1017,25 @@ export class Viewer {
     camera.updateProjectionMatrix();
     pane.controls.target.copy(center);
     pane.controls.update();
-    // Record the padded framing sphere so a later edit-driven rebuild can
-    // decide to skip its auto-reframe when the new bounds are contained.
-    this.lastFitSphere = { center: [center.x, center.y, center.z], radius: radius * 1.5 };
+  }
+
+  /**
+   * Frames an arbitrary world-space box in the focused pane — used by
+   * `screenshot_shape` to fill the frame with ONE entity rather than the whole
+   * model.
+   *
+   * Frame-only by construction: it goes through {@link placeCamera}, so none of
+   * the model-scoped state `framePane` maintains is disturbed.
+   */
+  frameBox(box: THREE.Box3, direction: THREE.Vector3): void {
+    if (box.isEmpty()) return;
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    // `|| 1` guards a fully degenerate box (a single point); a box that is flat
+    // in ONE axis is fine, since Math.max takes the largest extent.
+    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
+    this.placeCamera(this.focusedPane, center, radius, direction);
+    this.requestRender();
   }
 
   /** Frames the model keeping the focused pane's current viewing orientation. */

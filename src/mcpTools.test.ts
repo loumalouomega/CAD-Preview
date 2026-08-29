@@ -338,6 +338,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       warnings: [],
     })),
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
+    hitTest: vi.fn(async () => ({ hits: [], tolerance: 0 })),
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
     measureExact: vi.fn(async () => FAKE_EXACT_MEASURE_RESULT),
     checkInterference: vi.fn(async () => FAKE_INTERFERENCE_RESULT),

@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 37, `tools/list exposes 37 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 39, `tools/list exposes 39 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -1518,6 +1518,51 @@ try {
     console.log("  (Playwright/Chromium not installed in this environment — render_snapshot's supported:true path was not exercised)");
   }
 
+  // The view union / composite / screenshot_shape (roadmap "camera-aware
+  // snapshots"), under the same Chromium tolerance — they share the engine.
+  if (render.supported) {
+    const named = await call("render_snapshot", { path: model, view: { kind: "named", name: "iso-ftl" } });
+    assert(
+      named.images.length === 1 && named.images[0].label === "ISO-FTL",
+      `a named view renders exactly one labelled image (got ${JSON.stringify(named.images.map((i) => i.label))})`
+    );
+
+    const badView = await call("render_snapshot", { path: model, view: { kind: "named", name: "sideways" } });
+    assert(
+      badView.images.length === 4 && badView.warnings.some((w) => /Unknown view/.test(w)),
+      "an unknown view name warns and falls back to the default packet, never throws"
+    );
+
+    const grid = await callRaw("render_snapshot", { path: model, composite: true });
+    const gridJson = JSON.parse(grid.content[0].text);
+    assert(
+      gridJson.images.length === 1 && /^GRID/.test(gridJson.images[0].label),
+      `composite returns ONE grid image, replacing the four tiles (got ${JSON.stringify(gridJson.images.map((i) => i.label))})`
+    );
+    {
+      // Assert the PNG's real dimensions from its IHDR, not just its signature:
+      // a blank or half-drawn canvas would still be a valid PNG.
+      const png = Buffer.from(grid.content.find((c) => c.type === "image").data, "base64");
+      const width = png.readUInt32BE(16);
+      const height = png.readUInt32BE(20);
+      assert(
+        width === 1024 && height === 768,
+        `the composite is one view's worth of pixels, not four (got ${width}x${height})`
+      );
+    }
+
+    const shape = await call("screenshot_shape", { path: model, entityId: "face-0" });
+    assert(
+      shape.supported === true && shape.images.length === 1,
+      `screenshot_shape returns one framed image (got ${JSON.stringify(shape.images.map((i) => i.label))})`
+    );
+    const badShape = await call("screenshot_shape", { path: model, entityId: "face-99999" });
+    assert(
+      badShape.warnings.some((w) => /Unknown entity/.test(w)),
+      `an unknown entity warns and frames the whole model instead (got ${JSON.stringify(badShape.warnings)})`
+    );
+  }
+
   // compare_models visual diff (roadmap "Visual diff for Compare Models",
   // closed): includeSnapshots is opt-in and defaults to false — confirm the
   // default omits images entirely (no wasted render cost), then confirm the
@@ -2210,6 +2255,115 @@ try {
     console.log(`  (step.parts API unreachable in this environment: ${search.warnings?.[0]} — search/download supported:true paths were not exercised)`);
   }
   assert(true, "search_standard_parts / download_standard_part degrade gracefully regardless of network availability");
+
+  // hit_test (roadmap "close the pixel -> entity loop"): the sharp assertion the
+  // roadmap itself named — fire a ray down a known axis at known geometry and
+  // confirm the entity it names is the one `inspect` reports at that location.
+  // Unconditional: hit_test is host-side with no browser, so unlike
+  // render_snapshot there is no Chromium-absent branch to tolerate.
+  {
+    const hitModel = path.join(dir, "hittest.stp");
+    fs.copyFileSync(FIXTURE, hitModel);
+    const boxSize = 10;
+    // Well clear of the bull fixture's own bbox (~161 x 35 x 84), so a ray
+    // fired at the box cannot strike the model first. A first version put the
+    // box at the origin and the ray correctly hit the BULL — hit_test working,
+    // the assertion wrong.
+    const boxCentre = [400, 0, 0];
+    await call("apply_edit_ops", {
+      path: hitModel,
+      ops: [{ op: "addBox", center: boxCentre, size: [boxSize, boxSize, boxSize] }],
+    });
+
+    // Straight down -Z at the box's centre: must strike its +Z face at z = +5.
+    const down = await call("hit_test", {
+      path: hitModel,
+      rays: [{ origin: [400, 0, 500], direction: [0, 0, -1] }],
+      mode: "surface",
+    });
+    assert(down.supported === true, "hit_test needs no renderer and reports supported:true");
+    const top = down.hits[0];
+    assert(top !== null, `a ray down the axis strikes the box (got ${JSON.stringify(top)})`);
+    assert(
+      Math.abs(top.point[2] - boxSize / 2) < 1e-6 && Math.abs(top.point[0] - boxCentre[0]) < 1e-6,
+      `the hit point is exactly on the box's +Z face (got ${JSON.stringify(top.point)})`
+    );
+    assert(
+      Math.abs(Math.abs(top.normal[2]) - 1) < 1e-6,
+      `the reported normal is axis-aligned on a +Z face (got ${JSON.stringify(top.normal)})`
+    );
+
+    // THE cross-check: the id hit_test names must be the entity inspect
+    // describes at that spot. A picker that returned *some* face would pass a
+    // weaker assertion; this one would not.
+    const inspected = await call("inspect", { path: hitModel, entityId: top.entityId });
+    assert(
+      inspected.kind === "face" && inspected.surfaceType === "plane",
+      `hit_test's id resolves to a real planar face via inspect (got ${inspected.kind}/${inspected.surfaceType})`
+    );
+    assert(
+      Math.abs(inspected.center[2] - boxSize / 2) < 1e-6,
+      `inspect puts that face at exactly the z hit_test reported (got ${inspected.center[2]})`
+    );
+
+    // volume mode resolves up to the owning solid, like the interactive picker.
+    const asVolume = await call("hit_test", {
+      path: hitModel,
+      rays: [{ origin: [400, 0, 500], direction: [0, 0, -1] }],
+      mode: "volume",
+    });
+    assert(
+      asVolume.hits[0].entityType === "volume" && /^solid-\d+$/.test(asVolume.hits[0].entityId),
+      `volume mode resolves up to the owning solid (got ${JSON.stringify(asVolume.hits[0])})`
+    );
+
+    // hide reveals what is behind: without the near face, the far one is hit.
+    const behind = await call("hit_test", {
+      path: hitModel,
+      rays: [{ origin: [400, 0, 500], direction: [0, 0, -1] }],
+      mode: "surface",
+      hide: [top.entityId],
+    });
+    assert(
+      behind.hits[0] !== null && behind.hits[0].entityId !== top.entityId,
+      `hide skips the near face and reveals the one behind it (got ${JSON.stringify(behind.hits[0])})`
+    );
+
+    // A miss is a null hit with a warning, never an error.
+    const miss = await call("hit_test", {
+      path: hitModel,
+      rays: [{ origin: [1e6, 1e6, 1e6], direction: [0, 0, 1] }],
+    });
+    assert(
+      miss.hits[0] === null && miss.warnings.some((w) => /struck nothing/.test(w)),
+      `a ray that hits nothing reports null with a warning (got ${JSON.stringify(miss)})`
+    );
+
+    // Many rays, one model parse.
+    const batch = await call("hit_test", {
+      path: hitModel,
+      rays: [
+        { origin: [400, 0, 500], direction: [0, 0, -1] },
+        { origin: [400, 500, 0], direction: [0, -1, 0] },
+        { origin: [900, 0, 0], direction: [-1, 0, 0] },
+      ],
+      mode: "surface",
+    });
+    assert(
+      batch.hits.length === 3 && batch.hits.every((h) => h !== null),
+      `a batch of rays is answered in one call (got ${JSON.stringify(batch.hits.map((h) => h && h.entityId))})`
+    );
+    assert(
+      new Set(batch.hits.map((h) => h.entityId)).size === 3,
+      "three rays down three different axes strike three different faces"
+    );
+
+    const meshHit = await call("hit_test", { path: path.join(ROOT, "examples", "STL", "cube.stl"), rays: [{ origin: [0, 0, 1], direction: [0, 0, -1] }] });
+    assert(
+      meshHit.supported === false && /B-rep sources only/.test(meshHit.warnings[0]),
+      "hit_test degrades cleanly for a mesh-format source"
+    );
+  }
 
   // list_standard_hole_sizes (roadmap "Hole Wizard"): a pure table lookup — no
   // model, no kernel. The sharp assertions are the two that would catch a

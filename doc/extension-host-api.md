@@ -27,6 +27,11 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/viewerDefaults.ts` | The `cadPreview.*` settings bag + `normalizeViewerDefaults` tolerance gate (vscode-free) |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
 | `src/dirtyGuard.ts` | Refuses a sidecar write that would discard unsaved editor changes (fails open) |
+| `src/viewDirections.ts` | The shared named-view vocabulary (6 cardinal + 8 isometric octants), aliases, and orbit math (pure, unit-tested) |
+| `src/rayPick.ts` | Pure ray→entity picking over the tessellation (Möller–Trumbore faces, closest-approach edges/points; unit-tested) |
+| `src/hitTestService.ts` | `hit_test`'s host-side pipeline function: loadBRep + rayPick, no browser |
+| `src/scriptLibrary.ts` | Saved-script (macro) library parse/serialize + parameter-override merge (pure, unit-tested) |
+| `src/holeStandards.ts` | ISO metric / UNC / UNF tapped-hole and clearance sizes (pure, unit-tested) |
 | `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
 | `src/annotationsStore.ts` | Read/write the `<model>.annotations.json` sidecar (vscode fs) — pinned measurements |
 | `src/annotationsSidecar.ts` | Pure parse/serialize for the annotations sidecar (vscode-free, unit-tested) |

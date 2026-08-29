@@ -86,7 +86,9 @@ Every tool takes an absolute `path` to the model file, and every result carries 
 | `check_tolerance` | Tolerance-band fact check on top of the exact measurement above: runs the SAME `measure_exact` pipeline call, then reports `deviation = measured − nominal` and `withinTolerance` (`−toleranceMinus ≤ deviation ≤ tolerancePlus`; `toleranceMinus` defaults to `tolerancePlus`, i.e. symmetric ±, when omitted). Pure arithmetic over the measurement result — no new kernel surface. `withinTolerance` is a **fact about where the value sits relative to the band you supplied**, never a pass/fail verdict; you render the judgment (same framing as `check_interference`'s `hasOverlap`). B-rep sources only headless (same gate as `measure_exact`). |
 | `check_interference` | Interference/clash detection: the overlap volume (if any) between two operands via a real `BRepAlgoAPI_Common_3` intersection — read-only, never mutates the model. Each operand is either `a`/`b` (solid-N id list, compounded together if more than one — same as the `boolean` edit op's own operands) or `partA`/`partB` (a Part name, resolved to its assigned `volumes`) — give exactly one of the two per operand. `hasOverlap` is only `true` for a genuine, non-degenerate volume overlap (two solids merely touching at a face/edge/point report `hasOverlap: false`). B-rep sources only headless. |
 | `check_interference_all` | Assembly-wide sibling of `check_interference`: runs the same exact overlap test over EVERY pair of Parts in ONE call. Omit `parts` to compare all sidecar Parts pairwise; unknown/empty parts are skipped with warnings. Each row: `{partA, partB, hasOverlap, overlapVolume}` — pairs whose bounding boxes are strictly disjoint are reported without paying for a boolean and carry `screenedByBbox: true` (a fact about how the answer was derived; merely-touching boxes are never screened — the real boolean decides). Cost O(n²) worst case. B-rep sources only headless. |
-| `render_snapshot` | 4 labelled PNGs of the current model (sidecar edits replayed) — two opposed isometrics + top + front, optional `focus`/`hide` by entity id, optional `displayMode` (shaded/wireframe) for the whole packet. B-rep sources only, and **requires Playwright + a Chromium binary in this environment** — see "Prerequisites for render_snapshot" below; check the response's `supported` field rather than assuming availability. |
+| `render_snapshot` | Optional `view` picks ONE camera instead of the default 4-view packet: a named view (6 cardinal + 8 self-describing isometric octants, e.g. `iso-ftl`), `current`/`orbit-from-current` (from the view state you left the interactive viewer in), or an explicit `look-from` direction. Optional `composite: true` stitches the views into one labelled grid at a single view's pixel budget, so it costs one image's worth of attention rather than four. 4 labelled PNGs of the current model (sidecar edits replayed) — two opposed isometrics + top + front, optional `focus`/`hide` by entity id, optional `displayMode` (shaded/wireframe) for the whole packet. B-rep sources only, and **requires Playwright + a Chromium binary in this environment** — see "Prerequisites for render_snapshot" below; check the response's `supported` field rather than assuming availability. |
+| `screenshot_shape` | Photograph ONE entity, framed to fill the image — the usual next step after `inspect` returns something surprising. **Isolates the entity by default**: a face framed at its own scale otherwise puts the camera inside the parent solid, so the image would be interior geometry or an occluded face. `context: true` keeps the whole model visible (warned). Defaults to an isometric, since a planar face seen along its own plane is a line. |
+| `hit_test` | Fire rays at the model; report which entity each strikes, with the world hit point, distance along the ray, and (for a face) its outward normal. **The inverse of `render_snapshot`** — go from something seen in an image back to an entity id, or answer "what is directly above (x, y)?" by firing straight down. Pass many rays in one call: parsing and replaying the model dominates the cost and is paid once. **Needs no browser**, so unlike `render_snapshot` it never degrades to `supported: false`. B-rep sources only. |
 | `render_ops_prefix` | Render the model AS OF op N, without mutating anything: replays only `ops[0..throughIndex]` (0-based inclusive; `-1` = the base shape before any op) through the same stateless pipeline `load_model` uses and returns that prefix's entity inventory — **persists nothing** (the sidecar op stack is untouched). Optional `render: true` adds `render_snapshot`'s 4-view PNG packet of the prefix model (same prerequisites/degradation). Built for bisection: when a finished model misbehaves, snapshot the middle index and halve. Each prefix length pays a full replay, so it's click-to-jump, not a scrubber. B-rep sources only headless. |
 | `list_workspace_models` | Stateless discovery: given a folder (`root`), walks it (depth-capped; `.git`/`node_modules` never scanned) and returns every CAD file `routeFile()` recognizes with its detected format/strategy plus which companion sidecars currently exist beside it. Caps and unreadable directories are reported via `truncated` + `warnings` — never a quietly-partial list. Purely on-disk: this server has no open-document/session state anywhere. |
 | `search_standard_parts` | Faceted search over the hosted [step.parts](https://www.step.parts) catalog (fasteners, bearings, connectors, extrusions, ...) — `q` fuzzy text + `tag`/`category`/`family`/`standard` filters + pagination. **Network call** — `supported: false` on any API/network failure (inconclusive, never "no matching parts"). |
@@ -120,6 +122,28 @@ Every tool takes an absolute `path` to the model file, and every result carries 
 Edit ops are passed as **raw JSON** (e.g. `{"op": "addBox", "center": [0,0,0], "size": [20,10,5]}`) and validated by the same tolerant gate the extension uses (`validateEditOp`) — so every op kind the extension gains is automatically available to agents, and a malformed op is rejected with a reason rather than crashing anything. Numeric fields may bind to variables via the op's `exprs` map (`{"exprs": {"size[0]": "L"}}`).
 
 ## Parametric scripts
+
+### Closing the pixel → entity loop
+
+`render_snapshot` and `screenshot_shape` go from an entity to an image; `hit_test` goes back the
+other way. Together they compose:
+
+```
+hit_test  →  entity id + hit point + face normal
+          →  render_snapshot { view: { kind: "look-from", direction: <the normal> } }
+```
+
+Named views use one shared vocabulary: 6 cardinal (`front`/`back`/`top`/`bottom`/`right`/`left`)
+plus all 8 isometric octants, each self-describing — `iso-ftr` is front-top-right. The historical
+`iso`, `iso-a` and `iso-b` still resolve to exactly what they always did. Lookup is
+case-insensitive, and an unknown name warns and falls back rather than throwing.
+
+**`current` means an orientation, not a pose.** The `.view.json` sidecar stores a direction and an
+up vector — never a distance or target — so `current` reproduces the angle you left the viewer at,
+re-framed on the model, not its exact camera position.
+
+**`hit_test` needs no browser.** It raycasts the same tessellation the viewer would, host-side, so
+it has no `supported: false` renderer path at all — the only visual-family tool that always works.
 
 ### Saved scripts (the macro library)
 

@@ -183,6 +183,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     computeMassProperties: (...args) => callKernel("computeMassProperties", args) as ReturnType<Pipeline["computeMassProperties"]>,
     computeBom: (...args) => callKernel("computeBom", args) as ReturnType<Pipeline["computeBom"]>,
     getEntityFacts: (...args) => callKernel("getEntityFacts", args) as ReturnType<Pipeline["getEntityFacts"]>,
+    hitTest: (...args) => callKernel("hitTest", args) as ReturnType<Pipeline["hitTest"]>,
     measureEntities: (...args) => callKernel("measureEntities", args) as ReturnType<Pipeline["measureEntities"]>,
     measureExact: (...args) => callKernel("measureExact", args) as ReturnType<Pipeline["measureExact"]>,
     checkInterference: (...args) => callKernel("checkInterference", args) as ReturnType<Pipeline["checkInterference"]>,

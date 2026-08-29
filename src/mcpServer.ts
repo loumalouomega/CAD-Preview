@@ -39,6 +39,9 @@ import {
   checkInterferenceAllTool,
   renderSnapshotTool,
   renderOpsPrefixTool,
+  hitTestTool,
+  screenshotShapeTool,
+  type SnapshotView,
   listParametricScripts,
   listStandardHoleSizes,
   listWorkspaceModels,
@@ -68,6 +71,7 @@ import {
   type ProgressCallback,
 } from "./mcpTools";
 import { HOLE_STANDARDS } from "./holeStandards";
+import { NAMED_VIEW_NAMES } from "./viewDirections";
 import type { MeshOptions } from "./meshOptions";
 
 // The bundle lives in dist/ next to the WASM binaries; getOcct/getGmsh read
@@ -368,11 +372,36 @@ server.registerTool(
       focus: z.array(z.string()).optional().describe("Entity ids — isolate the view to only these"),
       hide: z.array(z.string()).optional().describe("Entity ids — force-hide these"),
       displayMode: z.enum(["shaded", "wireframe"]).optional().describe("Applies to the whole 4-image packet"),
+      view: z
+        .discriminatedUnion("kind", [
+          z.object({ kind: z.literal("named"), name: z.string().describe(`One of: ${NAMED_VIEW_NAMES.join(", ")} (or the aliases iso/iso-a/iso-b)`) }),
+          z.object({ kind: z.literal("current") }),
+          z.object({ kind: z.literal("orbit-from-current"), azimuthDeg: z.number(), elevationDeg: z.number() }),
+          z.object({
+            kind: z.literal("look-from"),
+            direction: z.tuple([z.number(), z.number(), z.number()]).describe("Target -> camera; need not be normalized"),
+            up: z.tuple([z.number(), z.number(), z.number()]).optional(),
+          }),
+        ])
+        .optional()
+        .describe(
+          "ONE camera instead of the default 4-view packet. `current`/`orbit-from-current` read the view state you left the interactive viewer in — that sidecar stores an orientation, not a pose, so `current` means the same direction re-framed on the model. Unknown names and a missing view state warn and fall back to the default packet. Omit for the default 4 views."
+        ),
+      composite: z
+        .boolean()
+        .optional()
+        .describe("Stitch the views into ONE labelled grid image instead of returning them separately — same total pixels as a single view, so it costs one image's worth of attention rather than four."),
     },
   },
   wrap(
-    (args: { path: string; focus?: string[]; hide?: string[]; displayMode?: "shaded" | "wireframe" }) =>
-      renderSnapshotTool(ctx, args)
+    (args: {
+      path: string;
+      focus?: string[];
+      hide?: string[];
+      displayMode?: "shaded" | "wireframe";
+      view?: SnapshotView;
+      composite?: boolean;
+    }) => renderSnapshotTool(ctx, args)
   )
 );
 
@@ -625,6 +654,76 @@ server.registerTool(
   wrap(
     (args: { libraryPath: string; name: string; path: string; parameters?: Record<string, number | string>; dryRun?: boolean }) =>
       runSavedScript(ctx, args)
+  )
+);
+
+server.registerTool(
+  "screenshot_shape",
+  {
+    description:
+      "Photograph ONE entity, framed to fill the image — the usual next step after inspect returns something surprising. ISOLATES the entity by default: a face framed at its own scale otherwise puts the camera inside the parent solid, so the image would be interior geometry or an occluded face. Pass context:true to keep the whole model visible (warned, since the entity may then be hidden). Defaults to an isometric, because a planar face seen along its own plane is a line. Facts only, via images (see describe_capabilities' verdictConventions). Requires Playwright + Chromium; check `supported`. B-rep sources only.",
+    inputSchema: {
+      path: modelPath,
+      entityId: z.string().describe("solid-N / face-N / edge-N / point-N, from load_model or inspect"),
+      view: z
+        .discriminatedUnion("kind", [
+          z.object({ kind: z.literal("named"), name: z.string() }),
+          z.object({ kind: z.literal("current") }),
+          z.object({ kind: z.literal("orbit-from-current"), azimuthDeg: z.number(), elevationDeg: z.number() }),
+          z.object({
+            kind: z.literal("look-from"),
+            direction: z.tuple([z.number(), z.number(), z.number()]),
+            up: z.tuple([z.number(), z.number(), z.number()]).optional(),
+          }),
+        ])
+        .optional()
+        .describe("Camera to frame the entity from; defaults to an isometric"),
+      context: z.boolean().optional().describe("Keep the whole model visible instead of isolating the entity"),
+      displayMode: z.enum(["shaded", "wireframe"]).optional(),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      entityId: string;
+      view?: SnapshotView;
+      context?: boolean;
+      displayMode?: "shaded" | "wireframe";
+    }) => screenshotShapeTool(ctx, args)
+  )
+);
+
+server.registerTool(
+  "hit_test",
+  {
+    description:
+      "Fire rays at the model and report which entity each one strikes, with the world-space hit point, the distance along the ray, and (for a face) its outward normal. The inverse of render_snapshot: use it to name the entity behind something you spotted in an image, or to answer 'what is directly above (x, y)?' by firing straight down. Pass MANY rays in one call — parsing and replaying the model dominates the cost and is paid once. Needs no browser, so unlike render_snapshot it never degrades to supported:false. B-rep sources only. Facts only (see describe_capabilities' verdictConventions).",
+    inputSchema: {
+      path: modelPath,
+      rays: z
+        .array(z.object({ origin: z.tuple([z.number(), z.number(), z.number()]), direction: z.tuple([z.number(), z.number(), z.number()]) }))
+        .describe("Rays in world space; `direction` need not be normalized"),
+      mode: z
+        .enum(["volume", "surface", "line", "point", "any"])
+        .optional()
+        .describe('Which entity kind to report. "volume" resolves a face hit up to its owning solid. Default "any" (nearest of face/edge/point).'),
+      focus: z.array(z.string()).optional().describe("Only these entity ids (or solid ids) are hittable"),
+      hide: z.array(z.string()).optional().describe("These entity ids (or solid ids) are ignored — useful to see what is behind a face"),
+      tolerance: z
+        .number()
+        .optional()
+        .describe("How near a ray must pass an edge/point to hit it, in model units. Default: 1% of the model's bbox diagonal (faces need no tolerance)."),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      rays: { origin: [number, number, number]; direction: [number, number, number] }[];
+      mode?: "volume" | "surface" | "line" | "point" | "any";
+      focus?: string[];
+      hide?: string[];
+      tolerance?: number;
+    }) => hitTestTool(ctx, args)
   )
 );
 

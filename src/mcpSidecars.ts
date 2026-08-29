@@ -17,6 +17,8 @@ import { parseAnnotationsJson, serializeAnnotationsJson } from "./annotationsSid
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 import { parseScriptLibraryJson, serializeScriptLibraryJson, type ScriptLibrary } from "./scriptLibrary";
+import { parseViewStateJson } from "./viewStateSidecar";
+import type { ViewState } from "./protocol";
 
 export function editsSidecarPath(modelPath: string): string {
   return `${modelPath}.edits.json`;
@@ -110,6 +112,22 @@ export async function writeMeshOptions(modelPath: string, options: MeshOptions):
   const sourceName = path.basename(modelPath);
   await fs.writeFile(meshOptionsSidecarPath(modelPath), serializeMeshJson(sourceName, options), "utf8");
   await fs.writeFile(geoScriptPath(modelPath), generateGeoScript(sourceName, options), "utf8");
+}
+
+/**
+ * The persisted view state, or `null` when there is none.
+ *
+ * Read-only: the MCP server never writes view state (it is a display
+ * preference with no headless meaning), but `render_snapshot`'s `current` /
+ * `orbit-from-current` views need the orientation the user left the viewer in.
+ */
+export async function readViewState(modelPath: string): Promise<ViewState | null> {
+  try {
+    const text = await fs.readFile(viewStateSidecarPath(modelPath), "utf8");
+    return parseViewStateJson(text);
+  } catch {
+    return null;
+  }
 }
 
 /**

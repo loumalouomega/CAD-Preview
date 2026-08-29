@@ -46,6 +46,7 @@ import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
 import { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
+import { hitTest } from "./hitTestService";
 
 /**
  * Per-document OCCT parse+replay cache (roadmap "Base-shape caching and
@@ -109,6 +110,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   computeMassProperties: computeMassProperties as Handler,
   computeBom: computeBom as Handler,
   getEntityFacts: getEntityFacts as Handler,
+  hitTest: hitTest as Handler,
   measureEntities: measureEntities as Handler,
   measureExact: measureExact as Handler,
   checkInterference: checkInterference as Handler,

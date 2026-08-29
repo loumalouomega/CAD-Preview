@@ -18,6 +18,7 @@
 
 import { computeDistanceGlyph } from "./webview/dimensionGlyph";
 import { annotatedLabelText, type AnnotatedTolerance } from "./toleranceBand";
+import { resolveNamedView } from "./viewDirections";
 
 export type Vec3 = readonly [number, number, number];
 type Pt2 = [number, number];
@@ -251,15 +252,25 @@ function escapeXml(text: string): string {
  * where they overlap so an SVG view and a `render_snapshot` view of the same
  * name mean the same thing. TOP/BOTTOM carry an explicit `up` because the
  * default `[0,1,0]` is parallel to their direction (the gimbal case). */
+// Derived from `viewDirections.ts`'s full vocabulary rather than declared
+// separately, so this curated list and the tool-facing one cannot drift.
+// Deliberately kept SHORT: `provider.ts` builds the Export Silhouette QuickPick
+// from these keys, so every entry added here becomes a menu row.
 export const SVG_VIEWS: Record<string, { direction: [number, number, number]; up?: [number, number, number] }> = {
-  FRONT: { direction: [0, 0, 1] },
-  BACK: { direction: [0, 0, -1] },
-  TOP: { direction: [0, 1, 0], up: [0, 0, -1] },
-  BOTTOM: { direction: [0, -1, 0], up: [0, 0, 1] },
-  RIGHT: { direction: [1, 0, 0] },
-  LEFT: { direction: [-1, 0, 0] },
-  ISO: { direction: [1, 0.8, 1] },
+  FRONT: named("front"),
+  BACK: named("back"),
+  TOP: named("top"),
+  BOTTOM: named("bottom"),
+  RIGHT: named("right"),
+  LEFT: named("left"),
+  ISO: named("iso"),
 };
+
+function named(name: string): { direction: [number, number, number]; up?: [number, number, number] } {
+  const v = resolveNamedView(name);
+  if (!v) throw new Error(`Unknown named view: ${name}`); // unreachable: these are canonical
+  return v.up ? { direction: v.direction, up: v.up } : { direction: v.direction };
+}
 
 export interface ViewSpec {
   direction: Vec3;

@@ -3259,7 +3259,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // visibility here needs no state restoration afterward.
       try {
         viewer.setCameraUp(new THREE.Vector3(...(msg.up ?? [0, 1, 0])));
+        if (msg.frameBox) {
+        // Fill the frame with one entity rather than the whole model. Uses
+        // frameBox (not setViewDirection, which keeps the current distance).
+        viewer.frameBox(
+          new THREE.Box3(new THREE.Vector3(...msg.frameBox.min), new THREE.Vector3(...msg.frameBox.max)),
+          new THREE.Vector3(...msg.direction)
+        );
+      } else {
         viewer.setViewDirection(new THREE.Vector3(...msg.direction));
+      }
         if (msg.focus || msg.hide) {
           viewer.applyPartVisibility(msg.hide ?? [], msg.focus?.length ? msg.focus : null);
         }

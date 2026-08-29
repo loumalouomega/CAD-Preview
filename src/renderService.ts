@@ -39,6 +39,10 @@ export interface RenderView {
   direction: [number, number, number];
   up?: [number, number, number];
   wireframe?: boolean;
+  /** World-space box to fill the frame with, instead of the whole model.
+   * Computed by {@link entityBounds} from the tessellation already in hand —
+   * no second kernel call. */
+  frameBox?: { min: [number, number, number]; max: [number, number, number] };
 }
 
 export interface RenderImage {
@@ -196,7 +200,15 @@ export async function renderSnapshot(
   bytes: Uint8Array,
   format: BRepFormat,
   ops: EditOp[],
-  opts: { focus?: string[]; hide?: string[]; wireframe?: boolean; views?: RenderView[] }
+  opts: {
+    focus?: string[];
+    hide?: string[];
+    wireframe?: boolean;
+    views?: RenderView[];
+    composite?: boolean;
+    /** Frame this entity instead of the whole model, in every requested view. */
+    frameEntity?: string;
+  }
 ): Promise<RenderResult> {
   if (!nodeSupportsPlaywright()) return { supported: false, reason: NODE_TOO_OLD_REASON };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -226,6 +238,19 @@ export async function renderSnapshot(
   const focus = (opts.focus ?? []).map(toSelectedEntity).filter((e): e is NonNullable<typeof e> => e !== null);
   const hide = (opts.hide ?? []).map(toSelectedEntity).filter((e): e is NonNullable<typeof e> => e !== null);
   const views = opts.views ?? DEFAULT_VIEWS;
+
+  // Resolve the entity's box ONCE from the tessellation already in hand, and
+  // apply it to every requested view.
+  let framed = views;
+  const frameWarnings: string[] = [];
+  if (opts.frameEntity) {
+    const box = entityBounds({ groups, edges, points }, opts.frameEntity);
+    if (box) {
+      framed = views.map((v) => ({ ...v, frameBox: box }));
+    } else {
+      frameWarnings.push(`Unknown entity "${opts.frameEntity}" — framed the whole model instead.`);
+    }
+  }
 
   let server: http.Server | undefined;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -268,8 +293,8 @@ export async function renderSnapshot(
 
     const images: RenderImage[] = [];
     const errors: string[] = [];
-    for (let i = 0; i < views.length; i++) {
-      const view = views[i];
+    for (let i = 0; i < framed.length; i++) {
+      const view = framed[i];
       const requestId = `rv-${i}`;
       await post({
         type: "renderViewRequest",
@@ -280,6 +305,7 @@ export async function renderSnapshot(
         focus: focus.length > 0 ? focus : undefined,
         hide: hide.length > 0 ? hide : undefined,
         wireframe: opts.wireframe ?? view.wireframe,
+        frameBox: view.frameBox,
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await page.waitForFunction(
@@ -298,14 +324,143 @@ export async function renderSnapshot(
       }
     }
 
+    // Composite BEFORE closing the page: the tiles are already decoded in the
+    // browser, so stitching there costs no transfer at all (versus shipping
+    // megabytes back over CDP just to send them out again). Node has no canvas;
+    // the page does.
+    let composited: RenderImage | null = null;
+    if (opts.composite && images.length > 1) {
+      try {
+        composited = await compositeInPage(page, images);
+      } catch (err) {
+        errors.push(`composite: ${(err as Error).message}`);
+      }
+    }
+
     await page.close();
 
     if (images.length === 0) {
       return { supported: false, reason: `Every view failed: ${errors.join("; ")}` };
     }
-    return { supported: true, images, ...(errors.length > 0 ? { reason: `Some views failed: ${errors.join("; ")}` } : {}) };
+    if (composited) {
+      // REPLACES the tiles rather than adding a fifth image — a composite that
+      // cost five images' worth of attention would defeat its own purpose.
+      return {
+        supported: true,
+        images: [composited],
+        ...(errors.length > 0 || frameWarnings.length > 0
+          ? {
+              reason: [
+                ...(errors.length > 0 ? [`Some views failed: ${errors.join("; ")}`] : []),
+                ...frameWarnings,
+              ].join(" "),
+            }
+          : {}),
+      };
+    }
+    const notes = [
+      ...(errors.length > 0 ? [`Some views failed: ${errors.join("; ")}`] : []),
+      ...frameWarnings,
+    ];
+    return { supported: true, images, ...(notes.length > 0 ? { reason: notes.join(" ") } : {}) };
   } finally {
     if (browser) await browser.close();
     if (server) server.close();
   }
+}
+
+/** Total pixels of the composite, matching one ordinary view — so a grid costs
+ * one image's worth of attention, which is the whole point of asking for it. */
+const COMPOSITE_WIDTH = 1024;
+const COMPOSITE_HEIGHT = 768;
+
+/**
+ * Stitches the already-captured views into one labelled grid, inside the page.
+ *
+ * Runs in the browser because that is where the PNGs already are (and where a
+ * canvas exists at all — Node has neither). The `await img.decode()` is
+ * load-bearing: without it the draws race the decodes and the result is a
+ * blank or half-filled canvas returned from a perfectly clean run, which is
+ * exactly the silent-success failure this repo has been bitten by before.
+ */
+async function compositeInPage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  images: RenderImage[]
+): Promise<RenderImage> {
+  const dataBase64 = (await page.evaluate(
+    async ({ tiles, width, height }: { tiles: string[]; width: number; height: number }) => {
+      const decoded = await Promise.all(
+        tiles.map(async (b64) => {
+          const img = new Image();
+          img.src = `data:image/png;base64,${b64}`;
+          await img.decode();
+          return img;
+        })
+      );
+      const cols = Math.min(2, decoded.length);
+      const rows = Math.ceil(decoded.length / cols);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d")!;
+      // CAD renders are thin dark lines on a light fill; a default downscale
+      // shreds them.
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.fillStyle = "#1e1e1e";
+      ctx.fillRect(0, 0, width, height);
+      const cellW = width / cols;
+      const cellH = height / rows;
+      decoded.forEach((img, i) => {
+        ctx.drawImage(img, (i % cols) * cellW, Math.floor(i / cols) * cellH, cellW, cellH);
+      });
+      return canvas.toDataURL("image/png").split(",")[1];
+    },
+    { tiles: images.map((i) => i.dataBase64), width: COMPOSITE_WIDTH, height: COMPOSITE_HEIGHT }
+  )) as string;
+
+  return { label: `GRID (${images.map((i) => i.label).join(", ")})`, mimeType: "image/png", dataBase64 };
+}
+
+/**
+ * The world-space bounding box of one entity, from the tessellation `loadBRep`
+ * already produced.
+ *
+ * Deliberately NOT `getEntityFacts`: that would pay a second full parse and
+ * op-replay on top of the one this call already did. The tessellated bbox
+ * differs from the exact one only by chordal deviation, which framing cannot
+ * notice. A solid id frames every face it owns.
+ */
+export function entityBounds(
+  loaded: {
+    groups: { id: string; faces: { faceId: string; buffers: { positions: Float32Array } }[] }[];
+    edges: { edgeId: string; positions: Float32Array }[];
+    points: { pointId: string; position: [number, number, number] }[];
+  },
+  entityId: string
+): { min: [number, number, number]; max: [number, number, number] } | null {
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  let found = false;
+
+  const eat = (p: ArrayLike<number>): void => {
+    for (let i = 0; i + 2 < p.length; i += 3) {
+      for (let a = 0; a < 3; a++) {
+        if (p[i + a] < min[a]) min[a] = p[i + a];
+        if (p[i + a] > max[a]) max[a] = p[i + a];
+      }
+    }
+    found = true;
+  };
+
+  for (const group of loaded.groups) {
+    for (const face of group.faces) {
+      if (group.id === entityId || face.faceId === entityId) eat(face.buffers.positions);
+    }
+  }
+  for (const edge of loaded.edges) if (edge.edgeId === entityId) eat(edge.positions);
+  for (const point of loaded.points) if (point.pointId === entityId) eat(point.position);
+
+  return found ? { min, max } : null;
 }
