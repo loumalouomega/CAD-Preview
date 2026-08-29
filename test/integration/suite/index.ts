@@ -27,6 +27,7 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { installModalStubs, pick, save, cancel, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
+import { writeParts } from "../../../src/partsStore";
 
 const EXTENSION_ID = "kratos-multiphysics.cad-preview";
 const VIEW_TYPE = "cad-preview.mesh";
@@ -378,6 +379,53 @@ test("session-gated commands are silent no-ops with no editor focused", async ()
 // ── Runner ────────────────────────────────────────────────────────────────
 export async function run(): Promise<void> {
   console.log("CAD Preview integration suite\n");
+
+test("a sidecar write is refused while the user has unsaved changes to it open", async () => {
+  // The one check that genuinely needs a real VS Code: it depends on
+  // `vscode.workspace.textDocuments` actually being populated with a dirty
+  // buffer, which no unit test or Playwright harness can produce.
+  const model = stage(STEP_FIXTURE);
+  const sidecar = vscode.Uri.file(`${model}.parts.json`);
+  fs.writeFileSync(sidecar.fsPath, '{"version":1,"source":"block.stp","parts":[]}\n', "utf8");
+
+  const doc = await vscode.workspace.openTextDocument(sidecar);
+  const editor = await vscode.window.showTextDocument(doc);
+  await editor.edit((e) => e.insert(new vscode.Position(0, 0), " "));
+  assert(doc.isDirty, "the sidecar is open with unsaved changes");
+
+  const before = fs.readFileSync(sidecar.fsPath, "utf8");
+  let refused = false;
+  let message = "";
+  try {
+    await writeParts(vscode.Uri.file(model), [
+      { name: "Clobber", color: "#ff0000", volumes: [], surfaces: [], lines: [], points: [] },
+    ]);
+  } catch (err) {
+    refused = true;
+    message = (err as Error).message;
+  }
+
+  assert(refused, "writing the sidecar threw rather than overwriting unsaved work");
+  assert(
+    /unsaved changes/i.test(message) && /Save or revert/i.test(message),
+    `the refusal says what happened AND what to do (got: ${message})`
+  );
+  assert(
+    fs.readFileSync(sidecar.fsPath, "utf8") === before,
+    "the file on disk is byte-identical — nothing was written"
+  );
+
+  // Fails OPEN: once the buffer is clean again, the write proceeds.
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+  await new Promise((r) => setTimeout(r, 300));
+  await writeParts(vscode.Uri.file(model), [
+    { name: "Now allowed", color: "#00ff00", volumes: [], surfaces: [], lines: [], points: [] },
+  ]);
+  assert(
+    fs.readFileSync(sidecar.fsPath, "utf8").includes("Now allowed"),
+    "with no dirty buffer the write goes through normally"
+  );
+});
 
   for (const c of CASES) {
     console.log(`\n${c.name}`);

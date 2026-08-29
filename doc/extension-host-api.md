@@ -26,6 +26,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
 | `src/viewerDefaults.ts` | The `cadPreview.*` settings bag + `normalizeViewerDefaults` tolerance gate (vscode-free) |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
+| `src/dirtyGuard.ts` | Refuses a sidecar write that would discard unsaved editor changes (fails open) |
 | `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
 | `src/annotationsStore.ts` | Read/write the `<model>.annotations.json` sidecar (vscode fs) — pinned measurements |
 | `src/annotationsSidecar.ts` | Pure parse/serialize for the annotations sidecar (vscode-free, unit-tested) |

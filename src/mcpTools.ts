@@ -220,6 +220,108 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
 
 /** All op kinds, derived from the panel catalog (which `opCatalog.test.ts`
  * already locks to cover every `EditOpKind`). */
+/**
+ * Replaces `compileParametricScript`'s generic `"invalid op"` reason with the
+ * specific one {@link explainEditOpRejection} can give.
+ *
+ * Done here, after the fact, rather than by threading an explainer into the
+ * compiler: `parametricScript.ts` is a pure module that must not import this
+ * one (which pulls in the whole tool surface), and the raw steps are still in
+ * hand at this point anyway. Only top-level `op` steps are enriched — a
+ * `repeat` body's per-iteration rejections already carry their own reasons.
+ */
+function enrichScriptRejections(
+  script: unknown,
+  report: Array<{ index: number; kind: string; reasons: string[] }>
+): void {
+  const steps = (script as { steps?: unknown } | null)?.steps;
+  if (!Array.isArray(steps)) return;
+  for (const entry of report) {
+    if (entry.kind !== "op" || !entry.reasons.includes("invalid op")) continue;
+    const raw = (steps[entry.index] as { op?: unknown } | undefined)?.op;
+    if (raw === undefined) continue;
+    entry.reasons = entry.reasons.map((r) => (r === "invalid op" ? explainEditOpRejection(raw) : r));
+  }
+}
+
+/**
+ * Why an op was rejected, and — where it can be determined — the corrected
+ * value, not just a diagnosis.
+ *
+ * Runs **only on the already-failed path**: `validateEditOp` returns
+ * `EditOp | null` with no reason channel, and widening that would churn eight
+ * call sites including the hot sidecar-parse path (hundreds of ops on every
+ * document open). A separate explainer costs nothing when validation succeeds,
+ * which is the overwhelmingly common case.
+ *
+ * Lives here rather than in `editOps.ts` so it can quote {@link OP_PARAM_DOCS}'s
+ * exact expected shape for the kind — the most paste-ready fix available.
+ */
+export function explainEditOpRejection(raw: unknown): string {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return `Expected an op object, got ${Array.isArray(raw) ? "an array" : typeof raw}. Each op is a JSON object with an "op" field, e.g. {"op": "translate", "targets": ["solid-0"], "vec": [1,0,0]}.`;
+  }
+
+  const kindRaw = (raw as { op?: unknown }).op;
+  if (typeof kindRaw !== "string" || kindRaw === "") {
+    return 'Missing the "op" field, which names the kind. Call describe_capabilities for the full catalog.';
+  }
+
+  const kinds = allOpKinds();
+  if (!(kinds as string[]).includes(kindRaw)) {
+    const near = nearestOpKind(kindRaw, kinds);
+    return (
+      `Unknown op kind "${kindRaw}".` +
+      (near ? ` Did you mean "${near}"? Expected shape: ${OP_PARAM_DOCS[near]}` : " Call describe_capabilities for the full catalog.")
+    );
+  }
+
+  // A known kind that still failed: the fields are wrong. Quoting the exact
+  // expected shape is the most actionable thing available without duplicating
+  // validateEditOpCore's per-kind checks (which would drift against it).
+  const kind = kindRaw as EditOpKind;
+  return `"${kind}" is a valid op kind, but its fields did not validate. Expected: ${OP_PARAM_DOCS[kind]}${
+    BREP_ONLY_OPS.has(kind) ? " (B-rep sources only)" : ""
+  }. Every numeric field must be a finite number, and every id an existing entity id.`;
+}
+
+/**
+ * The closest op kind by edit distance, or `null` when nothing is near enough
+ * to suggest — a wrong guess is worse than none, so this only fires for a
+ * genuine near-miss (a third of the name's length).
+ */
+function nearestOpKind(input: string, kinds: EditOpKind[]): EditOpKind | null {
+  const needle = input.toLowerCase();
+  let best: EditOpKind | null = null;
+  let bestDistance = Infinity;
+  for (const kind of kinds) {
+    const d = editDistance(needle, kind.toLowerCase());
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = kind;
+    }
+  }
+  const limit = Math.max(2, Math.floor(input.length / 3));
+  return best !== null && bestDistance <= limit ? best : null;
+}
+
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  const row = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(
+        prev[j] + 1,
+        row[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+    prev.splice(0, prev.length, ...row);
+  }
+  return prev[b.length];
+}
+
 export function allOpKinds(): EditOpKind[] {
   const kinds = new Set<EditOpKind>();
   for (const entry of allCatalogEntries()) for (const k of entry.kinds) kinds.add(k);
@@ -1760,13 +1862,7 @@ export async function applyEditOps(
   for (const raw of params.ops) {
     const op = validateEditOp(raw);
     if (!op) {
-      const kind = raw && typeof raw === "object" ? (raw as { op?: unknown }).op : undefined;
-      report.push({
-        accepted: false,
-        reason:
-          `Malformed or invalid op${typeof kind === "string" ? ` (${kind})` : ""} — ` +
-          "check describe_capabilities for the expected fields and invariants.",
-      });
+      report.push({ accepted: false, reason: explainEditOpRejection(raw) });
       continue;
     }
     if (route.strategy === "three" && BREP_ONLY_OPS.has(op.op)) {
@@ -1884,6 +1980,7 @@ async function compileAndApplyScript(
   const current = await readEdits(modelPath);
   const { values: documentValues } = evaluateVariables(current.variables);
   const compiled = compileParametricScript(params.script, documentValues);
+  enrichScriptRejections(params.script, compiled.report);
 
   const accepted: EditOp[] = [];
   let brepOnlyRejected = 0;
@@ -2021,6 +2118,7 @@ export async function saveParametricScript(params: {
   // Compile against the script's own defaults ({} document values: a saved
   // macro must stand on its own, not depend on some model's variables).
   const probe = compileParametricScript(params.script, {});
+  enrichScriptRejections(params.script, probe.report);
   const rejected = probe.report.reduce((n, r) => n + r.rejected, 0);
   if (probe.ops.length === 0) {
     throw new Error(

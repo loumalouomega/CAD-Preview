@@ -37,6 +37,7 @@ import {
   saveParametricScript,
   listParametricScripts,
   listStandardHoleSizes,
+  explainEditOpRejection,
   removeEditOp,
   setVariables,
   setPart,
@@ -1354,6 +1355,37 @@ describe("repair_mesh", () => {
   });
 });
 
+describe("explainEditOpRejection", () => {
+  it("names the nearest real kind for a near-miss", () => {
+    expect(explainEditOpRejection({ op: "tranlsate" })).toMatch(/Did you mean "translate"/);
+    expect(explainEditOpRejection({ op: "addbox" })).toMatch(/Did you mean "addBox"/);
+  });
+
+  it("suggests nothing when nothing is genuinely near — a wrong guess is worse than none", () => {
+    const r = explainEditOpRejection({ op: "completelyUnrelatedThing" });
+    expect(r).toMatch(/Unknown op kind/);
+    expect(r).not.toMatch(/Did you mean/);
+  });
+
+  it("quotes the expected shape for a valid kind whose fields are wrong", () => {
+    const r = explainEditOpRejection({ op: "fillet" });
+    expect(r).toContain("fillet");
+    expect(r).toContain("edges");
+    expect(r).toMatch(/B-rep sources only/); // fillet is BREP_ONLY
+  });
+
+  it("describes what it actually got for a non-object", () => {
+    expect(explainEditOpRejection(null)).toMatch(/got object/);
+    expect(explainEditOpRejection([])).toMatch(/got an array/);
+    expect(explainEditOpRejection("translate")).toMatch(/got string/);
+  });
+
+  it("says which field is missing when there is no kind at all", () => {
+    expect(explainEditOpRejection({})).toMatch(/Missing the "op" field/);
+    expect(explainEditOpRejection({ op: 42 })).toMatch(/Missing the "op" field/);
+  });
+});
+
 describe("apply_edit_ops", () => {
   it("appends valid ops and reports rejects with reasons", async () => {
     const result = await applyEditOps(ctx(), {
@@ -1367,7 +1399,13 @@ describe("apply_edit_ops", () => {
     expect(result.applied).toBe(1);
     expect(result.rejected).toBe(2);
     expect(result.report[0].accepted).toBe(true);
-    expect(result.report[1].reason).toMatch(/malformed|invalid/i);
+    // A rejection must ship a fix, not just a diagnosis: the reason names the
+    // kind and quotes its expected shape, so the caller can correct the op
+    // without a second round trip to describe_capabilities.
+    expect(result.report[1].reason).toContain("addBox");
+    expect(result.report[1].reason).toContain("size");
+    // An unknown kind gets the nearest real one suggested.
+    expect(result.report[2].reason).toMatch(/Unknown op kind "noSuchOp"/);
     expect(result.stackLength).toBe(1);
     expect(result.model).not.toBeNull();
     expect((await readEdits(stpModel)).ops).toHaveLength(1);
