@@ -49,7 +49,7 @@
  * limitation, re-verified against the live 9.7.0 WASM**: CGNS export of a
  * pure-2D/surface mesh (triangles/quads only, no volume elements) used to
  * produce a file this same WASM build's own reader couldn't read back — this
- * was fixed upstream in meshio++ 9.8.0 (currently installed: 10.14.0), see
+ * was fixed upstream in meshio++ 9.8.0 (currently installed: 10.20.2), see
  * `doc/gmsh-integration.md`'s "The meshio++ bridge" section.
  *
  * **The 8 non-bridge meshio-only writers below (`vtu`/`hmf`/`avsucd`/
@@ -86,6 +86,25 @@ export interface MeshExportFormat {
   filterLabel: string;
   /** Which writer produces this format — see the file doc comment. */
   via: "gmsh" | "mdpa" | "meshio";
+  /**
+   * Set only for a `via: "meshio"` format whose writer emits a SECOND file
+   * beside the primary one. Both export call sites (`provider.ts`'s
+   * `meshingExport` handler and `mcpTools.ts`'s `exportMeshTool`) read this
+   * instead of the hardcoded `.h5`/XDMF special-case they used to each carry
+   * their own copy of — the same "one registry, no second dispatch site"
+   * reason the `via` field itself exists.
+   *
+   * `linkage` distinguishes the two conventions, which need genuinely different
+   * write paths, not just a different filename:
+   * - `"referenced"` — the primary file names its companion in its own content
+   *   (XDMF's `<DataItem Format="HDF">out.h5:/…`), so the reference must be
+   *   rewritten to whatever the user actually saved the companion as.
+   * - `"sibling"` — the reader finds the companion purely by stem convention
+   *   (GiD's `<stem>.post.res`), so the bytes are written beside the primary
+   *   under the matching stem and the primary is left completely untouched.
+   *   Rewriting anything here would corrupt it.
+   */
+  companion?: { extension: string; linkage: "referenced" | "sibling" };
 }
 
 export const MESH_EXPORT_FORMATS = [
@@ -115,7 +134,14 @@ export const MESH_EXPORT_FORMATS = [
   { id: "vtk", label: "VTK (.vtk)", extension: "vtk", filterLabel: "VTK Mesh", via: "gmsh" },
   { id: "med", label: "MED (.med)", extension: "med", filterLabel: "MED Mesh", via: "meshio" },
   { id: "cgns", label: "CGNS (.cgns)", extension: "cgns", filterLabel: "CGNS Mesh", via: "meshio" },
-  { id: "xdmf", label: "XDMF (.xdmf)", extension: "xdmf", filterLabel: "XDMF Mesh", via: "meshio" },
+  {
+    id: "xdmf",
+    label: "XDMF (.xdmf)",
+    extension: "xdmf",
+    filterLabel: "XDMF Mesh",
+    via: "meshio",
+    companion: { extension: "h5", linkage: "referenced" },
+  },
   { id: "unv", label: "I-DEAS Universal (.unv)", extension: "unv", filterLabel: "I-DEAS Universal Mesh", via: "gmsh" },
   { id: "inp", label: "Abaqus (.inp)", extension: "inp", filterLabel: "Abaqus Input", via: "gmsh" },
   { id: "bdf", label: "Nastran Bulk Data (.bdf)", extension: "bdf", filterLabel: "Nastran Bulk Data", via: "gmsh" },
@@ -132,6 +158,22 @@ export const MESH_EXPORT_FORMATS = [
   { id: "flac3d", label: "FLAC3D (.f3grid)", extension: "f3grid", filterLabel: "FLAC3D Mesh", via: "meshio" },
   { id: "wkt", label: "Well-Known Text (.wkt)", extension: "wkt", filterLabel: "Well-Known Text", via: "meshio" },
   { id: "flux", label: "Flux (.pf3)", extension: "pf3", filterLabel: "Flux Mesh", via: "meshio" },
+  // GiD postprocess (meshio++ 10.18.0+). The only export target here with a
+  // COMPOUND extension and a stem-convention companion. Verified live against
+  // the packaged 10.20.2 WASM to the same two-step bar as the eight
+  // meshio-only writers above — and it clears a bar XDMF does not: fed this
+  // pipeline's own `Mesh.SaveAll`-shaped MSH 4.1 input (vertex + line +
+  // triangle + tetra), it writes the pair AND reads back through meshio++'s
+  // own reader with every block and count intact, where XDMF's Mixed-topology
+  // encoding cannot be re-read at all.
+  {
+    id: "gid",
+    label: "GiD Postprocess (.post.msh)",
+    extension: "post.msh",
+    filterLabel: "GiD Postprocess Mesh",
+    via: "meshio",
+    companion: { extension: "post.res", linkage: "sibling" },
+  },
 ] as const satisfies readonly MeshExportFormat[];
 
 export type MeshExportFormatId = (typeof MESH_EXPORT_FORMATS)[number]["id"];
@@ -140,4 +182,27 @@ const BY_ID = new Map<string, MeshExportFormat>(MESH_EXPORT_FORMATS.map((f) => [
 
 export function meshExportFormat(id: string): MeshExportFormat | undefined {
   return BY_ID.get(id);
+}
+
+/**
+ * The filename a companion file must be written under, given the basename the
+ * user actually chose for the primary file — or `undefined` for a format with
+ * no companion.
+ *
+ * Strips the format's OWN (possibly compound) extension to find the stem,
+ * rather than just the last dot-segment. That distinction is the whole reason
+ * this is a shared function instead of an inline `replace(/\.[^.]+$/, …)` at
+ * each call site: for a `mymesh.post.msh` save with a `post.res` companion, a
+ * last-segment strip leaves the stem as `mymesh.post` and yields
+ * `mymesh.post.post.res`. Falls back to a last-segment strip when the chosen
+ * name doesn't end in the expected extension, since a save dialog never forces
+ * one.
+ */
+export function companionSaveName(saveBasename: string, format: MeshExportFormat): string | undefined {
+  if (!format.companion) return undefined;
+  const suffix = `.${format.extension}`.toLowerCase();
+  const stem = saveBasename.toLowerCase().endsWith(suffix)
+    ? saveBasename.slice(0, saveBasename.length - suffix.length)
+    : saveBasename.replace(/\.[^.]+$/, "");
+  return `${stem}.${format.companion.extension}`;
 }

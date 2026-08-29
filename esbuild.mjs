@@ -66,7 +66,16 @@ const extensionConfig = {
   // fail gracefully, caught there) rather than getting inlined — inlining it
   // is what broke the build in the first place (playwright-core's own
   // optional chromium-bidi sub-dependency isn't resolvable by esbuild).
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "playwright"],
+  // "float-tetwild-wasm" (ftetwildService.ts) is the fourth WASM kernel and
+  // must stay external for the same ESM-only reason as @meshioplusplus/wasm
+  // (no `require` condition at all — `"type": "module"`, a bare-string
+  // `exports` map — so it's loaded via a dynamic `await import()`, never a
+  // static import, and needs real files on disk at runtime, not a bundled
+  // copy). It is ALSO loaded with `{ threads: false }` unconditionally,
+  // avoiding the same eager-worker-pool risk gmsh-wasm's and meshio++'s
+  // threaded variants have — but staying external is required regardless,
+  // purely for the ESM/CJS reason.
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
@@ -90,12 +99,13 @@ const mcpConfig = {
   format: "cjs",
   target: "node18",
   outfile: "dist/mcp-server.js",
-  // See the matching comment in extensionConfig above (both gmsh-wasm and
-  // @meshioplusplus/wasm). "playwright" is a devDependency, dynamically
-  // `import()`ed by src/renderService.ts for the render_snapshot MCP tool —
-  // it must resolve via real node_modules at runtime (or fail gracefully,
-  // caught there), never get inlined into the bundle.
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "playwright"],
+  // See the matching comment in extensionConfig above (gmsh-wasm,
+  // @meshioplusplus/wasm, and float-tetwild-wasm). "playwright" is a
+  // devDependency, dynamically `import()`ed by src/renderService.ts for the
+  // render_snapshot MCP tool — it must resolve via real node_modules at
+  // runtime (or fail gracefully, caught there), never get inlined into the
+  // bundle.
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
@@ -121,7 +131,7 @@ const kernelConfig = {
   target: "node18",
   outfile: "dist/kernel-worker.js",
   // See the matching comment in extensionConfig/mcpConfig above.
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "playwright"],
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,

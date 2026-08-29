@@ -33,12 +33,30 @@ node_modules/**
 !node_modules/@meshioplusplus/wasm/src/index.mjs
 !node_modules/@meshioplusplus/wasm/dist/meshioplusplus_wasm.mjs
 !node_modules/@meshioplusplus/wasm/dist/meshioplusplus_wasm.wasm
+# float-tetwild-wasm (ftetwildService.ts, the fourth WASM kernel) is the
+# SAME ESM-only real-files pattern as @meshioplusplus/wasm above — no
+# `require` condition, loaded via dynamic `import()`, needs real files on
+# disk. Unlike meshio++, the whole package (both the serial build always
+# actually loaded via `{threads: false}` AND the threaded build + its
+# libtbb.so* side-module) ships — a deliberate choice, not an oversight,
+# since pruning the never-loaded threaded files was judged not worth the
+# packaging fragility for a ~3.4MB saving.
+!node_modules/float-tetwild-wasm/package.json
+!node_modules/float-tetwild-wasm/index.js
+!node_modules/float-tetwild-wasm/dist/floattetwild.serial.mjs
+!node_modules/float-tetwild-wasm/dist/floattetwild.serial.wasm
+!node_modules/float-tetwild-wasm/dist/floattetwild.threaded.mjs
+!node_modules/float-tetwild-wasm/dist/floattetwild.threaded.wasm
+!node_modules/float-tetwild-wasm/dist/libtbb.so
+!node_modules/float-tetwild-wasm/dist/libtbb.so.12
+!node_modules/float-tetwild-wasm/dist/libtbb.so.12.16
 examples/**
 doc/**
 icons/**
 scripts/screenshots/**
 scripts/mcp-smoke/**
 scripts/perf/**
+scripts/webview-test/**
 **/*.ts
 **/*.map
 esbuild.mjs

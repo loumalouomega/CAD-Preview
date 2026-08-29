@@ -105,6 +105,7 @@ export class MeshingPanel {
   private readonly partsSection: HTMLElement;
   private readonly partsBody: HTMLElement;
 
+  private readonly engineSelect: HTMLSelectElement;
   private readonly dimensionSelect: HTMLSelectElement;
   private readonly sizeMinInput: HTMLInputElement;
   private readonly sizeMaxInput: HTMLInputElement;
@@ -114,6 +115,7 @@ export class MeshingPanel {
   private readonly elementShapeSelect: HTMLSelectElement;
   private readonly optimizeCheckbox: HTMLInputElement;
   private readonly stlAngleInput: HTMLInputElement;
+  private readonly ftetwildEpsRelInput: HTMLInputElement;
 
   /** Model bounding box, pushed by the wiring after each model load. */
   private extents: ModelExtents | null = null;
@@ -221,6 +223,25 @@ export class MeshingPanel {
     sizeSection.appendChild(this.sliderReadout);
 
     this.body.appendChild(sizeSection);
+
+    // ── Engine (a first-class choice, not an "advanced" knob — placed above
+    // the collapsed Advanced settings section, right below the primary size
+    // control it composes with) ──
+    const engineSection = document.createElement("div");
+    engineSection.className = "meshing-form";
+    this.engineSelect = this.select(engineSection, "Engine", [
+      ["gmsh", "Gmsh (default)"],
+      ["ftetwild", "fTetWild (robust)"],
+    ]);
+    this.engineSelect.title =
+      "Gmsh is fast but needs a watertight/manifold/well-oriented boundary. " +
+      "fTetWild survives dirty triangle meshes (holes, self-intersections, non-manifold edges) " +
+      "that make Gmsh's own STL reclassification throw or silently produce no elements — " +
+      "only for a mesh-format 3D source; a B-rep source or a non-3D dimension falls back to Gmsh.";
+    this.engineSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ engine: this.engineSelect.value as MeshOptions["engine"] });
+    });
+    this.body.appendChild(engineSection);
 
     // ── Part sizes (mirrors the Parts panel's per-part size inputs) ──
     this.partsSection = document.createElement("div");
@@ -337,8 +358,19 @@ export class MeshingPanel {
     form.appendChild(optimizeRow);
 
     this.stlAngleInput = this.numberField(form, "STL angle (°)", 40);
+    this.stlAngleInput.title = "Only used by engine: Gmsh (classifySurfaces' angle threshold) — ignored under fTetWild.";
     this.stlAngleInput.addEventListener("change", () => {
       cb.onOptionsChange({ stlAngle: Number(this.stlAngleInput.value) || 0 });
+    });
+
+    this.ftetwildEpsRelInput = this.numberField(form, "fTetWild envelope (eps)", DEFAULT_MESH_OPTIONS.ftetwildEpsRel);
+    this.ftetwildEpsRelInput.title =
+      "fTetWild's envelope size, as a fraction of the model's bounding-box diagonal — smaller stays " +
+      "closer to the input surface (slower); only used by engine: fTetWild.";
+    this.ftetwildEpsRelInput.step = "0.0001";
+    this.ftetwildEpsRelInput.addEventListener("change", () => {
+      const raw = Number(this.ftetwildEpsRelInput.value);
+      cb.onOptionsChange({ ftetwildEpsRel: raw > 0 ? raw : DEFAULT_MESH_OPTIONS.ftetwildEpsRel });
     });
 
     const resetBtn = document.createElement("button");
@@ -363,6 +395,7 @@ export class MeshingPanel {
   /** Rebuilds the form controls to reflect `options`, and the stats/error readout. */
   render(options: MeshOptions, status?: MeshingStats | MeshingError): void {
     this.lastOptions = options;
+    this.engineSelect.value = options.engine;
     this.dimensionSelect.value = String(options.dimension);
     this.sizeMinInput.value = String(options.sizeMin);
     // Never display the raw 1e+22 sentinel — show an empty "auto" field until
@@ -379,6 +412,22 @@ export class MeshingPanel {
     this.elementShapeSelect.value = options.elementShape;
     this.optimizeCheckbox.checked = options.optimize;
     this.stlAngleInput.value = String(options.stlAngle);
+    this.ftetwildEpsRelInput.value = String(options.ftetwildEpsRel);
+
+    // fTetWild ignores sizeMin/algorithm2D/algorithm3D/elementOrder/
+    // elementShape/stlAngle entirely (see gmshService.ts's populateMeshedModel
+    // doc comment) — greyed, not hidden, so switching back to Gmsh doesn't
+    // need re-entering them. A UX nicety only: `effectiveEngine`'s own
+    // downgrade + `validateMeshOptions` already make every combination safe
+    // regardless of what this panel currently disables.
+    const ftetwild = options.engine === "ftetwild";
+    this.sizeMinInput.disabled = ftetwild;
+    this.algorithm2DSelect.disabled = ftetwild;
+    this.algorithm3DSelect.disabled = ftetwild;
+    this.elementOrderSelect.disabled = ftetwild;
+    this.elementShapeSelect.disabled = ftetwild;
+    this.stlAngleInput.disabled = ftetwild;
+    this.ftetwildEpsRelInput.disabled = !ftetwild;
 
     this.syncSlider();
 

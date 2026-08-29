@@ -2,7 +2,7 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview, non-destructive editing, and FE mesh generation for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF, VTK, MED, CGNS, and more) inside VS Code, with an MCP server for AI agents.",
-  "version": "1.5.1",
+  "version": "1.7.0",
   "publisher": "kratos-multiphysics",
   "license": "GPL-2.0-or-later",
   "icon": "images/icon.png",
@@ -79,6 +79,9 @@
             "filenamePattern": "*.mdpa"
           },
           {
+            "filenamePattern": "*.foam"
+          },
+          {
             "filenamePattern": "*.msh"
           },
           {
@@ -95,6 +98,9 @@
           },
           {
             "filenamePattern": "*.mesh"
+          },
+          {
+            "filenamePattern": "*.post.msh"
           }
         ],
         "priority": "default"
@@ -136,6 +142,19 @@
       {
         "command": "cad-preview.exportSvg",
         "title": "CAD Preview: Export Silhouette SVG…"
+      },
+      {
+        "command": "cad-preview.exportDxf",
+        "title": "CAD Preview: Export Silhouette DXF…"
+      },
+      {
+        "command": "cad-preview.exportDrawing",
+        "title": "CAD Preview: Export Technical Drawing…",
+        "category": "CAD Preview"
+      },
+      {
+        "command": "cad-preview.exportMesh",
+        "title": "CAD Preview: Export FE Mesh…"
       },
       {
         "command": "cad-preview.compareModels",
@@ -211,6 +230,18 @@
         {
           "command": "cad-preview.exportSvg",
           "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.exportDxf",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.exportDrawing",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.exportMesh",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
         }
       ]
     },
@@ -275,6 +306,8 @@
     "mcp": "node dist/mcp-server.js",
     "mcp:smoke": "npm run build && node scripts/mcp-smoke/run.mjs",
     "perf": "npm run build && node scripts/perf/run.mjs",
+    "test:webview": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/webview-test/run.mjs",
+    "test:integration": "npm run build && node test/integration/run.mjs",
     "docs:dev": "vitepress dev doc",
     "docs:build": "vitepress build doc",
     "docs:preview": "vitepress preview doc",
@@ -282,18 +315,21 @@
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.3.0",
-    "@meshioplusplus/wasm": "^10.14.0",
+    "@meshioplusplus/wasm": "^10.20.2",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "fflate": "^0.8.3",
+    "float-tetwild-wasm": "^0.2.0",
     "opencascade.js": "^1.1.1",
     "three": "^0.185.1",
     "three-bvh-csg": "^0.0.18",
+    "three-mesh-bvh": "^0.9.10",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "@types/three": "^0.185.4",
     "@types/vscode": "^1.134.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.2",
     "playwright": "^1.62.1",

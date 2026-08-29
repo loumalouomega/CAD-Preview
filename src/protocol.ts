@@ -7,11 +7,13 @@ import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
-import type { ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
+import type { EntityFacts, ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
-import type { ClipAxis } from "./webview/clipping";
+import type { ClipPlaneState } from "./webview/clipping";
+import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
+import type { AnnotatedTolerance } from "./toleranceBand";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -96,6 +98,14 @@ export type MeasureTool = "distance" | "edgeLength" | "angle" | "radius";
  * falls out for free as "none of this annotation's anchor ids resolve"
  * rather than needing a separate boolean flag to keep in sync.
  */
+/** One saved macro, as the Macros panel displays it. A macro's own `variables`
+ * block IS its parameter list — there is no separate parameter schema. */
+export interface MacroSummary {
+  name: string;
+  description: string | null;
+  parameters: { name: string; expr: string }[];
+}
+
 export interface Annotation {
   id: string; // stable id, client-generated at pin time (e.g. "ann-<ts>-<rand>")
   tool: MeasureTool;
@@ -107,6 +117,51 @@ export interface Annotation {
   surfaces: string[]; // anchored face ids
   lines: string[]; // anchored edge ids
   points: string[]; // anchored point (vertex) ids
+  /**
+   * Optional tolerance band (roadmap "Tolerance-band fact checks"), recorded
+   * at pin time from the Measure panel's inline fields. `measured` is the raw
+   * numeric measurement frozen alongside the band, so the in/out-of-band
+   * colour can be re-derived on redisplay without parsing the formatted
+   * `text` back into a number. Facts only — the within/outside judgment is
+   * rendered by the viewer, never stored.
+   */
+  tolerance?: AnnotatedTolerance;
+}
+
+/**
+ * A named construction plane, persisted to `<model>.planes.json`.
+ *
+ * **Stores resolved vectors, never a live face reference.** The roadmap's own
+ * recommendation, and the same convention `align`'s `to` coordinate set: a
+ * plane derived from `face-12` keeps that face's plane, not a pointer to it.
+ * This is what keeps planes entirely out of `entityRebind.ts` — unlike
+ * `face-N`, a plane is never renumbered by replay, and a live reference would
+ * need rebinding on every topology-changing op for a feature whose whole value
+ * is that it stays put.
+ *
+ * `derivedFrom` is display-only provenance ("face-12", "3 points"). It is
+ * deliberately never resolved back to geometry.
+ */
+export interface ConstructionPlane {
+  id: string; // "plane-N"
+  name: string; // user-editable
+  point: [number, number, number]; // a point ON the plane
+  normal: [number, number, number]; // unit
+  derivedFrom?: string;
+}
+
+/**
+ * Per-pane camera state — the subset of {@link ViewState} that varies per pane
+ * in a split-view layout (roadmap "Split view", Phase 2). Direction + up are
+ * the same normalized vectors `ViewState` already persists; orthographic is
+ * per-pane like direction. Display mode and clip plane stay global (one value
+ * for the whole document, stored in `ViewState` itself), matching Phase 1's
+ * scoping that only camera state is per-pane.
+ */
+export interface PaneViewState {
+  viewDirection: [number, number, number];
+  cameraUp: [number, number, number];
+  orthographic: boolean;
 }
 
 /**
@@ -119,6 +174,14 @@ export interface Annotation {
  * auto-derives both from the model's current bounding box, so persisting just
  * a normalized direction + up vector is sufficient and survives edits that
  * change the model's extents.
+ *
+ * Phase 2 (roadmap "Split view", Phase 2) adds optional split-view layout +
+ * per-pane camera states. `layout` defaults to `"1x1"` when absent (an older
+ * sidecar or a session that never entered split view); `panes` holds one
+ * {@link PaneViewState} per pane of that layout, row-major, and is only
+ * meaningful when `layout !== "1x1"`. A sidecar without these fields restores
+ * as before — `view` alone is the focused/single-pane state in both
+ * directions, so version-compatibility needs no bump.
  */
 export interface ViewState {
   /** Camera direction (target → camera), as consumed by `Viewer.frame`/`setViewDirection`. */
@@ -126,13 +189,40 @@ export interface ViewState {
   cameraUp: [number, number, number];
   orthographic: boolean;
   displayMode: DisplayMode;
-  /** `null` when clipping is off. */
-  clip: { axis: ClipAxis; offsetFrac: number } | null;
+  /** `null` when clipping is off. See {@link ClipPlaneState} for why an
+   * arbitrary `normal` is stored BESIDE the axis preset rather than instead
+   * of it. */
+  clip: ClipPlaneState | null;
+  /** Split-view layout — absent/`"1x1"` means single pane. See {@link PaneViewState}. */
+  layout?: PaneLayoutId;
+  /** Per-pane camera states, one per pane of {@link ViewState.layout}, row-major. */
+  panes?: PaneViewState[];
 }
 
 /** Messages sent from the extension host to the webview. */
 export type HostToWebview =
-  | { type: "geometry"; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
+  | {
+      type: "geometry";
+      meshes: EncodedMesh[];
+      edges: EncodedEdge[];
+      points: EncodedPoint[];
+      /** Per-op replay outcomes (see `editOps.ts`'s `OpOutcome`) for the
+       * B-rep path — lets the Edits history mark an op that gracefully
+       * skipped instead of silently showing an unchanged model.
+       * Absent for mesh sources (their replay is client-side, in
+       * `rebuildMeshModel`, which reports outcomes directly). */
+      opOutcomes?: import("./editOps").OpOutcome[];
+      /**
+       * When `false`, the viewer must always re-frame the new model, even if
+       * its bounds would otherwise be considered contained by the last framing
+       * (roadmap "Render on demand"). A genuine file load / file swap must
+       * always show the new file framed, even when it happens to be smaller
+       * than the document it replaced — without this hint a contained swap
+       * would silently keep the old framing and look mis-framed. Absent/`true`
+       * (the edit-driven rebuild path) is containment-eligible.
+       */
+      autoFit?: boolean;
+    }
   | {
       type: "tree";
       root: TreeNode;
@@ -169,6 +259,25 @@ export type HostToWebview =
         pointDataNames: string[];
         cellDataNames: string[];
         fieldDataNames: string[];
+        /**
+         * Per-array facts (meshio++ `dataInfo`) for the point/cell arrays
+         * above, when the host could read them. Additive and optional: an
+         * older payload without it still renders, the picker just falls back
+         * to offering every name and discovering a non-scalar after the click.
+         *
+         * Present only when the source actually declares data arrays — it
+         * costs a full `readMesh`, which a document with no fields should not
+         * pay on open.
+         */
+        arrays?: Array<{
+          name: string;
+          location: "point" | "cell";
+          numComponents: number;
+          min: number;
+          max: number;
+          numNan: number;
+          consistent: boolean;
+        }>;
       };
       /** Per-boundary-triangle region correlation (`src/meshioService.ts`'s
        * `convertToStlBoundaryWithRegions`) — present whenever the source's
@@ -191,6 +300,11 @@ export type HostToWebview =
     }
   | { type: "parts"; parts: Part[] }
   | { type: "annotations"; annotations: Annotation[] }
+  /** Full replacement of the document's construction planes — sent on the
+   * `ready` handshake and whenever `<model>.planes.json` changes externally.
+   * Applied silently by `PlanesModel.load()` (no `onChange` echo), the same
+   * contract `"parts"`/`"annotations"` rely on to avoid a write loop. */
+  | { type: "planes"; planes: ConstructionPlane[] }
   | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
@@ -254,12 +368,42 @@ export type HostToWebview =
    * blocks further requests), so there's nothing to disambiguate. */
   | { type: "importSvgResult"; text: string }
   | { type: "importSvgError"; message: string }
+  | { type: "importDxfResult"; text: string }
+  | { type: "importDxfError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
+  /** Analytic classification of one entity, for the inspector card. Carries
+   * `EntityFacts` verbatim from the existing `getEntityFacts` pipeline
+   * function — the card is a new protocol pair over existing kernel surface,
+   * not new geometry work. B-rep sources only (a mesh has no analytic
+   * surface type), so the host answers with `entityFactsError` otherwise. */
+  /** The saved-macro library for this document's folder. Sent unprompted on
+   *  `ready` and after every macro save/delete, so the panel never has to ask. */
+  | { type: "macros"; macros: MacroSummary[] }
+  /** Compiled macro ops, to be pushed onto the webview's own op stack — so a
+   *  macro is undoable and removable op-by-op like any hand-applied edit,
+   *  with no special "macro" state for undo/redo to reason about. */
+  | { type: "macroApplyOps"; ops: EditOp[] }
+  | { type: "entityFactsResult"; requestId: string; facts: EntityFacts }
+  | { type: "entityFactsError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
   | { type: "meshHealError"; requestId: string; message: string }
+  /** Live operation preview result — the same encoded payload `"geometry"`
+   * carries, but for the speculative ops+draft replay. The webview builds a
+   * detached group from it (never `viewer.setModel`) and tints it by intent;
+   * `opOutcomes` lets the overlay degrade to nothing when the draft op
+   * gracefully skipped, with the reason available for the status line. */
+  | {
+      type: "opPreviewResult";
+      requestId: string;
+      meshes: EncodedMesh[];
+      edges: EncodedEdge[];
+      points: EncodedPoint[];
+      opOutcomes?: import("./editOps").OpOutcome[];
+    }
+  | { type: "opPreviewError"; requestId: string; message: string }
   | {
       type: "colorFieldResult";
       requestId: string;
@@ -274,27 +418,45 @@ export type HostToWebview =
   | {
       type: "renderViewRequest";
       /** Deliberately separate from `screenshotRequest`'s requestId
-       * namespace/round trip (`src/renderService.ts`'s headless multi-view
-       * capture, not the interactive single-view Screenshot feature) —
-       * carries camera/visibility/display-mode fields that feature has no
-       * reason to. */
+        * namespace/round trip (`src/renderService.ts`'s headless multi-view
+        * capture, not the interactive single-view Screenshot feature) —
+        * carries camera/visibility/display-mode fields that feature has no
+        * reason to. */
       requestId: string;
       /** Camera direction (target → camera), as consumed by
-       * `Viewer.setViewDirection`. */
+        * `Viewer.setViewDirection`. */
       direction: [number, number, number];
       /** Explicit camera up vector — required in practice for a near-vertical
-       * `direction` (e.g. a top view) to avoid a gimbal-lock-like flip;
-       * optional otherwise (defaults to `[0,1,0]`). */
+        * `direction` (e.g. a top view) to avoid a gimbal-lock-like flip;
+        * optional otherwise (defaults to `[0,1,0]`). */
       up?: [number, number, number];
       /** Burned into the returned PNG (top-left corner). */
       label: string;
       /** Entity ids to isolate to (only these are shown); omitted/empty means
-       * no isolation. */
+        * no isolation. */
       focus?: Array<{ entityType: EntityType; entityId: string }>;
       /** Entity ids to force-hide. */
       hide?: Array<{ entityType: EntityType; entityId: string }>;
       wireframe?: boolean;
-    };
+      /** World-space box to frame INSTEAD of the whole model
+       *  (`screenshot_shape`). Framing only — must never drive the
+       *  model-scoped pick threshold / helper scales. */
+      frameBox?: { min: [number, number, number]; max: [number, number, number] };
+    }
+  | { type: "linkedCamera"; camera: LinkedCameraState }
+  | { type: "camerasLinked"; enabled: boolean };
+
+/**
+ * Minimal camera triple shared across tabs via the host relay (roadmap "Split
+ * view", Phase 3). Deliberately only direction/up/orthographic — layout,
+ * display mode and clip stay independent per document. Receiver reframes from
+ * its own bbox via `frameFromDirection`/`setCameraUp`/`setOrthographic`.
+ */
+export interface LinkedCameraState {
+  viewDirection: [number, number, number];
+  cameraUp: [number, number, number];
+  orthographic: boolean;
+}
 
 /** One contiguous run of triangles in `meshingResult.indices` belonging to a
  * single part (or, for `name === null`, the trailing ungrouped/default run). */
@@ -311,6 +473,7 @@ export type WebviewToHost =
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
   | { type: "annotationsChanged"; annotations: Annotation[] }
+  | { type: "planesChanged"; planes: ConstructionPlane[] }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "viewChanged"; view: ViewState }
   | { type: "openFile" }
@@ -326,17 +489,42 @@ export type WebviewToHost =
   | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: "screenshotButtonClicked" }
   | { type: "promoteToBrepButtonClicked" }
+  | { type: "repairMeshButtonClicked" }
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
+  /** Inspector card: classify the entity the user just selected. */
+  /** Run a saved macro, appending its compiled ops to the edit history. */
+  | { type: "macroRun"; name: string; parameters: Record<string, string> }
+  /** Save the current op stack as a macro; the host prompts for a name. */
+  | { type: "macroSaveCurrent" }
+  | { type: "macroDelete"; name: string }
+  | { type: "entityFactsRequest"; requestId: string; entityId: string }
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
   | { type: "importSvgRequest" }
-  /** File ▸ Export Silhouette SVG… — like `exportRequest`, the host owns the
-   * whole flow from here (view quick-pick → unit quick-pick → save dialog), so
-   * there is nothing to correlate and no result message: success/failure come
+  | { type: "importDxfRequest" }
+  /** File ▸ Export Silhouette SVG/DXF… — like `exportRequest`, the host owns
+   * the whole flow from here (view quick-pick → unit quick-pick → save dialog),
+   * so there is nothing to correlate and no result message: success/failure come
    * back through the generic `status`/`error` messages. */
   | { type: "exportSvgRequest" }
+  | { type: "exportDxfRequest" }
+  /** File ▸ Export Technical Drawing… — the hidden-line counterpart of the two
+   *  silhouette exports; the host owns the view/unit picks and the save dialog. */
+  | { type: "exportDrawingRequest" }
+  /** Live operation preview (roadmap item, closed): the webview's open Edits
+   * form changed — replay the current ops PLUS this not-yet-committed draft
+   * op and post the resulting geometry back for a tinted overlay. The webview
+   * builds `op` through the exact same builder the Apply button uses, so
+   * preview and commit can never disagree; the host treats it as purely
+   * speculative (separate cache key, nothing persisted, no sidecar write).
+   * Never posted for mesh sources — their preview is entirely client-side. */
+  | {
+      type: "opPreviewRequest";
+      requestId: string;
+      op: import("./editOps").EditOp;
+    }
   | {
       type: "measureExactRequest";
       requestId: string;
@@ -348,7 +536,8 @@ export type WebviewToHost =
   | { type: "renderViewResult"; requestId: string; data: string }
   | { type: "renderViewError"; requestId: string; message: string }
   | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
-  | { type: "meshHealRequest"; requestId: string };
+  | { type: "meshHealRequest"; requestId: string }
+  | { type: "setCamerasLinked"; enabled: boolean };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {

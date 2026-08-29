@@ -1,7 +1,10 @@
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { applyEditsBRep, collectSolids, collectFaces, collectEdges } from "./occtOperations";
+import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
+import type { Part } from "./protocol";
+import type { BomRow } from "./bomExport";
 
 export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
 
@@ -43,11 +46,15 @@ export interface MassProperties {
  * overload/arg-count probing, same convention as every other OCCT call in
  * this codebase — see CLAUDE.md): `new oc.GProp_GProps_1()` (the *only*
  * accessible constructor — the unsuffixed `GProp_GProps` has none) →
- * `oc.BRepGProp.VolumeProperties_1(shape, props, onlyClosed, skipShared,
- * useTriangulation)` (exactly 5 args; all `false` verified correct — a
- * 2×3×4 box gave `Mass()` = 24) → `oc.BRepGProp.SurfaceProperties_1(shape,
- * props, skipShared, useTriangulation)` (4 args; verified area 52 on the same
- * box) → `oc.BRepGProp.LinearProperties(shape, props, skipShared, ?)`
+ * volume/surface integration goes through `src/brepGProp.ts`'s ADAPTIVE
+ * (`eps`-driven) wrappers — `VolumeProperties2(shape, props, eps,
+ * onlyClosed, skipShared)` / `SurfaceProperties2(shape, props, eps,
+ * skipShared)`, the embind-renamed variants stock opencascade.js exposes
+ * because the plain-overload names collide on `Standard_Real Eps` — NOT the
+ * fixed-order `_1` forms, which under-integrate B-spline-trimmed faces (see
+ * `brepGProp.ts`'s doc comment for the measured numbers). The 2×3×4 box
+ * still integrates to exactly 24 either way. →
+ * `oc.BRepGProp.LinearProperties(shape, props, skipShared, ?)`
  * (**unsuffixed**, but still needs exactly 4 args in this binding; verified
  * against a single edge, NOT the whole shape — `LinearProperties` over an
  * entire B-rep shape double-counts every edge shared by two faces, so it must
@@ -155,13 +162,13 @@ function readCenterAndInertia(
 function solidProperties(oc: any, shape: any, cleanup: Array<{ delete(): void }>): MassProperties {
   const vprops = new oc.GProp_GProps_1();
   cleanup.push(vprops);
-  oc.BRepGProp.VolumeProperties_1(shape, vprops, false, false, false);
+  volumePropertiesAdaptive(oc, shape, vprops);
   const volume = vprops.Mass();
   const { centerOfMass, momentsOfInertia } = readCenterAndInertia(vprops, cleanup);
 
   const sprops = new oc.GProp_GProps_1();
   cleanup.push(sprops);
-  oc.BRepGProp.SurfaceProperties_1(shape, sprops, false, false);
+  surfacePropertiesAdaptive(oc, shape, sprops);
   const area = sprops.Mass();
 
   return { volume, area, length: null, centerOfMass, momentsOfInertia };
@@ -172,7 +179,7 @@ function solidProperties(oc: any, shape: any, cleanup: Array<{ delete(): void }>
 function surfaceProperties(oc: any, face: any, cleanup: Array<{ delete(): void }>): MassProperties {
   const props = new oc.GProp_GProps_1();
   cleanup.push(props);
-  oc.BRepGProp.SurfaceProperties_1(face, props, false, false);
+  surfacePropertiesAdaptive(oc, face, props);
   const area = props.Mass();
   const { centerOfMass, momentsOfInertia } = readCenterAndInertia(props, cleanup);
   return { volume: null, area, length: null, centerOfMass, momentsOfInertia };
@@ -187,4 +194,108 @@ function linearPropertiesOf(oc: any, edge: any, cleanup: Array<{ delete(): void 
   const length = props.Mass();
   const { centerOfMass, momentsOfInertia } = readCenterAndInertia(props, cleanup);
   return { volume: null, area: null, length, centerOfMass, momentsOfInertia };
+}
+
+// ---------------------------------------------------------------------------
+// BOM export (roadmap item, closed) — the OCCT-touching half; the pure
+// `BomRow` shape + `bomTsv` serializer live in `bomExport.ts` so mcpTools.ts
+// can import them without dragging this file's WASM graph into vitest.
+
+/**
+ * One row per Part over a single parse/replay (roadmap item, closed) — the
+ * loop-and-tabulate sibling of {@link computeMassProperties}, reusing its
+ * exact already-verified `BRepGProp` call shapes (adaptive volume + surface
+ * wrappers) with zero new kernel surface. A Part whose ids don't resolve is
+ * reported in its row (`unresolvedIds`) and warned, never thrown; a Part
+ * resolving to zero solids gets `volume`/`area` `null`. Parts are passed in
+ * whole (the caller reads them from the sidecar); this function stays
+ * ignorant of where they came from, like every other entity-resolution path.
+ */
+export async function computeBom(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  parts: Part[]
+): Promise<{ rows: BomRow[]; warnings: string[] }> {
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/bom.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanup: Array<{ delete(): void }> = [];
+  const warnings: string[] = [];
+  try {
+    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    const solids = collectSolids(oc, shape, cleanup);
+    // NOTE: byId maps id → the RAW solid handle (s.solid), exactly like
+    // entityFacts.ts's checkInterference — `solid` here IS the TopoDS_Shape.
+    const byId = new Map(solids.map((s) => [s.id, s.solid]));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const volumeOfSolid = (solid: any): number => {
+      const props = new oc.GProp_GProps_1();
+      cleanup.push(props);
+      volumePropertiesAdaptive(oc, solid, props);
+      return props.Mass();
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const areaOfSolid = (solid: any): number => {
+      const props = new oc.GProp_GProps_1();
+      cleanup.push(props);
+      surfacePropertiesAdaptive(oc, solid, props);
+      return props.Mass();
+    };
+
+    const rows: BomRow[] = parts.map((part) => {
+      const unresolvedIds: string[] = [];
+      let volume = 0;
+      let area = 0;
+      let resolvedCount = 0;
+      for (const id of part.volumes) {
+        const solid = byId.get(id);
+        if (solid === undefined) {
+          unresolvedIds.push(id);
+          continue;
+        }
+        resolvedCount++;
+        volume += volumeOfSolid(solid);
+        area += areaOfSolid(solid);
+      }
+      if (unresolvedIds.length > 0) {
+        warnings.push(`Part "${part.name}": unresolved id(s) ${unresolvedIds.join(", ")}.`);
+      }
+      if (resolvedCount === 0 && part.volumes.length > 0) {
+        warnings.push(`Part "${part.name}" resolved to no solids.`);
+      }
+      return {
+        name: part.name,
+        color: part.color,
+        solidCount: part.volumes.length,
+        surfaceCount: part.surfaces.length,
+        lineCount: part.lines.length,
+        pointCount: part.points.length,
+        volume: resolvedCount > 0 ? volume : null,
+        area: resolvedCount > 0 ? area : null,
+        unresolvedIds,
+      };
+    });
+
+    return { rows, warnings };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try {
+        cleanup[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
 }

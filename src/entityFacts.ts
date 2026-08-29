@@ -7,11 +7,14 @@ import {
   collectVertices,
   bboxCenter,
   bboxDiagonal,
+  bboxExtent,
   facePlane,
+  faceSurfaceInfo,
   combineSolids,
 } from "./occtOperations";
 import { rebindEntities, remapPartEntityIds, type EntitySignature } from "./entityRebind";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
+import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp, Vec3 } from "./editOps";
 import type { Annotation, Part } from "./protocol";
@@ -36,12 +39,76 @@ export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
  */
 export type SurfaceType = "plane" | "cylinder" | "cone" | "sphere" | "torus" | "other";
 
-const SURFACE_TYPE_BY_VALUE: Record<number, SurfaceType> = {
-  0: "plane",
-  1: "cylinder",
-  2: "cone",
-  3: "sphere",
-  4: "torus",
+/**
+ * The analytic parameters of a face's underlying surface — the numbers
+ * {@link SurfaceType} previously implied but withheld.
+ *
+ * **Frame and units.** Every point and direction is in the WORLD coordinates
+ * of the shape after op replay — the same frame as `bbox`, `center`,
+ * `planeOrigin`, and the points `measure`/`measure_exact` report — and every
+ * length is in the source file's own units, unconverted, exactly like `bbox`
+ * and `area`. Verified against the live WASM under both translation (with
+ * `BRepBuilderAPI_Transform`'s copy and location-only modes) and rotation:
+ * `BRepAdaptor_Surface` applies the face's own `TopLoc_Location` inside the
+ * accessor, so nothing here needs converting. Directions are unit length by
+ * construction (`gp_Dir`), but expect ~1e-16 dirt off the axes after a
+ * rotation — compare with a tolerance, never `===`.
+ *
+ * **`axisLocation` is a point ON the axis and nothing more.** It is not the
+ * face's centre, not necessarily inside the face's own extent, and not stable
+ * across kernels — for a `BRepPrimAPI` cylinder it happens to be the base
+ * circle's centre, while for a filleted box edge it landed on the fillet's
+ * own axis. Use `axisLocation` + `axisDirection` as the infinite axis line;
+ * use `bbox`/`center` for where the face actually is.
+ *
+ * **Deliberately NOT reported**: whether a cylinder is a hole or a boss. A
+ * `gp_Cylinder` is identical for both — the material side lives in the face's
+ * `TopAbs_Orientation`, not in its surface — so no field here implies one.
+ */
+export type SurfaceParams =
+  | { kind: "plane"; origin: Vec3; normal: Vec3 }
+  | { kind: "cylinder"; radius: number; axisLocation: Vec3; axisDirection: Vec3 }
+  | {
+      kind: "cone";
+      axisLocation: Vec3;
+      axisDirection: Vec3;
+      /** The cone's radius measured AT `axisLocation` — meaningless without
+       * it, which is why `apex` ships alongside as an absolute anchor. The
+       * identity `refRadius === |apex - axisLocation| * tan(|semiAngle|)`
+       * holds wherever OCCT chooses to put the location. */
+      refRadius: number;
+      apex: Vec3;
+      /** Half-angle in DEGREES (this codebase's convention everywhere — see
+       * `ExactMeasureResult.angleDeg` and every `*Deg` op field), converted
+       * from OCCT's radians. **Signed, and the sign is load-bearing**: a
+       * positive half-angle means the radius GROWS along `axisDirection`.
+       * Verified both ways against the live WASM. */
+      semiAngleDeg: number;
+    }
+  | { kind: "sphere"; center: Vec3; radius: number }
+  | {
+      kind: "torus";
+      axisLocation: Vec3;
+      axisDirection: Vec3;
+      majorRadius: number;
+      minorRadius: number;
+    };
+
+/** Analytic curve classification of an edge — the edge-side counterpart of
+ * {@link SurfaceType}, which had no analogue before. */
+export type CurveType = "line" | "circle" | "ellipse" | "hyperbola" | "parabola" | "bezier" | "bspline" | "other";
+
+/** `GeomAbs_CurveType` ordinals. Read symbolically at runtime (never
+ * hardcoded) — see {@link curveTypeOf}; this table only names the ordinals
+ * OCCT's own enum defines, in its declared order. */
+const CURVE_TYPE_BY_VALUE: Record<number, CurveType> = {
+  0: "line",
+  1: "circle",
+  2: "ellipse",
+  3: "hyperbola",
+  4: "parabola",
+  5: "bezier",
+  6: "bspline",
 };
 
 export interface EntityFacts {
@@ -61,8 +128,33 @@ export interface EntityFacts {
   length: number | null;
   /** Set only for a planar face; null for non-planar faces and every other kind. */
   normal: Vec3 | null;
+  /** Set only for a planar face, beside `normal`: the plane's own origin as
+   * OCCT computed it (`gp_Pln.Location()` via `facePlane`) — a point that
+   * genuinely lies ON the face's plane, unlike `center` (the bounding-box
+   * centre, which is coplanar with a planar face but is not guaranteed to
+   * lie on an annular or concave one). Usable directly as `planePoint` for
+   * the `section`/`splitByPlane`/`mirror` ops. */
+  planeOrigin: Vec3 | null;
   /** Set only for a face. */
   surfaceType: SurfaceType | null;
+  /** The analytic parameters behind {@link surfaceType} — radius, axis, cone
+   * half-angle, torus radii. Face only, and null for `surfaceType: "other"`
+   * (a Bezier/B-spline/swept face has no closed-form parameters to report).
+   * When non-null, `surfaceParams.kind === surfaceType` always.
+   *
+   * `normal`/`planeOrigin` above are projections of the `"plane"` variant,
+   * read from the SAME adaptor so they cannot disagree — they predate this
+   * field and are kept because Clip ▸ Face and the inspector card consume
+   * them directly. Nothing populates them for a curved face: doing so would
+   * make Clip ▸ Face silently accept a cylinder and cut on a meaningless
+   * plane, in place of the explanatory refusal it gives today. */
+  surfaceParams: SurfaceParams | null;
+  /** Set only for an edge; null for every other kind. Uses the same
+   * `BRepAdaptor_Curve_2(edge).GetType()` call `measureExact`'s `"radius"`
+   * kind already exercises against the live WASM, so this needed no new
+   * probing — it is a new field on an existing function, not new kernel
+   * surface. */
+  curveType: CurveType | null;
 }
 
 export type ExactMeasureKind = "distance" | "edgeLength" | "radius";
@@ -74,6 +166,27 @@ export interface ExactMeasureResult {
    * on each shape (not necessarily either entity's centre or an endpoint). */
   fromPoint?: Vec3;
   toPoint?: Vec3;
+  /** `kind: "distance"` only — straight-line distance between the two
+   * entities' bounding-box centres (the number `measure` reports; included
+   * here so one call answers both "how close do they get" and "how far apart
+   * are they overall"). */
+  centreDistance?: number;
+  /** `kind: "distance"` between two PLANAR faces only — the perpendicular
+   * distance between their planes, meaningful exactly when the planes are
+   * parallel. Absent when either face is non-planar or the planes aren't
+   * parallel. */
+  parallelDistance?: number;
+  /** `kind: "distance"` between two planar faces only — angle between their
+   * (outward-oriented) normal vectors in degrees, `[0, 180]`. Two
+   * opposite-facing parallel faces of a solid legitimately read 180; use
+   * `parallelDistance`'s presence as the parallelism signal, not this value. */
+  angleDeg?: number;
+  /** `kind: "distance"` only — which reported number most likely answers
+   * "how far apart are these": `"parallel"` when `parallelDistance` was
+   * computed (two parallel planar faces — the perpendicular gap is almost
+   * always the dimension being asked about), else `"min"`. A fact about
+   * which quantity fits the pair's geometry, never a judgment of the value. */
+  primary?: "min" | "parallel";
 }
 
 export interface MeasureResult {
@@ -156,6 +269,17 @@ function boundsOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): { m
   return { min, max, diagonal: Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) };
 }
 
+/** Pure helpers for `measureExact`'s additive face-pair fields — trivial, but
+ * kept named so the parallelism tolerance reads as intent rather than magic. */
+function normalizeVec(v: Vec3): Vec3 {
+  const len = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n));
+}
+
 /**
  * Per-entity geometric facts (bbox, bbox-centre, area/length, planar-face
  * normal + surface type) for one `solid-N`/`face-N`/`edge-N`/`point-N`, via
@@ -189,12 +313,15 @@ export async function getEntityFacts(
     let area: number | null = null;
     let length: number | null = null;
     let normal: Vec3 | null = null;
+    let planeOrigin: Vec3 | null = null;
     let surfaceType: SurfaceType | null = null;
+    let surfaceParams: SurfaceParams | null = null;
+    let curveType: CurveType | null = null;
 
     if (kind === "solid" || kind === "face") {
       const props = new oc.GProp_GProps_1();
       cleanup.push(props);
-      oc.BRepGProp.SurfaceProperties_1(handle, props, false, false);
+      surfacePropertiesAdaptive(oc, handle, props);
       area = props.Mass();
     }
 
@@ -203,17 +330,37 @@ export async function getEntityFacts(
       cleanup.push(props);
       oc.BRepGProp.LinearProperties(handle, props, false, false);
       length = props.Mass();
+      const curve = new oc.BRepAdaptor_Curve_2(handle);
+      cleanup.push(curve);
+      curveType = CURVE_TYPE_BY_VALUE[curve.GetType().value] ?? "other";
     }
 
     if (kind === "face") {
-      const plane = facePlane(oc, handle, cleanup);
-      normal = plane?.nl ?? null;
-      const surf = new oc.BRepAdaptor_Surface_2(handle, true);
-      cleanup.push(surf);
-      surfaceType = SURFACE_TYPE_BY_VALUE[surf.GetType().value] ?? "other";
+      // ONE adaptor for both the classification and the parameters — this used
+      // to build two (its own, plus `facePlane`'s) on the same face, which also
+      // meant a plane's normal had two independent sources that could drift.
+      const info = faceSurfaceInfo(oc, handle, cleanup);
+      surfaceType = info.type;
+      surfaceParams = info.params;
+      // Projections of the same read, kept because they are load-bearing for
+      // Clip > Face, the inspector card, and existing smoke assertions.
+      normal = info.params?.kind === "plane" ? info.params.normal : null;
+      planeOrigin = info.params?.kind === "plane" ? info.params.origin : null;
     }
 
-    return { entityId, kind, bbox, center, area, length, normal, surfaceType };
+    return {
+      entityId,
+      kind,
+      bbox,
+      center,
+      area,
+      length,
+      normal,
+      planeOrigin,
+      surfaceType,
+      surfaceParams,
+      curveType,
+    };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {
@@ -320,6 +467,22 @@ export async function measureEntities(
  * or any point a user could have picked, which is exactly the extra
  * precision a triangulated approximation can't give.
  *
+ * **MAX distance (roadmap "Richer exact measurement", closed as
+ * probed-and-unavailable)** — the roadmap asked for minimum AND maximum
+ * separation. Probed against the live WASM, both candidate kernel paths are
+ * genuinely dead in this build, recorded here so neither is re-proposed:
+ * (1) `BRepExtrema_DistanceSS` (green in the manifest) — its usable 7-arg
+ * constructor `(S1, S2, Bnd_Box, Bnd_Box, dst, Extrema_ExtFlag,
+ * Extrema_ExtAlgo)` constructs but NEVER computes (no `Perform` method
+ * exists; `IsDone()` stays false and `DistValue()` echoes the `dst`
+ * early-exit hint verbatim regardless of filled bounding boxes or flag),
+ * and its other overloads need `BRepExtrema_ShapeType`, which is NOT bound;
+ * (2) `DistShapeShape_2(S1, S2, extFlag, extAlgo)` accepts the (bound!)
+ * `Extrema_ExtFlag_MAX` silently but ignores it — always returns the
+ * minimum. So this function reports the minimum exactly, plus the additive
+ * context fields below; a caller wanting "how far apart overall" has
+ * `centreDistance`.
+ *
  * **`kind: "edgeLength"`** — reuses the exact `BRepGProp.LinearProperties`
  * call shape `getEntityFacts` above already verified (single-edge only, per
  * that function's own doc comment — never call it over multiple edges).
@@ -370,12 +533,46 @@ export async function measureExact(
       cleanup.push(p1);
       const p2 = dist.PointOnShape2(1);
       cleanup.push(p2);
-      return {
+      const result: ExactMeasureResult = {
         kind,
         value: dist.Value(),
         fromPoint: [p1.X(), p1.Y(), p1.Z()],
         toPoint: [p2.X(), p2.Y(), p2.Z()],
       };
+
+      // Additive context fields (roadmap "Richer exact measurement", closed).
+      // centreDistance is the number `measure` reports — included so one call
+      // answers both "how close do they get" and "how far apart overall".
+      const c1 = bboxCenter(oc, a.handle, cleanup);
+      const c2 = bboxCenter(oc, b.handle, cleanup);
+      result.centreDistance = Math.hypot(c2[0] - c1[0], c2[1] - c1[1], c2[2] - c1[2]);
+
+      // Two planar faces additionally get the angle between their normals and
+      // — when the planes are parallel — the perpendicular plane-to-plane gap,
+      // which becomes the primary answer for that pair. (MAX distance was the
+      // roadmap's other ask; probed and genuinely unavailable in this WASM
+      // build — see this function's doc comment.)
+      if (a.kind === "face" && b.kind === "face") {
+        const planeA = facePlane(oc, a.handle, cleanup);
+        const planeB = facePlane(oc, b.handle, cleanup);
+        if (planeA && planeB) {
+          const n1 = normalizeVec(planeA.nl);
+          const n2 = normalizeVec(planeB.nl);
+          const cosAngle = clamp(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2], -1, 1);
+          result.angleDeg = Math.acos(cosAngle) * (180 / Math.PI);
+          // Parallel within ~1e-6 cosine (~8e-5 degrees): report the
+          // perpendicular gap |Δorigin·n̂1| and name it the primary value.
+          if (Math.abs(cosAngle) >= 1 - 1e-6) {
+            const dx = planeB.pt[0] - planeA.pt[0];
+            const dy = planeB.pt[1] - planeA.pt[1];
+            const dz = planeB.pt[2] - planeA.pt[2];
+            result.parallelDistance = Math.abs(dx * n1[0] + dy * n1[1] + dz * n1[2]);
+            result.primary = "parallel";
+          }
+        }
+      }
+      result.primary ??= "min";
+      return result;
     }
 
     if (kind === "edgeLength") {
@@ -437,7 +634,7 @@ export interface InterferenceResult {
  * copies for its own `a`/`b` operands, verified via the live `boolean` edit
  * op) for the intersection itself (`BRepAlgoAPI_Common_3(a, b)` →
  * `.IsDone()` → `.Shape()`), and this file's own `volumeOf` (the same
- * `BRepGProp.VolumeProperties_1` call shape `get_mass_properties` uses) for
+ * `BRepGProp` volume call shape (via `src/brepGProp.ts`'s adaptive wrapper) that `get_mass_properties` uses) for
  * the resulting volume.
  *
  * `a`/`b` are `solid-N` id arrays — a Part with multiple volumes maps
@@ -511,11 +708,192 @@ export async function checkInterference(
   }
 }
 
+export interface InterferencePairResult {
+  a: string[];
+  b: string[];
+  hasOverlap: boolean;
+  overlapVolume: number;
+  unresolvedA: string[];
+  unresolvedB: string[];
+  /** True when the pair was rejected by the cheap AABB pre-filter without
+   * paying for a real boolean — a fact about HOW the result was derived,
+   * not a different answer: two strictly-disjoint bounding boxes can never
+   * produce a Common_3 volume. Pairs whose boxes merely touch are NOT
+   * screened (they go to the real boolean, which resolves a touching-only
+   * pair to `hasOverlap: false` exactly like single-pair
+   * {@link checkInterference} does). */
+  screenedByBbox?: boolean;
+}
+
+/**
+ * Assembly-wide sibling of {@link checkInterference} (roadmap item, closed):
+ * runs the same exact-boolean-volume test over EVERY pair of the caller's
+ * solid-id groups in one call — one parse/replay total, not C(n,2) re-parses.
+ *
+ * Two independent external projects converged on the same shape this
+ * implements, so it is built-in from the start rather than deferred as an
+ * optimization: HCAD's assembly-wide clash pass, and SindriCAD's own
+ * `interference` op, both run a cheap bounding-box reject before any expensive
+ * boolean. Each group's extent is the union of its member solids'
+ * `bboxExtent`s (`occtOperations.ts`, exported here for exactly this caller),
+ * computed once per solid and cached across groups; a pair whose extents are
+ * STRICTLY separated on any axis is reported without a boolean
+ * (`screenedByBbox: true`). Touching AABBs are deliberately NOT screened —
+ * they go to the real boolean so the touching-vs-overlapping distinction
+ * stays exactly as authoritative as the single-pair path.
+ *
+ * The kernel surface is otherwise byte-identical to {@link checkInterference}:
+ * `combineSolids` per operand, `BRepAlgoAPI_Common_3(a, b)` → `.IsDone()` →
+ * `.Shape()`, adaptive-volume measurement, the `>1e-9` gate against a
+ * degenerate touching intersection, and graceful skip on unresolved ids or a
+ * non-converging boolean (never thrown). Cost scales O(n²) booleans worst-case;
+ * the pre-filter cuts the real cost to only the geometrically-plausible pairs.
+ */
+export async function checkInterferenceAll(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  groups: string[][]
+): Promise<{ pairs: InterferencePairResult[]; warnings: string[] }> {
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/cia.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanup: Array<{ delete(): void }> = [];
+  const warnings: string[] = [];
+  const pairs: InterferencePairResult[] = [];
+  try {
+    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    const solids = collectSolids(oc, shape, cleanup);
+    // NOTE: byId maps id → the RAW solid handle (s.solid), exactly like
+    // checkInterference above — `solid` here IS the TopoDS_Shape.
+    const byId = new Map(solids.map((s) => [s.id, s.solid]));
+
+    // Resolve every group's ids once; cache each solid's extent so a solid
+    // shared by several groups costs one bbox computation total.
+    const extentCache = new Map<string, { min: Vec3; max: Vec3 }>();
+    const extentOf = (id: string): { min: Vec3; max: Vec3 } | undefined => {
+      let ext = extentCache.get(id);
+      if (!ext) {
+        const solid = byId.get(id);
+        if (solid === undefined) return undefined;
+        ext = bboxExtent(oc, solid, cleanup);
+        extentCache.set(id, ext);
+      }
+      return ext;
+    };
+
+    interface ResolvedGroup {
+      ids: string[];
+      handles: unknown[];
+      unresolved: string[];
+      extent: { min: Vec3; max: Vec3 } | null;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resolved: ResolvedGroup[] = groups.map((group) => {
+      const handles: any[] = [];
+      const unresolved: string[] = [];
+      let min: Vec3 | null = null;
+      let max: Vec3 | null = null;
+      for (const id of group) {
+        const solid = byId.get(id);
+        if (solid === undefined) {
+          unresolved.push(id);
+          continue;
+        }
+        handles.push(solid);
+        const ext = extentOf(id)!;
+        if (min === null || max === null) {
+          min = [...ext.min];
+          max = [...ext.max];
+        } else {
+          for (let a = 0; a < 3; a++) {
+            if (ext.min[a] < min[a]) min[a] = ext.min[a];
+            if (ext.max[a] > max[a]) max[a] = ext.max[a];
+          }
+        }
+      }
+      if (unresolved.length > 0) {
+        warnings.push(`Group [${group.join(", ")}]: unresolved id(s) ${unresolved.join(", ")}.`);
+      }
+      if (handles.length === 0) {
+        warnings.push(
+          `Group [${group.join(", ")}] resolved to no solids — all of its pairs report no overlap (same graceful convention as single-pair check_interference).`
+        );
+        return { ids: [...group], handles, unresolved, extent: null };
+      }
+      return { ids: [...group], handles, unresolved, extent: { min: min!, max: max! } };
+    });
+
+    const strictlyDisjoint = (
+      a: { min: Vec3; max: Vec3 },
+      b: { min: Vec3; max: Vec3 }
+    ): boolean =>
+      a.max[0] < b.min[0] || b.max[0] < a.min[0] ||
+      a.max[1] < b.min[1] || b.max[1] < a.min[1] ||
+      a.max[2] < b.min[2] || b.max[2] < a.min[2];
+
+    for (let i = 0; i < resolved.length; i++) {
+      for (let j = i + 1; j < resolved.length; j++) {
+        const gi = resolved[i];
+        const gj = resolved[j];
+        const base = { unresolvedA: gi.unresolved, unresolvedB: gj.unresolved };
+        if (gi.extent === null || gj.extent === null) {
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, ...base });
+          continue;
+        }
+        if (strictlyDisjoint(gi.extent, gj.extent)) {
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, screenedByBbox: true, ...base });
+          continue;
+        }
+        const shapeA = combineSolids(oc, gi.handles, cleanup);
+        const shapeB = combineSolids(oc, gj.handles, cleanup);
+        const algo = new oc.BRepAlgoAPI_Common_3(shapeA, shapeB);
+        cleanup.push(algo);
+        if (!algo.IsDone()) {
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, ...base });
+          continue;
+        }
+        const resultShape = algo.Shape();
+        cleanup.push(resultShape);
+        const overlapVolume = volumeOf(oc, resultShape, cleanup);
+        pairs.push({
+          a: gi.ids,
+          b: gj.ids,
+          // Same degenerate-touching gate as checkInterference above.
+          hasOverlap: overlapVolume > 1e-9,
+          overlapVolume,
+          ...base,
+        });
+      }
+    }
+
+    return { pairs, warnings };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try {
+        cleanup[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function areaOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): number {
   const props = new oc.GProp_GProps_1();
   cleanup.push(props);
-  oc.BRepGProp.SurfaceProperties_1(handle, props, false, false);
+  surfacePropertiesAdaptive(oc, handle, props);
   return props.Mass();
 }
 
@@ -531,7 +909,7 @@ function lengthOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): num
 function volumeOf(oc: any, handle: any, cleanup: Array<{ delete(): void }>): number {
   const props = new oc.GProp_GProps_1();
   cleanup.push(props);
-  oc.BRepGProp.VolumeProperties_1(handle, props, false, false, false);
+  volumePropertiesAdaptive(oc, handle, props);
   return props.Mass();
 }
 

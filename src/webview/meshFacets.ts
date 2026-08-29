@@ -1,5 +1,17 @@
 import * as THREE from "three";
+import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { makeFaceMaterial } from "./geometryBuilder";
+
+// Patch THREE prototypes once so `Mesh.raycast` uses the BVH when present and
+// falls back to the original brute-force path otherwise. The patch is
+// idempotent across HMR / repeated imports. `three-mesh-bvh`'s own
+// `src/index.d.ts` already augments `three`'s `BufferGeometry` type with
+// `boundsTree` / `computeBoundsTree` / `disposeBoundsTree`.
+if (!(THREE.BufferGeometry.prototype as unknown as Record<string, unknown>).computeBoundsTree) {
+  (THREE.BufferGeometry.prototype as unknown as Record<string, unknown>).computeBoundsTree = computeBoundsTree;
+  (THREE.BufferGeometry.prototype as unknown as Record<string, unknown>).disposeBoundsTree = disposeBoundsTree;
+  (THREE.Mesh.prototype as unknown as Record<string, unknown>).raycast = acceleratedRaycast;
+}
 
 /** Default angle (degrees) below which adjacent triangles are treated coplanar. */
 export const FACET_ANGLE_TOLERANCE = 15;
@@ -132,6 +144,20 @@ export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string, triangle
     mesh.userData.groupId = volumeId;
     mesh.userData.entityType = "surface";
     mesh.userData.entityId = `${volumeId}/face-0`;
+    // BVH-accelerate kept-whole meshes (the dense-scan case — see Tier 2 item
+    // 1 in doc/roadmap.md). `indirect: true` preserves the original triangle
+    // order so any index-based logic stays correct if later code keys on it.
+    // The BVH lives with the geometry for the session; it is freed when the
+    // geometry is disposed on document close — no per-rebuild disposal needed
+    // (the geometry is shared with the cached pristine clone).
+    const geo = mesh.geometry as THREE.BufferGeometry;
+    if (!geo.boundsTree) {
+      try {
+        geo.computeBoundsTree?.({ indirect: true });
+      } catch {
+        // BVH build failure is non-fatal — fall back to brute-force raycast.
+      }
+    }
     return mesh;
   }
 

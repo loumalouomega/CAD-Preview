@@ -21,8 +21,10 @@ export interface EntitySignature {
   id: string; // e.g. "face-3"
   kind: RebindKind;
   centre: Vec3;
-  /** Area (solid boundary/face), length (edge), or `0` (point — a location
-   * has no size to compare, so points match on `centre` distance alone). */
+  /** Volume (solid), area (face), length (edge), or `0` (point — a location
+   * has no size to compare, so points match on `centre` distance alone).
+   * NOTE this said "area" for a solid until corrected; `collectAllEntitySignatures`
+   * has always populated it with `volumeOf`. */
   measure: number;
 }
 

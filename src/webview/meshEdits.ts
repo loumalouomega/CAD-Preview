@@ -1,10 +1,29 @@
 import * as THREE from "three";
 import { Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION } from "three-bvh-csg";
-import { BREP_ONLY_OPS, type EditOp, type Vec3 } from "../editOps";
+import { BREP_ONLY_OPS, type EditOp, type Vec3, type OpOutcome } from "../editOps";
 import { makeFaceMaterial } from "./geometryBuilder";
 
 /** Single shared CSG evaluator (cheap to keep; avoids re-alloc per boolean). */
 const csg = new Evaluator();
+
+/** Above this many combined triangles, a `three-bvh-csg` boolean/hole would
+ * likely freeze the webview's main thread — degrade to a status message
+ * instead. Tuned empirically against THIS codebase's `Evaluator` (not a
+ * number borrowed from a different boolean engine); see `doc/roadmap.md`'s
+ * Tier 2 item 1 note on why the threshold must come from local timing. */
+export const MESH_CSG_MAX_TRIANGLES = 150_000;
+
+/** Triangle count of a mesh's geometry (indexed or non-indexed). 0 if none. */
+export function meshTriangleCount(mesh: THREE.Object3D | null | undefined): number {
+  const geo = (mesh as THREE.Mesh | null | undefined)?.geometry as
+    | THREE.BufferGeometry
+    | undefined;
+  if (!geo) return 0;
+  const pos = geo.attributes.position as THREE.BufferAttribute | undefined;
+  if (!pos) return 0;
+  const idx = geo.index;
+  return (idx ? idx.count : pos.count) / 3;
+}
 
 /**
  * Webview-side (Three.js) edit engine for mesh formats (STL/OBJ/PLY/glTF), which
@@ -12,68 +31,152 @@ const csg = new Evaluator();
  * `THREE.Object3D` so mesh edits are replayed on every open, mirroring how the
  * host folds ops over a B-rep shape.
  *
- * Targets are resolved by the same stable `node-N` ids `tagMeshEntities` assigns
+ * Targets are resolved by the same stable `node-N` ids `tagMeshEntities assigns`
  * (traversal order). Transforms apply a `THREE.Matrix4` to each target's local
  * matrix — the caller always passes a *pristine* clone so ops replay cleanly.
  * Feature-modeling ops are {@link BREP_ONLY_OPS} (meshes have no sketch/exact
  * topology) and are skipped here; the panel disables them for mesh files.
+ *
+ * When `outcomes` is given, one {@link OpOutcome} is pushed per op — the
+ * webview-side half of the "a failed edit op is indistinguishable from one
+ * that did nothing" fix (the host's `applyEditsBRep` is the other half).
+ * Unlike the host, there is no shared shape handle to identity-compare against,
+ * so each dispatch site reports explicitly.
  */
-export function applyEditsMesh(root: THREE.Object3D, ops: EditOp[]): THREE.Object3D {
+export function applyEditsMesh(
+  root: THREE.Object3D,
+  ops: EditOp[],
+  outcomes?: OpOutcome[],
+  report?: (msg: string) => void
+): THREE.Object3D {
   // Counts only `addX` ops seen so far in THIS fold pass, so `prim-{K}` ids are
   // deterministic by op-list position and stable across repeated replays of the
   // same list (independent of whether a given primitive's mesh build succeeds).
-  let primCount = 0;
-  // Separate counter for pattern-generated copies (`pattern-{K}`) — kept
-  // distinct from `primCount` since a single patternLinear/patternCircular op
-  // produces MULTIPLE new objects (one per copy), not one per op.
-  let patternCount = 0;
-  for (const op of ops) {
-    if (BREP_ONLY_OPS.has(op.op)) continue; // not meaningful on a triangle mesh
-    if (op.op === "boolean") { applyMeshBoolean(root, op); continue; }
-    if (op.op === "explode") { applyMeshExplode(root, op.factor); continue; }
-    if (op.op === "align") { applyMeshAlign(root, op); continue; }
-    if (op.op === "patternLinear" || op.op === "patternCircular") {
-      patternCount = applyMeshPattern(root, op, patternCount);
-      continue;
-    }
-    // Holes MUST dispatch before the `add*` primitive branch below (their op
-    // names also start with "add") — they subtract from an existing target and
-    // never produce a `prim-{K}` body, so they don't touch `primCount` either.
-    if (op.op === "addHole" || op.op === "addCounterboreHole" || op.op === "addCountersinkHole") {
-      applyMeshHole(root, op);
-      continue;
-    }
-    if (op.op.startsWith("add")) {
-      const mesh = buildPrimitiveMesh(op);
-      if (mesh) {
-        mesh.userData.groupId = `prim-${primCount}`;
-        root.add(mesh);
-      }
-      primCount++;
-      continue;
-    }
-    const m = transformMatrixForOp(op);
-    if (!m) continue; // anything else is a no-op on a mesh
-    for (const target of resolveMeshTargets(root, transformTargets(op))) {
-      // Local matrices of mesh roots are identity, so a world-space op matrix
-      // applies correctly. applyMatrix4 premultiplies + re-decomposes.
-      target.applyMatrix4(m);
-    }
+  const ctx = { primCount: 0, patternCount: 0 };
+  for (let index = 0; index < ops.length; index++) {
+    const op = ops[index];
+    const outcome: OpOutcome = { index, kind: op.op, applied: true };
+    // First `fail` call wins for this op.
+    const fail: (diagnostic: string, hint?: string) => void = (diagnostic, hint) => {
+      if (!outcome.applied) return;
+      outcome.applied = false;
+      outcome.diagnostic = diagnostic;
+      if (hint) outcome.hint = hint;
+    };
+    applyOneOpMesh(root, op, fail, ctx, report);
+    outcomes?.push(outcome);
   }
   return root;
+}
+
+/** The fold-pass id counters (`prim-{K}` / `pattern-{K}`), owned by one
+ * {@link applyEditsMesh} call — never module state, so repeated replays of
+ * the same list stay deterministic. */
+interface MeshFoldCtx {
+  primCount: number;
+  patternCount: number;
+}
+
+/** One op's dispatch for the mesh engine. */
+function applyOneOpMesh(
+  root: THREE.Object3D,
+  op: EditOp,
+  fail: (diagnostic: string, hint?: string) => void,
+  ctx: MeshFoldCtx,
+  report?: (msg: string) => void
+): void {
+  if (BREP_ONLY_OPS.has(op.op)) {
+    fail(`${op.op} is B-rep only — triangle meshes have no sketch/exact topology for it`);
+    return; // not meaningful on a triangle mesh
+  }
+  if (op.op === "boolean") {
+    if (!applyMeshBoolean(root, op, fail, report)) {
+      // Dense guard already called `fail`+`report` inside; first-wins makes
+      // this second `fail` a no-op in that case, and the correct diagnostic
+      // for the unresolved-operand case otherwise.
+      fail("operand A/B node ids did not resolve to meshes", "re-check node-N ids — load_model/get_state lists them");
+    }
+    return;
+  }
+  if (op.op === "explode") {
+    applyMeshExplode(root, op.factor); // spreads whatever nodes exist; always applies
+    return;
+  }
+  if (op.op === "align") {
+    if (!applyMeshAlign(root, op)) {
+      fail("no target moved", "target node-N ids may not resolve, or every target is already at the requested coordinate");
+    }
+    return;
+  }
+  if (op.op === "patternLinear" || op.op === "patternCircular") {
+    const result = applyMeshPattern(root, op, ctx.patternCount);
+    ctx.patternCount = result.nextId;
+    if (!result.applied) fail("no copies were added", "target node-N ids may not resolve, or count is 1 (a pattern's count INCLUDES the original)");
+    return;
+  }
+  // Holes MUST dispatch before the `add*` primitive branch below (their op
+  // names also start with "add") — they subtract from an existing target and
+  // never produce a `prim-{K}` body, so they don't touch `primCount` either.
+  if (op.op === "addHole" || op.op === "addCounterboreHole" || op.op === "addCountersinkHole") {
+    if (!applyMeshHole(root, op, fail, report)) {
+      fail("target node id did not resolve to a mesh", "re-check node-N ids — load_model/get_state lists them");
+    }
+    return;
+  }
+  if (op.op.startsWith("add")) {
+    const mesh = buildPrimitiveMesh(op);
+    if (mesh) {
+      mesh.userData.groupId = `prim-${ctx.primCount}`;
+      root.add(mesh);
+    }
+    ctx.primCount++;
+    return;
+  }
+  const m = transformMatrixForOp(op);
+  if (!m) {
+    fail(`op kind "${op.op}" has no mesh equivalent`);
+    return; // anything else is a no-op on a mesh
+  }
+  const targetIds = transformTargets(op);
+  const targets = resolveMeshTargets(root, targetIds);
+  if (targets.length === 0 && targetIds.length > 0) {
+    fail(
+      `none of the target ids (${targetIds.join(", ")}) resolve`,
+      "re-check node-N ids — load_model/get_state lists them"
+    );
+    return;
+  }
+  for (const target of targets) {
+    // Local matrices of mesh roots are identity, so a world-space op matrix
+    // applies correctly. applyMatrix4 premultiplies + re-decomposes.
+    target.applyMatrix4(m);
+  }
 }
 
 /**
  * Mesh boolean via `three-bvh-csg`. Resolves operand A/B to their first mesh
  * (the typical 1-vs-1 case), evaluates the CSG, and replaces both operands in the
  * tree with the single result mesh (tagged with A's node id so it stays pickable
- * and colourable). Unresolved operands are skipped, mirroring the host's graceful
- * boolean. Topology changes re-id facets on the next split — accepted id drift.
+ * and colourable). Unresolved operands are skipped (returns false), mirroring the
+ * host's graceful boolean. Topology changes re-id facets on the next split —
+ * accepted id drift.
  */
-function applyMeshBoolean(root: THREE.Object3D, op: Extract<EditOp, { op: "boolean" }>): void {
+function applyMeshBoolean(
+  root: THREE.Object3D,
+  op: Extract<EditOp, { op: "boolean" }>,
+  fail?: (diagnostic: string, hint?: string) => void,
+  report?: (msg: string) => void
+): boolean {
   const aMesh = firstMesh(resolveMeshTargets(root, op.a));
   const bMesh = firstMesh(resolveMeshTargets(root, op.b));
-  if (!aMesh || !bMesh) return;
+  if (!aMesh || !bMesh) return false;
+  const denseTotal = meshTriangleCount(aMesh) + meshTriangleCount(bMesh);
+  if (denseTotal > MESH_CSG_MAX_TRIANGLES) {
+    const msg = "mesh too dense for a boolean here — try Promote to B-rep first";
+    fail?.(msg, "convert via Mesh Health → Promote to B-rep… and re-apply the boolean");
+    report?.(msg);
+    return false;
+  }
 
   const brushA = new Brush(aMesh.geometry);
   aMesh.updateWorldMatrix(true, false);
@@ -96,6 +199,7 @@ function applyMeshBoolean(root: THREE.Object3D, op: Extract<EditOp, { op: "boole
     o.parent?.remove(o);
   }
   root.add(out);
+  return true;
 }
 
 /**
@@ -110,10 +214,20 @@ function applyMeshBoolean(root: THREE.Object3D, op: Extract<EditOp, { op: "boole
  */
 function applyMeshHole(
   root: THREE.Object3D,
-  op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>
-): void {
+  op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>,
+  fail?: (diagnostic: string, hint?: string) => void,
+  report?: (msg: string) => void
+): boolean {
   const targetMesh = firstMesh(resolveMeshTargets(root, op.targets));
-  if (!targetMesh) return;
+  if (!targetMesh) return false;
+  // Holes subtract a small tool (32-segment cylinder/cone) from one target, so
+  // only the target's own density matters — the tool is negligible either way.
+  if (meshTriangleCount(targetMesh) > MESH_CSG_MAX_TRIANGLES) {
+    const msg = "mesh too dense for a hole here — try Promote to B-rep first";
+    fail?.(msg, "convert via Mesh Health → Promote to B-rep… and re-apply the hole");
+    report?.(msg);
+    return false;
+  }
 
   const toolBrush = (geo: THREE.BufferGeometry, height: number): Brush => {
     const b = new Brush(geo);
@@ -146,6 +260,7 @@ function applyMeshHole(
   out.userData.groupId = op.targets[0]; // keep a stable id for tagging/colouring
   for (const o of resolveMeshTargets(root, op.targets)) o.parent?.remove(o);
   root.add(out);
+  return true;
 }
 
 /**
@@ -170,19 +285,23 @@ function applyMeshExplode(root: THREE.Object3D, factor: number): void {
  * `"x"|"y"|"z"` keys `op.axis` already uses) lands at `op.to`, mirroring
  * `occtOperations.ts`'s `alignSolids` (always independent per target, no
  * "whole selection as one rigid group" shortcut). A target already at the
- * target coordinate (`|delta| < 1e-9`) is left untouched. */
-function applyMeshAlign(root: THREE.Object3D, op: Extract<EditOp, { op: "align" }>): void {
+ * target coordinate (`|delta| < 1e-9`) is left untouched. Returns whether any
+ * target actually moved. */
+function applyMeshAlign(root: THREE.Object3D, op: Extract<EditOp, { op: "align" }>): boolean {
   const idx = op.axis === "x" ? 0 : op.axis === "y" ? 1 : 2;
+  let moved = 0;
   for (const target of resolveMeshTargets(root, op.targets)) {
     const box = new THREE.Box3().setFromObject(target);
     if (box.isEmpty()) continue;
     const current = op.extent === "min" ? box.min[op.axis] : op.extent === "max" ? box.max[op.axis] : (box.min[op.axis] + box.max[op.axis]) / 2;
     const delta = op.to - current;
     if (Math.abs(delta) < 1e-9) continue;
+    moved++;
     const v: Vec3 = [0, 0, 0];
     v[idx] = delta;
     target.applyMatrix4(new THREE.Matrix4().makeTranslation(...v));
   }
+  return moved > 0;
 }
 
 /**
@@ -200,7 +319,7 @@ function applyMeshPattern(
   root: THREE.Object3D,
   op: Extract<EditOp, { op: "patternLinear" | "patternCircular" }>,
   nextId: number
-): number {
+): { nextId: number; applied: boolean } {
   const transformAt: (k: number) => THREE.Matrix4 =
     op.op === "patternLinear"
       ? (() => {
@@ -216,15 +335,17 @@ function applyMeshPattern(
           return (k: number) => conjugateAboutPoint(new THREE.Matrix4().makeRotationAxis(axis, ((op.angleDeg * k) * Math.PI) / 180), op.axisPoint);
         })();
 
+  let added = 0;
   for (const target of resolveMeshTargets(root, op.targets)) {
     for (let k = 1; k < op.count; k++) {
       const clone = target.clone(true);
       clone.applyMatrix4(transformAt(k));
       clone.userData.groupId = `pattern-${nextId++}`;
       root.add(clone);
+      added++;
     }
   }
-  return nextId;
+  return { nextId, applied: added > 0 };
 }
 
 /**

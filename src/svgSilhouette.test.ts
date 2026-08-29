@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { viewBasis, silhouetteSvg, polylinesSvg, scalePositions } from "./svgSilhouette";
+import { viewBasis, silhouetteSvg, polylinesSvg, scalePositions, technicalDrawingSvg} from "./svgSilhouette";
 import { parseSvgPaths } from "./svgImport";
 import { silhouetteEdges } from "./silhouetteEdges";
 import { weldTriangleSoup } from "./meshComponents";
@@ -202,5 +202,135 @@ describe("scalePositions", () => {
 
   it("scales every coordinate", () => {
     expect(Array.from(scalePositions(new Float32Array([1, 2, 3]), 2))).toEqual([2, 4, 6]);
+  });
+});
+
+describe("dimension glyphs baked into SVG export", () => {
+  const annotated = {
+    anchorPoint: [5, 0, 10] as const,
+    linePoints: [
+      [0, 0, 0],
+      [10, 0, 0],
+    ] as const,
+    text: "10 mm",
+  };
+
+  function frontViewWith(annotations: Parameters<typeof silhouetteSvg>[3] extends infer O ? O extends { annotations?: infer A } ? A : never : never) {
+    const { positions, indices } = bigCube();
+    const edges = silhouetteEdges(positions, indices, [0, 0, 1]);
+    return silhouetteSvg(positions, edges, { direction: [0, 0, 1] }, { annotations, dimensionScaleHint: 17.4 });
+  }
+
+  it("renders a pinned distance as glyph lines, filled arrowheads, and a value label", () => {
+    const { svg, segmentCount, dimensionCount } = frontViewWith([annotated]);
+    expect(dimensionCount).toBe(1);
+    // The measured fact appears verbatim in a <text> label.
+    expect(svg).toContain("<text");
+    expect(svg).toContain("10 mm");
+    // Arrowheads render as filled triangles (a fill-without-stroke path).
+    expect(svg).toMatch(/fill="#000000" stroke="none"/);
+    // Glyph lines are a separate path with a thinner stroke than the outline.
+    expect(svg.match(/stroke-width=/g)?.length).toBeGreaterThanOrEqual(2);
+    // Outline untouched.
+    expect(segmentCount).toBe(4);
+  });
+
+  it("decorates a toleranced annotation's label with its band", () => {
+    const { svg } = frontViewWith([
+      { ...annotated, tolerance: { nominal: 10, plus: 0.05, minus: 0.05, measured: 10.02 } },
+    ]);
+    expect(svg).toContain("[10 ±0.05]");
+  });
+
+  it("escapes XML-hostile text in labels", () => {
+    const { svg } = frontViewWith([{ ...annotated, text: "a<b&c" }]);
+    expect(svg).toContain("a&lt;b&amp;c");
+    expect(svg).not.toContain("a<b&c</text>");
+  });
+
+  it("grows the viewBox to include a dimension displaced outside the outline", () => {
+    const { positions, indices } = bigCube();
+    const edges = silhouetteEdges(positions, indices, [0, 0, 1]);
+    const plain = silhouetteSvg(positions, edges, { direction: [0, 0, 1] });
+    // A measurement floating ABOVE the cube (world +Y) — its dimension glyph
+    // must expand the drawing rather than be clipped by it.
+    const decorated = silhouetteSvg(positions, edges, { direction: [0, 0, 1] }, {
+      annotations: [{ anchorPoint: [5, 30, 0] as const, linePoints: [[0, 30, 0], [10, 30, 0]] as const, text: "10 mm" }],
+      dimensionScaleHint: 17.4,
+    });
+    const vb = (s: string): number[] =>
+      s
+        .match(/viewBox="([^"]+)"/)![1]
+        .split(" ")
+        .map(Number);
+    const [, py, , ph] = vb(plain.svg);
+    const [, dy2, , dh] = vb(decorated.svg);
+    expect(dy2).toBeLessThan(py);
+    expect(dh).toBeGreaterThan(ph);
+  });
+
+  it("renders a radius pin (no measurable line) as a bare anchor label", () => {
+    const { svg, dimensionCount } = frontViewWith([{ anchorPoint: [5, 0, 10] as const, linePoints: [] as const, text: "R = 5 mm" }]);
+    expect(dimensionCount).toBe(1);
+    expect(svg).toContain("R = 5 mm");
+    expect(svg).not.toMatch(/stroke-width="[^"]*" stroke-linecap="round" d="M [^"]*"[^>]*\/><path fill="#000000"/);
+  });
+
+  it("skips a degenerate pin entirely rather than emitting NaN geometry", () => {
+    const { svg, dimensionCount } = frontViewWith([
+      { anchorPoint: [NaN, 0, 0] as const, linePoints: [[0, 0, 0], [0, 0, 0]] as const, text: "?" },
+    ]);
+    expect(dimensionCount).toBeUndefined();
+    expect(svg).not.toMatch(/NaN|Infinity/);
+  });
+});
+
+describe("technicalDrawingSvg", () => {
+  const view = { direction: [0, 0, 1] as [number, number, number] };
+  const seg = (a: [number, number], b: [number, number]): [[number, number], [number, number]] => [a, b];
+
+  it("emits hidden runs as a dashed path", () => {
+    const r = technicalDrawingSvg([seg([0, 0], [10, 0])], [seg([0, 5], [10, 5])], view);
+    expect(r.svg).toMatch(/stroke-dasharray="[^"]+"/);
+    expect(r.hiddenSegmentCount).toBe(1);
+  });
+
+  it("CHAINS hidden segments into polylines", () => {
+    // The regression this pins: an SVG subpath restarts the dash pattern at
+    // zero, so a tessellated hidden curve made of many short segments renders
+    // SOLID — visually indistinguishable from a visible edge, while every count
+    // in the result stays correct. Only chaining makes the dash span the curve.
+    const chain = [seg([0, 0], [1, 0]), seg([1, 0], [2, 0]), seg([2, 0], [3, 0])];
+    const r = technicalDrawingSvg([seg([0, 9], [1, 9])], chain, view);
+    const dashed = /stroke-dasharray="[^"]*"[^>]*d="([^"]+)"/.exec(r.svg);
+    expect(dashed, "a dashed path is present").not.toBeNull();
+    // One subpath with three points, not three separate M...L pairs.
+    expect((dashed![1].match(/M/g) ?? []).length).toBe(1);
+    expect((dashed![1].match(/L/g) ?? []).length).toBe(3);
+  });
+
+  it("derives the dash pattern from the stroke width, never a literal", () => {
+    // serialize() works in MODEL units: a hardcoded dash renders solid on a
+    // tiny drawing and as one dash on a huge one.
+    const small = technicalDrawingSvg([seg([0, 0], [0.01, 0])], [seg([0, 0.005], [0.01, 0.005])], view);
+    const large = technicalDrawingSvg([seg([0, 0], [10000, 0])], [seg([0, 5000], [10000, 5000])], view);
+    const dashOf = (svg: string) => /stroke-dasharray="([^"]+)"/.exec(svg)![1];
+    expect(dashOf(small.svg)).not.toBe(dashOf(large.svg));
+    for (const svg of [small.svg, large.svg]) {
+      for (const n of dashOf(svg).split(" ")) expect(Number(n)).toBeGreaterThan(0);
+    }
+  });
+
+  it("grows the viewBox over hidden geometry too", () => {
+    // Hidden lines are geometry; bounds that ignored them would clip them.
+    const withHidden = technicalDrawingSvg([seg([0, 0], [1, 0])], [seg([0, 0], [50, 0])], view);
+    const without = technicalDrawingSvg([seg([0, 0], [1, 0])], [], view);
+    expect(withHidden.svg).not.toBe(without.svg);
+    const widthOf = (svg: string) => Number(/width="([\d.]+)mm"/.exec(svg)![1]);
+    expect(widthOf(withHidden.svg)).toBeGreaterThan(widthOf(without.svg));
+  });
+
+  it("omits hiddenSegmentCount entirely when no hidden list was supplied", () => {
+    expect(silhouetteSvg(new Float32Array([0, 0, 0, 1, 0, 0]), [[0, 1]], view).hiddenSegmentCount).toBeUndefined();
   });
 });

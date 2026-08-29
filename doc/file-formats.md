@@ -19,11 +19,13 @@ CAD Preview supports two classes of 3D files: **B-rep** (boundary representation
 | Exodus | `.exo`, `.e` | meshio++ → STL boundary → Three.js STLLoader | — |
 | XDMF | `.xdmf` (+ its `.h5` sibling, if any) | meshio++ → STL boundary → Three.js STLLoader | — |
 | Kratos MDPA | `.mdpa` | meshio++ → STL boundary → Three.js STLLoader | — |
+| OpenFOAM | `.foam` | meshio++ (case staging) → STL boundary → Three.js STLLoader | — |
 | Gmsh Mesh | `.msh`, `.msh2` | meshio++ → STL boundary → Three.js STLLoader | — |
 | Abaqus | `.inp` | meshio++ → STL boundary → Three.js STLLoader | — |
 | I-DEAS Universal | `.unv` | meshio++ → STL boundary → Three.js STLLoader | — |
 | SU2 | `.su2` | meshio++ → STL boundary → Three.js STLLoader | — |
 | INRIA Medit | `.mesh` | meshio++ → STL boundary → Three.js STLLoader | — |
+| GiD Postprocess | `.post.msh` (+ its `.post.res` sibling) | meshio++ → STL boundary → Three.js STLLoader | — |
 
 ## B-rep Formats (OCCT Pipeline)
 
@@ -107,17 +109,21 @@ Fixtures: `examples/GLTF/cube.gltf`, `examples/GLTF/cube.glb`, and `examples/GLT
 
 ---
 
-## meshio++ Bridge Formats (VTK, MED, CGNS, Exodus, XDMF, Kratos MDPA, and more)
+## meshio++ Bridge Formats (VTK, MED, CGNS, Exodus, XDMF, Kratos MDPA, OpenFOAM, and more)
 
-These formats — VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, and INRIA Medit — have no native Three.js loader, so the extension host converts them to a triangulated **boundary surface** in STL form first — [meshio++](https://github.com/loumalouomega/meshioplusplus) (`@meshioplusplus/wasm`, a third host-side WASM module alongside OCCT and Gmsh) reads the source file and calls `convertSurface` (entirely inside its C++ core — a volume mesh becomes its boundary, everything else passes through), producing ASCII STL bytes. Those bytes are sent to the webview (`loadMeshBytes` protocol message, base64-over-postMessage) and fed through the **exact same STL loader** a native `.stl` open uses — see `src/meshioService.ts`'s `convertToStlBoundary()` and `doc/gmsh-integration.md`'s "The meshio++ bridge" section (which also covers the reverse direction: exporting a *generated* FE mesh to MED/CGNS/XDMF/VTU/and more, independent of this import path).
+These formats — VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, OpenFOAM, Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, INRIA Medit, and GiD Postprocess — have no native Three.js loader, so the extension host converts them to a triangulated **boundary surface** in STL form first — [meshio++](https://github.com/loumalouomega/meshioplusplus) (`@meshioplusplus/wasm`, a third host-side WASM module alongside OCCT and Gmsh) reads the source file and calls `convertSurface` (entirely inside its C++ core — a volume mesh becomes its boundary, everything else passes through), producing ASCII STL bytes. Those bytes are sent to the webview (`loadMeshBytes` protocol message, base64-over-postMessage) and fed through the **exact same STL loader** a native `.stl` open uses — see `src/meshioService.ts`'s `convertToStlBoundary()` and `doc/gmsh-integration.md`'s "The meshio++ bridge" section (which also covers the reverse direction: exporting a *generated* FE mesh to MED/CGNS/XDMF/VTU/and more, independent of this import path).
+
+OpenFOAM is the one exception to the single-file shape: a `.foam` file is an (usually empty) **marker** — the ParaView convention — whose real mesh lives in sibling files under `<marker's parent>/constant/polyMesh/`. `src/meshioService.ts`'s `convertFoamCaseToStlBoundary(markerPath)` takes the marker's filesystem path, stages the whole case into meshio++'s virtual filesystem itself, and hand-builds the STL by fan-triangulating every boundary face (meshio++'s own STL writer emits zero facets for the quad-only boundaries typical of hex-dominant CFD meshes). OpenFOAM import is **geometry-only**: patch names ride a C++ side-channel its JS binding doesn't expose, and field files in the case's time directories are not read at all — no Parts are auto-created and the colour-by-field selector stays empty.
 
 **Gmsh Mesh / Abaqus / I-DEAS Universal / SU2 / INRIA Medit close a real export/import asymmetry**: the FE Mesh panel already *wrote* `.msh`/`.inp`/`.unv`/`.su2`/`.mesh` via Gmsh's own writer, but until now had no way to re-*open* any of them — this codebase's own exported files were not importable. Each was verified round-trippable end-to-end against the live WASM (export a real tetrahedralized model, then `readMesh()` the result back) before being added; two formats Gmsh ALSO writes were tried and **rejected** after the same check — `.bdf` (Nastran) and `.off` round-trip through meshio++'s reader for the same nominal format with a parse error (`"Not a meshio++-C++ Nastran file"` / `"Expected the first line to be 'OFF'"`), meaning Gmsh's writer output for those two isn't shaped the way meshio++'s own reader for them expects. Neither is claimed as an import format.
+
+**GiD Postprocess (`.post.msh`) is a sibling pair, and a compound extension.** Its ascii flavour splits a model across `<stem>.post.msh` (geometry) and `<stem>.post.res` (results), the second discovered purely by swapping that final segment — nothing inside the `.post.msh` names it. CAD Preview routes only the `.post.msh`; the `.post.res` is not independently openable (it is not a mesh) but is staged alongside the primary by the same `src/meshioCompanions.ts` machinery that stages XDMF's `.h5`. Because `.post.msh` **ends in `.msh`**, which is registered to a different format (Gmsh), `routeFile` matches the **longest registered suffix first** — a last-dot-only lookup would silently resolve every GiD file to a Gmsh parse that then fails, which is precisely the bug meshio++ itself had to fix in its own `resolve_format` in 10.18.0. Only the ascii flavour is claimed: meshio++ also reads GiD's `binary` (`.post.bin`) and `hdf5` (`.post.h5`) flavours, but this codebase has no fixture verifying either. GiD is also an **export** target — see `doc/gmsh-integration.md`'s "The meshio++ bridge".
 
 **`.msh` and `.inp` are ambiguous extensions**, each used by more than one format meshio++ can read (`.msh`: Gmsh, ANSYS, FreeFem; `.inp`: Abaqus, ANSYS APDL). CAD Preview always assumes the format it itself writes (Gmsh for `.msh`, Abaqus for `.inp`) and shows a one-line status caveat on open — an ANSYS-authored `.msh` or `.inp` file will not parse correctly. There is deliberately no content-sniffing disambiguation into the alternate formats: this codebase has no real ANSYS/FreeFem-authored fixture to verify such a read against, so claiming that support would be an unverified promise (see `src/fileRouter.ts`'s `AMBIGUOUS_MESHIO_EXTENSIONS`).
 
 **XDMF's `.h5` sibling is now staged automatically.** Earlier versions of this bridge wrote only the primary file's bytes into meshio++'s MEMFS, so an XDMF using the (default) `"HDF"` heavy-data format could never be read back at all (`HDF5: could not open file ...h5`) — every attempt failed before meshio++ ever got as far as interpreting the mesh. Opening an `.xdmf` now scans its own `<DataItem Format="HDF">` references (`src/meshioCompanions.ts`'s `extractXdmfHdfReferences`, a plain regex scan — no XML parser in this vitest config) and stages the referenced `.h5` file(s) alongside it under their exact referenced basename, if present beside the source. An XDMF using the `"XML"`/`"Binary"` data formats needs no companion and is unaffected either way.
 
-**A SEPARATE, pre-existing meshio++ 10.14.0 limitation was found while verifying this fix, and is NOT fixed by it: an XDMF whose mesh mixes cell types (points, lines, triangles, tetrahedra, …) into one "Mixed" topology block cannot be read back by meshio++'s own reader** (`"XDMF: unknown mixed topology index"` — reproduced with a bare hand-built mesh, no CAD-Preview code involved, so this is meshio++'s own writer/reader pairing, not something fixable here). Since this codebase's `generate_mesh` always forces Gmsh's `Mesh.SaveAll=1` (see `doc/gmsh-integration.md`'s "Parts → physical groups" section), which includes 0-D point elements alongside the real mesh, **an XDMF file exported BY THIS EXTENSION'S OWN FE Mesh panel is almost always Mixed-topology and currently cannot be re-meshed after reimport** — `load_model` still succeeds (region/metadata reading degrades gracefully, per the established "never throws, empty on failure" contract, rather than surfacing this), but `generate_mesh` on the reimported file fails with the error above. A genuinely single-cell-type XDMF (e.g. hand-authored, or written by a different tool) is unaffected by this and round-trips correctly — verified independently of the `.h5`-companion fix, which is itself confirmed working (the failure mode changes from "companion missing" to "mixed topology" once the companion is present, never the other way around).
+**A SEPARATE, pre-existing meshio++ 10.20.2 limitation was found while verifying this fix, and is NOT fixed by it: an XDMF whose mesh mixes cell types (points, lines, triangles, tetrahedra, …) into one "Mixed" topology block cannot be read back by meshio++'s own reader** (`"XDMF: unknown mixed topology index"` — reproduced with a bare hand-built mesh, no CAD-Preview code involved, so this is meshio++'s own writer/reader pairing, not something fixable here). Since this codebase's `generate_mesh` always forces Gmsh's `Mesh.SaveAll=1` (see `doc/gmsh-integration.md`'s "Parts → physical groups" section), which includes 0-D point elements alongside the real mesh, **an XDMF file exported BY THIS EXTENSION'S OWN FE Mesh panel is almost always Mixed-topology and currently cannot be re-meshed after reimport** — `load_model` still succeeds (region/metadata reading degrades gracefully, per the established "never throws, empty on failure" contract, rather than surfacing this), but `generate_mesh` on the reimported file fails with the error above. A genuinely single-cell-type XDMF (e.g. hand-authored, or written by a different tool) is unaffected by this and round-trips correctly — verified independently of the `.h5`-companion fix, which is itself confirmed working (the failure mode changes from "companion missing" to "mixed topology" once the companion is present, never the other way around).
 
 ### Processing Steps
 
@@ -134,7 +140,7 @@ Only geometry (points + triangle connectivity) becomes actual geometry through t
 
 ### Kratos MDPA note
 
-Unlike the MDPA **export** path (`src/mdpaWriter.ts`, hand-written — see `doc/gmsh-integration.md`'s "Kratos MDPA" section), **importing** an `.mdpa` file as a document goes through meshio++'s own native MDPA reader (mesh-level blocks only — `Nodes`/`Elements`/`Conditions`/`SubModelPart`; Kratos `Properties`/`Table`/`Geometries`/`Constraints` blocks are not represented in the WASM binding and throw if present, same as everywhere else meshio++ reads MDPA). These are two entirely independent code paths that happen to share a file extension — one reads MDPA (via meshio++, for the Components view), the other writes MDPA (hand-rolled, for FE mesh export) — neither replaces the other.
+Unlike the MDPA **export** path (`src/mdpaWriter.ts`, hand-written — see `doc/gmsh-integration.md`'s "Kratos MDPA" section), **importing** an `.mdpa` file as a document goes through meshio++'s own native MDPA reader (mesh-level blocks only — `Nodes`/`Elements`/`Conditions`/`SubModelPart`; Kratos `Properties`/`Table`/`Geometries`/`Constraints` blocks are not represented in the WASM binding and throw if present, same as everywhere else meshio++ reads MDPA). These are two entirely independent code paths that happen to share a file extension — one reads MDPA (via meshio++, for the Components view), the other writes MDPA (hand-rolled, for FE mesh export) — neither replaces the other. Non-sequential ("gapped") node ids — routine in real Kratos decks, since SubModelPart extraction, entity removal and deck merging all leave them — are supported (`@meshioplusplus/wasm` ≥ 9.13; regression-fixture: `examples/MDPA/gapped-ids.mdpa`, whose original ids surface as `mdpa:id` point/cell data names).
 
 ---
 
@@ -251,7 +257,7 @@ A `sizeMax` of `1e22` is Gmsh's "unbounded" sentinel: it means "no explicit targ
 
 ## View State Sidecar (`<model>.view.json`)
 
-The persisted **camera orientation, display mode, ortho/perspective toggle, and clip plane** (roadmap "View-state persistence", closed) are stored in a **fourth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.view.json`. Like the other three, this never modifies the CAD file. It is read on open (`readViewState()`) and autosaved, debounced (~500 ms, its own timer), on every user-facing view change — camera orbit/pan/zoom/dolly, Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, or the clip axis/offset/toggle — both in `src/viewStateStore.ts`; parse/serialize live in the vscode-free `src/viewStateSidecar.ts` so they are unit-tested.
+The persisted **camera orientation, display mode, ortho/perspective toggle, and clip plane** (roadmap "View-state persistence", closed) are stored in a **fourth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.view.json`. Like the other three, this never modifies the CAD file. It is read on open (`readViewState()`) and autosaved, debounced (~500 ms, its own timer), on every user-facing view change — camera orbit/pan/zoom/dolly, Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, the clip axis/offset/toggle, **or the split-view layout picker / any per-pane camera move** (Phase 2) — both in `src/viewStateStore.ts`; parse/serialize live in the vscode-free `src/viewStateSidecar.ts` so they are unit-tested.
 
 ```json
 {
@@ -263,11 +269,18 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
     "orthographic": false,
     "displayMode": "shaded",
     "clip": null
-  }
+  },
+  "layout": "1x2",
+  "panes": [
+    { "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false },
+    { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }
+  ]
 }
 ```
 
-`viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox (`planeForAxis`'s own convention), not a raw plane constant. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`).
+`layout` (`"1x1"|"1x2"|"2x1"|"2x2"`, Phase 2 — absent/`"1x1"` = single pane) and `panes` (one `PaneViewState` per pane of that layout, row-major) are optional siblings of `view` at the file's top level, never inside `view` itself; a `1×1` session writes neither, so existing single-pane sidecars stay byte-stable. `view` stays the focused/single-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — purely additive, no version bump. Only camera state (`viewDirection`/`cameraUp`/`orthographic`) is per-pane; display mode and clip stay global, matching Phase 1's scoping.
+
+`viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox, not a raw plane constant — measured along the clip's **active normal**. `clip` may carry an optional explicit unit `normal` (`{axis, offsetFrac, normal?}`) which wins over `axis` when present; `axis` is still always written, set to that normal's dominant axis, so an older build restores a sensible neighbouring clip instead of none. A malformed `normal` drops only itself, leaving the clip as its axis form — unlike a malformed `axis`, which still drops the whole `clip`. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`, an unknown `layout` → ignored as `"1x1"`, a bad per-pane entry → falls back to `view`'s own direction/up/ortho for that pane, a short/long `panes` array → padded/truncated to `paneCount(layout)`).
 
 **Deliberately excludes explode-preview state** — that's a session-only interaction preview by design (`src/webview/explodePreview.ts`); the *committed* `explode` edit op already persists correctly via `.edits.json`. **Deliberately excluded from the Preprocess Archive** (below) — unlike parts/edits/mesh options, view state is purely a display/session preference with no effect on computed geometry, mesh output, or anything an MCP agent would need; there is also no MCP tool surface for it at all (same "genuinely a display feature, no headless equivalent" scope this codebase already applies to Markup and interactive Measurement).
 
@@ -289,17 +302,44 @@ User-**pinned measurements** (roadmap "Persisted, topology-anchored annotations"
       "volumes": [],
       "surfaces": ["face-1", "face-4"],
       "lines": [],
-      "points": []
+      "points": [],
+      "tolerance": { "nominal": 12, "plus": 0.1, "minus": 0.05, "measured": 12.5 }
     }
   ]
 }
 ```
 
-Entity ids in `volumes`/`surfaces`/`lines`/`points` are the same stable topological ids `Part` uses, and are rebound through the identical best-effort geometric matching a topology-changing edit already applies to Parts (`src/entityFacts.ts`'s `rebindPartsAcrossOps`, extended to also rebind annotations via the same shape-diff pass at no extra cost) — an anchor that can't be confidently re-matched is dropped from these arrays, the same graceful-degradation contract unresolved Part ids already have. `text`/`anchorPoint`/`linePoints` are a **frozen** snapshot of the measurement result at pin time; they are never recomputed on reopen or after an edit — only whether the annotation is "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Parsing is tolerant like the other four sidecars: a missing/malformed field drops that one annotation entry, not the whole file. **Included in the Preprocess Archive** (below), alongside parts/edits/mesh options (roadmap "Archive integrity", closed).
+Entity ids in `volumes`/`surfaces`/`lines`/`points` are the same stable topological ids `Part` uses, and are rebound through the identical best-effort geometric matching a topology-changing edit already applies to Parts (`src/entityFacts.ts`'s `rebindPartsAcrossOps`, extended to also rebind annotations via the same shape-diff pass at no extra cost) — an anchor that can't be confidently re-matched is dropped from these arrays, the same graceful-degradation contract unresolved Part ids already have. `text`/`anchorPoint`/`linePoints` are a **frozen** snapshot of the measurement result at pin time; they are never recomputed on reopen or after an edit — only whether the annotation is "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Parsing is tolerant like the other four sidecars: a missing/malformed field drops that one annotation entry, not the whole file.
+
+The optional `tolerance` object (roadmap "Tolerance-band fact checks on exact measurements") records a nominal-plus-band intent from the Measure panel's inline fields: `nominal`/`plus`/`minus` are the band (a symmetric ± when `plus === minus`; both allowances ≥ 0), and `measured` is the raw numeric value frozen at pin time so the in/out-of-band colour can be re-derived on redisplay without parsing formatted text back into a number. Facts only — nothing stores a verdict; `src/toleranceBand.ts`'s shared `evaluateToleranceBand` computes it at render time (the same pure module the MCP `check_tolerance` tool uses). A malformed band drops the BAND only — the annotation survives as a plain untoleranced pin. A toleranced pin's label reads `"<text> [nominal ±band]"`, and it appears decorated the same way in SVG/DXF silhouette-export dimension glyphs. **Included in the Preprocess Archive** (below), alongside parts/edits/mesh options (roadmap "Archive integrity", closed).
+
+## Construction Planes Sidecar (`<model>.planes.json`)
+
+Named **construction planes** (roadmap "A named, persisted construction-plane entity", Phase 3 closed) — reusable datum planes saved from the current clip or entered numerically in the view-controls **Planes** group — are stored in a **sixth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.planes.json`. Like the other five, this never modifies the CAD file. It is read on open (`readPlanes()`) and autosaved, debounced (~500 ms, its own timer), on every add/rename/delete (`writePlanes()`), both in `src/planesStore.ts`; parse/serialize live in the vscode-free `src/planesSidecar.ts` so they are unit-tested. The headless MCP server has a byte-compatible counterpart in `src/mcpSidecars.ts`, written by the `set_plane` tool and reported by `get_state`.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "planes": [
+    {
+      "id": "plane-0",
+      "name": "Top datum",
+      "point": [0, 0, 10],
+      "normal": [0, 0, 1],
+      "derivedFrom": "face-12"
+    }
+  ]
+}
+```
+
+**Unlike every other sidecar that references geometry, a plane stores resolved vectors rather than entity ids** — so it takes no part in entity-id rebinding at all. A topology-changing edit that renumbers `face-N` and rebinds Parts and annotations leaves this file byte-identical, which is the whole point of naming a plane: it stays where it was put. `derivedFrom` records where the plane came from (`"face-12"`, `"clip plane"`, `"entered"`) for display only and is never resolved back to geometry.
+
+`id` is `plane-N` and is **never reused** — the next is the highest existing N plus one — so deleting a plane and adding another cannot resurrect the old id under a new meaning. Parsing is tolerant like the other sidecars: a malformed entry drops that one plane, not the file; `normal` is normalized on read, so a hand-edited `[0, 0, 10]` still yields a unit vector; and a zero-length normal drops that plane, since it describes no plane at all. **Included in the Preprocess Archive** (below).
 
 ## Preprocess Archive (`.zip`)
 
-**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its four sidecars — `<model>.parts.json`, `<model>.annotations.json`, `<model>.edits.json`, `<model>.mesh.json` — currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one. The generated `.geo` script is deliberately **not** packaged (see below).
+**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its sidecars — `<model>.parts.json`, `<model>.annotations.json`, `<model>.planes.json`, `<model>.edits.json`, `<model>.mesh.json` — currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one. The generated `.geo` script is deliberately **not** packaged (see below).
 
 The archive's internal layout (built by the pure, vscode-free — but Node-only, never imported by the webview — `src/preprocessArchive.ts`, shared by the extension and the MCP server):
 
@@ -327,7 +367,7 @@ The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displaye
 | --- | --- |
 | B-rep (STEP/IGES/BREP) | the other two B-rep formats, **plus** STL/OBJ/PLY/glTF |
 | Mesh (STL/OBJ/PLY/glTF) | the other mesh formats only |
-| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA) | STL/OBJ/PLY/glTF — the displayed model is an ordinary `THREE.Object3D` by this point (see the meshio++ Bridge Formats section above), so it exports exactly like a native mesh source |
+| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) | STL/OBJ/PLY/glTF — the displayed model is an ordinary `THREE.Object3D` by this point (see the meshio++ Bridge Formats section above), so it exports exactly like a native mesh source |
 
 The source format is never offered as its own export target (moot for the meshio++ row above, since none of those formats are export targets to begin with).
 
@@ -337,9 +377,9 @@ The source format is never offered as its own export target (moot for the meshio
 
 glTF export always produces a binary `.glb` file (not a text `.gltf` with embedded base64 buffers) — a single portable file, no separate buffer references to manage.
 
-### Silhouette SVG Export
+### Silhouette SVG/DXF Export
 
-**File ▸ Export Silhouette SVG…** (or the `CAD Preview: Export Silhouette SVG…` command) is a **third** export case, deliberately outside the Export… quick-pick above: it writes a 2D **outline drawing** rather than a 3D model, so it is neither a B-rep target nor a mesh target and never appears in `exportTargetsFor()`'s list. Flow: a view quick-pick (**Current view** — the angle you are currently looking at — then Front/Back/Top/Bottom/Left/Right/Iso), then the same export-unit quick-pick every other export shows, then a save dialog. Pressing Escape on the *view* pick cancels the export (it is the primary choice); Escape on the *unit* pick still exports at native mm, matching the existing convention.
+**File ▸ Export Silhouette SVG…** / **File ▸ Export Silhouette DXF…** (or the matching `CAD Preview: Export Silhouette …` commands) are a **third** export case, deliberately outside the Export… quick-pick above: they write a 2D **outline drawing** rather than a 3D model, so this is neither a B-rep target nor a mesh target and never appears in `exportTargetsFor()`'s list. The two menu items share one flow — a view quick-pick (**Current view** — the angle you are currently looking at — then Front/Back/Top/Bottom/Left/Right/Iso), then the same export-unit quick-pick every other export shows, then a save dialog — differing only in the serializer used (`src/svgSilhouette.ts` vs `src/dxfSilhouette.ts`, over the *same* segment list, so an SVG and a DXF of one view are geometrically consistent). Pressing Escape on the *view* pick cancels the export (it is the primary choice); Escape on the *unit* pick still exports at native mm, matching the existing convention.
 
 > **It is an outline, not a dimensioned 2D technical drawing. There is no hidden-line removal.** Back-facing geometry is not drawn, but neither are interior feature edges that do not lie on a silhouette. OCCT's `HLRBRep_*` hidden-line machinery is entirely unavailable in this WASM build, and `HLRAppli_ReflectLines` — the one surviving green alternative — was probed against the live kernel and produced a strictly *worse* drawing (missing the part's holes and interior cutout), so the outline is derived from **triangle adjacency** instead: an edge is kept where its two adjacent triangles disagree about facing the viewer. That choice is also why this works for mesh sources and not just B-rep. Treat the result as a review/illustration artifact; use the Measurement tools for any dimension you need to be sure of.
 
@@ -347,13 +387,17 @@ glTF export always produces a binary `.glb` file (not a text `.gltf` with embedd
 | --- | --- |
 | STEP / IGES / BREP | the tessellation of the current model, **edits baked in** |
 | STL / OBJ / PLY / glTF | the raw file bytes, **edits not baked in** (there is no host-side mesh edit engine — same limitation Compare Models has) |
-| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA) | rejected — those formats never expose a triangle array back to JS |
+| meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) | rejected — those formats never expose a triangle array back to JS |
 
-The output is a single self-contained `<path>` — no `<style>`, no script, no external references — so it embeds anywhere. **1 SVG user unit = 1 model unit**, with the document's physical `width`/`height` given in millimetres, so a drawing exported from a native (mm) model prints 1:1 in any vector tool. Choosing a non-mm unit applies the same real coordinate scale every other export in this codebase uses, before projection.
+The output is a single self-contained `<path>` — no `<style>`, no script, no external references — so it embeds anywhere. **1 SVG user unit = 1 model unit**, with the document's physical `width`/`height` given in millimetres, so a drawing exported from a native (mm) model prints 1:1 in any vector tool. Choosing a non-mm unit applies the same real coordinate scale every other export in this codebase uses, before projection. The DXF variant is minimal model-space `ENTITIES` only: chained collinear runs become `LWPOLYLINE`s and unmatched singletons stay independent `LINE`s, at 1 DXF drawing unit = 1 model unit.
 
 **Limitation — triangle winding.** The facing test depends on consistent triangle winding across the mesh. A mesh with mixed winding (some triangles clockwise, some counter-clockwise, as some exporters and hand-edited files produce) yields spurious interior lines, because the test flips with the winding. There is no cheap, reliable way to repair winding for an arbitrary open mesh, so this is documented rather than worked around.
 
-The same capability is available headlessly as the MCP server's `export_svg_silhouette` tool — see [MCP Server](./mcp-server.md).
+The same capability is available headlessly as the MCP server's `export_svg_silhouette` tool (its `format` param selects `"svg"` or `"dxf"`) — see [MCP Server](./mcp-server.md).
+
+### DXF Import
+
+**File ▸ Import DXF…** reads a `.dxf` file's model-space `ENTITIES` section and converts each supported entity into an existing parametric profile/curve edit op — genuinely no new geometry kernel surface. Handled: `LINE`, `LWPOLYLINE` (bulge arcs sampled), `POLYLINE`/`VERTEX`, `CIRCLE`, `ARC`, and `SPLINE` (control points); everything else (blocks, INSERT, TEXT/MTEXT, DIMENSION, HATCH, paper space) is skipped. Like SVG import, it is **B-rep sources only** — mesh files have no sketch topology to receive the imported ops — and placement follows the same simple defaults: flat in the XY plane at z=0, 1 DXF drawing unit = 1 mm, Y-up native (DXF needs no flip, unlike SVG). A poorly-scaled source is adjusted afterward with the ordinary `scale`/`translate`/`rotate` ops.
 
 ## File Size Guidance
 

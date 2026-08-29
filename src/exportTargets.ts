@@ -74,11 +74,17 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   exodus: "exo",
   xdmf: "xdmf",
   mdpa: "mdpa",
+  openfoam: "foam",
   gmsh: "msh",
   abaqus: "inp",
   unv: "unv",
   su2: "su2",
   medit: "mesh",
+  // Compound extension — the GiD geometry file. Never used as a save-dialog
+  // extension from here (see the comment above); GiD export runs through the FE
+  // Mesh panel's own registry (`meshExportFormats.ts`), which carries the
+  // `.post.res` sibling handling this table has no way to express.
+  gid: "post.msh",
 };
 
 /** Human-readable label for a format, used in the export quick-pick. */
@@ -98,9 +104,11 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   exodus: "Exodus",
   xdmf: "XDMF",
   mdpa: "MDPA",
+  openfoam: "OpenFOAM",
   gmsh: "Gmsh Mesh",
   abaqus: "Abaqus",
   unv: "I-DEAS Universal",
   su2: "SU2",
   medit: "INRIA Medit",
+  gid: "GiD Postprocess",
 };

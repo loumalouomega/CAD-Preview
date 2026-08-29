@@ -26,6 +26,8 @@ describe("validateMeshOptions", () => {
       elementShape: "subdivided" as const,
       optimize: false,
       stlAngle: 30,
+      engine: "ftetwild" as const,
+      ftetwildEpsRel: 2e-3,
     };
     expect(validateMeshOptions(opts)).toEqual(opts);
   });
@@ -110,6 +112,22 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ optimize: false })?.optimize).toBe(false);
     expect(validateMeshOptions({ optimize: "true" })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
+  });
+
+  it("defaults engine unless it is exactly 'gmsh' or 'ftetwild'", () => {
+    expect(validateMeshOptions({ engine: "ftetwild" })?.engine).toBe("ftetwild");
+    expect(validateMeshOptions({ engine: "gmsh" })?.engine).toBe("gmsh");
+    expect(validateMeshOptions({ engine: "tetgen" })?.engine).toBe(DEFAULT_MESH_OPTIONS.engine);
+    expect(validateMeshOptions({ engine: 1 })?.engine).toBe(DEFAULT_MESH_OPTIONS.engine);
+    expect(validateMeshOptions({})?.engine).toBe(DEFAULT_MESH_OPTIONS.engine);
+  });
+
+  it("defaults ftetwildEpsRel unless a positive finite number", () => {
+    expect(validateMeshOptions({ ftetwildEpsRel: 5e-4 })?.ftetwildEpsRel).toBe(5e-4);
+    expect(validateMeshOptions({ ftetwildEpsRel: 0 })?.ftetwildEpsRel).toBe(DEFAULT_MESH_OPTIONS.ftetwildEpsRel);
+    expect(validateMeshOptions({ ftetwildEpsRel: -1e-3 })?.ftetwildEpsRel).toBe(DEFAULT_MESH_OPTIONS.ftetwildEpsRel);
+    expect(validateMeshOptions({ ftetwildEpsRel: NaN })?.ftetwildEpsRel).toBe(DEFAULT_MESH_OPTIONS.ftetwildEpsRel);
+    expect(validateMeshOptions({ ftetwildEpsRel: "x" })?.ftetwildEpsRel).toBe(DEFAULT_MESH_OPTIONS.ftetwildEpsRel);
   });
 });
 
@@ -226,6 +244,8 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       elementShape: "simplex",
       optimize: true,
       stlAngle: 40,
+      engine: "gmsh",
+      ftetwildEpsRel: 1e-3,
     });
   });
 

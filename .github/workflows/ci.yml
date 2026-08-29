@@ -31,8 +31,38 @@ jobs:
       - name: Test (unit)
         run: npm test
 
-      # NOTE: @vscode/test-electron integration tests are added in a later milestone;
-      # they will need `xvfb-run` on Linux and a `.vscode-test` cache step here.
+      # The webview and the VS Code host API used to have ZERO automated
+      # coverage — every webview feature was verified by a manual F5 session or
+      # not at all. These two steps are that gap's automated half; see
+      # `CLAUDE.md`'s "Webview and host-side test harnesses".
+
+      - name: Cache VS Code for integration tests
+        uses: actions/cache@v4
+        with:
+          path: .vscode-test
+          key: vscode-test-${{ runner.os }}
+
+      # Both need a display server on Linux: the webview harness runs headless
+      # Chromium (SwiftShader), and the integration harness launches a real
+      # VS Code (Electron). Chromium is not preinstalled on the runner.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test (webview, Playwright over the real viewer bundle)
+        run: xvfb-run -a npm run test:webview
+
+      # @vscode/test-electron resolves "stable" to an exact version (and, on a
+      # cache miss, downloads the archive) via update.code.visualstudio.com —
+      # a network call this job has no control over. A transient blip there
+      # (ETIMEDOUT/ENETUNREACH) fails the whole job even though nothing here
+      # is actually broken, so retry a few times with backoff before giving up.
+      - name: Test (integration, real VS Code host)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: xvfb-run -a npm run test:integration
 
       - name: Package extension (.vsix)
         run: npm run package -- --out cad-preview.vsix

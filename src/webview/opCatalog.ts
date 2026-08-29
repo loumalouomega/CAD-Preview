@@ -259,3 +259,99 @@ function describeOpBase(op: EditOp): string {
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+/**
+ * Every entity id an op names as an operand, in no particular order.
+ *
+ * **These are ids the op MENTIONS, not entities it provably acts on.** Ids are
+ * positional (`face-12` is an index into the shape as it exists at that point
+ * in the op list), so the same string in two ops can denote different topology
+ * once an intervening op renumbers. Anything built on this must say "mentions",
+ * never "acts on" — see CLAUDE.md's entity-id-drift discussion.
+ *
+ * Exhaustive `switch` with no `default`, deliberately mirroring
+ * {@link describeOp}'s: a new `EditOpKind` becomes a compile error here rather
+ * than silently reporting no references. The creation ops (`addBox`,
+ * `addPolyline`, …) and `explode` genuinely take no ids — pure coordinates —
+ * and return `[]`.
+ */
+export function referencedEntities(op: EditOp): string[] {
+  switch (op.op) {
+    case "translate":
+    case "rotate":
+    case "scale":
+    case "mirror":
+    case "splitByPlane":
+    case "section":
+    case "align":
+    case "patternLinear":
+    case "patternCircular":
+    case "addHole":
+    case "addCounterboreHole":
+    case "addCountersinkHole":
+      return [...op.targets];
+    case "boolean":
+      return [...op.a, ...op.b];
+    case "fillet":
+    case "chamfer":
+    case "addSurfaceFromLines":
+      return [...op.edges];
+    case "addVolumeFromSurfaces":
+      return [...op.faces];
+    case "extrude":
+    case "revolve":
+      return [op.profile];
+    case "sweep":
+      return [op.profile, op.path];
+    case "loft":
+      return [...op.profiles];
+    case "mate":
+      return [op.faceA, op.faceB];
+    case "shell":
+      return [...op.openingFaces];
+    case "explode":
+    case "addBox":
+    case "addSphere":
+    case "addCylinder":
+    case "addCone":
+    case "addTorus":
+    case "addPrism":
+    case "addWedge":
+    case "addCircleProfile":
+    case "addRectangleProfile":
+    case "addPolygonProfile":
+    case "addEllipseProfile":
+    case "addRoundedRectangleProfile":
+    case "addSlotProfile":
+    case "addTrapezoidProfile":
+    case "addPoint":
+    case "addLine":
+    case "addArc":
+    case "addPolyline":
+    case "addThreePointArc":
+    case "addSpline":
+    case "addBezier":
+    case "addEllipseArc":
+    case "addHelix":
+      return [];
+  }
+}
+
+/**
+ * `entityId -> 1-based op positions that mention it`, for the hover tooltip.
+ *
+ * Built once per op-list change rather than per hover event: `EditsModel.list()`
+ * deep-clones on every call, so recomputing this inside a pointermove handler
+ * would clone the whole op list on every mouse move.
+ */
+export function buildEntityReferenceIndex(ops: EditOp[]): Map<string, number[]> {
+  const index = new Map<string, number[]>();
+  ops.forEach((op, i) => {
+    for (const id of referencedEntities(op)) {
+      const at = index.get(id);
+      if (at) at.push(i + 1);
+      else index.set(id, [i + 1]);
+    }
+  });
+  return index;
+}

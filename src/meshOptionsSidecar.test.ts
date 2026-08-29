@@ -19,6 +19,8 @@ describe("parseMeshJson", () => {
       elementShape: "subdivided",
       optimize: false,
       stlAngle: 25,
+      engine: "ftetwild",
+      ftetwildEpsRel: 5e-4,
     };
     const text = JSON.stringify({ version: 1, source: "bull.stp", options });
     expect(parseMeshJson(text)).toEqual(options);
@@ -72,6 +74,8 @@ describe("generateGeoScript", () => {
       elementShape: "simplex",
       optimize: true,
       stlAngle: 40,
+      engine: "gmsh",
+      ftetwildEpsRel: 1e-3,
     };
     const script = generateGeoScript("bull.stp", options);
 
@@ -132,5 +136,13 @@ describe("generateGeoScript", () => {
     expect(script3d.trim().endsWith("Mesh 3;")).toBe(true);
     const script1d = generateGeoScript("cube.stl", { ...DEFAULT_MESH_OPTIONS, dimension: 1 });
     expect(script1d.trim().endsWith("Mesh 1;")).toBe(true);
+  });
+
+  it("omits the trailing Mesh <dimension>; directive under engine: ftetwild, replacing it with an explanatory comment, while keeping the Merge/Mesh.* option lines", () => {
+    const script = generateGeoScript("dirty.stl", { ...DEFAULT_MESH_OPTIONS, dimension: 3, engine: "ftetwild" });
+    expect(script).toContain('Merge "dirty.stl";');
+    expect(script).toContain("Mesh.MeshSizeMax");
+    expect(script).not.toMatch(/^Mesh 3;/m);
+    expect(script.toLowerCase()).toContain("ftetwild");
   });
 });

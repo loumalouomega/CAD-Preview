@@ -6,11 +6,12 @@ import * as path from "path";
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, extractVertices, type SolidGroup, type EdgeLine, type PointEntity } from "./meshExtract";
 import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter } from "./occtOperations";
+import { volumePropertiesAdaptive } from "./brepGProp";
 import { readXcafAssembly, correlateAssemblyTree, type XcafAssemblyInfo } from "./xcafTree";
 import { buildXcafDocumentForExport, writeXcafStep, readXcafFallbackShape } from "./xcafWrite";
 import type { TreeNode, Part } from "./protocol";
 import type { CadFormat } from "./fileRouter";
-import type { EditOp } from "./editOps";
+import type { EditOp, OpOutcome } from "./editOps";
 import { type DisplayUnit, unitScaleFactor, igesUnitName } from "./lengthUnits";
 import { patchStepUnitDeclaration } from "./stepUnitPatch";
 import { TESSELLATION_PRESETS, type TessellationParams } from "./tessellationQuality";
@@ -55,9 +56,19 @@ export function resetOcct(): void {
  * reason, kept as its own local copy here rather than shared, matching this
  * codebase's convention of each kernel's fault handling staying self-
  * contained in its own service file.
+ *
+ * **`function table` was added to this vocabulary after a real miss.** A live
+ * `apply_edit_ops` abort surfaced as
+ * `WebAssembly.Table.get(): invalid index 9893720 into function table`, which
+ * the `table index` alternative does NOT match — the words are in the opposite
+ * order. The consequence was silent and compounding: the abort went undetected,
+ * so the singleton was never reset, no "kernel has been reset" message was
+ * produced, and `scripts/mcp-smoke/run.mjs`'s `callWithCleanRetry` (which keys
+ * on exactly that phrase) could not recover either. All four kernel services
+ * carry an identical copy of this regex, so all four were fixed together.
  */
 function isOcctWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table/i.test(message);
 }
 
 /**
@@ -85,6 +96,11 @@ export interface BRepResult {
   edges: EdgeLine[];
   points: PointEntity[];
   tree: TreeNode;
+  /** One outcome per applied op, in list order (roadmap "A failed edit op is
+   * indistinguishable from one that did nothing", closed) — a gracefully-
+   * skipped op reports `applied: false` with a diagnostic/hint instead of
+   * silently changing nothing. Empty when `ops` was empty. */
+  opOutcomes: OpOutcome[];
 }
 
 /**
@@ -121,6 +137,11 @@ export interface BRepCacheEntry {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   shape: any;
   opsCleanup: Array<{ delete(): void }>;
+  /** The per-op outcomes of the replay that produced `shape` (see
+   * {@link BRepResult.opOutcomes}). Kept in the entry so an incremental
+   * append can merge the suffix's outcomes onto the prefix's — the reused
+   * prefix ops are not re-run, so their outcomes must be carried forward. */
+  opOutcomes: OpOutcome[];
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -254,10 +275,14 @@ export async function loadBRepCached(
   try {
     let opsCleanup: Array<{ delete(): void }>;
     let shape: unknown;
+    let opOutcomes: OpOutcome[];
     if (appendReusable && previous) {
       opsCleanup = previous.opsCleanup;
       const suffix = ops.slice(previous.ops.length);
-      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup);
+      const suffixOutcomes: OpOutcome[] = [];
+      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup, suffixOutcomes);
+      // The reused prefix was not re-run; its recorded outcomes carry forward.
+      opOutcomes = [...previous.opOutcomes, ...suffixOutcomes];
     } else {
       // Base reused but the replay isn't (or there was no previous entry at
       // all) — free only the now-superseded op-replay handles; the base
@@ -269,15 +294,16 @@ export async function loadBRepCached(
         }
       }
       opsCleanup = [];
-      shape = applyEditsBRep(oc, baseShape, ops, opsCleanup);
+      opOutcomes = [];
+      shape = applyEditsBRep(oc, baseShape, ops, opsCleanup, opOutcomes);
     }
 
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
     const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops, shape, opsCleanup };
-    return { result: { groups, edges, points, tree }, cache };
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops, shape, opsCleanup, opOutcomes };
+    return { result: { groups, edges, points, tree, opOutcomes }, cache };
   } catch (err) {
     throw wrapOcctFault(err);
   }
@@ -305,12 +331,13 @@ export async function loadBRep(
   try {
     const baseShape = readShape(oc, tmpName, format, cleanup);
     const assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
-    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    const opOutcomes: OpOutcome[] = [];
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup, opOutcomes);
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
     const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
-    return { groups, edges, points, tree };
+    return { groups, edges, points, tree, opOutcomes };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {
@@ -345,7 +372,7 @@ function buildTree(oc: any, format: string, groups: SolidGroup[], shape: unknown
       const currentSolids = collectSolids(oc, shape, cleanup).map(({ id, solid }) => {
         const props = new oc.GProp_GProps_1();
         cleanup.push(props);
-        oc.BRepGProp.VolumeProperties_1(solid, props, false, false, false);
+        volumePropertiesAdaptive(oc, solid, props);
         return { id, centre: bboxCenter(oc, solid, cleanup), volume: props.Mass() };
       });
       const correlated = correlateAssemblyTree(assemblyTreeCache, currentSolids);

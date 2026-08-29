@@ -79,6 +79,13 @@ A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the 
 ```typescript
 type MeasureTool = 'distance' | 'edgeLength' | 'angle' | 'radius'
 
+interface AnnotationTolerance {
+  nominal: number    // target value, same unit as the measurement (mm / degrees)
+  plus: number       // allowed deviation above nominal (>= 0)
+  minus: number      // allowed deviation below nominal (>= 0); symmetric ± when equal to plus
+  measured: number   // raw numeric measurement frozen at pin time
+}
+
 interface Annotation {
   id: string
   tool: MeasureTool
@@ -90,10 +97,31 @@ interface Annotation {
   surfaces: string[]
   lines: string[]
   points: string[]
+  tolerance?: AnnotationTolerance           // optional tolerance band, recorded at pin time
 }
 ```
 
 A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchored annotations", closed) — a "pinned" result from the interactive Measure tool that survives closing the file, unlike the tool's own session-only overlay. Structurally shaped like `Part` (same four `EntityType`-keyed id buckets) so it can be rebound across topology-changing edits with the identical machinery `Part` already uses — see `src/entityRebind.ts`'s `remapPartEntityIds`. `text`/`anchorPoint`/`linePoints` are a frozen snapshot of the result at pin time, never recomputed on redisplay; only "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Persisted in `<model>.annotations.json` — see [File Formats](./file-formats.md).
+
+The optional `tolerance` field (roadmap "Tolerance-band fact checks on exact measurements") records a nominal-plus-band intent captured from the Measure panel's inline fields at pin time. `measured` is the raw numeric value frozen alongside the band, so the webview can re-derive the in/out-of-band label colour on every redisplay without parsing the formatted `text` back into a number. Facts only: nothing stores a pass/fail verdict — `src/toleranceBand.ts`'s shared `evaluateToleranceBand` computes it at render time (the same pure module the MCP `check_tolerance` tool uses, so headless and interactive math cannot drift). A malformed band is dropped tolerantly by the sidecar parser (band only — the annotation survives). A toleranced pin renders as `"<text> [nominal ±tol]"`, with an out-of-band pin's label frame and Saved-list row coloured by the derived tone; its dimension glyph in SVG/DXF silhouette exports carries the same decorated label.
+
+### `ConstructionPlane`
+
+```typescript
+interface ConstructionPlane {
+  id: string                                // "plane-N" — stable, never reused
+  name: string                              // user-editable
+  point: [number, number, number]           // a point ON the plane
+  normal: [number, number, number]          // unit
+  derivedFrom?: string                      // display-only provenance
+}
+```
+
+A named datum plane (roadmap "A named, persisted construction-plane entity", Phase 3 closed), persisted in `<model>.planes.json` — see [File Formats](./file-formats.md).
+
+**It stores resolved vectors, never a live face reference.** A plane derived from `face-12` keeps that face's plane, not a pointer to it, matching the convention `align`'s `to` coordinate already set. This is what keeps planes entirely out of `src/entityRebind.ts`: unlike `face-N`, a plane is never renumbered by replay, so a topology-changing op leaves it byte-identical while `parts`/`annotations` are rebound around it. `derivedFrom` (`"face-12"`, `"clip plane"`, `"entered"`) is recorded for display only and is deliberately never resolved back to geometry.
+
+Ids are never reused — the next is the highest existing N plus one — so deleting a plane and adding another cannot resurrect the old id under a new meaning. The sidecar parser normalizes `normal` on read (a hand-edited `[0, 0, 10]` still yields a unit vector) and drops a plane whose normal is zero-length, since that describes no plane at all.
 
 ### `ViewState`
 
@@ -101,16 +129,35 @@ A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchore
 type DisplayMode = 'shaded' | 'wireframe' | 'xray' | 'hiddenLines' | 'flat'
 type ClipAxis = 'x' | 'y' | 'z'
 
+interface ClipPlaneState {
+  axis: ClipAxis                             // preset; ALWAYS present, even beside `normal`
+  offsetFrac: number                         // -1..1 across the bbox extent ALONG the active normal
+  normal?: [number, number, number]          // optional explicit unit normal; WINS over `axis`
+}
+type PaneLayoutId = '1x1' | '1x2' | '2x1' | '2x2'
+
+interface PaneViewState {
+  viewDirection: [number, number, number]   // target → camera, normalized — per pane
+  cameraUp: [number, number, number]        // per pane
+  orthographic: boolean                      // per pane — projection is per-pane like direction
+}
+
 interface ViewState {
-  viewDirection: [number, number, number]   // target → camera, normalized
-  cameraUp: [number, number, number]
-  orthographic: boolean
-  displayMode: DisplayMode
-  clip: { axis: ClipAxis; offsetFrac: number } | null   // null = clipping off; offsetFrac is a fraction of the model's bbox, not a raw plane constant
+  viewDirection: [number, number, number]   // focused/single-pane direction (target → camera, normalized)
+  cameraUp: [number, number, number]        // focused/single-pane up
+  orthographic: boolean                      // focused/single-pane projection
+  displayMode: DisplayMode                   // global — one value for the whole document
+  clip: ClipPlaneState | null                // global — null = clipping off
+  layout?: PaneLayoutId                      // split-view layout; absent/"1x1" = single pane (Phase 2)
+  panes?: PaneViewState[]                    // one per pane of `layout`, row-major; absent = single pane
 }
 ```
 
 Persisted camera orientation, display mode, ortho/perspective, and clip plane (roadmap "View-state persistence", closed) — see [File Formats](./file-formats.md) for the `<model>.view.json` sidecar. Deliberately does **not** include explode-preview state (session-only by design) or raw camera position/target/distance: `Viewer.frame(direction)` auto-derives both from the model's current bounding box, so a normalized direction + up vector is enough and survives edits that change the model's extents.
+
+Phase 2 (roadmap "Split view", Phase 2) adds `layout` + per-pane camera states. `layout` defaults to `"1x1"` when absent (an older sidecar or a session that never entered split view); `panes` holds one `PaneViewState` per pane of that layout, row-major, and is only meaningful when `layout !== "1x1"`. `view` (the focused direction/up/ortho) stays the single-pane/focused-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — see [File Formats](./file-formats.md). Display mode and clip stay global; only camera state (direction/up/ortho) is per-pane.
+
+`clip` carries an optional explicit `normal` (roadmap "Arbitrary and reusable construction planes", Phases 1+2) that wins over the `axis` preset when present. `axis` is written **regardless**, set to the custom normal's dominant axis — so an older build, which only knows the axis form, restores a sensible neighbouring clip rather than failing its axis check and silently switching clipping off entirely. `offsetFrac` is measured along whichever normal is active.
 
 ### `EditOp`
 
@@ -267,7 +314,7 @@ interface MeshHealthReport {
 
 ```typescript
 type HostToWebview =
-  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[] }
+  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; autoFit?: boolean }
   | { type: 'tree';     root: TreeNode; sourceUnit?: string }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | {
@@ -298,19 +345,33 @@ type HostToWebview =
   | { type: 'standardPartsInsertError'; requestId: string; message: string }
   | { type: 'importSvgResult'; text: string }
   | { type: 'importSvgError'; message: string }
+  | { type: 'importDxfResult'; text: string }
+  | { type: 'importDxfError'; message: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
+  | { type: 'macros'; macros: MacroSummary[] }
+  | { type: 'macroApplyOps'; ops: EditOp[] }
+  | { type: 'entityFactsResult'; requestId: string; facts: EntityFacts }
+  | { type: 'entityFactsError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
+  | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
+  | { type: 'linkedCamera'; camera: LinkedCameraState }
+  | { type: 'camerasLinked'; enabled: boolean }
 ```
 
 ### `geometry`
 
 Sent after B-rep tessellation. Contains every face as an encoded mesh, every unique edge as a polyline, and every vertex as a point. The webview calls `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` (one `THREE.Mesh` per face, one `THREE.Line` per edge, one `THREE.Sprite` per point, parented under per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group)`.
+
+The optional `opOutcomes` array (roadmap "A failed edit op is indistinguishable from one that did nothing", closed) carries one entry per replayed op — `{index, kind, applied, diagnostic?, hint?}` in list order. An op that gracefully skipped during the host's B-rep replay (unresolved operands after id drift, a builder throw, `IsDone() === false`) reports `applied: false` with a human-readable `diagnostic` and an actionable `hint`, which the webview renders as a ⚠ marker on that op's row in the Edits history instead of silently showing an unchanged model. Absent for mesh sources — their replay is client-side (`rebuildMeshModel()` → `applyEditsMesh(root, ops, outcomes)`), which reports outcomes directly without a protocol round trip.
+
+The optional `autoFit` flag (roadmap "Render on demand, not every frame") controls whether `Viewer.setModel()` may skip its auto-reframe: `false` forces a full reframe (a genuine file load / file swap), absent or `true` is containment-eligible (an edit-driven rebuild — `Viewer` skips framing when the new bounds already fit inside the last padded fit sphere so the camera stops twitching on every small edit).
 
 ```json
 {
@@ -324,6 +385,12 @@ Sent after B-rep tessellation. Contains every face as an encoded mesh, every uni
   ],
   "points": [
     { "position": "DDDD...", "pointId": "point-0" }
+  ],
+  "opOutcomes": [
+    { "index": 0, "kind": "addBox", "applied": true },
+    { "index": 1, "kind": "fillet", "applied": false,
+      "diagnostic": "the fillet build threw — the radius 1000000 is likely too large for the geometry",
+      "hint": "try a smaller value, or fewer edges at once" }
   ]
 }
 ```
@@ -495,8 +562,10 @@ Sent once, right after `parts`, once the host has read the mesh-options sidecar 
 Sent once during the `ready` handshake, right after `meshingOptions`, once the host has read the view-state sidecar (`<model>.view.json`) — `view` is `null` when no sidecar exists yet for this document (a genuinely new document, or one never manually reoriented). Also re-sent by the external-change watcher on `.view.json` when another process (an MCP agent, a second tab on the same file) writes it. The webview applies it once BOTH this message and the model geometry (`geometry`/mesh load) have arrived — no deterministic order between the two, same non-deterministic-arrival-order discipline as `viewerDefaults`/`meshingOptions` vs. `geometry` — via `main.ts`'s `applyInitialViewIfNeeded()`, which mirrors `syncMeshSizeSeed()`'s "whichever lands last performs the actual application" idiom. `view: null` applies the default hardcoded isometric (`Viewer.resetView()`) instead. Applied only ONCE per document session: every subsequent model reload (an edit re-tessellating a B-rep source, a mesh edit rebuilding the displayed model) preserves the CURRENT camera direction (`Viewer.fitView()`) rather than re-snapping to the persisted state — camera position used to unconditionally reset on every one of those too, a bigger, more-repeated friction than "resets on reopen" alone.
 
 ```json
-{ "type": "viewState", "view": { "viewDirection": [1, 0.8, 1], "cameraUp": [0, 1, 0], "orthographic": false, "displayMode": "shaded", "clip": null } }
+{ "type": "viewState", "view": { "viewDirection": [1, 0.8, 1], "cameraUp": [0, 1, 0], "orthographic": false, "displayMode": "shaded", "clip": null, "layout": "1x2", "panes": [{ "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false }, { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }] } }
 ```
+
+In Phase 2 (roadmap "Split view", Phase 2) `view` carries optional `layout` + per-pane `panes` alongside the existing focused/single-pane fields — the message shape is unchanged, only the payload is wider. `layout` defaults to `"1x1"` when absent (an older sidecar or a session that never entered split view); `panes` is row-major, one `PaneViewState` per pane. `view` (the focused direction/up/ortho) stays the single-pane/focused-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — tolerant-parse. The headless harness (`renderService.ts`, which posts no layout message) and `capture.mjs`'s `populate()` (which posts `{view: null}`) keep getting single-pane.
 
 ### `meshingResult`
 
@@ -554,6 +623,36 @@ Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh source
 { "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
 ```
 
+### `macros` / `macroApplyOps`
+
+The saved-macro library for the document's folder (`cad-preview-macros.json` — the same file the MCP tools take as `libraryPath`). `macros` is sent unprompted on `ready` and after every save/delete, so the panel never has to ask for it.
+
+`macroApplyOps` carries a macro's **compiled** ops for the webview to push onto its own op stack — deliberately not a host-side append, so a macro is undoable, visible in the history and removable op-by-op exactly like a hand-applied edit, with no special "macro" state for undo/redo to reason about.
+
+```json
+{ "type": "macros", "macros": [{ "name": "bolt-circle", "description": "A ring of N holes", "parameters": [{ "name": "R", "expr": "20" }] }] }
+```
+
+`macroRun` sends the values currently typed into a macro's parameter fields; an override naming no declared parameter is reported in the resulting `status` rather than failing. `macroSaveCurrent` records the current op stack (the host prompts for a name — "record" is a selection over edits already applied, not a live capture session).
+
+### `entityFactsResult` / `entityFactsError`
+
+Sent in reply to `entityFactsRequest` — **B-rep sources only** (a triangle mesh has no analytic surface type; a fine-faceted prism and a cylinder are identical in triangles), same gate as `massPropertiesResult`. Carries `EntityFacts` verbatim from the existing `getEntityFacts` pipeline function — the interactive geometry inspector card is a new protocol pair over existing kernel surface, not new geometry work; the same function backs the `inspect` MCP tool.
+
+**Two consumers share this round trip**, each latched on its own request id: the inspector card, and the view-controls **Clip ▸ Face** button, which reads the reply's `normal` + `planeOrigin` to derive an arbitrary clip plane. The clip path issues its own request rather than reusing the card's last result — group/query selection never triggers a card fetch, so that cache can be empty or stale for a face selected that way.
+
+Driven by **selection, not hover**: `getEntityFacts` has no shape cache, so every call re-reads the source bytes and replays the whole op list. The hover tooltip is deliberately pure-webview for the same reason.
+
+```json
+{ "type": "entityFactsResult", "requestId": "1234-0.56", "facts": { "entityId": "face-3", "kind": "face", "bbox": { "min": [0, 0, 0], "max": [10, 10, 0], "diagonal": 14.142 }, "center": [5, 5, 0], "area": 100, "length": null, "normal": [0, 0, 1], "planeOrigin": [0, 0, 0], "surfaceType": "plane", "curveType": null } }
+```
+
+```json
+{ "type": "entityFactsError", "requestId": "1234-0.56", "message": "Geometry classification requires a B-rep source; a mesh has no analytic surface type." }
+```
+
+`curveType` is the edge-side counterpart of `surfaceType`, which had no analogue before this: `"line" | "circle" | "ellipse" | "hyperbola" | "parabola" | "bezier" | "bspline" | "other"`, set only for an edge. It uses the same `BRepAdaptor_Curve_2(edge).GetType()` call `measure_exact`'s `"radius"` kind already exercises against the live WASM, so it needed no new probing — and `inspect` gets it for free.
+
 ### `measureExactResult` / `measureExactError`
 
 Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as `massPropertiesResult`. A genuine host round trip via live OCCT geometry (`BRepExtrema_DistShapeShape` for `kind: "distance"`, `BRepGProp` for `"edgeLength"`, the edge's own curve for `"radius"`), distinct from both the interactive Measure tool's default instant triangulated-approximation result and `measure`'s bbox-centre-to-bbox-centre convention. See [Extension Host API](./extension-host-api.md#src-entityfacts-ts)'s verified call sequence for each `kind`.
@@ -576,6 +675,22 @@ Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh �
 
 ```json
 { "type": "meshHealError", "requestId": "1234-0.56", "message": "Mesh healability check requires an STL/OBJ/PLY source." }
+```
+
+### `opPreviewResult` / `opPreviewError`
+
+Sent in reply to `opPreviewRequest` (webview → host, below) — roadmap "Live operation preview", closed. The payload is the SAME encoded shape the `"geometry"` message carries (`meshes`/`edges`/`points`), computed from a speculative replay of `[...currentOps, draftOp]` against the document's cached base shape — so the webview builds the preview group with the exact same `buildGroupFromEncoded()` path it uses for real geometry, and preview can never render something Apply would not produce. **B-rep sources only** — mesh sources never send the request (their preview is entirely client-side via `applyEditsMesh`). The host persists nothing: the replay runs under a separate cache key (`<documentKey>::oppreview`) so it never evicts the real document's cache, no sidecar is touched, and the CAD file stays read-only as ever.
+
+`opOutcomes` carries the per-op replay outcomes; when the draft op itself gracefully skipped (an unresolvable operand id after id drift, a builder throw), the webview degrades to no overlay and surfaces the diagnostic in its status line instead — never a silently-wrong preview.
+
+Stale responses (a result arriving after a newer keystroke, a form switch, or a model rebuild) are discarded by the webview's generation guard — same discipline as `measureExactRequest`.
+
+```json
+{ "type": "opPreviewResult", "requestId": "1234-0.56", "meshes": [], "edges": [], "points": [] }
+```
+
+```json
+{ "type": "opPreviewError", "requestId": "1234-0.56", "message": "…" }
 ```
 
 ### `colorFieldResult` / `colorFieldError`
@@ -626,11 +741,39 @@ Sent in reply to `importSvgRequest` (webview → host, below) — no `requestId`
 { "type": "importSvgError", "message": "Could not read the selected file." }
 ```
 
+### `importDxfResult` / `importDxfError`
+
+Sent in reply to `importDxfRequest` (webview → host, below) — the DXF sibling of `importSvgResult`/`importSvgError`, with the identical no-`requestId` modal-dialog rationale. `text` is the picked `.dxf` file's raw ASCII contents, read host-side with no parsing — parsing (`src/dxfImport.ts`, model-space `ENTITIES` only) happens in the webview, where the resulting `addLine`/`addPolyline`/`addCircleProfile`/`addArc`/`addSpline` ops are pushed onto `EditsModel`. A dismissed dialog is a quiet no-op.
+
+```json
+{ "type": "importDxfResult", "text": "0\nSECTION\n2\nENTITIES\n..." }
+```
+
+```json
+{ "type": "importDxfError", "message": "Could not read the selected file." }
+```
+
+### `linkedCamera` / `camerasLinked`
+
+`linkedCamera` is the host relay for split-view Phase 3 (roadmap "Split view", Phase 3): when `camerasLinked` is true, every `viewChanged` fans out a minimal `LinkedCameraState` triple `{viewDirection, cameraUp, orthographic}` to every OTHER open session (`document.uri.toString()`-keyed registry in `provider.ts`; originator skipped). Receiver applies via `setCameraUp`/`applyOrtho`/`frameFromDirection` and reframes from its own bbox — direction + up + ortho only, never distance, so different extents still fill their frame. Loop-suppressed via `applyingLinkedCamera` + `viewSaveTimer` clear and gated on `hasAppliedInitialView`; never routes through `applyViewState`.
+
+`camerasLinked` broadcasts the provider-level flag to every session (including the originator) so all View ▾ checkboxes stay truthful; a newly-opened tab gets it when `camerasLinked` is already true. Both are session-only, never persisted to `.view.json`.
+
+```json
+{ "type": "linkedCamera", "camera": { "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false } }
+```
+
+```json
+{ "type": "camerasLinked", "enabled": true }
+```
+
 ---
 
 ## Webview → Host Messages (`WebviewToHost`)
 
 ```typescript
+type LinkedCameraState = { viewDirection: [number, number, number]; cameraUp: [number, number, number]; orthographic: boolean }
+
 type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
@@ -638,6 +781,7 @@ type WebviewToHost =
   | { type: 'annotationsChanged'; annotations: Annotation[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'viewChanged'; view: ViewState }
+  | { type: 'setCamerasLinked'; enabled: boolean }
   | { type: 'openFile' }
   | { type: 'openPath'; path: string }
   | { type: 'saveSidecars' }
@@ -650,17 +794,24 @@ type WebviewToHost =
   | { type: 'meshingExport'; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: 'screenshotButtonClicked' }
   | { type: 'promoteToBrepButtonClicked' }
+  | { type: 'repairMeshButtonClicked' }
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
+  | { type: 'macroRun'; name: string; parameters: Record<string, string> }
+  | { type: 'macroSaveCurrent' }
+  | { type: 'macroDelete'; name: string }
+  | { type: 'entityFactsRequest'; requestId: string; entityId: string }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
   | { type: 'importSvgRequest' }
+  | { type: 'importDxfRequest' }
+  | { type: 'exportDxfRequest' }
+  | { type: 'opPreviewRequest'; requestId: string; op: EditOp }
 ```
-
 ### `partsChanged`
 
 Sent whenever the user mutates parts (create / rename / recolour / delete / assign / remove entity). The host debounces these (~500 ms) and writes the full part list to the `<model>.parts.json` sidecar via `writeParts()`. The CAD file itself is never written — only the sidecar.
@@ -669,12 +820,30 @@ Sent whenever the user mutates parts (create / rename / recolour / delete / assi
 { "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [], "points": [] } ] }
 ```
 
+### `planes`
+
+Sent after geometry, once the host has read the construction-planes sidecar (`<model>.planes.json`) — same timing/role as `parts`/`annotations` (roadmap "A named, persisted construction-plane entity", Phase 3 closed). Carries the saved planes (empty array when no sidecar exists). The webview loads them into `PlanesModel` (silent `load()`, no `onChange` echo — hydrating from disk must not post straight back as a write) and renders the Planes group in the view-controls panel.
+
+Also sent when `<model>.planes.json` changes externally, via the same content-compared watcher every other sidecar uses. Unlike `parts`/`annotations` it is **never** resent by a rebind: a `ConstructionPlane` stores resolved vectors, not entity ids, so a topology-changing op leaves it untouched by design.
+
+```json
+{ "type": "planes", "planes": [ { "id": "plane-0", "name": "Top datum", "point": [0, 0, 10], "normal": [0, 0, 1], "derivedFrom": "face-12" } ] }
+```
+
 ### `annotationsChanged`
 
 Sent whenever the user pins a new measurement (📌) or deletes/renames one from the "Saved" list. Same debounce (~500 ms, its own timer) and same never-writes-the-CAD-file rule as `partsChanged` — the host writes the full annotation list to `<model>.annotations.json` via `writeAnnotations()`.
 
 ```json
 { "type": "annotationsChanged", "annotations": [ { "id": "ann-1234567890-1", "tool": "radius", "text": "R = 4 mm", "anchorPoint": [4, 0, 0], "linePoints": [], "volumes": [], "surfaces": [], "lines": ["edge-3"], "points": [] } ] }
+```
+
+### `planesChanged`
+
+Sent whenever the user saves the current clip plane, enters one numerically, or renames/deletes one from the Planes list. Same debounce (~500 ms, its own timer) and same never-writes-the-CAD-file rule as `partsChanged` — the host writes the full list to `<model>.planes.json` via `writePlanes()`.
+
+```json
+{ "type": "planesChanged", "planes": [ { "id": "plane-0", "name": "Top datum", "point": [0, 0, 10], "normal": [0, 0, 1] } ] }
 ```
 
 ### `editsChanged`
@@ -691,10 +860,18 @@ Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) *
 
 ### `viewChanged`
 
-Sent whenever the user changes the view — camera orbit/pan/zoom/dolly (drag or the stepped toolbar buttons), Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, or the clip axis/offset/toggle. Carries the full current `ViewState`, gathered fresh at save time (`viewer.getViewDirection()`/`getCameraUp()`/`isOrthographic()`/`getDisplayMode()` plus the clip controls' own closure state). The host debounces these (~500 ms, on its own timer separate from parts/edits/mesh) and writes `<model>.view.json` via `writeViewState()`. **Not** sent merely from opening a document, including the initial default-isometric framing or a persisted-state restoration — `main.ts` gates on its own `hasAppliedInitialView` flag, becoming true only after that one-time initial application completes, mirroring `syncMeshSizeSeed()`'s `load()`-not-`update()` "opening ≠ a user change" convention for mesh options. The CAD file is never written — only the sidecar. See [`ViewState`](#viewstate).
+Sent whenever the user changes the view — camera orbit/pan/zoom/dolly (drag or the stepped toolbar buttons), Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, the clip axis/offset/toggle, **or the split-view layout picker / any per-pane camera move** (Phase 2). Carries the full current `ViewState`, gathered fresh at save time (`viewer.getViewDirection()`/`getCameraUp()`/`isOrthographic()`/`getDisplayMode()` plus the clip controls' closure, **and `getPaneLayout()`/`getPaneViewStates()` when the layout isn't `"1x1"`**). The host debounces these (~500 ms, on its own timer separate from parts/edits/mesh) and writes `<model>.view.json` via `writeViewState()` — Phase 2's `layout`+`panes` ride as top-level siblings of `view` in the file, see [File Formats](./file-formats.md). **Not** sent merely from opening a document, including the initial default-isometric framing or a persisted-state restoration — `main.ts` gates on its own `hasAppliedInitialView` flag, becoming true only after that one-time initial application completes, mirroring `syncMeshSizeSeed()`'s `load()`-not-`update()` "opening ≠ a user change" convention for mesh options. The CAD file is never written — only the sidecar. See [`ViewState`](#viewstate).
 
 ```json
-{ "type": "viewChanged", "view": { "viewDirection": [0, 0, 1], "cameraUp": [0, 1, 0], "orthographic": true, "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": -0.1 } } }
+{ "type": "viewChanged", "view": { "viewDirection": [0, 0, 1], "cameraUp": [0, 1, 0], "orthographic": true, "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": -0.1 }, "layout": "1x2", "panes": [{ "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false }, { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }] } }
+```
+
+### `setCamerasLinked`
+
+Toggles the provider-level linked-cameras flag (roadmap "Split view", Phase 3). Clicking the View ▾ "Link cameras across tabs" checkbox (`#link-cameras`, `role="menuitemcheckbox"`) flips optimistically then posts this; authoritative state comes back via `camerasLinked` (last host write wins).
+
+```json
+{ "type": "setCamerasLinked", "enabled": true }
 ```
 
 ### `meshingChanged`
@@ -781,6 +958,14 @@ Deliberately **not** folded into `exportRequest`: an `"svg"` member of `CadForma
 { "type": "exportSvgRequest" }
 ```
 
+### `exportDxfRequest`
+
+The DXF sibling of `exportSvgRequest`, sent by **File ▸ Export Silhouette DXF…** (`#menu-export-dxf`) or the `cad-preview.exportDxf` command: the identical host-owned flow (view pick → unit pick → save dialog → kernel-worker `exportSvgSilhouette` call), differing only in the serializer used and the save-dialog filter/default extension (`.dxf`). Same no-`requestId`/no-result-message shape, same generic `status`/`error` feedback.
+
+```json
+{ "type": "exportDxfRequest" }
+```
+
 ### `exportResult` / `exportError`
 
 Sent in reply to `exportMesh`. `data` is base64 when `binary` is `true`, plain text otherwise — the same convention as `EncodedMesh`'s buffers, just generalized to a whole file. The host correlates the reply to its pending request via `requestId` and writes the decoded bytes to the path chosen in the save dialog.
@@ -821,6 +1006,14 @@ Sent when the Mesh Health panel's **Promote to B-rep…** button is clicked ("Me
 { "type": "screenshotError", "requestId": "1234-0.56", "message": "No model loaded" }
 ```
 
+### `repairMeshButtonClicked`
+
+Sent when the Mesh Health panel's **Repair (robust)…** button is clicked (roadmap "Robust volumetric meshing from a skin mesh", Phase 3) — only reachable once a report shows at least one component that did NOT close (the opposite gate from `promoteToBrepButtonClicked` above — a mesh that already closes has nothing to repair). Same shape as `promoteToBrepButtonClicked`: the host runs the entire flow itself (a save dialog defaulting to `.stl`, then `repairMesh` — tetrahedralize with fTetWild, keep the resulting volume mesh's own boundary) and reports success/failure through the generic `"status"`/`"error"` messages. No format/unit quick-picks — the repaired output is always STL, at the source's native scale.
+
+```json
+{ "type": "repairMeshButtonClicked" }
+```
+
 ### `massPropertiesRequest`
 
 Sent when the Mass Properties panel's **Compute** button is clicked, for a B-rep source only (mesh sources never send this — see `massPropertiesResult` above). `entityId` is `null` for the whole model, or the current selection's single entity id (`solid-N` / `face-N` / `edge-N`) — the panel refuses to guess when 2+ entities are selected, showing a guidance message instead of sending a request.
@@ -840,6 +1033,14 @@ Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep sourc
 ### `meshHealRequest`
 
 Sent when the Mesh Health panel's **Check Healability** button is clicked — only reachable for a native `.stl`/`.obj`/`.ply`/`.gltf`/`.glb` file on disk (a meshio-converted document hides the panel entirely, mirroring `check_mesh_health`'s own MCP-tool gate; see `meshHealResult`/`meshHealError` above). No parameters beyond `requestId` — the host re-reads the currently-open document's own bytes.
+
+### `opPreviewRequest`
+
+Sent whenever a field in the open Edits-panel op form changes (and once when the form opens, from its default values) — roadmap "Live operation preview", closed. Debounced ~250 ms webview-side; only the latest draft ever runs. `op` is the **fully-built** draft edit op, produced by the exact same builder function the form's Apply button uses — so preview and commit share one mapping and can never disagree. The host replays `[...currentOps, op]` speculatively (see `opPreviewResult` above). Never posted for mesh sources (client-side preview), for the Explode form (which keeps its own dedicated slider preview), or while any expression field currently fails to evaluate (the preview skips silently rather than flashing the Apply-time inline error).
+
+```json
+{ "type": "opPreviewRequest", "requestId": "1234-0.56", "op": { "op": "addBox", "center": [0, 0, 0], "size": [10, 10, 10] } }
+```
 
 ```json
 { "type": "meshHealRequest", "requestId": "1234-0.56" }
@@ -875,6 +1076,14 @@ Sent when **File ▾ → Import SVG…** is clicked. No parameters — the host 
 
 ```json
 { "type": "importSvgRequest" }
+```
+
+### `importDxfRequest`
+
+Sent when **File ▾ → Import DXF…** is clicked. No parameters — the host shows its own `showOpenDialog` filtered to `.dxf`; see `importDxfResult`/`importDxfError` above. Same B-rep-only gate as SVG import: on a mesh-format source the webview shows an explanatory status instead of parsing.
+
+```json
+{ "type": "importDxfRequest" }
 ```
 
 ---

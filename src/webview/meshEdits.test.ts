@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { applyEditsMesh, transformMatrixForOp } from "./meshEdits";
-import type { EditOp } from "../editOps";
+import { applyEditsMesh, transformMatrixForOp, MESH_CSG_MAX_TRIANGLES, meshTriangleCount } from "./meshEdits";
+import type { EditOp, OpOutcome } from "../editOps";
+import { vi } from "vitest";
 
 function point(m: THREE.Matrix4, x: number, y: number, z: number): [number, number, number] {
   const v = new THREE.Vector3(x, y, z).applyMatrix4(m);
@@ -443,5 +444,182 @@ describe("applyEditsMesh explode", () => {
     // Centre is x=0; factor 1 doubles each offset: -5 → -10, +5 → +10.
     expect(Math.round(a.getWorldPosition(new THREE.Vector3()).x)).toBe(-10);
     expect(Math.round(b.getWorldPosition(new THREE.Vector3()).x)).toBe(10);
+  });
+});
+
+describe("applyEditsMesh outcome reporting", () => {
+  function taggedMesh(): THREE.Object3D {
+    const root = new THREE.Group();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    root.add(mesh);
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    return root;
+  }
+  const collect = (root: THREE.Object3D, ops: EditOp[]): OpOutcome[] => {
+    const outcomes: OpOutcome[] = [];
+    applyEditsMesh(root, ops, outcomes);
+    return outcomes;
+  };
+
+  it("a valid op reports applied: true", () => {
+    const outcomes = collect(taggedMesh(), [{ op: "translate", targets: ["node-1"], vec: [1, 0, 0] }]);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ index: 0, kind: "translate", applied: true });
+  });
+
+  it("a B-rep-only op reports not-applied with a diagnostic (never silent)", () => {
+    const outcomes = collect(taggedMesh(), [{ op: "fillet", edges: ["edge-0"], radius: 1 }]);
+    expect(outcomes[0].applied).toBe(false);
+    expect(outcomes[0].diagnostic).toMatch(/B-rep only/);
+  });
+
+  it("an unresolved transform target reports not-applied with a hint", () => {
+    const outcomes = collect(taggedMesh(), [{ op: "translate", targets: ["node-9"], vec: [1, 0, 0] }]);
+    expect(outcomes[0].applied).toBe(false);
+    expect(outcomes[0].diagnostic).toMatch(/node-9/);
+    expect(outcomes[0].hint).toBeTruthy();
+  });
+
+  it("an unresolved boolean operand reports not-applied", () => {
+    const root = taggedMesh();
+    const outcomes = collect(root, [
+      { op: "addBox", center: [5, 5, 5], size: [2, 2, 2] },
+      { op: "boolean", kind: "union", a: ["node-9"], b: ["node-1"] },
+    ]);
+    expect(outcomes[0].applied).toBe(true);
+    expect(outcomes[1].applied).toBe(false);
+    expect(outcomes[1].diagnostic).toMatch(/operand|resolve/i);
+  });
+
+  it("an unresolved hole target reports not-applied", () => {
+    const outcomes = collect(taggedMesh(), [{
+      op: "addHole", targets: ["node-9"], position: [0, 0, 1], axis: [0, 0, -1], radius: 0.3, depth: 3,
+    } as EditOp]);
+    expect(outcomes[0].applied).toBe(false);
+  });
+
+  it("an align that moves nothing reports not-applied; a real move reports applied", () => {
+    const alreadyThere = collect(taggedMesh(), [{ op: "align", targets: ["node-1"], axis: "y", extent: "min", to: -0.5 }]);
+    expect(alreadyThere[0].applied).toBe(false); // box's min y is already -0.5
+    const moved = collect(taggedMesh(), [{ op: "align", targets: ["node-1"], axis: "y", extent: "min", to: 10 }]);
+    expect(moved[0].applied).toBe(true);
+  });
+
+  it("a pattern whose count is 1 adds no copies and reports not-applied", () => {
+    const outcomes = collect(taggedMesh(), [{ op: "patternLinear", targets: ["node-1"], direction: [1, 0, 0], spacing: 5, count: 1 }]);
+    expect(outcomes[0].applied).toBe(false);
+    expect(outcomes[0].diagnostic).toMatch(/no copies/);
+    expect(outcomes[0].hint).toMatch(/count/i);
+  });
+
+  it("outcomes carry stable indexes matching their op positions", () => {
+    const ops: EditOp[] = [
+      { op: "translate", targets: ["node-1"], vec: [1, 0, 0] },
+      { op: "fillet", edges: ["edge-0"], radius: 1 },
+      { op: "explode", factor: 0.5 },
+    ];
+    const outcomes = collect(taggedMesh(), ops);
+    expect(outcomes.map((o) => [o.index, o.applied])).toEqual([[0, true], [1, false], [2, true]]);
+  });
+});
+
+describe("meshTriangleCount", () => {
+  it("counts indexed and non-indexed geometries", () => {
+    const indexed = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    expect(meshTriangleCount(indexed)).toBe(12); // box = 12 tris
+    const nonIndexed = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1).toNonIndexed());
+    expect(meshTriangleCount(nonIndexed)).toBe(12);
+    expect(meshTriangleCount(null)).toBe(0);
+    expect(meshTriangleCount(undefined)).toBe(0);
+  });
+});
+
+describe("dense-mesh CSG guard (three-bvh-csg)", () => {
+  /** A mesh whose `meshTriangleCount` is `triCount`, without allocating
+   * `triCount * 3` unique vertices: 3 shared verts + an index that repeats
+   * them. Keeps the test's memory trivial while exercising the guard. */
+  function fakeMesh(triCount: number, id: string): THREE.Mesh {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), 3));
+    const idx = new Uint32Array(triCount * 3);
+    for (let i = 0; i < idx.length; i++) idx[i] = i % 3;
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    const m = new THREE.Mesh(geo);
+    m.userData.groupId = id;
+    return m;
+  }
+
+  it("boolean: dense operands are skipped with a diagnostic + report, not evaluated", () => {
+    const triEach = Math.ceil((MESH_CSG_MAX_TRIANGLES + 1) / 2); // combined > threshold
+    const root = new THREE.Group();
+    root.add(fakeMesh(triEach, "node-1"), fakeMesh(triEach, "node-2"));
+    // Group itself gets an id so traverse assigns deterministically, but we
+    // already set ids explicitly above.
+    const outcomes: OpOutcome[] = [];
+    const report = vi.fn();
+    applyEditsMesh(root, [{ op: "boolean", kind: "union", a: ["node-1"], b: ["node-2"] }], outcomes, report);
+    expect(outcomes[0].applied).toBe(false);
+    expect(outcomes[0].diagnostic).toMatch(/too dense/);
+    expect(outcomes[0].hint).toMatch(/Promote to B-rep/);
+    expect(report).toHaveBeenCalledWith(expect.stringMatching(/too dense/));
+    // No result mesh was added — still exactly the two original operands.
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    expect(meshes).toHaveLength(2);
+  });
+
+  it("boolean: low-poly operands still evaluate normally", () => {
+    const root = new THREE.Group();
+    const a = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2));
+    const b = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2));
+    b.position.set(1, 1, 1);
+    root.add(a, b);
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    const outcomes: OpOutcome[] = [];
+    const report = vi.fn();
+    applyEditsMesh(root, [{ op: "boolean", kind: "union", a: ["node-1"], b: ["node-2"] }], outcomes, report);
+    expect(outcomes[0].applied).toBe(true);
+    expect(report).not.toHaveBeenCalled();
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    expect(meshes).toHaveLength(1);
+  });
+
+  it("hole: dense target is skipped with a diagnostic + report", () => {
+    const triCount = MESH_CSG_MAX_TRIANGLES + 1;
+    const root = new THREE.Group();
+    root.add(fakeMesh(triCount, "node-1"));
+    const outcomes: OpOutcome[] = [];
+    const report = vi.fn();
+    applyEditsMesh(
+      root,
+      [{ op: "addHole", targets: ["node-1"], position: [0, 0, 1], axis: [0, 0, -1], radius: 0.3, depth: 3 } as EditOp],
+      outcomes,
+      report
+    );
+    expect(outcomes[0].applied).toBe(false);
+    expect(outcomes[0].diagnostic).toMatch(/too dense/);
+    expect(outcomes[0].hint).toMatch(/Promote to B-rep/);
+    expect(report).toHaveBeenCalledWith(expect.stringMatching(/too dense/));
+  });
+
+  it("hole: low-poly target still punches normally", () => {
+    const root = new THREE.Group();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10));
+    root.add(mesh);
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    const outcomes: OpOutcome[] = [];
+    const report = vi.fn();
+    applyEditsMesh(
+      root,
+      [{ op: "addHole", targets: ["node-1"], position: [0, 0, 5], axis: [0, 0, -1], radius: 2, depth: 10 } as EditOp],
+      outcomes,
+      report
+    );
+    expect(outcomes[0].applied).toBe(true);
+    expect(report).not.toHaveBeenCalled();
   });
 });

@@ -58,17 +58,23 @@ You can also drag a file from the OS file explorer (or another editor tab) and d
 | Exodus      | `.exo`, `.e`    | meshio++ → STL boundary surface → Three.js |
 | XDMF        | `.xdmf`         | meshio++ → STL boundary surface → Three.js |
 | Kratos MDPA | `.mdpa`         | meshio++ → STL boundary surface → Three.js |
+| OpenFOAM    | `.foam`         | meshio++ (case staging) → STL boundary surface → Three.js |
 | Gmsh Mesh   | `.msh`, `.msh2` | meshio++ → STL boundary surface → Three.js |
 | Abaqus      | `.inp`          | meshio++ → STL boundary surface → Three.js |
 | I-DEAS Universal | `.unv`     | meshio++ → STL boundary surface → Three.js |
 | SU2         | `.su2`          | meshio++ → STL boundary surface → Three.js |
 | INRIA Medit | `.mesh`         | meshio++ → STL boundary surface → Three.js |
+| GiD Postprocess | `.post.msh` (+ `.post.res`) | meshio++ → STL boundary surface → Three.js |
 
 > **B-rep vs mesh:** STEP, IGES, and BREP are boundary-representation formats that are tessellated on-the-fly in the extension host. STL, OBJ, PLY, and glTF are already triangulated and are loaded directly into the webview by Three.js.
 >
-> **VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit** have no native Three.js loader, so the extension host converts them to a triangulated **boundary surface** in STL form first ([meshio++](https://github.com/loumalouomega/meshioplusplus), entirely host-side — no browser involved) and hands that to the webview exactly like a native `.stl` open. This means Parts, Edits, Export, Mass Properties, and Measurement all work identically to STL. **Named cell regions in the source file now auto-become real Parts** on first import (one per region, pre-coloured and pre-assigned — for a tetrahedral/triangular boundary; a quad/hex boundary still doesn't correlate); scalar field data (temperatures, stresses, …) beyond region names is still **not** preserved — only its names are shown, not its values. If you need to inspect scalar field values or colour by them, keep using a dedicated viewer (e.g. ParaView) for those formats — CAD-Preview's support here is for quick geometry (and now region) previews alongside your CAD files, not full FE post-processing.
+> **VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit/GiD Postprocess** have no native Three.js loader, so the extension host converts them to a triangulated **boundary surface** in STL form first ([meshio++](https://github.com/loumalouomega/meshioplusplus), entirely host-side — no browser involved) and hands that to the webview exactly like a native `.stl` open. This means Parts, Edits, Export, Mass Properties, and Measurement all work identically to STL. **Named cell regions in the source file now auto-become real Parts** on first import (one per region, pre-coloured and pre-assigned — for a tetrahedral/triangular boundary; a quad/hex boundary still doesn't correlate); scalar field data (temperatures, stresses, …) beyond region names is still **not** preserved — only its names are shown, not its values. If you need to inspect scalar field values or colour by them, keep using a dedicated viewer (e.g. ParaView) for those formats — CAD-Preview's support here is for quick geometry (and now region) previews alongside your CAD files, not full FE post-processing.
+>
+> **OpenFOAM (`.foam`) is a case marker, not a mesh file.** It's an (often empty) marker whose real mesh lives in sibling files under `<parent>/constant/polyMesh/` — CAD-Preview stages the whole case and hand-builds the boundary surface. OpenFOAM import is geometry-only: no patch names or field data are preserved (no Parts auto-create, no colour-by-field for it).
 >
 > **Gmsh Mesh / Abaqus / I-DEAS Universal / SU2 / INRIA Medit close a real export/import asymmetry:** the FE Mesh panel already *wrote* `.msh`/`.inp`/`.unv`/`.su2`/`.mesh`, but until now had no way to re-*open* any of them. `.msh` and `.inp` are ambiguous extensions (also used by ANSYS/FreeFem and ANSYS APDL) — CAD-Preview always assumes its own output (Gmsh/Abaqus) and shows a one-line status caveat on open; there's no automatic disambiguation into the alternate formats. **Known limitation:** an `.xdmf` this extension itself exports almost always fails to re-mesh after reimport, due to a separate, pre-existing meshio++ defect in reading back its own "mixed cell type" output — opening the file still works, only Generate on the reopened document doesn't.
+>
+> **GiD Postprocess (`.post.msh`) is a sibling pair**, and unlike XDMF it re-meshes correctly after reimport. Geometry lives in the `.post.msh`, results in a `.post.res` beside it that the reader finds by name convention — keep the two together; only the `.post.msh` is opened directly. It is both an import format and an FE Mesh panel export target.
 
 ## User Interface
 
@@ -101,9 +107,12 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | **Save Preprocess…** | Bundle the CAD file plus whichever of its `.parts.json` / `.annotations.json` / `.edits.json` / `.mesh.json` sidecars currently exist into a single `.zip` archive (with a per-entry SHA-256 checksum recorded in its manifest), so the whole working state can be shared or archived as one file | Ctrl+Alt+S |
 | **Load Preprocess…** | Restore a `.zip` built by Save Preprocess: pick a destination for the CAD file, write back whichever sidecars it contains, and open the result — rejects a corrupted/tampered archive or a destination whose file extension doesn't match the archive's own format | Ctrl+Alt+O |
 | **Import SVG…** | Pick a `.svg` file and import every `<path>` in it as sketch **Polyline** edit ops — one per closed/open subpath (a shape with a hole, e.g. a traced letter "O", becomes two separate polylines) — ready to select (**Line** mode) and feed into Build → Surface / Extrude. B-rep only; only plain `<path>` elements are read (no `<rect>`/`<circle>`/other shape elements, and any `transform` attribute on the path is ignored) | — |
+| **Import DXF…** | Pick a `.dxf` file and import its model-space `LINE` / `LWPOLYLINE` (bulge arcs sampled) / `POLYLINE` / `CIRCLE` / `ARC` / `SPLINE` entities as the matching Line/Polyline/Circle/Arc/Spline edit ops. B-rep only; blocks/INSERT/TEXT/DIMENSION/HATCH and paper space are skipped, and geometry lands flat at z=0 (1 DXF unit = 1 mm, Y-up native — adjust afterward with Scale/Move/Rotate) | — |
 | **Export Silhouette SVG…** | Write a 2D **outline** of the model as an `.svg` file — pick a view (**Current view**, or Front/Back/Top/Bottom/Left/Right/Iso), then an export unit, then a destination. An outline, **not** a dimensioned technical drawing (see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg)) | — |
+| **Export Silhouette DXF…** | The same outline flow with a DXF serializer (`LWPOLYLINE` chains + `LINE` singletons), saved with a `.dxf` extension | — |
+| **Export Technical Drawing…** | A 2D drawing with **hidden-line removal**: feature edges solid where visible, dashed where hidden behind the part. Unlike the two silhouette exports it draws interior edges too, so a hole's far rim shows dashed. Same view and unit picks; SVG or DXF (where hidden geometry lands on a `HIDDEN` layer). Still a review artifact — no dimensions, single view | — |
 
-![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, and Export Silhouette SVG.](/screenshots/file-menu.png)
+![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, Import DXF, and the two Silhouette exports.](/screenshots/file-menu.png)
 
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette). The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't override VS Code's global Open/Save elsewhere.
 
@@ -136,19 +145,21 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 | **Hide smooth edges** | Declutter tangent patch-seam edges (e.g. between adjacent NURBS patches of one conceptually-curved surface on an imported STEP file) while keeping genuine feature edges — ticked when smooth edges are hidden. Off by default, so an existing model looks unchanged until you opt in |
 | **Snap to grid** | While dragging the [Transform Gizmo](#transform-gizmo) in Translate mode, round the move to whole multiples of the **Grid size** field (view-controls Appearance group, default `1`) — off by default |
 | **Snap to points** | While dragging the gizmo, snap a moved solid's nearest corner onto a nearby existing `point-N` vertex (any B-rep vertex or standalone point in the model) once it's within about 1% of the model's size — off by default. Both toggles can be on together; grid-snap applies once to the whole dragged group, point-snap then applies per solid, so different solids may snap to different nearby points |
-| **Screenshot…** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) |
+| **Pane layout** | Four mutually-exclusive layouts over the same scene — **1×1** (single view), **1×2** (two side-by-side columns), **2×1** (two stacked rows), **2×2** (quad) — each pane an independent camera (direction/up/ortho) over the single WebGL canvas; display mode, clip plane, selection, parts colours, overlays, and markup stay shared across all panes. Orbit, pan, zoom, the Persp/Ortho toggle, and the orientation cube all work per pane, and clicking a pane makes it the one the view-control buttons act on. All panes of a new layout start as copies of the current view; collapsing keeps whichever pane you were last in. Persisted to `<model>.view.json` alongside camera direction (reopens exactly as you left it, including the per-pane cameras — older sidecars without a layout still restore sensibly to single-pane) |
+| **Link cameras across tabs** | Share the focused pane's camera (direction/up/ortho) across all open CAD Preview tabs — orbiting one tab's view mirrors in the others within ~500 ms, re-framed to each document's own extents. Provider-level on/off (one checkbox for all tabs), session-only, never written to `.view.json` |
+| **Screenshot…** | Save the current 3D view as a PNG via a Save dialog (see [Taking a Screenshot](#taking-a-screenshot)) — in a split view this captures the whole quad |
 
 **Select ▾**
 
 ![The Select menu: Selection mode plus the Point/Vol/Surf/Line pick modes.](/screenshots/select-menu.png)
 
-**Selection mode** toggles entity picking; the **Point · Vol · Surf · Line** row chooses what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). Pick modes a given file format can't offer are greyed out.
+**Selection mode** toggles entity picking; the **Point · Vol · Surf · Line** row chooses what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). Pick modes a given file format can't offer are greyed out, and a filter form below the row lets you **select by shape instead of by clicking**: faces — `Normal ±X/±Y/±Z`, `Planar`, `Area ≥/≤`, `Largest/Smallest N`; lines — `Along X/Y/Z`, `Length ≥/≤`, `Longest/Shortest N` — plus a `No seams` toggle that skips tangent seam edges. `Vol`/`Point` modes grey the whole form (a volume-level predicate would need group deduplication deferred with Phase 2). **Select** replaces the current selection; **Add** unions into it.
 
 **Measure ▾**
 
 ![The Measure menu: Measure mode, the four tools, and Clear measurement.](/screenshots/measure-menu.png)
 
-**Measure mode** toggles measurement picking; the tool row selects **Distance**, **Length**, **Angle**, or **Radius**, and **Clear measurement** discards the current one (see [Measuring](#measuring)). The result appears on its own line just below the toolbar, so it stays readable with the menu closed. A **Saved** list at the bottom of the panel shows any pinned annotations (📌, see [Pinning a measurement](#pinning-a-measurement) below) — screenshot not yet regenerated for this row, see `doc/development.md`.
+**Measure mode** toggles measurement picking; the tool row selects **Distance**, **Length**, **Angle**, or **Radius**, and **Clear measurement** discards the current one (see [Measuring](#measuring)). The result appears on its own line just below the toolbar, so it stays readable with the menu closed. A **Saved** list at the bottom of the panel shows any pinned annotations (📌, see [Pinning a measurement](#pinning-a-measurement) below).
 
 **Markup ▾**
 
@@ -174,13 +185,89 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Zoom buttons** — Dolly in or out by a fixed factor.
 - **Fit** — Same as the toolbar Fit button (reframe in current orientation).
 - **Ctr** — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
-- **Clip group** — Enable a live section/clipping plane along **X**, **Y**, or **Z**, then drag the offset slider to sweep it across the model's bounding box (`-1` = min face, `0` = centre, `1` = max face). The cross-section is solid-filled, not see-through, and also applies to the FE Mesh overlay when shown. Turning it off instantly restores the full model.
+- **Clip group** — Enable a live section/clipping plane, then drag the offset slider to sweep it across the model's bounding box (`-1` = the min-side face, `0` = centre, `1` = the max side), measured along whichever normal is active. The cross-section is solid-filled, not see-through, and also applies to the FE Mesh overlay when shown. Turning it off instantly restores the full model.
+
+  The plane can be **any** direction, not just an axis:
+  - **X / Y / Z** are fast presets.
+  - **Face** clips along a selected planar face — select exactly one face in **Surf** mode and click it. The plane is oriented so the model is *kept* rather than cut away entirely, so for a face on the outside of the part nothing is cut until you drag the slider, which then sweeps inward from that face. Picking a curved face reports which surface type it found instead of applying a meaningless plane. B-rep sources only.
+  - **3 Pts** clips through three selected points — select exactly three in **Point** mode. The result doesn't depend on the order you clicked them. Three points in a straight line are rejected with an explanation.
+
+  Once a custom normal exists, a fourth **N** segment appears beside X/Y/Z showing it (hover for the vector and where it came from). It stays selectable, so you can flip to an axis preset to look at something and flip straight back without re-picking. The custom normal is saved to `<model>.view.json` along with everything else in the panel.
+- **Planes group** — Named **construction planes**, saved beside the model in `<model>.planes.json` so they survive closing the file. **Save clip** stores whatever the Clip group is currently showing; **Enter…** reveals fields for typing a point and a normal directly, which is the only way to author a plane with no geometry to pick. Each row offers **Use** (apply it as the clip — the same path the Face/3 Pts buttons take, so a saved plane behaves identically to a freshly derived one), rename, and delete. Hover a row for its point, normal, and where it came from.
+
+  **A plane stays put.** It stores the actual vectors, not a reference to the face it came from, so an edit that renumbers face ids leaves it exactly where you saved it — unlike Part and annotation assignments, which are re-matched geometrically. See [Construction Planes Sidecar](./file-formats.md#construction-planes-sidecar-modelplanesjson).
 - **Appearance group** — A background-colour swatch (live preview only — the session-only override always wins over the [`cadPreview.background` setting](#settings) until you reload), an opacity slider for the whole model, a **Persp / Ortho** button toggling between perspective and orthographic projection (orbit/pan/zoom, picking, and the orientation cube all keep working under either projection), a **Units** dropdown (mm/cm/m/in/ft, see [Units](#units) below), and a **Grid size** field controlling the [Transform Gizmo](#transform-gizmo)'s Snap to grid increment (see **View ▾** above — unrelated to the display grid's own Grid toggle). For a meshio++-imported source that declares point or cell scalar data (temperatures, stresses, …), a **Colour by field** dropdown also appears here — picking a field paints the model as a viridis colour ramp with a min/max legend; picking "None" reverts. Background/opacity/units/grid-size/colour-by-field stay session-only (never exported/persisted); colour-by-field additionally resets whenever an edit is applied, since a field's values only stay meaningful for the model's original, unedited geometry.
 - **Display group** — Five mutually exclusive rendering modes, replacing the old standalone Wireframe toolbar toggle: **Shaded** (the default, lit faces), **Wire** (faces rendered as a mesh of lines), **X-Ray** (translucent faces so edges show through), **Hidden** (edges of occluded geometry shown faintly through solid faces, full-strength where actually visible), and **Flat** (unlit, constant-colour faces — no lighting gradient, useful for reading true part colours without shading artifacts).
 
-![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, Appearance, and Display.](/screenshots/view-controls.png)
+![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, Planes, Appearance, and Display.](/screenshots/view-controls.png)
 
 **The camera direction/up vector, Persp/Ortho, Display mode, and the Clip plane are all saved automatically** to a `<model>.view.json` sidecar and restored the next time you open the same file, so reopening a large assembly picks up right where you left off instead of always resetting to the default isometric — see [View State Sidecar](./file-formats.md#view-state-sidecar-modelviewjson) for the format. Applying an edit reframes in your CURRENT direction rather than snapping back to the saved (or default) one. Background colour, opacity, the Units dropdown, and Colour by field remain purely session-only, as does explode-preview state (the *committed* `explode` op itself is saved in `.edits.json` like any other edit).
+
+### Explaining the geometry under the cursor
+
+With a pick mode active (**Select ▾**), two things explain what you are pointing at.
+
+**Hovering** shows a small tooltip with the entity's id (`face-12`, `edge-3`, `solid-0`) and which
+of your applied ops mention that id. This is the quickest way to read your own `.edits.json`: the
+ids in the sidecar are exactly the ids under your cursor. It says *mentions*, not *acts on*,
+deliberately — ids are positional, so the same `face-12` in two different ops can refer to
+different geometry once an op in between renumbers things.
+
+**Clicking** additionally opens an inspector card in the bottom-left corner, classifying the entity
+analytically: a planar / cylindrical / conical / spherical / toroidal face, or a straight /
+circular / elliptical / spline edge. It lists **only the measurements that classification gives
+meaning to** — a plane gets its area, normal, and a point on its plane; a cylinder gets no normal
+at all, because a curved face has no single one.
+
+The card needs the CAD kernel, so it is **B-rep only** (STEP/IGES/BREP) and appears on selection
+rather than on hover — a triangle mesh has no analytic surface type to report, and a fine-faceted
+prism is indistinguishable from a cylinder in triangles.
+
+**Right-clicking** an entity offers computed selection groups with their member counts — "Same
+facing (3)", "Planar faces (19)", "Area ≤ this (36)" for a face; "Parallel to this", "Length ≥/≤
+this" for an edge. Hovering a row previews exactly what choosing it would select; clicking replaces
+the selection, and shift-clicking adds to it.
+
+These are the same predicates as the **Select ▾** panel's filter form, with one difference that
+makes them worth reaching for: **the entity you right-clicked supplies the number**. "Area ≤ this"
+is the filter form's *Area ≤* with the threshold already filled in. Groups are offered for Surf and
+Line modes only — the same modes the filter form supports — and a group that would select only the
+entity you clicked is not offered at all.
+
+### Macros
+
+The **Macros** sidebar panel saves a set of edits you have already applied as a named, reusable
+script, so a bolt pattern or a standard bracket treatment does not have to be rebuilt by hand every
+time.
+
+**Save current** records the current edit history under a name you choose; the document's own
+parametric variables come along as the macro's parameters. Each saved macro then lists those
+parameters with an editable field seeded from its saved default — change one and press **Run** to
+apply the macro at the new values.
+
+Running a macro pushes its ops onto the ordinary edit history, so it is undoable, visible in the
+history list, and removable op-by-op exactly like a hand-applied edit — there is no separate "macro"
+state to reason about.
+
+Macros live in `cad-preview-macros.json` in the model's own folder, shared by every model there.
+That is the **same file** the MCP tools read and write, so a macro you record by hand is directly
+runnable by an agent and vice versa.
+
+### Theme
+
+The 3D scene follows VS Code's active colour theme. Switching between a light, dark, or
+high-contrast theme repaints the background, the default face/edge/point colours, the grid, the
+scene lighting, and the FE mesh overlay immediately — no reload, and nothing is written to any
+sidecar.
+
+**Colours you chose yourself are never re-tinted.** A Part's colour swatch, and a per-part FE mesh
+colour, are your data: they win over the themed default, so a theme switch leaves them exactly as
+you set them. The same applies to a background you picked by hand in the Appearance group — once
+you drag that swatch, your choice wins for the rest of the session.
+
+Two things deliberately do *not* follow the theme: the orientation cube's red/green/blue axis
+arrows (an axis-colour convention shared across CAD tools, not a theme detail), and a live
+operation preview's intent tint, which is regenerated whenever the draft changes anyway.
 
 ### Units
 
@@ -225,7 +312,9 @@ For a STEP/IGES/BREP model, a **⟟ Exact** button appears next to a completed D
 
 #### Pinning a measurement
 
-A **📌 Pin** button appears next to a completed measurement result on any source kind (unlike **⟟ Exact**, which is B-rep only). Clicking it saves the result as a persisted **annotation** — a "Saved" list at the bottom of the **Measure ▾** panel shows every pinned measurement, with a **Show** action (re-displays that overlay, no recompute) and a **✕** to delete it. Annotations survive closing the file, saved to a `<model>.annotations.json` sidecar next to the CAD source (the CAD file itself is still never touched).
+A **📌 Pin** button appears next to a completed measurement result on any source kind (unlike **⟟ Exact**, which is B-rep only). Beside it sit three small optional tolerance fields — **nom**, **+**, and **−**. Fill at least **nom** and **+** (leave **−** blank for a symmetric ± band) and the pinned annotation records that tolerance band alongside the measured value; pinning with only **nom** filled still pins, but tells you no band was recorded. Clicking **Pin** saves the result as a persisted **annotation** — a "Saved" list at the bottom of the **Measure ▾** panel shows every pinned measurement, with a **Show** action (re-displays that overlay, no recompute) and a **✕** to delete it. Annotations survive closing the file, saved to a `<model>.annotations.json` sidecar next to the CAD source (the CAD file itself is still never touched).
+
+A completed 2-point measurement (Distance or Angle) now renders as an actual **dimension**: arrowheads at both measured points, short witness marks, and the value label — not just a bare line. A toleranced pin shows its band in the label (`12.5 mm [10 ±0.05]`), and if the frozen measurement falls outside its own band, both the re-displayed label frame and its Saved-list row are coloured red — a presentation choice derived from the stored facts; nothing stores a pass/fail verdict. Pinned annotations also appear as dimension glyphs (extension lines, arrowheads, value labels) in **File ▾ → Export Silhouette SVG/DXF…** drawings.
 
 Unlike Markup strokes (screen-space pixels with no 3D anchoring at all), a pinned annotation stays attached to the actual entity it measured — a geometric best-effort match runs automatically whenever you apply a topology-changing edit elsewhere on the model, the same matching that already keeps Parts assigned correctly across edits. If the specific entity an annotation anchored to is later removed or fused away (a boolean, for example), the annotation degrades honestly: its row in the Saved list goes struck-through and **Show** disables, rather than silently pointing at the wrong geometry.
 
@@ -267,6 +356,8 @@ An inserted part opens as its own document rather than merging into whatever mod
 
 The **Edits** panel (below the Parts panel) applies non-destructive **edit operations** to the model. Edits never touch the CAD file — they are saved as an ordered, replayable op-list in a `<model>.edits.json` sidecar and re-applied each time you open the file.
 
+Every parameter form previews **live**: while a form is open, the viewer shows what that op *would* produce as a translucent overlay, re-computed as you type (~250 ms debounce) and coloured by intent — green where material is added, red where it is removed, blue for wire/reference results (points, lines, sketch faces), neutral for transforms and fillet/chamfer. Switching forms or changing the selection cancels the preview; only **Apply** commits anything to the history.
+
 The panel is organised into two top-level tabs — **GEOMETRY** (create new entities) and **EDIT** (modify existing ones) — sharing one undo/redo/Clear header and one operation-history list. The GEOMETRY tab is further split into **2D** (points, lines, curves, sketch profiles) and **3D** (solid primitives, holes) subtabs. Each tab shows a grid of operation buttons (icon + name); clicking a button opens its parameter form below the grid, and clicking it again collapses the form. For mesh sources the whole **2D** subtab and every other B-rep-only button grey out.
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
@@ -306,7 +397,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | --- | --- |
 | **Box / Sphere / Cylinder / Cone / Torus / Prism** | **Add** — appends a new body at that placement (no selection needed; all formats) |
 | **Wedge** | **Add** — appends a right-angular wedge: base `Size X`×`Size Y` centred at `Base ctr` in the plane ⟂ `Axis`, extruded `Height`; the far edge narrows to `Top X` (B-rep only) |
-| **Hole / C'bore / C'sink** | Select target volume(s) (**Vol** mode), place the mouth (`Mouth` + `Axis` pointing into the material), and **Cut** — drills a plain, counterbored, or countersunk hole (all formats) |
+| **Hole / C'bore / C'sink** | Select target volume(s) (**Vol** mode), place the mouth (`Mouth` + `Axis` pointing into the material), and **Cut** — drills a plain, counterbored, or countersunk hole (all formats). The **Standard** dropdown fills `Radius` (and, for a tapped size, a sensible blind `Depth`) from the ISO metric / UNC / UNF tables — pick e.g. *M6 tapped* or *M6 clearance* instead of looking the number up; the fields stay editable afterwards |
 | **Volume** (Build from selection) | Select ≥4 surfaces (**Surf** mode) that close into a shell and **Build** — sews them into a new closed solid (B-rep only) |
 
 **EDIT**:
@@ -326,7 +417,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | **Linear Pattern** | Select volumes (**Vol** mode); set a **Direction**, a **Spacing**, and a **Count** (total instances, including the original); **Apply** — appends `Count − 1` evenly-spaced copies of each selected volume (all formats) |
 | **Circular Pattern** | Select volumes (**Vol** mode); set an **Axis point** + **Axis direction**, an **Angle** step, and a **Count**; **Apply** — appends `Count − 1` copies arrayed around that axis at equal angular spacing (all formats) |
 
-Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all operations (back to the original model). To remove one specific operation without discarding everything applied after it, hover its row in the history list and click the **✕** that appears — unlike Undo, which only pops the most recent operation, this removes any row directly.
+Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all operations (back to the original model). To remove one specific operation without discarding everything applied after it, hover its row in the history list and click the **✕** that appears — unlike Undo, which only pops the most recent operation, this removes any row directly. The history is also a clickable timeline: undone-but-redoable steps appear as dimmed rows with continued numbering, and clicking **any** row — applied or dimmed — rolls the whole stack straight to that point in one step (clicking a dimmed row re-applies through it).
 
 ![The operation-history list — an ordered, individually-removable stack of applied edits.](/screenshots/edit-history.png)
 
@@ -372,6 +463,7 @@ To generate a mesh:
 | **Coarser→finer slider** | The primary control: sets the target element size (`Mesh.MeshSizeMax`), log-scaled between bbox-diagonal/5 (coarsest) and /200 (finest). The readout shows the size and an order-of-magnitude element-count estimate; a warning appears above the panel when the estimate exceeds ~1M elements |
 | **Coarse / Medium / Fine** | One-click presets: element size = bbox diagonal / 10, / 20 (the default), / 50 |
 | **Part sizes** | One size input per defined Part (visible once parts exist) — the same per-part target size as the Parts panel's input, mirrored here; blank inherits the global size |
+| **Engine** | **Gmsh** (default) or **fTetWild** — an alternative volume mesher for a dirty mesh-format 3D source (holes, self-intersections, non-manifold edges) that Gmsh's own boundary reclassification rejects or silently produces no elements for. Under fTetWild, Size min / 2D-3D algorithm / Element order / Element shape / STL angle are all greyed (unused); the size slider still applies, via fTetWild's own envelope/target-edge-length settings under Advanced. Requesting fTetWild for a B-rep source or a non-3D dimension falls back to Gmsh automatically |
 | **Advanced settings** (collapsed) | The raw Gmsh options below — expand to reveal them ([shown here](/screenshots/fe-mesh-advanced.png)) |
 | **Dimension** | 1D (edges only), 2D (surface triangulation), or 3D (volume tetrahedralization) |
 | **Size min / max** | Bounds on generated element size (`Mesh.MeshSizeMin`/`Mesh.MeshSizeMax`); **Size max** is the same value the slider drives, shown numerically (clearing it restores the bbox-derived default) |
@@ -379,7 +471,8 @@ To generate a mesh:
 | **Element shape** | **Triangles / Tetrahedra** (default), **Quads / Hexahedra** (recombines the mesh into quadrilaterals in 2D / hexahedra in 3D), or **Hex-Dominant (3D)** (a mixed tet/hex mesh via Gmsh's RTree recombiner — not exportable to Kratos MDPA, use a different export format) |
 | **Element order** | Linear (1) or quadratic (2) elements — quadratic adds mid-side nodes (the overlay still draws the corner geometry) |
 | **Optimize** | Run Gmsh's mesh optimizer after generation |
-| **STL angle (°)** | Surface-classification angle for mesh/STL sources (disabled for B-rep documents, which never reclassify) |
+| **STL angle (°)** | Surface-classification angle for mesh/STL sources (disabled for B-rep documents, which never reclassify) — only used by engine: Gmsh |
+| **fTetWild envelope (eps)** | fTetWild's envelope size, as a fraction of the model's bounding-box diagonal — smaller stays closer to the input surface (slower). Only used by engine: fTetWild |
 | **▶ Generate** | Run Gmsh now with the current options and show the result as an overlay |
 | **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, MED, CGNS, XDMF, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), OFF, VTK XML Unstructured (`.vtu`), HDF Mesh Format (`.hmf`), AVS UCD (`.avs`), COMSOL Mphtxt (`.mphtxt`), Netgen (`.vol`), FLAC3D (`.f3grid`), Well-Known Text (`.wkt`), or Flux (`.pf3`). Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and support linear or quadratic tetrahedra/hexahedra/triangles/quadrilaterals. MED/CGNS/XDMF and the 8 trailing formats (VTU through Flux) are all bridged through meshio++ (this Gmsh build has no writer for any of them) — MED preserves named Parts as **named MED groups**, and XDMF also writes a companion `.h5` file alongside the `.xdmf`. |
 | **Export unit `<select>`** | A real geometric scale applied to the exported file's geometry before Gmsh sees it — mirrors the model Export command's own unit picker (see [Units](#units)). Defaults to **mm** (native, no conversion); **Size min/max** and any per-part mesh size are automatically rescaled to match, so relative mesh density stays the same regardless of the chosen unit. Only affects **📤 Export** — **▶ Generate**'s overlay always meshes at native mm, since it has no exported file for a unit to matter to. |
@@ -422,17 +515,24 @@ B-rep targets are converted by OpenCascade.js's own writers, so STEP ↔ IGES �
 
 ### Exporting a Silhouette SVG
 
-Pick **File ▸ Export Silhouette SVG…** (or run `CAD Preview: Export Silhouette SVG…` from the Command Palette with a CAD Preview tab focused) to write a 2D **outline drawing** of the model as an `.svg` file. This is separate from the Export… flow above — an SVG is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
+Pick **File ▸ Export Silhouette SVG…** (or **Export Silhouette DXF…** for the DXF variant; both also exist as `CAD Preview: Export Silhouette …` commands) to write a 2D **outline drawing** of the model as an `.svg` or `.dxf` file.
+
+**For a drawing that shows what is behind the part, pick File ▸ Export Technical Drawing… instead.**
+That one runs hidden-line removal: it draws interior feature edges as well as the outline, and
+renders anything occluded as a dashed line — so a through-hole's far rim appears dashed rather than
+missing. It shares the same view and unit picks, and writes SVG or DXF (where hidden geometry goes
+on a `HIDDEN` layer you can toggle in a CAD tool). It is still a single view with no dimensions:
+treat it as a review or illustration artifact and measure anything you need to be sure of. This is separate from the Export… flow above — an outline is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
 
 1. **Pick a view.** The first entry is **Current view** — the angle you are currently looking at — followed by Front, Back, Top, Bottom, Left, Right, and Iso. Pressing Escape here cancels the export.
 2. **Pick an export unit.** The same quick-pick every other export shows, defaulting to native mm; Escape here still exports (at mm), it doesn't cancel.
-3. **Choose a destination** in the native Save dialog.
+3. **Choose a destination** in the native Save dialog (the menu item you picked decides SVG vs DXF and the default extension).
 
 > **It's an outline, not a dimensioned 2D technical drawing — there is no hidden-line removal.** Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette (a hole seen face-on draws as a circle; the same hole seen edge-on draws nothing). OpenCascade's hidden-line machinery is entirely unavailable in the bundled WASM build, so the outline is derived from triangle adjacency instead — which is also why this works for mesh files, not just B-rep. Use it for review notes, documentation figures, and laser/plotter outlines; use the [Measurement](#measuring) tools for any dimension you need to be sure of.
 
 Works for STEP/IGES/BREP (with your edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (from the raw file — edits are **not** baked in, since mesh edits can't be replayed outside the viewer). meshio-only sources (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit) are rejected.
 
-The output is a single self-contained `<path>` with no external references, at **1 SVG user unit = 1 model unit** and a physical size in millimetres — so a drawing exported from a native (mm) model prints 1:1 in any vector tool. One caveat: the outline depends on consistent triangle winding, so a mesh with mixed winding (as some exporters and hand-edited files produce) draws spurious interior lines.
+The SVG output is a single self-contained `<path>` with no external references, at **1 SVG user unit = 1 model unit** and a physical size in millimetres — so a drawing exported from a native (mm) model prints 1:1 in any vector tool. The DXF output is minimal model-space `ENTITIES`: chained collinear outline runs become `LWPOLYLINE`s and unmatched singletons stay independent `LINE`s. One caveat: the outline depends on consistent triangle winding, so a mesh with mixed winding (as some exporters and hand-edited files produce) draws spurious interior lines.
 
 ### Comparing Models
 
@@ -444,7 +544,7 @@ A results tab opens beside the editor showing:
 - **Removed** solids — present only in A.
 - **Added** solids — present only in B.
 
-This is a display-only report (no 3D view, no merge) — to actually look at both models side by side, open each in its own tab and use VS Code's split editor layout. STEP/IGES/BREP, STL, OBJ, PLY, and glTF/GLB are all supported, in any combination; the meshio-only formats (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit) are the one remaining exception, since they never expose a triangle array outside their own WASM module. For a STEP/IGES/BREP file, the comparison reflects its currently-applied edits (its `.edits.json` sidecar, if any); for an STL/OBJ/PLY/glTF file, edits are **not** baked in (there's no way to replay a mesh edit outside the viewer) — a warning banner says so if the file has pending edits, and the comparison runs against the raw file as-is.
+This is a display-only report (no 3D view, no merge) — to actually look at both models side by side, open each in its own tab and use VS Code's split editor layout. STEP/IGES/BREP, STL, OBJ, PLY, and glTF/GLB are all supported, in any combination; the meshio-only formats (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit) are the one remaining exception, since they never expose a triangle array outside their own WASM module. For a STEP/IGES/BREP file, the comparison reflects its currently-applied edits (its `.edits.json` sidecar, if any); for an STL/OBJ/PLY/glTF file, edits are **not** baked in (there's no way to replay a mesh edit outside the viewer) — a warning banner says so if the file has pending edits, and the comparison runs against the raw file as-is.
 
 ## Known Limitations
 
@@ -452,9 +552,9 @@ This is a display-only report (no 3D view, no merge) — to actually look at bot
 - **No glTF animations.** Animation playback is not implemented — only the first frame (bind pose) is shown.
 - **No BRep-embedded geometry in glTF.** Only triangulated `mesh` primitives inside glTF are rendered.
 - **No Compare Models / Mesh Health support for the meshio-only formats.** STEP/IGES/BREP/STL/OBJ/PLY/glTF are all supported (any combination) — glTF included since a dedicated host-side parser shipped, cross-validated against three.js's own `GLTFLoader`. VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit remain excluded: meshio++'s WASM module converts them to a boundary surface for display but never hands a triangle array back to JS, so there's nothing for the host to match on (they still open and preview normally).
-- **An `.xdmf` this extension itself exports usually can't be re-meshed after reimport.** A separate, pre-existing meshio++ 10.14.0 defect (not fixable in this codebase) means its own reader can't parse the "mixed cell type" topology this extension's meshing (`Mesh.SaveAll=1`, always on) produces. Opening the file still works normally; clicking **▶ Generate** on the reopened document fails with a clear error. A single-cell-type XDMF from a different tool is unaffected.
+- **An `.xdmf` this extension itself exports usually can't be re-meshed after reimport.** A separate, pre-existing meshio++ 10.20.2 defect (not fixable in this codebase) means its own reader can't parse the "mixed cell type" topology this extension's meshing (`Mesh.SaveAll=1`, always on) produces. Opening the file still works normally; clicking **▶ Generate** on the reopened document fails with a clear error. A single-cell-type XDMF from a different tool is unaffected.
 - **Compressed glTF isn't parsed host-side.** A `.gltf`/`.glb` requiring `KHR_draco_mesh_compression` or `EXT_meshopt_compression` is rejected with a clear error by Compare Models / Mesh Health / Promote to B-rep / Silhouette SVG — the host-side parser can't decode compressed buffers. Viewing such a file in the 3D view is unaffected.
-- **Mesh Health and Promote to B-rep cap out at 50,000 triangles.** Both build one OCCT face per triangle and sew them, so a larger mesh is refused with an actionable error rather than exhausting the WASM heap. Most likely to come up with glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY — decimate first if you hit it.
+- **Mesh Health and Promote to B-rep cap out at 50,000 triangles.** Both build one OCCT face per triangle and sew them, so a larger mesh is refused with an actionable error rather than exhausting the WASM heap. Most likely to come up with glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY — decimate first, or use the Mesh Health panel's **Repair (robust)…** button (fTetWild-based, no equivalent triangle-count ceiling), if you hit it. **Repair (robust)…** writes a NEW watertight STL file — tetrahedralize the source with fTetWild, keep the resulting volume mesh's own boundary — enabled once Check Healability shows at least one component that did NOT close; re-running Check Healability / Promote to B-rep on the repaired output then typically succeeds where the original could not.
 - **Silhouette SVG has no hidden-line removal.** It draws an outline, not a dimensioned 2D technical drawing — see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg).
 - **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in-process in the Node extension host — there is no streaming.
 - **One-time WASM startup.** The first B-rep file open triggers OpenCascade.js initialization (~300 ms on a typical machine). Subsequent B-rep files open faster because the kernel is memoized.

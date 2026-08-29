@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { routeFile, MESHIO_FORMATS, AMBIGUOUS_MESHIO_EXTENSIONS } from "./fileRouter";
+import { routeFile, MESHIO_FORMATS, AMBIGUOUS_MESHIO_EXTENSIONS, ambiguityCaveatFor, matchExtension } from "./fileRouter";
 
 describe("routeFile", () => {
   it("routes STEP files to the OCCT strategy", () => {
@@ -59,9 +59,83 @@ describe("routeFile", () => {
     expect(routeFile("m.off")).toBeUndefined();
   });
 
+  it("routes OpenFOAM case marker files to the meshio strategy", () => {
+    expect(routeFile("case.foam")).toEqual({ strategy: "meshio", format: "openfoam" });
+  });
+
+  describe("compound extensions (GiD's .post.msh)", () => {
+    it("routes .post.msh to gid, NOT to gmsh via its .msh tail", () => {
+      // The whole reason routeFile matches the longest suffix first: `.msh`
+      // alone is registered to gmsh, so a last-dot-only lookup silently
+      // resolved every GiD file to a Gmsh parse that then failed.
+      expect(routeFile("beam.post.msh")).toEqual({ strategy: "meshio", format: "gid" });
+      expect(routeFile("/abs/path/beam.post.msh")).toEqual({ strategy: "meshio", format: "gid" });
+      expect(routeFile("BEAM.POST.MSH")).toEqual({ strategy: "meshio", format: "gid" });
+    });
+
+    it("still routes a plain .msh to gmsh", () => {
+      expect(routeFile("beam.msh")).toEqual({ strategy: "meshio", format: "gmsh" });
+    });
+
+    it("does NOT route the .post.res results sibling — it is not an openable document", () => {
+      expect(routeFile("beam.post.res")).toBeUndefined();
+    });
+
+    it("does not claim the binary/hdf5 GiD flavours, which have no verified fixture here", () => {
+      expect(routeFile("beam.post.bin")).toBeUndefined();
+      expect(routeFile("beam.post.h5")).toBeUndefined();
+    });
+  });
+
+  describe("longest-suffix matching is behavior-preserving for single-extension paths", () => {
+    it("resolves an unregistered leading segment by falling through to the final extension", () => {
+      expect(routeFile("my.backup.stl")).toEqual({ strategy: "three", format: "stl" });
+      expect(routeFile("v1.2.3.step")).toEqual({ strategy: "occt", format: "step" });
+    });
+
+    it("ignores dots in directory components", () => {
+      expect(routeFile("/my.dir/model.stl")).toEqual({ strategy: "three", format: "stl" });
+      expect(routeFile("/my.dir/model")).toBeUndefined();
+    });
+
+    it("returns undefined for a trailing dot", () => {
+      expect(routeFile("model.")).toBeUndefined();
+      expect(routeFile("a.model.")).toBeUndefined();
+    });
+  });
+
+  describe("matchExtension", () => {
+    it("returns the registered key the route matched, longest suffix first", () => {
+      expect(matchExtension("beam.post.msh")).toBe("post.msh");
+      expect(matchExtension("beam.msh")).toBe("msh");
+      expect(matchExtension("my.backup.stl")).toBe("stl");
+    });
+
+    it("returns undefined when nothing is registered", () => {
+      expect(matchExtension("notes.txt")).toBeUndefined();
+      expect(matchExtension("noextension")).toBeUndefined();
+    });
+  });
+
+  describe("ambiguityCaveatFor", () => {
+    it("reports the caveat for a genuinely ambiguous extension", () => {
+      expect(ambiguityCaveatFor("m.msh")).toContain("Gmsh");
+      expect(ambiguityCaveatFor("m.inp")).toContain("Abaqus");
+    });
+
+    it("does NOT hand .msh's caveat to a .post.msh — it routes to gid, not gmsh", () => {
+      expect(ambiguityCaveatFor("beam.post.msh")).toBeUndefined();
+    });
+
+    it("returns undefined for an unambiguous or unsupported extension", () => {
+      expect(ambiguityCaveatFor("m.stl")).toBeUndefined();
+      expect(ambiguityCaveatFor("notes.txt")).toBeUndefined();
+    });
+  });
+
   it("MESHIO_FORMATS lists exactly the formats EXTENSION_MAP routes to the meshio strategy, with no duplicates", () => {
     const formatsInMap = new Set<string>();
-    for (const ext of ["vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "msh", "msh2", "inp", "unv", "su2", "mesh"]) {
+    for (const ext of ["vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam", "msh", "msh2", "inp", "unv", "su2", "mesh", "post.msh"]) {
       const route = routeFile(`x.${ext}`);
       if (route?.strategy === "meshio") formatsInMap.add(route.format);
     }

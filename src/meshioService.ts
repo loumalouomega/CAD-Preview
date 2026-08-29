@@ -1,8 +1,8 @@
 // meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM
 // singleton alongside OCCT (occtService.ts) and Gmsh (gmshService.ts), used to
-// import mesh-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA) as viewable
-// documents and to export generated FE meshes to formats Gmsh's own writers
-// cannot produce (MED, CGNS).
+// import mesh-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/GiD) as
+// viewable documents and to export generated FE meshes to formats Gmsh's own
+// writers cannot produce (MED, CGNS, GiD, …).
 //
 // UNLIKE gmsh-wasm/opencascade.js, this package is loaded with a DYNAMIC
 // `await import(...)`, not a static top-of-file `import` — verified against
@@ -36,9 +36,26 @@
 // `dist/meshioplusplus_wasm.mjs`) — like OCCT, unlike gmsh 0.2.0's raw-fd
 // writes — so `mcpServer.ts`'s existing top-of-file stdout rebinding already
 // covers it; no new suppression code is needed here.
+//
+// Re-confirmed against the 10.20.2 glue on the dependency bump: still exactly
+// one console.log + one console.error, zero raw fd writes — and still exactly
+// three `import.meta.url` self-locations, so the package must keep being
+// shipped as real files under node_modules (.vscodeignore carve-out) rather
+// than copied into dist/ the way OCCT's and Gmsh's `.wasm` binaries are.
+// `resolveVariant()` is byte-identical across that bump too, so `{variant:
+// "seq"}` below remains load-bearing, not vestigial.
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { summarizeQuality, type QualitySummary } from "./meshQuality";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MeshioApi = any;
+
+/** The subset of meshio++'s `Mesh` this module builds by hand (see
+ * `analyzeMeshioSurfaces`) — the full type lives in the package's own `.d.ts`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MeshioMesh = any;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _meshioPromise: Promise<MeshioApi> | null = null;
@@ -78,7 +95,7 @@ export function resetMeshio(): void {
  * each kernel's fault handling staying self-contained in its own service file.
  */
 function isMeshioWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table/i.test(message);
 }
 
 /**
@@ -147,7 +164,7 @@ export interface MeshioCompanion {
  * always written under its own real/referenced basename, never renamed.
  *
  * **Fixes ONLY the missing-companion failure, not every XDMF re-import** —
- * a SEPARATE, pre-existing meshio++ 10.14.0 bug means an XDMF whose mesh
+ * a SEPARATE, pre-existing meshio++ 10.20.2 bug means an XDMF whose mesh
  * mixes cell types (points/lines/triangles/tets — exactly what this
  * codebase's own `generate_mesh` always produces, since `Mesh.SaveAll=1` is
  * forced unconditionally) still fails to re-import, with a DIFFERENT error
@@ -220,6 +237,201 @@ export async function convertToStlBoundary(
   try {
     m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
     return m.FS.readFile(outPath);
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    unstageMeshioSource(m, allPaths, [outPath]);
+  }
+}
+
+/**
+ * Per-array facts about a source's point/cell data — what `readMeshioMetadata`
+ * cannot supply.
+ *
+ * `readMetadata` (the cheap call that reads a file's *shape* without its heavy
+ * arrays) returns names only. Component width lives on the full `Mesh`, so
+ * knowing whether an array is a plain scalar requires `dataInfo`, which
+ * requires a real `readMesh`. That is why this is a SEPARATE entry point rather
+ * than a widening of `readMeshioMetadata`: `provider.ts` and `mcpTools.ts` both
+ * call that one on every document open and depend on its cost.
+ *
+ * The payoff is a real UI wart. Today the colour-by-field picker offers every
+ * declared array, and a multi-component one fails only *after* the click —
+ * having read the whole file and run a full `readMesh` + `extractSurface` — so
+ * the user sees the dropdown snap back to "None" with a message that names
+ * three possible causes because the failure carried no discriminator. With
+ * `numComponents` known up front, the entry is disabled with a stated reason.
+ */
+export interface MeshioDataArrayInfo {
+  name: string;
+  location: "point" | "cell";
+  numComponents: number;
+  /** Over FINITE values only — meshio++'s own convention. */
+  min: number;
+  max: number;
+  numNan: number;
+  /** False when a multi-block array disagrees with itself about width. */
+  consistent: boolean;
+}
+
+/**
+ * Reads per-array info for a meshio source. **Never throws** — the same
+ * supplementary-information contract as `readMeshioMetadata`; an unreadable
+ * file yields `[]` and the caller simply falls back to name-only behaviour.
+ */
+export async function readMeshioDataInfo(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<MeshioDataArrayInfo[]> {
+  let m: MeshioApi;
+  try {
+    m = await getMeshio();
+  } catch {
+    return [];
+  }
+  let allPaths: string[] = [];
+  try {
+    const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+    allPaths = staged.allPaths;
+    const mesh = m.readMesh(staged.primaryPath, meshioFormat);
+    const infos = m.dataInfo(mesh) as Array<Record<string, unknown>>;
+    const out: MeshioDataArrayInfo[] = [];
+    for (const info of infos) {
+      const location = info.location === "point_data" ? "point" : info.location === "cell_data" ? "cell" : null;
+      if (!location) continue; // field_data is not colourable — it is not per-entity
+      out.push({
+        name: String(info.name),
+        location,
+        numComponents: Number(info.numComponents ?? 1),
+        min: Number(info.min ?? 0),
+        max: Number(info.max ?? 0),
+        numNan: Number(info.numNan ?? 0),
+        consistent: info.inconsistentBlocks !== true,
+      });
+    }
+    return out;
+  } catch (err) {
+    resetMeshioIfAbort(err);
+    return [];
+  } finally {
+    unstageMeshioSource(m, allPaths);
+  }
+}
+
+/** One declarative step in a {@link runMeshioOps} pipeline. */
+export interface MeshioOpSpec {
+  op: "clean" | "decimate" | "smooth" | "subdivide" | "refine" | "agglomerate" | "convertCells";
+  /** `decimate`: fraction of faces to KEEP, in (0, 1]. */
+  ratio?: number;
+  /** `smooth`/`refine`: iteration / subdivision count. */
+  iterations?: number;
+  levels?: number;
+  /** `smooth`: `"taubin"` (default, shrink-free) or `"laplacian"`. */
+  method?: string;
+  /** `convertCells`: `"linearize" | "simplexify" | "elevate"`. */
+  mode?: string;
+  /** `agglomerate`: target cells per group. */
+  targetGroupSize?: number;
+}
+
+export interface MeshioOpsResult {
+  bytes: Uint8Array;
+  /** One entry per requested step, in order — including the ones that did nothing. */
+  steps: Array<{ op: string; applied: boolean; detail: string }>;
+  warnings: string[];
+}
+
+/**
+ * Runs a declarative list of meshio++ mesh operations over a source file and
+ * writes the result.
+ *
+ * **One entry point for the whole family, not one per operation** — the same
+ * shape `run_parametric_script` established: a declarative document, a single
+ * call, and a per-step report so a caller can see which steps actually did
+ * something. A step that fails is recorded and skipped rather than aborting
+ * the pipeline, matching this codebase's standing graceful-degradation rule
+ * for op replay.
+ *
+ * **Built over the per-op functions, not meshio++'s own `runPipeline`.** That
+ * one takes an undocumented settings object (it rejects the obvious `mesh`
+ * key), so driving it would mean reverse-engineering a schema for no gain;
+ * the per-op calls are simple positional functions whose shapes are verified.
+ *
+ * Throws (via `wrapMeshioFault`) rather than degrading: unlike the read-side
+ * diagnostics in this file, this one PRODUCES a file, and silently writing an
+ * unmodified mesh would be worse than an error.
+ */
+export async function runMeshioOps(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  ops: readonly MeshioOpSpec[],
+  outExtension: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<MeshioOpsResult> {
+  const m = await getMeshio();
+  const outPath = `/ops.${outExtension}`;
+  let allPaths: string[] = [];
+  const steps: MeshioOpsResult["steps"] = [];
+  const warnings: string[] = [];
+  try {
+    const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+    allPaths = staged.allPaths;
+    let mesh = m.readMesh(staged.primaryPath, meshioFormat);
+
+    for (const spec of ops) {
+      try {
+        switch (spec.op) {
+          case "clean": {
+            const r = m.clean(mesh);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `welded ${r.pointsWelded}, dropped ${r.cellsDroppedDegenerate} degenerate / ${r.cellsDroppedDuplicate} duplicate` });
+            break;
+          }
+          case "decimate": {
+            const r = m.decimate(mesh, spec.ratio ?? 0.5);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `removed ${r.facesRemoved} faces, ${r.pointsRemoved} points` });
+            break;
+          }
+          case "smooth": {
+            const r = m.smooth(mesh, spec.method ?? "taubin", spec.iterations ?? 1);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `moved ${r.numNodesMoved} nodes, max displacement ${r.maxDisplacement}` });
+            break;
+          }
+          case "subdivide":
+            mesh = m.subdivide(mesh, false);
+            steps.push({ op: spec.op, applied: true, detail: "subdivided once" });
+            break;
+          case "refine":
+            mesh = m.refine(mesh, spec.levels ?? 1, false);
+            steps.push({ op: spec.op, applied: true, detail: `refined ${spec.levels ?? 1} level(s)` });
+            break;
+          case "agglomerate":
+            mesh = m.agglomerate(mesh, spec.targetGroupSize);
+            steps.push({ op: spec.op, applied: true, detail: "agglomerated" });
+            break;
+          case "convertCells":
+            mesh = m.convertCells(mesh, spec.mode ?? "simplexify", false);
+            steps.push({ op: spec.op, applied: true, detail: `mode ${spec.mode ?? "simplexify"}` });
+            break;
+          default:
+            steps.push({ op: String(spec.op), applied: false, detail: "unknown operation — skipped" });
+            warnings.push(`Unknown operation "${String(spec.op)}" was skipped.`);
+        }
+      } catch (err) {
+        // A step that cannot run is reported and skipped, never silent.
+        const detail = (err as Error)?.message ?? String(err);
+        steps.push({ op: spec.op, applied: false, detail });
+        warnings.push(`Operation "${spec.op}" was skipped: ${detail}`);
+      }
+    }
+
+    m.writeMesh(outPath, mesh);
+    return { bytes: m.FS.readFile(outPath), steps, warnings };
   } catch (err) {
     throw wrapMeshioFault(err);
   } finally {
@@ -375,9 +587,28 @@ export async function convertToStlBoundaryWithRegions(
     const cellRegions = ((mesh.regions ?? []) as any[]).filter((r) => r.kind === "cell");
     if (cellRegions.length === 0) return fallback();
 
-    const boundary = m.extractSurface(mesh, true);
+    // **The triangle-only gate is now a triangulation step, not a bail-out.**
+    // A hexahedral volume's boundary is quads, which is why this used to fall
+    // back to the plain path and silently lose region→Parts correlation for
+    // every hex/quad-boundary mesh. `convertCells(…, "simplexify", true)` splits
+    // those into triangles AND — verified against the live WASM — preserves the
+    // `surface:parent_cell` provenance array the correlation below depends on
+    // (a hexahedron's `quadx6` boundary becomes `trianglex12` with the array
+    // intact). Only run when something is actually non-triangular, so the
+    // already-triangular path stays byte-for-byte what it was.
+    let boundary = m.extractSurface(mesh, true);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const blocks = boundary.cells as any[];
+    let blocks = boundary.cells as any[];
+    if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
+      try {
+        boundary = m.convertCells(boundary, "simplexify", true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        blocks = boundary.cells as any[];
+      } catch (err) {
+        resetMeshioIfAbort(err);
+        return fallback();
+      }
+    }
     if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) return fallback();
     const parentCellBlocks: Float64Array[] | undefined = boundary.cell_data?.["surface:parent_cell"];
     if (!parentCellBlocks) return fallback();
@@ -440,6 +671,49 @@ export async function convertToStlBoundaryWithRegions(
   }
 }
 
+/**
+ * Why a field could not be read, so the caller can say which thing went wrong.
+ *
+ * This used to be a bare `null` shared by "field not found", "not a plain
+ * scalar", "boundary isn't pure triangles" and "the WASM aborted" — so
+ * `provider.ts` reconstituted a three-way *guess* and showed it to the user as
+ * a fact. The reason now travels with the failure.
+ */
+export type MeshioFieldFailureReason =
+  | "not-found"
+  | "not-scalar"
+  | "boundary-not-triangles"
+  | "no-finite-values"
+  | "empty"
+  | "kernel-fault";
+
+export interface MeshioFieldFailure {
+  reason: MeshioFieldFailureReason;
+}
+
+/** True when the result is a failure rather than values. */
+export function isMeshioFieldFailure(r: MeshioFieldValues | MeshioFieldFailure): r is MeshioFieldFailure {
+  return (r as MeshioFieldFailure).reason !== undefined;
+}
+
+/** A user-facing sentence for each reason — one cause, never a disjunction. */
+export function describeMeshioFieldFailure(reason: MeshioFieldFailureReason, field: string): string {
+  switch (reason) {
+    case "not-found":
+      return `Field "${field}" is not present in this file.`;
+    case "not-scalar":
+      return `Field "${field}" is not a plain scalar (it has multiple components per entity), so it cannot be mapped to a colour ramp.`;
+    case "boundary-not-triangles":
+      return `Colour-by-field needs a purely triangular boundary; this model's boundary contains other cell types.`;
+    case "no-finite-values":
+      return `Field "${field}" contains no finite values (all NaN or infinite).`;
+    case "empty":
+      return `Field "${field}" produced no values for this model's boundary.`;
+    case "kernel-fault":
+      return `Reading field "${field}" failed inside meshio++; the kernel has been reset — try again.`;
+  }
+}
+
 export interface MeshioFieldValues {
   /** One value per triangle CORNER, in the SAME file order as
    * `convertToStlBoundaryWithRegions`'s STL bytes (one entry per vertex of
@@ -493,7 +767,7 @@ export async function readMeshioFieldValues(
   kind: "point" | "cell",
   sourceName?: string,
   companions?: readonly MeshioCompanion[]
-): Promise<MeshioFieldValues | null> {
+): Promise<MeshioFieldValues | MeshioFieldFailure> {
   try {
     const m = await getMeshio();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -508,21 +782,23 @@ export async function readMeshioFieldValues(
     const boundary = m.extractSurface(mesh, true);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const blocks = boundary.cells as any[];
-    if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) return null;
+    if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
+      return { reason: "boundary-not-triangles" };
+    }
 
     const perCorner: number[] = [];
     if (kind === "point") {
       const arr: Float64Array | undefined = boundary.point_data?.[fieldName];
-      if (!arr) return null;
-      if ((boundary.point_data_components?.[fieldName] ?? 1) !== 1) return null; // not a plain scalar
+      if (!arr) return { reason: "not-found" };
+      if ((boundary.point_data_components?.[fieldName] ?? 1) !== 1) return { reason: "not-scalar" };
       for (const block of blocks) {
         for (let i = 0; i < block.data.length; i++) perCorner.push(arr[block.data[i]]);
       }
     } else {
       const cellArrBlocks: Float64Array[] | undefined = mesh.cell_data?.[fieldName];
       const parentCellBlocks: Float64Array[] | undefined = boundary.cell_data?.["surface:parent_cell"];
-      if (!cellArrBlocks || !parentCellBlocks) return null;
-      if ((mesh.cell_data_components?.[fieldName] ?? 1) !== 1) return null; // not a plain scalar
+      if (!cellArrBlocks || !parentCellBlocks) return { reason: "not-found" };
+      if ((mesh.cell_data_components?.[fieldName] ?? 1) !== 1) return { reason: "not-scalar" };
       const flat: number[] = [];
       for (const blockArr of cellArrBlocks) for (let i = 0; i < blockArr.length; i++) flat.push(blockArr[i]);
       for (let b = 0; b < blocks.length; b++) {
@@ -535,14 +811,327 @@ export async function readMeshioFieldValues(
         }
       }
     }
-    if (perCorner.length === 0) return null;
+    if (perCorner.length === 0) return { reason: "empty" };
+    // Over FINITE values only, matching meshio++'s own `dataInfo` convention.
+    // A single NaN previously poisoned both bounds, which then made every
+    // colour in the legend meaningless.
     let min = Infinity, max = -Infinity;
-    for (const v of perCorner) { if (v < min) min = v; if (v > max) max = v; }
+    for (const v of perCorner) { if (!Number.isFinite(v)) continue; if (v < min) min = v; if (v > max) max = v; }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return { reason: "no-finite-values" };
     return { values: Float32Array.from(perCorner), min, max };
   } catch (err) {
     resetMeshioIfAbort(err);
-    return null;
+    return { reason: "kernel-fault" };
   }
+}
+
+/**
+ * Per-component surface diagnostics from meshio++, complementing the OCCT
+ * sewing report `meshHeal.ts` already produces.
+ *
+ * **The genuinely new signal is `inconsistentPairCount`.** `meshTopology.ts`
+ * keys every edge through `edgeKey(a, b)`, which SORTS the pair — so
+ * orientation is discarded before counting and two adjacent triangles wound
+ * oppositely still register as a clean manifold edge. Verified against a
+ * hand-built tetrahedron with one face reversed: meshio reports
+ * `inconsistentPairs: 3` while boundary and non-manifold edges are both 0,
+ * i.e. geometry the existing analyzer calls perfectly clean.
+ *
+ * `boundaryEdgeCount`/`nonManifoldEdgeCount`/`degenerateTriangleCount`
+ * deliberately overlap with fields `meshTopology.ts` already computes. That
+ * overlap is the point: two independent implementations agreeing is a
+ * cross-check (`cube.stl` → 0, `holed-cube.stl` → 3 from both), and a
+ * disagreement is a finding rather than noise.
+ *
+ * **No MEMFS staging.** Unlike every other entry point in this file, this one
+ * takes an already-parsed welded soup and hands meshio++ a `Mesh` built in JS.
+ * Verified to work: these three functions accept a plain object literal, so
+ * there is no file to write, no `readMesh` to run and no re-serialization —
+ * and it can therefore run per connected component, matching
+ * `MeshHealthReport`'s existing per-component shape.
+ *
+ * **Never throws**, per this file's convention for supplementary information
+ * (`readMeshioMetadata`, `readMeshioFieldValues`): a component that meshio++
+ * cannot analyze degrades to `null` rather than failing a `check_mesh_health`
+ * that works today. Diagnostics about possibly-broken meshes are the input
+ * class most likely to trip a WASM abort, so the catch still calls
+ * `resetMeshioIfAbort` — leaving a corrupt singleton in place would silently
+ * degrade every later meshio call in the window.
+ */
+export interface MeshioSurfaceAnalysis {
+  boundaryEdgeCount: number;
+  nonManifoldEdgeCount: number;
+  /** Adjacent triangles wound in opposite directions — the signal `meshTopology.ts` cannot produce. */
+  inconsistentPairCount: number;
+  degenerateTriangleCount: number;
+  watertight: boolean;
+  /** meshio++'s own area, independent of `areaOfTriangles`. */
+  area: number;
+  /** Cells whose orientation is flipped relative to the rest. */
+  invertedCellCount: number;
+  /**
+   * Triangle-shape quality, folded through the SAME `summarizeQuality` the
+   * FE-mesh panel uses, as **normalized minimum angle** (`min_angle / 60`):
+   * 1.0 is equilateral, →0 is a sliver. That matches `summarizeQuality`'s
+   * documented "1 is perfect, <= 0 is degenerate" convention and its [0,1]
+   * bucketing exactly.
+   *
+   * NOT scaled-Jacobian, which the roadmap originally suggested: verified
+   * against the live WASM that `quality:scaled_jacobian` — along with
+   * `skewness`, `warpage` and both dihedral metrics — is **NaN for every
+   * triangle cell**, because those apply to volume cells only. Since every
+   * mesh this path analyzes is a surface, using it would have summarized
+   * nothing at all. `aspect_ratio` does apply but is unbounded above and
+   * inverted (1 = best, higher = worse), so it would clamp into
+   * `summarizeQuality`'s last bucket rather than spreading.
+   */
+  quality: QualitySummary | null;
+}
+
+/** Builds a meshio++ `Mesh` holding only `triangles`, with points compacted and reindexed. */
+function componentMesh(positions: Float32Array, indices: Uint32Array, triangles: readonly number[]): MeshioMesh {
+  const remap = new Map<number, number>();
+  const points: number[] = [];
+  const data = new Int32Array(triangles.length * 3);
+  let w = 0;
+  for (const t of triangles) {
+    for (let k = 0; k < 3; k++) {
+      const original = indices[t * 3 + k];
+      let mapped = remap.get(original);
+      if (mapped === undefined) {
+        mapped = remap.size;
+        remap.set(original, mapped);
+        points.push(positions[original * 3], positions[original * 3 + 1], positions[original * 3 + 2]);
+      }
+      data[w++] = mapped;
+    }
+  }
+  return { points: new Float64Array(points), dim: 3, cells: [{ type: "triangle", nodesPerCell: 3, data }] };
+}
+
+export async function analyzeMeshioSurfaces(
+  positions: Float32Array,
+  indices: Uint32Array,
+  components: readonly (readonly number[])[]
+): Promise<Array<MeshioSurfaceAnalysis | null>> {
+  let m: MeshioApi;
+  try {
+    m = await getMeshio();
+  } catch {
+    return components.map(() => null);
+  }
+
+  return components.map((triangles) => {
+    try {
+      const mesh = componentMesh(positions, indices, triangles);
+      const check = m.surfaceWatertightCheck(mesh);
+      const stats = m.stats(mesh);
+      // meshio++ reports NaN where a metric does not apply to a cell type, and
+      // `summarizeQuality` compares with `<` and accumulates a mean — a single
+      // NaN would poison the mean and land in bucket 0 via its clamp. Filter
+      // first; an all-NaN array yields `null` rather than a fabricated summary.
+      // (That guard is not theoretical: it is what caught scaled-Jacobian being
+      // entirely NaN on triangles — see `quality`'s doc comment.)
+      const raw: number[] = Array.from(m.attachQuality(mesh).cell_data?.["quality:min_angle"]?.[0] ?? []);
+      const finite = raw.filter((v) => Number.isFinite(v)).map((deg) => deg / 60);
+      return {
+        boundaryEdgeCount: check.boundaryEdges,
+        nonManifoldEdgeCount: check.nonManifoldEdges,
+        inconsistentPairCount: check.inconsistentPairs,
+        degenerateTriangleCount: check.degenerateTriangles,
+        watertight: check.watertight,
+        area: typeof stats.totalArea === "number" ? stats.totalArea : 0,
+        invertedCellCount: typeof stats.numInverted === "number" ? stats.numInverted : 0,
+        quality: finite.length > 0 ? summarizeQuality(finite) : null,
+      };
+    } catch (err) {
+      resetMeshioIfAbort(err);
+      return null;
+    }
+  });
+}
+
+/**
+ * OpenFOAM polyMesh import — the one meshio format that is NOT a single file.
+ * A `.foam` document is an (usually empty) marker file — the ParaView
+ * convention — whose real mesh lives in sibling files
+ * (`points`/`faces`/`owner`/`neighbour`/`boundary`) under
+ * `<marker's parent>/constant/polyMesh/`. meshio++'s C++ reader resolves that
+ * directory itself via `std::filesystem`, so unlike every other format in
+ * this file (bytes-in → STL-out), the whole case must be staged into MEMFS at
+ * the same relative layout before `convertSurface` can read it. This function
+ * takes the MARKER'S REAL FILESYSTEM PATH (a plain string, so it crosses the
+ * kernel-worker IPC boundary untouched), locates and copies the polyMesh
+ * siblings itself, converts to an ASCII STL boundary, and cleans up.
+ *
+ * Directory resolution mirrors meshio++'s own `_resolve_polymesh` for the two
+ * forms a marker-file open can encounter: `<parent>/constant/polyMesh` (the
+ * real case layout), then `<parent>/polyMesh` (a bare polyMesh directory kept
+ * beside the marker). A missing directory throws a clear, actionable error —
+ * an application error (not a WASM abort), thrown BEFORE any WASM work so it
+ * cannot corrupt the singleton.
+ *
+ * Deliberately geometry-only: meshio++'s OpenFOAM reader reads no point/cell/
+ * field data arrays (time-directory field files like `U`/`p`/`T` are not read)
+ * and carries patch names through a C++ side-channel struct (`OpenFoamInfo`)
+ * that is not surfaced to the JS binding — so there are no regions to
+ * correlate (`convertToStlBoundaryWithRegions`'s machinery has nothing to
+ * consume) and no metadata to report (`readMeshioMetadata`'s shape is
+ * structurally empty for this format; call sites skip both rather than pay a
+ * staging round trip for a guaranteed-empty answer).
+ *
+ * Throws on failure (unlike this file's graceful-degradation readers): a
+ * malformed case must surface as a load error naming what's wrong, exactly
+ * like every other unparseable source format.
+ */
+export async function convertFoamCaseToStlBoundary(markerPath: string): Promise<Uint8Array> {
+  // 1. Locate the polyMesh directory beside the marker on the REAL filesystem.
+  const parent = path.dirname(path.resolve(markerPath));
+  let polyMeshDir: string | null = null;
+  for (const candidate of [path.join(parent, "constant", "polyMesh"), path.join(parent, "polyMesh")]) {
+    try {
+      if ((await fs.promises.stat(candidate)).isDirectory()) { polyMeshDir = candidate; break; }
+    } catch { /* try the next candidate */ }
+  }
+  if (!polyMeshDir) {
+    throw new Error(
+      "OpenFOAM case error: no constant/polyMesh directory found beside the .foam marker — " +
+      `${path.basename(markerPath)} is a marker file; the mesh must live in its sibling constant/polyMesh/ (${parent}).`
+    );
+  }
+
+  const m = await getMeshio();
+  const caseRoot = "/foamcase";
+  const markerMemPath = `${caseRoot}/case.foam`;
+  const stagedFiles: string[] = [];
+  const rmTree = (p: string): void => {
+    try { m.FS.unlink(p); } catch { /* ignore */ }
+    try { m.FS.rmdir(p); } catch { /* ignore */ }
+  };
+  try {
+    // 2. Stage <case>/constant/polyMesh/* into MEMFS. FS.mkdir creates one
+    // level at a time (no -p semantics), so each level is attempted and its
+    // already-exists failure ignored.
+    for (const dir of [caseRoot, `${caseRoot}/constant`, `${caseRoot}/constant/polyMesh`]) {
+      try { m.FS.mkdir(dir); } catch { /* exists or fatal — writeFile below will say which */ }
+    }
+    // The marker itself is content-free by convention; copy whatever bytes the
+    // real file has anyway so the staged case mirrors the source on disk.
+    m.FS.writeFile(markerMemPath, new Uint8Array(await fs.promises.readFile(markerPath)));
+    stagedFiles.push(markerMemPath);
+    const entries = await fs.promises.readdir(polyMeshDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const memPath = `${caseRoot}/constant/polyMesh/${entry.name}`;
+      m.FS.writeFile(memPath, new Uint8Array(await fs.promises.readFile(path.join(polyMeshDir, entry.name))));
+      stagedFiles.push(memPath);
+    }
+    if (stagedFiles.length === 1) {
+      throw new Error(
+        `OpenFOAM case error: ${polyMeshDir} contains no files — expected points/faces/owner/neighbour/boundary.`
+      );
+    }
+
+    // 3. Convert. Deliberately NOT `m.convertSurface`: that call linearizes
+    // higher-ORDER cells (tri6→tri3) but does NOT split multi-node boundary
+    // FACES — and meshio++'s STL writer then silently emits zero facets for a
+    // quad-only boundary (verified live against a single-hex case: extractSurface
+    // returns one `quad` block, convertSurface's STL is `solid endsolid`). Hex-
+    // dominant meshes are THE typical OpenFOAM content, so an all-quad boundary
+    // is the common case, not an edge case. Instead: readMesh + extractSurface +
+    // fan-triangulate every boundary face here — the same hand-built-STL shape
+    // `convertToStlBoundaryWithRegions` uses, generalized from its
+    // triangle-only fast path to arbitrary polygons.
+    let mesh;
+    try {
+      mesh = m.readMesh(markerMemPath, "openfoam");
+    } catch (err) {
+      throw wrapMeshioFault(err);
+    }
+    const boundary = m.extractSurface(mesh, false);
+    const stl = boundaryTrianglesToAsciiStl(boundary.points, boundary.dim, boundary.cells);
+    if (!stl) {
+      throw new Error(
+        "OpenFOAM case error: the mesh produced an empty boundary — no faces to display."
+      );
+    }
+    return stl;
+  } finally {
+    for (const p of stagedFiles) rmTree(p);
+    rmTree(`${caseRoot}/constant/polyMesh`);
+    rmTree(`${caseRoot}/constant`);
+    rmTree(caseRoot);
+  }
+}
+
+/**
+ * Builds ASCII STL bytes from a meshio++ boundary mesh, fan-triangulating every
+ * polygonal face (`triangle`, `quad`, ragged `polygon*`) about its first vertex.
+ * Returns `null` when no triangle came out. Normals are recomputed from the
+ * post-triangulation winding via cross product — never trusted from the source,
+ * the same convention `scaleStlBytes` established. Accepts exactly the two
+ * `CellBlock` shapes a SURFACE boundary can contain (rectangular + CSR polygon);
+ * a polyhedron block on a boundary is structurally unexpected and throws rather
+ * than silently dropping faces.
+ */
+function boundaryTrianglesToAsciiStl(
+  points: Float64Array,
+  dim: number,
+  cells: unknown[]
+): Uint8Array | null {
+  const lines: string[] = ["solid meshio"];
+  let count = 0;
+  const emitTriangle = (i0: number, i1: number, i2: number): void => {
+    const v0 = [points[i0 * dim], points[i0 * dim + 1], points[i0 * dim + 2]];
+    const v1 = [points[i1 * dim], points[i1 * dim + 1], points[i1 * dim + 2]];
+    const v2 = [points[i2 * dim], points[i2 * dim + 1], points[i2 * dim + 2]];
+    const ux = v1[0] - v0[0], uy = v1[1] - v0[1], uz = v1[2] - v0[2];
+    const wx = v2[0] - v0[0], wy = v2[1] - v0[1], wz = v2[2] - v0[2];
+    let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len === 0) return; // degenerate triangle — skip, never emit NaN normals
+    nx /= len; ny /= len; nz /= len;
+    lines.push(
+      `facet normal ${nx} ${ny} ${nz}`,
+      "outer loop",
+      `vertex ${v0[0]} ${v0[1]} ${v0[2]}`,
+      `vertex ${v1[0]} ${v1[1]} ${v1[2]}`,
+      `vertex ${v2[0]} ${v2[1]} ${v2[2]}`,
+      "endloop",
+      "endfacet"
+    );
+    count++;
+  };
+  for (const block of cells) {
+    const b = block as { type?: string; data?: Int32Array; nodesPerCell?: number; rowOffsets?: Int32Array };
+    const data = b.data;
+    if (!data) throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}" (no connectivity).`);
+    if (b.rowOffsets) {
+      // Ragged polygon block (CSR): fan-triangulate each variable-length row.
+      const rows = b.rowOffsets.length - 1;
+      for (let c = 0; c < rows; c++) {
+        const start = b.rowOffsets[c], end = b.rowOffsets[c + 1];
+        for (let i = start + 1; i + 1 < end; i++) {
+          emitTriangle(data[start], data[i], data[i + 1]);
+        }
+      }
+    } else if (typeof b.nodesPerCell === "number") {
+      const n = b.nodesPerCell;
+      const cellCount = data.length / n;
+      if (n < 3 || !Number.isInteger(cellCount)) {
+        throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}" (${n} nodes/cell).`);
+      }
+      for (let c = 0; c < cellCount; c++) {
+        for (let i = 1; i + 1 < n; i++) {
+          emitTriangle(data[c * n], data[c * n + i], data[c * n + i + 1]);
+        }
+      }
+    } else {
+      throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}".`);
+    }
+  }
+  lines.push("endsolid meshio");
+  return count > 0 ? Buffer.from(lines.join("\n"), "utf8") : null;
 }
 
 /**
@@ -596,31 +1185,77 @@ export async function readMeshioFieldValues(
  * filename's* basename and rewrite the embedded reference to match —
  * `provider.ts`'s `meshingExport` handler does this the same way it already
  * rewrites `.geo_unrolled`'s `Merge "...xao"` stub.
+ *
+ * **`extension` and `companionExtension` come from `meshExportFormats.ts`'s
+ * registry entry, not from `outMeshioFormat`.** For most formats the two
+ * coincide, which is why this used to derive the MEMFS path as
+ * `/out.${outMeshioFormat}` — but GiD breaks that assumption twice over: its
+ * format name is `gid` while its extension is the COMPOUND `post.msh`, and its
+ * ascii writer emits a `.post.res` results sibling rather than XDMF's `.h5`.
+ * Both are now registry-supplied, so a future companion-bearing format needs no
+ * edit here at all. `companionExtension` is looked up best-effort — a format
+ * whose companion is conditional (XDMF's `.h5` exists only for the `"HDF"` data
+ * format, not `"XML"`/`"Binary"`) simply reports none when the file isn't there.
+ *
+ * **Provenance (`source`) is recorded via an explicit scope** — `withProvenance`
+ * rather than the raw `provenanceBegin`/`provenanceEnd` pair, since it closes
+ * the scope even if the body throws. Without a scope meshio++ writes only a
+ * one-line credit; with one it also records where the mesh came from, what was
+ * written, and any conversion assumptions raised along the way. **This is a
+ * no-op for MED/CGNS/XDMF** — verified by inspecting raw output bytes, not just
+ * `readProvenance`: those three (and `hmf`/`wkt`) embed nothing at all, because
+ * their containers have no header slot meshio++ renders a provenance block
+ * into. It genuinely lands for `vtu`/`avsucd`/`mphtxt`/`netgen`/`flac3d`/`flux`
+ * and the new `gid`. Passing `source` is therefore harmless everywhere and
+ * useful for most of the registry — but the coverage split must not be
+ * described as universal.
  */
+
+export interface MeshioExportOptions {
+  /** MEMFS write extension, from the registry entry. Defaults to `outMeshioFormat`. */
+  extension?: string;
+  /** Extension of the second file this format's writer emits, if any. */
+  companionExtension?: string;
+  /** Origin recorded in the written file's provenance block, where the format has one. */
+  source?: { name: string; format: string };
+}
 
 export async function exportViaMeshio(
   gmshMshText: string,
-  outMeshioFormat: string
+  outMeshioFormat: string,
+  options: MeshioExportOptions = {}
 ): Promise<{ bytes: Uint8Array; companion?: { name: string; bytes: Uint8Array } }> {
   const m = await getMeshio();
+  const extension = options.extension || outMeshioFormat;
   const inPath = "/in.msh";
-  const outPath = `/out.${outMeshioFormat}`;
-  const companionPath = "/out.h5";
+  const outPath = `/out.${extension}`;
+  const companionName = options.companionExtension ? `out.${options.companionExtension}` : undefined;
+  const companionPath = companionName ? `/${companionName}` : undefined;
   m.FS.writeFile(inPath, Buffer.from(gmshMshText, "utf8"));
   try {
-    m.convert(inPath, outPath, { inFormat: "gmsh", outFormat: outMeshioFormat });
+    const convert = () => m.convert(inPath, outPath, { inFormat: "gmsh", outFormat: outMeshioFormat });
+    if (options.source) {
+      const { name, format } = options.source;
+      m.withProvenance(1, () => {
+        m.provenanceSetSource(name, format);
+        m.provenanceSetTarget(outMeshioFormat);
+        convert();
+      });
+    } else {
+      convert();
+    }
     const bytes = m.FS.readFile(outPath);
-    if (outMeshioFormat !== "xdmf") return { bytes };
+    if (!companionPath || !companionName) return { bytes };
     try {
-      return { bytes, companion: { name: "out.h5", bytes: m.FS.readFile(companionPath) } };
+      return { bytes, companion: { name: companionName, bytes: m.FS.readFile(companionPath) } };
     } catch {
-      return { bytes }; // the "Binary"/"XML" data formats have no HDF companion — only "HDF" does
+      return { bytes }; // a conditional companion this write didn't produce (e.g. XDMF's "XML"/"Binary" data formats)
     }
   } catch (err) {
     throw wrapMeshioFault(err);
   } finally {
     try { m.FS.unlink(inPath); } catch { /* ignore */ }
     try { m.FS.unlink(outPath); } catch { /* ignore */ }
-    try { m.FS.unlink(companionPath); } catch { /* ignore */ }
+    if (companionPath) { try { m.FS.unlink(companionPath); } catch { /* ignore */ } }
   }
 }

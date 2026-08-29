@@ -37,6 +37,13 @@ const STEM_COMPANION_EXTENSIONS: Readonly<Record<string, readonly string[]>> = {
   tetgen: ["node", "ele"],
   triangle: ["node", "ele", "poly"],
   ensight: ["case", "geo"],
+  // GiD postprocess ascii: geometry in `<stem>.post.msh`, results in the
+  // `<stem>.post.res` sibling. Only the FINAL segment is listed, because
+  // `stemCompanionCandidates` splits on the last dot — for `beam.post.msh` that
+  // yields stem `beam.post` + primary ext `msh`, so `"res"` correctly produces
+  // `beam.post.res`. (The `.post` segment travels along inside the stem, which
+  // is exactly right: GiD's own convention swaps only that final segment.)
+  gid: ["msh", "res"],
 };
 
 /**

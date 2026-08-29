@@ -8,6 +8,11 @@ export interface MassPropertiesDisplay {
    * inertia are near-zero for most axis-aligned bodies and not worth the
    * panel real estate. `null` for mesh sources (not computed client-side). */
   momentsOfInertia: { ixx: number; iyy: number; izz: number } | null;
+  /** `false` when the mesh-source triangle set has free/boundary edges — volume
+   * is a signed-tetrahedra sum over an open surface and may not be physically
+   * meaningful. `null`/omitted for B-rep sources (always closed) and for a
+   * single-facet ("surface") pick where volume is suppressed anyway. */
+  watertight?: boolean | null;
 }
 
 export interface MassPropertiesPanelCallbacks {
@@ -80,6 +85,12 @@ export class MassPropertiesPanel {
       row.appendChild(l);
       row.appendChild(v);
       this.body.appendChild(row);
+    }
+    if (props.watertight === false) {
+      const warn = document.createElement("div");
+      warn.className = "mass-message mass-message-warning";
+      warn.textContent = "⚠ Not watertight — volume may not be meaningful.";
+      this.body.appendChild(warn);
     }
   }
 }

@@ -34,12 +34,17 @@ import * as path from "path";
 // the "cjs" output, which Node resolves at actual runtime (honoring the
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
-import { gmshShapeOptions, type MeshOptions } from "./meshOptions";
+import { gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine } from "./meshOptions";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
 import { meshExportFormat, type MeshExportFormatId } from "./meshExportFormats";
 import { writeMdpa, type MdpaMesh, type MdpaMode, type MdpaNode, type MdpaCell, type MdpaGroup } from "./mdpaWriter";
+import { parseToWeldedMesh } from "./meshHeal";
+import { boundsOfTriangles, boundsDiagonal, weldedMeshToStlBytes } from "./meshComponents";
+import { tetrahedralize, tetsToMsh41 } from "./ftetwildService";
+import type { MeshParseFormat } from "./fileRouter";
+import type { GltfExternalBuffers } from "./gltfParser";
 import {
   GMSH_ELEMENT_TYPES,
   MDPA_KIND_INFO,
@@ -114,7 +119,7 @@ export function resetGmsh(): void {
  * be turned into an actionable message instead of the raw "memory access out of
  * bounds" that reaches the panel today. */
 function isWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table/i.test(message);
 }
 
 /**
@@ -170,6 +175,15 @@ export interface MeshResult {
    * nothing scored below the quality threshold (a good mesh) or quality
    * couldn't be computed at all. */
   worstElements?: WorstElementsOverlay;
+  /** Which volume mesher actually ran — see `MeshOptions.engine`/
+   * `effectiveEngine`. May differ from what was REQUESTED: `"ftetwild"` is
+   * only honored for a 3D mesh-format source, so a B-rep source or a
+   * non-3D `dimension` silently (but visibly, via `warnings` below) falls
+   * back to `"gmsh"`. */
+  engineUsed: MeshEngine;
+  /** Non-fatal, worth-surfacing notes — currently only an engine-fallback
+   * explanation (see `engineUsed` above); empty when nothing was downgraded. */
+  warnings: string[];
 }
 
 /** A highlight overlay of the mesh's worst-quality elements, closing the
@@ -266,6 +280,124 @@ async function loadGeometryAndApplyOptions(
 }
 
 /**
+ * Resolves `options.engine` down to what will ACTUALLY run, downgrading to
+ * `"gmsh"` (with an explanatory warning, never silently) for the two cases
+ * fTetWild can't meaningfully help with: a B-rep source (already exact
+ * geometry — nothing to be robust against) and a non-3D `dimension`
+ * (fTetWild is a volume mesher only). `"gmsh"` itself is never downgraded —
+ * it's always valid.
+ */
+function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { engine: MeshEngine; warnings: string[] } {
+  if (options.engine !== "ftetwild") return { engine: "gmsh", warnings: [] };
+  if (input.kind === "brep") {
+    return {
+      engine: "gmsh",
+      warnings: [
+        'Engine "ftetwild" was requested but this is a B-rep source with exact geometry — fTetWild only helps with dirty triangle meshes, so Gmsh was used instead.',
+      ],
+    };
+  }
+  if (options.dimension !== 3) {
+    return {
+      engine: "gmsh",
+      warnings: [
+        `Engine "ftetwild" was requested but dimension is ${options.dimension} — fTetWild only produces 3D tetrahedral volume meshes, so Gmsh was used instead.`,
+      ],
+    };
+  }
+  return { engine: "ftetwild", warnings: [] };
+}
+
+/**
+ * Populates `gmsh`'s CURRENT model with a finished volume mesh, dispatching
+ * on `options.engine` (as resolved by {@link effectiveEngine}) — the single
+ * seam every meshing/export entry point below (`generateMesh`,
+ * `exportMeshFormat`, `exportMdpa`) shares, so the fTetWild alternative
+ * reuses every existing downstream read-back path (`buildIndices`/
+ * `buildEdges`/`gmsh.write()`/`extractMdpaMesh`/
+ * `computeQualityAndWorstElements`) completely unchanged — see CLAUDE.md's
+ * fTetWild section for the full design.
+ *
+ * `"gmsh"` is byte-for-byte the original `loadGeometryAndApplyOptions` +
+ * `runMeshGenerate` sequence this function replaces at each call site.
+ *
+ * `"ftetwild"` (mesh-format 3D sources only, per `effectiveEngine`'s gate)
+ * instead: parses the raw STL bytes into a welded triangle soup
+ * (`parseToWeldedMesh`, entirely host-side, no WASM — the exact input shape
+ * `check_mesh_health`/`promote_mesh_to_brep` already use for the identical
+ * four dirty-mesh formats), tetrahedralizes it (`ftetwildService.ts`'s
+ * `tetrahedralize`, which survives the holes/self-intersections/
+ * non-manifold edges that make Gmsh's own `classifySurfaces` throw
+ * "STL classification produced no surfaces"), serializes the raw result to
+ * MSH 4.1 text (`tetsToMsh41`), and `gmsh.merge()`s it into the SAME gmsh
+ * model `generateMesh` would otherwise have used directly — verified live:
+ * this creates a genuine queryable 3D discrete-volume entity (`getEntities
+ * (3)`), not a dead end; `getElements`/`getNodes`/`getElementQualities`/
+ * `gmsh.write()` all resolve correctly against it.
+ *
+ * `idealEdgeLengthRel` (fTetWild's own target-edge-length knob, a FRACTION
+ * of the input's own bbox diagonal) is derived from `options.sizeMax` (an
+ * ABSOLUTE size) rather than stored as its own field, so the existing size
+ * slider/Coarse-Medium-Fine presets keep working unchanged under either
+ * engine — `SIZE_MAX_SENTINEL` (no explicit size chosen yet) falls back to
+ * fTetWild's own default (`0.05`), which not coincidentally equals what
+ * `syncMeshSizeSeed`'s own `diagonal/20` bbox-derived seed already produces.
+ *
+ * `parts` are silently unused under `"ftetwild"`, same as Gmsh's own STL
+ * path already does (`groupMaps` stays `null` either way) — Gmsh's STL
+ * reclassification has no part correlation to begin with (see
+ * `gmshPartsMap.ts`'s doc comment), and an externally-tetrahedralized mesh
+ * has none for the identical reason.
+ */
+async function populateMeshedModel(
+  extensionPath: string,
+  gmsh: GmshApi,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[]
+): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[] }> {
+  const { engine, warnings } = effectiveEngine(input, options);
+
+  if (engine === "gmsh") {
+    const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
+    runMeshGenerate(gmsh, options);
+    return { tmpPath: loaded.tmpPath, groupMaps: loaded.groupMaps, engineUsed: "gmsh", warnings };
+  }
+
+  // engine === "ftetwild" — effectiveEngine only returns this for input.kind
+  // === "stl" (mesh-format) at dimension 3.
+  const stlInput = input as Extract<MeshGenerationInput, { kind: "stl" }>;
+  gmsh.clear();
+  gmsh.model.add(`model-${++_modelCounter}`);
+
+  const welded = parseToWeldedMesh(stlInput.stlBytes, "stl");
+  const allTriangles = Array.from({ length: Math.floor(welded.indices.length / 3) }, (_, i) => i);
+  const bounds = boundsOfTriangles(welded.positions, welded.indices, allTriangles);
+  const diagonal = bounds ? boundsDiagonal(bounds) : 0;
+  const idealEdgeLengthRel =
+    options.sizeMax === SIZE_MAX_SENTINEL || !(diagonal > 0) ? 0.05 : Math.min(1, options.sizeMax / diagonal);
+
+  const { vertices, tets } = await tetrahedralize(welded, {
+    epsRel: options.ftetwildEpsRel,
+    idealEdgeLengthRel,
+  });
+  const mshText = tetsToMsh41(vertices, tets);
+
+  // Short MEMFS path — this build's OCCT module has a documented undocumented
+  // path-length cliff (see meshHeal.ts's writeShape callers); unconfirmed but
+  // untested for this gmsh-wasm build, so kept short defensively.
+  const tmpPath = "/i.msh";
+  gmsh.FS.writeFile(tmpPath, mshText);
+  gmsh.merge(tmpPath);
+  // Same reasoning as loadGeometryAndApplyOptions's own Mesh.SaveAll — moot
+  // today since `groupMaps` is always null here (no physical groups can
+  // exist), but set for consistency/future-proofing at negligible cost.
+  gmsh.option.setNumber("Mesh.SaveAll", 1);
+
+  return { tmpPath, groupMaps: null, engineUsed: "ftetwild", warnings };
+}
+
+/**
  * Generates a mesh from `input` per `options` and returns node/element counts
  * plus a display-ready boundary triangulation (`positions`/`indices`) alongside
  * the raw `.msh` text. For `dimension === 3` the boundary triangles are derived
@@ -284,10 +416,8 @@ export async function generateMesh(
   const outPath = "/out.msh";
   let tmpPath: string | null = null;
   try {
-    const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
+    const loaded = await populateMeshedModel(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
-
-    runMeshGenerate(gmsh, options);
 
     const nodes = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
     const { positions, tagToIndex } = buildPositions(nodes);
@@ -310,6 +440,8 @@ export async function generateMesh(
       mshText,
       quality,
       worstElements,
+      engineUsed: loaded.engineUsed,
+      warnings: loaded.warnings,
     };
   } finally {
     if (tmpPath) {
@@ -317,6 +449,61 @@ export async function generateMesh(
     }
     try { gmsh.FS.unlink(outPath); } catch { /* ignore */ }
   }
+}
+
+export interface RepairMeshResult {
+  /** ASCII STL bytes of the repaired (watertight, manifold) surface. */
+  stlBytes: Uint8Array;
+  nodeCount: number;
+  elementCount: number;
+}
+
+/**
+ * Repairs a dirty triangle mesh (holes, self-intersections, non-manifold
+ * edges — exactly what `check_mesh_health` already diagnoses and
+ * `promote_mesh_to_brep` then fails to close) into a watertight surface, by
+ * tetrahedralizing it with fTetWild and taking the resulting volume mesh's
+ * own boundary. A tet mesh's boundary is watertight and manifold BY
+ * CONSTRUCTION regardless of how broken the input was — holes close,
+ * self-intersections resolve, and fTetWild's own winding-number-based
+ * interior classification handles the rest (see `ftetwildService.ts`). This
+ * closes roadmap item "Robust volumetric meshing from a skin mesh"'s own
+ * Phase 1 shape ("repair, then reuse the existing mesher") without either of
+ * its originally-scoped blockers (an unmerged meshio++ SDF branch, or a
+ * nonexistent WASM build of MMG).
+ *
+ * Deliberately reuses `generateMesh` wholesale rather than re-implementing
+ * boundary extraction: a 3D `engine: "ftetwild"` generate's own
+ * `positions`/`indices` output already IS the tet mesh's boundary
+ * triangulation (`buildIndices`'s existing `extractBoundaryFaces` →
+ * `boundaryTriangles` path, completely unchanged) — there is nothing else
+ * to build. The repaired result is handed back as ASCII STL bytes (via
+ * `weldedMeshToStlBytes`), the same shape `check_mesh_health`/
+ * `promote_mesh_to_brep` already accept, so a caller's natural next step —
+ * re-running either of those on the repaired bytes — needs no new plumbing.
+ *
+ * No triangle-count ceiling is imposed here — unlike `meshHeal.ts`'s
+ * `MAX_HEALABLE_TRIANGLES` (a property of the per-triangle OCCT sewing
+ * pipeline specifically, one face per triangle), fTetWild's own cost profile
+ * is different and unmeasured at scale; the kernel-worker's existing 5-minute
+ * watchdog (`kernelClient.ts`) is the backstop for now.
+ */
+export async function repairMesh(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: MeshParseFormat,
+  external?: GltfExternalBuffers
+): Promise<RepairMeshResult> {
+  const welded = parseToWeldedMesh(bytes, format, external);
+  const stlBytes = weldedMeshToStlBytes(welded);
+  const result = await generateMesh(
+    extensionPath,
+    { kind: "stl", stlBytes },
+    { ...DEFAULT_MESH_OPTIONS, engine: "ftetwild", dimension: 3 },
+    []
+  );
+  const repairedStlBytes = weldedMeshToStlBytes({ positions: result.positions, indices: result.indices });
+  return { stlBytes: repairedStlBytes, nodeCount: result.nodeCount, elementCount: result.elementCount };
 }
 
 export interface GeoExportResult {
@@ -343,6 +530,16 @@ export interface GeoExportResult {
  * to a MEMFS-only path the caller must resolve — see `xao` above. The STL
  * path (GEO-kernel `addSurfaceLoop`/`addVolume`) has no such companion since
  * it unrolls to real Point/Curve/Surface/Volume commands inline.
+ *
+ * Deliberately does NOT go through `populateMeshedModel` — `engine:
+ * "ftetwild"` throws here rather than silently falling back to Gmsh's own
+ * geometry import: a `.geo_unrolled` script represents GEOMETRY (Gmsh's own
+ * import/classification of it), not a mesh, and fTetWild never runs a Gmsh
+ * geometry step at all — there is nothing meaningful to unroll for the mesh
+ * it would have produced. `effectiveEngine`'s own B-rep/non-3D downgrades
+ * still apply first, so this only actually throws for a genuine
+ * 3D-mesh-format request, the one case `.geo_unrolled` export doesn't even
+ * make sense to offer for an fTetWild-meshed document.
  */
 export async function exportGeoUnrolled(
   extensionPath: string,
@@ -350,6 +547,13 @@ export async function exportGeoUnrolled(
   options: MeshOptions,
   parts: Part[] = []
 ): Promise<GeoExportResult> {
+  const { engine } = effectiveEngine(input, options);
+  if (engine === "ftetwild") {
+    throw new Error(
+      '.geo_unrolled export is not available under engine "ftetwild" — it represents Gmsh\'s own geometry import, and fTetWild never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
+    );
+  }
+
   const gmsh = await getGmsh(extensionPath);
 
   const outPath = "/out.geo_unrolled";
@@ -407,10 +611,9 @@ export async function exportMeshFormat(
   const outPath = `/out.${format.extension}`;
   let tmpPath: string | null = null;
   try {
-    const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
+    const loaded = await populateMeshedModel(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    runMeshGenerate(gmsh, options);
     gmsh.write(outPath);
     return gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
   } finally {
@@ -444,10 +647,9 @@ export async function exportMdpa(
   const gmsh = await getGmsh(extensionPath);
   let tmpPath: string | null = null;
   try {
-    const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
+    const loaded = await populateMeshedModel(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    runMeshGenerate(gmsh, options);
     const mesh = extractMdpaMesh(gmsh, loaded.groupMaps);
 
     if (mode === "elements") {

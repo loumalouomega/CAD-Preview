@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
+import { assertNotDirty } from "./dirtyGuard";
 
 /** The mesh options sidecar URI for a model: `<model>.mesh.json` beside the source. */
 export function meshOptionsSidecarUri(modelUri: vscode.Uri): vscode.Uri {
@@ -19,6 +20,7 @@ export async function readMeshOptions(modelUri: vscode.Uri): Promise<MeshOptions
 
 /** Writes the mesh options sidecar beside the model. The model file itself is never touched. */
 export async function writeMeshOptions(modelUri: vscode.Uri, options: MeshOptions): Promise<void> {
+  assertNotDirty(meshOptionsSidecarUri(modelUri));
   const sourceName = modelUri.path.slice(modelUri.path.lastIndexOf("/") + 1);
   const text = serializeMeshJson(sourceName, options);
   await vscode.workspace.fs.writeFile(meshOptionsSidecarUri(modelUri), Buffer.from(text, "utf8"));
@@ -31,6 +33,7 @@ export function geoScriptUri(modelUri: vscode.Uri): vscode.Uri {
 
 /** Computes and writes the `.geo` script for the model's current mesh options. */
 export async function writeGeoScript(modelUri: vscode.Uri, options: MeshOptions): Promise<void> {
+  assertNotDirty(geoScriptUri(modelUri));
   const sourceName = modelUri.path.slice(modelUri.path.lastIndexOf("/") + 1);
   const text = generateGeoScript(sourceName, options);
   await vscode.workspace.fs.writeFile(geoScriptUri(modelUri), Buffer.from(text, "utf8"));

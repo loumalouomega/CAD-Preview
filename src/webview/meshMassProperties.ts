@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { weldTriangleSoup } from "../meshComponents";
+import { analyzeMeshTopology } from "../meshTopology";
 
 export interface MeshMassProperties {
   /** Signed-tetrahedra volume, meaningful only when `meshes` forms a closed
@@ -13,6 +15,11 @@ export interface MeshMassProperties {
   /** Area-weighted centroid of the surface — the right centroid for a single
    * open facet, where a signed volume has no physical meaning. */
   areaCentroid: [number, number, number];
+  /** Whether the triangle set is watertight (no free/boundary edges) — `false`
+   * means `volume` is a signed-tetrahedra sum over an open surface and may not
+   * be physically meaningful. Computed by welding world-space triangles at the
+   * same epsilon `meshComponents.ts` uses, then counting free edges. */
+  watertight: boolean;
 }
 
 /**
@@ -51,6 +58,10 @@ export function computeMeshMassProperties(meshes: THREE.Mesh[]): MeshMassPropert
   const ac = new THREE.Vector3();
   const cross = new THREE.Vector3();
 
+  // Accumulate a flat world-space triangle soup for watertightness analysis
+  // (same epsilon as `weldTriangleSoup`'s default — flatten here, weld later).
+  const soup: number[] = [];
+
   for (const mesh of meshes) {
     mesh.updateWorldMatrix(true, false);
     const geometry = mesh.geometry;
@@ -74,6 +85,8 @@ export function computeMeshMassProperties(meshes: THREE.Mesh[]): MeshMassPropert
       areaCx += triArea * ((a.x + b.x + c.x) / 3);
       areaCy += triArea * ((a.y + b.y + c.y) / 3);
       areaCz += triArea * ((a.z + b.z + c.z) / 3);
+
+      soup.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
     }
   }
 
@@ -87,5 +100,16 @@ export function computeMeshMassProperties(meshes: THREE.Mesh[]): MeshMassPropert
   const areaCentroid: [number, number, number] =
     areaSum > 0 ? [areaCx / areaSum, areaCy / areaSum, areaCz / areaSum] : [0, 0, 0];
 
-  return { volume, area: areaSum, volumeCentroid, areaCentroid };
+  // Watertight = no free (boundary) edges after welding.
+  let watertight = true;
+  if (soup.length > 0) {
+    const welded = weldTriangleSoup(new Float32Array(soup));
+    const triCount = welded.indices.length / 3;
+    if (triCount > 0) {
+      const triangles = Array.from({ length: triCount }, (_, i) => i);
+      watertight = analyzeMeshTopology(welded.positions, welded.indices, triangles).freeEdgeCount === 0;
+    }
+  }
+
+  return { volume, area: areaSum, volumeCentroid, areaCentroid, watertight };
 }

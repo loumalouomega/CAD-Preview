@@ -34,12 +34,18 @@
  */
 import * as THREE from "three";
 import { parseStl } from "./stlParser";
+import { clean } from "./untrustedText";
 import { segmentCoplanarFacets, MAX_FACETS, FACET_ANGLE_TOLERANCE } from "./webview/meshFacets";
 import { PALETTE } from "./webview/partsModel";
 import type { MeshioRegionAssignment } from "./meshioService";
 import type { Part } from "./protocol";
 
 const VOLUME_ID = "node-0";
+
+/** Cap applied to region-derived Part names — a region name is document-
+ * derived text (attacker-influenced from the MCP caller's point of view), so
+ * it goes through `clean()` before it persists into the parts sidecar. */
+const MAX_PART_NAME_LENGTH = 100;
 
 /**
  * Builds one `Part` per named region that owns ≥1 facet, assigning that
@@ -75,10 +81,16 @@ export function buildPartsFromMeshioRegions(stlBytes: Uint8Array, regions: Meshi
 
   const parts: Part[] = [];
   for (const [regionIdx, surfaces] of surfacesByRegion) {
+    // The name is document-derived text — clean it (control/format chars
+    // stripped, line breaks flattened, truncated) before it persists into
+    // the parts sidecar, where MCP-facing responses would resurface it.
+    // See src/untrustedText.ts.
     const name = regions.regionNames[regionIdx];
     if (!name) continue;
+    const cleanedName = clean(name, MAX_PART_NAME_LENGTH);
+    if (!cleanedName) continue;
     parts.push({
-      name,
+      name: cleanedName,
       color: PALETTE[parts.length % PALETTE.length],
       volumes: [],
       surfaces,

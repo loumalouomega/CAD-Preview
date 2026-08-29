@@ -27,7 +27,7 @@ features:
 
   - icon: 🧭
     title: Orientation Cube & View Controls
-    details: A labeled orientation gizmo mirrors the current camera direction. Click any face to snap to that standard view. The collapsible view-controls panel lets you step-rotate, pan, zoom, fit, or reset the view without touching the mouse — plus a live uncapped clipping plane, a background/opacity Appearance group, and a perspective/orthographic toggle.
+    details: A labeled orientation gizmo mirrors the current camera direction. Click any face to snap to that standard view. The collapsible view-controls panel lets you step-rotate, pan, zoom, fit, or reset the view without touching the mouse — plus a live, solid-capped clipping plane along an axis or any face-derived normal, a background/opacity Appearance group, and a perspective/orthographic toggle.
 
   - icon: 🌲
     title: Component Tree Panel
@@ -58,12 +58,12 @@ features:
     details: Convert the open model and save it via a native dialog. B-rep files (STEP/IGES/BREP) can export to each other (true OCCT writers) or to any mesh format; mesh files can export to other mesh formats.
 
   - icon: 📐
-    title: Silhouette SVG Export
-    details: Write a 2D outline of the model as a self-contained SVG — pick the current view or a standard one (Front/Back/Top/Bottom/Left/Right/Iso), pick a unit, save. Works for STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF, and prints 1:1 at 1 SVG user unit per model unit. An outline, not a dimensioned technical drawing — there is no hidden-line removal.
+    title: Silhouette SVG/DXF Export
+    details: Write a 2D outline of the model as a self-contained SVG or a minimal DXF — pick the current view or a standard one (Front/Back/Top/Bottom/Left/Right/Iso), pick a unit, save. Works for STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF, and prints 1:1 at 1 unit per model unit. An outline, not a dimensioned technical drawing — there is no hidden-line removal.
 
   - icon: 🧮
     title: FE Mesh Generation (Gmsh)
-    details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry, alongside a quality summary (min/mean element quality plus a histogram). Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as hand-written Kratos MDPA (the default, preserving named Parts as SubModelParts) or any Gmsh format the panel offers (.msh, .msh2, .geo_unrolled, VTK, I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF). The CAD file stays read-only.
+    details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry, alongside a quality summary (min/mean element quality plus a histogram). Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as hand-written Kratos MDPA (the default, preserving named Parts as SubModelParts) or any Gmsh format the panel offers (.msh, .msh2, .geo_unrolled, VTK, I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF). For a dirty mesh-format source Gmsh's own meshing rejects, an Engine choice switches to fTetWild, a tetrahedralizer built to survive holes/self-intersections/non-manifold edges. The CAD file stays read-only.
 
   - icon: 🤖
     title: MCP Server for AI Agents
@@ -102,7 +102,7 @@ features:
 | PLY    | `.ply`          | Three.js `PLYLoader`                   |
 | glTF   | `.gltf`, `.glb` | Three.js `GLTFLoader`                  |
 
-Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, and INRIA Medit](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-and-more) via the host-side meshio++ bridge — the last five close a real export/import asymmetry (this codebase's own FE Meshing panel wrote them but couldn't reopen them). SVG is not a rendering format but appears at both ends of the pipeline: **Import SVG…** traces a `.svg`'s paths into sketch polylines, and **Export Silhouette SVG…** writes a 2D outline of the model back out.
+Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, OpenFOAM, Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, INRIA Medit, and GiD Postprocess](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-openfoam-and-more) via the host-side meshio++ bridge — the last five close a real export/import asymmetry (this codebase's own FE Meshing panel wrote them but couldn't reopen them). SVG and DXF are not rendering formats but appear at both ends of the pipeline: **Import SVG…**/**Import DXF…** trace a 2D drawing's geometry into sketch polylines/profile ops, and **Export Silhouette SVG…/…DXF…** write a 2D outline of the model back out.
 
 ## Badges
 

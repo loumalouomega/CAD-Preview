@@ -84,7 +84,43 @@ describe("collectTargets", () => {
     const root = buildModel();
     expect(collectTargets(root, "point").map((o) => o.userData.entityId)).toEqual(["point-0"]);
   });
+
+  describe("hidden geometry is NOT collected (traverseVisible is load-bearing)", () => {
+    it("a hidden leaf (a Part eye-toggle's face) is pruned from the target set", () => {
+      const root = buildModel();
+      const face = root.getObjectByProperty("userData.entityId", "face-0") ?? deepFind(root, "face-0");
+      face!.visible = false;
+      expect(collectTargets(root, "surface")).toEqual([]);
+      // Other kinds are unaffected.
+      expect(collectTargets(root, "line").map((o) => o.userData.entityId)).toEqual(["edge-0"]);
+    });
+
+    it("an invisible ANCESTOR prunes its whole subtree (hidden Part hides faces+edges+points as a unit)", () => {
+      const root = buildModel();
+      const solid = root.children[0];
+      solid.visible = false;
+      expect(collectTargets(root, "surface")).toEqual([]);
+    });
+
+    it("an invisible root collects nothing at all", () => {
+      const root = buildModel();
+      root.visible = false;
+      expect(collectTargets(root, "surface")).toEqual([]);
+      expect(collectTargets(root, "line")).toEqual([]);
+      expect(collectTargets(root, "point")).toEqual([]);
+    });
+  });
 });
+
+/** Finds an object by `userData.entityId` without relying on
+ * `getObjectByProperty`'s dotted-path semantics. */
+function deepFind(root: THREE.Object3D, entityId: string): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null;
+  root.traverse((o) => {
+    if ((o.userData as { entityId?: string }).entityId === entityId) found = o;
+  });
+  return found;
+}
 
 describe("resolveMeasurePick", () => {
   const face = { entityType: "surface", entityId: "face-3", groupId: "solid-1" };
@@ -138,5 +174,17 @@ describe("collectMeasureTargets", () => {
   it("collects every surface/line/point at once, excluding the FE-mesh overlay", () => {
     const root = buildModel();
     expect(collectMeasureTargets(root).map((o) => o.userData.entityId)).toEqual(["face-0", "edge-0", "point-0"]);
+  });
+
+  it("a hidden Part's entities stay unmeasurable (invisible ancestor prunes the subtree)", () => {
+    const root = buildModel();
+    root.children[0].visible = false; // the solid group holding face-0
+    expect(collectMeasureTargets(root).map((o) => o.userData.entityId)).toEqual(["edge-0", "point-0"]);
+  });
+
+  it("a hidden leaf is skipped individually", () => {
+    const root = buildModel();
+    deepFind(root, "edge-0")!.visible = false;
+    expect(collectMeasureTargets(root).map((o) => o.userData.entityId)).toEqual(["face-0", "point-0"]);
   });
 });

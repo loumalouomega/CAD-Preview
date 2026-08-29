@@ -65,3 +65,43 @@ describe("serializeViewStateJson", () => {
     expect(parsed.source).toBe("bull.stp");
   });
 });
+
+describe("view-state clip: the optional arbitrary normal", () => {
+  const withClip = (clip: unknown) =>
+    parseViewStateJson(JSON.stringify({ version: 1, source: "bull.stp", view: { ...validView, clip } }));
+
+  it("keeps a legacy axis-only clip byte-identical, writing no normal key", () => {
+    // The overwhelmingly common on-disk shape. It must not gain a `normal`.
+    const text = serializeViewStateJson("bull.stp", validView);
+    expect(text).not.toContain("normal");
+    expect(parseViewStateJson(text)).toEqual(validView);
+  });
+
+  it("normalizes a stored normal on read, so consumers can assume a unit vector", () => {
+    const parsed = withClip({ axis: "x", offsetFrac: 0, normal: [2, 0, 0] });
+    expect(parsed?.clip?.normal).toEqual([1, 0, 0]);
+  });
+
+  it("round-trips a custom normal", () => {
+    const custom: ViewState = { ...validView, clip: { axis: "z", offsetFrac: -0.5, normal: [0, 0, 1] } };
+    expect(parseViewStateJson(serializeViewStateJson("bull.stp", custom))).toEqual(custom);
+  });
+
+  it("drops ONLY the normal when it is degenerate, keeping the clip as its axis form", () => {
+    // Deliberately unlike a bad `axis`, which drops the whole clip (below).
+    const zero = withClip({ axis: "x", offsetFrac: 0.25, normal: [0, 0, 0] });
+    expect(zero?.clip).toEqual({ axis: "x", offsetFrac: 0.25 });
+    const nan = withClip({ axis: "x", offsetFrac: 0.25, normal: [1, 0, Number.NaN] });
+    expect(nan?.clip).toEqual({ axis: "x", offsetFrac: 0.25 });
+    const short = withClip({ axis: "x", offsetFrac: 0.25, normal: [1, 0] });
+    expect(short?.clip).toEqual({ axis: "x", offsetFrac: 0.25 });
+    const wrongType = withClip({ axis: "x", offsetFrac: 0.25, normal: "x" });
+    expect(wrongType?.clip).toEqual({ axis: "x", offsetFrac: 0.25 });
+  });
+
+  it("still drops the WHOLE clip for a bad axis, even when a valid normal is present", () => {
+    // The forward-compat contract: `axis` is always required, so an older build
+    // reading this file restores a sensible neighbouring clip rather than none.
+    expect(withClip({ axis: "w", offsetFrac: 0, normal: [1, 0, 0] })?.clip).toBeNull();
+  });
+});

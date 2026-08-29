@@ -46,7 +46,7 @@
  *     "many repeated `Perform()` calls on one instance" behavior.
  *   - Triangle-soup → one tiny planar `BRepBuilderAPI_MakeFace` per triangle
  *     → `Sewing` → `NbFreeEdges()===0` → pull the `TopAbs_SHELL` →
- *     `BRepBuilderAPI_MakeSolid_3` → `BRepGProp.VolumeProperties_1` gives an
+ *     `BRepBuilderAPI_MakeSolid_3` → `volumePropertiesAdaptive` (`BRepGProp`'s adaptive overload, see `src/brepGProp.ts`) gives an
  *     exact volume match against a real STL fixture (verified against
  *     `examples/STL/cube.stl`, 1000 for a 10×10×10 cube, floating-point
  *     exact).
@@ -54,6 +54,7 @@
 
 import { getOcct, wrapOcctFault, writeShape } from "./occtService";
 import { scaleShapeForExport, combineSolids } from "./occtOperations";
+import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
 import { parseStl } from "./stlParser";
 import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
@@ -61,6 +62,8 @@ import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
 import type { MeshParseFormat } from "./fileRouter";
 import { weldTriangleSoup, connectedComponents, areaOfTriangles, volumeOfTriangles, type WeldedMesh } from "./meshComponents";
 import { analyzeMeshTopology } from "./meshTopology";
+import { analyzeMeshioSurfaces } from "./meshioService";
+import type { QualitySummary } from "./meshQuality";
 import { patchStepUnitDeclaration } from "./stepUnitPatch";
 import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import type { BRepFormat } from "./massProperties";
@@ -91,6 +94,26 @@ export interface ComponentHealthReport {
   areaDeltaPct: number | null;
   /** `(healedVolume - rawVolume) / rawVolume * 100` — `null` unless it closed. */
   volumeDeltaPct: number | null;
+  /**
+   * Adjacent triangles wound in opposite directions, from meshio++'s
+   * `surfaceWatertightCheck` — `null` if meshio++ could not analyze this
+   * component.
+   *
+   * This is the one health signal `meshTopology.ts` structurally CANNOT
+   * produce: it keys edges through `edgeKey(a, b)`, which sorts the pair, so
+   * orientation is discarded before counting and an oppositely-wound
+   * neighbour still registers as a clean manifold edge. A component can score
+   * 0 free edges and 0 non-manifold edges here and still be inconsistently
+   * wound.
+   */
+  inconsistentPairCount: number | null;
+  /** Cells whose orientation is flipped relative to the rest (meshio++ `stats`). */
+  invertedCellCount: number | null;
+  /** Triangle-shape quality (meshio++ `attachQuality`) as normalized minimum
+   * angle — 1.0 equilateral, →0 a sliver — folded through the same
+   * `summarizeQuality` the FE-mesh panel renders. Scaled-Jacobian is NOT used:
+   * it is NaN for every triangle cell (see `MeshioSurfaceAnalysis.quality`). */
+  quality: QualitySummary | null;
 }
 
 export interface MeshHealthReport {
@@ -115,7 +138,14 @@ export interface MeshHealthReport {
  */
 export const MAX_HEALABLE_TRIANGLES = 50_000;
 
-function parseToWeldedMesh(bytes: Uint8Array, format: MeshParseFormat, external?: GltfExternalBuffers): WeldedMesh {
+/**
+ * Parses any of the four dirty-mesh formats into a welded `{positions,
+ * indices}` triangle soup, entirely host-side, no WASM. Exported (was
+ * module-private) for `ftetwildService.ts`'s tetrahedralization path — it
+ * needs exactly this shape as fTetWild's `tetrahedralize()` input, and this
+ * is the one place all four formats already funnel into it uniformly.
+ */
+export function parseToWeldedMesh(bytes: Uint8Array, format: MeshParseFormat, external?: GltfExternalBuffers): WeldedMesh {
   if (format === "stl") return weldTriangleSoup(parseStl(bytes));
   if (format === "obj") return parseObj(bytes);
   if (format === "gltf") return parseGltf(bytes, external); // already welded internally
@@ -226,12 +256,12 @@ function solidPropertiesFromSewedShape(oc: any, sewedShape: unknown, cleanup: Ar
 
   const volumeProps = new oc.GProp_GProps_1();
   cleanup.push(volumeProps);
-  oc.BRepGProp.VolumeProperties_1(solid, volumeProps, false, false, false);
+  volumePropertiesAdaptive(oc, solid, volumeProps);
   const volume = volumeProps.Mass();
 
   const areaProps = new oc.GProp_GProps_1();
   cleanup.push(areaProps);
-  oc.BRepGProp.SurfaceProperties_1(solid, areaProps, false, false);
+  surfacePropertiesAdaptive(oc, solid, areaProps);
   const area = areaProps.Mass();
 
   return { area, volume };
@@ -258,6 +288,11 @@ export async function checkMeshHealth(
   const { positions, indices } = parseToWeldedMesh(bytes, format, external);
   assertHealableSize(indices);
   const componentTriangles = connectedComponents(indices);
+  // Supplementary meshio++ diagnostics, one per component. Never throws — a
+  // component meshio++ cannot analyze yields `null` and the OCCT-derived
+  // fields below are unaffected. Computed up front because the map is
+  // synchronous (it holds live OCCT handles) and this is async.
+  const meshioAnalyses = await analyzeMeshioSurfaces(positions, indices, componentTriangles);
 
   const cleanup: Array<{ delete(): void }> = [];
   try {
@@ -285,6 +320,9 @@ export async function checkMeshHealth(
         healedVolume: solidProps?.volume ?? null,
         areaDeltaPct: solidProps && rawArea > 0 ? ((solidProps.area - rawArea) / rawArea) * 100 : null,
         volumeDeltaPct: solidProps && rawVolume > 0 ? ((solidProps.volume - rawVolume) / rawVolume) * 100 : null,
+        inconsistentPairCount: meshioAnalyses[index]?.inconsistentPairCount ?? null,
+        invertedCellCount: meshioAnalyses[index]?.invertedCellCount ?? null,
+        quality: meshioAnalyses[index]?.quality ?? null,
       };
     });
 

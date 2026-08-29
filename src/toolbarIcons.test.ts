@@ -15,6 +15,8 @@ const EXPECTED_IDS: ToolbarIconId[] = [
   "undo", "redo", "add", "isolate",
   // Display modes (Wire reuses the existing `wireframe` icon).
   "shaded", "xray", "hiddenLines", "flat",
+  // Split-view layout picker (Phase 2: 1×1, 1×2, 2×1, 2×2).
+  "layout1x1", "layout1x2", "layout2x1", "layout2x2",
 ];
 
 describe("TOOLBAR_ICONS", () => {

@@ -29,6 +29,17 @@ export class EditsModel {
     return this.ops.map(clone);
   }
 
+  /**
+   * The undone-but-recoverable ops in CHRONOLOGICAL order (the order they
+   * would re-apply) — i.e. the redo buffer reversed, since {@link undo}
+   * pushes onto the buffer's end and {@link redo} pops from it. Cloned like
+   * {@link list}. This is the order the Edits panel renders pending rows in
+   * and the order its timeline indices address.
+   */
+  redoList(): EditOp[] {
+    return [...this.redoBuffer].reverse().map(clone);
+  }
+
   get size(): number {
     return this.ops.length;
   }
@@ -84,6 +95,43 @@ export class EditsModel {
     if (index < 0 || index >= this.ops.length) return;
     this.ops.splice(index, 1);
     this.redoBuffer = [];
+    this.onChange();
+  }
+
+  /**
+   * Moves the stack boundary straight to timeline position `index` in ONE
+   * splice — the op-history-scrubbing primitive (roadmap Tier 2 item 1).
+   * `index` addresses the full chronological timeline: applied ops at
+   * `0..ops.length-1`, then pending-redo ops after them in {@link redoList}
+   * order. Jumping to position k makes the model state "after op k applied":
+   * clicking an applied row rolls back past it, clicking a pending row
+   * re-applies through it.
+   *
+   * This splices the boundary between the two arrays directly and fires ONE
+   * `onChange` at the end — never a loop of {@link undo}/{@link redo} calls,
+   * which would fire one `onChange`/`editsChanged`/autosave/re-tessellate
+   * round trip PER STEP for a single click. Redo-buffer ORDER is preserved in
+   * both directions, so ↶/↷ keep working correctly after any jump:
+   * demoting ops onto the buffer's FRONT reversed puts the chronologically-
+   * first demoted op where {@link redo} will pop it first; promoting ops off
+   * the buffer's END reversed re-applies them in exactly the order repeated
+   * {@link redo} calls would have. A jump that changes nothing (the last
+   * applied row) is a no-op with no `onChange`, matching every other
+   * mutation's no-op discipline.
+   */
+  jumpTo(index: number): void {
+    const n = this.ops.length;
+    const r = this.redoBuffer.length;
+    if (index < 0 || index >= n + r) return;
+    const target = index + 1; // applied count after jumping to timeline position `index`
+    if (target === n) return;
+    if (target < n) {
+      const demoted = this.ops.splice(target);
+      this.redoBuffer = [...demoted.reverse(), ...this.redoBuffer];
+    } else {
+      const restored = this.redoBuffer.splice(this.redoBuffer.length - (target - n)).reverse();
+      this.ops.push(...restored);
+    }
     this.onChange();
   }
 }

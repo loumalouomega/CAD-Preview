@@ -35,11 +35,20 @@ await esbuild.build({
   target: "node18",
   outfile,
   // This entry imports gmshService.ts (for the FE-mesh overlay fixture), so it
-  // needs the same external-ize-gmsh-wasm fix esbuild.mjs's extension/mcp
-  // configs already document: @loumalouomega/gmsh-wasm's Emscripten pthread
-  // bootstrap has a top-level `await import('worker_threads')` in its .mjs
-  // build that this "cjs" output format cannot represent.
-  external: ["vscode", "@loumalouomega/gmsh-wasm"],
+  // needs the same external-ize-the-WASM-packages fix esbuild.mjs's
+  // extension/mcp/kernel configs already document: each of these ships an
+  // ESM-only build whose Emscripten bootstrap uses a top-level `await
+  // import(...)` that this "cjs" output format cannot represent.
+  //
+  // **Keep this list in sync with `esbuild.mjs`'s own `external` arrays.** It
+  // silently fell behind once already: `float-tetwild-wasm` was added to
+  // `gmshService.ts`'s import graph (via `ftetwildService.ts`) when the robust
+  // meshing feature shipped, and because nothing here listed it, THIS script —
+  // and therefore all of `npm run docs:screenshots` — failed outright with
+  // "Top-level await is currently not supported with the cjs output format".
+  // Nobody noticed, because regenerating screenshots is a manual step; the
+  // breakage surfaced only when the pipeline was next actually run.
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright"],
   plugins: [wasmPathPlugin],
   banner: { js: `const import_meta_url = require("url").pathToFileURL(__filename).href;` },
   define: { "import.meta.url": "import_meta_url" },

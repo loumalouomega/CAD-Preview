@@ -1,4 +1,5 @@
 import type { Annotation, MeasureTool } from "./protocol";
+import type { AnnotatedTolerance } from "./toleranceBand";
 
 /** Pure (vscode-free) parse/serialize for the annotations sidecar — unit-testable. */
 
@@ -33,6 +34,21 @@ function asLinePoints(value: unknown): [number, number, number][] {
     if (p) out.push(p);
   }
   return out;
+}
+
+/**
+ * Tolerantly parses an annotation's optional tolerance band. A malformed band
+ * (any field missing/non-numeric/non-finite, or a negative allowance) drops
+ * the BAND only — the annotation itself survives, rendering exactly like a
+ * plain untoleranced pin.
+ */
+function asTolerance(value: unknown): AnnotatedTolerance | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const t = value as Partial<AnnotatedTolerance>;
+  const fields = [t.nominal, t.plus, t.minus, t.measured];
+  if (!fields.every((v) => typeof v === "number" && Number.isFinite(v))) return undefined;
+  if ((t.plus as number) < 0 || (t.minus as number) < 0) return undefined;
+  return { nominal: t.nominal as number, plus: t.plus as number, minus: t.minus as number, measured: t.measured as number };
 }
 
 /**
@@ -71,6 +87,7 @@ export function parseAnnotationsJson(text: string): Annotation[] {
       surfaces: asStringArray(a.surfaces),
       lines: asStringArray(a.lines),
       points: asStringArray(a.points),
+      tolerance: asTolerance(a.tolerance),
     });
   }
   return annotations;

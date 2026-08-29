@@ -1,3 +1,89 @@
+/* ── 3D scene palette ───────────────────────────────────────────────────
+ *
+ * Read by `src/webview/palette.ts` via `getComputedStyle(document.body)` and
+ * fed to THREE materials — the WebGL surface is not styled by CSS, so these
+ * are data for JS, not style rules.
+ *
+ * `:root`'s values MUST stay byte-identical to `palette.ts`'s
+ * `PALETTE_FALLBACKS` (the pre-theming constants). Two things depend on that:
+ * the default dark theme must render exactly as it did before theming existed,
+ * and the screenshot harness sets no body theme class, so it resolves here.
+ *
+ * Only the theme-class blocks below override. Values are explicit literals
+ * rather than `var(--vscode-*)` derivations — the harness defines only 12 of
+ * the 43 `--vscode-*` variables this file consumes, so keying a scene colour
+ * off an unset one would silently diverge between harness and real session.
+ *
+ * The theme class lives on <body>, so these must be readable from body. */
+:root {
+  --cad-face: #c0c4cc;
+  --cad-edge: #303338;
+  --cad-point: #ffcc00;
+  --cad-accent: #3b82f6;
+  --cad-accent-fail: #e5484d;
+  --cad-mesh: #4ea1ff;
+  --cad-mesh-wire: #1a3d66;
+  --cad-worst-element: #ff3b30;
+  --cad-hidden-line-ghost: #8fa8c9;
+  --cad-background: #1e1e1e;
+  --cad-grid-center: #888888;
+  --cad-grid-division: #444444;
+  --cad-light-sky: #ffffff;
+  --cad-light-ground: #404040;
+  --cad-light-key: #ffffff;
+}
+
+/* Light themes: darken the fills/edges so they read against a light ground,
+ * lift the grid, and warm the ground bounce (a near-black bounce under a light
+ * background reads as grime). The accent hues are kept — they are recognisable
+ * UI signals, and both pass contrast against either background. */
+body.vscode-light {
+  --cad-face: #b8bcc4;
+  --cad-edge: #5a5f68;
+  --cad-point: #b07d00;
+  --cad-mesh: #1f6fd0;
+  --cad-mesh-wire: #9dc2ee;
+  --cad-hidden-line-ghost: #6b7d96;
+  --cad-background: #f3f3f3;
+  --cad-grid-center: #9a9a9a;
+  --cad-grid-division: #c8c8c8;
+  --cad-light-ground: #b0b0b0;
+}
+
+/* High contrast: maximum separation, no mid-tones. */
+body.vscode-high-contrast {
+  --cad-face: #d4d4d4;
+  --cad-edge: #ffffff;
+  --cad-point: #ffff00;
+  --cad-accent: #1aebff;
+  --cad-accent-fail: #ff4a4a;
+  --cad-mesh: #6fc3ff;
+  --cad-mesh-wire: #ffffff;
+  --cad-hidden-line-ghost: #c0c0c0;
+  --cad-background: #000000;
+  --cad-grid-center: #ffffff;
+  --cad-grid-division: #767676;
+  --cad-light-ground: #202020;
+}
+
+/* MUST stay after `.vscode-high-contrast`: VS Code can set both classes on the
+ * body for a high-contrast LIGHT theme, and these have equal specificity — so
+ * source order is what makes the light variant win. */
+body.vscode-high-contrast-light {
+  --cad-face: #3b3b3b;
+  --cad-edge: #000000;
+  --cad-point: #6b4a00;
+  --cad-accent: #0f4a9c;
+  --cad-accent-fail: #b5121b;
+  --cad-mesh: #0f4a9c;
+  --cad-mesh-wire: #000000;
+  --cad-hidden-line-ghost: #3b3b3b;
+  --cad-background: #ffffff;
+  --cad-grid-center: #000000;
+  --cad-grid-division: #949494;
+  --cad-light-ground: #d0d0d0;
+}
+
 html,
 body {
   margin: 0;
@@ -40,6 +126,33 @@ body {
   pointer-events: none;
 }
 
+/* Split-view pane separators (roadmap "Split view", Phase 1) — thin visual
+ * dividers between 2×2 panes, over the single WebGL canvas but under the
+ * markup canvas (z-index 4 < 5). Always pointer-events:none: the panes they
+ * delineate are scissored regions of ONE canvas, so there is nothing to
+ * hit-test and clicks must fall through to the canvas beneath. */
+.pane-divider {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  background: var(--vscode-editorWidget-border, #454545);
+}
+#pane-divider-v {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+}
+#pane-divider-h {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+}
+.pane-divider.hidden {
+  display: none;
+}
+
 /* ── Sidebar (stacks Components + Parts) ─────────────────────────────── */
 
 #side {
@@ -79,7 +192,8 @@ body {
 #edits-header,
 #meshing-header,
 #mass-header,
-#mesh-health-header {
+#mesh-health-header,
+#macros-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -96,7 +210,8 @@ body {
 #edits-header,
 #meshing-header,
 #mass-header,
-#mesh-health-header {
+#mesh-health-header,
+#macros-header {
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
 }
 
@@ -350,6 +465,35 @@ body {
   font-size: 12px;
 }
 
+/* Geometric selection filters (roadmap Tier 2 item 1, Phase 1) — a predicate
+ * dropdown + numeric field + seam toggle inside the Select ▾ panel. Reuses
+ * the `.tb-row` flex container so nothing bespoke is needed for layout; only
+ * the native `<select>`/`<input>` appearance needs a small, non-button reset
+ * (otherwise `#toolbar button`'s blue background would win — it targets the
+ *  tag, not these two, so no specificity trap here). */
+#toolbar .tb-dropdown .tb-filter select,
+#toolbar .tb-dropdown .tb-filter input[type="text"] {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+}
+#toolbar .tb-dropdown .tb-filter select:disabled,
+#toolbar .tb-dropdown .tb-filter input:disabled {
+  opacity: 0.45;
+}
+#toolbar .tb-dropdown .tb-filter .tb-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
 .tb-sep {
   height: 1px;
   margin: 4px 6px;
@@ -594,6 +738,14 @@ input[type="range"]#clip-offset.meshing-slider {
 
 #view-controls .vc-row button {
   padding: 5px 9px;
+}
+
+/* Without this a disabled derive button (Clip ▸ Face / 3 Pts) looks exactly
+   like an enabled one — the panel had no :disabled rule of its own at all.
+   Matches #parts-isolate:disabled. */
+#view-controls .vc-row button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 #vc-background {
@@ -1531,6 +1683,11 @@ input[type="range"].meshing-slider:focus {
   opacity: 1;
 }
 
+.mass-message-warning {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  opacity: 1;
+}
+
 .mesh-health-row {
   display: flex;
   justify-content: space-between;
@@ -1615,6 +1772,33 @@ input[type="range"].meshing-slider:focus {
 .edit-remove:hover {
   opacity: 1 !important;
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
+}
+
+/* A replay outcome of "did not apply" (see EditsPanel.render's opOutcomes):
+ * the row dims and carries a ⚠ marker whose tooltip holds the diagnostic +
+ * hint. Warning color matches the editor theme's error/warning foreground. */
+.edit-row-skipped .edit-label { opacity: 0.45; }
+
+/* Op-history scrubbing (roadmap Tier 2 item 1): every history row is
+ * clickable and jumps the stack to that point in one splice; rows still in
+ * the redo buffer render dimmed with a ↷ mark and continued numbering, and
+ * re-apply through themselves when clicked. */
+.edit-row { cursor: pointer; }
+.edit-row-pending .edit-label { opacity: 0.4; }
+.edit-row-pending .edit-index { opacity: 0.35; }
+.edit-row-pending:hover .edit-label { opacity: 0.7; }
+.edit-pending-mark {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.45;
+}
+.edit-skip-warning {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--vscode-editorWarning-foreground, var(--vscode-list-warningForeground, #cca700));
+  cursor: help;
 }
 
 #edits-compose {
@@ -1854,7 +2038,8 @@ input[type="range"].meshing-slider:focus {
 
 #toolbar .tb-dropdown .sel-mode,
 #toolbar .tb-dropdown .measure-tool-btn,
-#toolbar .tb-dropdown .markup-tool-btn {
+#toolbar .tb-dropdown .markup-tool-btn,
+#toolbar .tb-dropdown .layout-btn {
   display: inline-flex;
   gap: 5px;
   padding: 4px 8px;
@@ -1864,14 +2049,16 @@ input[type="range"].meshing-slider:focus {
 
 #toolbar .tb-dropdown .sel-mode.active,
 #toolbar .tb-dropdown .measure-tool-btn.active,
-#toolbar .tb-dropdown .markup-tool-btn.active {
+#toolbar .tb-dropdown .markup-tool-btn.active,
+#toolbar .tb-dropdown .layout-btn.active {
   background: var(--vscode-button-background, #0e639c);
   color: var(--vscode-button-foreground, #fff);
 }
 
 #toolbar .tb-dropdown .sel-mode:disabled,
 #toolbar .tb-dropdown .measure-tool-btn:disabled,
-#toolbar .tb-dropdown .markup-tool-btn:disabled {
+#toolbar .tb-dropdown .markup-tool-btn:disabled,
+#toolbar .tb-dropdown .layout-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
@@ -1949,6 +2136,46 @@ input[type="range"].meshing-slider:focus {
   cursor: default;
 }
 
+/* ── Tolerance-band fields (roadmap "Tolerance-band fact checks") — three
+ * tiny inline inputs shown next to 📌 Pin whenever a pinnable measurement is
+ * showing. Nominal + one allowance is the minimum for a band; − blank means
+ * symmetric ±. ─────────────────────────────────────────────────────────── */
+
+#measure-tol-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* An author `display` rule overrides the `hidden` attribute's default
+ * `display: none` — re-state it explicitly or the group leaks into view
+ * whenever no pinnable measurement is showing (caught by visually inspecting
+ * the regenerated measure-menu screenshot, not by any test). */
+#measure-tol-group[hidden] {
+  display: none;
+}
+.measure-tol-field {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--vscode-foreground, #ccc);
+  opacity: 0.9;
+}
+.measure-tol-field input {
+  width: 52px;
+  padding: 1px 4px;
+  font-size: 11px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, rgba(30, 30, 30, 0.85));
+  border: 1px solid var(--vscode-widget-border, #3c3c3c);
+  border-radius: 3px;
+}
+/* An out-of-tolerance toleranced pin's list row — same derived-tone idea the
+ * overlay label uses (the annotation stores facts; this is presentation). */
+.annotation-row .annotation-out-of-tolerance {
+  color: var(--vscode-errorForeground, #f48771);
+}
+
 /* ── Saved annotations (roadmap "Persisted, topology-anchored annotations",
  * closed) — the pinned-measurement list under the Measure ▾ panel. ─────── */
 
@@ -1985,4 +2212,240 @@ input[type="range"].meshing-slider:focus {
 .annotation-row button {
   flex: 0 0 auto;
   padding: 2px 6px !important;
+}
+
+/* ── Named construction planes (view-controls "Planes" group) ─────────────
+ * Same row shape as .annotation-row; the two are deliberately separate
+ * selectors rather than one shared class, since they live in different panels
+ * and only happen to look alike today. */
+.plane-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.plane-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plane-row button {
+  flex: 0 0 auto;
+  padding: 2px 6px !important;
+}
+.plane-row-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* `.vc-row { display: flex }` beats the UA's `[hidden] { display: none }`, so
+   the attribute alone does NOT hide this row — the same defect class as
+   `#hover-tip.hidden`, which rendered as a visible empty box while every test
+   asserting the class passed. Here it left two text inputs on screen and grew
+   the bottom control bar wide enough to cover the sidebar. */
+#plane-entry[hidden] {
+  display: none;
+}
+/* Two vectors on one row: each must shrink rather than push the Add button
+   out of the panel. */
+.plane-vec {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 6em;
+}
+
+/* ── Hover tooltip + inspector card (roadmap "Explain the geometry under the
+ *    cursor") ───────────────────────────────────────────────────────────────
+ *
+ * Both live inside #app, which is the positioning context the WebGL canvas
+ * shares — so the tooltip's left/top can be set straight from canvas-relative
+ * pointer coordinates with no offset arithmetic.
+ *
+ * z-index sits above #view-controls (10) and the markup canvas (5) but below
+ * #toolbar (15), so neither can cover the controls. */
+#hover-tip {
+  position: absolute;
+  z-index: 13;
+  /* Never eats a click meant for the geometry underneath — the tooltip tracks
+   * the cursor, so without this it would sit directly under the pointer. */
+  pointer-events: none;
+  padding: 3px 7px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.72));
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+}
+
+/* There is NO global `.hidden` rule in this file — each consumer defines its
+ * own (`.pane-divider.hidden`, `.tb-dropdown.hidden`). Omitting these two
+ * rendered both elements as empty bordered boxes over the viewport, which the
+ * webview tests could not catch: they asserted `classList.contains("hidden")`,
+ * which was true the whole time. Only inspecting the screenshots found it. */
+#hover-tip.hidden,
+#inspector-card.hidden {
+  display: none;
+}
+
+#hover-tip .hover-id {
+  font-weight: 600;
+}
+
+#hover-tip .hover-ops {
+  opacity: 0.75;
+}
+
+#inspector-card {
+  position: absolute;
+  z-index: 12;
+  left: 8px;
+  bottom: 8px;
+  min-width: 168px;
+  max-width: min(34vw, 320px);
+  padding: 6px 9px;
+  border-radius: 4px;
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: 11px;
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.72));
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+}
+
+#inspector-card .insp-title {
+  font-weight: 600;
+  margin-bottom: 3px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#inspector-card .insp-id {
+  font-family: var(--vscode-editor-font-family, monospace);
+  opacity: 0.7;
+  font-weight: 400;
+}
+
+#inspector-card .insp-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#inspector-card .insp-key {
+  opacity: 0.7;
+}
+
+#inspector-card .insp-val {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+#inspector-card .insp-note {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+/* Selection-groups context menu. Reuses `.tb-dropdown`'s look (background,
+ * border, radius, shadow, padding) — only positioning differs: this one is
+ * cursor-anchored inside #app rather than hung under a toolbar trigger. */
+#context-menu {
+  position: absolute;
+  min-width: 190px;
+}
+
+#context-menu .ctx-count {
+  opacity: 0.6;
+  margin-left: 10px;
+}
+
+#context-menu .ctx-empty {
+  padding: 4px 8px;
+  opacity: 0.7;
+  font-style: italic;
+  font-size: 11px;
+}
+
+/* ── Macros panel (saved parameterized scripts) ──────────────────────────── */
+
+#macros-body {
+  padding: 4px 8px 8px;
+}
+
+.macros-empty,
+.macros-status {
+  opacity: 0.75;
+  font-size: 11px;
+  padding: 2px 0 4px;
+}
+
+.macro-item {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+.macro-item:last-child {
+  border-bottom: none;
+}
+
+.macro-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.macro-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.macro-btn {
+  font: inherit;
+  font-size: 11px;
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border: none;
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.macro-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.macro-param {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.macro-param-name {
+  min-width: 54px;
+  opacity: 0.75;
+  font-size: 11px;
+}
+
+.macro-param-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #1e1e1e);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.macro-param-input:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
 }

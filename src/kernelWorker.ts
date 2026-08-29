@@ -26,23 +26,29 @@ console.debug = console.error.bind(console);
 /* eslint-enable no-console */
 
 import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, type BRepCacheEntry, type BRepResult } from "./occtService";
-import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled } from "./gmshService";
-import { computeMassProperties } from "./massProperties";
-import { getEntityFacts, measureEntities, measureExact, checkInterference, rebindPartsAcrossOps } from "./entityFacts";
+import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled, repairMesh } from "./gmshService";
+import { computeMassProperties, computeBom } from "./massProperties";
+import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
 import {
   convertToStlBoundary,
   convertToStlBoundaryWithRegions,
+  convertFoamCaseToStlBoundary,
   exportViaMeshio,
   readMeshioMetadata,
+  readMeshioDataInfo,
+  runMeshioOps,
   readMeshioFieldValues,
 } from "./meshioService";
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
+import { recognizePrimitives } from "./primitiveReport";
+import { fitMeshRegion } from "./meshRegionFit";
 import { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
+import { hitTest } from "./hitTestService";
 
 /**
  * Per-document OCCT parse+replay cache (roadmap "Base-shape caching and
@@ -104,10 +110,13 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   exportMdpa: exportMdpa as Handler,
   exportGeoUnrolled: exportGeoUnrolled as Handler,
   computeMassProperties: computeMassProperties as Handler,
+  computeBom: computeBom as Handler,
   getEntityFacts: getEntityFacts as Handler,
+  hitTest: hitTest as Handler,
   measureEntities: measureEntities as Handler,
   measureExact: measureExact as Handler,
   checkInterference: checkInterference as Handler,
+  checkInterferenceAll: checkInterferenceAll as Handler,
   rebindPartsAcrossOps: rebindPartsAcrossOps as Handler,
   renderSnapshot: renderSnapshot as Handler,
   isRenderAvailable: isRenderAvailable as Handler,
@@ -116,13 +125,19 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   compareModels: compareModels as Handler,
   convertToStlBoundary: convertToStlBoundary as Handler,
   convertToStlBoundaryWithRegions: convertToStlBoundaryWithRegions as Handler,
+  convertFoamCaseToStlBoundary: convertFoamCaseToStlBoundary as Handler,
   exportViaMeshio: exportViaMeshio as Handler,
   readMeshioMetadata: readMeshioMetadata as Handler,
+  readMeshioDataInfo: readMeshioDataInfo as Handler,
+  runMeshioOps: runMeshioOps as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,
   checkMeshHealth: checkMeshHealth as Handler,
+  recognizePrimitives: recognizePrimitives as Handler,
+  fitMeshRegion: fitMeshRegion as Handler,
   promoteMeshToBrep: promoteMeshToBrep as Handler,
+  repairMesh: repairMesh as Handler,
   exportSvgSilhouette: exportSvgSilhouette as Handler,
 };
 

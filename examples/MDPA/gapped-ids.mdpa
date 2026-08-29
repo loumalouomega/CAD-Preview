@@ -1,0 +1,10 @@
+Begin Nodes
+        7  0.0  0.0  0.0
+       23  1.0  0.0  0.0
+       41  0.0  1.0  0.0
+      100  0.0  0.0  1.0
+End Nodes
+
+Begin Elements Element3D4N
+  5  1  7 23 41 100
+End Elements

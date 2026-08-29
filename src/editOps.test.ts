@@ -7,6 +7,8 @@ describe("validateEditOp", () => {
       .toEqual({ op: "translate", targets: ["solid-0"], vec: [1, 2, 3] });
     expect(validateEditOp({ op: "scale", targets: ["solid-0"], center: [0, 0, 0], factors: [2, 1, 1] }))
       .toMatchObject({ op: "scale" });
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], planePoint: [0, 0, 5], planeNormal: [1, 2, -1] }))
+      .toEqual({ op: "mirror", targets: ["solid-0"], planePoint: [0, 0, 5], planeNormal: [1, 2, -1] });
   });
 
   it("accepts well-formed boolean and fillet/chamfer ops", () => {
@@ -155,6 +157,11 @@ describe("validateEditOp", () => {
     // section: zero-length normal
     expect(validateEditOp({
       op: "section", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 0],
+    })).toBeNull();
+    // mirror: zero-length planeNormal — same gate as splitByPlane/section
+    // (gp_Dir(0,0,0) throws inside OCCT and the op would silently no-op)
+    expect(validateEditOp({
+      op: "mirror", targets: ["solid-0"], planePoint: [0, 0, 5], planeNormal: [0, 0, 0],
     })).toBeNull();
   });
 

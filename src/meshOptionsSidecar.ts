@@ -43,6 +43,17 @@ export function serializeMeshJson(sourceName: string, options: MeshOptions): str
  * Generates the editable `.geo` script text for GMSH: merges the source CAD
  * file, sets one `Mesh.*` option per {@link MeshOptions} field, and issues
  * the trailing `Mesh <dimension>;` command that actually triggers meshing.
+ *
+ * Under `engine: "ftetwild"`, the trailing `Mesh <dimension>;` directive is
+ * REPLACED with a plain comment rather than emitted as usual — a `.geo`
+ * script is inherently Gmsh-only (there is no fTetWild directive Gmsh's own
+ * `.geo` interpreter could run), so opening this file in a real Gmsh install
+ * and running it would silently mesh via Gmsh's `classifySurfaces` path
+ * instead of the fTetWild tetrahedralizer this extension actually used —
+ * misrepresenting what was done, not just producing a slightly different
+ * result. The `Merge` + `Mesh.*` option lines still emit unchanged (they're
+ * harmless, and several — `Mesh.MeshSizeMin`/`Max` — are still meaningful
+ * context even though fTetWild doesn't read them via this file).
  */
 export function generateGeoScript(sourceName: string, options: MeshOptions): string {
   const shape = gmshShapeOptions(options.elementShape, options.dimension);
@@ -59,7 +70,13 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
     `Mesh.SubdivisionAlgorithm = ${shape.subdivisionAlgorithm};`,
     `Mesh.Recombine3DAll = ${shape.recombine3DAll};`,
     `Mesh.Optimize = ${options.optimize ? 1 : 0};`,
-    `Mesh ${options.dimension};`,
+    options.engine === "ftetwild"
+      ? "// engine: fTetWild — this document was volume-meshed by fTetWild, not Gmsh's\n" +
+        "// own mesher, so there is no Gmsh directive that reproduces it. Running\n" +
+        `// this script's own "Mesh ${options.dimension};" would mesh via Gmsh's\n` +
+        "// classifySurfaces path instead — a different result, not a re-run of\n" +
+        "// what this extension actually did — so it is deliberately omitted."
+      : `Mesh ${options.dimension};`,
   ];
   return lines.join("\n") + "\n";
 }

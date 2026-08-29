@@ -18,7 +18,7 @@ console.debug = console.error.bind(console);
 /* eslint-enable no-console */
 
 import * as path from "path";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
@@ -26,25 +26,45 @@ import { z } from "zod";
 import { createKernelClient } from "./kernelClient";
 import {
   describeCapabilities,
+  OP_PARAM_DOCS,
+  allOpKinds,
   loadModel,
   getMassProperties,
+  generateBomTool,
   inspectEntity,
   measureTool,
   measureExactTool,
+  checkToleranceTool,
   checkInterferenceTool,
+  checkInterferenceAllTool,
   renderSnapshotTool,
+  renderOpsPrefixTool,
+  hitTestTool,
+  screenshotShapeTool,
+  type SnapshotView,
+  listParametricScripts,
+  listStandardHoleSizes,
+  listWorkspaceModels,
   searchStandardPartsTool,
   downloadStandardPartTool,
   compareModelsTool,
   checkMeshHealthTool,
+  recognizePrimitivesTool,
+  fitMeshRegionTool,
+  transformMeshTool,
   promoteMeshToBrepTool,
+  repairMeshTool,
   exportSvgSilhouetteTool,
+  exportTechnicalDrawingTool,
   getState,
   applyEditOps,
   runParametricScriptTool,
   removeEditOp,
+  runSavedScript,
+  saveParametricScript,
   setVariables,
   setPart,
+  setPlane,
   setMeshOptions,
   generateMeshTool,
   exportMeshTool,
@@ -54,6 +74,8 @@ import {
   type ToolContext,
   type ProgressCallback,
 } from "./mcpTools";
+import { HOLE_STANDARDS } from "./holeStandards";
+import { NAMED_VIEW_NAMES } from "./viewDirections";
 import type { MeshOptions } from "./meshOptions";
 
 // The bundle lives in dist/ next to the WASM binaries; getOcct/getGmsh read
@@ -78,7 +100,53 @@ const ctx: ToolContext = {
   pipeline: createKernelClient(extensionPath),
 };
 
-const server = new McpServer({ name: "cad-preview", version: "1.0.0" });
+const INSTRUCTIONS = [
+  "CAD-Preview — headless CAD modeling via sidecar-persisted edit ops.",
+  "Every path/outputPath is absolute. The CAD source file is never written — edits, parts, annotations and mesh options live in sidecars next to it (<model>.edits.json etc.) and are replayed on open in VS Code.",
+  "Tools report facts (numbers, entity inventories, images, warnings) — you render the verdict. A supported:false response or a tool/network failure is need-more-info, never a silent pass or fail.",
+  "Call describe_capabilities first (or read cad-preview://capabilities) for the full op catalog with per-kind parameter docs, B-rep-only/topology-changing flags, entity-id scheme and headless limitations. Prefer the resource if your client auto-attaches it. Pass ops as raw JSON with an op kind field — they are validated by the same tolerant gate the extension uses.",
+  "render_snapshot images (and compare_models includeSnapshots ones) are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
+].join(" ");
+
+const server = new McpServer({ name: "cad-preview", version: "1.0.0" }, { instructions: INSTRUCTIONS });
+
+server.registerResource(
+  "capabilities",
+  "cad-preview://capabilities",
+  {
+    title: "CAD-Preview capabilities",
+    description: "Full op catalog with per-kind parameter docs, entity-id scheme and headless limitations. Same content as the describe_capabilities tool, same source.",
+    mimeType: "application/json",
+  },
+  async (uri) => ({
+    contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(describeCapabilities(), null, 2) }],
+  })
+);
+
+server.registerResource(
+  "op",
+  new ResourceTemplate("cad-preview://op/{kind}", {
+    list: async () => ({
+      resources: allOpKinds().map((kind) => ({
+        uri: `cad-preview://op/${kind}`,
+        name: kind,
+        description: OP_PARAM_DOCS[kind as keyof typeof OP_PARAM_DOCS] ?? kind,
+        mimeType: "application/json",
+      })),
+    }),
+  }),
+  {
+    title: "CAD-Preview op",
+    description: "Parameters for one EditOp kind. Same source as describe_capabilities.",
+    mimeType: "application/json",
+  },
+  async (uri, { kind }) => {
+    const caps = describeCapabilities();
+    const op = (caps.ops as Array<{ op: string }>).find((o) => o.op === kind);
+    if (!op) throw new Error(`Unknown op kind: ${kind} (see cad-preview://capabilities for the full catalog)`);
+    return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(op, null, 2) }] };
+  }
+);
 
 type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 type ToolResult = { content: ToolContent[]; isError?: boolean };
@@ -189,10 +257,20 @@ server.registerTool(
 );
 
 server.registerTool(
+  "generate_bom",
+  {
+    description:
+      "One bill-of-materials row per Part: name, entity counts, and volume/area (SUM of member solids' individual volumes — sum-of-parts procurement convention, NOT a combined-solid volume; overlapping members count their overlap twice). Also returns `bom`, a ready-to-paste tab-separated string with a header row for spreadsheet handoff. Facts only — unresolvable ids are reported per row (unresolvedIds) and in warnings, never silently dropped; an empty parts sidecar returns zero rows with a warning. Read-only. B-rep sources only headless.",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => generateBomTool(ctx, args))
+);
+
+server.registerTool(
   "inspect",
   {
     description:
-      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, and — for a planar face — its normal and surface type, for one entity id. B-rep sources only headless.",
+      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, surface/curve classification, and the underlying ANALYTIC PARAMETERS for one entity id — a cylinder's radius and axis, a cone's half-angle (degrees, signed: positive means the radius grows along the axis) with its apex and reference radius, a sphere's centre and radius, a torus's major/minor radii. Points and directions are in world coordinates, lengths in the file's own units. `surfaceParams.axisLocation` is a point ON the axis, not the face's centre and not necessarily within its extent — use bbox/center for where the face is. B-rep sources only headless.",
     inputSchema: {
       path: modelPath,
       entityId: z.string().describe("solid-N / face-N / edge-N / point-N id from load_model's inventory"),
@@ -223,7 +301,7 @@ server.registerTool(
   "measure_exact",
   {
     description:
-      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true nearest points found, not either entity's centre. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
+      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true minimum distance plus the realizing points where it lands, centreDistance (bbox-centre-to-bbox-centre, what `measure` reports), and — for two planar faces — angleDeg between their normals and parallelDistance (perpendicular plane-to-plane gap) when the planes are parallel; `primary` names which value most likely answers 'how far apart are these' for that pair ('parallel' for two parallel planar faces, else 'min') — a fact about which quantity fits the geometry, never a judgment of it. There is NO maximum-distance field: probed and genuinely unavailable in this WASM build. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
     inputSchema: {
       path: modelPath,
       kind: z.enum(["distance", "edgeLength", "radius"]),
@@ -233,6 +311,29 @@ server.registerTool(
   },
   wrap((args: { path: string; kind: "distance" | "edgeLength" | "radius"; entityIdA: string; entityIdB?: string }) =>
     measureExactTool(ctx, args)
+  )
+);
+
+server.registerTool(
+  "check_tolerance",
+  {
+    description:
+      "Tolerance-band fact check on top of an exact measurement: runs the SAME exact measurement measure_exact performs (B-rep precision, same kind/entityId rules), then reports the measured value alongside deviation = measured − nominal and withinTolerance (true when −toleranceMinus ≤ deviation ≤ tolerancePlus). toleranceMinus defaults to tolerancePlus (symmetric ±) when omitted. withinTolerance is a FACT about where the value sits relative to the band you supplied — never a pass/fail verdict; you render the judgment. No new geometry is computed and nothing is persisted.",
+    inputSchema: {
+      path: modelPath,
+      kind: z.enum(["distance", "edgeLength", "radius"]),
+      entityIdA: z.string().describe("solid-N / face-N / edge-N / point-N id"),
+      entityIdB: z.string().optional().describe("solid-N / face-N / edge-N / point-N id — required for kind='distance'"),
+      nominal: z.number().describe("Nominal (target) value, same unit as the measurement (mm for distance/edgeLength/radius)"),
+      tolerancePlus: z.number().describe("Allowed deviation above nominal (≥ 0)"),
+      toleranceMinus: z
+        .number()
+        .optional()
+        .describe("Allowed deviation below nominal (≥ 0); omitted = symmetric ± with tolerancePlus"),
+    },
+  },
+  wrap((args: { path: string; kind: "distance" | "edgeLength" | "radius"; entityIdA: string; entityIdB?: string; nominal: number; tolerancePlus: number; toleranceMinus?: number }) =>
+    checkToleranceTool(ctx, args)
   )
 );
 
@@ -253,6 +354,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  "check_interference_all",
+  {
+    description:
+      "Facts only (see describe_capabilities' verdictConventions): assembly-wide interference check — runs the same exact BRepAlgoAPI_Common_3 overlap test over EVERY pair of Parts in one call, with a cheap bounding-box pre-filter (strictly-disjoint pairs are reported without paying for a boolean; screenedByBbox:true marks those). Each row: {partA, partB, hasOverlap, overlapVolume} plus unresolved id lists. parts omitted = every Part in the sidecar; unknown/empty parts are skipped with warnings. hasOverlap is only true for a genuine non-degenerate volume overlap (merely-touching solids report false). Cost is O(n^2) pairs worst case. Read-only, never mutates the model. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      parts: z.array(z.string()).optional().describe("Part names to compare pairwise (default: every Part in the sidecar)"),
+    },
+  },
+  wrap((args: { path: string; parts?: string[] }) => checkInterferenceAllTool(ctx, args))
+);
+
+server.registerTool(
   "render_snapshot",
   {
     description:
@@ -262,12 +376,54 @@ server.registerTool(
       focus: z.array(z.string()).optional().describe("Entity ids — isolate the view to only these"),
       hide: z.array(z.string()).optional().describe("Entity ids — force-hide these"),
       displayMode: z.enum(["shaded", "wireframe"]).optional().describe("Applies to the whole 4-image packet"),
+      view: z
+        .discriminatedUnion("kind", [
+          z.object({ kind: z.literal("named"), name: z.string().describe(`One of: ${NAMED_VIEW_NAMES.join(", ")} (or the aliases iso/iso-a/iso-b)`) }),
+          z.object({ kind: z.literal("current") }),
+          z.object({ kind: z.literal("orbit-from-current"), azimuthDeg: z.number(), elevationDeg: z.number() }),
+          z.object({
+            kind: z.literal("look-from"),
+            direction: z.tuple([z.number(), z.number(), z.number()]).describe("Target -> camera; need not be normalized"),
+            up: z.tuple([z.number(), z.number(), z.number()]).optional(),
+          }),
+        ])
+        .optional()
+        .describe(
+          "ONE camera instead of the default 4-view packet. `current`/`orbit-from-current` read the view state you left the interactive viewer in — that sidecar stores an orientation, not a pose, so `current` means the same direction re-framed on the model. Unknown names and a missing view state warn and fall back to the default packet. Omit for the default 4 views."
+        ),
+      composite: z
+        .boolean()
+        .optional()
+        .describe("Stitch the views into ONE labelled grid image instead of returning them separately — same total pixels as a single view, so it costs one image's worth of attention rather than four."),
     },
   },
   wrap(
-    (args: { path: string; focus?: string[]; hide?: string[]; displayMode?: "shaded" | "wireframe" }) =>
-      renderSnapshotTool(ctx, args)
+    (args: {
+      path: string;
+      focus?: string[];
+      hide?: string[];
+      displayMode?: "shaded" | "wireframe";
+      view?: SnapshotView;
+      composite?: boolean;
+    }) => renderSnapshotTool(ctx, args)
   )
+);
+
+server.registerTool(
+  "render_ops_prefix",
+  {
+    description:
+      "Render the model AS OF op N — read-only bisection for 'the finished model is wrong and I don't know which step broke it'. Replays only ops[0..throughIndex] (0-based, inclusive; -1 = the base shape before any op) through the same stateless pipeline load_model uses and returns that prefix's entity inventory; PERSISTS NOTHING (the sidecar op stack is untouched). Optional render:true adds render_snapshot's 4-view PNG packet of the PREFIX model as image content blocks (same Playwright/Chromium prerequisite and supported:false degradation). Workflow: snapshot the middle index, look, halve again — two or three snapshots localize the culprit faster than re-reading the whole op list. Each prefix length pays a full replay (no incremental reuse across differing lengths), so this is a click-to-jump tool, not a scrubber. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      throughIndex: z
+        .number()
+        .int()
+        .describe("Last applied op to include, 0-based (-1 = base shape with no ops applied)"),
+      render: z.boolean().optional().describe("Also render the prefix model's 4-view PNG packet (default false)"),
+    },
+  },
+  wrap((args: { path: string; throughIndex: number; render?: boolean }) => renderOpsPrefixTool(ctx, args))
 );
 
 server.registerTool(
@@ -322,6 +478,22 @@ server.registerTool(
 );
 
 server.registerTool(
+  "transform_mesh",
+  {
+    description:
+      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
+    inputSchema: {
+      path: modelPath,
+      ops: z
+        .array(z.record(z.string(), z.unknown()))
+        .describe('Ordered operations, e.g. [{"op":"clean"},{"op":"decimate","ratio":0.25}]'),
+      outputPath: z.string().describe("Destination file path; its extension selects the output format"),
+    },
+  },
+  wrap((args: { path: string; ops: unknown[]; outputPath: string }) => transformMeshTool(ctx, args))
+);
+
+server.registerTool(
   "check_mesh_health",
   {
     description:
@@ -329,6 +501,35 @@ server.registerTool(
     inputSchema: { path: modelPath },
   },
   wrap((args: { path: string }) => checkMeshHealthTool(ctx, args))
+);
+
+server.registerTool(
+  "recognize_primitives",
+  {
+    description:
+      "Per-solid primitive recognition, FACTS ONLY (see describe_capabilities' verdictConventions): for each solid, the face inventory by surface type, a candidate primitive (box/sphere/cylinder/cone/torus) when the inventory matches a signature exactly, and the FIT RESIDUAL — the largest deviation between the solid's real tessellated boundary and that idealized primitive, in the file's units, plus `fitResidualFrac` as a fraction of the solid's bbox diagonal. A candidate is a HYPOTHESIS, not a verdict: a small residual means the solid closely resembles that primitive; you decide whether it IS one. `candidate: null` means no signature matched (a filleted box has an extra face, so it is honestly not a box) — the inventory is still reported and is useful on its own. Emits no ops and changes nothing. B-rep sources only headless: a mesh source has no analytic surface to classify.",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => recognizePrimitivesTool(ctx, args))
+);
+
+server.registerTool(
+  "fit_mesh_region",
+  {
+    description:
+      "Fit a plane / cylinder / sphere to a REGION of a mesh, FACTS ONLY. Grows a region outward from the triangle nearest `seedPoint`, crossing an edge only where adjacent triangles' normals differ by less than `angleDeg` (default 40 — deliberately looser than face-splitting tolerances so the walk crosses a tessellated curve), then fits all three shapes and reports each with its own residual (largest deviation of the region's vertices, and `residualFrac` relative to the region's size). `simplest` names the first of plane<cylinder<sphere whose residualFrac is under the published threshold; `simplestRule` states that rule so you can recompute it — it is a convenience over the same numbers, never a hidden judgment. This ordering matters: a FLAT region is also fitted by an enormous sphere with a tiny residual, so choosing by residual alone would pick close to arbitrarily. A shape that cannot be fitted is ABSENT rather than present with meaningless parameters (a flat region's normals are all parallel, so no cylinder axis exists — that is the honest answer). Emits no ops. Mesh sources only (stl/obj/ply/gltf): a B-rep source already has exact surfaces, so use inspect/recognize_primitives there.",
+    inputSchema: {
+      path: modelPath,
+      seedPoint: z
+        .tuple([z.number(), z.number(), z.number()])
+        .describe("World-space point on the surface; the nearest triangle by centroid seeds the region"),
+      angleDeg: z.number().optional().describe("Dihedral gate in degrees (default 40)"),
+      maxTriangles: z.number().optional().describe("Cap on region size; the result reports `capped` when hit"),
+    },
+  },
+  wrap((args: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number }) =>
+    fitMeshRegionTool(ctx, args)
+  )
 );
 
 server.registerTool(
@@ -347,24 +548,87 @@ server.registerTool(
 );
 
 server.registerTool(
+  "repair_mesh",
+  {
+    description:
+      "Repairs a dirty STL/OBJ/PLY/glTF mesh (holes, self-intersections, non-manifold edges -- exactly what check_mesh_health diagnoses) into a NEW watertight STL file at outputPath, via fTetWild: tetrahedralizes the mesh, then takes the resulting volume mesh's own boundary -- watertight and manifold BY CONSTRUCTION regardless of how broken the input was, since fTetWild is built specifically to survive that input class where Gmsh's own classifySurfaces path throws or silently produces no elements (see generate_mesh's engine:'ftetwild' option). This is a ONE-SHOT EXPORT, not an in-place reclassification -- the original mesh source is left completely untouched. The natural next step is re-running check_mesh_health or promote_mesh_to_brep on the repaired output, which now typically closes where the original could not. B-rep sources return an error (nothing to repair); meshio-only formats return an error (no host-side triangle-soup parser). No triangle-count ceiling is imposed (unlike check_mesh_health/promote_mesh_to_brep's 50000-triangle cap, a property of their different, per-triangle OCCT sewing approach) -- a very large or very slow mesh may hit this server's own per-call timeout instead.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write the repaired STL file to (must not be the source path)"),
+    },
+  },
+  wrap((args: { path: string; outputPath: string }) => repairMeshTool(ctx, args))
+);
+
+server.registerTool(
+  "export_technical_drawing",
+  {
+    description:
+      "Write a 2D TECHNICAL DRAWING to .svg or .dxf: feature edges with hidden-line removal — visible runs solid, occluded runs dashed (SVG) or on a HIDDEN layer (DXF). Unlike export_svg_silhouette, which draws an outline only, this also draws interior feature edges and shows what is behind them. Single orthographic view, no dimensions. Works for B-rep AND mesh sources: the visibility test runs on tessellated triangles and calls no OCCT hidden-line API (that family is unavailable in this build), so it is not limited to B-rep. Treat it as a review/illustration artifact — use measure/measure_exact for any dimension you need to be sure of.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write (.svg or .dxf)"),
+      view: z.string().optional().describe(`Named view: ${NAMED_VIEW_NAMES.join(", ")}. Unknown names warn and fall back to FRONT.`),
+      direction: z.tuple([z.number(), z.number(), z.number()]).optional().describe("Explicit view direction (model → camera); wins over `view`"),
+      up: z.tuple([z.number(), z.number(), z.number()]).optional(),
+      unit: z.string().optional().describe("Output unit (mm/cm/m/in/ft); a real coordinate scale, default mm"),
+      strokeWidth: z.number().optional(),
+      tessellationQuality: z.string().optional().describe('B-rep only: draft/standard/fine. Default "fine" — the drawing IS the tessellation, and a coarser one also raises the angle below which a face join reads as tangent.'),
+      creaseAngleDeg: z
+        .number()
+        .optional()
+        .describe("Mesh sources only: dihedral angle above which an interior edge is drawn. Default 35°, chosen to clear a coarse STL cylinder's own facet angle. Too low turns the drawing into a wireframe (which is warned about)."),
+      format: z.enum(["svg", "dxf"]).optional(),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      outputPath: string;
+      view?: string;
+      direction?: [number, number, number];
+      up?: [number, number, number];
+      unit?: string;
+      strokeWidth?: number;
+      tessellationQuality?: string;
+      creaseAngleDeg?: number;
+      format?: "svg" | "dxf";
+    }) => exportTechnicalDrawingTool(ctx, args)
+  )
+);
+
+server.registerTool(
   "export_svg_silhouette",
   {
     description:
-      "Write a 2D OUTLINE (silhouette) of a model to an .svg file. OUTLINE ONLY -- there is NO hidden-line removal, so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 SVG user unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does.",
+      "Write a 2D OUTLINE (silhouette) of a model to an .svg or .dxf file. OUTLINE ONLY -- there is NO hidden-line removal here (use export_technical_drawing for that), so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 output unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does. Output format is \"svg\" (default) or \"dxf\" — DXF chains silhouette segments into LWPOLYLINEs (with bulges for arcs where detected) plus singleton LINEs.",
     inputSchema: {
       path: modelPath,
-      outputPath: z.string().describe("Absolute path to write the .svg to (must not be the source path)"),
+      outputPath: z.string().describe("Absolute path to write the .svg/.dxf to (must not be the source path)"),
       view: z.string().optional().describe("Named view: FRONT | BACK | TOP | BOTTOM | LEFT | RIGHT | ISO (default FRONT)"),
       direction: z.array(z.number()).optional().describe("Explicit view direction [x,y,z] (model -> camera); overrides view"),
       up: z.array(z.number()).optional().describe("Explicit up vector [x,y,z]"),
       unit: z.string().optional().describe("Output unit: mm | cm | m | in | ft (default mm, no conversion)"),
-      strokeWidth: z.number().optional().describe("Stroke width in output units (default: proportional to the drawing's size)"),
+      strokeWidth: z.number().optional().describe("SVG only: stroke width in output units (default: proportional to the drawing's size)"),
       tessellationQuality: z.string().optional().describe("B-rep sources only: draft | standard | fine (default fine)"),
+      format: z.enum(["svg", "dxf"]).optional().describe("Output format: svg (default) or dxf"),
     },
   },
-  wrap((args: { path: string; outputPath: string; view?: string; direction?: number[]; up?: number[]; unit?: string; strokeWidth?: number; tessellationQuality?: string }) =>
+  wrap((args: { path: string; outputPath: string; view?: string; direction?: number[]; up?: number[]; unit?: string; strokeWidth?: number; tessellationQuality?: string; format?: string }) =>
     exportSvgSilhouetteTool(ctx, args)
   )
+);
+
+server.registerTool(
+  "list_workspace_models",
+  {
+    description:
+      "Stateless discovery: given a folder, return every CAD file routeFile() recognizes beneath it (depth-capped walk; .git and node_modules are never scanned), each with its detected format/strategy and which companion sidecars (.edits.json/.parts.json/.annotations.json/.mesh.json/.view.json/.geo) currently exist beside it. Caps are reported via truncated + warnings — the list is never quietly partial. Purely additive over load_model's own routing rules: use it to discover what's in a project before calling explicit-path tools; every other tool stays fully path-explicit (this server has no open-document state).",
+    inputSchema: {
+      root: z.string().describe("Absolute path to the folder to scan"),
+    },
+  },
+  wrap((args: { root: string }) => listWorkspaceModels(args))
 );
 
 server.registerTool(
@@ -411,6 +675,147 @@ server.registerTool(
   wrap((args: { path: string; index: number }) => removeEditOp(ctx, args))
 );
 
+const libraryPath = z.string().describe("Absolute path to the script-library JSON file (you name it; it is created on first save)");
+
+server.registerTool(
+  "save_parametric_script",
+  {
+    description:
+      "Save a named, parameterized script to a reusable library file so you don't re-derive the same bolt-pattern logic every session. The script is the exact same {variables?, steps} document run_parametric_script takes, and its own `variables` block IS its parameter list — there is no separate parameter schema. REFUSES to save a script that compiles to no ops, so a broken macro never enters the library silently. Pass overwrite:true to replace an existing name. Touches no model and no geometry.",
+    inputSchema: {
+      libraryPath,
+      name: z.string().describe("Unique name within the library; how run_saved_script refers to it"),
+      script: z.looseObject({}).describe("{variables?: [{name, expr}], steps: [...]} — identical to run_parametric_script's `script`"),
+      description: z.string().optional().describe("Free text shown by list_parametric_scripts"),
+      overwrite: z.boolean().optional().describe("Replace an existing script of the same name (default false: a name collision is an error)"),
+    },
+  },
+  wrap((args: { libraryPath: string; name: string; script: Record<string, unknown>; description?: string; overwrite?: boolean }) =>
+    saveParametricScript(args)
+  )
+);
+
+server.registerTool(
+  "list_parametric_scripts",
+  {
+    description:
+      "List the saved scripts in a library file with their descriptions and declared parameters (name + default expression), so you can discover what is available without reading the raw JSON. A missing or empty library reads as empty with a warning, never an error.",
+    inputSchema: { libraryPath },
+  },
+  wrap((args: { libraryPath: string }) => listParametricScripts(args))
+);
+
+server.registerTool(
+  "run_saved_script",
+  {
+    description:
+      "Run a saved script from a library against a model, optionally overriding its declared parameters by name (e.g. {radius: 30, count: 8}). Goes through the exact same compile/validate/bake/persist path as run_parametric_script — same B-rep-only op gate, same entity rebinding, same response — differing only in where the script came from. An override naming no declared parameter is warned about, not fatal.",
+    inputSchema: {
+      libraryPath,
+      name: z.string().describe("The saved script's name, as reported by list_parametric_scripts"),
+      path: modelPath,
+      parameters: z
+        .record(z.string(), z.union([z.number(), z.string()]))
+        .optional()
+        .describe("Per-parameter overrides by name; a number or an expression string. Unknown names are ignored with a warning."),
+      dryRun: z.boolean().optional().describe("Compile and report without persisting"),
+    },
+  },
+  wrap(
+    (args: { libraryPath: string; name: string; path: string; parameters?: Record<string, number | string>; dryRun?: boolean }) =>
+      runSavedScript(ctx, args)
+  )
+);
+
+server.registerTool(
+  "screenshot_shape",
+  {
+    description:
+      "Photograph ONE entity, framed to fill the image — the usual next step after inspect returns something surprising. ISOLATES the entity by default: a face framed at its own scale otherwise puts the camera inside the parent solid, so the image would be interior geometry or an occluded face. Pass context:true to keep the whole model visible (warned, since the entity may then be hidden). Defaults to an isometric, because a planar face seen along its own plane is a line. Facts only, via images (see describe_capabilities' verdictConventions). Requires Playwright + Chromium; check `supported`. B-rep sources only.",
+    inputSchema: {
+      path: modelPath,
+      entityId: z.string().describe("solid-N / face-N / edge-N / point-N, from load_model or inspect"),
+      view: z
+        .discriminatedUnion("kind", [
+          z.object({ kind: z.literal("named"), name: z.string() }),
+          z.object({ kind: z.literal("current") }),
+          z.object({ kind: z.literal("orbit-from-current"), azimuthDeg: z.number(), elevationDeg: z.number() }),
+          z.object({
+            kind: z.literal("look-from"),
+            direction: z.tuple([z.number(), z.number(), z.number()]),
+            up: z.tuple([z.number(), z.number(), z.number()]).optional(),
+          }),
+        ])
+        .optional()
+        .describe("Camera to frame the entity from; defaults to an isometric"),
+      context: z.boolean().optional().describe("Keep the whole model visible instead of isolating the entity"),
+      displayMode: z.enum(["shaded", "wireframe"]).optional(),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      entityId: string;
+      view?: SnapshotView;
+      context?: boolean;
+      displayMode?: "shaded" | "wireframe";
+    }) => screenshotShapeTool(ctx, args)
+  )
+);
+
+server.registerTool(
+  "hit_test",
+  {
+    description:
+      "Fire rays at the model and report which entity each one strikes, with the world-space hit point, the distance along the ray, and (for a face) its outward normal. The inverse of render_snapshot: use it to name the entity behind something you spotted in an image, or to answer 'what is directly above (x, y)?' by firing straight down. Pass MANY rays in one call — parsing and replaying the model dominates the cost and is paid once. Needs no browser, so unlike render_snapshot it never degrades to supported:false. B-rep sources only. Facts only (see describe_capabilities' verdictConventions).",
+    inputSchema: {
+      path: modelPath,
+      rays: z
+        .array(z.object({ origin: z.tuple([z.number(), z.number(), z.number()]), direction: z.tuple([z.number(), z.number(), z.number()]) }))
+        .describe("Rays in world space; `direction` need not be normalized"),
+      mode: z
+        .enum(["volume", "surface", "line", "point", "any"])
+        .optional()
+        .describe('Which entity kind to report. "volume" resolves a face hit up to its owning solid. Default "any" (nearest of face/edge/point).'),
+      focus: z.array(z.string()).optional().describe("Only these entity ids (or solid ids) are hittable"),
+      hide: z.array(z.string()).optional().describe("These entity ids (or solid ids) are ignored — useful to see what is behind a face"),
+      tolerance: z
+        .number()
+        .optional()
+        .describe("How near a ray must pass an edge/point to hit it, in model units. Default: 1% of the model's bbox diagonal (faces need no tolerance)."),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      rays: { origin: [number, number, number]; direction: [number, number, number] }[];
+      mode?: "volume" | "surface" | "line" | "point" | "any";
+      focus?: string[];
+      hide?: string[];
+      tolerance?: number;
+    }) => hitTestTool(ctx, args)
+  )
+);
+
+server.registerTool(
+  "list_standard_hole_sizes",
+  {
+    description:
+      "Standard tapped/threaded hole sizes (ISO metric coarse/fine, Unified UNC/UNF) so you don't have to hard-code a pitch table. Facts only (see describe_capabilities' verdictConventions): each designation reports a tapDrillDiameter (for a hole that will be TAPPED with this thread) AND a clearanceDiameter (for a hole this size of bolt PASSES THROUGH) — which one applies depends on your intent, and this tool does not choose. Every diameter is in MILLIMETRES, imperial designations included, because mm is the unit every edit op consumes; *Radius fields are pre-halved to drop straight into addHole/addCounterboreHole/addCountersinkHole's `radius`. Omit both params to list everything. No model is read and no geometry is touched.",
+    inputSchema: {
+      standard: z
+        .string()
+        .optional()
+        .describe(`One of: ${HOLE_STANDARDS.join(", ")}. Unrecognized values warn and list every standard.`),
+      designation: z
+        .string()
+        .optional()
+        .describe('A single size, e.g. "M6", "M10x1.25", "1/4-20" (case- and space-insensitive). Adds depthPresets for that size.'),
+    },
+  },
+  wrap((args: { standard?: string; designation?: string }) => listStandardHoleSizes(args))
+);
+
 server.registerTool(
   "set_variables",
   {
@@ -453,6 +858,34 @@ server.registerTool(
       points?: string[];
       meshSize?: number | null;
     }) => setPart(args)
+  )
+);
+
+server.registerTool(
+  "set_plane",
+  {
+    description:
+      "Create, update, or remove a named construction plane in <model>.planes.json — a reusable datum for clipping and, later, for placing geometry. Addressed by id (stable), not by name (freely editable). A plane stores RESOLVED vectors, never a live face reference, so it is deliberately not rebound when a later op renumbers face ids; pass inspect's normal + planeOrigin for a face to record one. Omitting id creates a new plane.",
+    inputSchema: {
+      path: modelPath,
+      id: z.string().optional().describe("plane-N id; omit to create a new plane"),
+      name: z.string().optional().describe("Display name"),
+      point: z.array(z.number()).length(3).optional().describe("A point ON the plane, e.g. inspect's planeOrigin"),
+      normal: z.array(z.number()).length(3).optional().describe("Plane normal (normalized on write), e.g. inspect's normal"),
+      derivedFrom: z.string().optional().describe("Display-only provenance, e.g. \"face-12\" — never resolved back to geometry"),
+      remove: z.boolean().optional().describe("Remove the plane with this id instead of upserting"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      id?: string;
+      name?: string;
+      point?: number[];
+      normal?: number[];
+      derivedFrom?: string;
+      remove?: boolean;
+    }) => setPlane(args)
   )
 );
 

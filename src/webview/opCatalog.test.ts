@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OP_CATALOG, allCatalogEntries, describeOp } from "./opCatalog";
+import { OP_CATALOG, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { BREP_ONLY_OPS, type EditOp, type EditOpKind } from "../editOps";
 
@@ -118,5 +118,81 @@ describe("describeOp", () => {
     });
     expect(plain).not.toContain("[");
     expect(parametric).toBe(`${plain} [length = L*2]`);
+  });
+});
+
+describe("referencedEntities", () => {
+  it("covers every op kind without throwing or returning undefined", () => {
+    // The exhaustive switch makes a missing kind a compile error (verified: a
+    // removed case yields TS2366), but this also pins the runtime shape.
+    for (const kind of Object.keys(REPRESENTATIVE_OPS) as EditOpKind[]) {
+      const ids = referencedEntities(REPRESENTATIVE_OPS[kind]);
+      expect(Array.isArray(ids), `${kind} returns an array`).toBe(true);
+      for (const id of ids) expect(typeof id).toBe("string");
+    }
+  });
+
+  it("reads the `targets` family", () => {
+    expect(referencedEntities({ op: "translate", targets: ["solid-1", "solid-2"], vec: [1, 0, 0] }))
+      .toEqual(["solid-1", "solid-2"]);
+    expect(referencedEntities({ op: "align", targets: ["solid-3"], axis: "z", extent: "min", to: 0 }))
+      .toEqual(["solid-3"]);
+  });
+
+  it("reads BOTH boolean operand sides", () => {
+    expect(referencedEntities({ op: "boolean", kind: "subtract", a: ["solid-0"], b: ["solid-1", "solid-2"] }))
+      .toEqual(["solid-0", "solid-1", "solid-2"]);
+  });
+
+  it("reads the edge and face families", () => {
+    expect(referencedEntities({ op: "fillet", edges: ["edge-4", "edge-5"], radius: 1 }))
+      .toEqual(["edge-4", "edge-5"]);
+    expect(referencedEntities({ op: "addVolumeFromSurfaces", faces: ["face-1", "face-2"] }))
+      .toEqual(["face-1", "face-2"]);
+    expect(referencedEntities({ op: "shell", thickness: -1, openingFaces: ["face-9"] }))
+      .toEqual(["face-9"]);
+  });
+
+  it("reads the scalar-string operands, including sweep's second one", () => {
+    expect(referencedEntities({ op: "extrude", profile: "face-7", dir: [0, 0, 1], length: 2 }))
+      .toEqual(["face-7"]);
+    // `path` is easy to forget — sweep is the only op with two differently-named
+    // scalar operands.
+    expect(referencedEntities({ op: "sweep", profile: "face-7", path: "edge-3" }))
+      .toEqual(["face-7", "edge-3"]);
+    expect(referencedEntities({ op: "mate", faceA: "face-1", faceB: "face-2" }))
+      .toEqual(["face-1", "face-2"]);
+  });
+
+  it("returns nothing for ops that genuinely name no entity", () => {
+    expect(referencedEntities({ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] })).toEqual([]);
+    expect(referencedEntities({ op: "explode", factor: 2 })).toEqual([]);
+  });
+
+  it("does not alias the op's own arrays", () => {
+    // A caller must not be able to mutate an op through the returned list.
+    const op: EditOp = { op: "fillet", edges: ["edge-1"], radius: 1 };
+    referencedEntities(op).push("edge-999");
+    expect(op.edges).toEqual(["edge-1"]);
+  });
+});
+
+describe("buildEntityReferenceIndex", () => {
+  it("maps an id to every 1-based op position that mentions it", () => {
+    const ops: EditOp[] = [
+      { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] },
+      { op: "fillet", edges: ["edge-4"], radius: 1 },
+      { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },
+      { op: "chamfer", edges: ["edge-4", "edge-7"], distance: 1 },
+    ];
+    const index = buildEntityReferenceIndex(ops);
+    expect(index.get("edge-4")).toEqual([2, 4]);
+    expect(index.get("edge-7")).toEqual([4]);
+    expect(index.get("solid-0")).toEqual([3]);
+    expect(index.get("face-99")).toBeUndefined();
+  });
+
+  it("is empty for an empty op list", () => {
+    expect(buildEntityReferenceIndex([]).size).toBe(0);
   });
 });

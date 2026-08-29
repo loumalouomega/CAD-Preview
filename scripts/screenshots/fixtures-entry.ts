@@ -21,6 +21,7 @@ import { generateMesh, type MeshGenerationInput } from "../../src/gmshService";
 import { encodeBuffer, type Part } from "../../src/protocol";
 import { DEFAULT_MESH_OPTIONS } from "../../src/meshOptions";
 import { viewerBodyHtml } from "../../src/viewerDom";
+import { MESH_EXPORT_FORMATS } from "../../src/meshExportFormats";
 
 // This entry is bundled into `.build/` before running, so `import.meta.url`
 // can't locate the repo. It is always launched from the repo root (the
@@ -43,6 +44,16 @@ async function main(): Promise<void> {
   // The shared, real viewer DOM (single source of truth) for the harness page.
   fs.writeFileSync(path.join(OUT, "body.html"), viewerBodyHtml());
   console.log("  wrote body.html");
+
+  // The export-format registry, as the webview's own `<select>` should end up
+  // reflecting it. Emitted here — rather than read by the assertion runner —
+  // because this entry is the one place in the screenshot toolchain that can
+  // import TypeScript from `src/`; the runner is a plain `.mjs` and cannot.
+  // This is what lets `webview-test` assert the picker against the REAL
+  // registry instead of a hand-copied list that would drift from it.
+  writeJson("registry.json", {
+    meshExportFormats: MESH_EXPORT_FORMATS.map((f) => ({ id: f.id, label: f.label, via: f.via })),
+  });
 
   const bytes = new Uint8Array(fs.readFileSync(MODEL));
 

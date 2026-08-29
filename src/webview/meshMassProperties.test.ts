@@ -58,8 +58,43 @@ describe("computeMeshMassProperties", () => {
   });
 
   it("returns zero volume for an empty mesh list", () => {
-    const { volume, area } = computeMeshMassProperties([]);
+    const { volume, area, watertight } = computeMeshMassProperties([]);
     expect(volume).toBe(0);
     expect(area).toBe(0);
+    expect(watertight).toBe(true);
+  });
+
+  it("reports watertight true for a closed cube", () => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    expect(computeMeshMassProperties([mesh]).watertight).toBe(true);
+  });
+
+  it("reports watertight false for an open tetrahedron (3 of 4 faces)", () => {
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array([
+      0, 0, 0, 1, 0, 0, 0, 1, 0,
+      0, 0, 0, 1, 0, 0, 0, 0, 1,
+      1, 0, 0, 0, 1, 0, 0, 0, 1,
+    ]);
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setIndex([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry);
+    const result = computeMeshMassProperties([mesh]);
+    expect(result.watertight).toBe(false);
+    expect(Number.isFinite(result.volume)).toBe(true);
+  });
+
+  it("reports watertight true for a non-indexed closed tetrahedron (welding merges duplicated vertices)", () => {
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array([
+      0, 0, 0, 0, 1, 0, 1, 0, 0,
+      0, 0, 0, 1, 0, 0, 0, 0, 1,
+      1, 0, 0, 0, 1, 0, 0, 0, 1,
+      0, 1, 0, 0, 0, 0, 0, 0, 1,
+    ]);
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const mesh = new THREE.Mesh(geometry);
+    expect(computeMeshMassProperties([mesh]).watertight).toBe(true);
   });
 });

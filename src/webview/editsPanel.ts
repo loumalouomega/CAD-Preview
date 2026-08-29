@@ -1,7 +1,8 @@
-import type { EditOp, ExprMap, Vec3 } from "../editOps";
+import type { EditOp, ExprMap, Vec3, OpOutcome } from "../editOps";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
+import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 
 // Re-exported for compatibility — `describeOp` now lives in the pure, headless-
@@ -106,6 +107,11 @@ export interface EditsPanelCallbacks {
   onClear: () => void;
   /** Remove a single op from anywhere in the history list (not just the last one). */
   onRemoveOp: (index: number) => void;
+  /** Jump the op stack straight to timeline position `index` in one splice
+   * (op-history scrubbing, roadmap Tier 2 item 1): applied rows roll the
+   * model back past them, pending-redo rows re-apply through them. Wired
+   * straight to `EditsModel.jumpTo`. */
+  onJumpTo: (index: number) => void;
   /** Apply a transform to the current selection (the wiring supplies targets). */
   onApplyTransform: (draft: TransformDraft) => void;
   /** Capture the current selection as boolean operand A; returns its size. */
@@ -153,6 +159,17 @@ export interface EditsPanelCallbacks {
    * retarget the Transform Gizmo for `"translate"`/`"rotate"`/`"scale"`
    * without this panel needing to know the gizmo exists. */
   onFormChanged: (id: PanelOpId | null) => void;
+  /** A field in the open op form changed (or the form just opened) — the live
+   * operation preview re-reads {@link EditsPanel.currentDraft} and schedules a
+   * debounced preview. Fired from one delegated listener on `#edits-params`
+   * (plus the point-list add/remove buttons, whose clicks change the draft
+   * without an `input` event); never fired for the Explode form, which keeps
+   * its own slider preview. */
+  onPreviewDraftChanged: () => void;
+  /** The open form went away (op switched or collapsed) — any in-flight or
+   * pending preview is discarded. Fired BEFORE the replacement form renders,
+   * so a stale preview can never outlive the form it came from. */
+  onPreviewCancel: () => void;
 }
 
 type TabId = "geometry" | "edit";
@@ -313,13 +330,33 @@ export class EditsPanel {
     return 0;
   }
 
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean): void {
+  /**
+   * Renders the op-history timeline: the applied ops, then — when the redo
+   * buffer is non-empty — its ops as additional, visually dimmed pending rows
+   * with continued numbering (op-history scrubbing, roadmap Tier 2 item 1).
+   * Every row (applied or pending) is clickable and jumps the stack straight
+   * to that point in one splice via `onJumpTo`; the ✕ remove button still
+   * works per applied row (it stops propagation so removing never also
+   * jumps). The optional `opOutcomes` (the most recent replay's per-op
+   * results — see `editOps.ts`'s `OpOutcome`) marks an op that gracefully
+   * skipped: its row gets a ⚠ marker (tooltip = diagnostic + hint) and a
+   * dimmed style, so "the model just didn't change" is at least visible
+   * WHERE it happened rather than silent. Rows with no matching outcome
+   * render unmarked (e.g. before any replay has run).
+   *
+   * `redoOps` must be in CHRONOLOGICAL order (`EditsModel.redoList()`), i.e.
+   * the order the pending ops would re-apply — matching the timeline indices
+   * `onJumpTo` receives.
+   */
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[]): void {
     this.undoBtn.disabled = !canUndo;
     this.redoBtn.disabled = !canRedo;
-    this.clearBtn.disabled = ops.length === 0;
+    this.clearBtn.disabled = ops.length === 0 && (redoOps?.length ?? 0) === 0;
+
+    const outcomeOf = new Map((opOutcomes ?? []).map((o) => [o.index, o]));
 
     this.body.innerHTML = "";
-    if (ops.length === 0) {
+    if (ops.length === 0 && (redoOps?.length ?? 0) === 0) {
       const empty = document.createElement("div");
       empty.className = "edits-empty";
       empty.textContent = "No edits — the source file is shown unchanged.";
@@ -329,25 +366,59 @@ export class EditsPanel {
 
     const ol = document.createElement("ol");
     ol.className = "edits-list";
-    ops.forEach((op, i) => {
+    const row = (
+      op: EditOp,
+      i: number,
+      opts: { pending: boolean; outcome?: OpOutcome }
+    ): void => {
       const li = document.createElement("li");
-      li.className = "edit-row";
+      li.className = opts.pending ? "edit-row edit-row-pending" : "edit-row";
+      // Any row click scrubs the timeline to that point. Applied rows roll
+      // back past themselves; pending rows re-apply through them. Clicking
+      // the LAST applied row is a natural no-op inside jumpTo.
+      li.title = opts.pending ? "Click to re-apply through this step" : "";
+      li.addEventListener("click", () => this.cb.onJumpTo(i));
+      const outcome = opts.outcome;
+      if (outcome && !outcome.applied) {
+        li.classList.add("edit-row-skipped");
+        li.title = `Did not apply — ${outcome.diagnostic ?? "no reason recorded"}${outcome.hint ? `\nHint: ${outcome.hint}` : ""}`;
+      }
       const idx = document.createElement("span");
       idx.className = "edit-index";
       idx.textContent = `${i + 1}.`;
       const label = document.createElement("span");
       label.className = "edit-label";
       label.textContent = describeOp(op);
-      const del = document.createElement("button");
-      del.className = "edit-remove";
-      del.innerHTML = TOOLBAR_ICONS.close;
-      del.title = "Remove this edit";
-      del.addEventListener("click", () => this.cb.onRemoveOp(i));
       li.appendChild(idx);
       li.appendChild(label);
-      li.appendChild(del);
+      if (!opts.pending) {
+        const del = document.createElement("button");
+        del.className = "edit-remove";
+        del.innerHTML = TOOLBAR_ICONS.close;
+        del.title = "Remove this edit";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation(); // removing must not also jump to this row's position
+          this.cb.onRemoveOp(i);
+        });
+        // A skipped op's warning marker sits between the label and the remove
+        // button so it can't be mistaken for a row-level action.
+        if (outcome && !outcome.applied) {
+          const warn = document.createElement("span");
+          warn.className = "edit-skip-warning";
+          warn.textContent = "⚠";
+          li.appendChild(warn);
+        }
+        li.appendChild(del);
+      } else {
+        const redoMark = document.createElement("span");
+        redoMark.className = "edit-pending-mark";
+        redoMark.textContent = "↷";
+        li.appendChild(redoMark);
+      }
       ol.appendChild(li);
-    });
+    };
+    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i) }));
+    (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
   }
 
@@ -431,6 +502,17 @@ export class EditsPanel {
     this.paramsEl.id = "edits-params";
     this.compose.appendChild(this.paramsEl);
 
+    // Live-preview trigger: ONE delegated listener for every field in every
+    // form (never per-field wiring). Point-list add/remove buttons change the
+    // draft without an `input` event, so they get a click hook too.
+    this.paramsEl.addEventListener("input", () => {
+      if (this.draftReader) this.cb.onPreviewDraftChanged();
+    });
+    this.paramsEl.addEventListener("click", (e) => {
+      const t = e.target as HTMLElement | null;
+      if (this.draftReader && t?.closest(".point-add, .point-remove")) this.cb.onPreviewDraftChanged();
+    });
+
     this.updateTabVisibility();
   }
 
@@ -480,7 +562,9 @@ export class EditsPanel {
   private selectOp(id: PanelOpId | null): void {
     // Leaving a form (switching ops, or collapsing) discards any in-progress
     // live preview rather than leaving it stacked/orphaned — a no-op if
-    // nothing was previewing.
+    // nothing was previewing. Fired BEFORE the replacement form renders, and
+    // before the explode-preview cancel, so nothing stale survives either.
+    this.cb.onPreviewCancel();
     this.cb.onExplodePreviewCancel();
     this.activeOp = id;
     for (const [opId, btn] of this.opButtons) btn.classList.toggle("active", opId === id);
@@ -500,34 +584,30 @@ export class EditsPanel {
       // ── EDIT · transform ──
       case "translate":
         f.appendChild(this.vecField("vec", "Δ", [0, 0, 0]));
-        f.appendChild(this.applyButton("Apply", "Apply to the selected volumes", () =>
-          this.cb.onApplyTransform({ kind: "translate", vec: this.readVec("vec") })));
+        this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => ({ kind: "translate", vec: this.readVec("vec") }), (d) => this.cb.onApplyTransform(d));
         break;
       case "rotate":
         f.appendChild(this.vecField("axisPoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 90));
-        f.appendChild(this.applyButton("Apply", "Apply to the selected volumes", () =>
-          this.cb.onApplyTransform({
+        this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => ({
             kind: "rotate", axisPoint: this.readVec("axisPoint"),
             axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"),
-          })));
+          }), (d) => this.cb.onApplyTransform(d));
         break;
       case "scale":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
         f.appendChild(this.vecField("factors", "Scale", [1, 1, 1]));
-        f.appendChild(this.applyButton("Apply", "Apply to the selected volumes", () =>
-          this.cb.onApplyTransform({
+        this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => ({
             kind: "scale", center: this.readVec("center"), factors: this.readVec("factors"),
-          })));
+          }), (d) => this.cb.onApplyTransform(d));
         break;
       case "mirror":
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [1, 0, 0]));
-        f.appendChild(this.applyButton("Apply", "Apply to the selected volumes", () =>
-          this.cb.onApplyTransform({
+        this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => ({
             kind: "mirror", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal"),
-          })));
+          }), (d) => this.cb.onApplyTransform(d));
         break;
 
       // ── EDIT · boolean (Set A two-step; B = live selection) ──
@@ -542,14 +622,12 @@ export class EditsPanel {
       case "fillet":
         f.appendChild(this.hint("Rounds the selected edges (Line mode)"));
         f.appendChild(this.numField("amount", "Radius", 1));
-        f.appendChild(this.applyButton("Apply", "Apply to the selected edges (Line mode)", () =>
-          this.cb.onApplyFillet("fillet", this.readNum("amount"))));
+        this.applyButtonDraft("Apply", "Apply to the selected edges (Line mode)", (): { kind: "fillet"; amount: number } => ({ kind: "fillet", amount: this.readNum("amount") }), (d) => this.cb.onApplyFillet(d.kind, d.amount));
         break;
       case "chamfer":
         f.appendChild(this.hint("Bevels the selected edges (Line mode)"));
         f.appendChild(this.numField("amount", "Setback", 1));
-        f.appendChild(this.applyButton("Apply", "Apply to the selected edges (Line mode)", () =>
-          this.cb.onApplyFillet("chamfer", this.readNum("amount"))));
+        this.applyButtonDraft("Apply", "Apply to the selected edges (Line mode)", (): { kind: "chamfer"; amount: number } => ({ kind: "chamfer", amount: this.readNum("amount") }), (d) => this.cb.onApplyFillet(d.kind, d.amount));
         break;
 
       // ── EDIT · features ──
@@ -557,29 +635,25 @@ export class EditsPanel {
         f.appendChild(this.hint("Profile = selected face (Surf mode)"));
         f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
         f.appendChild(this.numField("length", "Length", 10));
-        f.appendChild(this.applyButton("Apply", "Build the feature from the selected face", () =>
-          this.cb.onApplyFeature({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length") })));
+        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length") }), (d) => this.cb.onApplyFeature(d));
         break;
       case "revolve":
         f.appendChild(this.hint("Profile = selected face (Surf mode)"));
         f.appendChild(this.vecField("axisPoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 360));
-        f.appendChild(this.applyButton("Apply", "Build the feature from the selected face", () =>
-          this.cb.onApplyFeature({
+        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({
             kind: "revolve", axisPoint: this.readVec("axisPoint"),
             axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"),
-          })));
+          }), (d) => this.cb.onApplyFeature(d));
         break;
       case "sweep":
         f.appendChild(this.hint("Profile = selected face · path = selected edge"));
-        f.appendChild(this.applyButton("Apply", "Build the feature from the selected face + edge", () =>
-          this.cb.onApplyFeature({ kind: "sweep" })));
+        this.applyButtonDraft("Apply", "Build the feature from the selected face + edge", (): FeatureDraft => ({ kind: "sweep" }), (d) => this.cb.onApplyFeature(d));
         break;
       case "loft":
         f.appendChild(this.hint("Profiles = 2+ selected faces"));
-        f.appendChild(this.applyButton("Apply", "Build the feature from the selected faces", () =>
-          this.cb.onApplyFeature({ kind: "loft" })));
+        this.applyButtonDraft("Apply", "Build the feature from the selected faces", (): FeatureDraft => ({ kind: "loft" }), (d) => this.cb.onApplyFeature(d));
         break;
 
       // ── EDIT · modify ──
@@ -587,8 +661,7 @@ export class EditsPanel {
         f.appendChild(this.hint("Hollows the solids owning the selected faces; the faces become openings (Surf mode)"));
         f.appendChild(this.numField("thickness", "Thickness", -1));
         f.appendChild(this.hint("Negative = walls grow inward (hollow); positive = outward"));
-        f.appendChild(this.applyButton("Apply", "Shell the solids owning the selected opening faces", () =>
-          this.cb.onApplyModify({ kind: "shell", thickness: this.readNum("thickness") })));
+        this.applyButtonDraft("Apply", "Shell the solids owning the selected opening faces", (): ModifyDraft => ({ kind: "shell", thickness: this.readNum("thickness") }), (d) => this.cb.onApplyModify(d));
         break;
       case "splitByPlane":
         f.appendChild(this.hint("Splits the selected volumes (Vol mode) by the plane"));
@@ -597,21 +670,19 @@ export class EditsPanel {
         f.appendChild(this.enumField("keep", "Keep", [
           ["both", "Both"], ["positive", "Normal side"], ["negative", "Other side"],
         ], "both"));
-        f.appendChild(this.applyButton("Apply", "Split the selected volumes by the plane", () =>
-          this.cb.onApplyModify({
+        this.applyButtonDraft("Apply", "Split the selected volumes by the plane", (): ModifyDraft => ({
             kind: "splitByPlane", planePoint: this.readVec("planePoint"),
             planeNormal: this.readVec("planeNormal"),
             keep: this.readEnum("keep", "both") as "both" | "positive" | "negative",
-          })));
+          }), (d) => this.cb.onApplyModify(d));
         break;
       case "section":
         f.appendChild(this.hint("Adds the planar cross-section of the selected volumes (Vol mode) as a sketch face"));
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 1]));
-        f.appendChild(this.applyButton("Apply", "Add the cross-section face (the solids stay untouched)", () =>
-          this.cb.onApplyModify({
+        this.applyButtonDraft("Apply", "Add the cross-section face (the solids stay untouched)", (): ModifyDraft => ({
             kind: "section", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal"),
-          })));
+          }), (d) => this.cb.onApplyModify(d));
         break;
 
       // ── EDIT · assembly ──
@@ -623,8 +694,7 @@ export class EditsPanel {
         break;
       case "mate":
         f.appendChild(this.hint("Select face A then B (Surf mode)"));
-        f.appendChild(this.applyButton("Apply", "Align the first selected face onto the second", () =>
-          this.cb.onApplyMate()));
+        this.applyButtonDraft("Apply", "Align the first selected face onto the second", () => ({}), () => this.cb.onApplyMate());
         break;
       case "align":
         f.appendChild(this.hint("Moves the selected volumes (Vol mode) along an axis to an absolute coordinate"));
@@ -633,23 +703,21 @@ export class EditsPanel {
           ["min", "Min"], ["center", "Center"], ["max", "Max"],
         ], "min"));
         f.appendChild(this.numField("to", "To", 0));
-        f.appendChild(this.applyButton("Apply", "Align the selected volumes", () =>
-          this.cb.onApplyAlign({
+        this.applyButtonDraft("Apply", "Align the selected volumes", (): AlignDraft => ({
             axis: this.readEnum("axis", "z") as "x" | "y" | "z",
             extent: this.readEnum("extent", "min") as "min" | "center" | "max",
             to: this.readNum("to"),
-          })));
+          }), (d) => this.cb.onApplyAlign(d));
         break;
       case "patternLinear":
         f.appendChild(this.hint("Arrays the selected volumes (Vol mode) along a direction"));
         f.appendChild(this.vecField("direction", "Dir", [1, 0, 0]));
         f.appendChild(this.numField("spacing", "Spacing", 10));
         f.appendChild(this.numField("count", "Count", 3));
-        f.appendChild(this.applyButton("Apply", "Pattern the selected volumes", () =>
-          this.cb.onApplyPattern({
+        this.applyButtonDraft("Apply", "Pattern the selected volumes", (): PatternDraft => ({
             kind: "patternLinear", direction: this.readVec("direction"),
             spacing: this.readNum("spacing"), count: this.readNum("count"),
-          })));
+          }), (d) => this.cb.onApplyPattern(d));
         break;
       case "patternCircular":
         f.appendChild(this.hint("Arrays the selected volumes (Vol mode) around an axis"));
@@ -657,25 +725,22 @@ export class EditsPanel {
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 60));
         f.appendChild(this.numField("count", "Count", 6));
-        f.appendChild(this.applyButton("Apply", "Pattern the selected volumes", () =>
-          this.cb.onApplyPattern({
+        this.applyButtonDraft("Apply", "Pattern the selected volumes", (): PatternDraft => ({
             kind: "patternCircular", axisPoint: this.readVec("axisPoint"),
             axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"),
             count: this.readNum("count"),
-          })));
+          }), (d) => this.cb.onApplyPattern(d));
         break;
 
       // ── GEOMETRY 2D · wireframe ──
       case "addPoint":
         f.appendChild(this.vecField("position", "Position", [0, 0, 0]));
-        f.appendChild(this.applyButton("Add", "Add a new standalone point (no selection needed)", () =>
-          this.cb.onApplyWireframe({ kind: "addPoint", position: this.readVec("position") })));
+        this.applyButtonDraft("Add", "Add a new standalone point (no selection needed)", (): WireframeDraft => ({ kind: "addPoint", position: this.readVec("position") }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addLine":
         f.appendChild(this.vecField("start", "Start", [0, 0, 0]));
         f.appendChild(this.vecField("end", "End", [10, 0, 0]));
-        f.appendChild(this.applyButton("Add", "Add a new standalone line (no selection needed)", () =>
-          this.cb.onApplyWireframe({ kind: "addLine", start: this.readVec("start"), end: this.readVec("end") })));
+        this.applyButtonDraft("Add", "Add a new standalone line (no selection needed)", (): WireframeDraft => ({ kind: "addLine", start: this.readVec("start"), end: this.readVec("end") }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addArc":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -683,43 +748,38 @@ export class EditsPanel {
         f.appendChild(this.numField("radius", "Radius", 5));
         f.appendChild(this.numField("startAngleDeg", "Start°", 0));
         f.appendChild(this.numField("endAngleDeg", "End°", 180));
-        f.appendChild(this.applyButton("Add", "Add a new standalone arc (no selection needed)", () =>
-          this.cb.onApplyWireframe({
+        this.applyButtonDraft("Add", "Add a new standalone arc (no selection needed)", (): WireframeDraft => ({
             kind: "addArc", center: this.readVec("center"), normal: this.readVec("normal"),
             radius: this.readNum("radius"), startAngleDeg: this.readNum("startAngleDeg"),
             endAngleDeg: this.readNum("endAngleDeg"),
-          })));
+          }), (d) => this.cb.onApplyWireframe(d));
         break;
 
       // ── GEOMETRY 2D · curves ──
       case "addPolyline":
         f.appendChild(this.pointListField("points", "Points", [[0, 0, 0], [10, 0, 0], [10, 10, 0]], 2));
         f.appendChild(this.boolField("closed", "Closed", false));
-        f.appendChild(this.applyButton("Add", "Add a new standalone polyline (no selection needed)", () =>
-          this.cb.onApplyWireframe({
+        this.applyButtonDraft("Add", "Add a new standalone polyline (no selection needed)", (): WireframeDraft => ({
             kind: "addPolyline", points: this.readPoints("points"), closed: this.readBool("closed"),
-          })));
+          }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addThreePointArc":
         f.appendChild(this.vecField("p1", "Start", [0, 0, 0]));
         f.appendChild(this.vecField("p2", "Through", [5, 5, 0]));
         f.appendChild(this.vecField("p3", "End", [10, 0, 0]));
-        f.appendChild(this.applyButton("Add", "Add a circular arc through the three points (no selection needed)", () =>
-          this.cb.onApplyWireframe({
+        this.applyButtonDraft("Add", "Add a circular arc through the three points (no selection needed)", (): WireframeDraft => ({
             kind: "addThreePointArc", p1: this.readVec("p1"), p2: this.readVec("p2"), p3: this.readVec("p3"),
-          })));
+          }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addSpline":
         f.appendChild(this.hint("Smooth curve through the points (endpoint-exact fit)"));
         f.appendChild(this.pointListField("points", "Points", [[0, 0, 0], [5, 5, 0], [10, 0, 0]], 2));
-        f.appendChild(this.applyButton("Add", "Add a new standalone spline (no selection needed)", () =>
-          this.cb.onApplyWireframe({ kind: "addSpline", points: this.readPoints("points") })));
+        this.applyButtonDraft("Add", "Add a new standalone spline (no selection needed)", (): WireframeDraft => ({ kind: "addSpline", points: this.readPoints("points") }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addBezier":
         f.appendChild(this.hint("Passes through the first and last control point only"));
         f.appendChild(this.pointListField("controlPoints", "Ctrl pts", [[0, 0, 0], [5, 10, 0], [10, 0, 0]], 2));
-        f.appendChild(this.applyButton("Add", "Add a new standalone Bézier curve (no selection needed)", () =>
-          this.cb.onApplyWireframe({ kind: "addBezier", controlPoints: this.readPoints("controlPoints") })));
+        this.applyButtonDraft("Add", "Add a new standalone Bézier curve (no selection needed)", (): WireframeDraft => ({ kind: "addBezier", controlPoints: this.readPoints("controlPoints") }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addEllipseArc":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -729,12 +789,11 @@ export class EditsPanel {
         f.appendChild(this.numField("radiusY", "Radius Y", 5));
         f.appendChild(this.numField("startAngleDeg", "Start°", 0));
         f.appendChild(this.numField("endAngleDeg", "End°", 180));
-        f.appendChild(this.applyButton("Add", "Add a new standalone elliptical arc (no selection needed)", () =>
-          this.cb.onApplyWireframe({
+        this.applyButtonDraft("Add", "Add a new standalone elliptical arc (no selection needed)", (): WireframeDraft => ({
             kind: "addEllipseArc", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), radiusX: this.readNum("radiusX"), radiusY: this.readNum("radiusY"),
             startAngleDeg: this.readNum("startAngleDeg"), endAngleDeg: this.readNum("endAngleDeg"),
-          })));
+          }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addHelix":
         f.appendChild(this.vecField("center", "Base", [0, 0, 0]));
@@ -742,11 +801,10 @@ export class EditsPanel {
         f.appendChild(this.numField("radius", "Radius", 5));
         f.appendChild(this.numField("pitch", "Pitch", 3));
         f.appendChild(this.numField("turns", "Turns", 3));
-        f.appendChild(this.applyButton("Add", "Add a new standalone helix (no selection needed)", () =>
-          this.cb.onApplyWireframe({
+        this.applyButtonDraft("Add", "Add a new standalone helix (no selection needed)", (): WireframeDraft => ({
             kind: "addHelix", center: this.readVec("center"), axis: this.readVec("axis"),
             radius: this.readNum("radius"), pitch: this.readNum("pitch"), turns: this.readNum("turns"),
-          })));
+          }), (d) => this.cb.onApplyWireframe(d));
         break;
 
       // ── GEOMETRY 2D · sketch profiles ──
@@ -754,11 +812,10 @@ export class EditsPanel {
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
         f.appendChild(this.vecField("normal", "Normal", [0, 0, 1]));
         f.appendChild(this.numField("radius", "Radius", 5));
-        f.appendChild(this.applyButton("Sketch", SKETCH_TITLE, () =>
-          this.cb.onApplyProfile({
+        this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addCircleProfile", center: this.readVec("center"),
             normal: this.readVec("normal"), radius: this.readNum("radius"),
-          })));
+          }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addRectangleProfile":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -766,11 +823,10 @@ export class EditsPanel {
         f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
         f.appendChild(this.numField("width", "Width", 10));
         f.appendChild(this.numField("height", "Height", 6));
-        f.appendChild(this.applyButton("Sketch", SKETCH_TITLE, () =>
-          this.cb.onApplyProfile({
+        this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addRectangleProfile", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), width: this.readNum("width"), height: this.readNum("height"),
-          })));
+          }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addPolygonProfile":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -778,11 +834,10 @@ export class EditsPanel {
         f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
         f.appendChild(this.numField("radius", "Radius", 5));
         f.appendChild(this.numField("sides", "Sides", 6));
-        f.appendChild(this.applyButton("Sketch", SKETCH_TITLE, () =>
-          this.cb.onApplyProfile({
+        this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addPolygonProfile", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), radius: this.readNum("radius"), sides: this.readNum("sides"),
-          })));
+          }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addEllipseProfile":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -790,11 +845,10 @@ export class EditsPanel {
         f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
         f.appendChild(this.numField("radiusX", "Radius X", 8));
         f.appendChild(this.numField("radiusY", "Radius Y", 5));
-        f.appendChild(this.applyButton("Sketch", SKETCH_TITLE, () =>
-          this.cb.onApplyProfile({
+        this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addEllipseProfile", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), radiusX: this.readNum("radiusX"), radiusY: this.readNum("radiusY"),
-          })));
+          }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addRoundedRectangleProfile":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -803,12 +857,11 @@ export class EditsPanel {
         f.appendChild(this.numField("width", "Width", 10));
         f.appendChild(this.numField("height", "Height", 6));
         f.appendChild(this.numField("cornerRadius", "Corner r", 1));
-        f.appendChild(this.applyButton("Sketch", SKETCH_TITLE, () =>
-          this.cb.onApplyProfile({
+        this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addRoundedRectangleProfile", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), width: this.readNum("width"), height: this.readNum("height"),
             cornerRadius: this.readNum("cornerRadius"),
-          })));
+          }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addSlotProfile":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -816,11 +869,10 @@ export class EditsPanel {
         f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
         f.appendChild(this.numField("length", "Length", 12));
         f.appendChild(this.numField("width", "Width", 4));
-        f.appendChild(this.applyButton("Sketch", SKETCH_TITLE, () =>
-          this.cb.onApplyProfile({
+        this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addSlotProfile", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), length: this.readNum("length"), width: this.readNum("width"),
-          })));
+          }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addTrapezoidProfile":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -829,49 +881,43 @@ export class EditsPanel {
         f.appendChild(this.numField("bottomWidth", "Bottom w", 10));
         f.appendChild(this.numField("topWidth", "Top w", 6));
         f.appendChild(this.numField("height", "Height", 5));
-        f.appendChild(this.applyButton("Sketch", SKETCH_TITLE, () =>
-          this.cb.onApplyProfile({
+        this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addTrapezoidProfile", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), bottomWidth: this.readNum("bottomWidth"),
             topWidth: this.readNum("topWidth"), height: this.readNum("height"),
-          })));
+          }), (d) => this.cb.onApplyProfile(d));
         break;
 
       // ── GEOMETRY 2D/3D · build from selection ──
       case "buildSurface":
         f.appendChild(this.hint("Select 3+ lines forming a closed loop (Line mode)"));
-        f.appendChild(this.applyButton("Build", "Build a flat face from the selected lines", () =>
-          this.cb.onBuildSurfaceFromLines()));
+        this.applyButtonDraft("Build", "Build a flat face from the selected lines", () => ({}), () => this.cb.onBuildSurfaceFromLines());
         break;
       case "buildVolume":
         f.appendChild(this.hint("Select 4+ surfaces forming a closed shell (Surf mode)"));
-        f.appendChild(this.applyButton("Build", "Build a solid by sewing the selected surfaces", () =>
-          this.cb.onBuildVolumeFromSurfaces()));
+        this.applyButtonDraft("Build", "Build a solid by sewing the selected surfaces", () => ({}), () => this.cb.onBuildVolumeFromSurfaces());
         break;
 
       // ── GEOMETRY 3D · primitives ──
       case "addBox":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
         f.appendChild(this.vecField("size", "Size", [10, 10, 10]));
-        f.appendChild(this.applyButton("Add", ADD_TITLE, () =>
-          this.cb.onApplyPrimitive({ kind: "addBox", center: this.readVec("center"), size: this.readVec("size") })));
+        this.applyButtonDraft("Add", ADD_TITLE, (): PrimitiveDraft => ({ kind: "addBox", center: this.readVec("center"), size: this.readVec("size") }), (d) => this.cb.onApplyPrimitive(d));
         break;
       case "addSphere":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
         f.appendChild(this.numField("radius", "Radius", 5));
-        f.appendChild(this.applyButton("Add", ADD_TITLE, () =>
-          this.cb.onApplyPrimitive({ kind: "addSphere", center: this.readVec("center"), radius: this.readNum("radius") })));
+        this.applyButtonDraft("Add", ADD_TITLE, (): PrimitiveDraft => ({ kind: "addSphere", center: this.readVec("center"), radius: this.readNum("radius") }), (d) => this.cb.onApplyPrimitive(d));
         break;
       case "addCylinder":
         f.appendChild(this.vecField("center", "Base", [0, 0, 0]));
         f.appendChild(this.vecField("axis", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("radius", "Radius", 5));
         f.appendChild(this.numField("height", "Height", 10));
-        f.appendChild(this.applyButton("Add", ADD_TITLE, () =>
-          this.cb.onApplyPrimitive({
+        this.applyButtonDraft("Add", ADD_TITLE, (): PrimitiveDraft => ({
             kind: "addCylinder", center: this.readVec("center"), axis: this.readVec("axis"),
             radius: this.readNum("radius"), height: this.readNum("height"),
-          })));
+          }), (d) => this.cb.onApplyPrimitive(d));
         break;
       case "addCone":
         f.appendChild(this.vecField("center", "Base", [0, 0, 0]));
@@ -879,22 +925,20 @@ export class EditsPanel {
         f.appendChild(this.numField("radius1", "Base r", 5));
         f.appendChild(this.numField("radius2", "Top r", 0));
         f.appendChild(this.numField("height", "Height", 10));
-        f.appendChild(this.applyButton("Add", ADD_TITLE, () =>
-          this.cb.onApplyPrimitive({
+        this.applyButtonDraft("Add", ADD_TITLE, (): PrimitiveDraft => ({
             kind: "addCone", center: this.readVec("center"), axis: this.readVec("axis"),
             radius1: this.readNum("radius1"), radius2: this.readNum("radius2"), height: this.readNum("height"),
-          })));
+          }), (d) => this.cb.onApplyPrimitive(d));
         break;
       case "addTorus":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
         f.appendChild(this.vecField("axis", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("majorRadius", "Major r", 10));
         f.appendChild(this.numField("minorRadius", "Minor r", 2));
-        f.appendChild(this.applyButton("Add", ADD_TITLE, () =>
-          this.cb.onApplyPrimitive({
+        this.applyButtonDraft("Add", ADD_TITLE, (): PrimitiveDraft => ({
             kind: "addTorus", center: this.readVec("center"), axis: this.readVec("axis"),
             majorRadius: this.readNum("majorRadius"), minorRadius: this.readNum("minorRadius"),
-          })));
+          }), (d) => this.cb.onApplyPrimitive(d));
         break;
       case "addPrism":
         f.appendChild(this.vecField("center", "Base", [0, 0, 0]));
@@ -902,11 +946,10 @@ export class EditsPanel {
         f.appendChild(this.numField("radius", "Radius", 5));
         f.appendChild(this.numField("sides", "Sides", 6));
         f.appendChild(this.numField("height", "Height", 10));
-        f.appendChild(this.applyButton("Add", ADD_TITLE, () =>
-          this.cb.onApplyPrimitive({
+        this.applyButtonDraft("Add", ADD_TITLE, (): PrimitiveDraft => ({
             kind: "addPrism", center: this.readVec("center"), axis: this.readVec("axis"),
             radius: this.readNum("radius"), sides: this.readNum("sides"), height: this.readNum("height"),
-          })));
+          }), (d) => this.cb.onApplyPrimitive(d));
         break;
       case "addWedge":
         f.appendChild(this.vecField("center", "Base ctr", [0, 0, 0]));
@@ -916,58 +959,60 @@ export class EditsPanel {
         f.appendChild(this.numField("dy", "Size Y", 6));
         f.appendChild(this.numField("dz", "Height", 4));
         f.appendChild(this.numField("ltx", "Top X", 3));
-        f.appendChild(this.applyButton("Add", ADD_TITLE, () =>
-          this.cb.onApplyPrimitive({
+        this.applyButtonDraft("Add", ADD_TITLE, (): PrimitiveDraft => ({
             kind: "addWedge", center: this.readVec("center"), axis: this.readVec("axis"),
             up: this.readVec("up"), dx: this.readNum("dx"), dy: this.readNum("dy"),
             dz: this.readNum("dz"), ltx: this.readNum("ltx"),
-          })));
+          }), (d) => this.cb.onApplyPrimitive(d));
         break;
 
       // ── GEOMETRY 3D · holes (subtractive — need selected target volumes) ──
       case "addHole":
         f.appendChild(this.hint("Cuts into the selected volumes (Vol mode)"));
+        f.appendChild(this.holeStandardField());
         f.appendChild(this.vecField("position", "Mouth", [0, 0, 0]));
         f.appendChild(this.vecField("axis", "Axis", [0, 0, -1]));
         f.appendChild(this.numField("radius", "Radius", 2));
         f.appendChild(this.numField("depth", "Depth", 10));
-        f.appendChild(this.applyButton("Cut", HOLE_TITLE, () =>
-          this.cb.onApplyHole({
+        this.applyButtonDraft("Cut", HOLE_TITLE, (): HoleDraft => ({
             kind: "addHole", position: this.readVec("position"), axis: this.readVec("axis"),
             radius: this.readNum("radius"), depth: this.readNum("depth"),
-          })));
+          }), (d) => this.cb.onApplyHole(d));
         break;
       case "addCounterboreHole":
         f.appendChild(this.hint("Cuts into the selected volumes (Vol mode)"));
+        f.appendChild(this.holeStandardField());
         f.appendChild(this.vecField("position", "Mouth", [0, 0, 0]));
         f.appendChild(this.vecField("axis", "Axis", [0, 0, -1]));
         f.appendChild(this.numField("radius", "Radius", 2));
         f.appendChild(this.numField("depth", "Depth", 10));
         f.appendChild(this.numField("cbRadius", "Bore r", 4));
         f.appendChild(this.numField("cbDepth", "Bore d", 3));
-        f.appendChild(this.applyButton("Cut", HOLE_TITLE, () =>
-          this.cb.onApplyHole({
+        this.applyButtonDraft("Cut", HOLE_TITLE, (): HoleDraft => ({
             kind: "addCounterboreHole", position: this.readVec("position"), axis: this.readVec("axis"),
             radius: this.readNum("radius"), depth: this.readNum("depth"),
             cbRadius: this.readNum("cbRadius"), cbDepth: this.readNum("cbDepth"),
-          })));
+          }), (d) => this.cb.onApplyHole(d));
         break;
       case "addCountersinkHole":
         f.appendChild(this.hint("Cuts into the selected volumes (Vol mode)"));
+        f.appendChild(this.holeStandardField());
         f.appendChild(this.vecField("position", "Mouth", [0, 0, 0]));
         f.appendChild(this.vecField("axis", "Axis", [0, 0, -1]));
         f.appendChild(this.numField("radius", "Radius", 2));
         f.appendChild(this.numField("depth", "Depth", 10));
         f.appendChild(this.numField("csRadius", "Sink r", 4));
         f.appendChild(this.numField("csAngleDeg", "Angle°", 90));
-        f.appendChild(this.applyButton("Cut", HOLE_TITLE, () =>
-          this.cb.onApplyHole({
+        this.applyButtonDraft("Cut", HOLE_TITLE, (): HoleDraft => ({
             kind: "addCountersinkHole", position: this.readVec("position"), axis: this.readVec("axis"),
             radius: this.readNum("radius"), depth: this.readNum("depth"),
             csRadius: this.readNum("csRadius"), csAngleDeg: this.readNum("csAngleDeg"),
-          })));
+          }), (d) => this.cb.onApplyHole(d));
         break;
     }
+    // A freshly-opened form previews immediately from its default field
+    // values — opening "Box" shows the default box before anything is typed.
+    if (this.draftReader) this.cb.onPreviewDraftChanged();
   }
 
   private renderBooleanForm(kind: BooleanKind): void {
@@ -1006,9 +1051,70 @@ export class EditsPanel {
 
     f.appendChild(row);
     f.appendChild(status);
+    // The boolean form has no fields of its own — its draft is the captured-A
+    // state plus the live selection, both read by the wiring's preview
+    // builder. Registered so selection changes (not field input) refresh it.
+    this.draftReader = () => ({});
   }
 
   // ── Field helpers ────────────────────────────────────────────────────────
+
+  /**
+   * The open form's draft reader, registered by {@link applyButtonDraft}
+   * (and the boolean form): returns the SAME draft object the Apply button
+   * would push, reading the live field values. `null` when no previewable
+   * form is open (nothing open, or the Explode form, which keeps its own
+   * slider preview and deliberately registers nothing).
+   */
+  private draftReader: (() => unknown) | null = null;
+
+  /** The currently-open op button's id, or `null` when no form is open — the
+   * preview engine's eligibility check and tint lookup read this. */
+  openOpId(): PanelOpId | null {
+    return this.activeOp;
+  }
+
+  /**
+   * The open form's current draft, for the live operation preview. Re-reads
+   * the fields fresh on every call (the same readers the Apply button uses,
+   * so a preview can never disagree with what Apply would commit). Returns
+   * `null` when nothing is previewable or any expression field currently
+   * fails to evaluate — mid-edit invalid expressions skip the preview
+   * silently rather than flashing the inline error the APPLY click shows.
+   */
+  currentDraft(): { id: PanelOpId; draft: Record<string, unknown> } | null {
+    const reader = this.draftReader;
+    const id = this.activeOp;
+    if (!reader || id === null) return null;
+    this.pendingExprs = {};
+    this.pendingErrors = [];
+    let draft: Record<string, unknown> = {} as Record<string, unknown>;
+    try {
+      draft = reader() as Record<string, unknown>;
+    } finally {
+      // Drain whatever this read collected — a preview read never leaves
+      // state behind for the next APPLY click, and vice versa.
+      const errors = this.pendingErrors;
+      const exprs = { ...this.pendingExprs };
+      this.pendingErrors = [];
+      this.pendingExprs = {};
+      if (errors.length > 0) return null;
+      if (exprs && Object.keys(exprs).length > 0) draft = { ...draft, exprs };
+    }
+    return { id, draft };
+  }
+
+  /**
+   * Creates the form's Apply button AND registers its draft literal as the
+   * live-preview reader. The draft literal is the EXACT object the Apply
+   * click pushes — read fresh from the fields on every preview tick and on
+   * every Apply — which is what makes a preview structurally incapable of
+   * drifting from what Apply would commit.
+   */
+  private applyButtonDraft<D>(label: string, title: string, read: () => D, apply: (d: D) => void): HTMLElement {
+    this.draftReader = read as () => unknown;
+    return this.applyButton(label, title, () => apply(read()));
+  }
 
   private applyButton(label: string, title: string, onClick: () => void): HTMLElement {
     const row = document.createElement("div");
@@ -1069,6 +1175,62 @@ export class EditsPanel {
     input.dataset.name = name;
     input.value = String(def);
     row.appendChild(input);
+    return row;
+  }
+
+  /**
+   * A designation picker for the three hole ops (roadmap "Hole Wizard").
+   *
+   * Deliberately fills the EXISTING `radius`/`depth` number fields via
+   * {@link setNumField} rather than introducing a new field type or a new draft
+   * shape — the ops are entirely unchanged and remain plain numbers. Picking a
+   * designation is a convenience that types for you; the fields stay editable
+   * afterwards, and an expression typed into them still wins at Apply time.
+   *
+   * Offers both a tapped and a clearance option per size, because which is
+   * wanted depends on intent and `holeStandards.ts` deliberately does not
+   * guess (see its own doc comment).
+   */
+  private holeStandardField(): HTMLElement {
+    const row = document.createElement("label");
+    row.className = "compose-field";
+    const span = document.createElement("span");
+    span.className = "compose-label";
+    span.textContent = "Standard";
+    row.appendChild(span);
+
+    const select = document.createElement("select");
+    select.className = "compose-select";
+    select.id = "hole-standard-select";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "Custom…";
+    select.appendChild(none);
+
+    for (const size of allHoleSizes()) {
+      for (const fit of ["tap", "clearance"] as const) {
+        const opt = document.createElement("option");
+        const d = fit === "tap" ? size.tapDrillDiameter : size.clearanceDiameter;
+        opt.value = `${size.designation}|${fit}`;
+        opt.textContent = `${size.designation} ${fit === "tap" ? "tapped" : "clearance"} (⌀${d} mm)`;
+        select.appendChild(opt);
+      }
+    }
+
+    select.addEventListener("change", () => {
+      const [designation, fit] = select.value.split("|");
+      if (!designation) return;
+      const size = findHoleSize(designation);
+      if (!size) return;
+      const diameter = fit === "tap" ? size.tapDrillDiameter : size.clearanceDiameter;
+      this.setNumField("radius", diameter / 2);
+      // A tapped hole gets a sensible blind depth too (1.5x diameter, the
+      // typical steel rule); a clearance hole's depth depends on the stock,
+      // not the thread, so it is left alone.
+      if (fit === "tap") this.setNumField("depth", depthPresetsFor(size)[1].depth);
+    });
+
+    row.appendChild(select);
     return row;
   }
 

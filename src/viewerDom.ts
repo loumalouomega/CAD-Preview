@@ -30,7 +30,10 @@ export function viewerBodyHtml(): string {
         <button id="menu-load-preprocess" role="menuitem" title="Restore a CAD file + its sidecars from a .zip and open it">${icon("open")} Load Preprocess…</button>
         <div class="tb-sep"></div>
         <button id="menu-import-svg" role="menuitem" title="Import an SVG file's paths as standalone sketch polylines (Vol/Surf mode → Extrude to build a solid)">${icon("open")} Import SVG…</button>
+        <button id="menu-import-dxf" role="menuitem" title="Import a DXF file's entities as standalone sketch primitives (lines, arcs, circles, polylines, splines — pick in Vol/Surf/Line mode, extrude to build a solid)">${icon("open")} Import DXF…</button>
         <button id="menu-export-svg" role="menuitem" title="Export a 2D outline (silhouette) of the model as an SVG drawing — outline only, no hidden-line removal">${icon("export")} Export Silhouette SVG…</button>
+        <button id="menu-export-dxf" role="menuitem" title="Export a 2D outline (silhouette) of the model as a DXF drawing — chained polylines (LWPOLYLINE with bulges for arcs) plus singletons as LINEs, outline only">${icon("export")} Export Silhouette DXF…</button>
+        <button id="menu-export-drawing" role="menuitem" title="Export a 2D technical drawing — feature edges with hidden-line removal, occluded runs dashed">${icon("export")} Export Technical Drawing…</button>
       </div>
     </div>
   </div>
@@ -105,9 +108,17 @@ export function viewerBodyHtml(): string {
           <div id="mesh-health-actions">
             <button id="mesh-health-check" title="Read-only diagnostic: checks whether this mesh could be closed into a valid B-rep solid, and at what tolerance/cost — does not promote or change anything">${icon("generate")} Check Healability</button>
             <button id="mesh-health-promote" title="Sew this mesh into a solid and save it as a brand-new STEP/IGES/BREP file — the original mesh file is left untouched" disabled>${icon("export")} Promote to B-rep…</button>
+            <button id="mesh-health-repair" title="Tetrahedralize this mesh with fTetWild and save its watertight boundary as a brand-new STL file — for a component that would not close above; the original mesh file is left untouched" disabled>Repair (robust)…</button>
           </div>
         </div>
         <div id="mesh-health-body"></div>
+      </div>
+      <div id="macros-panel">
+        <div id="macros-header">
+          <span id="macros-title">Macros</span>
+          <button id="macros-save" title="Save the current edit history as a reusable, parameterized macro">${icon("save")} Save current</button>
+        </div>
+        <div id="macros-body"></div>
       </div>
       <div id="standard-parts-panel">
         <div id="standard-parts-header">
@@ -123,6 +134,26 @@ export function viewerBodyHtml(): string {
     </div>
     <div id="app">
       <canvas id="markup-canvas"></canvas>
+      <!-- Split-view pane separators — pure visual dividers over the single
+           WebGL canvas (pointer-events:none), shown only while a 2×2 layout
+           is active. Below the markup canvas so annotations draw over them. -->
+      <div id="pane-divider-v" class="pane-divider hidden"></div>
+      <div id="pane-divider-h" class="pane-divider hidden"></div>
+      <!-- Hover "teach" tooltip: the entity id under the cursor and which ops
+           MENTION it. Cursor-anchored, so it lives inside #app (whose box the
+           canvas shares) and is pointer-events:none — it must never eat a
+           click meant for the geometry beneath it. -->
+      <div id="hover-tip" class="hidden"></div>
+      <!-- Inspector card: analytic classification of the SELECTED entity.
+           Selection-driven rather than hover-driven because it costs a host
+           round trip, and getEntityFacts has no shape cache — every call
+           re-reads the source bytes and replays the whole op list. -->
+      <div id="inspector-card" class="hidden"></div>
+      <!-- Selection-groups context menu: right-click an entity to select
+           everything like it. Reuses the query-filter predicates rather than
+           inventing a second vocabulary; the clicked entity supplies the
+           argument the filter form would make you type. -->
+      <div id="context-menu" class="tb-dropdown hidden" role="menu"></div>
     </div>
   </div>
   <div id="toolbar">
@@ -139,6 +170,15 @@ export function viewerBodyHtml(): string {
         <button id="snap-grid" role="menuitemcheckbox" aria-checked="false" title="Snap Transform Gizmo drags to a grid spacing">${icon("grid")} Snap to grid</button>
         <button id="snap-points" role="menuitemcheckbox" aria-checked="false" title="Snap Transform Gizmo drags to nearby existing points">${icon("point")} Snap to points</button>
         <div class="tb-sep"></div>
+        <div id="layout-group" class="tb-row" title="Pane layout — one view or a split of independent cameras over the same scene">
+          <button class="layout-btn active" data-layout="1x1" title="Single view — one camera over the whole canvas">${icon("layout1x1")} 1×1</button>
+          <button class="layout-btn" data-layout="1x2" title="Two side-by-side columns — two independent cameras, vertical split">${icon("layout1x2")} 1×2</button>
+          <button class="layout-btn" data-layout="2x1" title="Two stacked rows — two independent cameras, horizontal split">${icon("layout2x1")} 2×1</button>
+          <button class="layout-btn" data-layout="2x2" title="Quad — four independent cameras on a 2×2 grid">${icon("layout2x2")} 2×2</button>
+        </div>
+        <div class="tb-sep"></div>
+        <button id="link-cameras" role="menuitemcheckbox" aria-checked="false" title="Share camera orientation across all open CAD Preview tabs">${icon("view")} Link cameras across tabs</button>
+        <div class="tb-sep"></div>
         <button id="screenshot" role="menuitem" title="Save the current view as a PNG">${icon("screenshot")} Screenshot…</button>
       </div>
     </div>
@@ -151,6 +191,20 @@ export function viewerBodyHtml(): string {
           <button class="sel-mode" data-mode="volume" title="Pick volumes (solids)">${icon("volume")} Vol</button>
           <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">${icon("surface")} Surf</button>
           <button class="sel-mode" data-mode="line" title="Pick lines (edges)">${icon("line")} Line</button>
+        </div>
+        <div class="tb-sep"></div>
+        <div id="filter-group" class="tb-filter" title="Geometric filter — select entities by shape predicates">
+          <div class="tb-row">
+            <select id="filter-pred" title="Filter predicate"></select>
+            <input id="filter-arg" type="text" inputmode="decimal" placeholder="value" title="Threshold / count for the selected filter">
+          </div>
+          <div class="tb-row">
+            <label class="tb-check" for="filter-exclude-smooth" title="When set, edge filters skip tangent seam edges (patch seams on what is logically one curved surface)">
+              <input type="checkbox" id="filter-exclude-smooth"> No seams
+            </label>
+            <button id="filter-replace" title="Replace the current selection with the filtered result">Select</button>
+            <button id="filter-add" title="Add the filtered result to the current selection">Add</button>
+          </div>
         </div>
       </div>
     </div>
@@ -195,6 +249,11 @@ export function viewerBodyHtml(): string {
   <div id="measure-readout-row">
     <span id="measure-readout"></span>
     <button id="measure-exact-btn" title="Recompute at exact B-rep precision (a host round trip, vs. the instant triangulated approximation above)" hidden>${icon("generate")} Exact</button>
+    <span id="measure-tol-group" hidden>
+      <label class="measure-tol-field">nom <input type="text" inputmode="decimal" id="measure-tol-nominal" placeholder="nominal" title="Nominal value for a tolerance band on the pinned annotation (same unit as the readout; leave blank to pin without a band)"></label>
+      <label class="measure-tol-field">+ <input type="text" inputmode="decimal" id="measure-tol-plus" placeholder="+" title="Allowed deviation above nominal (defaults symmetric when − is blank)"></label>
+      <label class="measure-tol-field">− <input type="text" inputmode="decimal" id="measure-tol-minus" placeholder="−" title="Allowed deviation below nominal (blank = same as +)"></label>
+    </span>
     <button id="measure-pin-btn" title="Pin this measurement as a persisted annotation — survives closing the file, re-anchored across edits" hidden>${icon("save")} Pin</button>
   </div>
   <div id="view-controls">
@@ -243,9 +302,31 @@ export function viewerBodyHtml(): string {
         <button class="clip-axis active" data-axis="x">X</button>
         <button class="clip-axis" data-axis="y">Y</button>
         <button class="clip-axis" data-axis="z">Z</button>
+        <button class="clip-axis" id="clip-custom" hidden title="Custom clip normal">N</button>
       </div>
-      <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset">
+      <div class="vc-row">
+        <button id="clip-from-face" title="Clip along the selected planar face">Face</button>
+        <button id="clip-from-points" title="Clip through three selected points">3 Pts</button>
+      </div>
+      <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset along the active normal">
       <button id="clip-toggle" title="Toggle clipping">Off</button>
+      <!-- Saved construction planes live INSIDE the Clip group rather than as
+           a sixth top-level one: #view-controls is a horizontal row of column
+           groups, so a new group costs WIDTH, and a sixth took the bar from
+           866px to 1290px in a 1400px viewport — wide enough to cover the
+           sidebar and swallow clicks there (caught by the screenshot harness
+           timing out on a sidebar button). Nested here it costs height
+           instead, and the clip is a saved plane's only consumer today. -->
+      <div id="plane-entry" class="vc-row" hidden>
+        <input type="text" id="plane-entry-point" class="plane-vec" placeholder="px,py,pz" title="A point ON the plane">
+        <input type="text" id="plane-entry-normal" class="plane-vec" placeholder="nx,ny,nz" title="Plane normal">
+        <button id="plane-entry-ok" title="Create the plane">Add</button>
+      </div>
+      <div class="vc-row">
+        <button id="plane-save" title="Save the current clip plane as a named construction plane">Save</button>
+        <button id="plane-add" title="Enter a construction plane numerically">Enter…</button>
+      </div>
+      <div id="planes-list" title="Named construction planes — persisted beside the model"></div>
     </div>
     <div class="vc-group">
       <span class="vc-label">Appearance</span>

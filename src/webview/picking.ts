@@ -46,12 +46,20 @@ export function resolvePick(userData: EntityUserData, mode: EntityType): PickRes
  * Collects the raycast target objects for a selection `mode`: point sprites for
  * `point`, edge lines for `line`, face meshes otherwise (a `volume` pick starts
  * from a face and resolves to its solid via {@link resolvePick}).
+ *
+ * **`traverseVisible` is load-bearing, not cosmetic.** three's `Raycaster`
+ * tests only `layers` — it ignores `.visible` entirely — so collecting via
+ * plain `traverse` would let clicks select (and measurements hit) geometry the
+ * user explicitly hid: a Part hidden by its eye-toggle, anything outside an
+ * active Isolate, or the model's own faces while an FE-mesh/colour-field
+ * overlay is shown (`traverseVisible` prunes such a subtree at the invisible
+ * ancestor, which is exactly the desired unit of hiding in all four cases).
  */
 export function collectTargets(root: Object3D, mode: EntityType): Object3D[] {
   const wantPoint = mode === "point";
   const wantLine = mode === "line";
   const out: Object3D[] = [];
-  root.traverse((o) => {
+  root.traverseVisible((o) => {
     const t = (o.userData as EntityUserData)?.entityType;
     if (wantPoint ? t === "point" : wantLine ? t === "line" : t === "surface") out.push(o);
   });
@@ -65,10 +73,13 @@ export function collectTargets(root: Object3D, mode: EntityType): Object3D[] {
  * in a single session. Deliberately excludes anything tagged `"mesh"` (the FE
  * overlay) — same exclusion `collectTargets` gets implicitly by only matching
  * `"surface"|"line"|"point"`.
+ *
+ * `traverseVisible` for the same load-bearing reason as {@link collectTargets}
+ * — a hidden Part stays unmeasurable, matching what the user sees.
  */
 export function collectMeasureTargets(root: Object3D): Object3D[] {
   const out: Object3D[] = [];
-  root.traverse((o) => {
+  root.traverseVisible((o) => {
     const t = (o.userData as EntityUserData)?.entityType;
     if (t === "surface" || t === "line" || t === "point") out.push(o);
   });

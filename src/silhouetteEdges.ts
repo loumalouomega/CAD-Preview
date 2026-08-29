@@ -46,30 +46,27 @@ export type Vec3 = readonly [number, number, number];
  * facing. That is deterministic rather than arbitrary, and it puts exactly one
  * silhouette line along a cylinder's tangent instead of zero or two.
  */
-export function silhouetteEdges(positions: Float32Array, indices: Uint32Array, direction: Vec3): Array<[number, number]> {
+/** One mesh edge and the triangles referencing it. */
+export interface MeshEdge {
+  /** Vertex indices into `positions` (×3). */
+  a: number;
+  b: number;
+  /** Indices of the triangles referencing this edge. */
+  triangles: number[];
+}
+
+/**
+ * Edge → referencing-triangles adjacency, in deterministic first-encountered
+ * order.
+ *
+ * Factored out because {@link silhouetteEdges} and `hiddenLineRemoval.ts` both
+ * need exactly this walk, and building it twice over a large mesh means two
+ * passes and two sets of `Map` string keys for no benefit — the same reason
+ * `edgeKey` itself moved into `meshComponents.ts`.
+ */
+export function buildEdgeAdjacency(indices: Uint32Array): MeshEdge[] {
   const triangleCount = Math.floor(indices.length / 3);
-  if (triangleCount === 0) return [];
-
-  const [dx, dy, dz] = direction;
-  const front = new Uint8Array(triangleCount);
-  for (let t = 0; t < triangleCount; t++) {
-    const i0 = indices[t * 3] * 3;
-    const i1 = indices[t * 3 + 1] * 3;
-    const i2 = indices[t * 3 + 2] * 3;
-    const ux = positions[i1] - positions[i0];
-    const uy = positions[i1 + 1] - positions[i0 + 1];
-    const uz = positions[i1 + 2] - positions[i0 + 2];
-    const vx = positions[i2] - positions[i0];
-    const vy = positions[i2 + 1] - positions[i0 + 1];
-    const vz = positions[i2 + 2] - positions[i0 + 2];
-    const nx = uy * vz - uz * vy;
-    const ny = uz * vx - ux * vz;
-    const nz = ux * vy - uy * vx;
-    front[t] = nx * dx + ny * dy + nz * dz > 0 ? 1 : 0;
-  }
-
-  // Edge → the triangles referencing it, plus the vertex pair to emit.
-  const edges = new Map<string, { a: number; b: number; triangles: number[] }>();
+  const edges = new Map<string, MeshEdge>();
   for (let t = 0; t < triangleCount; t++) {
     const i0 = indices[t * 3];
     const i1 = indices[t * 3 + 1];
@@ -86,9 +83,49 @@ export function silhouetteEdges(positions: Float32Array, indices: Uint32Array, d
       else edges.set(key, { a, b, triangles: [t] });
     }
   }
+  return [...edges.values()];
+}
+
+/**
+ * Unnormalized triangle normals, one xyz triple per triangle.
+ *
+ * Unnormalized is deliberate and sufficient for a facing test (only the sign of
+ * the dot product matters); {@link hiddenLineRemoval} normalizes only where an
+ * actual angle is needed.
+ */
+export function triangleNormals(positions: Float32Array, indices: Uint32Array): Float32Array {
+  const triangleCount = Math.floor(indices.length / 3);
+  const normals = new Float32Array(triangleCount * 3);
+  for (let t = 0; t < triangleCount; t++) {
+    const i0 = indices[t * 3] * 3;
+    const i1 = indices[t * 3 + 1] * 3;
+    const i2 = indices[t * 3 + 2] * 3;
+    const ux = positions[i1] - positions[i0];
+    const uy = positions[i1 + 1] - positions[i0 + 1];
+    const uz = positions[i1 + 2] - positions[i0 + 2];
+    const vx = positions[i2] - positions[i0];
+    const vy = positions[i2 + 1] - positions[i0 + 1];
+    const vz = positions[i2 + 2] - positions[i0 + 2];
+    normals[t * 3] = uy * vz - uz * vy;
+    normals[t * 3 + 1] = uz * vx - ux * vz;
+    normals[t * 3 + 2] = ux * vy - uy * vx;
+  }
+  return normals;
+}
+
+export function silhouetteEdges(positions: Float32Array, indices: Uint32Array, direction: Vec3): Array<[number, number]> {
+  const triangleCount = Math.floor(indices.length / 3);
+  if (triangleCount === 0) return [];
+
+  const [dx, dy, dz] = direction;
+  const normals = triangleNormals(positions, indices);
+  const front = new Uint8Array(triangleCount);
+  for (let t = 0; t < triangleCount; t++) {
+    front[t] = normals[t * 3] * dx + normals[t * 3 + 1] * dy + normals[t * 3 + 2] * dz > 0 ? 1 : 0;
+  }
 
   const result: Array<[number, number]> = [];
-  for (const { a, b, triangles } of edges.values()) {
+  for (const { a, b, triangles } of buildEdgeAdjacency(indices)) {
     const keep =
       triangles.length === 1 ||
       triangles.length > 2 ||

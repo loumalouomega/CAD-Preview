@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { EncodedMesh, EncodedEdge, EncodedPoint, MeshElementGroup } from "../protocol";
 import { valueToColor } from "./colorMap";
+import { paletteColor } from "./palette";
 
 function decodeF32(b64: string): Float32Array {
   const bin = atob(b64);
@@ -16,12 +17,21 @@ function decodeU32(b64: string): Uint32Array {
   return new Uint32Array(bytes.buffer);
 }
 
-/** Base surface colour for unassigned faces. */
-export const DEFAULT_FACE_COLOR = 0xc0c4cc;
-/** Base colour for unassigned edges. */
-export const DEFAULT_EDGE_COLOR = 0x303338;
-/** Base colour for unassigned points. */
-export const DEFAULT_POINT_COLOR = 0xffcc00;
+/**
+ * Base colours for unassigned entities — now theme-reactive, resolved from
+ * `palette.ts` on each call rather than being frozen constants.
+ *
+ * These are functions, not constants, precisely because a constant is captured
+ * at module load and can never track a theme change. Both re-apply paths that
+ * matter (`Viewer.setEntityColors`, `Viewer.renderSelection`) call them fresh,
+ * so re-running `main.ts`'s `refreshColors()` after a theme change re-themes
+ * the whole model — and, because those call sites only reach the default in
+ * the `?? default` branch, a per-Part colour swatch is structurally immune to
+ * being re-tinted. See `palette.ts`.
+ */
+export const defaultFaceColor = (): number => paletteColor("face");
+export const defaultEdgeColor = (): number => paletteColor("edge");
+export const defaultPointColor = (): number => paletteColor("point");
 
 /**
  * A single filled-circle dot, drawn once onto a canvas and shared by every
@@ -53,7 +63,7 @@ function dotTexture(): THREE.CanvasTexture {
 /** A fresh material per face so faces can be coloured independently. */
 export function makeFaceMaterial(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
-    color: DEFAULT_FACE_COLOR,
+    color: defaultFaceColor(),
     metalness: 0.1,
     roughness: 0.7,
     side: THREE.DoubleSide,
@@ -87,7 +97,7 @@ function buildEdgeLine(ee: EncodedEdge): THREE.Line {
   const positions = decodeF32(ee.positions);
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  const material = new THREE.LineBasicMaterial({ color: DEFAULT_EDGE_COLOR });
+  const material = new THREE.LineBasicMaterial({ color: defaultEdgeColor() });
   const line = new THREE.Line(geometry, material);
   line.userData.entityType = "line";
   line.userData.entityId = ee.edgeId;
@@ -112,7 +122,7 @@ function buildEdgeLine(ee: EncodedEdge): THREE.Line {
  */
 function buildPointSprite(ep: EncodedPoint): THREE.Sprite {
   const position = decodeF32(ep.position); // length 3: x, y, z
-  const material = new THREE.SpriteMaterial({ map: dotTexture(), color: DEFAULT_POINT_COLOR });
+  const material = new THREE.SpriteMaterial({ map: dotTexture(), color: defaultPointColor() });
   const sprite = new THREE.Sprite(material);
   sprite.position.set(position[0], position[1], position[2]);
   sprite.scale.setScalar(0.02);
@@ -122,8 +132,8 @@ function buildPointSprite(ep: EncodedPoint): THREE.Sprite {
 }
 
 /** Default overlay colour for triangles not claimed by any part — distinct hue
- * from DEFAULT_FACE_COLOR so an overlay is visually distinguishable. */
-const DEFAULT_MESH_COLOR = 0x4ea1ff;
+ * from the default face colour so an overlay is visually distinguishable. */
+const defaultMeshColor = (): number => paletteColor("mesh");
 
 /**
  * Builds a display group for a generated FE (finite-element) surface mesh — the
@@ -163,10 +173,9 @@ export function buildFEMesh(
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
 
   const groups = elementGroups.length > 0 ? elementGroups : [{ name: null, color: null, indexStart: 0, indexCount: indices.length }];
-  const materials = groups.map(
-    (g) =>
-      new THREE.MeshBasicMaterial({
-        color: g.color ?? DEFAULT_MESH_COLOR,
+  const materials = groups.map((g) => {
+    const material = new THREE.MeshBasicMaterial({
+        color: g.color ?? defaultMeshColor(),
         side: THREE.DoubleSide,
         // Unlit on purpose: a tet-mesh boundary is thousands of small, irregularly
         // oriented triangles (unlike a smooth NURBS-tessellated B-rep face), so a
@@ -184,8 +193,13 @@ export function buildFEMesh(
         polygonOffset: true,
         polygonOffsetFactor: 1,
         polygonOffsetUnits: 1,
-      })
-  );
+      });
+    // `Viewer.applyTheme()` repaints only materials still at the default; a
+    // real per-part colour (`g.color`) is user data and must survive a theme
+    // change, exactly as a Part's face swatch does.
+    material.userData.themedDefault = g.color == null;
+    return material;
+  });
   groups.forEach((g, i) => geometry.addGroup(g.indexStart, g.indexCount, i));
 
   const mesh = new THREE.Mesh(geometry, materials);
@@ -196,7 +210,7 @@ export function buildFEMesh(
   const wireGeometry = new THREE.BufferGeometry();
   wireGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   wireGeometry.setIndex(new THREE.BufferAttribute(edges, 1));
-  const wireMaterial = new THREE.LineBasicMaterial({ color: 0x1a3d66 });
+  const wireMaterial = new THREE.LineBasicMaterial({ color: paletteColor("meshWire") });
   const wireframe = new THREE.LineSegments(wireGeometry, wireMaterial);
   wireframe.userData.entityType = "mesh";
 
@@ -208,8 +222,8 @@ export function buildFEMesh(
 }
 
 /** Highlight colour for `buildWorstElementsHighlight` — a distinct, alarming
- * hue (unlike `DEFAULT_MESH_COLOR`, which is meant to blend in as "the mesh"). */
-const WORST_ELEMENT_COLOR = 0xff3b30;
+ * hue (unlike the default mesh colour, which is meant to blend in as "the mesh"). */
+const worstElementColor = (): number => paletteColor("worstElement");
 
 /**
  * Builds the "worst-quality elements" highlight overlay from
@@ -240,7 +254,7 @@ export function buildWorstElementsHighlight(positionsB64: string, indicesB64: st
   geometry.computeVertexNormals();
 
   const material = new THREE.MeshBasicMaterial({
-    color: WORST_ELEMENT_COLOR,
+    color: worstElementColor(),
     side: THREE.DoubleSide,
     transparent: true,
     opacity: 0.85,

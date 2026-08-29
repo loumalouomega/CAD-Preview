@@ -1,5 +1,10 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
+import { refreshPalette } from "./palette";
+import { buildEntityReferenceIndex } from "./opCatalog";
+import { hoverContent, inspectorContent } from "./entityExplain";
+import { MacrosPanel } from "./macrosPanel";
+import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
 import { exportModel } from "./meshExporters";
@@ -7,18 +12,22 @@ import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildC
 import { viridisCssGradientStops } from "./colorMap";
 import { splitMeshesIntoFacets } from "./meshFacets";
 import { parseSvgPaths } from "../svgImport";
+import { parseDxf } from "../dxfImport";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
 import { AnnotationsModel } from "./annotationsModel";
+import { PlanesModel } from "./planesModel";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
-import { EditsPanel } from "./editsPanel";
+import { EditsPanel, type TransformDraft, type FeatureDraft, type ModifyDraft, type PrimitiveDraft, type HoleDraft, type ProfileDraft, type WireframeDraft, type AlignDraft, type PatternDraft } from "./editsPanel";
+import { OpPreviewScheduler } from "./opPreviewScheduler";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
 import { evaluateVariables, resolveEditOps } from "../editVariables";
 import { extractIdentifiers } from "../paramExpr";
+import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } from "../toleranceBand";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
@@ -32,18 +41,36 @@ import type { MeshSizePreset } from "../viewerDefaults";
 import { applyEditsMesh } from "./meshEdits";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import { VisibilityState } from "./visibilityState";
+import { collectTargets } from "./picking";
+import {
+  FACE_FILTERS,
+  LINE_FILTERS,
+  applyFaceFilter,
+  applyLineFilter,
+  type FaceFilterId,
+  type LineFilterId,
+} from "./selectFilters";
 import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
 import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, snapTranslateDelta, nearestSnapPoint, type TransformBase } from "./gizmoTransform";
-import { planeForAxis, type ClipAxis } from "./clipping";
+import {
+  planeForClip,
+  orientTowardBulk,
+  planeFromThreePoints,
+  dominantAxis,
+  type ClipAxis,
+  type ClipPlaneState,
+} from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
-import type { ExactMeasureKind } from "../entityFacts";
+import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
+import type { OpOutcome } from "../editOps";
+import { validateEditOp } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -65,6 +92,11 @@ const statusEl = document.getElementById("status")!;
 const sideEl = document.getElementById("side")!;
 const panelEl = document.getElementById("tree-panel")!;
 const toggleBtn = document.getElementById("tree-toggle") as HTMLButtonElement;
+
+// Resolve the CSS palette BEFORE the Viewer is constructed — its constructor
+// builds the background, lights and grid from it, and every material built
+// during the first model load reads it too.
+refreshPalette();
 
 const viewer = new Viewer(app);
 
@@ -149,14 +181,19 @@ function renderAnnotationsList(): void {
   for (const a of annotationsModel.list()) {
     const entities = AnnotationsModel.entitiesOf(a);
     const detached = entities.length === 0 || !entities.some((e) => viewer.hasEntity(e.entityType, e.entityId));
-    const label = a.label ? `${a.label}: ${a.text}` : a.text;
+    // The band decoration + in/out-of-band colour are derived at render time
+    // from the annotation's frozen facts — never stored.
+    const evaluation = a.tolerance ? evaluateToleranceBand(a.tolerance.measured, a.tolerance) : null;
+    const outOfBand = evaluation !== null && !evaluation.withinTolerance;
+    const displayText = annotatedLabelText(a.text, a.tolerance);
+    const label = a.label ? `${a.label}: ${displayText}` : displayText;
 
     const row = document.createElement("div");
     row.className = detached ? "annotation-row detached" : "annotation-row";
 
     const text = document.createElement("span");
-    text.className = "annotation-row-text";
-    text.textContent = label;
+    text.className = outOfBand ? "annotation-row-text annotation-out-of-tolerance" : "annotation-row-text";
+    text.textContent = outOfBand ? `${label} — outside tolerance` : label;
     text.title = detached
       ? "Detached — the anchored entity no longer resolves (removed, or couldn't be re-matched across an edit)."
       : label;
@@ -170,7 +207,8 @@ function renderAnnotationsList(): void {
       viewer.showMeasurementOverlay(
         a.linePoints.map((p) => new THREE.Vector3(...p)),
         new THREE.Vector3(...a.anchorPoint),
-        a.text
+        displayText,
+        { tone: outOfBand ? "fail" : "normal" }
       );
       setMeasureReadout(label);
     });
@@ -190,6 +228,144 @@ const annotationsModel = new AnnotationsModel(() => {
   post({ type: "annotationsChanged", annotations: annotationsModel.list() });
   renderAnnotationsList();
 });
+
+// ── Named construction planes ────────────────────────────────────────────
+// A plane stores RESOLVED vectors, never a live face reference, so nothing
+// here participates in entity rebinding: a plane is not renumbered by replay
+// the way `face-N` is, which is the whole point of naming one.
+const planesModel = new PlanesModel(() => {
+  post({ type: "planesChanged", planes: planesModel.list() });
+  renderPlanesList();
+});
+
+/** Set by `setupClippingControls`, which owns the clip state this reads and writes. */
+let planesClipHandle: { applyDerivedPlane(n: THREE.Vector3, p: THREE.Vector3, label: string): void; getState(): ClipState } | null = null;
+
+function renderPlanesList(): void {
+  const container = document.getElementById("planes-list");
+  if (!container) return;
+  container.innerHTML = "";
+  for (const plane of planesModel.list()) {
+    const row = document.createElement("div");
+    row.className = "plane-row";
+
+    const name = document.createElement("span");
+    name.className = "plane-row-name";
+    name.textContent = plane.name;
+    const fmt = (v: readonly number[]) => v.map((n) => n.toFixed(3)).join(", ");
+    name.title = `point (${fmt(plane.point)}) · normal (${fmt(plane.normal)})${
+      plane.derivedFrom ? ` · from ${plane.derivedFrom}` : ""
+    }`;
+    row.appendChild(name);
+
+    const use = document.createElement("button");
+    use.textContent = "Use";
+    use.title = "Clip along this plane";
+    use.addEventListener("click", () => {
+      if (!planesClipHandle) return;
+      planesClipHandle.applyDerivedPlane(
+        new THREE.Vector3(...plane.normal),
+        new THREE.Vector3(...plane.point),
+        plane.name
+      );
+    });
+    row.appendChild(use);
+
+    const rename = document.createElement("button");
+    rename.textContent = "✎";
+    rename.title = "Rename";
+    rename.addEventListener("click", () => {
+      // VS Code webviews block prompt(); rename inline, same as the Parts panel.
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = plane.name;
+      input.className = "plane-row-rename";
+      const commit = () => planesModel.rename(plane.id, input.value);
+      input.addEventListener("blur", commit);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") renderPlanesList();
+      });
+      row.replaceChild(input, name);
+      input.focus();
+      input.select();
+    });
+    row.appendChild(rename);
+
+    const del = document.createElement("button");
+    del.innerHTML = TOOLBAR_ICONS.close;
+    del.title = "Delete this plane";
+    del.addEventListener("click", () => planesModel.remove(plane.id));
+    row.appendChild(del);
+
+    container.appendChild(row);
+  }
+}
+
+/** Parses "1, 2, 3" into a vector, or null — deliberately tolerant of spacing. */
+function parseVecField(text: string): [number, number, number] | null {
+  const parts = text.split(",").map((s) => Number(s.trim()));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  return [parts[0], parts[1], parts[2]];
+}
+
+function setupPlanesControls(): void {
+  const saveBtn = document.getElementById("plane-save");
+  const addBtn = document.getElementById("plane-add");
+  const entry = document.getElementById("plane-entry");
+  const pointField = document.getElementById("plane-entry-point") as HTMLInputElement | null;
+  const normalField = document.getElementById("plane-entry-normal") as HTMLInputElement | null;
+  const okBtn = document.getElementById("plane-entry-ok");
+
+  saveBtn?.addEventListener("click", () => {
+    const state = planesClipHandle?.getState();
+    if (!state) {
+      setStatus("Turn clipping on first — there is no plane to save.", true);
+      return;
+    }
+    const box = viewer.getModel() ? new THREE.Box3().setFromObject(viewer.getModel()!) : null;
+    if (!box) {
+      setStatus("No model to derive a plane from.", true);
+      return;
+    }
+    // Re-derive the SAME plane the clip is currently showing, through the very
+    // function that built it, so a saved plane and the live clip can never
+    // disagree about what "this plane" means.
+    const plane = planeForClip(state, box);
+    const point = plane.normal.clone().multiplyScalar(-plane.constant);
+    planesModel.add({
+      name: `Plane ${planesModel.size + 1}`,
+      point: [point.x, point.y, point.z],
+      normal: [plane.normal.x, plane.normal.y, plane.normal.z],
+      derivedFrom: "clip plane",
+    });
+    setStatus("Saved the current clip plane.");
+  });
+
+  addBtn?.addEventListener("click", () => {
+    if (!entry) return;
+    entry.hidden = !entry.hidden;
+    if (!entry.hidden) pointField?.focus();
+  });
+
+  okBtn?.addEventListener("click", () => {
+    const point = parseVecField(pointField?.value ?? "");
+    const normal = parseVecField(normalField?.value ?? "");
+    if (!point || !normal) {
+      setStatus("Enter both a point and a normal as three comma-separated numbers.", true);
+      return;
+    }
+    if (Math.hypot(...normal) < 1e-12) {
+      setStatus("That normal is zero-length — it describes no plane.", true);
+      return;
+    }
+    planesModel.add({ name: `Plane ${planesModel.size + 1}`, point, normal, derivedFrom: "entered" });
+    if (pointField) pointField.value = "";
+    if (normalField) normalField.value = "";
+    if (entry) entry.hidden = true;
+    setStatus("Added a construction plane.");
+  });
+}
 
 // ── Edits (replayable op-stack) + parametric variables ───────────────────
 // The webview owns the op-stack; the host persists it and (for B-rep) re-applies
@@ -226,12 +402,31 @@ function variableUsage(): Map<string, number> {
 
 /** Re-renders the Edits + Variables panels from the models (no host post). */
 function renderEditsUi(): void {
+  // The one choke point every op-list change funnels through — sidecar
+  // hydration, a user edit, an undo/redo/jump, and an external reconciliation.
+  // Rebuilding the hover tooltip's reverse index here (rather than per hover
+  // event) is what keeps `EditsModel.list()`'s deep clone off the pointermove
+  // path.
+  rebuildEntityRefIndex();
   const { values, errors } = evaluateVariables(variablesModel.list());
   const { ops } = resolveEditOps(editsModel.list(), values);
   editsPanel.setVariables(values);
-  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo);
+  // Pending (redo-buffer) ops ride along in chronological order so the history
+  // renders as a full clickable timeline (op-history scrubbing, roadmap Tier
+  // 2 item 1). They are NOT resolved here: they aren't applied yet, and the
+  // resolve-on-read contract re-evaluates them at every future consumption
+  // point anyway.
+  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList());
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
 }
+
+/** The most recent replay's per-op outcomes (see `editOps.ts`'s
+ * `OpOutcome`) — set by the B-rep `"geometry"` handler and by
+ * `rebuildMeshModel()` for mesh sources, consumed by `renderEditsUi()` so the
+ * Edits history can mark an op that gracefully skipped instead of silently
+ * showing an unchanged model. Cleared whenever a genuinely new model loads
+ * before its fresh outcomes arrive (the geometry post always carries them). */
+let lastOpOutcomes: OpOutcome[] | null = null;
 
 /** Fired on every op-stack or variable mutation: resolve, persist, re-display. */
 function syncEdits(): void {
@@ -278,7 +473,10 @@ let clearMarkupOverlay: (() => void) | null = null;
 function cancelExplodePreview(): void {
   if (!explodePreviewBases) return;
   const model = viewer.getModel();
-  if (model) resetExplodePreview(explodePreviewBases);
+  if (model) {
+    resetExplodePreview(explodePreviewBases);
+    viewer.requestRender();
+  }
   explodePreviewBases = null;
 }
 
@@ -327,11 +525,34 @@ let gridSnapSize = 1;
  * individually-tagged, always-fully-populated point entities (FE-mesh
  * overlay vertices are display-only and excluded from picking already;
  * edge/face-mesh vertices were never separately tagged entities at all) —
- * see CLAUDE.md's "Bottom-up wireframe modeling" section. */
+ * see CLAUDE.md's "Bottom-up wireframe modeling" section.
+ *
+ * `traverseVisible`, not `traverse` — same load-bearing reason as
+ * `picking.ts`'s collectors: a snap candidate is an implicit pick target,
+ * and a hidden Part's points must not attract gizmo drags either (three's
+ * Raycaster ignores `.visible`; this traversal must not). */
 function collectSnapPoints(): THREE.Vector3[] {
-  const points: THREE.Vector3[] = [];
-  viewer.getModel()?.traverse((o) => {
-    if (o instanceof THREE.Sprite && o.userData.entityType === "point") points.push(o.position.clone());
+  return [...collectPointEntities().values()];
+}
+
+/**
+ * Every visible `point-N` entity, by id, in WORLD space — shared by gizmo
+ * snapping and Clip ▸ 3 Pts.
+ *
+ * **`getWorldPosition`, not `.position`.** This used to read the local
+ * position while being described as world-space; the two diverge whenever an
+ * ancestor carries a transform, which for these sprites means during an
+ * explode preview (the preview moves the top-level `groupId` groups). Identical
+ * whenever no ancestor transform exists, so this is a strict improvement — but
+ * it does change where a gizmo drag snaps mid-explode-preview, which is a real
+ * if narrow behaviour change rather than a pure refactor.
+ */
+function collectPointEntities(): Map<string, THREE.Vector3> {
+  const points = new Map<string, THREE.Vector3>();
+  viewer.getModel()?.traverseVisible((o) => {
+    if (o instanceof THREE.Sprite && o.userData.entityType === "point") {
+      points.set(String(o.userData.entityId), o.getWorldPosition(new THREE.Vector3()));
+    }
   });
   return points;
 }
@@ -386,6 +607,7 @@ function cancelGizmoPreview(): void {
       t.object.quaternion.copy(t.baseQuaternion);
       t.object.scale.copy(t.baseScale);
     }
+    viewer.requestRender();
   }
   gizmoTargets = null;
 }
@@ -438,6 +660,7 @@ viewer.setGizmoHandlers(
         t.object.scale.copy(s.scale);
       }
     }
+    viewer.requestRender();
     // Push the live-dragged values into the open form's fields — the answer
     // to "what happens when a drag overwrites a field the user had typed an
     // expression into" (see `EditsPanel.setVecField`'s doc comment): the
@@ -482,86 +705,47 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onRedo: () => editsModel.redo(),
   onClear: () => editsModel.clear(),
   onRemoveOp: (index) => editsModel.remove(index),
+  // One splice + one onChange/editsChanged/re-tessellate round trip per
+  // click — never a looped undo()/redo() sequence (op-history scrubbing).
+  onJumpTo: (index) => editsModel.jumpTo(index),
   onApplyTransform: (draft) => {
-    // Transforms act on whole volumes. Use the selected volume ids; require at
-    // least one so an edit is never silently a no-op.
-    const targets = selectedVolumes();
-    if (targets.length === 0) {
-      setStatus("Select one or more volumes (Vol mode) before applying a transform.", true);
-      return;
-    }
-    let op: EditOp;
-    switch (draft.kind) {
-      case "translate": op = { op: "translate", targets, vec: draft.vec }; break;
-      case "rotate": op = { op: "rotate", targets, axisPoint: draft.axisPoint, axisDir: draft.axisDir, angleDeg: draft.angleDeg }; break;
-      case "scale": op = { op: "scale", targets, center: draft.center, factors: draft.factors }; break;
-      case "mirror": op = { op: "mirror", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal }; break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
+    const id = draft.kind === "translate" ? "translate" : draft.kind === "rotate" ? "rotate" : draft.kind === "scale" ? "scale" : "mirror";
+    const resolved = buildOpForPanel(id, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this transform.", true); return; }
     cancelGizmoPreview(); // discard the live preview — the real op replay rebuilds everything
-    editsModel.push(op);
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onCaptureBooleanA: () => {
     booleanA = selectedVolumes();
     if (booleanA.length === 0) setStatus("Select volumes for operand A before Set A.", true);
+    // Capturing A changes the boolean form's preview inputs — refresh it.
+    scheduleOpPreview();
     return booleanA.length;
   },
   onApplyBoolean: (kind) => {
-    const b = selectedVolumes();
-    if (booleanA.length === 0) { setStatus("Set operand A first (select volumes → Set A).", true); return; }
-    if (b.length === 0) { setStatus("Select operand B volumes before applying.", true); return; }
-    if (b.some((id) => booleanA.includes(id))) {
-      setStatus("Operands A and B must be different volumes.", true);
-      return;
-    }
-    editsModel.push({ op: "boolean", kind, a: booleanA, b });
+    const resolved = buildOpForPanel(kind === "union" ? "booleanUnion" : kind === "subtract" ? "booleanSubtract" : "booleanIntersect", {});
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this boolean.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     booleanA = [];
     selection.clear();
     renderHighlight();
     setStatus("");
   },
   onApplyFillet: (kind, amount, exprs) => {
-    // Fillet/chamfer act on selected edges (Line mode), B-rep only.
-    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
-    if (edges.length === 0) {
-      setStatus("Select one or more edges (Line mode) before applying a fillet/chamfer.", true);
-      return;
-    }
-    if (amount <= 0) { setStatus("Enter a positive radius / setback.", true); return; }
-    const op: EditOp =
-      kind === "fillet" ? { op: "fillet", edges, radius: amount } : { op: "chamfer", edges, distance: amount };
-    // The panel's shared field is named `amount`; remap onto the op's real field.
-    if (exprs?.amount) op.exprs = { [kind === "fillet" ? "radius" : "distance"]: exprs.amount };
-    editsModel.push(op);
+    const resolved = buildOpForPanel(kind, { amount, exprs: exprs?.amount ? { amount: exprs.amount } : undefined });
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyFeature: (draft) => {
-    // Feature modeling builds a new body from selected profile faces (Surf mode)
-    // and, for sweep, a path edge (Line mode). B-rep only.
-    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
-    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
-    let op: EditOp | null = null;
-    switch (draft.kind) {
-      case "extrude":
-        if (!faces[0]) { setStatus("Select a profile face (Surf mode) to extrude.", true); return; }
-        op = { op: "extrude", profile: faces[0], dir: draft.dir, length: draft.length };
-        break;
-      case "revolve":
-        if (!faces[0]) { setStatus("Select a profile face (Surf mode) to revolve.", true); return; }
-        op = { op: "revolve", profile: faces[0], axisPoint: draft.axisPoint, axisDir: draft.axisDir, angleDeg: draft.angleDeg };
-        break;
-      case "sweep":
-        if (!faces[0] || !edges[0]) { setStatus("Select a profile face and a path edge for sweep.", true); return; }
-        op = { op: "sweep", profile: faces[0], path: edges[0] };
-        break;
-      case "loft":
-        if (faces.length < 2) { setStatus("Select 2+ profile faces (Surf mode) to loft.", true); return; }
-        op = { op: "loft", profiles: faces };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this feature.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyExplode: (factor, exprs) => {
@@ -576,330 +760,66 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     if (!model) return;
     if (!explodePreviewBases) explodePreviewBases = captureExplodeBase(model);
     applyExplodePreview(explodePreviewBases, factor);
+    viewer.requestRender();
   },
   onExplodePreviewCancel: cancelExplodePreview,
   onApplyMate: () => {
-    // Mate aligns the first selected face onto the second (Surf mode), B-rep only.
-    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
-    if (faces.length < 2) {
-      setStatus("Select two faces (Surf mode): face A first, then face B, to mate.", true);
-      return;
-    }
-    editsModel.push({ op: "mate", faceA: faces[0], faceB: faces[1] });
+    const resolved = buildOpForPanel("mate", {});
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot mate.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyAlign: (draft) => {
-    const targets = selectedVolumes();
-    if (targets.length === 0) {
-      setStatus("Select one or more volumes (Vol mode) before aligning.", true);
-      return;
-    }
-    const op: EditOp = { op: "align", targets, axis: draft.axis, extent: draft.extent, to: draft.to };
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel("align", draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot align.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyPattern: (draft) => {
-    const targets = selectedVolumes();
-    if (targets.length === 0) {
-      setStatus("Select one or more volumes (Vol mode) before patterning.", true);
-      return;
-    }
-    if (!Number.isInteger(draft.count) || draft.count < 2) {
-      setStatus("Count must be an integer ≥ 2.", true);
-      return;
-    }
-    let op: EditOp;
-    switch (draft.kind) {
-      case "patternLinear":
-        if (!draft.direction.some((v) => v !== 0)) { setStatus("Direction must be non-zero.", true); return; }
-        if (draft.spacing === 0) { setStatus("Spacing must be non-zero.", true); return; }
-        op = { op: "patternLinear", targets, direction: draft.direction, spacing: draft.spacing, count: draft.count };
-        break;
-      case "patternCircular":
-        if (!draft.axisDir.some((v) => v !== 0)) { setStatus("Axis must be non-zero.", true); return; }
-        op = {
-          op: "patternCircular", targets, axisPoint: draft.axisPoint,
-          axisDir: draft.axisDir, angleDeg: draft.angleDeg, count: draft.count,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this pattern.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyModify: (draft) => {
     // Shell takes its opening faces from the Surf selection; split/section take
     // their target volumes from the Vol selection. B-rep only.
-    let op: EditOp;
-    switch (draft.kind) {
-      case "shell": {
-        const openingFaces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
-        if (openingFaces.length === 0) {
-          setStatus("Select the opening face(s) (Surf mode) before shelling.", true);
-          return;
-        }
-        if (draft.thickness === 0) { setStatus("Thickness must be non-zero.", true); return; }
-        op = { op: "shell", thickness: draft.thickness, openingFaces };
-        break;
-      }
-      case "splitByPlane": {
-        const targets = selectedVolumes();
-        if (targets.length === 0) { setStatus("Select one or more volumes (Vol mode) to split.", true); return; }
-        if (!draft.planeNormal.some((v) => v !== 0)) { setStatus("Plane normal must be non-zero.", true); return; }
-        op = {
-          op: "splitByPlane", targets, planePoint: draft.planePoint,
-          planeNormal: draft.planeNormal, keep: draft.keep,
-        };
-        break;
-      }
-      case "section": {
-        const targets = selectedVolumes();
-        if (targets.length === 0) { setStatus("Select one or more volumes (Vol mode) to section.", true); return; }
-        if (!draft.planeNormal.some((v) => v !== 0)) { setStatus("Plane normal must be non-zero.", true); return; }
-        op = { op: "section", targets, planePoint: draft.planePoint, planeNormal: draft.planeNormal };
-        break;
-      }
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this modify op.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyPrimitive: (draft) => {
-    // Primitives are self-contained placements — no selection/operand needed.
-    // A light client-side guard avoids silently pushing an op that
-    // validateEditOp would later drop on reload (non-positive dimensions).
-    let op: EditOp;
-    switch (draft.kind) {
-      case "addBox":
-        if (draft.size.some((s) => s <= 0)) { setStatus("Box size must be positive.", true); return; }
-        op = { op: "addBox", center: draft.center, size: draft.size };
-        break;
-      case "addSphere":
-        if (draft.radius <= 0) { setStatus("Sphere radius must be positive.", true); return; }
-        op = { op: "addSphere", center: draft.center, radius: draft.radius };
-        break;
-      case "addCylinder":
-        if (draft.radius <= 0 || draft.height <= 0) { setStatus("Radius and height must be positive.", true); return; }
-        op = { op: "addCylinder", center: draft.center, axis: draft.axis, radius: draft.radius, height: draft.height };
-        break;
-      case "addCone":
-        if (draft.radius1 <= 0 && draft.radius2 <= 0) { setStatus("At least one cone radius must be positive.", true); return; }
-        if (draft.height <= 0) { setStatus("Height must be positive.", true); return; }
-        op = {
-          op: "addCone", center: draft.center, axis: draft.axis,
-          radius1: draft.radius1, radius2: draft.radius2, height: draft.height,
-        };
-        break;
-      case "addTorus":
-        if (draft.majorRadius <= 0 || draft.minorRadius <= 0 || draft.minorRadius >= draft.majorRadius) {
-          setStatus("Torus needs 0 < minor radius < major radius.", true);
-          return;
-        }
-        op = {
-          op: "addTorus", center: draft.center, axis: draft.axis,
-          majorRadius: draft.majorRadius, minorRadius: draft.minorRadius,
-        };
-        break;
-      case "addPrism":
-        if (draft.radius <= 0 || draft.height <= 0) { setStatus("Radius and height must be positive.", true); return; }
-        if (!Number.isInteger(draft.sides) || draft.sides < 3) { setStatus("Sides must be an integer ≥ 3.", true); return; }
-        op = {
-          op: "addPrism", center: draft.center, axis: draft.axis,
-          radius: draft.radius, sides: draft.sides, height: draft.height,
-        };
-        break;
-      case "addWedge":
-        if (draft.dx <= 0 || draft.dy <= 0 || draft.dz <= 0) { setStatus("Wedge sizes must be positive.", true); return; }
-        if (draft.ltx < 0) { setStatus("Top X extent must be ≥ 0.", true); return; }
-        if (!nonParallel(draft.axis, draft.up)) { setStatus("Up must not be parallel to Axis.", true); return; }
-        op = {
-          op: "addWedge", center: draft.center, axis: draft.axis, up: draft.up,
-          dx: draft.dx, dy: draft.dy, dz: draft.dz, ltx: draft.ltx,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot add this primitive.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyHole: (draft) => {
-    // Holes are subtractive: they cut into the selected volumes, so a target
-    // selection is required (unlike the self-contained primitives above).
-    const targets = selectedVolumes();
-    if (targets.length === 0) {
-      setStatus("Select one or more volumes (Vol mode) to cut the hole into.", true);
-      return;
-    }
-    if (draft.radius <= 0 || draft.depth <= 0) { setStatus("Radius and depth must be positive.", true); return; }
-    let op: EditOp;
-    switch (draft.kind) {
-      case "addHole":
-        op = { op: "addHole", targets, position: draft.position, axis: draft.axis, radius: draft.radius, depth: draft.depth };
-        break;
-      case "addCounterboreHole":
-        if (draft.cbRadius <= draft.radius) { setStatus("Counterbore radius must exceed the hole radius.", true); return; }
-        if (draft.cbDepth <= 0 || draft.cbDepth >= draft.depth) { setStatus("Counterbore depth must satisfy 0 < depth < hole depth.", true); return; }
-        op = {
-          op: "addCounterboreHole", targets, position: draft.position, axis: draft.axis,
-          radius: draft.radius, depth: draft.depth, cbRadius: draft.cbRadius, cbDepth: draft.cbDepth,
-        };
-        break;
-      case "addCountersinkHole":
-        if (draft.csRadius <= draft.radius) { setStatus("Countersink radius must exceed the hole radius.", true); return; }
-        if (draft.csAngleDeg <= 0 || draft.csAngleDeg >= 180) { setStatus("Countersink angle must be between 0° and 180°.", true); return; }
-        op = {
-          op: "addCountersinkHole", targets, position: draft.position, axis: draft.axis,
-          radius: draft.radius, depth: draft.depth, csRadius: draft.csRadius, csAngleDeg: draft.csAngleDeg,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot cut this hole.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyProfile: (draft) => {
     // 2D profiles are self-contained placements — no selection/operand needed.
-    // Sketched now, picked (Surf mode) and used as an extrude/revolve/sweep/loft
-    // profile later. A light client-side guard mirrors validateEditOp's checks.
-    let op: EditOp;
-    switch (draft.kind) {
-      case "addCircleProfile":
-        if (draft.radius <= 0) { setStatus("Circle radius must be positive.", true); return; }
-        op = { op: "addCircleProfile", center: draft.center, normal: draft.normal, radius: draft.radius };
-        break;
-      case "addRectangleProfile":
-        if (draft.width <= 0 || draft.height <= 0) { setStatus("Width and height must be positive.", true); return; }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addRectangleProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, width: draft.width, height: draft.height,
-        };
-        break;
-      case "addPolygonProfile":
-        if (draft.radius <= 0) { setStatus("Radius must be positive.", true); return; }
-        if (!Number.isInteger(draft.sides) || draft.sides < 3) { setStatus("Sides must be an integer ≥ 3.", true); return; }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addPolygonProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, radius: draft.radius, sides: draft.sides,
-        };
-        break;
-      case "addEllipseProfile":
-        if (draft.radiusX <= 0 || draft.radiusY <= 0) { setStatus("Both radii must be positive.", true); return; }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addEllipseProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, radiusX: draft.radiusX, radiusY: draft.radiusY,
-        };
-        break;
-      case "addRoundedRectangleProfile":
-        if (draft.width <= 0 || draft.height <= 0) { setStatus("Width and height must be positive.", true); return; }
-        if (draft.cornerRadius <= 0 || 2 * draft.cornerRadius >= Math.min(draft.width, draft.height)) {
-          setStatus("Corner radius must satisfy 0 < 2·r < min(width, height).", true);
-          return;
-        }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addRoundedRectangleProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, width: draft.width, height: draft.height, cornerRadius: draft.cornerRadius,
-        };
-        break;
-      case "addSlotProfile":
-        if (draft.width <= 0 || draft.length <= draft.width) {
-          setStatus("Slot needs length > width > 0.", true);
-          return;
-        }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addSlotProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, length: draft.length, width: draft.width,
-        };
-        break;
-      case "addTrapezoidProfile":
-        if (draft.bottomWidth <= 0 || draft.topWidth <= 0 || draft.height <= 0) {
-          setStatus("Trapezoid widths and height must be positive.", true);
-          return;
-        }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        op = {
-          op: "addTrapezoidProfile", center: draft.center, normal: draft.normal,
-          up: draft.up, bottomWidth: draft.bottomWidth, topWidth: draft.topWidth, height: draft.height,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot sketch this profile.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onApplyWireframe: (draft) => {
-    // Point/Line/Arc are self-contained placements — no selection needed.
-    let op: EditOp;
-    switch (draft.kind) {
-      case "addPoint":
-        op = { op: "addPoint", position: draft.position };
-        break;
-      case "addLine":
-        if (draft.start.every((v, i) => v === draft.end[i])) {
-          setStatus("Start and end must differ.", true);
-          return;
-        }
-        op = { op: "addLine", start: draft.start, end: draft.end };
-        break;
-      case "addArc":
-        if (draft.radius <= 0) { setStatus("Arc radius must be positive.", true); return; }
-        if (draft.startAngleDeg === draft.endAngleDeg) { setStatus("Start and end angle must differ.", true); return; }
-        op = {
-          op: "addArc", center: draft.center, normal: draft.normal, radius: draft.radius,
-          startAngleDeg: draft.startAngleDeg, endAngleDeg: draft.endAngleDeg,
-        };
-        break;
-      case "addPolyline": {
-        const min = draft.closed ? 3 : 2;
-        if (draft.points.length < min) { setStatus(`A ${draft.closed ? "closed " : ""}polyline needs ${min}+ points.`, true); return; }
-        if (hasRepeatedConsecutive(draft.points)) { setStatus("Consecutive points must differ.", true); return; }
-        op = { op: "addPolyline", points: draft.points, closed: draft.closed };
-        break;
-      }
-      case "addThreePointArc": {
-        const { p1, p2, p3 } = draft;
-        const same = (a: number[], b: number[]) => a.every((v, i) => v === b[i]);
-        if (same(p1, p2) || same(p2, p3) || same(p1, p3)) { setStatus("The three points must be distinct.", true); return; }
-        op = { op: "addThreePointArc", p1, p2, p3 };
-        break;
-      }
-      case "addSpline":
-        if (draft.points.length < 2) { setStatus("A spline needs 2+ points.", true); return; }
-        if (hasRepeatedConsecutive(draft.points)) { setStatus("Consecutive points must differ.", true); return; }
-        op = { op: "addSpline", points: draft.points };
-        break;
-      case "addBezier":
-        if (draft.controlPoints.length < 2) { setStatus("A Bézier needs 2+ control points.", true); return; }
-        op = { op: "addBezier", controlPoints: draft.controlPoints };
-        break;
-      case "addEllipseArc":
-        if (draft.radiusX <= 0 || draft.radiusY <= 0) { setStatus("Both radii must be positive.", true); return; }
-        if (!nonParallel(draft.normal, draft.up)) { setStatus("Up must not be parallel to Normal.", true); return; }
-        if (draft.startAngleDeg === draft.endAngleDeg) { setStatus("Start and end angle must differ.", true); return; }
-        op = {
-          op: "addEllipseArc", center: draft.center, normal: draft.normal, up: draft.up,
-          radiusX: draft.radiusX, radiusY: draft.radiusY,
-          startAngleDeg: draft.startAngleDeg, endAngleDeg: draft.endAngleDeg,
-        };
-        break;
-      case "addHelix":
-        if (draft.radius <= 0 || draft.pitch <= 0 || draft.turns <= 0) {
-          setStatus("Helix radius, pitch, and turns must all be positive.", true);
-          return;
-        }
-        op = {
-          op: "addHelix", center: draft.center, axis: draft.axis,
-          radius: draft.radius, pitch: draft.pitch, turns: draft.turns,
-        };
-        break;
-    }
-    if (draft.exprs) op.exprs = draft.exprs;
-    editsModel.push(op);
+    const resolved = buildOpForPanel(draft.kind, draft);
+    if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot add this curve.", true); return; }
+    cancelOpPreview();
+    editsModel.push(resolved.op);
     setStatus("");
   },
   onBuildSurfaceFromLines: () => {
@@ -923,6 +843,8 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     setStatus("");
   },
   onFormChanged: updateGizmoForForm,
+  onPreviewDraftChanged: () => scheduleOpPreview(),
+  onPreviewCancel: () => cancelOpPreview()
 });
 
 // ── Meshing (GMSH FE-mesh generation) ────────────────────────────────────
@@ -997,7 +919,31 @@ let colorFieldRequestId: string | null = null;
  * source file's declared point/cell data array names — called once per
  * `loadMeshBytes` (never for a native mesh open, which has no meshio
  * metadata at all, so the group stays hidden). */
-function applyAvailableColorFields(fields: { pointDataNames: string[]; cellDataNames: string[] } | undefined): void {
+type ColorFieldArrayInfo = {
+  name: string;
+  location: "point" | "cell";
+  numComponents: number;
+  min: number;
+  max: number;
+  numNan: number;
+  consistent: boolean;
+};
+
+/**
+ * Populates the colour-by-field picker.
+ *
+ * **A field that cannot be coloured is disabled here, with the reason in its
+ * label and tooltip** — rather than being offered and failing after the click.
+ * Previously every declared array became an enabled option, and a
+ * multi-component one only failed once the host had read the whole file and run
+ * a full `readMesh` + `extractSurface`; the user saw the dropdown snap back to
+ * "None" after a delay. `arrays` (meshio++ `dataInfo`) carries `numComponents`
+ * up front. It is optional: without it the picker behaves exactly as before,
+ * so an older host payload still works.
+ */
+function applyAvailableColorFields(
+  fields: { pointDataNames: string[]; cellDataNames: string[]; arrays?: ColorFieldArrayInfo[] } | undefined
+): void {
   availableColorFields = fields && fields.pointDataNames.length + fields.cellDataNames.length > 0 ? fields : null;
   const group = document.getElementById("vc-colorfield-group");
   const sel = document.getElementById("vc-colorfield-select") as HTMLSelectElement | null;
@@ -1005,18 +951,28 @@ function applyAvailableColorFields(fields: { pointDataNames: string[]; cellDataN
   group.hidden = availableColorFields === null;
   sel.innerHTML = '<option value="">None</option>';
   if (!availableColorFields) return;
-  for (const name of availableColorFields.pointDataNames) {
+
+  const infoFor = (name: string, location: "point" | "cell"): ColorFieldArrayInfo | undefined =>
+    fields?.arrays?.find((a) => a.name === name && a.location === location);
+
+  const addOption = (name: string, location: "point" | "cell"): void => {
     const opt = document.createElement("option");
-    opt.value = `point:${name}`;
-    opt.textContent = `${name} (point)`;
+    opt.value = `${location}:${name}`;
+    const info = infoFor(name, location);
+    if (info && info.numComponents !== 1) {
+      opt.disabled = true;
+      opt.textContent = `${name} (${location}) — ${info.numComponents} components`;
+      opt.title = `Not colourable: a colour ramp maps one scalar per entity, and this array has ${info.numComponents} components each.`;
+    } else {
+      opt.textContent = `${name} (${location})`;
+      // Range up front, before any values are fetched.
+      if (info) opt.title = `Range ${formatMeasure(info.min)} … ${formatMeasure(info.max)}${info.numNan > 0 ? ` · ${info.numNan} NaN` : ""}`;
+    }
     sel.appendChild(opt);
-  }
-  for (const name of availableColorFields.cellDataNames) {
-    const opt = document.createElement("option");
-    opt.value = `cell:${name}`;
-    opt.textContent = `${name} (cell)`;
-    sel.appendChild(opt);
-  }
+  };
+
+  for (const name of availableColorFields.pointDataNames) addOption(name, "point");
+  for (const name of availableColorFields.cellDataNames) addOption(name, "cell");
 }
 
 /** Resets the selector to "None", hides the legend, and clears any active
@@ -1060,7 +1016,9 @@ function setupColorFieldControls(): void {
 // `src/stepUnits.ts`'s doc comment). This only rescales what Mass Properties/
 // Measurement *display*; nothing stored is ever rescaled.
 let currentDisplayUnit: DisplayUnit = "mm";
-let lastRawMassProperties: (LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"] }) | null = null;
+let lastRawMassProperties:
+  | (LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"]; watertight?: boolean | null })
+  | null = null;
 
 /** Sets the display unit, syncs the `<select>`, and live-rescales the
  * currently-shown Mass Properties result (if any) — measurements already on
@@ -1070,13 +1028,22 @@ function setDisplayUnit(unit: DisplayUnit): void {
   currentDisplayUnit = unit;
   const sel = document.getElementById("vc-unit") as HTMLSelectElement | null;
   if (sel) sel.value = unit;
-  if (lastRawMassProperties) massPropertiesPanel.render(convertLengthBasedProperties(lastRawMassProperties, unit), unit);
+  if (lastRawMassProperties)
+    massPropertiesPanel.render(
+      convertLengthBasedProperties(lastRawMassProperties, unit) as MassPropertiesDisplay,
+      unit
+    );
 }
 
 /** Caches the raw (mm) result and renders it converted to `currentDisplayUnit`. */
-function renderMassProperties(raw: LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"] }): void {
+function renderMassProperties(
+  raw: LengthBasedProperties & { momentsOfInertia: MassPropertiesDisplay["momentsOfInertia"]; watertight?: boolean | null }
+): void {
   lastRawMassProperties = raw;
-  massPropertiesPanel.render(convertLengthBasedProperties(raw, currentDisplayUnit), currentDisplayUnit);
+  massPropertiesPanel.render(
+    convertLengthBasedProperties(raw, currentDisplayUnit) as MassPropertiesDisplay,
+    currentDisplayUnit
+  );
 }
 
 const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mass-panel")!, {
@@ -1106,6 +1073,12 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
 let meshHealthEligibleFormat: MeshParseFormat | null = null;
 let meshHealRequestId: string | null = null;
 
+const macrosPanel = new MacrosPanel(document.getElementById("macros-panel")!, {
+  onRun: (name, parameters) => post({ type: "macroRun", name, parameters }),
+  onSaveCurrent: () => post({ type: "macroSaveCurrent" }),
+  onDelete: (name) => post({ type: "macroDelete", name }),
+});
+
 const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health-panel")!, {
   onCheck: () => {
     if (!meshHealthEligibleFormat) return;
@@ -1117,6 +1090,10 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
   onPromote: () => {
     if (!meshHealthEligibleFormat) return;
     post({ type: "promoteToBrepButtonClicked" });
+  },
+  onRepair: () => {
+    if (!meshHealthEligibleFormat) return;
+    post({ type: "repairMeshButtonClicked" });
   },
 });
 
@@ -1171,13 +1148,14 @@ function computeAndRenderMeshMassProperties(target: SelectedEntity | null): void
   }
 
   const isClosedTarget = target === null || target.entityType === "volume";
-  const { volume, area, volumeCentroid, areaCentroid } = computeMeshMassProperties(meshes);
+  const { volume, area, volumeCentroid, areaCentroid, watertight } = computeMeshMassProperties(meshes);
   renderMassProperties({
     volume: isClosedTarget ? volume : null,
     area,
     length: null,
     centerOfMass: isClosedTarget ? volumeCentroid : areaCentroid,
     momentsOfInertia: null,
+    watertight: isClosedTarget ? watertight : null,
   });
 }
 
@@ -1234,6 +1212,32 @@ function refreshColors(): void {
   applyVisibilityState();
 }
 
+/**
+ * Keeps the 3D scene in step with VS Code's active theme.
+ *
+ * VS Code signals a theme change by rewriting `<body>`'s class
+ * (`vscode-light`/`vscode-dark`/`vscode-high-contrast*`) and the `--vscode-*`
+ * custom properties — there is no message for it, so a `MutationObserver` is
+ * the detection, and no host round trip is involved at all.
+ *
+ * `applyTheme()` re-reads the palette and handles the surfaces with no other
+ * re-apply path (background, lights, grid, overlays, ghost lines, clip cap);
+ * `refreshColors()` then re-themes faces/edges/points/selection through the
+ * existing colour path — which is what leaves per-Part swatches untouched.
+ * This is the same "a material-affecting change must be followed by
+ * refreshColors()" contract `setDisplayMode()` already documents.
+ */
+function setupThemeReactivity(): void {
+  const observer = new MutationObserver(() => {
+    viewer.applyTheme();
+    refreshColors();
+  });
+  observer.observe(document.body, {
+    attributes: true,
+    attributeFilter: ["class", "data-vscode-theme-kind"],
+  });
+}
+
 /** Re-applies both the Parts hide/isolate state and the Tree per-node hide
  * state to the (possibly freshly rebuilt) model — new `THREE.Object3D`s from
  * a model reload start fully visible, so this must run on every model
@@ -1255,6 +1259,401 @@ function renderHighlight(): void {
     previewPartIndex !== null ? partsModel.entitiesOf(previewPartIndex) : selection.list();
   viewer.renderSelection(entities);
   refreshGizmoAttachment(); // no-op unless a translate/rotate/scale form is open
+  clippingControls?.reflectSelection(); // Clip ▸ Face / 3 Pts gate on the selection
+  // A selection change re-aims every selection-dependent op (boolean B,
+  // fillet edges, feature profiles, mate faces, build-surface loops) — cancel
+  // the stale preview and reschedule from the still-open form. Roadmap trap
+  // #2: without this, switching selection strands an orphaned preview built
+  // from operands that no longer exist. The gizmo forms never schedule a
+  // preview at all (the Transform Gizmo IS their live preview), so this is a
+  // cheap no-op while one of those is open.
+  if (opPreviewEligible()) {
+    opPreviewScheduler.cancel();
+    viewer.setOpPreview(null);
+    scheduleOpPreview();
+  }
+}
+
+// ── Live operation preview (roadmap item, closed) ─────────────────────────
+// One debounced speculative replay of [...currentOps, draftOp] rendered as a
+// translucent intent-tinted stand-in for the model. The webview owns ALL of
+// it: nothing here ever touches EditsModel or posts anything but the
+// read-only opPreviewRequest — a preview must never enter the op stack
+// (roadmap trap #1: it would become undoable/persistable/wrong).
+
+const OP_PREVIEW_DEBOUNCE_MS = 250;
+let opPreviewRequestId = 0;
+const opPreviewScheduler = new OpPreviewScheduler<{ id: PanelOpId; draft: Record<string, unknown> }>(runOpPreview, OP_PREVIEW_DEBOUNCE_MS);
+
+/** The panel forms whose live preview this engine renders. Deliberately NOT
+ * previewed: `"explode"` (its own slider preview owns that op) and
+ * `"translate"`/`"rotate"`/`"scale"` (the Transform Gizmo already previews
+ * them by dragging — stacking a second preview under the gizmo's hidden-model
+ * window would fight it). Everything else previews uniformly. */
+function opPreviewEligible(): boolean {
+  const open = editsPanel.openOpId();
+  return open !== null && open !== "explode" && open !== "translate" && open !== "rotate" && open !== "scale";
+}
+
+/** Intent colour for a previewed op kind — green adds material, red removes
+ * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
+ * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
+function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
+  switch (id) {
+    case "booleanUnion":
+    case "addBox":
+    case "addSphere":
+    case "addCylinder":
+    case "addCone":
+    case "addTorus":
+    case "addPrism":
+    case "addWedge":
+    case "extrude":
+    case "revolve":
+    case "sweep":
+    case "loft":
+    case "patternLinear":
+    case "patternCircular":
+      return "add";
+    case "booleanSubtract":
+    case "booleanIntersect":
+    case "addHole":
+    case "addCounterboreHole":
+    case "addCountersinkHole":
+    case "shell":
+    case "splitByPlane":
+      return "cut";
+    case "addCircleProfile":
+    case "addRectangleProfile":
+    case "addPolygonProfile":
+    case "addEllipseProfile":
+    case "addRoundedRectangleProfile":
+    case "addSlotProfile":
+    case "addTrapezoidProfile":
+    case "addPoint":
+    case "addLine":
+    case "addArc":
+    case "addPolyline":
+    case "addThreePointArc":
+    case "addSpline":
+    case "addBezier":
+    case "addEllipseArc":
+    case "addHelix":
+    case "section":
+    case "buildSurface":
+    case "buildVolume":
+      return "ref";
+    default:
+      return undefined; // mirror, align, fillet, chamfer — neutral
+  }
+}
+
+/**
+ * THE single draft→EditOp mapping, shared verbatim by every Apply button AND
+ * by the live preview — the structural guarantee that a preview can never
+ * disagree with what Apply would commit (same guards, same field reads, same
+ * construction). Each Apply callback below is a thin shell around this:
+ * resolve → surface the error → push. Returns `{error}` (never throws) when
+ * an operand selection is missing/invalid or a client-side guard fails;
+ * `validateEditOp` remains the authoritative gate downstream either way.
+ */
+function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op?: EditOp; error?: string } {
+  const d = rawDraft as Record<string, any> & { exprs?: Record<string, string> };
+  const withExprs = (op: EditOp): EditOp => {
+    if (d.exprs && Object.keys(d.exprs).length > 0) op.exprs = d.exprs;
+    return op;
+  };
+  const selVolumes = selectedVolumes();
+  const selFaces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+  const selEdges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+
+  switch (id) {
+    // ── transforms ──
+    case "translate": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
+      return { op: withExprs({ op: "translate", targets: selVolumes, vec: d.vec }) };
+    }
+    case "rotate": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
+      return { op: withExprs({ op: "rotate", targets: selVolumes, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg }) };
+    }
+    case "scale": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
+      return { op: withExprs({ op: "scale", targets: selVolumes, center: d.center, factors: d.factors }) };
+    }
+    case "mirror": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
+      return { op: withExprs({ op: "mirror", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal }) };
+    }
+
+    // ── booleans (A captured via Set A, B = live Vol selection) ──
+    case "booleanUnion":
+    case "booleanSubtract":
+    case "booleanIntersect": {
+      const kind = id === "booleanUnion" ? "union" : id === "booleanSubtract" ? "subtract" : "intersect";
+      if (booleanA.length === 0) return { error: "Set operand A first (select volumes → Set A)." };
+      if (selVolumes.length === 0) return { error: "Select operand B volumes before applying." };
+      if (selVolumes.some((v) => booleanA.includes(v))) return { error: "Operands A and B must be different volumes." };
+      return { op: { op: "boolean", kind, a: booleanA, b: selVolumes } };
+    }
+
+    // ── refine ──
+    case "fillet":
+    case "chamfer": {
+      if (selEdges.length === 0) return { error: `Select one or more edges (Line mode) before applying a ${id}.` };
+      if (d.amount <= 0) return { error: "Enter a positive radius / setback." };
+      const op: EditOp = id === "fillet"
+        ? { op: "fillet", edges: selEdges, radius: d.amount }
+        : { op: "chamfer", edges: selEdges, distance: d.amount };
+      if (d.exprs?.amount) op.exprs = { [id === "fillet" ? "radius" : "distance"]: d.exprs.amount };
+      return { op };
+    }
+
+    // ── feature modeling ──
+    case "extrude":
+      if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to extrude." };
+      return { op: withExprs({ op: "extrude", profile: selFaces[0], dir: d.dir, length: d.length }) };
+    case "revolve":
+      if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to revolve." };
+      return { op: withExprs({ op: "revolve", profile: selFaces[0], axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg }) };
+    case "sweep":
+      if (!selFaces[0] || !selEdges[0]) return { error: "Select a profile face and a path edge for sweep." };
+      return { op: withExprs({ op: "sweep", profile: selFaces[0], path: selEdges[0] }) };
+    case "loft":
+      if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft." };
+      return { op: withExprs({ op: "loft", profiles: selFaces }) };
+
+    // ── assembly ──
+    case "mate":
+      if (selFaces.length < 2) return { error: "Select two faces (Surf mode): face A first, then face B, to mate." };
+      return { op: { op: "mate", faceA: selFaces[0], faceB: selFaces[1] } };
+    case "align":
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before aligning." };
+      return { op: withExprs({ op: "align", targets: selVolumes, axis: d.axis, extent: d.extent, to: d.to }) };
+    case "patternLinear":
+    case "patternCircular": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before patterning." };
+      if (!Number.isInteger(d.count) || d.count < 2) return { error: "Count must be an integer ≥ 2." };
+      if (id === "patternLinear") {
+        if (!d.direction.some((v: number) => v !== 0)) return { error: "Direction must be non-zero." };
+        if (d.spacing === 0) return { error: "Spacing must be non-zero." };
+        return { op: withExprs({ op: "patternLinear", targets: selVolumes, direction: d.direction, spacing: d.spacing, count: d.count }) };
+      }
+      if (!d.axisDir.some((v: number) => v !== 0)) return { error: "Axis must be non-zero." };
+      return { op: withExprs({ op: "patternCircular", targets: selVolumes, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, count: d.count }) };
+    }
+
+    // ── modify ──
+    case "shell": {
+      if (selFaces.length === 0) return { error: "Select the opening face(s) (Surf mode) before shelling." };
+      if (d.thickness === 0) return { error: "Thickness must be non-zero." };
+      return { op: withExprs({ op: "shell", thickness: d.thickness, openingFaces: selFaces }) };
+    }
+    case "splitByPlane":
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to split." };
+      if (!d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
+      return { op: withExprs({ op: "splitByPlane", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal, keep: d.keep }) };
+    case "section":
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to section." };
+      if (!d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
+      return { op: withExprs({ op: "section", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal }) };
+
+    // ── holes ──
+    case "addHole":
+    case "addCounterboreHole":
+    case "addCountersinkHole": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to cut the hole into." };
+      if (d.radius <= 0 || d.depth <= 0) return { error: "Radius and depth must be positive." };
+      if (id === "addCounterboreHole") {
+        if (d.cbRadius <= d.radius) return { error: "Counterbore radius must exceed the hole radius." };
+        if (d.cbDepth <= 0 || d.cbDepth >= d.depth) return { error: "Counterbore depth must satisfy 0 < depth < hole depth." };
+        return { op: withExprs({ op: id, targets: selVolumes, position: d.position, axis: d.axis, radius: d.radius, depth: d.depth, cbRadius: d.cbRadius, cbDepth: d.cbDepth }) };
+      }
+      if (id === "addCountersinkHole") {
+        if (d.csRadius <= d.radius) return { error: "Countersink radius must exceed the hole radius." };
+        if (d.csAngleDeg <= 0 || d.csAngleDeg >= 180) return { error: "Countersink angle must be between 0° and 180°." };
+        return { op: withExprs({ op: id, targets: selVolumes, position: d.position, axis: d.axis, radius: d.radius, depth: d.depth, csRadius: d.csRadius, csAngleDeg: d.csAngleDeg }) };
+      }
+      return { op: withExprs({ op: id, targets: selVolumes, position: d.position, axis: d.axis, radius: d.radius, depth: d.depth }) };
+    }
+
+    // ── 2D profiles ──
+    case "addCircleProfile":
+      if (d.radius <= 0) return { error: "Circle radius must be positive." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius }) };
+    case "addRectangleProfile":
+      if (d.width <= 0 || d.height <= 0) return { error: "Width and height must be positive." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, width: d.width, height: d.height }) };
+    case "addPolygonProfile":
+      if (d.radius <= 0) return { error: "Radius must be positive." };
+      if (!Number.isInteger(d.sides) || d.sides < 3) return { error: "Sides must be an integer ≥ 3." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radius: d.radius, sides: d.sides }) };
+    case "addEllipseProfile":
+      if (d.radiusX <= 0 || d.radiusY <= 0) return { error: "Both radii must be positive." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radiusX: d.radiusX, radiusY: d.radiusY }) };
+    case "addRoundedRectangleProfile":
+      if (d.width <= 0 || d.height <= 0) return { error: "Width and height must be positive." };
+      if (d.cornerRadius <= 0 || 2 * d.cornerRadius >= Math.min(d.width, d.height)) return { error: "Corner radius must satisfy 0 < 2·r < min(width, height)." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, width: d.width, height: d.height, cornerRadius: d.cornerRadius }) };
+    case "addSlotProfile":
+      if (d.width <= 0 || d.length <= d.width) return { error: "Slot needs length > width > 0." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, length: d.length, width: d.width }) };
+    case "addTrapezoidProfile":
+      if (d.bottomWidth <= 0 || d.topWidth <= 0 || d.height <= 0) return { error: "Trapezoid widths and height must be positive." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, bottomWidth: d.bottomWidth, topWidth: d.topWidth, height: d.height }) };
+
+    // ── wireframe curves/points ──
+    case "addPoint":
+      return { op: withExprs({ op: id, position: d.position }) };
+    case "addLine":
+      if (d.start.every((v: number, i: number) => v === d.end[i])) return { error: "Start and end must differ." };
+      return { op: withExprs({ op: id, start: d.start, end: d.end }) };
+    case "addArc":
+      if (d.radius <= 0) return { error: "Arc radius must be positive." };
+      if (d.startAngleDeg === d.endAngleDeg) return { error: "Start and end angle must differ." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg }) };
+    case "addPolyline": {
+      const min = d.closed ? 3 : 2;
+      if (d.points.length < min) return { error: `A ${d.closed ? "closed " : ""}polyline needs ${min}+ points.` };
+      if (hasRepeatedConsecutive(d.points)) return { error: "Consecutive points must differ." };
+      return { op: withExprs({ op: id, points: d.points, closed: d.closed }) };
+    }
+    case "addThreePointArc": {
+      const same = (a: number[], b: number[]) => a.every((v, i) => v === b[i]);
+      if (same(d.p1, d.p2) || same(d.p2, d.p3) || same(d.p1, d.p3)) return { error: "The three points must be distinct." };
+      return { op: withExprs({ op: id, p1: d.p1, p2: d.p2, p3: d.p3 }) };
+    }
+    case "addSpline":
+      if (d.points.length < 2) return { error: "A spline needs 2+ points." };
+      if (hasRepeatedConsecutive(d.points)) return { error: "Consecutive points must differ." };
+      return { op: withExprs({ op: id, points: d.points }) };
+    case "addBezier":
+      if (d.controlPoints.length < 2) return { error: "A Bézier needs 2+ control points." };
+      return { op: withExprs({ op: id, controlPoints: d.controlPoints }) };
+    case "addEllipseArc":
+      if (d.radiusX <= 0 || d.radiusY <= 0) return { error: "Both radii must be positive." };
+      if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
+      if (d.startAngleDeg === d.endAngleDeg) return { error: "Start and end angle must differ." };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radiusX: d.radiusX, radiusY: d.radiusY, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg }) };
+    case "addHelix":
+      if (d.radius <= 0 || d.pitch <= 0 || d.turns <= 0) return { error: "Helix radius, pitch, and turns must all be positive." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, pitch: d.pitch, turns: d.turns }) };
+
+    // ── primitives (guards transcribed from onApplyPrimitive's cases) ──
+    case "addBox": {
+      if (d.size.some((v: number) => v <= 0)) return { error: "Box sizes must all be positive." };
+      return { op: withExprs({ op: id, center: d.center, size: d.size }) };
+    }
+    case "addSphere":
+      if (d.radius <= 0) return { error: "Sphere radius must be positive." };
+      return { op: withExprs({ op: id, center: d.center, radius: d.radius }) };
+    case "addCylinder":
+      if (d.radius <= 0 || d.height <= 0) return { error: "Cylinder radius and height must be positive." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, height: d.height }) };
+    case "addCone":
+      if (!(d.radius1 > 0 || d.radius2 > 0)) return { error: "At least one cone radius must be positive." };
+      if (d.height <= 0) return { error: "Height must be positive." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius1: d.radius1, radius2: d.radius2, height: d.height }) };
+    case "addTorus":
+      if (d.majorRadius <= 0 || d.minorRadius <= 0 || d.minorRadius >= d.majorRadius) return { error: "Torus needs 0 < minor radius < major radius." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, majorRadius: d.majorRadius, minorRadius: d.minorRadius }) };
+    case "addPrism":
+      if (d.radius <= 0 || d.height <= 0) return { error: "Radius and height must be positive." };
+      if (!Number.isInteger(d.sides) || d.sides < 3) return { error: "Sides must be an integer ≥ 3." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, sides: d.sides, height: d.height }) };
+    case "addWedge":
+      if (d.dx <= 0 || d.dy <= 0 || d.dz <= 0) return { error: "Wedge sizes must be positive." };
+      if (d.ltx < 0) return { error: "Top X extent must be ≥ 0." };
+      if (!nonParallel(d.axis, d.up)) return { error: "Up must not be parallel to Axis." };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, up: d.up, dx: d.dx, dy: d.dy, dz: d.dz, ltx: d.ltx }) };
+
+    // ── build from selection ──
+    case "buildSurface":
+      if (selEdges.length < 3) return { error: "Select 3+ lines (Line mode) forming a closed loop." };
+      return { op: { op: "addSurfaceFromLines", edges: selEdges } };
+    case "buildVolume":
+      if (selFaces.length < 4) return { error: "Select 4+ surfaces (Surf mode) forming a closed shell." };
+      return { op: { op: "addVolumeFromSurfaces", faces: selFaces } };
+
+    default:
+      return { error: "This op has no live preview." };
+  }
+}
+
+/** Reads the open form's CURRENT draft through the panel (the same readers
+ * Apply uses) and schedules a debounced preview run. No-op when no
+ * previewable form is open or the draft's expressions currently fail to
+ * evaluate (`currentDraft()` returns null — skip silently, never flash the
+ * inline Apply-time error mid-typing). */
+function scheduleOpPreview(): void {
+  if (!opPreviewEligible()) return;
+  const current = editsPanel.currentDraft();
+  if (!current) {
+    viewer.setOpPreview(null);
+    return;
+  }
+  opPreviewScheduler.schedule(current);
+}
+
+/** Cancels any pending/in-flight preview and clears the overlay. */
+function cancelOpPreview(): void {
+  opPreviewScheduler.cancel();
+  viewer.setOpPreview(null);
+}
+
+/** The scheduler's runner: resolve → validate → replay speculatively. Mesh
+ * sources stay entirely client-side (applyEditsMesh over a fresh pristine
+ * clone — the host round trip would need an STL snapshot for zero benefit);
+ * B-rep sources post `opPreviewRequest` and render from `opPreviewResult`. */
+async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknown> }, generation: number): Promise<void> {
+  const resolved = buildOpForPanel(entry.id, entry.draft);
+  if (resolved.error || !resolved.op) {
+    viewer.setOpPreview(null);
+    setStatus(resolved.error ?? "Cannot preview this op.", true);
+    return;
+  }
+  const clean = validateEditOp(resolved.op);
+  if (!clean) {
+    viewer.setOpPreview(null);
+    setStatus("The drafted operation is invalid and cannot be previewed.", true);
+    return;
+  }
+  const tint = tintForPanelOp(entry.id);
+  if (sourceKind === "mesh") {
+    if (!pristineMesh) return;
+    const clone = pristineMesh.clone(true);
+    applyEditsMesh(clone, [...currentResolvedOps().ops, clean]);
+    viewer.setOpPreview(clone, tint);
+    return;
+  }
+  const requestId = `oppreview-${++opPreviewRequestId}`;
+  pendingOpPreviewGeneration.set(requestId, generation);
+  post({ type: "opPreviewRequest", requestId, op: clean });
+}
+
+/** Generation guard for in-flight preview requests: a response is rendered
+ * only if its request was the latest scheduled run AND no cancel has fired
+ * since (form switch / selection change / Apply / model rebuild all bump the
+ * scheduler's generation via `cancel()`). */
+const pendingOpPreviewGeneration = new Map<string, number>();
+
+function handleOpPreviewResult(msg: Extract<HostToWebview, { type: "opPreviewResult" }>): void {
+  const gen = pendingOpPreviewGeneration.get(msg.requestId);
+  pendingOpPreviewGeneration.delete(msg.requestId);
+  if (gen === undefined || !opPreviewScheduler.isCurrent(gen)) return; // stale — silently discarded
+  const draftOutcome = msg.opOutcomes?.[msg.opOutcomes.length - 1];
+  if (draftOutcome && !draftOutcome.applied) {
+    viewer.setOpPreview(null);
+    setStatus(`Preview skipped: ${draftOutcome.diagnostic ?? "the operation produced no change"}${draftOutcome.hint ? ` — ${draftOutcome.hint}` : ""}`, true);
+    return;
+  }
+  viewer.setOpPreview(buildGroupFromEncoded(msg.meshes, msg.edges, msg.points), tintForPanelOp(editsPanel.openOpId() as PanelOpId));
 }
 
 // The pristine, tagged-but-unedited loaded object for mesh formats. Mesh edits
@@ -1290,15 +1689,20 @@ function pristineMeshPositions(): Float32Array | null {
 let importedRegionInfo: { triangleRegion: Int32Array } | null = null;
 
 /** Rebuilds the displayed mesh model: clone pristine → apply resolved ops → facet-split. */
-function rebuildMeshModel(): void {
+function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   if (!pristineMesh) return;
   const ops = currentResolvedOps().ops;
-  const edited = applyEditsMesh(pristineMesh.clone(), ops);
+  const outcomes: OpOutcome[] = [];
+  const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
+  lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
-  viewer.setModel(model);
+  viewer.setModel(model, opts);
+  cancelOpPreview(); // setModel() already cleared the overlay; this also kills any pending/in-flight preview request
   explodePreviewBases = null; // stale references to the just-replaced model's objects
   gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
   viewer.detachTransformGizmo();
+  hideInspectorCard(); // its facts describe the pre-edit shape, and ids may have been renumbered
+  hideHoverTip();
   resetColorFieldSelection(); // any edit invalidates the field values' triangle correlation, same as importedRegionInfo above
   refreshColors();
   renderAnnotationsList(); // detached status may have changed
@@ -1307,6 +1711,7 @@ function rebuildMeshModel(): void {
   // `geometry` message after each edit.)
   meshingPanel.setModelExtents(viewer.getModelExtents());
   applyInitialViewIfNeeded(); // no-op after the document's first load; see its doc comment
+  renderEditsUi(); // re-render with THIS replay's outcome markers (syncEdits rendered before they existed)
 }
 
 function showSidebar(): void {
@@ -1324,13 +1729,143 @@ viewer.setEntityPickHandler(
       selection.add(result);
     }
     renderHighlight();
+    requestEntityFacts(result.entityId);
   },
   () => {
     previewPartIndex = null;
     selection.clear();
     renderHighlight();
+    hideInspectorCard();
   }
 );
+
+// ── Explain the geometry under the cursor ─────────────────────────────────
+// Two affordances over one pick path, split by COST, not by preference:
+// hovering is pure webview and instant, while the inspector card needs a host
+// round trip and `getEntityFacts` has no shape cache (every call re-reads the
+// source bytes and replays the whole op list). So hover drives the tooltip and
+// SELECTION drives the card — a hover-driven round trip would re-parse the
+// model on every mouse move.
+
+const hoverTipEl = document.getElementById("hover-tip");
+const inspectorEl = document.getElementById("inspector-card");
+
+/** `entityId -> 1-based op positions mentioning it`. Rebuilt on op-list change,
+ * never per hover event: `EditsModel.list()` deep-clones the whole list. */
+let entityRefIndex = new Map<string, number[]>();
+function rebuildEntityRefIndex(): void {
+  entityRefIndex = buildEntityReferenceIndex(editsModel.list());
+}
+
+function hideHoverTip(): void {
+  hoverTipEl?.classList.add("hidden");
+}
+
+function showHoverTip(entityId: string, x: number, y: number): void {
+  if (!hoverTipEl) return;
+  const { id, ops } = hoverContent(entityId, entityRefIndex.get(entityId));
+  hoverTipEl.textContent = "";
+  const idEl = document.createElement("span");
+  idEl.className = "hover-id";
+  idEl.textContent = id;
+  const opsEl = document.createElement("span");
+  opsEl.className = "hover-ops";
+  opsEl.textContent = `\n${ops}`;
+  hoverTipEl.append(idEl, opsEl);
+  hoverTipEl.classList.remove("hidden");
+
+  // Keep the tip inside #app: near the right/bottom edge, flip it to the other
+  // side of the cursor rather than letting it overflow the viewport.
+  const host = hoverTipEl.parentElement;
+  const hostW = host?.clientWidth ?? 0;
+  const hostH = host?.clientHeight ?? 0;
+  const w = hoverTipEl.offsetWidth;
+  const h = hoverTipEl.offsetHeight;
+  const left = x + 14 + w > hostW ? Math.max(0, x - 14 - w) : x + 14;
+  const top = y + 14 + h > hostH ? Math.max(0, y - 14 - h) : y + 14;
+  hoverTipEl.style.left = `${left}px`;
+  hoverTipEl.style.top = `${top}px`;
+}
+
+let lastHoverPointer = { x: 0, y: 0 };
+document.getElementById("app")?.addEventListener("pointermove", (e) => {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  lastHoverPointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+});
+
+viewer.setEntityHoverHandler((result) => {
+  if (!result) {
+    hideHoverTip();
+    return;
+  }
+  showHoverTip(result.entityId, lastHoverPointer.x, lastHoverPointer.y);
+});
+
+function hideInspectorCard(): void {
+  entityFactsRequestId = null; // a newer/cleared selection supersedes any in-flight reply
+  inspectorEl?.classList.add("hidden");
+}
+
+/** Latched so a slow reply for a superseded selection is discarded — the same
+ * requestId stale-response idiom `massPropertiesRequest`/`measureExactRequest`
+ * already use. */
+let entityFactsRequestId: string | null = null;
+
+function requestEntityFacts(entityId: string): void {
+  if (!inspectorEl) return;
+  // Mesh sources have no analytic surface type at all; the host would only
+  // answer with an error, so don't ask.
+  if (sourceKind !== "brep") {
+    hideInspectorCard();
+    return;
+  }
+  const requestId = `${Date.now()}-${Math.random()}`;
+  entityFactsRequestId = requestId;
+  renderInspectorCard(entityId, null);
+  post({ type: "entityFactsRequest", requestId, entityId });
+}
+
+/** `facts === null` renders the pending state, keeping the card's position
+ * stable instead of having it appear only once the round trip lands. */
+function renderInspectorCard(entityId: string, facts: EntityFacts | null, error?: string): void {
+  if (!inspectorEl) return;
+  inspectorEl.textContent = "";
+
+  const title = document.createElement("div");
+  title.className = "insp-title";
+  const name = document.createElement("span");
+  const id = document.createElement("span");
+  id.className = "insp-id";
+  id.textContent = entityId;
+  title.append(name, id);
+  inspectorEl.append(title);
+
+  if (error) {
+    name.textContent = "Unavailable";
+    const note = document.createElement("div");
+    note.className = "insp-note";
+    note.textContent = error;
+    inspectorEl.append(note);
+  } else if (!facts) {
+    name.textContent = "Inspecting…";
+  } else {
+    const content = inspectorContent(facts);
+    name.textContent = content.title;
+    for (const row of content.rows) {
+      const line = document.createElement("div");
+      line.className = "insp-row";
+      const k = document.createElement("span");
+      k.className = "insp-key";
+      k.textContent = row.key;
+      const v = document.createElement("span");
+      v.className = "insp-val";
+      v.textContent = row.value;
+      line.append(k, v);
+      inspectorEl.append(line);
+    }
+  }
+  inspectorEl.classList.remove("hidden");
+}
 
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
@@ -1377,8 +1912,218 @@ function setupSelectionControls(): void {
       modeBtns.forEach((b) => b.classList.toggle("active", b === btn));
       if (selecting) apply();
       reflect();
+      syncFilterUi();
     });
   }
+
+  // ── Geometric selection filters (roadmap Tier 2 item 1, Phase 1) ──────────
+  // One registry-driven predicate dropdown + numeric field + seam toggle, run
+  // against `collectTargets(viewer.getModel(), selectMode)` and bulk-injected
+  // into `SelectionSet`. Pure predicates live in `selectFilters.ts`.
+  const filterGroup = document.getElementById("filter-group") as HTMLElement | null;
+  const filterPred = document.getElementById("filter-pred") as HTMLSelectElement | null;
+  const filterArg = document.getElementById("filter-arg") as HTMLInputElement | null;
+  const filterExcludeSmooth = document.getElementById("filter-exclude-smooth") as HTMLInputElement | null;
+  const filterReplace = document.getElementById("filter-replace") as HTMLButtonElement | null;
+  const filterAdd = document.getElementById("filter-add") as HTMLButtonElement | null;
+
+  const filterSupportsMode = (m: EntityType) => m === "surface" || m === "line";
+
+  // Keep the predicate dropdown in sync with the active pick mode — the
+  // option list is registry-driven (`FACE_FILTERS`/`LINE_FILTERS`), so this
+  // populates the `<select>` whenever the mode changes (including the
+  // `setSelectableModes` mesh-source path, via the exposed `__syncFilterUi`).
+  let lastFilterMode: EntityType | null = null;
+  const syncFilterUi = () => {
+    if (filterPred && lastFilterMode !== selectMode) {
+      const wantLine = selectMode === "line";
+      const wantSurface = selectMode === "surface";
+      const opts = wantLine ? LINE_FILTERS : wantSurface ? FACE_FILTERS : [];
+      const prevVal = filterPred.value;
+      filterPred.innerHTML = "";
+      for (const o of opts) {
+        const el = document.createElement("option");
+        el.value = o.id;
+        el.textContent = o.label;
+        filterPred.appendChild(el);
+      }
+      // Preserve previous selection if it still exists in the new mode.
+      if (opts.some((o) => o.id === prevVal)) filterPred.value = prevVal;
+      lastFilterMode = selectMode;
+    }
+    const supported = filterSupportsMode(selectMode);
+    const opts = selectMode === "line" ? LINE_FILTERS : selectMode === "surface" ? FACE_FILTERS : [];
+    const cur = filterPred ? (opts.find((o) => o.id === filterPred.value) ?? opts[0]) : undefined;
+    const needsArg = cur ? cur.argKind !== "none" : false;
+    if (filterPred) filterPred.disabled = !supported;
+    if (filterArg) {
+      filterArg.disabled = !supported || !needsArg;
+      filterArg.placeholder = needsArg ? (cur?.argKind === "count" ? "N" : "value") : "—";
+    }
+    if (filterExcludeSmooth) filterExcludeSmooth.disabled = selectMode !== "line";
+    if (filterReplace) filterReplace.disabled = !supported;
+    if (filterAdd) filterAdd.disabled = !supported;
+    if (filterGroup) filterGroup.style.opacity = supported ? "" : "0.45";
+  };
+
+  const runFilter = (replace: boolean) => {
+    const model = viewer.getModel();
+    if (!model) {
+      setStatus("No model loaded.", true);
+      return;
+    }
+    if (!filterSupportsMode(selectMode)) {
+      setStatus(`Filters are not available in ${selectMode} mode — switch to Surf or Line.`, true);
+      return;
+    }
+    if (!filterPred) return;
+    const filterId = filterPred.value;
+    const argRaw = filterArg?.value.trim() ?? "";
+    const cur =
+      (selectMode === "line" ? (LINE_FILTERS as readonly { id: string; argKind: string }[]) : (FACE_FILTERS as readonly { id: string; argKind: string }[])).find(
+        (o) => o.id === filterId
+      ) ?? null;
+    let arg = 0;
+    if (cur && cur.argKind !== "none") {
+      if (argRaw === "") {
+        setStatus(cur.argKind === "count" ? "Enter a count N (e.g. 5)." : "Enter a threshold value.", true);
+        return;
+      }
+      arg = Number(argRaw);
+      if (!Number.isFinite(arg)) {
+        setStatus(`"${argRaw}" is not a number.`, true);
+        return;
+      }
+      if (cur.argKind === "count" && (!Number.isInteger(arg) || arg <= 0)) {
+        setStatus("Count must be a positive integer.", true);
+        return;
+      }
+    }
+    const targets = collectTargets(model, selectMode);
+    const excludeSmooth = !!filterExcludeSmooth?.checked;
+    const result =
+      selectMode === "line"
+        ? applyLineFilter(targets, filterId as LineFilterId, arg, excludeSmooth)
+        : applyFaceFilter(targets, filterId as FaceFilterId, arg);
+    if (replace) selection.clear();
+    for (const e of result) selection.add(e);
+    renderHighlight();
+    setStatus(result.length === 0 ? "Filter matched nothing." : `Filter matched ${result.length} of ${targets.length} ${selectMode === "line" ? "edges" : "faces"}.`);
+  };
+
+  filterPred?.addEventListener("change", syncFilterUi);
+  filterReplace?.addEventListener("click", () => runFilter(true));
+  filterAdd?.addEventListener("click", () => runFilter(false));
+
+  // Expose the sync helper so `setSelectableModes` (outside this closure) can
+  // keep the filter form's disabled state in sync when mesh sources restrict
+  // the available pick modes.
+  (globalThis as unknown as { __syncFilterUi?: () => void }).__syncFilterUi = syncFilterUi;
+  syncFilterUi();
+
+  // ── Selection-groups context menu ───────────────────────────────────────
+  // The same predicates as the filter form above, reached by right-click
+  // instead of by composing a query — and the clicked entity supplies the
+  // argument the form makes you type. Lives inside this closure because it
+  // needs `selectMode`/`selecting` and the same bulk-inject path `runFilter`
+  // uses; that is also why `runFilter` was never lifted out.
+  const ctxMenu = document.getElementById("context-menu");
+  let previewingGroup = false;
+
+  const closeMenu = (): void => {
+    ctxMenu?.classList.add("hidden");
+    if (previewingGroup) {
+      previewingGroup = false;
+      renderHighlight(); // drop the hover preview, restore the real selection
+    }
+  };
+
+  // Registered ONCE, not per open: adding it inside the open handler would
+  // accumulate a listener on every right-click.
+  ctxMenu?.addEventListener("pointerleave", () => {
+    if (previewingGroup) {
+      previewingGroup = false;
+      renderHighlight();
+    }
+  });
+
+  const applyGroup = (entities: SelectedEntity[], replace: boolean): void => {
+    previewingGroup = false; // this IS the commit; renderHighlight below is authoritative
+    if (replace) selection.clear();
+    for (const e of entities) selection.add(e);
+    renderHighlight();
+    setStatus(`Selected ${entities.length} ${selectMode === "line" ? "edges" : "faces"}.`);
+  };
+
+  viewer.setContextMenuHandler((result, cssX, cssY) => {
+    if (!ctxMenu) return;
+    closeMenu();
+    const model = viewer.getModel();
+    if (!model || !selecting) return;
+
+    const groups = selectionGroupsFor(collectTargets(model, selectMode), selectMode, result.entityId);
+    ctxMenu.textContent = "";
+
+    if (groups.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "ctx-empty";
+      // Volume/point have no predicate vocabulary — the same gate the filter
+      // form applies. Say which case it is rather than showing a blank menu.
+      empty.textContent =
+        selectMode === "surface" || selectMode === "line"
+          ? "No groups match beyond this one."
+          : "Selection groups apply to Surf and Line modes.";
+      ctxMenu.append(empty);
+    } else {
+      for (const g of groups) {
+        const btn = document.createElement("button");
+        btn.setAttribute("role", "menuitem");
+        btn.textContent = g.label;
+        const count = document.createElement("span");
+        count.className = "ctx-count";
+        count.textContent = `${g.entities.length}`;
+        btn.append(count);
+        // Hovering previews exactly what clicking would select — drawn through
+        // renderSelection directly, never into the SelectionSet, so moving away
+        // restores the real selection with no bookkeeping to undo.
+        btn.addEventListener("pointerenter", () => {
+          previewingGroup = true;
+          viewer.renderSelection(g.entities);
+        });
+        btn.addEventListener("click", (e) => {
+          applyGroup(g.entities, !e.shiftKey); // shift-click unions, as elsewhere
+          closeMenu();
+        });
+        ctxMenu.append(btn);
+      }
+    }
+
+    ctxMenu.classList.remove("hidden");
+    // Keep it inside #app: flip to the other side of the cursor near an edge.
+    const host = ctxMenu.parentElement;
+    const left = cssX + ctxMenu.offsetWidth > (host?.clientWidth ?? 0) ? Math.max(0, cssX - ctxMenu.offsetWidth) : cssX;
+    const top = cssY + ctxMenu.offsetHeight > (host?.clientHeight ?? 0) ? Math.max(0, cssY - ctxMenu.offsetHeight) : cssY;
+    ctxMenu.style.left = `${left}px`;
+    ctxMenu.style.top = `${top}px`;
+  });
+
+  // Capture phase, mirroring `dropdownMenu.ts`'s own dismissal discipline: the
+  // click that closes the ctxMenu must not also reach the canvas underneath and
+  // change the selection.
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!ctxMenu || ctxMenu.classList.contains("hidden")) return;
+      if (ctxMenu.contains(e.target as Node)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+    },
+    true
+  );
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMenu();
+  });
 }
 
 /** Restricts pickable entity kinds (mesh formats expose only whole "volumes"). */
@@ -1395,6 +2140,10 @@ function setSelectableModes(modes: EntityType[]): void {
     document.querySelectorAll(".sel-mode").forEach((b) => b.classList.toggle("active", b === active));
     if (selecting) viewer.setSelectionMode(selectMode);
   }
+  // Keep the geometric filter form's disabled state in sync when mesh
+  // sources restrict the available pick modes (the filter UI lives inside
+  // `setupSelectionControls`'s closure, so bounce through the exposed sync).
+  (globalThis as unknown as { __syncFilterUi?: () => void }).__syncFilterUi?.();
 }
 
 // ── Measurement toolbar (distance/edge length/angle/radius) ────────────────
@@ -1403,6 +2152,11 @@ function setSelectableModes(modes: EntityType[]): void {
 
 interface MeasurementResult {
   text: string;
+  /** Raw numeric measurement in the readout's own unit (mm for length tools,
+   * degrees for angle) — what a tolerance-bearing pin freezes as
+   * `tolerance.measured`, so the in/out-of-band colour can be re-derived on
+   * redisplay without parsing the formatted `text` back into a number. */
+  value: number;
   anchor: Vec3;
   /** 2 points to connect with a line (distance/angle), or none (edgeLength/radius). */
   linePoints: Vec3[];
@@ -1432,19 +2186,21 @@ function computeMeasurementResult(tool: MeasureTool, picks: MeasurementPick[]): 
   if (tool === "distance") {
     const [a, b] = picks;
     if (!a || !b) return null;
-    return { text: formatMeasureLength(pointDistance(a.point, b.point)), anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+    const value = pointDistance(a.point, b.point);
+    return { text: formatMeasureLength(value), value, anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
   }
   if (tool === "edgeLength") {
     const [a] = picks;
     if (!a?.polyline) return null;
-    return { text: `L = ${formatMeasureLength(polylineLength(a.polyline))}`, anchor: a.point, linePoints: [] };
+    const value = polylineLength(a.polyline);
+    return { text: `L = ${formatMeasureLength(value)}`, value, anchor: a.point, linePoints: [] };
   }
   if (tool === "angle") {
     const [a, b] = picks;
     if (!a?.direction || !b?.direction) return null;
     const deg = angleBetweenVectors(a.direction, b.direction);
     if (Number.isNaN(deg)) return null;
-    return { text: `${formatMeasure(deg)}°`, anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
+    return { text: `${formatMeasure(deg)}°`, value: deg, anchor: midpoint(a.point, b.point), linePoints: [a.point, b.point] };
   }
   if (tool === "radius") {
     const [a] = picks;
@@ -1455,7 +2211,7 @@ function computeMeasurementResult(tool: MeasureTool, picks: MeasurementPick[]): 
       polylinePointAt(a.polyline, Math.floor(n / 2)),
       polylinePointAt(a.polyline, n - 1)
     );
-    return r === null ? null : { text: `R = ${formatMeasureLength(r)}`, anchor: a.point, linePoints: [] };
+    return r === null ? null : { text: `R = ${formatMeasureLength(r)}`, value: r, anchor: a.point, linePoints: [] };
   }
   return null;
 }
@@ -1487,13 +2243,48 @@ let measureExactRequestId: string | null = null;
 
 /** Shows/hides `#measure-pin-btn` — available whenever there's a completed
  * measurement with at least one resolved entity id, on ANY source kind
- * (unlike `#measure-exact-btn`, which is B-rep only). */
+ * (unlike `#measure-exact-btn`, which is B-rep only). The tolerance-band
+ * fields ride along: they're only meaningful when there's something to pin. */
 function refreshPinButton(): void {
   const btn = document.getElementById("measure-pin-btn") as HTMLButtonElement | null;
   if (!btn) return;
   const available = !!lastMeasurement?.picks.some((p) => p.entityId);
   btn.hidden = !available;
   btn.disabled = !available;
+  const tolGroup = document.getElementById("measure-tol-group");
+  if (tolGroup) tolGroup.hidden = !available;
+}
+
+/**
+ * Reads one tolerance field as a finite number; `null` when blank or
+ * unparseable — the same tolerant-input convention every other numeric
+ * webview field uses (bad keystrokes fall back to "not provided", never
+ * throw).
+ */
+function readTolField(id: string): number | null {
+  const raw = (document.getElementById(id) as HTMLInputElement | null)?.value?.trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Reads the three inline tolerance fields next to 📌 Pin into an
+ * {@link AnnotatedTolerance}. A band needs at least Nominal AND +; − defaults
+ * to + (symmetric ±). Returns `{ band: undefined, incomplete: true }` when
+ * only Nominal was filled so the caller can say so instead of silently
+ * ignoring the user's intent.
+ */
+function readToleranceFields(): { band?: AnnotatedTolerance; incomplete: boolean } {
+  const nominal = readTolField("measure-tol-nominal");
+  if (nominal === null) return { incomplete: false };
+  const plus = readTolField("measure-tol-plus");
+  if (plus === null || plus < 0) {
+    return { incomplete: true };
+  }
+  const minus = readTolField("measure-tol-minus") ?? plus;
+  if (minus < 0 || !lastMeasurement) return { incomplete: true };
+  return { band: { nominal, plus, minus, measured: lastMeasurement.result.value }, incomplete: false };
 }
 
 let annotationIdCounter = 0;
@@ -1526,6 +2317,7 @@ function annotationFromLastMeasurement(): Annotation | null {
     surfaces,
     lines,
     points,
+    tolerance: readToleranceFields().band,
   };
 }
 
@@ -1631,8 +2423,11 @@ function setupMeasureControls(): void {
   pinBtn?.addEventListener("click", () => {
     const annotation = annotationFromLastMeasurement();
     if (!annotation) return;
+    // A half-filled band (Nominal without +) still pins — but says so rather
+    // than silently dropping the user's intent.
+    const { incomplete } = readToleranceFields();
     annotationsModel.push(annotation);
-    setStatus("Pinned measurement");
+    setStatus(incomplete && !annotation.tolerance ? "Pinned without a tolerance band — fill Nominal and +" : "Pinned measurement");
   });
 
   exactBtn?.addEventListener("click", () => {
@@ -1760,6 +2555,31 @@ function pointsEqual(a: [number, number, number], b: [number, number, number]): 
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 }
 
+/**
+ * Converts a DXF file's entities into standalone sketch ops (roadmap Tier 2
+ * #1 Phase 1). `parseDxf` already returns validated `EditOp`s (one per
+ * LINE/CIRCLE/ARC, per-vertex arcs/lines for LWPOLYLINE/POLYLINE with bulges,
+ * otherwise a single closed/open addPolyline/spline) — this just pushes them.
+ * Flat XY at z=0, Y-up native, 1 DXF unit = 1mm, same as SVG placement but
+ * without the Y-negation (DXF is already Y-up).
+ */
+function importDxfPaths(dxfText: string): void {
+  if (sourceKind === "mesh") {
+    setStatus("DXF import builds sketch primitives, which are B-rep only — open a STEP/IGES/BREP file to use it.", true);
+    return;
+  }
+  const { ops, warnings } = parseDxf(dxfText);
+  if (ops.length === 0) {
+    // Surface parse warnings (e.g. no ENTITIES) if any, otherwise generic
+    const hint = warnings[0] ?? "No usable entities found (supported: LINE, LWPOLYLINE, POLYLINE, CIRCLE, ARC, SPLINE).";
+    setStatus(hint, true);
+    return;
+  }
+  for (const op of ops) editsModel.push(op);
+  const suffix = warnings.length > 0 ? ` (${warnings.join("; ")})` : "";
+  setStatus(`Imported ${ops.length} entit${ops.length === 1 ? "y" : "ies"} from DXF as sketch primitives.${suffix}`);
+}
+
 function setupFileMenu(): void {
   const menu = setupDropdown("file-menu", "file-dropdown");
   if (!menu) return;
@@ -1777,7 +2597,10 @@ function setupFileMenu(): void {
   item("menu-save-preprocess", () => post({ type: "savePreprocessRequest" }));
   item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
   item("menu-import-svg", () => post({ type: "importSvgRequest" }));
+  item("menu-import-dxf", () => post({ type: "importDxfRequest" }));
   item("menu-export-svg", () => post({ type: "exportSvgRequest" }));
+  item("menu-export-dxf", () => post({ type: "exportDxfRequest" }));
+  item("menu-export-drawing", () => post({ type: "exportDrawingRequest" }));
 }
 
 /**
@@ -1812,9 +2635,61 @@ function setupViewMenu(): void {
     snapPointsBtn.setAttribute("aria-checked", String(snapToPointsEnabled));
   });
 
+  // Split view (roadmap "Split view", Phase 2) — the View ▾ layout picker:
+  // four mutually-exclusive pane layouts over one scene (one renderer, one
+  // canvas — panes are scissored viewports). Only camera state is per-pane;
+  // everything else (display mode, clip plane, selection, overlays) stays
+  // global. The active button mirrors the current layout; a layout change
+  // also updates the pane dividers and persists via `scheduleViewSave`.
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("#layout-group .layout-btn")) {
+    btn.addEventListener("click", () => {
+      const next = btn.dataset.layout as ReturnType<typeof viewer.getPaneLayout>;
+      if (!next || next === viewer.getPaneLayout()) return;
+      viewer.setPaneLayout(next);
+      reflectLayoutPicker(next);
+      setPaneDividersForLayout(next);
+      // A layout change is a user view change — persist it. `viewer`'s
+      // `onViewChanged` may not fire for this (the kept pane's camera didn't
+      // move), so call explicitly rather than relying on the change event.
+      scheduleViewSave();
+    });
+  }
+  reflectLayoutPicker(viewer.getPaneLayout());
+
+  const linkBtn = document.getElementById("link-cameras");
+  linkBtn?.addEventListener("click", () => {
+    const enabled = linkBtn.getAttribute("aria-checked") !== "true";
+    // Optimistic reflect — authoritative state comes back via `camerasLinked`.
+    linkBtn.setAttribute("aria-checked", String(enabled));
+    post({ type: "setCamerasLinked", enabled });
+  });
+
   // #edges is owned by setupAppearanceControls() — it holds the visibility
   // flag; this only reflects it. Screenshot is one-shot, so it dismisses.
   document.getElementById("screenshot")?.addEventListener("click", () => menu?.close());
+}
+
+/** Syncs the picker's `.active` class to `layout` — called from the picker
+ * click handler and from `applyViewState`'s restore path. */
+function reflectLayoutPicker(layout: string): void {
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("#layout-group .layout-btn")) {
+    btn.classList.toggle("active", btn.dataset.layout === layout);
+  }
+}
+
+/** Shows/hides the two thin DOM dividers between split-view panes — pure
+ * visual separators over the single canvas (pointer-events: none; the panes
+ * they delineate share that one canvas, so there is nothing to hit-test).
+ * `1×2` shows only the vertical divider, `2×1` only the horizontal, `2×2`
+ * both, `1×1` neither. Kept as a named export helper so `applyViewState`'s
+ * restore path can also sync dividers without re-dispatching a picker click. */
+function setPaneDividersForLayout(layout: string): void {
+  document.getElementById("pane-divider-v")?.classList.toggle("hidden", layout !== "1x2" && layout !== "2x2");
+  document.getElementById("pane-divider-h")?.classList.toggle("hidden", layout !== "2x1" && layout !== "2x2");
+}
+/** Backwards-compat alias for older call sites/tests that used the boolean form. */
+function setPaneDividersVisible(visible: boolean): void {
+  setPaneDividersForLayout(visible ? "2x2" : "1x1");
 }
 
 /**
@@ -1852,6 +2727,12 @@ function setupDragAndDrop(): void {
  * click duplicating that logic and risking drift. */
 interface AppearanceControlsHandle {
   applyOrtho(enabled: boolean): void;
+  /** Re-reads the focused pane's projection state onto the button's
+   * label/active class WITHOUT changing it — used when the focused pane
+   * changes (split view), since projection is per-pane and the new focus may
+   * carry the opposite mode even though the user clicked no projection
+   * control. */
+  reflectOrtho(): void;
   applyDisplayMode(mode: DisplayMode): void;
 }
 
@@ -1895,18 +2776,20 @@ function setupAppearanceControls(): AppearanceControlsHandle {
   });
 
   const orthoBtn = document.getElementById("vc-ortho");
+  const reflectOrtho = () => {
+    if (orthoBtn) {
+      orthoBtn.textContent = viewer.isOrthographic() ? "Ortho" : "Persp";
+      orthoBtn.classList.toggle("active", viewer.isOrthographic());
+    }
+  };
   const applyOrtho = (enabled: boolean) => {
     viewer.setOrthographic(enabled);
-    if (orthoBtn) {
-      orthoBtn.textContent = enabled ? "Ortho" : "Persp";
-      orthoBtn.classList.toggle("active", enabled);
-    }
+    reflectOrtho();
   };
   orthoBtn?.addEventListener("click", () => {
     applyOrtho(!viewer.isOrthographic());
     scheduleViewSave();
   });
-
   document.getElementById("vc-unit")?.addEventListener("change", (e) => {
     setDisplayUnit((e.target as HTMLSelectElement).value as DisplayUnit);
   });
@@ -1941,20 +2824,27 @@ function setupAppearanceControls(): AppearanceControlsHandle {
     });
   }
 
-  return { applyOrtho, applyDisplayMode };
+  return { applyOrtho, reflectOrtho, applyDisplayMode };
 }
 
 /** `null` clip state means clipping is off (mirrors `ViewState.clip`). */
-type ClipState = { axis: ClipAxis; offsetFrac: number } | null;
+type ClipState = ClipPlaneState | null;
 
 /** Handle returned by {@link setupClippingControls}, letting persisted view
  * state restore the clip plane through the same code the toolbar uses, and
  * letting the view-state save gather the clip plane's current settings
- * (`clipAxis`/`clipEnabled`/`offsetSlider.value` are this function's own
- * closure state, with no other way to read them from outside). */
+ * (`clipAxis`/`clipEnabled`/`offsetFrac` are this function's own closure
+ * state, with no other way to read them from outside). */
 interface ClippingControlsHandle {
   applyState(state: ClipState): void;
   getState(): ClipState;
+  /** Enables/disables the two derive buttons for the current selection.
+   * Called from `renderHighlight()`, the single choke point every selection
+   * mutation already funnels through. */
+  reflectSelection(): void;
+  /** Applies a plane derived from picked geometry: orients it toward the bulk
+   * of the model, stores it as the custom normal, and turns clipping on. */
+  applyDerivedPlane(normal: THREE.Vector3, throughPoint: THREE.Vector3, label: string): void;
 }
 
 /**
@@ -1969,57 +2859,225 @@ interface ClippingControlsHandle {
 function setupClippingControls(): ClippingControlsHandle {
   let clipAxis: ClipAxis = "x";
   let clipEnabled = false;
-  const axisBtns = [...document.querySelectorAll<HTMLButtonElement>(".clip-axis")];
+  /** The custom normal, or `null` while an axis preset is active. Kept even
+   * while a preset is selected, so the `N` segment can switch back to it
+   * without the user re-picking the geometry. */
+  let customNormal: THREE.Vector3 | null = null;
+  let customLabel = "";
+  let usingCustom = false;
+  /**
+   * The source of truth for the cut position. The slider is a VIEW of this,
+   * not the other way round: its integer -100..100 range quantizes to 0.01,
+   * which used to silently round `offsetFrac` on every restore (0.333 → 0.33,
+   * rewriting the sidecar). Harmless for a hand-dragged axis clip; a real
+   * correctness problem for "clip exactly at this face", where 0.5% of the
+   * bbox extent is enough to leave a visible sliver of the face behind.
+   */
+  let offsetFrac = 0;
+
+  const allSegments = [...document.querySelectorAll<HTMLButtonElement>(".clip-axis")];
+  const customBtn = document.getElementById("clip-custom") as HTMLButtonElement | null;
+  const axisBtns = allSegments.filter((b) => b.dataset.axis !== undefined);
   const offsetSlider = document.getElementById("clip-offset") as HTMLInputElement | null;
   const toggleBtn = document.getElementById("clip-toggle");
+  const faceBtn = document.getElementById("clip-from-face") as HTMLButtonElement | null;
+  const pointsBtn = document.getElementById("clip-from-points") as HTMLButtonElement | null;
+
+  const modelBox = (): THREE.Box3 | null => {
+    const model = viewer.getModel();
+    if (!model) return null;
+    const box = new THREE.Box3().setFromObject(model);
+    return box.isEmpty() ? null : box;
+  };
+
+  const currentState = (): ClipPlaneState => ({
+    axis: clipAxis,
+    offsetFrac,
+    ...(usingCustom && customNormal ? { normal: customNormal.toArray() as [number, number, number] } : {}),
+  });
 
   const applyClip = () => {
-    if (!clipEnabled || !offsetSlider) {
-      viewer.setClippingPlane(null);
-      return;
+    const box = clipEnabled ? modelBox() : null;
+    viewer.setClippingPlane(box ? planeForClip(currentState(), box) : null);
+  };
+
+  /** Keeps the four segments, the slider and the toggle showing the truth. */
+  const reflectUi = () => {
+    axisBtns.forEach((b) => b.classList.toggle("active", !usingCustom && b.dataset.axis === clipAxis));
+    if (customBtn) {
+      customBtn.hidden = customNormal === null;
+      customBtn.classList.toggle("active", usingCustom);
+      if (customNormal) {
+        const n = customNormal.toArray().map((c) => c.toFixed(3)).join(", ");
+        customBtn.title = customLabel ? `Custom normal (${n}) — from ${customLabel}` : `Custom normal (${n})`;
+      }
     }
-    const model = viewer.getModel();
-    const box = model ? new THREE.Box3().setFromObject(model) : null;
-    if (!box || box.isEmpty()) {
-      viewer.setClippingPlane(null);
-      return;
+    if (offsetSlider) offsetSlider.value = String(Math.round(offsetFrac * 100));
+    if (toggleBtn) {
+      toggleBtn.classList.toggle("active", clipEnabled);
+      toggleBtn.textContent = clipEnabled ? "On" : "Off";
     }
-    viewer.setClippingPlane(planeForAxis(clipAxis, Number(offsetSlider.value) / 100, box));
   };
 
   for (const btn of axisBtns) {
     btn.addEventListener("click", () => {
       clipAxis = btn.dataset.axis as ClipAxis;
-      axisBtns.forEach((b) => b.classList.toggle("active", b === btn));
+      usingCustom = false;
+      reflectUi();
       applyClip();
       scheduleViewSave();
     });
   }
+  // Re-selects the stored custom normal, so X/Y/Z/N is a genuine four-way
+  // control — flip to an axis, look at something, flip back without re-picking.
+  customBtn?.addEventListener("click", () => {
+    if (!customNormal) return;
+    usingCustom = true;
+    reflectUi();
+    applyClip();
+    scheduleViewSave();
+  });
   offsetSlider?.addEventListener("change", scheduleViewSave); // commit on release, not every drag tick
-  offsetSlider?.addEventListener("input", applyClip);
+  offsetSlider?.addEventListener("input", () => {
+    offsetFrac = Number(offsetSlider.value) / 100;
+    applyClip();
+  });
   toggleBtn?.addEventListener("click", () => {
     clipEnabled = !clipEnabled;
-    toggleBtn.classList.toggle("active", clipEnabled);
-    toggleBtn.textContent = clipEnabled ? "On" : "Off";
+    reflectUi();
     applyClip();
     scheduleViewSave();
   });
 
+  const applyDerivedPlane = (normal: THREE.Vector3, throughPoint: THREE.Vector3, label: string) => {
+    const box = modelBox();
+    if (!box) {
+      setStatus("No model to clip.", true);
+      return;
+    }
+    // Orient toward the bulk, or a face's own outward normal would keep the
+    // EMPTY half and the model would appear to vanish.
+    const oriented = orientTowardBulk(normal, throughPoint, box);
+    customNormal = oriented.normal;
+    customLabel = label;
+    usingCustom = true;
+    clipAxis = dominantAxis(oriented.normal);
+    offsetFrac = oriented.offsetFrac;
+    // Turning clipping on is part of the action: clicking "Face" while clipping
+    // is off and seeing nothing happen is a bug-shaped experience.
+    clipEnabled = true;
+    reflectUi();
+    applyClip();
+    scheduleViewSave();
+    setStatus(
+      offsetFrac <= -0.999
+        ? `Clip normal from ${label} — drag the offset slider to cut.`
+        : `Clipping along ${label}.`
+    );
+  };
+
+  const reflectSelection = () => {
+    const picked = selection.list();
+    const faces = picked.filter((e) => e.entityType === "surface");
+    const points = picked.filter((e) => e.entityType === "point");
+    if (faceBtn) {
+      // Mesh sources have no analytic surface, so the host can only answer the
+      // facts request with an error — don't offer the button at all.
+      const ok = sourceKind === "brep" && faces.length === 1 && picked.length === 1;
+      faceBtn.disabled = !ok;
+      faceBtn.title = ok
+        ? `Clip along ${faces[0].entityId}`
+        : sourceKind === "brep"
+          ? "Select exactly one planar face to clip along it"
+          : "Clipping along a face needs a B-rep source";
+    }
+    if (pointsBtn) {
+      // Self-gating for mesh sources: they build no `point-N` sprites at all.
+      const ok = points.length === 3 && picked.length === 3;
+      pointsBtn.disabled = !ok;
+      pointsBtn.title = ok ? "Clip through the three selected points" : "Select exactly three points";
+    }
+  };
+
+  faceBtn?.addEventListener("click", () => requestClipFromFace());
+  pointsBtn?.addEventListener("click", () => applyClipFromPoints());
+  reflectSelection();
+
   const applyState = (state: ClipState) => {
     clipEnabled = state !== null;
-    clipAxis = state?.axis ?? clipAxis;
-    axisBtns.forEach((b) => b.classList.toggle("active", b.dataset.axis === clipAxis));
-    if (offsetSlider && state) offsetSlider.value = String(Math.round(state.offsetFrac * 100));
-    if (toggleBtn) {
-      toggleBtn.classList.toggle("active", clipEnabled);
-      toggleBtn.textContent = clipEnabled ? "On" : "Off";
+    if (state) {
+      clipAxis = state.axis;
+      offsetFrac = state.offsetFrac;
+      if (state.normal) {
+        customNormal = new THREE.Vector3(...state.normal);
+        customLabel = customLabel || "the saved view";
+        usingCustom = true;
+      } else {
+        usingCustom = false;
+      }
     }
+    reflectUi();
     applyClip();
   };
-  const getState = (): ClipState =>
-    clipEnabled && offsetSlider ? { axis: clipAxis, offsetFrac: Number(offsetSlider.value) / 100 } : null;
+  const getState = (): ClipState => (clipEnabled ? currentState() : null);
 
-  return { applyState, getState };
+  return { applyState, getState, reflectSelection, applyDerivedPlane };
+}
+
+/**
+ * Clip ▸ Face. Issues its OWN `entityFactsRequest` rather than reusing whatever
+ * the inspector card last fetched: group/query selection never calls
+ * `requestEntityFacts` at all, so that cache is empty or stale for a face
+ * selected that way, and reusing it would also race a click that lands before
+ * an in-flight reply. The two request-id latches are independent, so neither
+ * consumer can steal the other's response.
+ */
+let clipFaceFactsRequestId: string | null = null;
+
+function requestClipFromFace(): void {
+  const face = selection.list().find((e) => e.entityType === "surface");
+  if (!face) return;
+  clipFaceFactsRequestId = `clipface-${Date.now()}-${Math.random()}`;
+  post({ type: "entityFactsRequest", requestId: clipFaceFactsRequestId, entityId: face.entityId });
+}
+
+/** Applies a clip plane from a completed Clip ▸ Face round trip. */
+function applyClipFromFaceFacts(facts: EntityFacts): void {
+  // `EntityFacts` sets BOTH of these only for a planar face, so this one check
+  // covers every non-planar surface type.
+  if (!facts.normal || !facts.planeOrigin) {
+    setStatus(
+      `${facts.entityId} is ${facts.surfaceType ? `a ${facts.surfaceType} face` : "not planar"} — pick a planar face.`,
+      true
+    );
+    return;
+  }
+  // `planeOrigin` genuinely lies ON the face's plane; `center` is the bbox
+  // centre, which for an annular or concave face need not.
+  clippingControls?.applyDerivedPlane(
+    new THREE.Vector3(...facts.normal),
+    new THREE.Vector3(...facts.planeOrigin),
+    facts.entityId
+  );
+}
+
+/** Clip ▸ 3 Pts — entirely webview-side; the sprite positions are already here. */
+function applyClipFromPoints(): void {
+  const ids = selection.list().filter((e) => e.entityType === "point");
+  if (ids.length !== 3) return;
+  const byId = collectPointEntities();
+  const pts = ids.map((e) => byId.get(e.entityId));
+  if (pts.some((p) => !p)) {
+    setStatus("Those points are no longer in the model.", true);
+    return;
+  }
+  const [a, b, c] = pts as THREE.Vector3[];
+  const plane = planeFromThreePoints(a, b, c);
+  if (!plane) {
+    setStatus("Those three points are collinear — no plane.", true);
+    return;
+  }
+  clippingControls?.applyDerivedPlane(plane.normal, plane.point, `${ids.map((e) => e.entityId).join(", ")}`);
 }
 
 /**
@@ -2153,8 +3211,19 @@ try {
   setupDragAndDrop();
   appearanceControls = setupAppearanceControls();
   clippingControls = setupClippingControls();
+  // The Planes panel drives the clip through the SAME handle the Face/3 Pts
+  // buttons use, so "Use this plane" and a derived clip cannot diverge into
+  // two implementations.
+  planesClipHandle = clippingControls;
+  setupPlanesControls();
   setupMarkupControls();
   setupColorFieldControls();
+  setupThemeReactivity();
+  // Split view: when the focused pane changes (a click in another pane), UI
+  // that mirrors FOCUSED-pane state must re-read it — projection is per-pane,
+  // so the Persp/Ortho button can need the other label even though the user
+  // clicked no projection control.
+  viewer.onFocusChanged(() => appearanceControls?.reflectOrtho());
 } catch (err) {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
   console.error(message, err);
@@ -2183,12 +3252,33 @@ let hasAppliedInitialView = false;
 /** Applies a full `ViewState` to the viewer + Appearance/Clip controls — the
  * one place that does so, shared by the initial restoration below and by a
  * post-initial external-change reconciliation of `.view.json` (`case
- * "viewState":`, when `hasAppliedInitialView` is already true). */
+ * "viewState":`, when `hasAppliedInitialView` is already true).
+ *
+ * Phase 2: `layout` + per-pane `panes` are applied first — the layout switch
+ * itself is pane-management only (no model needed), then each pane's camera
+ * direction/up/ortho is restored via the per-pane Viewer API. When no per-pane
+ * state is present (old sidecar, single-pane session) the original
+ * focused-pane-only path runs as before. Global display mode + clip stay
+ * once, not per pane. */
 function applyViewState(state: ViewState): void {
-  viewer.setCameraUp(new THREE.Vector3(...state.cameraUp));
-  if (state.orthographic !== viewer.isOrthographic()) appearanceControls?.applyOrtho(state.orthographic);
+  const layout = state.layout ?? "1x1";
+  if (layout !== viewer.getPaneLayout()) viewer.setPaneLayout(layout as ReturnType<typeof viewer.getPaneLayout>);
+  reflectLayoutPicker(layout);
+  setPaneDividersForLayout(layout);
+  if (layout !== "1x1" && state.panes && state.panes.length > 0) {
+    // Per-pane camera states — `viewStateSidecar` already padded/truncated to
+    // `paneCount(layout)`, but be defensive against a hand-edited sidecar.
+    const n = Math.min(state.panes.length, viewer.getPaneViewStates().length);
+    for (let i = 0; i < n; i++) viewer.applyPaneCameraState(i, state.panes[i]);
+    // A per-pane ortho toggle doesn't go through the Appearance button's
+    // `applyOrtho` path, so re-sync the button to the (still focused) pane 0.
+    appearanceControls?.reflectOrtho();
+  } else {
+    viewer.setCameraUp(new THREE.Vector3(...state.cameraUp));
+    if (state.orthographic !== viewer.isOrthographic()) appearanceControls?.applyOrtho(state.orthographic);
+    viewer.frameFromDirection(new THREE.Vector3(...state.viewDirection));
+  }
   appearanceControls?.applyDisplayMode(state.displayMode);
-  viewer.frameFromDirection(new THREE.Vector3(...state.viewDirection));
   clippingControls?.applyState(state.clip);
 }
 
@@ -2210,11 +3300,31 @@ function applyInitialViewIfNeeded(): void {
 const VIEW_SAVE_DEBOUNCE_MS = 500;
 let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
 
+/** While applying a linked camera from another tab, suppress the echo that
+ * would otherwise relay it back (roadmap "Split view", Phase 3). */
+let applyingLinkedCamera = false;
+
+function applyLinkedCamera(camera: import("../protocol").LinkedCameraState): void {
+  if (viewSaveTimer) clearTimeout(viewSaveTimer);
+  applyingLinkedCamera = true;
+  try {
+    viewer.setCameraUp(new THREE.Vector3(...camera.cameraUp));
+    if (camera.orthographic !== viewer.isOrthographic()) {
+      appearanceControls?.applyOrtho(camera.orthographic);
+    }
+    viewer.frameFromDirection(new THREE.Vector3(...camera.viewDirection));
+    appearanceControls?.reflectOrtho();
+  } finally {
+    applyingLinkedCamera = false;
+  }
+}
+
 /** Debounced autosave, called from every user-facing view change (camera
  * orbit/pan/zoom/fit/reset, the orientation gizmo, ortho/display-mode
- * buttons, and the clip controls). */
+ * buttons, the clip controls, and — since Phase 2 — a layout change or any
+ * per-pane camera move). */
 function scheduleViewSave(): void {
-  if (!hasAppliedInitialView) return;
+  if (!hasAppliedInitialView || applyingLinkedCamera) return;
   if (viewSaveTimer) clearTimeout(viewSaveTimer);
   viewSaveTimer = setTimeout(() => {
     const dir = viewer.getViewDirection();
@@ -2226,6 +3336,11 @@ function scheduleViewSave(): void {
       displayMode: viewer.getDisplayMode(),
       clip: clippingControls?.getState() ?? null,
     };
+    const layout = viewer.getPaneLayout();
+    if (layout !== "1x1") {
+      view.layout = layout;
+      view.panes = viewer.getPaneViewStates();
+    }
     post({ type: "viewChanged", view });
   }, VIEW_SAVE_DEBOUNCE_MS);
 }
@@ -2293,16 +3408,20 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       try {
         setStatus("Building geometry…");
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
-        viewer.setModel(group);
+        viewer.setModel(group, { autoFit: msg.autoFit });
+        cancelOpPreview(); // setModel() cleared the overlay; kill any pending/in-flight preview too
         explodePreviewBases = null; // stale references to the just-replaced model's objects
         gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
-        viewer.detachTransformGizmo();
         lastRawMassProperties = null; // stale — refers to the just-replaced model
         lastMeasurement = null; // stale entity ids — refer to the just-replaced model
+        hideInspectorCard(); // ditto — its facts describe the just-replaced shape
+        hideHoverTip();
+        lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
         clearMarkupOverlay?.();
         refreshColors();
         renderAnnotationsList(); // detached status may have changed for the new model
+        renderEditsUi(); // re-render the history with the fresh per-op outcome markers
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
         sourceKind = "brep";
@@ -2331,6 +3450,12 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       partsPanel.render(partsModel.list());
       meshingPanel.renderParts(partsModel.list());
       showSidebar();
+      break;
+
+    case "planes":
+      // Silent hydration, same contract as "parts"/"annotations".
+      planesModel.load(msg.planes);
+      renderPlanesList();
       break;
 
     case "annotations":
@@ -2486,7 +3611,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // visibility here needs no state restoration afterward.
       try {
         viewer.setCameraUp(new THREE.Vector3(...(msg.up ?? [0, 1, 0])));
+        if (msg.frameBox) {
+        // Fill the frame with one entity rather than the whole model. Uses
+        // frameBox (not setViewDirection, which keeps the current distance).
+        viewer.frameBox(
+          new THREE.Box3(new THREE.Vector3(...msg.frameBox.min), new THREE.Vector3(...msg.frameBox.max)),
+          new THREE.Vector3(...msg.direction)
+        );
+      } else {
         viewer.setViewDirection(new THREE.Vector3(...msg.direction));
+      }
         if (msg.focus || msg.hide) {
           viewer.applyPartVisibility(msg.hide ?? [], msg.focus?.length ? msg.focus : null);
         }
@@ -2507,6 +3641,40 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "massPropertiesError":
       if (msg.requestId !== massPropertiesRequestId) break;
       massPropertiesPanel.renderMessage(msg.message, true);
+      break;
+
+    case "macros":
+      macrosPanel.render(msg.macros);
+      break;
+
+    case "macroApplyOps":
+      // Straight onto the op stack, so the macro's ops are undoable and
+      // removable one by one exactly like hand-applied edits.
+      for (const op of msg.ops) editsModel.push(op);
+      break;
+
+    case "entityFactsResult":
+      // Clip ▸ Face shares this round trip with the inspector card, latched on
+      // its own request id — checked first so a clip reply is never mistaken
+      // for a card reply, and vice versa.
+      if (msg.requestId === clipFaceFactsRequestId) {
+        clipFaceFactsRequestId = null;
+        applyClipFromFaceFacts(msg.facts);
+        break;
+      }
+      if (msg.requestId !== entityFactsRequestId) break; // stale — a newer selection superseded it
+      renderInspectorCard(msg.facts.entityId, msg.facts);
+      break;
+
+    case "entityFactsError":
+      if (msg.requestId === clipFaceFactsRequestId) {
+        clipFaceFactsRequestId = null;
+        setStatus(msg.message, true);
+        break;
+      }
+      if (msg.requestId !== entityFactsRequestId) break;
+      // Keep the card, showing why — silently vanishing would read as a bug.
+      renderInspectorCard(selection.list()[0]?.entityId ?? "", null, msg.message);
       break;
 
     case "standardPartsSearchResult":
@@ -2544,6 +3712,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       setStatus(`SVG import failed: ${msg.message}`, true);
       break;
 
+    case "importDxfResult":
+      importDxfPaths(msg.text);
+      break;
+
+    case "importDxfError":
+      setStatus(`DXF import failed: ${msg.message}`, true);
+      break;
+
     case "measureExactResult": {
       if (msg.requestId !== measureExactRequestId) break; // stale — a newer request/Clear superseded it
       const label = msg.result.kind === "distance" ? "D" : msg.result.kind === "edgeLength" ? "L" : "R";
@@ -2568,6 +3744,19 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshHealthPanel.renderMessage(msg.message, true);
       break;
 
+    case "opPreviewResult":
+      handleOpPreviewResult(msg);
+      break;
+
+    case "opPreviewError": {
+      const gen = pendingOpPreviewGeneration.get(msg.requestId);
+      pendingOpPreviewGeneration.delete(msg.requestId);
+      if (gen === undefined || !opPreviewScheduler.isCurrent(gen)) break; // stale
+      viewer.setOpPreview(null);
+      setStatus(`Preview unavailable: ${msg.message}`, true);
+      break;
+    }
+
     case "colorFieldResult": {
       if (msg.requestId !== colorFieldRequestId) break; // stale — a newer selection/Clear/edit superseded it
       const positions = pristineMeshPositions();
@@ -2589,11 +3778,23 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "colorFieldError": {
       if (msg.requestId !== colorFieldRequestId) break;
+      // Clear the overlay and legend, not just the <select>. Previously this
+      // only reset the dropdown, so after a failed pick the viewport kept
+      // showing the PREVIOUS field's colours and its legend range while the
+      // dropdown read "None" — the colours on screen no longer corresponded to
+      // anything selected, which is worse than showing nothing.
+      resetColorFieldSelection();
       setStatus(msg.message, true);
-      const sel = document.getElementById("vc-colorfield-select") as HTMLSelectElement | null;
-      if (sel) sel.value = "";
       break;
     }
+
+    case "linkedCamera":
+      if (hasAppliedInitialView) applyLinkedCamera(msg.camera);
+      break;
+
+    case "camerasLinked":
+      document.getElementById("link-cameras")?.setAttribute("aria-checked", String(msg.enabled));
+      break;
 
     case "meshingResult":
       meshingPanel.setBusy(false);
@@ -2680,7 +3881,7 @@ async function loadMeshObjectFromUrl(
     // Cache the pristine object; the displayed model is rebuilt from it with
     // the current edits applied (no-op when there are none).
     pristineMesh = object;
-    rebuildMeshModel();
+    rebuildMeshModel({ autoFit: false });
     // Meshes have facet "surfaces" and whole-object "volumes", but no edges.
     setSelectableModes(["volume", "surface"]);
     editsPanel.setBRepOnly(false); // fillet/chamfer need exact topology (B-rep)
