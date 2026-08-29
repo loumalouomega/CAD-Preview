@@ -33,6 +33,10 @@ import {
   getState,
   applyEditOps,
   runParametricScriptTool,
+  runSavedScript,
+  saveParametricScript,
+  listParametricScripts,
+  listStandardHoleSizes,
   removeEditOp,
   setVariables,
   setPart,
@@ -1518,6 +1522,101 @@ describe("apply_edit_ops", () => {
       });
       expect(result.warnings.some((w) => /Rebound/.test(w))).toBe(false);
     });
+  });
+});
+
+describe("list_standard_hole_sizes", () => {
+  it("lists every standard when given nothing", async () => {
+    const r = await listStandardHoleSizes({});
+    expect(r.sizes.length).toBeGreaterThan(20);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("narrows to one standard", async () => {
+    const r = await listStandardHoleSizes({ standard: "unc" });
+    expect(r.sizes.every((x) => x.standard === "unc")).toBe(true);
+  });
+
+  it("pre-halves the diameters so they drop into addHole's radius", async () => {
+    const r = await listStandardHoleSizes({ designation: "M6" });
+    expect(r.sizes[0].tapDrillRadius).toBe(r.sizes[0].tapDrillDiameter / 2);
+    expect(r.sizes[0].clearanceRadius).toBe(r.sizes[0].clearanceDiameter / 2);
+  });
+
+  it("adds depth presets for a single-designation lookup only", async () => {
+    expect((await listStandardHoleSizes({ designation: "M6" })).depthPresets).toBeDefined();
+    expect((await listStandardHoleSizes({})).depthPresets).toBeUndefined();
+  });
+
+  it("warns and degrades rather than throwing on bad input", async () => {
+    const badStd = await listStandardHoleSizes({ standard: "whitworth" });
+    expect(badStd.warnings[0]).toMatch(/Unknown standard/);
+    expect(badStd.sizes.length).toBeGreaterThan(0);
+
+    const badDes = await listStandardHoleSizes({ designation: "M7" });
+    expect(badDes.sizes).toEqual([]);
+    expect(badDes.warnings[0]).toMatch(/No standard hole size/);
+  });
+});
+
+describe("the script library", () => {
+  const script = {
+    variables: [{ name: "R", expr: "10" }],
+    steps: [{ op: { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] } }],
+  };
+  const lib = () => path.join(dir, "macros.json");
+
+  it("saves, lists and reports a script's own variables as its parameters", async () => {
+    const saved = await saveParametricScript({ libraryPath: lib(), name: "m", script });
+    expect(saved.compiledOps).toBe(1);
+    expect(saved.parameters).toEqual([{ name: "R", expr: "10" }]);
+
+    const listed = await listParametricScripts({ libraryPath: lib() });
+    expect(listed.scripts).toEqual([{ name: "m", description: null, parameters: [{ name: "R", expr: "10" }] }]);
+  });
+
+  it("refuses a script that compiles to no ops rather than saving it silently", async () => {
+    await expect(
+      saveParametricScript({ libraryPath: lib(), name: "bad", script: { steps: [{ op: { op: "nope" } }] } })
+    ).rejects.toThrow(/compiled to no ops/);
+    expect(await listParametricScripts({ libraryPath: lib() })).toMatchObject({ scripts: [] });
+  });
+
+  it("refuses to clobber an existing name without overwrite", async () => {
+    await saveParametricScript({ libraryPath: lib(), name: "m", script });
+    await expect(saveParametricScript({ libraryPath: lib(), name: "m", script })).rejects.toThrow(/already exists/);
+    const again = await saveParametricScript({ libraryPath: lib(), name: "m", script, overwrite: true });
+    expect(again.replaced).toBe(true);
+  });
+
+  it("reads a missing library as empty, with a warning, never an error", async () => {
+    const r = await listParametricScripts({ libraryPath: path.join(dir, "nope.json") });
+    expect(r.scripts).toEqual([]);
+    expect(r.warnings[0]).toMatch(/No scripts found/);
+  });
+
+  it("runs a saved script through the same path as an inline one", async () => {
+    await saveParametricScript({ libraryPath: lib(), name: "m", script });
+    const r = await runSavedScript(ctx(), { libraryPath: lib(), name: "m", path: stpModel });
+    expect(r.script).toBe("m");
+    expect(r.applied).toBe(1);
+    const persisted = await readEdits(stpModel);
+    expect(persisted.ops).toHaveLength(1);
+  });
+
+  it("warns about an override naming no declared parameter, without failing", async () => {
+    await saveParametricScript({ libraryPath: lib(), name: "m", script });
+    const r = await runSavedScript(ctx(), {
+      libraryPath: lib(), name: "m", path: stpModel, parameters: { NOPE: 1 }, dryRun: true,
+    });
+    expect(r.warnings.some((w: string) => /NOPE/.test(w))).toBe(true);
+  });
+
+  it("fails with an actionable error for an unknown script name", async () => {
+    await saveParametricScript({ libraryPath: lib(), name: "m", script });
+    await expect(
+      runSavedScript(ctx(), { libraryPath: lib(), name: "ghost", path: stpModel })
+    ).rejects.toThrow(/No saved script named "ghost".*available: m/s);
   });
 });
 

@@ -98,6 +98,14 @@ export type MeasureTool = "distance" | "edgeLength" | "angle" | "radius";
  * falls out for free as "none of this annotation's anchor ids resolve"
  * rather than needing a separate boolean flag to keep in sync.
  */
+/** One saved macro, as the Macros panel displays it. A macro's own `variables`
+ * block IS its parameter list — there is no separate parameter schema. */
+export interface MacroSummary {
+  name: string;
+  description: string | null;
+  parameters: { name: string; expr: string }[];
+}
+
 export interface Annotation {
   id: string; // stable id, client-generated at pin time (e.g. "ann-<ts>-<rand>")
   tool: MeasureTool;
@@ -340,6 +348,13 @@ export type HostToWebview =
    * function — the card is a new protocol pair over existing kernel surface,
    * not new geometry work. B-rep sources only (a mesh has no analytic
    * surface type), so the host answers with `entityFactsError` otherwise. */
+  /** The saved-macro library for this document's folder. Sent unprompted on
+   *  `ready` and after every macro save/delete, so the panel never has to ask. */
+  | { type: "macros"; macros: MacroSummary[] }
+  /** Compiled macro ops, to be pushed onto the webview's own op stack — so a
+   *  macro is undoable and removable op-by-op like any hand-applied edit,
+   *  with no special "macro" state for undo/redo to reason about. */
+  | { type: "macroApplyOps"; ops: EditOp[] }
   | { type: "entityFactsResult"; requestId: string; facts: EntityFacts }
   | { type: "entityFactsError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
@@ -445,6 +460,11 @@ export type WebviewToHost =
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
   /** Inspector card: classify the entity the user just selected. */
+  /** Run a saved macro, appending its compiled ops to the edit history. */
+  | { type: "macroRun"; name: string; parameters: Record<string, string> }
+  /** Save the current op stack as a macro; the host prompts for a name. */
+  | { type: "macroSaveCurrent" }
+  | { type: "macroDelete"; name: string }
   | { type: "entityFactsRequest"; requestId: string; entityId: string }
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }

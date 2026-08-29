@@ -192,7 +192,8 @@ body {
 #edits-header,
 #meshing-header,
 #mass-header,
-#mesh-health-header {
+#mesh-health-header,
+#macros-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -209,7 +210,8 @@ body {
 #edits-header,
 #meshing-header,
 #mass-header,
-#mesh-health-header {
+#mesh-health-header,
+#macros-header {
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
 }
 
@@ -2317,4 +2319,83 @@ input[type="range"].meshing-slider:focus {
   opacity: 0.7;
   font-style: italic;
   font-size: 11px;
+}
+
+/* ── Macros panel (saved parameterized scripts) ──────────────────────────── */
+
+#macros-body {
+  padding: 4px 8px 8px;
+}
+
+.macros-empty,
+.macros-status {
+  opacity: 0.75;
+  font-size: 11px;
+  padding: 2px 0 4px;
+}
+
+.macro-item {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+.macro-item:last-child {
+  border-bottom: none;
+}
+
+.macro-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.macro-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.macro-btn {
+  font: inherit;
+  font-size: 11px;
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border: none;
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.macro-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.macro-param {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.macro-param-name {
+  min-width: 54px;
+  opacity: 0.75;
+  font-size: 11px;
+}
+
+.macro-param-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #1e1e1e);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.macro-param-input:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
 }

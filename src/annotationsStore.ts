@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { Annotation } from "./protocol";
 import { parseAnnotationsJson, serializeAnnotationsJson } from "./annotationsSidecar";
+import { assertNotDirty } from "./dirtyGuard";
 
 /** The sidecar URI for a model: `<model>.annotations.json` beside the source file. */
 export function annotationsSidecarUri(modelUri: vscode.Uri): vscode.Uri {
@@ -19,6 +20,7 @@ export async function readAnnotations(modelUri: vscode.Uri): Promise<Annotation[
 
 /** Writes the sidecar beside the model. The model file itself is never touched. */
 export async function writeAnnotations(modelUri: vscode.Uri, annotations: Annotation[]): Promise<void> {
+  assertNotDirty(annotationsSidecarUri(modelUri));
   const sourceName = modelUri.path.slice(modelUri.path.lastIndexOf("/") + 1);
   const text = serializeAnnotationsJson(sourceName, annotations);
   await vscode.workspace.fs.writeFile(annotationsSidecarUri(modelUri), Buffer.from(text, "utf8"));

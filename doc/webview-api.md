@@ -17,6 +17,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/palette.ts` | The 3D scene's theme-reactive colour palette, read from `--cad-*` CSS custom properties (unit-tested) |
 | `src/webview/entityExplain.ts` | Pure content for the hover tooltip and the geometry inspector card — which fields a classification gives meaning to (unit-tested) |
 | `src/webview/selectionGroups.ts` | Pure computed selection groups for the right-click menu, composed from `selectFilters.ts`'s predicates (unit-tested) |
+| `src/webview/macrosPanel.ts` | Macros sidebar panel — saved parameterized scripts (DOM-only, F5-verified) |
 | `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |

@@ -323,6 +323,8 @@ type HostToWebview =
   | { type: 'importDxfError'; message: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
+  | { type: 'macros'; macros: MacroSummary[] }
+  | { type: 'macroApplyOps'; ops: EditOp[] }
   | { type: 'entityFactsResult'; requestId: string; facts: EntityFacts }
   | { type: 'entityFactsError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
@@ -595,6 +597,18 @@ Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh source
 { "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
 ```
 
+### `macros` / `macroApplyOps`
+
+The saved-macro library for the document's folder (`cad-preview-macros.json` — the same file the MCP tools take as `libraryPath`). `macros` is sent unprompted on `ready` and after every save/delete, so the panel never has to ask for it.
+
+`macroApplyOps` carries a macro's **compiled** ops for the webview to push onto its own op stack — deliberately not a host-side append, so a macro is undoable, visible in the history and removable op-by-op exactly like a hand-applied edit, with no special "macro" state for undo/redo to reason about.
+
+```json
+{ "type": "macros", "macros": [{ "name": "bolt-circle", "description": "A ring of N holes", "parameters": [{ "name": "R", "expr": "20" }] }] }
+```
+
+`macroRun` sends the values currently typed into a macro's parameter fields; an override naming no declared parameter is reported in the resulting `status` rather than failing. `macroSaveCurrent` records the current op stack (the host prompts for a name — "record" is a selection over edits already applied, not a live capture session).
+
 ### `entityFactsResult` / `entityFactsError`
 
 Sent in reply to `entityFactsRequest` — **B-rep sources only** (a triangle mesh has no analytic surface type; a fine-faceted prism and a cylinder are identical in triangles), same gate as `massPropertiesResult`. Carries `EntityFacts` verbatim from the existing `getEntityFacts` pipeline function — the interactive geometry inspector card is a new protocol pair over existing kernel surface, not new geometry work; the same function backs the `inspect` MCP tool.
@@ -756,6 +770,9 @@ type WebviewToHost =
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
+  | { type: 'macroRun'; name: string; parameters: Record<string, string> }
+  | { type: 'macroSaveCurrent' }
+  | { type: 'macroDelete'; name: string }
   | { type: 'entityFactsRequest'; requestId: string; entityId: string }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string }

@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 33, `tools/list exposes 33 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 37, `tools/list exposes 37 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -2211,6 +2211,47 @@ try {
   }
   assert(true, "search_standard_parts / download_standard_part degrade gracefully regardless of network availability");
 
+  // list_standard_hole_sizes (roadmap "Hole Wizard"): a pure table lookup — no
+  // model, no kernel. The sharp assertions are the two that would catch a
+  // mistyped row: M6's tap drill is exactly D-P, and the pre-halved *Radius
+  // fields must actually be half the diameters (they are what drops straight
+  // into addHole's `radius`).
+  const holesAll = await call("list_standard_hole_sizes", {});
+  assert(holesAll.sizes.length > 20, `list_standard_hole_sizes lists every standard (got ${holesAll.sizes.length})`);
+  assert(holesAll.warnings.length === 0, "listing every standard warns about nothing");
+
+  const m6 = await call("list_standard_hole_sizes", { designation: "m6" });
+  assert(m6.sizes.length === 1, `a designation lookup returns exactly one size (got ${m6.sizes.length})`);
+  assert(
+    m6.sizes[0].designation === "M6" && m6.sizes[0].tapDrillDiameter === 5 && m6.sizes[0].clearanceDiameter === 6.6,
+    `M6 reports the standard 5.0mm tap drill and 6.6mm clearance (got ${JSON.stringify(m6.sizes[0])})`
+  );
+  assert(
+    m6.sizes[0].tapDrillRadius === 2.5 && m6.sizes[0].clearanceRadius === 3.3,
+    "the pre-halved *Radius fields are exactly half the diameters (they feed addHole's `radius`)"
+  );
+  assert(
+    Array.isArray(m6.depthPresets) && m6.depthPresets.length > 0 && m6.depthPresets.every((p) => p.depth > 0),
+    "a designation lookup also returns usable depth presets"
+  );
+
+  const imperial = await call("list_standard_hole_sizes", { designation: "1/4-20" });
+  assert(
+    Math.abs(imperial.sizes[0].majorDiameter - 6.35) < 1e-6 && imperial.sizes[0].nominalInch === 0.25,
+    `imperial designations report MILLIMETRES with the inch nominal carried alongside (got ${JSON.stringify(imperial.sizes[0])})`
+  );
+
+  const badStandard = await call("list_standard_hole_sizes", { standard: "whitworth" });
+  assert(
+    badStandard.warnings.some((w) => /Unknown standard/.test(w)) && badStandard.sizes.length > 0,
+    "an unknown standard warns and falls back to listing everything, never throws"
+  );
+  const badDesignation = await call("list_standard_hole_sizes", { designation: "M7" });
+  assert(
+    badDesignation.sizes.length === 0 && badDesignation.warnings.some((w) => /No standard hole size/.test(w)),
+    "an unknown designation returns no sizes with a clear warning, never throws"
+  );
+
   // run_parametric_script: a real bolt-circle (4 cylinders around the
   // origin, radius/count from script variables, position via trig exprs
   // over the loop index) — exercises the whole compile → validate → bake →
@@ -2258,6 +2299,115 @@ try {
   assert(
     Math.abs(cylinderOps[0].center[0] - s * 2) < 1e-6 && Math.abs(cylinderOps[0].center[1]) < 1e-6,
     "the first bolt-circle cylinder lands at angle 0 (R, 0) as expected"
+  );
+
+  // The script library (roadmap "saved, named, parameterized scripts"): save the
+  // SAME bolt-circle as a macro, then run it twice with different overrides
+  // against a FRESH copy of the fixture each time. The sharp assertion is that
+  // the two runs differ by exactly the parameter change — a saved script that
+  // ignored its overrides would still "work" and still produce cylinders.
+  const libraryPath = path.join(dir, "macros.json");
+  const boltCircleScript = {
+    variables: [
+      { name: "R", expr: String(s * 2) },
+      { name: "N", expr: "4" },
+    ],
+    steps: [
+      {
+        repeat: {
+          times: "N",
+          indexVar: "i",
+          body: [
+            {
+              op: "addCylinder",
+              center: [0, 0, 0],
+              axis: [0, 0, 1],
+              radius: s / 4,
+              height: s,
+              exprs: { "center[0]": "R*cos(i*360/N)", "center[1]": "R*sin(i*360/N)" },
+            },
+          ],
+        },
+      },
+    ],
+  };
+
+  const savedScript = await call("save_parametric_script", {
+    libraryPath,
+    name: "bolt-circle",
+    description: "A ring of N cylinders at radius R",
+    script: boltCircleScript,
+  });
+  assert(
+    savedScript.compiledOps === 4 && savedScript.scriptCount === 1,
+    `save_parametric_script dry-compiles before saving (compiledOps=${savedScript.compiledOps}, scriptCount=${savedScript.scriptCount})`
+  );
+  assert(
+    savedScript.parameters.map((p) => p.name).join(",") === "R,N",
+    `the script's own variables block IS its parameter list (got ${JSON.stringify(savedScript.parameters)})`
+  );
+
+  const brokenSave = await callTolerant("save_parametric_script", {
+    libraryPath,
+    name: "broken",
+    script: { steps: [{ op: { op: "notARealOpKind" } }] },
+  });
+  assert(
+    brokenSave.error && /compiled to no ops/.test(brokenSave.error),
+    `a script that compiles to nothing is refused rather than saved silently (got ${brokenSave.error})`
+  );
+
+  const listedMacros = await call("list_parametric_scripts", { libraryPath });
+  assert(
+    listedMacros.scripts.length === 1 && listedMacros.scripts[0].name === "bolt-circle",
+    `list_parametric_scripts returns the saved macro and not the refused one (got ${JSON.stringify(listedMacros.scripts.map((x) => x.name))})`
+  );
+
+  // Two runs, fresh fixture each, differing ONLY in the overrides.
+  const runA = path.join(dir, "macro-a.stp");
+  const runB = path.join(dir, "macro-b.stp");
+  fs.copyFileSync(FIXTURE, runA);
+  fs.copyFileSync(FIXTURE, runB);
+
+  const macroA = await call("run_saved_script", { libraryPath, name: "bolt-circle", path: runA });
+  const macroB = await call("run_saved_script", {
+    libraryPath,
+    name: "bolt-circle",
+    path: runB,
+    parameters: { R: s * 3, N: 6 },
+  });
+  assert(macroA.applied === 4, `the saved macro's defaults produce 4 cylinders (got ${macroA.applied})`);
+  assert(macroB.applied === 6, `overriding N to 6 produces 6 cylinders (got ${macroB.applied})`);
+
+  const opsOf = (m) =>
+    JSON.parse(fs.readFileSync(`${m}.edits.json`, "utf8")).ops.filter((o) => o.op === "addCylinder");
+  const aFirst = opsOf(runA)[0];
+  const bFirst = opsOf(runB)[0];
+  assert(
+    Math.abs(aFirst.center[0] - s * 2) < 1e-6 && Math.abs(bFirst.center[0] - s * 3) < 1e-6,
+    `the R override moves the first cylinder to exactly the new radius (a=${aFirst.center[0]}, b=${bFirst.center[0]})`
+  );
+  assert(
+    opsOf(runA).every((o) => o.exprs === undefined) && opsOf(runB).every((o) => o.exprs === undefined),
+    "saved-script ops are persisted fully baked, same as an inline script's"
+  );
+
+  const unknownOverride = await call("run_saved_script", {
+    libraryPath,
+    name: "bolt-circle",
+    path: runA,
+    parameters: { RADIUS: 5 },
+    dryRun: true,
+  });
+  assert(
+    unknownOverride.warnings.some((w) => /RADIUS/.test(w)),
+    `an override naming no declared parameter warns rather than failing (got ${JSON.stringify(unknownOverride.warnings)})`
+  );
+
+  const missingScript = await callTolerant("run_saved_script", { libraryPath, name: "nope", path: runA });
+  assert(
+    missingScript.error && /No saved script named/.test(missingScript.error),
+    "running an unknown script name fails with a clear, actionable error"
   );
 
   const zipOut = path.join(dir, "bull.preprocess.zip");

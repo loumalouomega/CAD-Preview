@@ -3,6 +3,7 @@ import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
 import { buildEntityReferenceIndex } from "./opCatalog";
 import { hoverContent, inspectorContent } from "./entityExplain";
+import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
@@ -907,6 +908,12 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
 // triangulated but not itself one of those FILES) stays ineligible.
 let meshHealthEligibleFormat: MeshParseFormat | null = null;
 let meshHealRequestId: string | null = null;
+
+const macrosPanel = new MacrosPanel(document.getElementById("macros-panel")!, {
+  onRun: (name, parameters) => post({ type: "macroRun", name, parameters }),
+  onSaveCurrent: () => post({ type: "macroSaveCurrent" }),
+  onDelete: (name) => post({ type: "macroDelete", name }),
+});
 
 const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health-panel")!, {
   onCheck: () => {
@@ -3273,6 +3280,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "massPropertiesError":
       if (msg.requestId !== massPropertiesRequestId) break;
       massPropertiesPanel.renderMessage(msg.message, true);
+      break;
+
+    case "macros":
+      macrosPanel.render(msg.macros);
+      break;
+
+    case "macroApplyOps":
+      // Straight onto the op stack, so the macro's ops are undoable and
+      // removable one by one exactly like hand-applied edits.
+      for (const op of msg.ops) editsModel.push(op);
       break;
 
     case "entityFactsResult":

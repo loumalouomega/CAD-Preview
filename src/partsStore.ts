@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { Part } from "./protocol";
 import { parsePartsJson, serializePartsJson } from "./partsSidecar";
+import { assertNotDirty } from "./dirtyGuard";
 
 /** The sidecar URI for a model: `<model>.parts.json` beside the source file. */
 export function sidecarUri(modelUri: vscode.Uri): vscode.Uri {
@@ -19,6 +20,7 @@ export async function readParts(modelUri: vscode.Uri): Promise<Part[]> {
 
 /** Writes the sidecar beside the model. The model file itself is never touched. */
 export async function writeParts(modelUri: vscode.Uri, parts: Part[]): Promise<void> {
+  assertNotDirty(sidecarUri(modelUri));
   const sourceName = modelUri.path.slice(modelUri.path.lastIndexOf("/") + 1);
   const text = serializePartsJson(sourceName, parts);
   await vscode.workspace.fs.writeFile(sidecarUri(modelUri), Buffer.from(text, "utf8"));

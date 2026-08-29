@@ -2,6 +2,7 @@ import type { EditOp, ExprMap, Vec3, OpOutcome } from "../editOps";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
+import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 
 // Re-exported for compatibility — `describeOp` now lives in the pure, headless-
@@ -968,6 +969,7 @@ export class EditsPanel {
       // ── GEOMETRY 3D · holes (subtractive — need selected target volumes) ──
       case "addHole":
         f.appendChild(this.hint("Cuts into the selected volumes (Vol mode)"));
+        f.appendChild(this.holeStandardField());
         f.appendChild(this.vecField("position", "Mouth", [0, 0, 0]));
         f.appendChild(this.vecField("axis", "Axis", [0, 0, -1]));
         f.appendChild(this.numField("radius", "Radius", 2));
@@ -979,6 +981,7 @@ export class EditsPanel {
         break;
       case "addCounterboreHole":
         f.appendChild(this.hint("Cuts into the selected volumes (Vol mode)"));
+        f.appendChild(this.holeStandardField());
         f.appendChild(this.vecField("position", "Mouth", [0, 0, 0]));
         f.appendChild(this.vecField("axis", "Axis", [0, 0, -1]));
         f.appendChild(this.numField("radius", "Radius", 2));
@@ -993,6 +996,7 @@ export class EditsPanel {
         break;
       case "addCountersinkHole":
         f.appendChild(this.hint("Cuts into the selected volumes (Vol mode)"));
+        f.appendChild(this.holeStandardField());
         f.appendChild(this.vecField("position", "Mouth", [0, 0, 0]));
         f.appendChild(this.vecField("axis", "Axis", [0, 0, -1]));
         f.appendChild(this.numField("radius", "Radius", 2));
@@ -1171,6 +1175,62 @@ export class EditsPanel {
     input.dataset.name = name;
     input.value = String(def);
     row.appendChild(input);
+    return row;
+  }
+
+  /**
+   * A designation picker for the three hole ops (roadmap "Hole Wizard").
+   *
+   * Deliberately fills the EXISTING `radius`/`depth` number fields via
+   * {@link setNumField} rather than introducing a new field type or a new draft
+   * shape — the ops are entirely unchanged and remain plain numbers. Picking a
+   * designation is a convenience that types for you; the fields stay editable
+   * afterwards, and an expression typed into them still wins at Apply time.
+   *
+   * Offers both a tapped and a clearance option per size, because which is
+   * wanted depends on intent and `holeStandards.ts` deliberately does not
+   * guess (see its own doc comment).
+   */
+  private holeStandardField(): HTMLElement {
+    const row = document.createElement("label");
+    row.className = "compose-field";
+    const span = document.createElement("span");
+    span.className = "compose-label";
+    span.textContent = "Standard";
+    row.appendChild(span);
+
+    const select = document.createElement("select");
+    select.className = "compose-select";
+    select.id = "hole-standard-select";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "Custom…";
+    select.appendChild(none);
+
+    for (const size of allHoleSizes()) {
+      for (const fit of ["tap", "clearance"] as const) {
+        const opt = document.createElement("option");
+        const d = fit === "tap" ? size.tapDrillDiameter : size.clearanceDiameter;
+        opt.value = `${size.designation}|${fit}`;
+        opt.textContent = `${size.designation} ${fit === "tap" ? "tapped" : "clearance"} (⌀${d} mm)`;
+        select.appendChild(opt);
+      }
+    }
+
+    select.addEventListener("change", () => {
+      const [designation, fit] = select.value.split("|");
+      if (!designation) return;
+      const size = findHoleSize(designation);
+      if (!size) return;
+      const diameter = fit === "tap" ? size.tapDrillDiameter : size.clearanceDiameter;
+      this.setNumField("radius", diameter / 2);
+      // A tapped hole gets a sensible blind depth too (1.5x diameter, the
+      // typical steel rule); a clearance hole's depth depends on the stock,
+      // not the thread, so it is left alone.
+      if (fit === "tap") this.setNumField("depth", depthPresetsFor(size)[1].depth);
+    });
+
+    row.appendChild(select);
     return row;
   }
 

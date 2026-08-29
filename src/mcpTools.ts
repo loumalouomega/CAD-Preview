@@ -78,6 +78,8 @@ import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { normalizeTessellationQuality } from "./tessellationQuality";
 import { SVG_VIEWS } from "./svgSilhouette";
+import { HOLE_STANDARDS, allHoleSizes, depthPresetsFor, findHoleSize, holeSizesFor, type HoleStandard } from "./holeStandards";
+import { mergeScriptOverrides, scriptParameters, type ScriptLibraryEntry } from "./scriptLibrary";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -87,6 +89,8 @@ import type {
   MeshGenerationInput,
 } from "./gmshService";
 import {
+  readScriptLibrary,
+  writeScriptLibrary,
   readEdits,
   writeEdits,
   readParts,
@@ -1849,9 +1853,33 @@ export async function runParametricScriptTool(
   ctx: ToolContext,
   params: { path: string; script: unknown; dryRun?: boolean }
 ) {
-  const modelPath = params.path;
+  return compileAndApplyScript(ctx, params.path, params.script, params.dryRun);
+}
+
+/**
+ * The whole compile -> gate -> persist -> replay -> rebind path, shared by
+ * `run_parametric_script` and `run_saved_script`.
+ *
+ * Extracted because the two tools differ ONLY in where the script document came
+ * from: an inline argument, or a saved library entry. Everything here (the
+ * route gate, the `BREP_ONLY_OPS` filter, the truncation warning, the sidecar
+ * write, the kernel replay, `maybeRebindParts`, the response shape) is
+ * script-source independent — so a saved script gets no second B-rep gate and
+ * no second entity-rebinding call site.
+ *
+ * `extraWarnings` lets a caller prepend its own (e.g. an unknown parameter
+ * override) without re-declaring the response shape.
+ */
+async function compileAndApplyScript(
+  ctx: ToolContext,
+  modelPath: string,
+  script: unknown,
+  dryRun: boolean | undefined,
+  extraWarnings: string[] = []
+) {
+  const params = { path: modelPath, script, dryRun };
   const route = requireRoute(modelPath);
-  const warnings: string[] = [];
+  const warnings: string[] = [...extraWarnings];
 
   const current = await readEdits(modelPath);
   const { values: documentValues } = evaluateVariables(current.variables);
@@ -1956,6 +1984,189 @@ export async function removeEditOp(ctx: ToolContext, params: { path: string; ind
     stackLength: newOps.length,
     warnings,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The script (macro) library: save_parametric_script / list_parametric_scripts /
+// run_saved_script
+
+/**
+ * Saves a named script to a caller-named library file.
+ *
+ * Kernel-free (no `ctx`) and model-free — saving a macro touches no geometry.
+ *
+ * **Refuses to save a script that does not compile.** It is dry-run compiled
+ * against its own declared variable defaults first, so a broken macro never
+ * makes it into the library silently, to fail later against a real model where
+ * the cause is much harder to see. Note "compiles" means every step produced an
+ * op; whether those ops RESOLVE against a particular model is a separate
+ * question this cannot answer without one.
+ */
+export async function saveParametricScript(params: {
+  libraryPath: string;
+  name: string;
+  script: Record<string, unknown>;
+  description?: string;
+  overwrite?: boolean;
+}) {
+  const name = params.name.trim();
+  if (name === "") throw new Error("A script name is required.");
+
+  const library = await readScriptLibrary(params.libraryPath);
+  const existed = Object.prototype.hasOwnProperty.call(library, name);
+  if (existed && params.overwrite !== true) {
+    throw new Error(`A script named "${name}" already exists — pass overwrite: true to replace it.`);
+  }
+
+  // Compile against the script's own defaults ({} document values: a saved
+  // macro must stand on its own, not depend on some model's variables).
+  const probe = compileParametricScript(params.script, {});
+  const rejected = probe.report.reduce((n, r) => n + r.rejected, 0);
+  if (probe.ops.length === 0) {
+    throw new Error(
+      `Refusing to save "${name}": the script compiled to no ops. ` +
+        (probe.issues[0] ?? probe.report.flatMap((r) => r.reasons)[0] ?? "Check its `steps`.")
+    );
+  }
+
+  const warnings: string[] = [];
+  if (rejected > 0) {
+    warnings.push(`${rejected} step(s)/op(s) were rejected when compiling against the script's own defaults.`);
+  }
+  if (probe.truncated) warnings.push("Script hit a size safety cap when compiled against its own defaults.");
+  if (existed) warnings.push(`Replaced the existing script "${name}".`);
+
+  const entry: ScriptLibraryEntry = { name, script: params.script };
+  if (params.description != null) entry.description = params.description;
+  library[name] = entry;
+  await writeScriptLibrary(params.libraryPath, library);
+
+  return {
+    name,
+    replaced: existed,
+    compiledOps: probe.ops.length,
+    parameters: scriptParameters(params.script),
+    scriptCount: Object.keys(library).length,
+    warnings,
+  };
+}
+
+/**
+ * Lists saved scripts with their parameters, so an agent can discover what is
+ * available without reading the raw library JSON. Kernel-free (no `ctx`).
+ */
+export async function listParametricScripts(params: { libraryPath: string }) {
+  const library = await readScriptLibrary(params.libraryPath);
+  const scripts = Object.values(library).map((entry) => ({
+    name: entry.name,
+    description: entry.description ?? null,
+    parameters: scriptParameters(entry.script),
+  }));
+  scripts.sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    libraryPath: params.libraryPath,
+    scripts,
+    warnings: scripts.length === 0 ? [`No scripts found at ${params.libraryPath} (a missing or empty library reads as empty, never an error).`] : [],
+  };
+}
+
+/**
+ * Runs a saved script against a model, with optional per-parameter overrides.
+ *
+ * Hands the merged script to the SAME compile-and-apply path
+ * `run_parametric_script` uses — the only difference is where the document came
+ * from. An override naming an undeclared parameter is warned about, not fatal.
+ */
+export async function runSavedScript(
+  ctx: ToolContext,
+  params: {
+    libraryPath: string;
+    name: string;
+    path: string;
+    parameters?: Record<string, number | string>;
+    dryRun?: boolean;
+  }
+) {
+  const library = await readScriptLibrary(params.libraryPath);
+  const entry = library[params.name];
+  if (!entry) {
+    const available = Object.keys(library);
+    throw new Error(
+      `No saved script named "${params.name}" in ${params.libraryPath}` +
+        (available.length > 0 ? ` — available: ${available.join(", ")}.` : " (the library is empty or missing).")
+    );
+  }
+
+  const { script, unknownNames } = mergeScriptOverrides(entry.script, params.parameters);
+  const warnings: string[] = [];
+  if (unknownNames.length > 0) {
+    const declared = scriptParameters(entry.script).map((p) => p.name);
+    warnings.push(
+      `Ignored override(s) naming no declared parameter: ${unknownNames.join(", ")}` +
+        (declared.length > 0 ? ` — "${entry.name}" declares: ${declared.join(", ")}.` : ` — "${entry.name}" declares none.`)
+    );
+  }
+
+  const result = await compileAndApplyScript(ctx, params.path, script, params.dryRun, warnings);
+  return { script: entry.name, ...result };
+}
+
+// ---------------------------------------------------------------------------
+// list_standard_hole_sizes
+
+/**
+ * Standard tapped/threaded hole sizes, so an agent does not have to hard-code a
+ * pitch table to place a realistic hole.
+ *
+ * Kernel-free (no `ctx`) and model-free: this is a lookup over a static table
+ * (`src/holeStandards.ts`), not a query about any document. It reports FACTS —
+ * a tap-drill and a clearance diameter per designation — and deliberately does
+ * not recommend one: which applies depends on whether the hole will be tapped
+ * or passed through, which only the caller knows. See `describeCapabilities()`'s
+ * `verdictConventions`.
+ *
+ * Feeds the EXISTING `addHole`/`addCounterboreHole`/`addCountersinkHole` ops'
+ * `radius` field unchanged (radius = diameter / 2, in mm) — there is no
+ * standards-aware op kind and none was added.
+ */
+export async function listStandardHoleSizes(params: { standard?: string; designation?: string }) {
+  const warnings: string[] = [];
+
+  let standard: HoleStandard | undefined;
+  if (params.standard != null) {
+    const key = params.standard.trim().toLowerCase();
+    if ((HOLE_STANDARDS as readonly string[]).includes(key)) {
+      standard = key as HoleStandard;
+    } else {
+      warnings.push(
+        `Unknown standard "${params.standard}" — valid: ${HOLE_STANDARDS.join(", ")}. Listing every standard.`
+      );
+    }
+  }
+
+  // A designation lookup is the narrower query, so it wins; `standard` then
+  // only narrows which table is searched.
+  if (params.designation != null) {
+    const size = findHoleSize(params.designation, standard);
+    if (!size) {
+      warnings.push(
+        `No standard hole size matches "${params.designation}"${standard ? ` in ${standard}` : ""}.`
+      );
+      return { sizes: [], warnings };
+    }
+    return {
+      sizes: [{ ...size, tapDrillRadius: size.tapDrillDiameter / 2, clearanceRadius: size.clearanceDiameter / 2 }],
+      depthPresets: depthPresetsFor(size),
+      warnings,
+    };
+  }
+
+  const sizes = (standard ? holeSizesFor(standard) : allHoleSizes()).map((size) => ({
+    ...size,
+    tapDrillRadius: size.tapDrillDiameter / 2,
+    clearanceRadius: size.clearanceDiameter / 2,
+  }));
+  return { sizes, warnings };
 }
 
 // ---------------------------------------------------------------------------

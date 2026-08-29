@@ -112,6 +112,13 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="mesh-health-body"></div>
       </div>
+      <div id="macros-panel">
+        <div id="macros-header">
+          <span id="macros-title">Macros</span>
+          <button id="macros-save" title="Save the current edit history as a reusable, parameterized macro">${icon("save")} Save current</button>
+        </div>
+        <div id="macros-body"></div>
+      </div>
       <div id="standard-parts-panel">
         <div id="standard-parts-header">
           <span id="standard-parts-title">Standard Parts</span>

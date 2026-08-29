@@ -39,6 +39,8 @@ import {
   checkInterferenceAllTool,
   renderSnapshotTool,
   renderOpsPrefixTool,
+  listParametricScripts,
+  listStandardHoleSizes,
   listWorkspaceModels,
   searchStandardPartsTool,
   downloadStandardPartTool,
@@ -52,6 +54,8 @@ import {
   applyEditOps,
   runParametricScriptTool,
   removeEditOp,
+  runSavedScript,
+  saveParametricScript,
   setVariables,
   setPart,
   setMeshOptions,
@@ -63,6 +67,7 @@ import {
   type ToolContext,
   type ProgressCallback,
 } from "./mcpTools";
+import { HOLE_STANDARDS } from "./holeStandards";
 import type { MeshOptions } from "./meshOptions";
 
 // The bundle lives in dist/ next to the WASM binaries; getOcct/getGmsh read
@@ -569,6 +574,77 @@ server.registerTool(
     inputSchema: { path: modelPath, index: z.number().int().describe("0-based index into the op stack") },
   },
   wrap((args: { path: string; index: number }) => removeEditOp(ctx, args))
+);
+
+const libraryPath = z.string().describe("Absolute path to the script-library JSON file (you name it; it is created on first save)");
+
+server.registerTool(
+  "save_parametric_script",
+  {
+    description:
+      "Save a named, parameterized script to a reusable library file so you don't re-derive the same bolt-pattern logic every session. The script is the exact same {variables?, steps} document run_parametric_script takes, and its own `variables` block IS its parameter list — there is no separate parameter schema. REFUSES to save a script that compiles to no ops, so a broken macro never enters the library silently. Pass overwrite:true to replace an existing name. Touches no model and no geometry.",
+    inputSchema: {
+      libraryPath,
+      name: z.string().describe("Unique name within the library; how run_saved_script refers to it"),
+      script: z.looseObject({}).describe("{variables?: [{name, expr}], steps: [...]} — identical to run_parametric_script's `script`"),
+      description: z.string().optional().describe("Free text shown by list_parametric_scripts"),
+      overwrite: z.boolean().optional().describe("Replace an existing script of the same name (default false: a name collision is an error)"),
+    },
+  },
+  wrap((args: { libraryPath: string; name: string; script: Record<string, unknown>; description?: string; overwrite?: boolean }) =>
+    saveParametricScript(args)
+  )
+);
+
+server.registerTool(
+  "list_parametric_scripts",
+  {
+    description:
+      "List the saved scripts in a library file with their descriptions and declared parameters (name + default expression), so you can discover what is available without reading the raw JSON. A missing or empty library reads as empty with a warning, never an error.",
+    inputSchema: { libraryPath },
+  },
+  wrap((args: { libraryPath: string }) => listParametricScripts(args))
+);
+
+server.registerTool(
+  "run_saved_script",
+  {
+    description:
+      "Run a saved script from a library against a model, optionally overriding its declared parameters by name (e.g. {radius: 30, count: 8}). Goes through the exact same compile/validate/bake/persist path as run_parametric_script — same B-rep-only op gate, same entity rebinding, same response — differing only in where the script came from. An override naming no declared parameter is warned about, not fatal.",
+    inputSchema: {
+      libraryPath,
+      name: z.string().describe("The saved script's name, as reported by list_parametric_scripts"),
+      path: modelPath,
+      parameters: z
+        .record(z.string(), z.union([z.number(), z.string()]))
+        .optional()
+        .describe("Per-parameter overrides by name; a number or an expression string. Unknown names are ignored with a warning."),
+      dryRun: z.boolean().optional().describe("Compile and report without persisting"),
+    },
+  },
+  wrap(
+    (args: { libraryPath: string; name: string; path: string; parameters?: Record<string, number | string>; dryRun?: boolean }) =>
+      runSavedScript(ctx, args)
+  )
+);
+
+server.registerTool(
+  "list_standard_hole_sizes",
+  {
+    description:
+      "Standard tapped/threaded hole sizes (ISO metric coarse/fine, Unified UNC/UNF) so you don't have to hard-code a pitch table. Facts only (see describe_capabilities' verdictConventions): each designation reports a tapDrillDiameter (for a hole that will be TAPPED with this thread) AND a clearanceDiameter (for a hole this size of bolt PASSES THROUGH) — which one applies depends on your intent, and this tool does not choose. Every diameter is in MILLIMETRES, imperial designations included, because mm is the unit every edit op consumes; *Radius fields are pre-halved to drop straight into addHole/addCounterboreHole/addCountersinkHole's `radius`. Omit both params to list everything. No model is read and no geometry is touched.",
+    inputSchema: {
+      standard: z
+        .string()
+        .optional()
+        .describe(`One of: ${HOLE_STANDARDS.join(", ")}. Unrecognized values warn and list every standard.`),
+      designation: z
+        .string()
+        .optional()
+        .describe('A single size, e.g. "M6", "M10x1.25", "1/4-20" (case- and space-insensitive). Adds depthPresets for that size.'),
+    },
+  },
+  wrap((args: { standard?: string; designation?: string }) => listStandardHoleSizes(args))
 );
 
 server.registerTool(

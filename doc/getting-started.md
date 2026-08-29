@@ -223,6 +223,25 @@ is the filter form's *Area ≤* with the threshold already filled in. Groups are
 Line modes only — the same modes the filter form supports — and a group that would select only the
 entity you clicked is not offered at all.
 
+### Macros
+
+The **Macros** sidebar panel saves a set of edits you have already applied as a named, reusable
+script, so a bolt pattern or a standard bracket treatment does not have to be rebuilt by hand every
+time.
+
+**Save current** records the current edit history under a name you choose; the document's own
+parametric variables come along as the macro's parameters. Each saved macro then lists those
+parameters with an editable field seeded from its saved default — change one and press **Run** to
+apply the macro at the new values.
+
+Running a macro pushes its ops onto the ordinary edit history, so it is undoable, visible in the
+history list, and removable op-by-op exactly like a hand-applied edit — there is no separate "macro"
+state to reason about.
+
+Macros live in `cad-preview-macros.json` in the model's own folder, shared by every model there.
+That is the **same file** the MCP tools read and write, so a macro you record by hand is directly
+runnable by an agent and vice versa.
+
 ### Theme
 
 The 3D scene follows VS Code's active colour theme. Switching between a light, dark, or
@@ -367,7 +386,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | --- | --- |
 | **Box / Sphere / Cylinder / Cone / Torus / Prism** | **Add** — appends a new body at that placement (no selection needed; all formats) |
 | **Wedge** | **Add** — appends a right-angular wedge: base `Size X`×`Size Y` centred at `Base ctr` in the plane ⟂ `Axis`, extruded `Height`; the far edge narrows to `Top X` (B-rep only) |
-| **Hole / C'bore / C'sink** | Select target volume(s) (**Vol** mode), place the mouth (`Mouth` + `Axis` pointing into the material), and **Cut** — drills a plain, counterbored, or countersunk hole (all formats) |
+| **Hole / C'bore / C'sink** | Select target volume(s) (**Vol** mode), place the mouth (`Mouth` + `Axis` pointing into the material), and **Cut** — drills a plain, counterbored, or countersunk hole (all formats). The **Standard** dropdown fills `Radius` (and, for a tapped size, a sensible blind `Depth`) from the ISO metric / UNC / UNF tables — pick e.g. *M6 tapped* or *M6 clearance* instead of looking the number up; the fields stay editable afterwards |
 | **Volume** (Build from selection) | Select ≥4 surfaces (**Surf** mode) that close into a shell and **Build** — sews them into a new closed solid (B-rep only) |
 
 **EDIT**:

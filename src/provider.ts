@@ -40,6 +40,10 @@ import { scaleStlBytes } from "./stlParser";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
+import { mergeScriptOverrides, parseScriptLibraryJson, scriptParameters, serializeScriptLibraryJson } from "./scriptLibrary";
+import { compileParametricScript } from "./parametricScript";
+import { evaluateVariables } from "./editVariables";
+import * as path from "path";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -693,6 +697,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           post({ type: "viewState", view });
         });
         this.sendViewerDefaults(post);
+        void this.sendMacros(document.uri, post);
         if (this.camerasLinked) {
           post({ type: "camerasLinked", enabled: true });
         }
@@ -911,6 +916,86 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           post({ type: "massPropertiesResult", requestId: msg.requestId, properties });
         } catch (err) {
           post({ type: "massPropertiesError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "macroRun") {
+        try {
+          const libraryPath = macroLibraryPath(document.uri);
+          const library = parseScriptLibraryJson(await readTextFile(libraryPath));
+          const entry = library[msg.name];
+          if (!entry) throw new Error(`No saved macro named "${msg.name}".`);
+
+          const { script, unknownNames } = mergeScriptOverrides(entry.script, msg.parameters);
+          const { values } = evaluateVariables(currentVariables);
+          const compiled = compileParametricScript(script, values);
+          if (compiled.ops.length === 0) {
+            throw new Error(compiled.issues[0] ?? `"${msg.name}" compiled to no ops.`);
+          }
+          // Straight onto the webview's own op stack, so a macro is undoable,
+          // inspectable in the history and removable op-by-op exactly like a
+          // hand-applied edit — no special "macro" state for undo to reason about.
+          post({ type: "macroApplyOps", ops: compiled.ops });
+          const skipped = unknownNames.length > 0 ? ` (ignored unknown parameter(s): ${unknownNames.join(", ")})` : "";
+          post({ type: "status", text: `Ran "${msg.name}" — ${compiled.ops.length} op(s)${skipped}.` });
+        } catch (err) {
+          post({ type: "error", message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "macroSaveCurrent") {
+        try {
+          if (currentEdits.length === 0) {
+            throw new Error("Nothing to save — apply some edits first.");
+          }
+          const name = await vscode.window.showInputBox({
+            title: "Save macro",
+            prompt: `Name for this macro (${currentEdits.length} op(s))`,
+            placeHolder: "bolt-circle",
+            validateInput: (v) => (v.trim() === "" ? "A name is required" : null),
+          });
+          if (name === undefined) return; // dismissed — a quiet no-op
+
+          const libraryPath = macroLibraryPath(document.uri);
+          const library = parseScriptLibraryJson(await readTextFile(libraryPath));
+          // The op list IS the recording: "record" is a selection over edits
+          // already applied, not a live capture session. The document's own
+          // variables come along as the macro's parameters.
+          library[name.trim()] = {
+            name: name.trim(),
+            description: `Recorded from ${currentEdits.length} op(s)`,
+            script: {
+              variables: currentVariables.map((v) => ({ name: v.name, expr: v.expr })),
+              steps: currentEdits.map((op) => ({ op })),
+            },
+          };
+          await vscode.workspace.fs.writeFile(
+            vscode.Uri.file(libraryPath),
+            Buffer.from(serializeScriptLibraryJson(library), "utf8")
+          );
+          await this.sendMacros(document.uri, post);
+          post({ type: "status", text: `Saved macro "${name.trim()}".` });
+        } catch (err) {
+          post({ type: "error", message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "macroDelete") {
+        try {
+          const libraryPath = macroLibraryPath(document.uri);
+          const library = parseScriptLibraryJson(await readTextFile(libraryPath));
+          delete library[msg.name];
+          await vscode.workspace.fs.writeFile(
+            vscode.Uri.file(libraryPath),
+            Buffer.from(serializeScriptLibraryJson(library), "utf8")
+          );
+          await this.sendMacros(document.uri, post);
+          post({ type: "status", text: `Deleted macro "${msg.name}".` });
+        } catch (err) {
+          post({ type: "error", message: (err as Error).message });
         }
         return;
       }
@@ -1381,6 +1466,26 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * per-document sidecar value (e.g. an already-saved `.mesh.json` size) or a
    * runtime toggle (the toolbar Grid button) always wins once set.
    */
+  /**
+   * Posts the saved-macro list for this document's folder.
+   *
+   * The library lives beside the model as `cad-preview-macros.json`, shared by
+   * every model in that folder — the same file the MCP tools take as an
+   * explicit `libraryPath`, so a macro recorded here is directly runnable by an
+   * agent and vice versa. A missing library reads as empty, never an error.
+   */
+  private async sendMacros(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
+    const library = parseScriptLibraryJson(await readTextFile(macroLibraryPath(uri)));
+    const macros = Object.values(library)
+      .map((entry) => ({
+        name: entry.name,
+        description: entry.description ?? null,
+        parameters: scriptParameters(entry.script),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    post({ type: "macros", macros });
+  }
+
   private sendViewerDefaults(post: (msg: HostToWebview) => void): void {
     const cfg = vscode.workspace.getConfiguration("cadPreview");
     const defaults = normalizeViewerDefaults({
@@ -2128,5 +2233,30 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   <script nonce="${nonce}" src="${viewerUri}"></script>
 </body>
 </html>`;
+  }
+}
+
+/**
+ * The saved-macro library beside a model: `cad-preview-macros.json` in the
+ * model's own folder, shared by every model there.
+ *
+ * A folder-level path rather than a per-model one because a macro is reusable
+ * BY DEFINITION — tying it to one document would defeat the point — and an
+ * explicit filename rather than a hidden convention so it can be checked into a
+ * project alongside its models, and named directly to the MCP tools'
+ * `libraryPath`.
+ */
+function macroLibraryPath(modelUri: vscode.Uri): string {
+  return path.join(path.dirname(modelUri.fsPath), "cad-preview-macros.json");
+}
+
+/** Reads a text file, or `""` when it is missing/unreadable — the same
+ * bare-catch tolerance every sidecar read in this codebase uses. */
+async function readTextFile(filePath: string): Promise<string> {
+  try {
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+    return Buffer.from(bytes).toString("utf8");
+  } catch {
+    return "";
   }
 }

@@ -16,6 +16,7 @@ import { parsePartsJson, serializePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson, serializeAnnotationsJson } from "./annotationsSidecar";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
+import { parseScriptLibraryJson, serializeScriptLibraryJson, type ScriptLibrary } from "./scriptLibrary";
 
 export function editsSidecarPath(modelPath: string): string {
   return `${modelPath}.edits.json`;
@@ -109,6 +110,28 @@ export async function writeMeshOptions(modelPath: string, options: MeshOptions):
   const sourceName = path.basename(modelPath);
   await fs.writeFile(meshOptionsSidecarPath(modelPath), serializeMeshJson(sourceName, options), "utf8");
   await fs.writeFile(geoScriptPath(modelPath), generateGeoScript(sourceName, options), "utf8");
+}
+
+/**
+ * The script (macro) library at a caller-named path.
+ *
+ * Unlike every other function here, this takes the library file's OWN path
+ * rather than deriving it from a model path — a macro is not tied to one CAD
+ * document the way `.edits.json` is, and the MCP server has no workspace root
+ * to hide it in. Missing/unreadable/corrupt yields an empty library, same
+ * bare-catch convention as every read above.
+ */
+export async function readScriptLibrary(libraryPath: string): Promise<ScriptLibrary> {
+  try {
+    const text = await fs.readFile(libraryPath, "utf8");
+    return parseScriptLibraryJson(text);
+  } catch {
+    return {};
+  }
+}
+
+export async function writeScriptLibrary(libraryPath: string, library: ScriptLibrary): Promise<void> {
+  await fs.writeFile(libraryPath, serializeScriptLibraryJson(library), "utf8");
 }
 
 /**

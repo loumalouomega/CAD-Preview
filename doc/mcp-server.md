@@ -99,6 +99,10 @@ Every tool takes an absolute `path` to the model file, and every result carries 
 | `get_state` | The sidecar state without loading geometry: edit-op stack (indexed, described), variables (evaluated), parts, annotations (pinned measurements — read-only, see below), mesh options. |
 | `apply_edit_ops` | Validate and append raw `EditOp` JSON objects to the op stack; per-op accept/reject report; for B-rep sources returns the post-replay entity inventory. `dryRun` validates without persisting. **"Accepted" means the op passed validation, not that it executed** — the response's report entries carry `applied: false` + a `diagnostic`/`hint` for any op whose replay gracefully skipped (e.g. an absurd fillet radius), `applied`/`notApplied` counts reflect reality, and a `warnings` entry names every skipped op, while the valid ops around it still apply and persist. When the appended ops include a topology-changing one and Parts exist, best-effort geometrically rebinds their `face-N`/`edge-N`/`solid-N`/`point-N` references to the re-tessellated ids (see "Entity-id rebinding" below) and reports the outcome in `warnings`. |
 | `run_parametric_script` | Compiles a declarative `{variables?, steps}` script (each step is one op, or one flat `repeat` loop expanding a template op-list with the loop index available to `exprs`) into ops and appends them via the same path as `apply_edit_ops` — NOT a general scripting language, no code execution. See "Parametric scripts" below. Gets the same entity-id rebinding and the same applied/not-applied outcome reporting as `apply_edit_ops`. |
+| `save_parametric_script` | Save a named script to a caller-named library JSON file, so a bolt-pattern (or any repeated parametric job) survives across sessions instead of being re-derived every time. The script is the exact same document `run_parametric_script` takes, and its own `variables` block IS its parameter list — there is no separate parameter schema. **Refuses to save a script that compiles to no ops**, so a broken macro never enters the library silently. Kernel-free; touches no model. |
+| `list_parametric_scripts` | List a library's saved scripts with descriptions and declared parameters (name + default expression), for discovery without reading the raw JSON. A missing/empty library reads as empty with a warning, never an error. |
+| `run_saved_script` | Run a saved script against a model, optionally overriding declared parameters by name (`{radius: 30, count: 8}`; a number or an expression string). Goes through the **same** compile/validate/bake/persist path as `run_parametric_script` — same B-rep-only op gate, same entity rebinding, same response shape — differing only in where the script came from. An override naming no declared parameter is warned about, not fatal. |
+| `list_standard_hole_sizes` | Standard tapped/threaded hole sizes (ISO metric coarse/fine, Unified UNC/UNF) so you needn't hard-code a pitch table. Facts only: each designation reports a `tapDrillDiameter` (for a hole to be TAPPED) **and** a `clearanceDiameter` (for a hole a bolt PASSES THROUGH) — which applies depends on intent, and the tool does not choose. All diameters are in **millimetres**, imperial designations included, because mm is the unit every edit op consumes; `tapDrillRadius`/`clearanceRadius` are pre-halved to drop straight into `addHole`'s `radius`. Kernel-free; no model is read. |
 | `remove_edit_op` | Remove one op by 0-based index (the panel's per-row ✕ equivalent); attempts entity-id rebinding for any existing Parts, see below. |
 | `set_variables` | Replace the named parametric variables (`L = 20`) and re-resolve every op expression — geometry rebuilds from the new values on next load/mesh. |
 | `set_part` | Create/update/remove a named part grouping entity ids; optional per-part `meshSize` for local refinement. |
@@ -116,6 +120,29 @@ Every tool takes an absolute `path` to the model file, and every result carries 
 Edit ops are passed as **raw JSON** (e.g. `{"op": "addBox", "center": [0,0,0], "size": [20,10,5]}`) and validated by the same tolerant gate the extension uses (`validateEditOp`) — so every op kind the extension gains is automatically available to agents, and a malformed op is rejected with a reason rather than crashing anything. Numeric fields may bind to variables via the op's `exprs` map (`{"exprs": {"size[0]": "L"}}`).
 
 ## Parametric scripts
+
+### Saved scripts (the macro library)
+
+A script becomes reusable by giving it a name and a place to live. That place is **one explicit JSON file you name** (`libraryPath`), not a hidden per-workspace convention: the MCP server has no notion of a workspace root — every path is caller-supplied — and a macro isn't tied to one CAD document the way `.edits.json` is tied to one source file. Keep it beside your models and check it in.
+
+```jsonc
+// macros.json
+{ "version": 1, "scripts": {
+  "bolt-circle": {
+    "name": "bolt-circle",
+    "description": "A ring of N holes at radius R",
+    "script": { "variables": [{"name": "R", "expr": "20"}, {"name": "N", "expr": "4"}], "steps": [ /* … */ ] }
+  }
+} }
+```
+
+**A script's own `variables` block is its parameter list** — `run_saved_script`'s `parameters` merges caller values onto it by name before compiling. An override naming an undeclared variable is reported in `warnings` and *not applied*: inventing it would shadow a document variable of the same name for that compile, which is a surprising thing to do on a typo.
+
+The interactive **Macros** sidebar panel reads and writes the same file (as `cad-preview-macros.json` in the model's own folder), so a macro recorded by hand is directly runnable by an agent and vice versa — the same interoperability the parts/edits/mesh sidecars already give the two surfaces. Running one there pushes its compiled ops onto the ordinary edit history, so a macro is undoable and removable op-by-op like any hand-applied edit.
+
+### Standard hole sizes
+
+`list_standard_hole_sizes` is a pure table lookup feeding the **existing** `addHole`/`addCounterboreHole`/`addCountersinkHole` ops' `radius` field — there is no standards-aware op kind and none was added. Metric tap drills follow the standard `D − P` rule (major diameter minus pitch); imperial rows come from the usual numbered/lettered/fractional drill sizes. Both diameters are always reported because the tool cannot know whether your hole will be tapped or passed through.
 
 `run_parametric_script` is NOT a general-purpose scripting language — no code execution, no I/O — just a compiler from a small declarative document into the same `EditOp[]` shape `apply_edit_ops` accepts. A script is:
 
