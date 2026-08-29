@@ -41,7 +41,7 @@ import { scaleStlBytes } from "./stlParser";
 import { envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
-import type { Part, Annotation } from "./protocol";
+import type { Part, Annotation, ConstructionPlane } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, computeBom, MassProperties } from "./massProperties";
 import type {
@@ -102,12 +102,15 @@ import {
   writeParts,
   readAnnotations,
   writeAnnotations,
+  readPlanes,
+  writePlanes,
   readMeshOptions,
   writeMeshOptions,
   assertNotSourcePath,
   editsSidecarPath,
   partsSidecarPath,
   annotationsSidecarPath,
+  planesSidecarPath,
   meshOptionsSidecarPath,
   viewStateSidecarPath,
   geoScriptPath,
@@ -116,6 +119,7 @@ import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
+import { parsePlanesJson, nextPlaneId } from "./planesSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
@@ -403,7 +407,7 @@ export function describeCapabilities() {
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups, same as .stl. Still not exportable headless as a SOURCE DOCUMENT (export_brep/export_mesh always target a B-rep or a generated FE mesh, never these formats' own native representation) — edit ops can still be written to the sidecar for the extension to replay.",
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
-      "The CAD source file is never written; edits/parts/annotations/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .mesh.json sidecars the extension reads on open.",
+      "The CAD source file is never written; edits/parts/annotations/construction planes/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open.",
       "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
     ],
   };
@@ -1805,6 +1809,7 @@ export async function getState(params: { path: string }) {
   const { ops, variables } = await readEdits(modelPath);
   const parts = await readParts(modelPath);
   const annotations = await readAnnotations(modelPath);
+  const planes = await readPlanes(modelPath);
   const meshOptions = await readMeshOptions(modelPath);
   const { errors } = evaluateVariables(variables);
   return {
@@ -1822,6 +1827,10 @@ export async function getState(params: { path: string }) {
     // have it rebound correctly across the agent's own topology-changing ops
     // (see `maybeRebindParts`).
     annotations,
+    // Writable, unlike annotations: an agent that has just called `inspect`
+    // holds a face's `normal` and `planeOrigin`, and storing that as a named
+    // datum is a real headless workflow — see `set_plane`.
+    planes,
     meshOptions,
     warnings: [],
   };
@@ -1853,6 +1862,7 @@ export interface WorkspaceModelEntry {
     edits: boolean;
     parts: boolean;
     annotations: boolean;
+    planes: boolean;
     meshOptions: boolean;
     viewState: boolean;
     geoScript: boolean;
@@ -1958,6 +1968,7 @@ export async function listWorkspaceModels(params: { root: string }): Promise<{
           edits: await fileExists(editsSidecarPath(filePath)),
           parts: await fileExists(partsSidecarPath(filePath)),
           annotations: await fileExists(annotationsSidecarPath(filePath)),
+          planes: await fileExists(planesSidecarPath(filePath)),
           meshOptions: await fileExists(meshOptionsSidecarPath(filePath)),
           viewState: await fileExists(viewStateSidecarPath(filePath)),
           geoScript: await fileExists(geoScriptPath(filePath)),
@@ -2682,6 +2693,87 @@ export async function setPart(params: {
 }
 
 // ---------------------------------------------------------------------------
+// set_plane
+
+/**
+ * Creates, updates, or deletes a named construction plane in
+ * `<model>.planes.json` — the same sidecar the Planes panel reads.
+ *
+ * **Kernel-free**, so it takes no `ctx`: it only reads and writes JSON, exactly
+ * like `set_variables`/`get_state`/`list_workspace_models`. Addressed by `id`
+ * rather than by name (unlike `set_part`) because a plane's name is freely
+ * editable and duplicable, whereas its id is the stable handle `derivedFrom`
+ * strings — and any future op reference — would point at.
+ *
+ * A degenerate (zero-length) normal is rejected rather than stored: it
+ * describes no plane at all, and this is caller-input-shape misuse, which this
+ * codebase fails fast on rather than degrading.
+ */
+export async function setPlane(params: {
+  path: string;
+  id?: string;
+  name?: string;
+  point?: number[];
+  normal?: number[];
+  derivedFrom?: string;
+  remove?: boolean;
+}) {
+  const modelPath = params.path;
+  requireRoute(modelPath);
+  const planes = await readPlanes(modelPath);
+  const warnings: string[] = [];
+
+  const summarize = () => planes.map((p) => ({ id: p.id, name: p.name, point: p.point, normal: p.normal }));
+
+  if (params.remove) {
+    if (!params.id) throw new Error("remove requires the plane's id.");
+    const index = planes.findIndex((p) => p.id === params.id);
+    if (index === -1) throw new Error(`No construction plane with id "${params.id}".`);
+    planes.splice(index, 1);
+    await writePlanes(modelPath, planes);
+    return { planes: summarize(), warnings };
+  }
+
+  const index = params.id ? planes.findIndex((p) => p.id === params.id) : -1;
+  if (params.id && index === -1 && !(params.point && params.normal)) {
+    throw new Error(`No construction plane with id "${params.id}" — creating one needs both point and normal.`);
+  }
+  const existing: ConstructionPlane | undefined = index === -1 ? undefined : planes[index];
+
+  const asVec = (v: number[] | undefined, label: string): [number, number, number] | undefined => {
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.length !== 3 || !v.every((n) => typeof n === "number" && Number.isFinite(n))) {
+      throw new Error(`${label} must be three finite numbers.`);
+    }
+    return [v[0], v[1], v[2]];
+  };
+
+  const point = asVec(params.point, "point") ?? existing?.point;
+  const rawNormal = asVec(params.normal, "normal") ?? existing?.normal;
+  if (!point || !rawNormal) throw new Error("Creating a construction plane needs both point and normal.");
+  const len = Math.hypot(rawNormal[0], rawNormal[1], rawNormal[2]);
+  if (len < 1e-12) throw new Error("normal is zero-length — it describes no plane.");
+  const normal: [number, number, number] = [rawNormal[0] / len, rawNormal[1] / len, rawNormal[2] / len];
+  if (Math.abs(len - 1) > 1e-6) warnings.push("normal was not unit length and has been normalized.");
+
+  const plane: ConstructionPlane = {
+    id: existing?.id ?? params.id ?? nextPlaneId(planes),
+    name: params.name ?? existing?.name ?? `Plane ${planes.length + 1}`,
+    point,
+    normal,
+    derivedFrom: params.derivedFrom ?? existing?.derivedFrom,
+  };
+  if (existing) planes[index] = plane;
+  else planes.push(plane);
+  await writePlanes(modelPath, planes);
+
+  warnings.push(
+    "A construction plane stores resolved vectors, not a live face reference — it is deliberately NOT rebound when a later op renumbers face ids, so it stays where it was put."
+  );
+  return { plane, planes: summarize(), warnings };
+}
+
+// ---------------------------------------------------------------------------
 // set_mesh_options
 
 export async function setMeshOptions(params: { path: string; options: Partial<MeshOptions> }) {
@@ -3301,10 +3393,11 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
   assertNotSourcePath(modelPath, outputPath);
 
   const sourceName = path.basename(modelPath);
-  const [source, parts, annotations, edits, meshOptions] = await Promise.all([
+  const [source, parts, annotations, planes, edits, meshOptions] = await Promise.all([
     readModelBytes(modelPath),
     readOptionalFile(partsSidecarPath(modelPath)),
     readOptionalFile(annotationsSidecarPath(modelPath)),
+    readOptionalFile(planesSidecarPath(modelPath)),
     readOptionalFile(editsSidecarPath(modelPath)),
     readOptionalFile(meshOptionsSidecarPath(modelPath)),
   ]);
@@ -3312,7 +3405,7 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
   // Per-entry SHA-256 checksums (roadmap "Archive integrity", closed); the
   // generated .geo script is deliberately NOT packaged — see
   // buildPreprocessZip's doc comment.
-  const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, edits, meshOptions });
+  const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, planes, edits, meshOptions });
   await fs.writeFile(outputPath, zipBytes);
   return {
     written: outputPath,
@@ -3321,6 +3414,7 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
       source: sourceName,
       parts: parts !== undefined,
       annotations: annotations !== undefined,
+      planes: planes !== undefined,
       edits: edits !== undefined,
       meshOptions: meshOptions !== undefined,
     },
@@ -3364,6 +3458,9 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
   if (contents.annotations !== undefined) {
     await writeAnnotations(outputPath, parseAnnotationsJson(contents.annotations));
   }
+  if (contents.planes !== undefined) {
+    await writePlanes(outputPath, parsePlanesJson(contents.planes));
+  }
   if (contents.edits !== undefined) {
     const parsed = parseEditsJson(contents.edits);
     await writeEdits(outputPath, parsed.ops, parsed.variables);
@@ -3382,6 +3479,7 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
     restored: {
       parts: contents.parts !== undefined,
       annotations: contents.annotations !== undefined,
+      planes: contents.planes !== undefined,
       edits: contents.edits !== undefined,
       meshOptions: contents.meshOptions !== undefined,
     },

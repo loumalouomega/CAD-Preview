@@ -17,6 +17,7 @@ import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
 import { AnnotationsModel } from "./annotationsModel";
+import { PlanesModel } from "./planesModel";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
 import { EditsPanel, type TransformDraft, type FeatureDraft, type ModifyDraft, type PrimitiveDraft, type HoleDraft, type ProfileDraft, type WireframeDraft, type AlignDraft, type PatternDraft } from "./editsPanel";
@@ -227,6 +228,144 @@ const annotationsModel = new AnnotationsModel(() => {
   post({ type: "annotationsChanged", annotations: annotationsModel.list() });
   renderAnnotationsList();
 });
+
+// ── Named construction planes ────────────────────────────────────────────
+// A plane stores RESOLVED vectors, never a live face reference, so nothing
+// here participates in entity rebinding: a plane is not renumbered by replay
+// the way `face-N` is, which is the whole point of naming one.
+const planesModel = new PlanesModel(() => {
+  post({ type: "planesChanged", planes: planesModel.list() });
+  renderPlanesList();
+});
+
+/** Set by `setupClippingControls`, which owns the clip state this reads and writes. */
+let planesClipHandle: { applyDerivedPlane(n: THREE.Vector3, p: THREE.Vector3, label: string): void; getState(): ClipState } | null = null;
+
+function renderPlanesList(): void {
+  const container = document.getElementById("planes-list");
+  if (!container) return;
+  container.innerHTML = "";
+  for (const plane of planesModel.list()) {
+    const row = document.createElement("div");
+    row.className = "plane-row";
+
+    const name = document.createElement("span");
+    name.className = "plane-row-name";
+    name.textContent = plane.name;
+    const fmt = (v: readonly number[]) => v.map((n) => n.toFixed(3)).join(", ");
+    name.title = `point (${fmt(plane.point)}) · normal (${fmt(plane.normal)})${
+      plane.derivedFrom ? ` · from ${plane.derivedFrom}` : ""
+    }`;
+    row.appendChild(name);
+
+    const use = document.createElement("button");
+    use.textContent = "Use";
+    use.title = "Clip along this plane";
+    use.addEventListener("click", () => {
+      if (!planesClipHandle) return;
+      planesClipHandle.applyDerivedPlane(
+        new THREE.Vector3(...plane.normal),
+        new THREE.Vector3(...plane.point),
+        plane.name
+      );
+    });
+    row.appendChild(use);
+
+    const rename = document.createElement("button");
+    rename.textContent = "✎";
+    rename.title = "Rename";
+    rename.addEventListener("click", () => {
+      // VS Code webviews block prompt(); rename inline, same as the Parts panel.
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = plane.name;
+      input.className = "plane-row-rename";
+      const commit = () => planesModel.rename(plane.id, input.value);
+      input.addEventListener("blur", commit);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") renderPlanesList();
+      });
+      row.replaceChild(input, name);
+      input.focus();
+      input.select();
+    });
+    row.appendChild(rename);
+
+    const del = document.createElement("button");
+    del.innerHTML = TOOLBAR_ICONS.close;
+    del.title = "Delete this plane";
+    del.addEventListener("click", () => planesModel.remove(plane.id));
+    row.appendChild(del);
+
+    container.appendChild(row);
+  }
+}
+
+/** Parses "1, 2, 3" into a vector, or null — deliberately tolerant of spacing. */
+function parseVecField(text: string): [number, number, number] | null {
+  const parts = text.split(",").map((s) => Number(s.trim()));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  return [parts[0], parts[1], parts[2]];
+}
+
+function setupPlanesControls(): void {
+  const saveBtn = document.getElementById("plane-save");
+  const addBtn = document.getElementById("plane-add");
+  const entry = document.getElementById("plane-entry");
+  const pointField = document.getElementById("plane-entry-point") as HTMLInputElement | null;
+  const normalField = document.getElementById("plane-entry-normal") as HTMLInputElement | null;
+  const okBtn = document.getElementById("plane-entry-ok");
+
+  saveBtn?.addEventListener("click", () => {
+    const state = planesClipHandle?.getState();
+    if (!state) {
+      setStatus("Turn clipping on first — there is no plane to save.", true);
+      return;
+    }
+    const box = viewer.getModel() ? new THREE.Box3().setFromObject(viewer.getModel()!) : null;
+    if (!box) {
+      setStatus("No model to derive a plane from.", true);
+      return;
+    }
+    // Re-derive the SAME plane the clip is currently showing, through the very
+    // function that built it, so a saved plane and the live clip can never
+    // disagree about what "this plane" means.
+    const plane = planeForClip(state, box);
+    const point = plane.normal.clone().multiplyScalar(-plane.constant);
+    planesModel.add({
+      name: `Plane ${planesModel.size + 1}`,
+      point: [point.x, point.y, point.z],
+      normal: [plane.normal.x, plane.normal.y, plane.normal.z],
+      derivedFrom: "clip plane",
+    });
+    setStatus("Saved the current clip plane.");
+  });
+
+  addBtn?.addEventListener("click", () => {
+    if (!entry) return;
+    entry.hidden = !entry.hidden;
+    if (!entry.hidden) pointField?.focus();
+  });
+
+  okBtn?.addEventListener("click", () => {
+    const point = parseVecField(pointField?.value ?? "");
+    const normal = parseVecField(normalField?.value ?? "");
+    if (!point || !normal) {
+      setStatus("Enter both a point and a normal as three comma-separated numbers.", true);
+      return;
+    }
+    if (Math.hypot(...normal) < 1e-12) {
+      setStatus("That normal is zero-length — it describes no plane.", true);
+      return;
+    }
+    planesModel.add({ name: `Plane ${planesModel.size + 1}`, point, normal, derivedFrom: "entered" });
+    if (pointField) pointField.value = "";
+    if (normalField) normalField.value = "";
+    if (entry) entry.hidden = true;
+    setStatus("Added a construction plane.");
+  });
+}
 
 // ── Edits (replayable op-stack) + parametric variables ───────────────────
 // The webview owns the op-stack; the host persists it and (for B-rep) re-applies
@@ -3072,6 +3211,11 @@ try {
   setupDragAndDrop();
   appearanceControls = setupAppearanceControls();
   clippingControls = setupClippingControls();
+  // The Planes panel drives the clip through the SAME handle the Face/3 Pts
+  // buttons use, so "Use this plane" and a derived clip cannot diverge into
+  // two implementations.
+  planesClipHandle = clippingControls;
+  setupPlanesControls();
   setupMarkupControls();
   setupColorFieldControls();
   setupThemeReactivity();
@@ -3306,6 +3450,12 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       partsPanel.render(partsModel.list());
       meshingPanel.renderParts(partsModel.list());
       showSidebar();
+      break;
+
+    case "planes":
+      // Silent hydration, same contract as "parts"/"annotations".
+      planesModel.load(msg.planes);
+      renderPlanesList();
       break;
 
     case "annotations":

@@ -85,6 +85,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"loadMeshBytes"` | base64-decode → `Blob` → `blob:` object URL (`URL.createObjectURL`) → decode `msg.regionAssignment` (if present, base64 `Int32Array` → `regionInfo`) → `loadMeshObjectFromUrl(blobUrl, "stl", msg.sourceFormat.toUpperCase(), regionInfo)`, then `URL.revokeObjectURL(blobUrl)`. A meshio++-imported document (`doc/file-formats.md`'s "meshio++ Bridge Formats") — always loaded via the STL loader regardless of the true source format, which only picks the Components tree root's label. `regionInfo` seeds a module-level `importedRegionInfo`, fed into `splitMeshesIntoFacets` **only while the edit-op list is empty** (see `rebuildMeshModel` below) so the webview's own facet split reproduces the same `node-0/face-K` ids the host may have auto-created Parts against. `applyAvailableColorFields(msg.meshioMetadata)` populates (and shows/hides) the "Colour by field" `<select>` from `pointDataNames`/`cellDataNames`. When `msg.meshioMetadata` is present, it's also shown as a `setStatus()` line AFTER the load succeeds, deliberately outside the try/finally that owns the blob URL, so it can't race with `loadMeshObjectFromUrl`'s own status sequence — a region that correlated (has `regionAssignment`) is worded "(see Parts)", uncorrelated regions "not imported as Parts/geometry", point/cell data names `(see "Colour by field")`, and `fieldDataNames` (whole-mesh, not spatially varying — nothing to colour by) "not imported". |
 | `"parts"` | `PartsModel.load(msg.parts)` → recolour model → `PartsPanel.render()` + `MeshingPanel.renderParts()` |
 | `"annotations"` | `AnnotationsModel.load(msg.annotations)` (silent) → `renderAnnotationsList()` (rebuilds the Saved list under Measure ▾, recomputing each row's "detached" status via `viewer.hasEntity()`) |
+| `"planes"` | `PlanesModel.load(msg.planes)` (silent) → `renderPlanesList()` (rebuilds the Planes group in the view-controls panel) |
 | `"edits"` | `EditsModel.load(msg.ops)` → (mesh sources) `rebuildMeshModel()` → `EditsPanel.render()` |
 | `"status"` | Set `#status-text` content |
 | `"error"` | Show `#error-overlay` with message |
@@ -1388,6 +1389,30 @@ class AnnotationsModel {
 **"Detached" is computed reactively, not stored.** `Viewer.hasEntity(entityType, entityId): boolean` (a plain `model.traverse()` match against `userData.entityType`/`entityId`, mirroring `renderSelection`'s existing lookup) checks whether an annotation's anchor ids currently resolve in the loaded model. A row whose entities are empty, or where NONE resolve, renders with the `detached` CSS class (struck-through text) and a disabled **Show** button. This is what still reports honestly for a **mesh-format** source, which has no host-side rebind engine at all (same accepted limitation `Part` ids already have there) — a topology-changing mesh edit can leave stale ids with nothing to proactively correct them, so the webview's own live check is the only thing standing between the user and a silently-wrong overlay.
 
 See [Extension Host API](./extension-host-api.md) for the sidecar (`annotationsStore.ts`/`annotationsSidecar.ts`) and the host-side rebinding this model's `load()` calls are ultimately driven by.
+
+**A field-by-field `clone` is where a real defect hid**: it once omitted `tolerance`, and since it runs on both `push` and `list`, a pinned band never reached the sidecar and `renderAnnotationsList`'s `a.tolerance` was always `undefined` — the whole tolerance feature was inert while every test passed. Any field added to `Annotation` must be copied there.
+
+---
+
+## `src/webview/planesModel.ts` — named construction planes
+
+```typescript
+class PlanesModel {
+  constructor(onChange: () => void)
+  load(planes: ConstructionPlane[]): void          // silent — no onChange echo
+  list(): ConstructionPlane[]                      // deep clones
+  find(id: string): ConstructionPlane | undefined  // cloned
+  add(plane: Omit<ConstructionPlane, "id">): ConstructionPlane  // assigns the next free id
+  rename(id: string, name: string): void           // trims; a blank name is a no-op
+  remove(id: string): void
+}
+```
+
+The same silent-`load()` / firing-mutation contract as `PartsModel`/`AnnotationsModel`. Ids are `plane-N` and **never reused** (highest existing N plus one), so deleting one and adding another cannot resurrect the old id — that rule is re-implemented here rather than imported from `planesSidecar.ts`, to keep this module free of the sidecar's parse/serialize surface; both copies are separately tested.
+
+`main.ts` wires it into the view-controls **Planes** group (`#planes-list`, below the Clip group): **Save clip** re-derives the current clip through `planeForClip` — the same function that built it, so a saved plane and the live clip cannot disagree about what "this plane" means — **Enter…** reveals a numeric point+normal entry (the only way to author a plane with no geometry to pick), and each row offers **Use**, rename (inline `<input>`, since webviews block `prompt()`), and delete. **Use** calls `ClippingControlsHandle.applyDerivedPlane` — the very same handle the Clip ▸ Face and 3 Pts buttons use, so a stored plane and a derived clip can never diverge into two implementations, and a stored normal is oriented toward the model's bulk on the way in exactly as a picked one is.
+
+Nothing here participates in entity rebinding: a plane stores resolved vectors, never entity ids. See [Extension Host API](./extension-host-api.md) for the sidecar pair.
 
 ---
 

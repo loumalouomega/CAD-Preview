@@ -4,7 +4,7 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from "fflate";
 /**
  * Pure (vscode-free, but Node-only — never imported by the webview) builder/
  * reader for the "preprocess archive" — a single `.zip` bundling the CAD
- * source file plus whichever of its parts/annotations/edits/mesh-options
+ * source file plus whichever of its parts/planes/annotations/edits/mesh-options
  * sidecars currently exist, so the whole working state of a document can be
  * packaged and restored elsewhere. Mirrors the `*Sidecar.ts` convention: this
  * module only holds pure parse/serialize logic; `provider.ts`
@@ -86,6 +86,7 @@ export interface PreprocessArchiveInput {
   source: Uint8Array;
   parts?: string;
   annotations?: string;
+  planes?: string;
   edits?: string;
   meshOptions?: string;
 }
@@ -95,6 +96,7 @@ export interface PreprocessArchiveContents {
   source: Uint8Array;
   parts?: string;
   annotations?: string;
+  planes?: string;
   edits?: string;
   meshOptions?: string;
 }
@@ -110,6 +112,7 @@ export function buildPreprocessZip(input: PreprocessArchiveInput): Uint8Array {
   const entries: Record<string, Uint8Array> = { [input.sourceName]: input.source };
   if (input.parts !== undefined) entries[`${input.sourceName}.parts.json`] = strToU8(input.parts);
   if (input.annotations !== undefined) entries[`${input.sourceName}.annotations.json`] = strToU8(input.annotations);
+  if (input.planes !== undefined) entries[`${input.sourceName}.planes.json`] = strToU8(input.planes);
   if (input.edits !== undefined) entries[`${input.sourceName}.edits.json`] = strToU8(input.edits);
   if (input.meshOptions !== undefined) entries[`${input.sourceName}.mesh.json`] = strToU8(input.meshOptions);
 
@@ -202,6 +205,7 @@ export function readPreprocessZip(bytes: Uint8Array): PreprocessArchiveContents 
     source,
     parts: readText(`${manifest.source}.parts.json`),
     annotations: readText(`${manifest.source}.annotations.json`),
+    planes: readText(`${manifest.source}.planes.json`),
     edits: readText(`${manifest.source}.edits.json`),
     meshOptions: readText(`${manifest.source}.mesh.json`),
   };

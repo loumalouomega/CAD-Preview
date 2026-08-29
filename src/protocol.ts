@@ -129,6 +129,28 @@ export interface Annotation {
 }
 
 /**
+ * A named construction plane, persisted to `<model>.planes.json`.
+ *
+ * **Stores resolved vectors, never a live face reference.** The roadmap's own
+ * recommendation, and the same convention `align`'s `to` coordinate set: a
+ * plane derived from `face-12` keeps that face's plane, not a pointer to it.
+ * This is what keeps planes entirely out of `entityRebind.ts` — unlike
+ * `face-N`, a plane is never renumbered by replay, and a live reference would
+ * need rebinding on every topology-changing op for a feature whose whole value
+ * is that it stays put.
+ *
+ * `derivedFrom` is display-only provenance ("face-12", "3 points"). It is
+ * deliberately never resolved back to geometry.
+ */
+export interface ConstructionPlane {
+  id: string; // "plane-N"
+  name: string; // user-editable
+  point: [number, number, number]; // a point ON the plane
+  normal: [number, number, number]; // unit
+  derivedFrom?: string;
+}
+
+/**
  * Per-pane camera state — the subset of {@link ViewState} that varies per pane
  * in a split-view layout (roadmap "Split view", Phase 2). Direction + up are
  * the same normalized vectors `ViewState` already persists; orthographic is
@@ -278,6 +300,11 @@ export type HostToWebview =
     }
   | { type: "parts"; parts: Part[] }
   | { type: "annotations"; annotations: Annotation[] }
+  /** Full replacement of the document's construction planes — sent on the
+   * `ready` handshake and whenever `<model>.planes.json` changes externally.
+   * Applied silently by `PlanesModel.load()` (no `onChange` echo), the same
+   * contract `"parts"`/`"annotations"` rely on to avoid a write loop. */
+  | { type: "planes"; planes: ConstructionPlane[] }
   | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
@@ -446,6 +473,7 @@ export type WebviewToHost =
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
   | { type: "annotationsChanged"; annotations: Annotation[] }
+  | { type: "planesChanged"; planes: ConstructionPlane[] }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "viewChanged"; view: ViewState }
   | { type: "openFile" }

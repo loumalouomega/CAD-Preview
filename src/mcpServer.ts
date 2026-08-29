@@ -64,6 +64,7 @@ import {
   saveParametricScript,
   setVariables,
   setPart,
+  setPlane,
   setMeshOptions,
   generateMeshTool,
   exportMeshTool,
@@ -857,6 +858,34 @@ server.registerTool(
       points?: string[];
       meshSize?: number | null;
     }) => setPart(args)
+  )
+);
+
+server.registerTool(
+  "set_plane",
+  {
+    description:
+      "Create, update, or remove a named construction plane in <model>.planes.json — a reusable datum for clipping and, later, for placing geometry. Addressed by id (stable), not by name (freely editable). A plane stores RESOLVED vectors, never a live face reference, so it is deliberately not rebound when a later op renumbers face ids; pass inspect's normal + planeOrigin for a face to record one. Omitting id creates a new plane.",
+    inputSchema: {
+      path: modelPath,
+      id: z.string().optional().describe("plane-N id; omit to create a new plane"),
+      name: z.string().optional().describe("Display name"),
+      point: z.array(z.number()).length(3).optional().describe("A point ON the plane, e.g. inspect's planeOrigin"),
+      normal: z.array(z.number()).length(3).optional().describe("Plane normal (normalized on write), e.g. inspect's normal"),
+      derivedFrom: z.string().optional().describe("Display-only provenance, e.g. \"face-12\" — never resolved back to geometry"),
+      remove: z.boolean().optional().describe("Remove the plane with this id instead of upserting"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      id?: string;
+      name?: string;
+      point?: number[];
+      normal?: number[];
+      derivedFrom?: string;
+      remove?: boolean;
+    }) => setPlane(args)
   )
 );
 

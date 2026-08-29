@@ -313,9 +313,33 @@ Entity ids in `volumes`/`surfaces`/`lines`/`points` are the same stable topologi
 
 The optional `tolerance` object (roadmap "Tolerance-band fact checks on exact measurements") records a nominal-plus-band intent from the Measure panel's inline fields: `nominal`/`plus`/`minus` are the band (a symmetric ± when `plus === minus`; both allowances ≥ 0), and `measured` is the raw numeric value frozen at pin time so the in/out-of-band colour can be re-derived on redisplay without parsing formatted text back into a number. Facts only — nothing stores a verdict; `src/toleranceBand.ts`'s shared `evaluateToleranceBand` computes it at render time (the same pure module the MCP `check_tolerance` tool uses). A malformed band drops the BAND only — the annotation survives as a plain untoleranced pin. A toleranced pin's label reads `"<text> [nominal ±band]"`, and it appears decorated the same way in SVG/DXF silhouette-export dimension glyphs. **Included in the Preprocess Archive** (below), alongside parts/edits/mesh options (roadmap "Archive integrity", closed).
 
+## Construction Planes Sidecar (`<model>.planes.json`)
+
+Named **construction planes** (roadmap "A named, persisted construction-plane entity", Phase 3 closed) — reusable datum planes saved from the current clip or entered numerically in the view-controls **Planes** group — are stored in a **sixth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.planes.json`. Like the other five, this never modifies the CAD file. It is read on open (`readPlanes()`) and autosaved, debounced (~500 ms, its own timer), on every add/rename/delete (`writePlanes()`), both in `src/planesStore.ts`; parse/serialize live in the vscode-free `src/planesSidecar.ts` so they are unit-tested. The headless MCP server has a byte-compatible counterpart in `src/mcpSidecars.ts`, written by the `set_plane` tool and reported by `get_state`.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "planes": [
+    {
+      "id": "plane-0",
+      "name": "Top datum",
+      "point": [0, 0, 10],
+      "normal": [0, 0, 1],
+      "derivedFrom": "face-12"
+    }
+  ]
+}
+```
+
+**Unlike every other sidecar that references geometry, a plane stores resolved vectors rather than entity ids** — so it takes no part in entity-id rebinding at all. A topology-changing edit that renumbers `face-N` and rebinds Parts and annotations leaves this file byte-identical, which is the whole point of naming a plane: it stays where it was put. `derivedFrom` records where the plane came from (`"face-12"`, `"clip plane"`, `"entered"`) for display only and is never resolved back to geometry.
+
+`id` is `plane-N` and is **never reused** — the next is the highest existing N plus one — so deleting a plane and adding another cannot resurrect the old id under a new meaning. Parsing is tolerant like the other sidecars: a malformed entry drops that one plane, not the file; `normal` is normalized on read, so a hand-edited `[0, 0, 10]` still yields a unit vector; and a zero-length normal drops that plane, since it describes no plane at all. **Included in the Preprocess Archive** (below).
+
 ## Preprocess Archive (`.zip`)
 
-**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its four sidecars — `<model>.parts.json`, `<model>.annotations.json`, `<model>.edits.json`, `<model>.mesh.json` — currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one. The generated `.geo` script is deliberately **not** packaged (see below).
+**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its sidecars — `<model>.parts.json`, `<model>.annotations.json`, `<model>.planes.json`, `<model>.edits.json`, `<model>.mesh.json` — currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one. The generated `.geo` script is deliberately **not** packaged (see below).
 
 The archive's internal layout (built by the pure, vscode-free — but Node-only, never imported by the webview — `src/preprocessArchive.ts`, shared by the extension and the MCP server):
 

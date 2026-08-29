@@ -310,6 +310,23 @@ export function viewerBodyHtml(): string {
       </div>
       <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset along the active normal">
       <button id="clip-toggle" title="Toggle clipping">Off</button>
+      <!-- Saved construction planes live INSIDE the Clip group rather than as
+           a sixth top-level one: #view-controls is a horizontal row of column
+           groups, so a new group costs WIDTH, and a sixth took the bar from
+           866px to 1290px in a 1400px viewport — wide enough to cover the
+           sidebar and swallow clicks there (caught by the screenshot harness
+           timing out on a sidebar button). Nested here it costs height
+           instead, and the clip is a saved plane's only consumer today. -->
+      <div id="plane-entry" class="vc-row" hidden>
+        <input type="text" id="plane-entry-point" class="plane-vec" placeholder="px,py,pz" title="A point ON the plane">
+        <input type="text" id="plane-entry-normal" class="plane-vec" placeholder="nx,ny,nz" title="Plane normal">
+        <button id="plane-entry-ok" title="Create the plane">Add</button>
+      </div>
+      <div class="vc-row">
+        <button id="plane-save" title="Save the current clip plane as a named construction plane">Save</button>
+        <button id="plane-add" title="Enter a construction plane numerically">Enter…</button>
+      </div>
+      <div id="planes-list" title="Named construction planes — persisted beside the model"></div>
     </div>
     <div class="vc-group">
       <span class="vc-label">Appearance</span>

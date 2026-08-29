@@ -1354,6 +1354,94 @@ test("clip P6: Clip ▸ Face applies a plane, and refuses a non-planar face", as
 });
 
 
+test("planes P1: a stored plane renders, and Use applies it as the clip", async (page) => {
+  await populate(page);
+
+  // Hydrate the panel exactly as the host does on `ready` — a silent load that
+  // must NOT echo back as a planesChanged write.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await post(page, {
+    type: "planes",
+    planes: [
+      { id: "plane-0", name: "Datum A", point: [0, 1000, 0], normal: [0, 1, 0], derivedFrom: "face-7" },
+    ],
+  });
+  await sleep(300);
+
+  const rendered = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll("#planes-list .plane-row"));
+    return {
+      count: rows.length,
+      name: rows[0]?.querySelector(".plane-row-name")?.textContent ?? null,
+      title: rows[0]?.querySelector(".plane-row-name")?.getAttribute("title") ?? null,
+      echoed: window.__sent.filter((m) => m.type === "planesChanged").length,
+    };
+  });
+  assert(rendered.count === 1, `the stored plane renders one row (got ${rendered.count})`);
+  assert(rendered.name === "Datum A", `the row shows the plane's name (got ${rendered.name})`);
+  assert(
+    typeof rendered.title === "string" && rendered.title.includes("from face-7"),
+    `the row's tooltip carries its provenance (got ${rendered.title})`
+  );
+  // The load/echo contract: hydrating from disk must not post a write back.
+  assert(rendered.echoed === 0, `load() does not echo back as a write (saw ${rendered.echoed} planesChanged)`);
+
+  // "Use" must drive the SAME path the Face button does, so a saved plane and
+  // a derived clip cannot diverge — assert the applied clip, not just a click.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll("#planes-list .plane-row button"));
+    btns.find((b) => b.textContent === "Use")?.click();
+  });
+  await sleep(900);
+
+  const applied = await page.evaluate(() => {
+    const msgs = (window.__sent || []).filter((m) => m.type === "viewChanged");
+    return {
+      toggle: document.getElementById("clip-toggle")?.textContent,
+      clip: msgs.length ? msgs[msgs.length - 1].view.clip : null,
+    };
+  });
+  assert(applied.toggle === "On", "Use turns clipping on, so the click visibly does something");
+  assert(applied.clip?.axis === "y", `the applied plane keeps its dominant axis (got ${applied.clip?.axis})`);
+  // Same orientation invariant the Face path has: a normal pointing off the
+  // top of the model must be flipped inward or the model appears to vanish.
+  assert(
+    Array.isArray(applied.clip?.normal) && applied.clip.normal[1] < 0,
+    `Use orients the stored normal toward the bulk (got ${JSON.stringify(applied.clip?.normal)})`
+  );
+
+  // Numeric entry — the only way to author a plane with no geometry to pick.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#plane-add");
+  await page.fill("#plane-entry-point", "1, 2, 3");
+  await page.fill("#plane-entry-normal", "0,0,0");
+  await page.click("#plane-entry-ok");
+  await sleep(250);
+  const rejected = await page.evaluate(() => ({
+    rows: document.querySelectorAll("#planes-list .plane-row").length,
+    posted: window.__sent.filter((m) => m.type === "planesChanged").length,
+  }));
+  assert(rejected.rows === 1, "a zero-length normal adds no plane");
+  assert(rejected.posted === 0, "a rejected entry posts no write");
+
+  await page.fill("#plane-entry-normal", "1, 0, 0");
+  await page.click("#plane-entry-ok");
+  await sleep(250);
+  const added = await page.evaluate(() => {
+    const posts = window.__sent.filter((m) => m.type === "planesChanged");
+    return {
+      rows: document.querySelectorAll("#planes-list .plane-row").length,
+      last: posts.length ? posts[posts.length - 1].planes : null,
+    };
+  });
+  assert(added.rows === 2, `a valid entry adds a row (got ${added.rows})`);
+  assert(
+    added.last?.length === 2 && added.last[1].id === "plane-1",
+    `the new plane gets the next free id and is posted for persisting (got ${JSON.stringify(added.last?.map((p) => p.id))})`
+  );
+});
+
 
 async function main() {
   if (!nodeSupportsPlaywright()) {

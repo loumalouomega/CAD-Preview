@@ -73,5 +73,11 @@ function clone(a: Annotation): Annotation {
     surfaces: [...a.surfaces],
     lines: [...a.lines],
     points: [...a.points],
+    // Omitting this silently disabled the whole tolerance feature: `clone`
+    // runs on BOTH `push` and `list`, so a freshly-pinned band was dropped
+    // before it could be persisted, and `renderAnnotationsList`'s
+    // `a.tolerance` was therefore always undefined. Any field added to
+    // `Annotation` must be copied here.
+    tolerance: a.tolerance ? { ...a.tolerance } : undefined,
   };
 }

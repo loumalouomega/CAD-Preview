@@ -41,11 +41,12 @@ import {
   removeEditOp,
   setVariables,
   setPart,
+  setPlane,
   setMeshOptions,
   type Pipeline,
   type ToolContext,
 } from "./mcpTools";
-import { readEdits, readParts, readAnnotations, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath } from "./mcpSidecars";
+import { readEdits, readParts, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
 import type { EditOp } from "./editOps";
 import { MESH_EXPORT_FORMATS } from "./meshExportFormats";
 import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
@@ -1911,6 +1912,63 @@ describe("set_part", () => {
   });
 });
 
+describe("set_plane", () => {
+  it("creates, updates, and removes a plane addressed by id", async () => {
+    const created = await setPlane({ path: stpModel, name: "Datum A", point: [0, 0, 5], normal: [0, 0, 2] });
+    expect(created.plane!.id).toBe("plane-0");
+    expect(created.plane!.normal).toEqual([0, 0, 1]); // normalized on write
+    expect(created.warnings.join(" ")).toMatch(/not unit length/i);
+
+    // An update keeps every field the caller omitted.
+    await setPlane({ path: stpModel, id: "plane-0", name: "Datum B" });
+    let planes = await readPlanes(stpModel);
+    expect(planes).toHaveLength(1);
+    expect(planes[0].name).toBe("Datum B");
+    expect(planes[0].point).toEqual([0, 0, 5]);
+
+    await setPlane({ path: stpModel, id: "plane-0", remove: true });
+    expect(await readPlanes(stpModel)).toHaveLength(0);
+  });
+
+  it("never REUSES an id, so a deleted plane's id cannot come back", async () => {
+    await setPlane({ path: stpModel, point: [0, 0, 0], normal: [1, 0, 0] });
+    await setPlane({ path: stpModel, point: [0, 0, 1], normal: [1, 0, 0] });
+    await setPlane({ path: stpModel, id: "plane-0", remove: true });
+    const next = await setPlane({ path: stpModel, point: [0, 0, 2], normal: [1, 0, 0] });
+    expect(next.plane!.id).toBe("plane-2");
+  });
+
+  it("rejects a zero-length normal rather than storing a plane that describes nothing", async () => {
+    await expect(setPlane({ path: stpModel, point: [0, 0, 0], normal: [0, 0, 0] })).rejects.toThrow(/zero-length/i);
+    expect(await readPlanes(stpModel)).toHaveLength(0);
+  });
+
+  it("rejects a malformed vector and a removal of an unknown id", async () => {
+    await expect(setPlane({ path: stpModel, point: [0, 0], normal: [1, 0, 0] })).rejects.toThrow(/three finite/i);
+    await expect(setPlane({ path: stpModel, point: [0, 0, NaN], normal: [1, 0, 0] })).rejects.toThrow(/three finite/i);
+    await expect(setPlane({ path: stpModel, id: "plane-9", remove: true })).rejects.toThrow(/no construction plane/i);
+    await expect(setPlane({ path: stpModel, remove: true })).rejects.toThrow(/requires the plane's id/i);
+  });
+
+  it("refuses to create without both point and normal", async () => {
+    await expect(setPlane({ path: stpModel, point: [0, 0, 0] })).rejects.toThrow(/needs both point and normal/i);
+  });
+
+  it("says plainly that a plane is NOT rebound across topology changes", async () => {
+    const r = await setPlane({ path: stpModel, point: [0, 0, 0], normal: [0, 1, 0] });
+    expect(r.warnings.join(" ")).toMatch(/not rebound/i);
+  });
+
+  it("writes the sidecar beside the model, and get_state reflects it", async () => {
+    await setPlane({ path: stpModel, name: "Top", point: [1, 2, 3], normal: [0, 0, 1] });
+    const onDisk = JSON.parse(await fs.readFile(planesSidecarPath(stpModel), "utf8"));
+    expect(onDisk.planes[0].name).toBe("Top");
+    const state = await getState({ path: stpModel });
+    expect(state.planes).toHaveLength(1);
+    expect(state.planes[0].point).toEqual([1, 2, 3]);
+  });
+});
+
 describe("set_mesh_options", () => {
   it("merges, validates, persists, and regenerates the .geo script", async () => {
     const result = await setMeshOptions({ path: stpModel, options: { dimension: 2, sizeMax: 4 } });
@@ -2276,7 +2334,14 @@ describe("save_preprocess", () => {
     const zipOut = path.join(dir, "model.preprocess.zip");
     const result = await savePreprocessTool({ path: stpModel, outputPath: zipOut });
 
-    expect(result.included).toEqual({ source: "model.stp", parts: true, annotations: false, edits: true, meshOptions: false });
+    expect(result.included).toEqual({
+      source: "model.stp",
+      parts: true,
+      annotations: false,
+      planes: false,
+      edits: true,
+      meshOptions: false,
+    });
     expect((await fs.stat(zipOut)).size).toBeGreaterThan(0);
   });
 
@@ -2315,7 +2380,7 @@ describe("load_preprocess", () => {
     const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
 
     expect(result.manifestSource).toBe("model.stp");
-    expect(result.restored).toEqual({ parts: true, annotations: false, edits: true, meshOptions: false });
+    expect(result.restored).toEqual({ parts: true, annotations: false, planes: false, edits: true, meshOptions: false });
     expect(await fs.readFile(restored, "utf8")).toBe(await fs.readFile(stpModel, "utf8"));
 
     const restoredEdits = await readEdits(restored);

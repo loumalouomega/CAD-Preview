@@ -7,7 +7,15 @@ import { detectIgesLengthUnit } from "./igesUnits";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
-import { encodeBuffer, type HostToWebview, type WebviewToHost, type Part, type Annotation, type ViewState } from "./protocol";
+import {
+  encodeBuffer,
+  type HostToWebview,
+  type WebviewToHost,
+  type Part,
+  type Annotation,
+  type ConstructionPlane,
+  type ViewState,
+} from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
 import { isMeshioFieldFailure, describeMeshioFieldFailure } from "./meshioService";
@@ -17,6 +25,7 @@ import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
+import { readPlanes, writePlanes, planesSidecarUri } from "./planesStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
 import { validateEditOp } from "./editOps";
@@ -33,6 +42,7 @@ import { normalizeViewerDefaults } from "./viewerDefaults";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
+import { parsePlanesJson } from "./planesSidecar";
 import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, UNIT_LABELS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
@@ -302,6 +312,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const pending = new Map<string, PendingExport>();
     let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let annotationsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    let planesSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let meshSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let viewSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -349,6 +360,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     // topology-anchored annotations", closed) — same "retained for Save to
     // flush" reason as `currentParts`.
     let currentAnnotations: Annotation[] = [];
+    // Named construction planes (roadmap "Reusable construction planes") —
+    // same "retained for Save to flush" reason as `currentParts`. Deliberately
+    // NOT rebound across topology changes: a plane stores resolved vectors,
+    // never a live face reference, so replay never renumbers it.
+    let currentPlanes: ConstructionPlane[] = [];
     let currentMeshOptions: MeshOptions | undefined;
     // The last view state received from the webview (or read from the
     // sidecar), retained for the same "Save flushes everything" reason as
@@ -362,6 +378,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const flushSidecars = async (): Promise<void> => {
       if (partsSaveTimer) clearTimeout(partsSaveTimer);
       if (annotationsSaveTimer) clearTimeout(annotationsSaveTimer);
+      if (planesSaveTimer) clearTimeout(planesSaveTimer);
       if (editsSaveTimer) clearTimeout(editsSaveTimer);
       if (meshSaveTimer) clearTimeout(meshSaveTimer);
       if (viewSaveTimer) clearTimeout(viewSaveTimer);
@@ -369,6 +386,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         await Promise.all([
           writeParts(document.uri, currentParts),
           writeAnnotations(document.uri, currentAnnotations),
+          writePlanes(document.uri, currentPlanes),
           writeEdits(document.uri, currentEdits, currentVariables),
           ...(currentMeshOptions
             ? [writeMeshOptions(document.uri, currentMeshOptions), writeGeoScript(document.uri, currentMeshOptions)]
@@ -590,6 +608,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       })();
     });
 
+    watchForExternalChange(planesSidecarUri(document.uri), () => {
+      void (async () => {
+        const planes = await readPlanes(document.uri);
+        if (JSON.stringify(planes) === JSON.stringify(currentPlanes)) return;
+        currentPlanes = planes;
+        post({ type: "planes", planes: currentPlanes });
+        post({ type: "status", text: "Construction planes updated externally" });
+      })();
+    });
     watchForExternalChange(annotationsSidecarUri(document.uri), () => {
       void (async () => {
         const annotations = await readAnnotations(document.uri);
@@ -695,6 +722,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           currentAnnotations = annotations;
           post({ type: "annotations", annotations: currentAnnotations });
         });
+        void readPlanes(document.uri).then((planes) => {
+          currentPlanes = planes;
+          post({ type: "planes", planes: currentPlanes });
+        });
         void this.sendMeshOptions(document.uri, post).then((options) => {
           currentMeshOptions = options;
         });
@@ -733,6 +764,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           void writeAnnotations(document.uri, annotations).then(
             undefined,
             (err) => post({ type: "error", message: `Could not save annotations: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      if (msg.type === "planesChanged") {
+        // Debounced autosave, own timer — mirrors partsChanged.
+        const planes: ConstructionPlane[] = msg.planes;
+        currentPlanes = planes;
+        if (planesSaveTimer) clearTimeout(planesSaveTimer);
+        planesSaveTimer = setTimeout(() => {
+          void writePlanes(document.uri, planes).then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save construction planes: ${(err as Error).message}` })
           );
         }, PARTS_SAVE_DEBOUNCE_MS);
         return;
@@ -2099,7 +2144,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   }
 
   /**
-   * Packages the CAD source plus whichever of its parts/annotations/edits/
+   * Packages the CAD source plus whichever of its parts/planes/annotations/edits/
    * mesh-options sidecars exist on disk into a single `.zip` (File ▸ Save
    * Preprocess…), with a per-entry SHA-256 checksum recorded in the manifest
    * (roadmap "Archive integrity", closed). Callers must flush pending
@@ -2129,14 +2174,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           return undefined;
         }
       };
-      const [source, parts, annotations, edits, meshOptions] = await Promise.all([
+      const [source, parts, annotations, planes, edits, meshOptions] = await Promise.all([
         vscode.workspace.fs.readFile(uri),
         readOptional(sidecarUri(uri)),
         readOptional(annotationsSidecarUri(uri)),
+        readOptional(planesSidecarUri(uri)),
         readOptional(editsSidecarUri(uri)),
         readOptional(meshOptionsSidecarUri(uri)),
       ]);
-      const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, edits, meshOptions });
+      const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, planes, edits, meshOptions });
       await vscode.workspace.fs.writeFile(saveUri, zipBytes);
       post({ type: "status", text: `Saved preprocess archive to ${saveUri.fsPath}` });
     } catch (err) {
@@ -2199,6 +2245,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       await vscode.workspace.fs.writeFile(destUri, contents.source);
       if (contents.parts !== undefined) {
         await writeParts(destUri, parsePartsJson(contents.parts));
+      }
+      if (contents.planes !== undefined) {
+        await writePlanes(destUri, parsePlanesJson(contents.planes));
       }
       if (contents.annotations !== undefined) {
         await writeAnnotations(destUri, parseAnnotationsJson(contents.annotations));

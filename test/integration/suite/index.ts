@@ -28,6 +28,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { installModalStubs, pick, save, cancel, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
+import { writePlanes } from "../../../src/planesStore";
 
 const EXTENSION_ID = "kratos-multiphysics.cad-preview";
 const VIEW_TYPE = "cad-preview.mesh";
@@ -357,6 +358,38 @@ test("an external .parts.json edit is reconciled into the webview", async () => 
   await closeAll();
 });
 
+/**
+ * The sixth watcher. Same mechanism as the .parts.json case above; worth its
+ * own test because a new watcher is easy to add to the list and forget to
+ * register, and nothing else in the suite would notice.
+ */
+test("an external .planes.json edit is reconciled into the webview", async () => {
+  const ext = vscode.extensions.getExtension(EXTENSION_ID);
+  const api = ext?.exports as { onDidPostMessage?: vscode.Event<{ type: string }> } | undefined;
+  if (!api?.onDidPostMessage) return;
+
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens for the planes watcher");
+
+  const seen: string[] = [];
+  const sub = api.onDidPostMessage((m) => { seen.push(m.type); });
+  try {
+    fs.writeFileSync(
+      `${staged}.planes.json`,
+      JSON.stringify({
+        version: 1,
+        source: path.basename(staged),
+        planes: [{ id: "plane-0", name: "FromDisk", point: [1, 2, 3], normal: [0, 0, 1] }],
+      })
+    );
+    const got = await waitFor(() => seen.includes("planes"), 15000); // 300ms debounce + async read
+    assert(got, `the .planes.json watcher posts a "planes" message (saw ${JSON.stringify(seen.slice(-8))})`);
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
 test("session-gated commands are silent no-ops with no editor focused", async () => {
   await closeAll();
   // No active session: these must do nothing at all — in particular they must
@@ -424,6 +457,47 @@ test("a sidecar write is refused while the user has unsaved changes to it open",
   assert(
     fs.readFileSync(sidecar.fsPath, "utf8").includes("Now allowed"),
     "with no dirty buffer the write goes through normally"
+  );
+});
+
+/**
+ * The guard lives in each store module — the seam it was designed around — so
+ * every store needs its own coverage: a new sidecar that forgets the guard
+ * would otherwise clobber unsaved work with nothing to catch it.
+ */
+test("the dirty-buffer guard also protects .planes.json", async () => {
+  const model = stage(STEP_FIXTURE);
+  const sidecar = vscode.Uri.file(`${model}.planes.json`);
+  fs.writeFileSync(sidecar.fsPath, '{"version":1,"source":"block.stp","planes":[]}\n', "utf8");
+
+  const doc = await vscode.workspace.openTextDocument(sidecar);
+  const editor = await vscode.window.showTextDocument(doc);
+  await editor.edit((e) => e.insert(new vscode.Position(0, 0), " "));
+  assert(doc.isDirty, "the planes sidecar is open with unsaved changes");
+
+  const before = fs.readFileSync(sidecar.fsPath, "utf8");
+  let refused = false;
+  try {
+    await writePlanes(vscode.Uri.file(model), [
+      { id: "plane-0", name: "Clobber", point: [0, 0, 0], normal: [0, 0, 1] },
+    ]);
+  } catch {
+    refused = true;
+  }
+  assert(refused, "writing .planes.json threw rather than overwriting unsaved work");
+  assert(
+    fs.readFileSync(sidecar.fsPath, "utf8") === before,
+    "the planes file on disk is byte-identical — nothing was written"
+  );
+
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+  await new Promise((r) => setTimeout(r, 300));
+  await writePlanes(vscode.Uri.file(model), [
+    { id: "plane-0", name: "Now allowed", point: [0, 0, 0], normal: [0, 0, 1] },
+  ]);
+  assert(
+    fs.readFileSync(sidecar.fsPath, "utf8").includes("Now allowed"),
+    "with no dirty buffer the planes write goes through normally"
   );
 });
 

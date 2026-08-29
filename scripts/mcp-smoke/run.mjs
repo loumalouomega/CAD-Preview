@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 42, `tools/list exposes 42 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 43, `tools/list exposes 43 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -3141,6 +3141,66 @@ try {
     "running an unknown script name fails with a clear, actionable error"
   );
 
+  // ── Named construction planes (roadmap "Reusable construction planes") ──
+  // The workflow this exists for: inspect a face, then store ITS plane as a
+  // reusable datum. Uses the face's real analytic plane, so a wrong normal or
+  // a dropped point would show up as a mismatch rather than passing.
+  const planeFace = await call("inspect", { path: model, entityId: "face-36" });
+  assert(
+    Array.isArray(planeFace.normal) && Array.isArray(planeFace.planeOrigin),
+    `the seeded face is planar, so inspect gives a normal + planeOrigin (got ${JSON.stringify(planeFace.normal)})`
+  );
+  const madePlane = await call("set_plane", {
+    path: model,
+    name: "Top datum",
+    point: planeFace.planeOrigin,
+    normal: planeFace.normal,
+    derivedFrom: "face-36",
+  });
+  assert(madePlane.plane.id === "plane-0", `set_plane creates plane-0 (got ${madePlane.plane.id})`);
+  assert(
+    Math.abs(Math.hypot(...madePlane.plane.normal) - 1) < 1e-9,
+    `the stored normal is unit length (got ${JSON.stringify(madePlane.plane.normal)})`
+  );
+  const planeState = await call("get_state", { path: model });
+  assert(
+    planeState.planes.length === 1 && planeState.planes[0].name === "Top datum",
+    `get_state reflects the stored plane (got ${JSON.stringify(planeState.planes)})`
+  );
+  const planeSidecar = JSON.parse(fs.readFileSync(`${model}.planes.json`, "utf8"));
+  assert(
+    planeSidecar.planes[0].derivedFrom === "face-36",
+    `the sidecar records provenance (got ${JSON.stringify(planeSidecar.planes[0])})`
+  );
+
+  // A plane must survive a topology-changing op UNCHANGED — that is the whole
+  // point of storing resolved vectors rather than a face reference. Parts get
+  // rebound here; planes deliberately do not. On a THROWAWAY copy, so the
+  // appended op cannot disturb the edits-sidecar counts asserted below.
+  const planeModel = path.join(dir, "plane-rebind.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), planeModel);
+  await call("set_plane", { path: planeModel, name: "Datum", point: [1, 2, 3], normal: [0, 0, 1] });
+  await call("set_part", { path: planeModel, name: "P", surfaces: ["face-36"] });
+  const planeBefore = fs.readFileSync(`${planeModel}.planes.json`, "utf8");
+  const partBefore = fs.readFileSync(`${planeModel}.parts.json`, "utf8");
+  await call("apply_edit_ops", { path: planeModel, ops: [{ op: "fillet", edges: ["edge-0"], radius: 0.4 }] });
+  assert(
+    fs.readFileSync(`${planeModel}.planes.json`, "utf8") === planeBefore,
+    "a construction plane is byte-identical after a topology-changing op — never rebound"
+  );
+  // The control: the SAME op does touch the parts sidecar, so the plane's
+  // stability is a property of planes, not of the op having done nothing.
+  assert(
+    fs.readFileSync(`${planeModel}.parts.json`, "utf8") !== partBefore,
+    "the same op DID rebind the parts sidecar — so the plane's stability is not a no-op artifact"
+  );
+
+  const zeroNormal = await callTolerant("set_plane", { path: model, point: [0, 0, 0], normal: [0, 0, 0] });
+  assert(
+    zeroNormal.error && /zero-length/i.test(zeroNormal.error),
+    `set_plane refuses a zero-length normal (got: ${JSON.stringify(zeroNormal)})`
+  );
+
   const zipOut = path.join(dir, "bull.preprocess.zip");
   const saved = await call("save_preprocess", { path: model, outputPath: zipOut });
   assert(
@@ -3148,6 +3208,7 @@ try {
     "save_preprocess writes a non-empty .zip including the edits + parts sidecars"
   );
   assert(!saved.included.meshOptions, "save_preprocess omits mesh options never explicitly set via set_mesh_options");
+  assert(saved.included.planes, "save_preprocess includes the construction-planes sidecar");
 
   const restoredDir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-preview-mcp-smoke-restore-"));
   const restoredModel = path.join(restoredDir, "bull-restored.stp");
@@ -3167,6 +3228,14 @@ try {
   );
   const restoredParts = JSON.parse(fs.readFileSync(`${restoredModel}.parts.json`, "utf8"));
   assert(restoredParts.parts.length === 1 && restoredParts.parts[0].name === "Bull", "load_preprocess restores the parts sidecar");
+  assert(loaded2.restored.planes, "load_preprocess reports the planes sidecar as restored");
+  // Assert the restored FILE, not just the flag — a flag can be true while the
+  // write silently produced nothing.
+  const restoredPlanes = JSON.parse(fs.readFileSync(`${restoredModel}.planes.json`, "utf8"));
+  assert(
+    restoredPlanes.planes.length === 1 && restoredPlanes.planes[0].name === "Top datum",
+    `load_preprocess restores the planes sidecar with its contents (got ${JSON.stringify(restoredPlanes.planes)})`
+  );
   fs.rmSync(restoredDir, { recursive: true, force: true });
 
   // Op-outcome reporting (roadmap item, closed): a deliberately-DOOMED op —

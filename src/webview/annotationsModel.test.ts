@@ -72,6 +72,35 @@ describe("AnnotationsModel", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("CARRIES the tolerance band through push, list and load", () => {
+    // Regression: `clone` used to omit `tolerance`, which runs on BOTH push
+    // and list — so a pinned band was dropped before it could be persisted,
+    // and the render path's `a.tolerance` was always undefined. The whole
+    // tolerance feature was silently inert.
+    const band = { nominal: 10, plus: 0.05, minus: 0.05, measured: 10.02 };
+    const m = new AnnotationsModel(() => {});
+    m.push({ ...SAMPLE, tolerance: band });
+    expect(m.list()[0].tolerance).toEqual(band);
+
+    const loaded = new AnnotationsModel(() => {});
+    loaded.load([{ ...SAMPLE, tolerance: band }]);
+    expect(loaded.list()[0].tolerance).toEqual(band);
+  });
+
+  it("deep-clones the band, so a caller cannot mutate stored state", () => {
+    const band = { nominal: 10, plus: 0.05, minus: 0.05, measured: 10.02 };
+    const m = new AnnotationsModel(() => {});
+    m.push({ ...SAMPLE, tolerance: band });
+    m.list()[0].tolerance!.nominal = 999;
+    expect(m.list()[0].tolerance!.nominal).toBe(10);
+  });
+
+  it("leaves an untoleranced annotation without a band", () => {
+    const m = new AnnotationsModel(() => {});
+    m.push({ ...SAMPLE });
+    expect(m.list()[0].tolerance).toBeUndefined();
+  });
+
   it("entitiesOf() flattens the four id buckets into a selection list", () => {
     const a: Annotation = { ...SAMPLE, volumes: ["solid-0"], surfaces: ["face-1"], lines: ["edge-2"], points: ["point-3"] };
     expect(AnnotationsModel.entitiesOf(a)).toEqual([

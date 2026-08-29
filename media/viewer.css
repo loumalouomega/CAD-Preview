@@ -2214,6 +2214,48 @@ input[type="range"].meshing-slider:focus {
   padding: 2px 6px !important;
 }
 
+/* ── Named construction planes (view-controls "Planes" group) ─────────────
+ * Same row shape as .annotation-row; the two are deliberately separate
+ * selectors rather than one shared class, since they live in different panels
+ * and only happen to look alike today. */
+.plane-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.plane-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plane-row button {
+  flex: 0 0 auto;
+  padding: 2px 6px !important;
+}
+.plane-row-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* `.vc-row { display: flex }` beats the UA's `[hidden] { display: none }`, so
+   the attribute alone does NOT hide this row — the same defect class as
+   `#hover-tip.hidden`, which rendered as a visible empty box while every test
+   asserting the class passed. Here it left two text inputs on screen and grew
+   the bottom control bar wide enough to cover the sidebar. */
+#plane-entry[hidden] {
+  display: none;
+}
+/* Two vectors on one row: each must shrink rather than push the Add button
+   out of the panel. */
+.plane-vec {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 6em;
+}
+
 /* ── Hover tooltip + inspector card (roadmap "Explain the geometry under the
  *    cursor") ───────────────────────────────────────────────────────────────
  *

@@ -3,7 +3,7 @@
  * `editsStore.ts` / `partsStore.ts` / `meshOptionsStore.ts` (which wrap the
  * same pure parsers in `vscode.workspace.fs`). Must stay byte-compatible with
  * what `provider.ts` reads on reopen: same `<model>.edits.json` /
- * `.parts.json` / `.mesh.json` / `.geo` filenames, same tolerant-read
+ * `.parts.json` / `.planes.json` / `.mesh.json` / `.geo` filenames, same tolerant-read
  * defaults, same one-way `.geo` regeneration on every options write.
  */
 import * as fs from "fs/promises";
@@ -11,9 +11,10 @@ import * as path from "path";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { parseEditsJson, serializeEditsJson, type ParsedEdits } from "./editsSidecar";
-import type { Annotation, Part } from "./protocol";
+import type { Annotation, ConstructionPlane, Part } from "./protocol";
 import { parsePartsJson, serializePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson, serializeAnnotationsJson } from "./annotationsSidecar";
+import { parsePlanesJson, serializePlanesJson } from "./planesSidecar";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 import { parseScriptLibraryJson, serializeScriptLibraryJson, type ScriptLibrary } from "./scriptLibrary";
@@ -30,6 +31,10 @@ export function partsSidecarPath(modelPath: string): string {
 
 export function annotationsSidecarPath(modelPath: string): string {
   return `${modelPath}.annotations.json`;
+}
+
+export function planesSidecarPath(modelPath: string): string {
+  return `${modelPath}.planes.json`;
 }
 
 export function meshOptionsSidecarPath(modelPath: string): string {
@@ -95,6 +100,22 @@ export async function readAnnotations(modelPath: string): Promise<Annotation[]> 
 export async function writeAnnotations(modelPath: string, annotations: Annotation[]): Promise<void> {
   const text = serializeAnnotationsJson(path.basename(modelPath), annotations);
   await fs.writeFile(annotationsSidecarPath(modelPath), text, "utf8");
+}
+
+/** Reads + validates the construction-planes sidecar; returns `[]` when missing or unreadable. */
+export async function readPlanes(modelPath: string): Promise<ConstructionPlane[]> {
+  try {
+    const text = await fs.readFile(planesSidecarPath(modelPath), "utf8");
+    return parsePlanesJson(text);
+  } catch {
+    return [];
+  }
+}
+
+/** Writes the construction-planes sidecar beside the model. The model file itself is never touched. */
+export async function writePlanes(modelPath: string, planes: ConstructionPlane[]): Promise<void> {
+  const text = serializePlanesJson(path.basename(modelPath), planes);
+  await fs.writeFile(planesSidecarPath(modelPath), text, "utf8");
 }
 
 /** Reads + validates the mesh options sidecar; returns `DEFAULT_MESH_OPTIONS` when missing or unreadable. */

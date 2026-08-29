@@ -105,6 +105,24 @@ A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchore
 
 The optional `tolerance` field (roadmap "Tolerance-band fact checks on exact measurements") records a nominal-plus-band intent captured from the Measure panel's inline fields at pin time. `measured` is the raw numeric value frozen alongside the band, so the webview can re-derive the in/out-of-band label colour on every redisplay without parsing the formatted `text` back into a number. Facts only: nothing stores a pass/fail verdict — `src/toleranceBand.ts`'s shared `evaluateToleranceBand` computes it at render time (the same pure module the MCP `check_tolerance` tool uses, so headless and interactive math cannot drift). A malformed band is dropped tolerantly by the sidecar parser (band only — the annotation survives). A toleranced pin renders as `"<text> [nominal ±tol]"`, with an out-of-band pin's label frame and Saved-list row coloured by the derived tone; its dimension glyph in SVG/DXF silhouette exports carries the same decorated label.
 
+### `ConstructionPlane`
+
+```typescript
+interface ConstructionPlane {
+  id: string                                // "plane-N" — stable, never reused
+  name: string                              // user-editable
+  point: [number, number, number]           // a point ON the plane
+  normal: [number, number, number]          // unit
+  derivedFrom?: string                      // display-only provenance
+}
+```
+
+A named datum plane (roadmap "A named, persisted construction-plane entity", Phase 3 closed), persisted in `<model>.planes.json` — see [File Formats](./file-formats.md).
+
+**It stores resolved vectors, never a live face reference.** A plane derived from `face-12` keeps that face's plane, not a pointer to it, matching the convention `align`'s `to` coordinate already set. This is what keeps planes entirely out of `src/entityRebind.ts`: unlike `face-N`, a plane is never renumbered by replay, so a topology-changing op leaves it byte-identical while `parts`/`annotations` are rebound around it. `derivedFrom` (`"face-12"`, `"clip plane"`, `"entered"`) is recorded for display only and is deliberately never resolved back to geometry.
+
+Ids are never reused — the next is the highest existing N plus one — so deleting a plane and adding another cannot resurrect the old id under a new meaning. The sidecar parser normalizes `normal` on read (a hand-edited `[0, 0, 10]` still yields a unit vector) and drops a plane whose normal is zero-length, since that describes no plane at all.
+
 ### `ViewState`
 
 ```typescript
@@ -802,12 +820,30 @@ Sent whenever the user mutates parts (create / rename / recolour / delete / assi
 { "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [], "points": [] } ] }
 ```
 
+### `planes`
+
+Sent after geometry, once the host has read the construction-planes sidecar (`<model>.planes.json`) — same timing/role as `parts`/`annotations` (roadmap "A named, persisted construction-plane entity", Phase 3 closed). Carries the saved planes (empty array when no sidecar exists). The webview loads them into `PlanesModel` (silent `load()`, no `onChange` echo — hydrating from disk must not post straight back as a write) and renders the Planes group in the view-controls panel.
+
+Also sent when `<model>.planes.json` changes externally, via the same content-compared watcher every other sidecar uses. Unlike `parts`/`annotations` it is **never** resent by a rebind: a `ConstructionPlane` stores resolved vectors, not entity ids, so a topology-changing op leaves it untouched by design.
+
+```json
+{ "type": "planes", "planes": [ { "id": "plane-0", "name": "Top datum", "point": [0, 0, 10], "normal": [0, 0, 1], "derivedFrom": "face-12" } ] }
+```
+
 ### `annotationsChanged`
 
 Sent whenever the user pins a new measurement (📌) or deletes/renames one from the "Saved" list. Same debounce (~500 ms, its own timer) and same never-writes-the-CAD-file rule as `partsChanged` — the host writes the full annotation list to `<model>.annotations.json` via `writeAnnotations()`.
 
 ```json
 { "type": "annotationsChanged", "annotations": [ { "id": "ann-1234567890-1", "tool": "radius", "text": "R = 4 mm", "anchorPoint": [4, 0, 0], "linePoints": [], "volumes": [], "surfaces": [], "lines": ["edge-3"], "points": [] } ] }
+```
+
+### `planesChanged`
+
+Sent whenever the user saves the current clip plane, enters one numerically, or renames/deletes one from the Planes list. Same debounce (~500 ms, its own timer) and same never-writes-the-CAD-file rule as `partsChanged` — the host writes the full list to `<model>.planes.json` via `writePlanes()`.
+
+```json
+{ "type": "planesChanged", "planes": [ { "id": "plane-0", "name": "Top datum", "point": [0, 0, 10], "normal": [0, 0, 1] } ] }
 ```
 
 ### `editsChanged`

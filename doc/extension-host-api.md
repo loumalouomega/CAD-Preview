@@ -36,6 +36,8 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
 | `src/annotationsStore.ts` | Read/write the `<model>.annotations.json` sidecar (vscode fs) — pinned measurements |
 | `src/annotationsSidecar.ts` | Pure parse/serialize for the annotations sidecar (vscode-free, unit-tested) |
+| `src/planesStore.ts` | Read/write the `<model>.planes.json` sidecar (vscode fs) — named construction planes |
+| `src/planesSidecar.ts` | Pure parse/serialize for the planes sidecar (vscode-free, unit-tested) |
 | `src/editOps.ts` | The `EditOp` union + `validateEditOp` tolerance gate + the `OpOutcome`/`OutcomeFail` per-op replay-outcome types shared by both edit engines (vscode-free) |
 | `src/svgImport.ts` | Pure SVG `<path d>` parser (regex extraction + a hand-written command interpreter covering M/L/H/V/C/S/Q/T/A/Z) into flattened polyline subpaths, feeding `addPolyline` ops — shared between the extension and webview bundles like `editOps.ts`/`protocol.ts` (vscode/DOM-free, unit-tested) |
 | `src/dxfImport.ts` | Pure DXF model-space `ENTITIES` parser (group-code/value line-pair scan; `LINE`/`LWPOLYLINE`+bulge/`POLYLINE`/`CIRCLE`/`ARC`/`SPLINE`) feeding the existing `addLine`/`addPolyline`/`addCircleProfile`/`addArc`/`addSpline` ops — same pure/shared-bundle convention as `svgImport.ts`, Y-up native, flat at z=0 (vscode/DOM-free, unit-tested) |
@@ -1197,6 +1199,30 @@ async function writeAnnotations(modelUri, annotations): Promise<void>
 ```
 
 `provider.ts` calls `readAnnotations()` on open (posts an `annotations` message) and, on each debounced `annotationsChanged` message (~500 ms, its own timer), `writeAnnotations()`. Also rebound (alongside Parts) by `rebindPartsOnChange()` on any topology-changing edit — see `entityFacts.ts`'s `rebindPartsAcrossOps` above.
+
+**Gotcha, from a real defect:** `annotationsSidecar.ts` and `annotationsModel.ts` each build an `Annotation` field by field. `AnnotationsModel`'s private `clone` once omitted `tolerance`, and since it runs on BOTH `push` and `list`, a pinned band was dropped before it could be persisted and the render path's `a.tolerance` was always `undefined` — the whole tolerance feature was inert with every test green. Any field added to `Annotation` must be copied in all of them.
+
+---
+
+## `src/planesStore.ts` and `src/planesSidecar.ts`
+
+The sixth sidecar pair — named construction planes (roadmap "A named, persisted construction-plane entity", Phase 3 closed) — structurally identical to the parts/annotations pairs.
+
+```typescript
+// planesSidecar.ts (vscode-free)
+function parsePlanesJson(text: string): ConstructionPlane[]        // tolerant: returns [] on bad input
+function serializePlanesJson(sourceName: string, planes: ConstructionPlane[]): string
+function nextPlaneId(planes: readonly ConstructionPlane[]): string // highest N + 1; never reuses
+
+// planesStore.ts (VS Code fs)
+function planesSidecarUri(modelUri: vscode.Uri): vscode.Uri        // <model>.planes.json
+async function readPlanes(modelUri): Promise<ConstructionPlane[]>   // [] if missing/unreadable
+async function writePlanes(modelUri, planes): Promise<void>         // assertNotDirty first
+```
+
+**A plane stores resolved vectors, not entity ids, so it is the one geometry-referencing sidecar that takes no part in entity rebinding** — `rebindPartsOnChange()` does not touch it, by design. Two tolerance rules worth knowing: `normal` is normalized on read (a hand-edited `[0, 0, 10]` is usable), and a zero-length normal drops that plane, since it describes no plane at all and would divide by zero downstream.
+
+The webview counterpart is `src/webview/planesModel.ts` (`PlanesModel`), mirroring `PartsModel`/`AnnotationsModel`'s silent-`load()` / firing-mutation contract. It re-implements the never-reuse id rule rather than importing `nextPlaneId`, to stay free of the sidecar's parse/serialize surface; both copies are separately tested.
 
 ---
 
