@@ -318,8 +318,10 @@ function selectFeatureEdges(
   return kept;
 }
 
-/** Cosine of the angle between two triangles' normals, or NaN if degenerate. */
-function normalCos(normals: Float32Array, t0: number, t1: number): number {
+/** Cosine of the angle between two triangles' normals, or NaN if degenerate.
+ * Exported for `meshRegionGrow.ts`, whose dihedral gate needs the identical
+ * test — including the deliberate absence of `abs()` below. */
+export function normalCos(normals: Float32Array, t0: number, t1: number): number {
   const ax = normals[t0 * 3], ay = normals[t0 * 3 + 1], az = normals[t0 * 3 + 2];
   const bx = normals[t1 * 3], by = normals[t1 * 3 + 1], bz = normals[t1 * 3 + 2];
   const la = Math.hypot(ax, ay, az);

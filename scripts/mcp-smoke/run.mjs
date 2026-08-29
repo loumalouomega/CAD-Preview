@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 41, `tools/list exposes 41 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 42, `tools/list exposes 42 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -971,6 +971,82 @@ try {
     assert(
       meshRec.supported === false && /mesh source/.test(meshRec.warnings.join(" ")),
       "recognize_primitives rejects a mesh source with a clear reason"
+    );
+  }
+
+
+  // ── fit_mesh_region (roadmap item 9 Phase 1) ─────────────────────────────
+  //
+  // Both fixtures have analytic ground truth: cube.stl is a real 10x10x10 cube,
+  // and large-sphere-100k.stl is a sphere of radius exactly 10 at the origin
+  // (verified from its own bounding box).
+  {
+    const cubePath = path.join(ROOT, "examples", "STL", "cube.stl");
+    // Seed well above the +z face's centre.
+    const flat = await call("fit_mesh_region", { path: cubePath, seedPoint: [5, 5, 40] });
+    assert(flat.supported === true, "fit_mesh_region supports an STL source");
+    assert(
+      flat.triangleCount === 2,
+      `the region stops at the cube's 90-degree edges — one face, not the whole solid (got ${flat.triangleCount} of 12)`
+    );
+
+    const flatPlane = flat.candidates.find((c) => c.kind === "plane");
+    assert(flatPlane !== undefined, "a flat region yields a plane candidate");
+    if (flatPlane) {
+      assert(
+        flatPlane.residual < 1e-4,
+        `a real flat face fits a plane essentially exactly (residual ${flatPlane.residual})`
+      );
+      const n = flatPlane.primitive.normal;
+      assert(
+        Math.abs(Math.abs(n[2]) - 1) < 1e-6,
+        `the fitted normal is the seeded face's own axis (got ${JSON.stringify(n)})`
+      );
+    }
+
+    // THE tie-break: a flat region genuinely IS also fitted by an enormous
+    // sphere, so `simplest` must prefer the simpler shape rather than pick by
+    // residual alone.
+    assert(flat.simplest === "plane", `a flat region reports plane as simplest (got ${flat.simplest})`);
+    assert(
+      flat.candidates.find((c) => c.kind === "cylinder") === undefined,
+      "a flat region offers NO cylinder candidate — parallel normals determine no axis"
+    );
+    assert(
+      typeof flat.simplestRule === "string" && flat.simplestRule.includes("residualFrac"),
+      "the report publishes the rule used to pick `simplest`, so a caller can recompute it"
+    );
+
+    // A real 100k-triangle tessellated sphere of radius exactly 10.
+    const spherePath = path.join(ROOT, "examples", "STL", "large-sphere-100k.stl");
+    const curved = await call("fit_mesh_region", { path: spherePath, seedPoint: [10, 0, 0] });
+    assert(
+      curved.triangleCount > 1000,
+      `the grow crosses a tessellated curve rather than stopping at each facet (got ${curved.triangleCount})`
+    );
+    const sph = curved.candidates.find((c) => c.kind === "sphere");
+    assert(sph !== undefined, "a curved region yields a sphere candidate");
+    if (sph) {
+      assert(
+        Math.abs(sph.primitive.radius - 10) < 0.05,
+        `the sphere fit recovers the fixture's known radius of 10 (got ${sph.primitive.radius})`
+      );
+      const c = sph.primitive.center;
+      assert(
+        Math.hypot(c[0], c[1], c[2]) < 0.05,
+        `the sphere fit recovers the fixture's known centre at the origin (got ${JSON.stringify(c)})`
+      );
+    }
+    assert(
+      curved.simplest !== "plane",
+      `a whole sphere is not reported as simplest-fits-a-plane (got ${curved.simplest})`
+    );
+
+    // Both rejection paths.
+    const brepFit = await call("fit_mesh_region", { path: model, seedPoint: [0, 0, 0] });
+    assert(
+      brepFit.supported === false && /B-rep source/.test(brepFit.warnings.join(" ")),
+      "fit_mesh_region rejects a B-rep source, pointing at inspect/recognize_primitives"
     );
   }
 

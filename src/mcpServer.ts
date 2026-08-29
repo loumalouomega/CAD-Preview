@@ -50,6 +50,7 @@ import {
   compareModelsTool,
   checkMeshHealthTool,
   recognizePrimitivesTool,
+  fitMeshRegionTool,
   transformMeshTool,
   promoteMeshToBrepTool,
   repairMeshTool,
@@ -509,6 +510,25 @@ server.registerTool(
     inputSchema: { path: modelPath },
   },
   wrap((args: { path: string }) => recognizePrimitivesTool(ctx, args))
+);
+
+server.registerTool(
+  "fit_mesh_region",
+  {
+    description:
+      "Fit a plane / cylinder / sphere to a REGION of a mesh, FACTS ONLY. Grows a region outward from the triangle nearest `seedPoint`, crossing an edge only where adjacent triangles' normals differ by less than `angleDeg` (default 40 — deliberately looser than face-splitting tolerances so the walk crosses a tessellated curve), then fits all three shapes and reports each with its own residual (largest deviation of the region's vertices, and `residualFrac` relative to the region's size). `simplest` names the first of plane<cylinder<sphere whose residualFrac is under the published threshold; `simplestRule` states that rule so you can recompute it — it is a convenience over the same numbers, never a hidden judgment. This ordering matters: a FLAT region is also fitted by an enormous sphere with a tiny residual, so choosing by residual alone would pick close to arbitrarily. A shape that cannot be fitted is ABSENT rather than present with meaningless parameters (a flat region's normals are all parallel, so no cylinder axis exists — that is the honest answer). Emits no ops. Mesh sources only (stl/obj/ply/gltf): a B-rep source already has exact surfaces, so use inspect/recognize_primitives there.",
+    inputSchema: {
+      path: modelPath,
+      seedPoint: z
+        .tuple([z.number(), z.number(), z.number()])
+        .describe("World-space point on the surface; the nearest triangle by centroid seeds the region"),
+      angleDeg: z.number().optional().describe("Dihedral gate in degrees (default 40)"),
+      maxTriangles: z.number().optional().describe("Cap on region size; the result reports `capped` when hit"),
+    },
+  },
+  wrap((args: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number }) =>
+    fitMeshRegionTool(ctx, args)
+  )
 );
 
 server.registerTool(

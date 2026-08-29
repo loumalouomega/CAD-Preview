@@ -366,6 +366,11 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     checkMeshHealth: vi.fn(async () => FAKE_MESH_HEALTH_REPORT),
     recognizePrimitives: vi.fn(async () => ({ solidCount: 0, solids: [] })),
+    fitMeshRegion: vi.fn(async () => ({
+      seedTriangle: 0, triangleCount: 0, capped: false, regionArea: 0, regionDiagonal: 0,
+      freeEdgeCount: 0, nonManifoldEdgeCount: 0, candidates: [], simplest: null,
+      simplestRule: "", warnings: [],
+    })),
     promoteMeshToBrep: vi.fn(async () => FAKE_PROMOTE_RESULT),
     repairMesh: vi.fn(async () => FAKE_REPAIR_RESULT),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),

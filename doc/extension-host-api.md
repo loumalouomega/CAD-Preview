@@ -386,6 +386,16 @@ Non-topology-changing ops are skipped entirely in both paths (their ids are alre
 
 ---
 
+## `src/meshRegionGrow.ts`, `src/primitiveFit.ts`, and `src/meshRegionFit.ts`
+
+Mesh-side region fitting (roadmap item 9) — `fit_mesh_region`. All three are pure and **dependency-free**, and the whole path is **WASM-free** (no `getOcct`), so it preserves the "opening a pure-mesh file must never load the WASM" invariant.
+
+- **`meshRegionGrow.ts`** — `growRegion(positions, indices, seedTriangle, {angleDeg, maxTriangles})` → `{triangles, capped}`, a seeded dihedral-gated flood fill copying `connectedComponents`' discipline. Plus `nearestTriangleToPoint` (centroid distance — documented as a *seed* resolver, not a containment test), `regionPoints`, and `regionNormals`. Deliberately NOT `meshFacets.ts`'s `segmentCoplanarFacets`: that is global segmentation with no cap, is not THREE-free, and its 15° tolerance is tuned to split flat faces where this needs to walk across a curve.
+- **`primitiveFit.ts`** — `symmetricEigen` (3×3 cyclic Jacobi, ascending, since every consumer wants the *smallest* eigenvector), `solveLinear`, `fitPlane` (point PCA), `fitSphere` (Kasa), `fitCylinder` (axis from the covariance of the **normals**, then a 2D Kasa circle), and `axialExtent`. None of this existed anywhere in the repo before — there is no matrix library in the host dependency set, so it is hand-rolled like every other pure module.
+- **`meshRegionFit.ts`** — the orchestrator: `parseToWeldedMesh` → resolve seed → grow → fit all three → residual via `maxDeviation`. Publishes every candidate with its own residual rather than picking a winner, so a caller can disagree. `simplestOf(candidates)` is exported and pure — the published rule (simplest shape first, then a residual threshold) applied over exactly the numbers the result carries, so `simplestRule`'s "recompute it yourself" claim is verifiable rather than aspirational.
+
+`primitiveSdf.ts`'s `Primitive` union gained a `plane` variant for this — its one unbounded member. A fitted cylinder is infinite and must be clipped to the region's axial extent before its residual means anything.
+
 ## `src/primitiveSdf.ts`, `src/primitiveRecognition.ts`, and `src/primitiveReport.ts`
 
 Per-solid primitive recognition (roadmap item 8 Phase 2) — `recognize_primitives`. Split three ways along this codebase's usual pure/impure line:

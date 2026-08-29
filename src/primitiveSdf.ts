@@ -39,6 +39,12 @@ export type Vec3 = [number, number, number];
  * be handed to those ops later without a coordinate conversion trap.
  */
 export type Primitive =
+  /** An INFINITE plane — the one unbounded member of this union, added for the
+   * mesh-region fitting in `primitiveFit.ts`. Its signed distance is the
+   * perpendicular offset, negative on the side the normal points away from. It
+   * never arises from B-rep primitive recognition, which only ever produces
+   * bounded solids. */
+  | { kind: "plane"; point: Vec3; normal: Vec3 }
   | { kind: "box"; center: Vec3; size: Vec3; xAxis: Vec3; yAxis: Vec3; zAxis: Vec3 }
   | { kind: "sphere"; center: Vec3; radius: number }
   | { kind: "cylinder"; base: Vec3; axis: Vec3; radius: number; height: number }
@@ -73,6 +79,9 @@ function sdRect2(px: number, py: number, hx: number, hy: number): number {
 /** Signed distance from `p` to `prim`'s boundary — negative inside. */
 export function signedDistance(p: Vec3, prim: Primitive): number {
   switch (prim.kind) {
+    case "plane":
+      return dot(sub(p, prim.point), prim.normal);
+
     case "sphere":
       return len(sub(p, prim.center)) - prim.radius;
 
