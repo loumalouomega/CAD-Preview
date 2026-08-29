@@ -199,6 +199,7 @@ const FAKE_ENTITY_FACTS: EntityFacts = {
   normal: null,
   planeOrigin: null,
   surfaceType: null,
+  surfaceParams: null,
   curveType: null,
 };
 
@@ -364,6 +365,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     checkMeshHealth: vi.fn(async () => FAKE_MESH_HEALTH_REPORT),
+    recognizePrimitives: vi.fn(async () => ({ solidCount: 0, solids: [] })),
     promoteMeshToBrep: vi.fn(async () => FAKE_PROMOTE_RESULT),
     repairMesh: vi.fn(async () => FAKE_REPAIR_RESULT),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),

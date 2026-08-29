@@ -12,6 +12,7 @@ const base: EntityFacts = {
   normal: null,
   planeOrigin: null,
   surfaceType: null,
+  surfaceParams: null,
   curveType: null,
 };
 
@@ -102,5 +103,84 @@ describe("hoverContent", () => {
 
   it("passes the id through verbatim", () => {
     expect(hoverContent("edge-11", [1]).id).toBe("edge-11");
+  });
+});
+
+describe("inspectorContent — analytic surface parameters", () => {
+  it("shows a cylinder's radius and axis, and still no normal", () => {
+    const k = keys({
+      ...base,
+      surfaceType: "cylinder",
+      surfaceParams: { kind: "cylinder", radius: 3, axisLocation: [1, 2, 3], axisDirection: [0, 0, 1] },
+    });
+    expect(k).toContain("Radius");
+    expect(k).toContain("Axis");
+    expect(k).toContain("Axis through");
+    // A cylinder has no single normal — the row must stay absent.
+    expect(k).not.toContain("Normal");
+  });
+
+  it("shows a cone's half angle in degrees, with its apex", () => {
+    const rows = inspectorContent({
+      ...base,
+      surfaceType: "cone",
+      surfaceParams: {
+        kind: "cone",
+        axisLocation: [0, 0, 0],
+        axisDirection: [0, 0, 1],
+        refRadius: 5,
+        apex: [0, 0, 6.5],
+        semiAngleDeg: -36.8699,
+      },
+    }).rows;
+    const half = rows.find((r) => r.key === "Half angle");
+    expect(half?.value.endsWith("°")).toBe(true);
+    // The sign is what says which way the cone opens — it must survive.
+    expect(half?.value.startsWith("-")).toBe(true);
+    expect(rows.map((r) => r.key)).toContain("Apex");
+  });
+
+  it("distinguishes a sphere's own centre from the bbox centre", () => {
+    const rows = inspectorContent({
+      ...base,
+      surfaceType: "sphere",
+      surfaceParams: { kind: "sphere", center: [9, 9, 9], radius: 2.5 },
+    }).rows;
+    expect(rows.find((r) => r.key === "Sphere centre")?.value).toContain("9");
+    // Both rows exist and mean different things for a partial spherical face.
+    expect(rows.find((r) => r.key === "Centre")?.value).toContain("0.5");
+  });
+
+  it("shows both torus radii", () => {
+    const k = keys({
+      ...base,
+      surfaceType: "torus",
+      surfaceParams: { kind: "torus", axisLocation: [0, 0, 0], axisDirection: [0, 0, 1], majorRadius: 10, minorRadius: 2 },
+    });
+    expect(k).toContain("Major radius");
+    expect(k).toContain("Minor radius");
+  });
+
+  it("does NOT duplicate a plane's origin and normal", () => {
+    // normal/planeOrigin already render these; the `plane` variant is
+    // deliberately absent from the params switch. Without that, every planar
+    // face would show two identical pairs.
+    const k = keys({
+      ...base,
+      surfaceType: "plane",
+      normal: [0, 0, 1],
+      planeOrigin: [0, 0, 5],
+      surfaceParams: { kind: "plane", origin: [0, 0, 5], normal: [0, 0, 1] },
+    });
+    expect(k.filter((x) => x === "Normal")).toHaveLength(1);
+    expect(k.filter((x) => x === "On plane")).toHaveLength(1);
+  });
+
+  it("tolerates the field being absent entirely, rather than throwing", () => {
+    // The webview harness hand-builds these payloads; an older or partial
+    // object must render, not crash the card.
+    const partial = { ...base, surfaceType: "cylinder" as const };
+    delete (partial as { surfaceParams?: unknown }).surfaceParams;
+    expect(() => inspectorContent(partial as EntityFacts)).not.toThrow();
   });
 });

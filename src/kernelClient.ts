@@ -207,6 +207,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     disposeBRepCacheForDocument: (...args) => callKernel("disposeBRepCacheForDocument", args) as Promise<void>,
     readMeshioFieldValues: (...args) => callKernel("readMeshioFieldValues", args) as ReturnType<typeof readMeshioFieldValues>,
     checkMeshHealth: (...args) => callKernel("checkMeshHealth", args) as ReturnType<Pipeline["checkMeshHealth"]>,
+    recognizePrimitives: (...args) => callKernel("recognizePrimitives", args) as ReturnType<Pipeline["recognizePrimitives"]>,
     promoteMeshToBrep: (...args) => callKernel("promoteMeshToBrep", args) as ReturnType<Pipeline["promoteMeshToBrep"]>,
     repairMesh: (...args) => callKernel("repairMesh", args) as ReturnType<Pipeline["repairMesh"]>,
     exportSvgSilhouette: (...args) => callKernel("exportSvgSilhouette", args) as ReturnType<Pipeline["exportSvgSilhouette"]>,

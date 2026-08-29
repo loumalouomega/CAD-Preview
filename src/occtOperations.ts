@@ -1,4 +1,8 @@
 import type { EditOp, Vec3, OpOutcome, OutcomeFail } from "./editOps";
+// TYPE-ONLY, and that is load-bearing: `entityFacts.ts` imports this module
+// at runtime, so a value import here would close a genuine require() cycle in
+// the CJS bundle.
+import type { SurfaceType, SurfaceParams } from "./entityFacts";
 import { enumerateEdges } from "./edgeEnumeration";
 
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
@@ -1882,24 +1886,138 @@ export function bboxExtent(oc: any, s: any, cleanup: Array<{ delete(): void }>):
 }
 
 /**
+ * The analytic classification AND parameters of a face's surface, from ONE
+ * `BRepAdaptor_Surface`.
+ *
+ * **Every accessor here was verified against the live WASM**, since none of
+ * `.Cylinder()`/`.Cone()`/`.Sphere()`/`.Torus()` had a single call site in
+ * this codebase and the bindings manifest lists class names only, with no
+ * method-level information (this repo's history is full of green-but-broken
+ * bindings — `ShapeFix_Shape`, `Message_ProgressRange_1`, `HLRBRep_*`).
+ * Confirmed members: `gp_Cylinder{Radius,Location,Axis}`,
+ * `gp_Cone{RefRadius,SemiAngle,Apex,Location,Axis}`,
+ * `gp_Sphere{Radius,Location}` (note: **no `Axis()`**), and
+ * `gp_Torus{MajorRadius,MinorRadius,Location,Axis}` — each round-tripped
+ * against a primitive built with known parameters, and additionally against a
+ * fillet-generated cylindrical face, which is the case that matters for
+ * imported STEP (its faces come from someone else's kernel, not
+ * `BRepPrimAPI`).
+ *
+ * **Every sub-accessor returns its own handle needing `.delete()`** — the
+ * `gp_*` itself and each `Location()`/`Axis()`/`Direction()`/`Apex()` — hence
+ * the cleanup discipline below, copied from what `facePlane` already did.
+ *
+ * **The type gate is symbolic and mandatory.** Calling the wrong accessor
+ * (e.g. `.Cylinder()` on a plane) throws a raw JS `number` — an OCCT
+ * exception pointer, not an `Error`, with no decoder available in this build
+ * — so an escaped throw would surface to the user as the literal string
+ * `"16412792"`. It is also not matched by `isOcctWasmAbort`, so it would not
+ * trigger a (spurious) kernel reset. The `try/catch` below is what keeps that
+ * contained; the parameter read degrades to `params: null` while `type` is
+ * still reported.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function faceSurfaceInfo(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  oc: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  face: any,
+  cleanup: Array<{ delete(): void }>
+): { type: SurfaceType; params: SurfaceParams | null } {
+  const surf = new oc.BRepAdaptor_Surface_2(face, true);
+  cleanup.push(surf);
+  const t = surf.GetType().value;
+  const E = oc.GeomAbs_SurfaceType;
+
+  // Keeps every handle a sub-accessor hands back, so the caller's `finally`
+  // frees them in reverse order.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const keep = (...handles: any[]) => {
+    for (const h of handles) if (h && typeof h.delete === "function") cleanup.push(h);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pointOf = (h: any): Vec3 => [h.X(), h.Y(), h.Z()];
+  /** A `gp_Ax1`'s location + direction, both kept for cleanup. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const axisOf = (g: any): { loc: Vec3; dir: Vec3 } => {
+    const ax = g.Axis();
+    const l = ax.Location();
+    const d = ax.Direction();
+    const out = { loc: pointOf(l), dir: pointOf(d) };
+    keep(ax, l, d);
+    return out;
+  };
+
+  let type: SurfaceType = "other";
+  let params: SurfaceParams | null = null;
+  try {
+    if (t === E.GeomAbs_Plane.value) {
+      type = "plane";
+      const pln = surf.Plane();
+      const loc = pln.Location();
+      const a = axisOf(pln);
+      params = { kind: "plane", origin: pointOf(loc), normal: a.dir };
+      keep(pln, loc);
+    } else if (t === E.GeomAbs_Cylinder.value) {
+      type = "cylinder";
+      const cyl = surf.Cylinder();
+      const a = axisOf(cyl);
+      params = { kind: "cylinder", radius: cyl.Radius(), axisLocation: a.loc, axisDirection: a.dir };
+      keep(cyl);
+    } else if (t === E.GeomAbs_Cone.value) {
+      type = "cone";
+      const cone = surf.Cone();
+      const a = axisOf(cone);
+      const apex = cone.Apex();
+      params = {
+        kind: "cone",
+        axisLocation: a.loc,
+        axisDirection: a.dir,
+        refRadius: cone.RefRadius(),
+        apex: pointOf(apex),
+        // Radians -> degrees, sign preserved (see SurfaceParams' doc).
+        semiAngleDeg: cone.SemiAngle() * (180 / Math.PI),
+      };
+      keep(cone, apex);
+    } else if (t === E.GeomAbs_Sphere.value) {
+      type = "sphere";
+      const sph = surf.Sphere();
+      const loc = sph.Location();
+      params = { kind: "sphere", center: pointOf(loc), radius: sph.Radius() };
+      keep(sph, loc);
+    } else if (t === E.GeomAbs_Torus.value) {
+      type = "torus";
+      const tor = surf.Torus();
+      const a = axisOf(tor);
+      params = {
+        kind: "torus",
+        axisLocation: a.loc,
+        axisDirection: a.dir,
+        majorRadius: tor.MajorRadius(),
+        minorRadius: tor.MinorRadius(),
+      };
+      keep(tor);
+    }
+  } catch {
+    // A parameter read failed; the classification stands on its own.
+    params = null;
+  }
+  return { type, params };
+}
+
+/**
  * The (point, normal) of a planar face, or null if the face is not planar.
- * Exported for `src/entityFacts.ts`'s `inspect`/`measure` MCP tools (its only
- * consumer besides `mateShape` below).
+ *
+ * A projection of {@link faceSurfaceInfo} — deliberately not a second reader,
+ * so a plane's normal can never disagree with `surfaceParams`. Consumers:
+ * `mateShape` below, and `entityFacts.ts`'s `measureExact` planar face-pair
+ * branch.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function facePlane(oc: any, face: any, cleanup: Array<{ delete(): void }>): { pt: Vec3; nl: Vec3 } | null {
   try {
-    const surf = new oc.BRepAdaptor_Surface_2(face, true);
-    cleanup.push(surf);
-    if (surf.GetType().value !== oc.GeomAbs_SurfaceType.GeomAbs_Plane.value) return null;
-    const pln = surf.Plane();
-    const loc = pln.Location();
-    const axis = pln.Axis();
-    const d = axis.Direction();
-    const pt: Vec3 = [loc.X(), loc.Y(), loc.Z()];
-    const nl: Vec3 = [d.X(), d.Y(), d.Z()];
-    for (const h of [pln, loc, axis, d]) { if (h && typeof h.delete === "function") cleanup.push(h); }
-    return { pt, nl };
+    const { params } = faceSurfaceInfo(oc, face, cleanup);
+    return params?.kind === "plane" ? { pt: params.origin, nl: params.normal } : null;
   } catch {
     return null;
   }

@@ -755,7 +755,8 @@ test("inspector card: selection requests facts, and the reply renders per classi
     entityId: req.entityId, kind: "face",
     bbox: { min: [0, 0, 0], max: [1, 1, 0], diagonal: Math.SQRT2 },
     center: [0.5, 0.5, 0], area: 1, length: null,
-    normal: [0, 0, 1], planeOrigin: [0, 0, 0], surfaceType: "plane", curveType: null,
+    normal: [0, 0, 1], planeOrigin: [0, 0, 0], surfaceType: "plane",
+    surfaceParams: { kind: "plane", origin: [0, 0, 0], normal: [0, 0, 1] }, curveType: null,
   };
   await reply(planar, req.requestId);
   await sleep(120);
@@ -768,6 +769,27 @@ test("inspector card: selection requests facts, and the reply renders per classi
   await sleep(120);
   assert((await cardTitle()) === "Cylindrical face", `a cylinder renders as "Cylindrical face" (got ${await cardTitle()})`);
   assert(!(await cardKeys()).includes("Normal"), "a curved face shows NO Normal row");
+
+  // The analytic parameters behind the classification. Before roadmap item 8
+  // Phase 1 the card could say "Cylindrical face" and nothing more — the
+  // radius and axis were computed in the same OCCT call and thrown away.
+  await reply(
+    {
+      ...planar,
+      surfaceType: "cylinder",
+      normal: null,
+      planeOrigin: null,
+      surfaceParams: { kind: "cylinder", radius: 3, axisLocation: [1, 2, 3], axisDirection: [0, 0, 1] },
+    },
+    req.requestId
+  );
+  await sleep(120);
+  {
+    const k = await cardKeys();
+    assert(k.includes("Radius"), "a cylindrical face shows its Radius row");
+    assert(k.includes("Axis"), "a cylindrical face shows its Axis row");
+    assert(!k.includes("Normal"), "the parameters do not resurrect a Normal row for a curved face");
+  }
 
   // Stale replies must be dropped, or a slow answer for a previous selection
   // would overwrite the current one.

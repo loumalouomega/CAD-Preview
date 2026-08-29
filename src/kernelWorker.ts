@@ -43,6 +43,7 @@ import {
   readMeshioFieldValues,
 } from "./meshioService";
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
+import { recognizePrimitives } from "./primitiveReport";
 import { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
@@ -132,6 +133,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,
   checkMeshHealth: checkMeshHealth as Handler,
+  recognizePrimitives: recognizePrimitives as Handler,
   promoteMeshToBrep: promoteMeshToBrep as Handler,
   repairMesh: repairMesh as Handler,
   exportSvgSilhouette: exportSvgSilhouette as Handler,

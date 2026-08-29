@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 40, `tools/list exposes 40 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 41, `tools/list exposes 41 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -558,6 +558,421 @@ try {
     cylinderRadiusFound !== null,
     `measure_exact radius finds the cylinder's rim edge and resolves its exact radius (expected ${knownRadius})`
   );
+
+
+  // ── inspect: analytic surface parameters (roadmap item 8 Phase 1) ────────
+  //
+  // `surfaceType: "cylinder"` used to be the whole answer — no radius, no
+  // axis. These assert the parameters against geometry built with KNOWN
+  // values, which is the bar `measure_exact`'s radius path set: not "the
+  // accessor returned a number".
+  {
+    const surfModel = path.join(dir, "bull-for-surface-params.stp");
+    fs.copyFileSync(FIXTURE, surfModel);
+    const R = s / 5;
+    const H = s;
+    // Deliberately TILTED and OFF-ORIGIN. A local/parametric answer would read
+    // [0,0,1] at the origin and sail through an axis-aligned fixture; only a
+    // tilted, translated one proves the values are in world coordinates.
+    const cylCentre = [bbox.max[0] + 5 * s, 2 * s, -3 * s];
+    const cylAxis = [0, 1, 1];
+    const applied = await call("apply_edit_ops", {
+      path: surfModel,
+      ops: [{ op: "addCylinder", center: cylCentre, radius: R, height: H, axis: cylAxis }],
+    });
+    assert(applied.applied === 1, "apply_edit_ops accepts the tilted cylinder for surface-parameter checks");
+
+    const unit = (v) => { const n = Math.hypot(...v); return v.map((c) => c / n); };
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const norm = (v) => Math.hypot(...v);
+    const expectedAxis = unit(cylAxis);
+
+    // Faces are enumerated per solid — there is no global faceCount.
+    const faceIdsOf = (m) => m.solids.flatMap((sol) => sol.faceIds);
+    let cylFace = null;
+    for (const fid of faceIdsOf(applied.model)) {
+      const f = await call("inspect", { path: surfModel, entityId: fid });
+      if (f.surfaceType !== "cylinder" || !f.surfaceParams) continue;
+      if (Math.abs(f.surfaceParams.radius - R) > 1e-6) continue;
+      cylFace = f;
+      break;
+    }
+    assert(cylFace !== null, `inspect finds the added cylinder's lateral face and reports radius ${R}`);
+    if (cylFace) {
+      const p = cylFace.surfaceParams;
+      assert(p.kind === "cylinder", `surfaceParams.kind matches surfaceType (got ${p.kind})`);
+      assert(Math.abs(p.radius - R) < 1e-9, `cylinder radius is exact (expected ${R}, got ${p.radius})`);
+      // Sign-insensitive: OCCT may report either direction along the axis.
+      const align = Math.abs(dot(unit(p.axisDirection), expectedAxis));
+      assert(align > 1 - 1e-6, `cylinder axisDirection matches the requested tilted axis (|dot| ${align.toFixed(9)})`);
+      // THE world-frame assertion: axisLocation must lie on the line through
+      // the requested centre along the requested axis, i.e. its perpendicular
+      // component is zero. A local-frame answer fails this.
+      const d = sub(p.axisLocation, cylCentre);
+      const perp = norm(sub(d, expectedAxis.map((c) => c * dot(d, expectedAxis))));
+      assert(perp < 1e-6, `cylinder axisLocation lies on the true axis line (perp offset ${perp.toExponential(2)})`);
+      // A cylinder has no single normal; populating one would make Clip > Face
+      // silently accept it and cut on a meaningless plane.
+      assert(
+        cylFace.normal === null && cylFace.planeOrigin === null,
+        "a cylindrical face still reports no normal/planeOrigin"
+      );
+      // Cross-tool agreement: two independent kernel paths — the surface
+      // adaptor's Cylinder().Radius() and the curve adaptor's Circle().Radius()
+      // — must resolve the same rim radius.
+      let rimAgreed = false;
+      for (let i = 0; i < applied.model.edgeCount; i++) {
+        const r = await callTolerant("measure_exact", { path: surfModel, kind: "radius", entityIdA: `edge-${i}` });
+        if (!r.error && Math.abs(r.value.value - p.radius) < 1e-9) { rimAgreed = true; break; }
+      }
+      assert(rimAgreed, "measure_exact's rim radius agrees with the face's surfaceParams.radius to 1e-9");
+    }
+
+    // Cone: half-angle in DEGREES with its sign, and the location-independent
+    // identity that survives OCCT choosing a different point on the axis.
+    const coneModel = path.join(dir, "bull-for-cone-params.stp");
+    fs.copyFileSync(FIXTURE, coneModel);
+    const r1 = s / 4, r2 = s / 10, hCone = s / 2;
+    const coneApplied = await call("apply_edit_ops", {
+      path: coneModel,
+      ops: [{ op: "addCone", center: [bbox.max[0] + 5 * s, 0, 0], radius1: r1, radius2: r2, height: hCone, axis: [0, 0, 1] }],
+    });
+    assert(coneApplied.applied === 1, "apply_edit_ops accepts the cone for surface-parameter checks");
+    let coneFace = null;
+    for (const fid of faceIdsOf(coneApplied.model)) {
+      const f = await call("inspect", { path: coneModel, entityId: fid });
+      if (f.surfaceType !== "cone" || !f.surfaceParams) continue;
+      coneFace = f;
+      break;
+    }
+    assert(coneFace !== null, "inspect finds the cone's lateral face and reports cone parameters");
+    if (coneFace) {
+      const p = coneFace.surfaceParams;
+      const expectedDeg = -Math.atan((r1 - r2) / hCone) * (180 / Math.PI);
+      assert(
+        Math.abs(p.semiAngleDeg - expectedDeg) < 1e-6,
+        `cone semiAngleDeg is degrees WITH its sign (expected ${expectedDeg.toFixed(6)}, got ${p.semiAngleDeg})`
+      );
+      assert(p.semiAngleDeg < 0, "a cone narrowing along +axis reports a negative half-angle");
+      const dApex = Math.hypot(...[0, 1, 2].map((k) => p.apex[k] - p.axisLocation[k]));
+      const identity = dApex * Math.tan(Math.abs((p.semiAngleDeg * Math.PI) / 180));
+      assert(
+        Math.abs(identity - p.refRadius) < 1e-6,
+        `refRadius == |apex - axisLocation| * tan|semiAngle| (${identity.toFixed(6)} vs ${p.refRadius})`
+      );
+    }
+
+    // Sphere and torus. Without these the two accessors would ship with no
+    // live verification at all — the cylinder/cone assertions above say
+    // nothing about them.
+    {
+      const sphModel = path.join(dir, "bull-for-sphere-params.stp");
+      fs.copyFileSync(FIXTURE, sphModel);
+      const sr = s / 6;
+      const sc = [bbox.max[0] + 7 * s, 3 * s, 2 * s];
+      const sphApplied = await call("apply_edit_ops", {
+        path: sphModel,
+        ops: [{ op: "addSphere", center: sc, radius: sr }],
+      });
+      assert(sphApplied.applied === 1, "apply_edit_ops accepts the sphere for surface-parameter checks");
+      let sphFace = null;
+      for (const fid of faceIdsOf(sphApplied.model)) {
+        const f = await call("inspect", { path: sphModel, entityId: fid });
+        if (f.surfaceType !== "sphere" || !f.surfaceParams) continue;
+        sphFace = f;
+        break;
+      }
+      assert(sphFace !== null, "inspect finds the sphere's face and reports sphere parameters");
+      if (sphFace) {
+        const p = sphFace.surfaceParams;
+        assert(Math.abs(p.radius - sr) < 1e-9, `sphere radius is exact (expected ${sr}, got ${p.radius})`);
+        const off = Math.hypot(p.center[0] - sc[0], p.center[1] - sc[1], p.center[2] - sc[2]);
+        assert(off < 1e-6, `sphere centre is the requested world position (offset ${off.toExponential(2)})`);
+      }
+
+      const torModel = path.join(dir, "bull-for-torus-params.stp");
+      fs.copyFileSync(FIXTURE, torModel);
+      const majR = s / 3, minR = s / 12;
+      const tc = [bbox.max[0] + 7 * s, 0, 0];
+      const torAxis = [1, 0, 0]; // deliberately NOT +z, so a hardcoded axis would fail
+      const torApplied = await call("apply_edit_ops", {
+        path: torModel,
+        ops: [{ op: "addTorus", center: tc, axis: torAxis, majorRadius: majR, minorRadius: minR }],
+      });
+      assert(torApplied.applied === 1, "apply_edit_ops accepts the torus for surface-parameter checks");
+      let torFace = null;
+      for (const fid of faceIdsOf(torApplied.model)) {
+        const f = await call("inspect", { path: torModel, entityId: fid });
+        if (f.surfaceType !== "torus" || !f.surfaceParams) continue;
+        torFace = f;
+        break;
+      }
+      assert(torFace !== null, "inspect finds the torus's face and reports torus parameters");
+      if (torFace) {
+        const p = torFace.surfaceParams;
+        // Major/minor must not be transposed — assert each against its own value.
+        assert(Math.abs(p.majorRadius - majR) < 1e-9, `torus majorRadius is exact (expected ${majR}, got ${p.majorRadius})`);
+        assert(Math.abs(p.minorRadius - minR) < 1e-9, `torus minorRadius is exact (expected ${minR}, got ${p.minorRadius})`);
+        assert(p.majorRadius > p.minorRadius, "torus major/minor are not transposed");
+        const align = Math.abs(dot(unit(p.axisDirection), unit(torAxis)));
+        assert(align > 1 - 1e-6, `torus axisDirection matches the requested non-default axis (|dot| ${align.toFixed(9)})`);
+      }
+    }
+
+    // A fillet-generated cylindrical face. This is the case that actually
+    // matters: an imported STEP's faces are analytic surfaces from someone
+    // else's kernel, not `BRepPrimAPI` output, and a parameter reader that
+    // only worked on primitives we built ourselves would be worthless.
+    {
+      const filletModel = path.join(dir, "bull-for-fillet-params.stp");
+      fs.copyFileSync(FIXTURE, filletModel);
+      const fr = s / 40;
+      const boxAt = [bbox.max[0] + 9 * s, 0, 0];
+      const boxed = await call("apply_edit_ops", {
+        path: filletModel,
+        ops: [{ op: "addBox", center: boxAt, size: [s, s, s] }],
+      });
+      const boxFaces = boxed.model.solids[boxed.model.solids.length - 1].faceIds;
+      // Fillet one of the new box's own edges. Find an edge belonging to it by
+      // filleting each candidate until one takes.
+      // Bounded deliberately: the box was appended last, so its own 12 edges
+      // are the LAST 12 in explorer order, and the filleted face lands on the
+      // LAST solid. Scanning every edge and every face instead costs hundreds
+      // of extra kernel calls, and this file's total call volume is already
+      // close enough to the documented accumulated-heap-pressure threshold
+      // that the extra traffic tipped a later render_snapshot into a WASM
+      // abort. Cheap here is not an optimization, it is what keeps the run green.
+      let filletRadiusFound = null;
+      const firstBoxEdge = Math.max(0, boxed.model.edgeCount - 12);
+      for (let e = boxed.model.edgeCount - 1; e >= firstBoxEdge && filletRadiusFound === null; e--) {
+        const t = await callTolerant("apply_edit_ops", {
+          path: filletModel,
+          ops: [{ op: "fillet", edges: [`edge-${e}`], radius: fr }],
+          dryRun: false,
+        });
+        // Same rule as the recognition block below: remove the attempt on every
+        // path, since a validated-but-unapplied op is still persisted.
+        if (t.error || t.value.applied !== 1) {
+          await callTolerant("remove_edit_op", { path: filletModel, index: 1 });
+          continue;
+        }
+        const after = t.value.model;
+        // Scan EVERY solid's faces: the fillet rebuilds the whole shape, so the
+        // filleted solid is not necessarily last afterwards (narrowing this to
+        // the last solid was a real bug — it found nothing). The edge bound
+        // above is what keeps the cost down; the first candidate edge succeeds,
+        // so this inner scan runs once.
+        for (const fid of after.solids.flatMap((sol) => sol.faceIds)) {
+          const f = await call("inspect", { path: filletModel, entityId: fid });
+          if (f.surfaceType === "cylinder" && f.surfaceParams && Math.abs(f.surfaceParams.radius - fr) < 1e-9) {
+            filletRadiusFound = f.surfaceParams.radius;
+            break;
+          }
+        }
+        // Undo so a failed candidate doesn't accumulate fillets.
+        if (filletRadiusFound === null) await callTolerant("remove_edit_op", { path: filletModel, index: 1 });
+      }
+      assert(
+        filletRadiusFound !== null,
+        `surfaceParams reads a FILLET-generated cylindrical face's radius exactly (expected ${fr})`
+      );
+      assert(boxFaces.length === 6, `the added box contributed 6 planar faces (got ${boxFaces.length})`);
+    }
+
+    // A planar face's surfaceParams must be strictly identical to the
+    // normal/planeOrigin projections — proves the single-adaptor refactor
+    // did not let the two reads diverge.
+    let planeChecked = false;
+    for (const fid of faceIdsOf(applied.model)) {
+      if (planeChecked) break;
+      const f = await call("inspect", { path: surfModel, entityId: fid });
+      if (f.surfaceType !== "plane" || !f.surfaceParams) continue;
+      assert(
+        JSON.stringify(f.surfaceParams.normal) === JSON.stringify(f.normal) &&
+          JSON.stringify(f.surfaceParams.origin) === JSON.stringify(f.planeOrigin),
+        "a planar face's surfaceParams match its normal/planeOrigin exactly (one adaptor, one source)"
+      );
+      planeChecked = true;
+    }
+    assert(planeChecked, "found a planar face to cross-check surfaceParams against normal/planeOrigin");
+
+    // Negatives: a free-form face and the non-face kinds report null rather
+    // than a fabricated parameter set.
+    const freeform = await call("inspect", { path: surfModel, entityId: "face-0" });
+    if (freeform.surfaceType === "other") {
+      assert(freeform.surfaceParams === null, "a free-form (other) face reports surfaceParams: null");
+    }
+    for (const [id, what] of [["solid-0", "solid"], ["edge-0", "edge"], ["point-0", "vertex"]]) {
+      const e = await callTolerant("inspect", { path: surfModel, entityId: id });
+      if (e.error) continue;
+      assert(e.value.surfaceParams === null, `a ${what} reports surfaceParams: null`);
+    }
+  }
+
+
+  // ── recognize_primitives (roadmap item 8 Phase 2) ─────────────────────────
+  //
+  // Facts only. The assertion that carries this block is the FILLETED box:
+  // publishing a residual is pointless unless it actually moves when the
+  // geometry stops being the ideal primitive.
+  {
+    const recModel = path.join(dir, "bull-for-recognize.stp");
+    fs.copyFileSync(FIXTURE, recModel);
+    const bs = s / 2;
+    const boxCentre = [bbox.max[0] + 12 * s, 0, 0];
+    const sphR = s / 7;
+    const sphCentre = [bbox.max[0] + 16 * s, 0, 0];
+    // A non-default axis, so the cap-derived height cannot pass by accident.
+    const cylR2 = s / 9;
+    const cylH2 = s / 3;
+    const cylCentre2 = [bbox.max[0] + 20 * s, 0, 0];
+    const recApplied = await call("apply_edit_ops", {
+      path: recModel,
+      ops: [
+        { op: "addBox", center: boxCentre, size: [bs, bs, bs] },
+        { op: "addSphere", center: sphCentre, radius: sphR },
+        { op: "addCylinder", center: cylCentre2, radius: cylR2, height: cylH2, axis: [0, 1, 0] },
+      ],
+    });
+    assert(recApplied.applied === 3, "apply_edit_ops accepts the box + sphere + cylinder for recognition checks");
+
+    const rep = await call("recognize_primitives", { path: recModel });
+    assert(rep.supported === true, "recognize_primitives supports a B-rep source");
+    assert(
+      rep.solidCount === recApplied.model.solids.length,
+      `the report has one row per solid (${rep.solidCount} vs ${recApplied.model.solids.length})`
+    );
+
+    const boxRow = rep.solids.find((r) => r.candidate && r.candidate.kind === "box");
+    assert(boxRow !== undefined, "the added box is recognized as a box");
+    if (boxRow) {
+      const sz = [...boxRow.candidate.size].sort((a, b) => a - b);
+      assert(
+        sz.every((v) => Math.abs(v - bs) < 1e-6),
+        `the box's size is recovered exactly (expected ${bs}, got ${JSON.stringify(sz)})`
+      );
+      // NOT floating-point zero, and that is expected rather than sloppy: the
+      // sampled points come from the tessellation's Float32Array buffers, whose
+      // precision is relative to COORDINATE MAGNITUDE, and this box sits ~1000
+      // units from the origin (2^-24 * 1000 ~ 6e-5). So the residual has a
+      // noise floor; assert scale-free against the solid's own size instead.
+      assert(
+        boxRow.fitResidual !== null && boxRow.fitResidualFrac < 1e-5,
+        `a true box fits its own primitive to the tessellation's precision floor (residualFrac ${boxRow.fitResidualFrac})`
+      );
+      assert(boxRow.inventory.plane === 6, `the box's inventory reports 6 planar faces (got ${boxRow.inventory.plane})`);
+    }
+
+    const sphRow = rep.solids.find((r) => r.candidate && r.candidate.kind === "sphere");
+    assert(sphRow !== undefined, "the added sphere is recognized as a sphere");
+    if (sphRow) {
+      assert(
+        Math.abs(sphRow.candidate.radius - sphR) < 1e-6,
+        `the sphere's radius is recovered exactly (expected ${sphR}, got ${sphRow.candidate.radius})`
+      );
+      // A sphere's tessellation nodes lie on the analytic sphere, so the only
+      // deviation is the same Float32 floor as the box above.
+      assert(
+        sphRow.fitResidual !== null && sphRow.fitResidualFrac < 1e-5,
+        `a true sphere fits its own primitive to the tessellation's precision floor (residualFrac ${sphRow.fitResidualFrac})`
+      );
+    }
+
+    // Cylinder: the most involved signature — the radius and axis come from
+    // the lateral face, but the HEIGHT has to be derived from the gap between
+    // the two cap planes, which unit tests can only exercise synthetically.
+    const cylRow = rep.solids.find((r) => r.candidate && r.candidate.kind === "cylinder");
+    assert(cylRow !== undefined, "the added cylinder is recognized as a cylinder");
+    if (cylRow) {
+      assert(
+        Math.abs(cylRow.candidate.radius - cylR2) < 1e-6,
+        `the cylinder's radius is recovered exactly (expected ${cylR2}, got ${cylRow.candidate.radius})`
+      );
+      assert(
+        Math.abs(cylRow.candidate.height - cylH2) < 1e-6,
+        `the cylinder's height is derived from its cap planes (expected ${cylH2}, got ${cylRow.candidate.height})`
+      );
+      // `candidate.axis` is already unit length (recognizePrimitive normalizes),
+      // so no local helper is needed — and the one in the surface-params block
+      // above is out of scope here.
+      const ax = cylRow.candidate.axis;
+      assert(
+        Math.abs(Math.hypot(...ax) - 1) < 1e-9,
+        `the cylinder's candidate axis is unit length (got ${Math.hypot(...ax)})`
+      );
+      assert(Math.abs(Math.abs(ax[1]) - 1) < 1e-6, `the cylinder's axis matches the requested +Y (got ${JSON.stringify(ax)})`);
+      assert(
+        cylRow.inventory.cylinder === 1 && cylRow.inventory.plane === 2,
+        `the cylinder's inventory is 1 lateral + 2 caps (got ${JSON.stringify(cylRow.inventory)})`
+      );
+      assert(
+        cylRow.fitResidual !== null && cylRow.fitResidualFrac < 1e-4,
+        `a true cylinder fits its own primitive to the tessellation's precision floor (residualFrac ${cylRow.fitResidualFrac})`
+      );
+    }
+
+    // bull.stp's own free-form solid: no candidate, but a populated inventory.
+    const freeRow = rep.solids.find((r) => r.candidate === null);
+    assert(freeRow !== undefined, "a free-form solid reports candidate: null rather than a guess");
+    if (freeRow) {
+      const total = Object.values(freeRow.inventory).reduce((a, b) => a + b, 0);
+      assert(total === freeRow.faceCount, `an unrecognized solid still reports its full inventory (${total} faces)`);
+      assert(
+        freeRow.fitResidual === null && freeRow.fitResidualFrac === null,
+        "no candidate means no residual — null, never a perfect-looking 0"
+      );
+    }
+
+    // THE assertion this feature exists for: fillet one of the box's edges and
+    // the residual must MOVE. A filleted box is honestly not a box primitive
+    // (the extra face changes the inventory), so the candidate goes null —
+    // which is itself the fact worth publishing.
+    const filletR = bs / 10;
+    let filletApplied = null;
+    const firstBoxEdge = Math.max(0, recApplied.model.edgeCount - 30);
+    for (let e = recApplied.model.edgeCount - 1; e >= firstBoxEdge && filletApplied === null; e--) {
+      const t = await callTolerant("apply_edit_ops", {
+        path: recModel,
+        ops: [{ op: "fillet", edges: [`edge-${e}`], radius: filletR }],
+      });
+      // An op that VALIDATES but does not apply is still persisted (that is
+      // exactly what the edit-outcome feature reports), so the attempt must be
+      // removed on EVERY path — skipping the removal on a non-applying attempt
+      // leaves an extra op in the list and the next `index: 2` removal then
+      // targets the wrong one.
+      const applied1 = !t.error && t.value.applied === 1;
+      let matched = null;
+      if (applied1) {
+        const after = await call("recognize_primitives", { path: recModel });
+        const withCyl = after.solids.find((r) => r.inventory.cylinder > 0 && r.inventory.plane === 6);
+        if (withCyl) matched = { after, withCyl };
+      }
+      if (matched) {
+        filletApplied = matched;
+        break;
+      }
+      await callTolerant("remove_edit_op", { path: recModel, index: 2 });
+    }
+    assert(filletApplied !== null, "filleting one of the box's edges produces a 6-plane + cylinder inventory");
+    if (filletApplied) {
+      assert(
+        filletApplied.withCyl.candidate === null,
+        "a filleted box is honestly NOT a box primitive — the extra face means no exact signature match"
+      );
+      assert(
+        filletApplied.withCyl.inventory.plane === 6 && filletApplied.withCyl.inventory.cylinder === 1,
+        `the inventory still describes it usefully (${JSON.stringify(filletApplied.withCyl.inventory)})`
+      );
+    }
+
+    // A mesh source is rejected, not silently answered.
+    const meshRec = await call("recognize_primitives", { path: path.join(ROOT, "examples", "STL", "cube.stl") });
+    assert(
+      meshRec.supported === false && /mesh source/.test(meshRec.warnings.join(" ")),
+      "recognize_primitives rejects a mesh source with a clear reason"
+    );
+  }
 
   // Error paths degrade to a clear, actionable error, never a meaningless number.
   const distanceWithoutB = await callTolerant("measure_exact", { path: model, kind: "distance", entityIdA: "solid-0" });

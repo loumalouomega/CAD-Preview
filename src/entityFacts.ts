@@ -9,6 +9,7 @@ import {
   bboxDiagonal,
   bboxExtent,
   facePlane,
+  faceSurfaceInfo,
   combineSolids,
 } from "./occtOperations";
 import { rebindEntities, remapPartEntityIds, type EntitySignature } from "./entityRebind";
@@ -38,13 +39,60 @@ export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
  */
 export type SurfaceType = "plane" | "cylinder" | "cone" | "sphere" | "torus" | "other";
 
-const SURFACE_TYPE_BY_VALUE: Record<number, SurfaceType> = {
-  0: "plane",
-  1: "cylinder",
-  2: "cone",
-  3: "sphere",
-  4: "torus",
-};
+/**
+ * The analytic parameters of a face's underlying surface — the numbers
+ * {@link SurfaceType} previously implied but withheld.
+ *
+ * **Frame and units.** Every point and direction is in the WORLD coordinates
+ * of the shape after op replay — the same frame as `bbox`, `center`,
+ * `planeOrigin`, and the points `measure`/`measure_exact` report — and every
+ * length is in the source file's own units, unconverted, exactly like `bbox`
+ * and `area`. Verified against the live WASM under both translation (with
+ * `BRepBuilderAPI_Transform`'s copy and location-only modes) and rotation:
+ * `BRepAdaptor_Surface` applies the face's own `TopLoc_Location` inside the
+ * accessor, so nothing here needs converting. Directions are unit length by
+ * construction (`gp_Dir`), but expect ~1e-16 dirt off the axes after a
+ * rotation — compare with a tolerance, never `===`.
+ *
+ * **`axisLocation` is a point ON the axis and nothing more.** It is not the
+ * face's centre, not necessarily inside the face's own extent, and not stable
+ * across kernels — for a `BRepPrimAPI` cylinder it happens to be the base
+ * circle's centre, while for a filleted box edge it landed on the fillet's
+ * own axis. Use `axisLocation` + `axisDirection` as the infinite axis line;
+ * use `bbox`/`center` for where the face actually is.
+ *
+ * **Deliberately NOT reported**: whether a cylinder is a hole or a boss. A
+ * `gp_Cylinder` is identical for both — the material side lives in the face's
+ * `TopAbs_Orientation`, not in its surface — so no field here implies one.
+ */
+export type SurfaceParams =
+  | { kind: "plane"; origin: Vec3; normal: Vec3 }
+  | { kind: "cylinder"; radius: number; axisLocation: Vec3; axisDirection: Vec3 }
+  | {
+      kind: "cone";
+      axisLocation: Vec3;
+      axisDirection: Vec3;
+      /** The cone's radius measured AT `axisLocation` — meaningless without
+       * it, which is why `apex` ships alongside as an absolute anchor. The
+       * identity `refRadius === |apex - axisLocation| * tan(|semiAngle|)`
+       * holds wherever OCCT chooses to put the location. */
+      refRadius: number;
+      apex: Vec3;
+      /** Half-angle in DEGREES (this codebase's convention everywhere — see
+       * `ExactMeasureResult.angleDeg` and every `*Deg` op field), converted
+       * from OCCT's radians. **Signed, and the sign is load-bearing**: a
+       * positive half-angle means the radius GROWS along `axisDirection`.
+       * Verified both ways against the live WASM. */
+      semiAngleDeg: number;
+    }
+  | { kind: "sphere"; center: Vec3; radius: number }
+  | {
+      kind: "torus";
+      axisLocation: Vec3;
+      axisDirection: Vec3;
+      majorRadius: number;
+      minorRadius: number;
+    };
 
 /** Analytic curve classification of an edge — the edge-side counterpart of
  * {@link SurfaceType}, which had no analogue before. */
@@ -89,6 +137,18 @@ export interface EntityFacts {
   planeOrigin: Vec3 | null;
   /** Set only for a face. */
   surfaceType: SurfaceType | null;
+  /** The analytic parameters behind {@link surfaceType} — radius, axis, cone
+   * half-angle, torus radii. Face only, and null for `surfaceType: "other"`
+   * (a Bezier/B-spline/swept face has no closed-form parameters to report).
+   * When non-null, `surfaceParams.kind === surfaceType` always.
+   *
+   * `normal`/`planeOrigin` above are projections of the `"plane"` variant,
+   * read from the SAME adaptor so they cannot disagree — they predate this
+   * field and are kept because Clip ▸ Face and the inspector card consume
+   * them directly. Nothing populates them for a curved face: doing so would
+   * make Clip ▸ Face silently accept a cylinder and cut on a meaningless
+   * plane, in place of the explanatory refusal it gives today. */
+  surfaceParams: SurfaceParams | null;
   /** Set only for an edge; null for every other kind. Uses the same
    * `BRepAdaptor_Curve_2(edge).GetType()` call `measureExact`'s `"radius"`
    * kind already exercises against the live WASM, so this needed no new
@@ -255,6 +315,7 @@ export async function getEntityFacts(
     let normal: Vec3 | null = null;
     let planeOrigin: Vec3 | null = null;
     let surfaceType: SurfaceType | null = null;
+    let surfaceParams: SurfaceParams | null = null;
     let curveType: CurveType | null = null;
 
     if (kind === "solid" || kind === "face") {
@@ -275,15 +336,31 @@ export async function getEntityFacts(
     }
 
     if (kind === "face") {
-      const plane = facePlane(oc, handle, cleanup);
-      normal = plane?.nl ?? null;
-      planeOrigin = plane?.pt ?? null;
-      const surf = new oc.BRepAdaptor_Surface_2(handle, true);
-      cleanup.push(surf);
-      surfaceType = SURFACE_TYPE_BY_VALUE[surf.GetType().value] ?? "other";
+      // ONE adaptor for both the classification and the parameters — this used
+      // to build two (its own, plus `facePlane`'s) on the same face, which also
+      // meant a plane's normal had two independent sources that could drift.
+      const info = faceSurfaceInfo(oc, handle, cleanup);
+      surfaceType = info.type;
+      surfaceParams = info.params;
+      // Projections of the same read, kept because they are load-bearing for
+      // Clip > Face, the inspector card, and existing smoke assertions.
+      normal = info.params?.kind === "plane" ? info.params.normal : null;
+      planeOrigin = info.params?.kind === "plane" ? info.params.origin : null;
     }
 
-    return { entityId, kind, bbox, center, area, length, normal, planeOrigin, surfaceType, curveType };
+    return {
+      entityId,
+      kind,
+      bbox,
+      center,
+      area,
+      length,
+      normal,
+      planeOrigin,
+      surfaceType,
+      surfaceParams,
+      curveType,
+    };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

@@ -90,6 +90,43 @@ export function inspectorContent(facts: EntityFacts): InspectorContent {
   if (facts.normal !== null) rows.push({ key: "Normal", value: vec(facts.normal) });
   if (facts.planeOrigin !== null) rows.push({ key: "On plane", value: vec(facts.planeOrigin) });
 
+  // The analytic parameters, per classification. The `plane` variant is
+  // deliberately absent: its origin/normal are already rendered above, and
+  // duplicating them here would show every planar face two identical pairs.
+  //
+  // `if (facts.surfaceParams)` rather than `!== null` on purpose — the webview
+  // test harness hand-builds `entityFactsResult` payloads, so an older or
+  // partial object arriving with the field simply missing must render, not throw.
+  if (facts.surfaceParams) {
+    const p = facts.surfaceParams;
+    switch (p.kind) {
+      case "cylinder":
+        rows.push({ key: "Radius", value: num(p.radius) });
+        rows.push({ key: "Axis", value: vec(p.axisDirection) });
+        rows.push({ key: "Axis through", value: vec(p.axisLocation) });
+        break;
+      case "cone":
+        rows.push({ key: "Radius at axis pt", value: num(p.refRadius) });
+        rows.push({ key: "Half angle", value: `${num(p.semiAngleDeg)}°` });
+        rows.push({ key: "Apex", value: vec(p.apex) });
+        rows.push({ key: "Axis", value: vec(p.axisDirection) });
+        rows.push({ key: "Axis through", value: vec(p.axisLocation) });
+        break;
+      case "sphere":
+        rows.push({ key: "Radius", value: num(p.radius) });
+        rows.push({ key: "Sphere centre", value: vec(p.center) });
+        break;
+      case "torus":
+        rows.push({ key: "Major radius", value: num(p.majorRadius) });
+        rows.push({ key: "Minor radius", value: num(p.minorRadius) });
+        rows.push({ key: "Axis", value: vec(p.axisDirection) });
+        rows.push({ key: "Axis through", value: vec(p.axisLocation) });
+        break;
+      case "plane":
+        break;
+    }
+  }
+
   rows.push({ key: "Centre", value: vec(facts.center) });
   if (facts.bbox !== null && facts.kind !== "point") {
     // A vertex's bbox is degenerate — its diagonal is always 0, which is noise.

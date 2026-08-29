@@ -49,6 +49,7 @@ import {
   downloadStandardPartTool,
   compareModelsTool,
   checkMeshHealthTool,
+  recognizePrimitivesTool,
   transformMeshTool,
   promoteMeshToBrepTool,
   repairMeshTool,
@@ -267,7 +268,7 @@ server.registerTool(
   "inspect",
   {
     description:
-      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, and — for a planar face — its normal and surface type, for one entity id. B-rep sources only headless.",
+      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, surface/curve classification, and the underlying ANALYTIC PARAMETERS for one entity id — a cylinder's radius and axis, a cone's half-angle (degrees, signed: positive means the radius grows along the axis) with its apex and reference radius, a sphere's centre and radius, a torus's major/minor radii. Points and directions are in world coordinates, lengths in the file's own units. `surfaceParams.axisLocation` is a point ON the axis, not the face's centre and not necessarily within its extent — use bbox/center for where the face is. B-rep sources only headless.",
     inputSchema: {
       path: modelPath,
       entityId: z.string().describe("solid-N / face-N / edge-N / point-N id from load_model's inventory"),
@@ -498,6 +499,16 @@ server.registerTool(
     inputSchema: { path: modelPath },
   },
   wrap((args: { path: string }) => checkMeshHealthTool(ctx, args))
+);
+
+server.registerTool(
+  "recognize_primitives",
+  {
+    description:
+      "Per-solid primitive recognition, FACTS ONLY (see describe_capabilities' verdictConventions): for each solid, the face inventory by surface type, a candidate primitive (box/sphere/cylinder/cone/torus) when the inventory matches a signature exactly, and the FIT RESIDUAL — the largest deviation between the solid's real tessellated boundary and that idealized primitive, in the file's units, plus `fitResidualFrac` as a fraction of the solid's bbox diagonal. A candidate is a HYPOTHESIS, not a verdict: a small residual means the solid closely resembles that primitive; you decide whether it IS one. `candidate: null` means no signature matched (a filleted box has an extra face, so it is honestly not a box) — the inventory is still reported and is useful on its own. Emits no ops and changes nothing. B-rep sources only headless: a mesh source has no analytic surface to classify.",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => recognizePrimitivesTool(ctx, args))
 );
 
 server.registerTool(
