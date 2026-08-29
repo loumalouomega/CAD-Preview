@@ -51,8 +51,18 @@ jobs:
       - name: Test (webview, Playwright over the real viewer bundle)
         run: xvfb-run -a npm run test:webview
 
+      # @vscode/test-electron resolves "stable" to an exact version (and, on a
+      # cache miss, downloads the archive) via update.code.visualstudio.com —
+      # a network call this job has no control over. A transient blip there
+      # (ETIMEDOUT/ENETUNREACH) fails the whole job even though nothing here
+      # is actually broken, so retry a few times with backoff before giving up.
       - name: Test (integration, real VS Code host)
-        run: xvfb-run -a npm run test:integration
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: xvfb-run -a npm run test:integration
 
       - name: Package extension (.vsix)
         run: npm run package -- --out cad-preview.vsix
