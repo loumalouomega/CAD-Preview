@@ -110,6 +110,7 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | **Import DXF…** | Pick a `.dxf` file and import its model-space `LINE` / `LWPOLYLINE` (bulge arcs sampled) / `POLYLINE` / `CIRCLE` / `ARC` / `SPLINE` entities as the matching Line/Polyline/Circle/Arc/Spline edit ops. B-rep only; blocks/INSERT/TEXT/DIMENSION/HATCH and paper space are skipped, and geometry lands flat at z=0 (1 DXF unit = 1 mm, Y-up native — adjust afterward with Scale/Move/Rotate) | — |
 | **Export Silhouette SVG…** | Write a 2D **outline** of the model as an `.svg` file — pick a view (**Current view**, or Front/Back/Top/Bottom/Left/Right/Iso), then an export unit, then a destination. An outline, **not** a dimensioned technical drawing (see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg)) | — |
 | **Export Silhouette DXF…** | The same outline flow with a DXF serializer (`LWPOLYLINE` chains + `LINE` singletons), saved with a `.dxf` extension | — |
+| **Export Technical Drawing…** | A 2D drawing with **hidden-line removal**: feature edges solid where visible, dashed where hidden behind the part. Unlike the two silhouette exports it draws interior edges too, so a hole's far rim shows dashed. Same view and unit picks; SVG or DXF (where hidden geometry lands on a `HIDDEN` layer). Still a review artifact — no dimensions, single view | — |
 
 ![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, Import DXF, and the two Silhouette exports.](/screenshots/file-menu.png)
 
@@ -504,7 +505,14 @@ B-rep targets are converted by OpenCascade.js's own writers, so STEP ↔ IGES �
 
 ### Exporting a Silhouette SVG
 
-Pick **File ▸ Export Silhouette SVG…** (or **Export Silhouette DXF…** for the DXF variant; both also exist as `CAD Preview: Export Silhouette …` commands) to write a 2D **outline drawing** of the model as an `.svg` or `.dxf` file. This is separate from the Export… flow above — an outline is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
+Pick **File ▸ Export Silhouette SVG…** (or **Export Silhouette DXF…** for the DXF variant; both also exist as `CAD Preview: Export Silhouette …` commands) to write a 2D **outline drawing** of the model as an `.svg` or `.dxf` file.
+
+**For a drawing that shows what is behind the part, pick File ▸ Export Technical Drawing… instead.**
+That one runs hidden-line removal: it draws interior feature edges as well as the outline, and
+renders anything occluded as a dashed line — so a through-hole's far rim appears dashed rather than
+missing. It shares the same view and unit picks, and writes SVG or DXF (where hidden geometry goes
+on a `HIDDEN` layer you can toggle in a CAD tool). It is still a single view with no dimensions:
+treat it as a review or illustration artifact and measure anything you need to be sure of. This is separate from the Export… flow above — an outline is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
 
 1. **Pick a view.** The first entry is **Current view** — the angle you are currently looking at — followed by Front, Back, Top, Bottom, Left, Right, and Iso. Pressing Escape here cancels the export.
 2. **Pick an export unit.** The same quick-pick every other export shows, defaulting to native mm; Escape here still exports (at mm), it doesn't cancel.

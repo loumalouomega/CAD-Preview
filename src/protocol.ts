@@ -480,6 +480,9 @@ export type WebviewToHost =
    * back through the generic `status`/`error` messages. */
   | { type: "exportSvgRequest" }
   | { type: "exportDxfRequest" }
+  /** File ▸ Export Technical Drawing… — the hidden-line counterpart of the two
+   *  silhouette exports; the host owns the view/unit picks and the save dialog. */
+  | { type: "exportDrawingRequest" }
   /** Live operation preview (roadmap item, closed): the webview's open Edits
    * form changed — replay the current ops PLUS this not-yet-committed draft
    * op and post the resulting geometry back for a tinted overlay. The webview

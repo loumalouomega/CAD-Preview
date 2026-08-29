@@ -33,6 +33,7 @@ export function viewerBodyHtml(): string {
         <button id="menu-import-dxf" role="menuitem" title="Import a DXF file's entities as standalone sketch primitives (lines, arcs, circles, polylines, splines — pick in Vol/Surf/Line mode, extrude to build a solid)">${icon("open")} Import DXF…</button>
         <button id="menu-export-svg" role="menuitem" title="Export a 2D outline (silhouette) of the model as an SVG drawing — outline only, no hidden-line removal">${icon("export")} Export Silhouette SVG…</button>
         <button id="menu-export-dxf" role="menuitem" title="Export a 2D outline (silhouette) of the model as a DXF drawing — chained polylines (LWPOLYLINE with bulges for arcs) plus singletons as LINEs, outline only">${icon("export")} Export Silhouette DXF…</button>
+        <button id="menu-export-drawing" role="menuitem" title="Export a 2D technical drawing — feature edges with hidden-line removal, occluded runs dashed">${icon("export")} Export Technical Drawing…</button>
       </div>
     </div>
   </div>

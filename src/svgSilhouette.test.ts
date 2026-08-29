@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { viewBasis, silhouetteSvg, polylinesSvg, scalePositions } from "./svgSilhouette";
+import { viewBasis, silhouetteSvg, polylinesSvg, scalePositions, technicalDrawingSvg} from "./svgSilhouette";
 import { parseSvgPaths } from "./svgImport";
 import { silhouetteEdges } from "./silhouetteEdges";
 import { weldTriangleSoup } from "./meshComponents";
@@ -282,5 +282,55 @@ describe("dimension glyphs baked into SVG export", () => {
     ]);
     expect(dimensionCount).toBeUndefined();
     expect(svg).not.toMatch(/NaN|Infinity/);
+  });
+});
+
+describe("technicalDrawingSvg", () => {
+  const view = { direction: [0, 0, 1] as [number, number, number] };
+  const seg = (a: [number, number], b: [number, number]): [[number, number], [number, number]] => [a, b];
+
+  it("emits hidden runs as a dashed path", () => {
+    const r = technicalDrawingSvg([seg([0, 0], [10, 0])], [seg([0, 5], [10, 5])], view);
+    expect(r.svg).toMatch(/stroke-dasharray="[^"]+"/);
+    expect(r.hiddenSegmentCount).toBe(1);
+  });
+
+  it("CHAINS hidden segments into polylines", () => {
+    // The regression this pins: an SVG subpath restarts the dash pattern at
+    // zero, so a tessellated hidden curve made of many short segments renders
+    // SOLID — visually indistinguishable from a visible edge, while every count
+    // in the result stays correct. Only chaining makes the dash span the curve.
+    const chain = [seg([0, 0], [1, 0]), seg([1, 0], [2, 0]), seg([2, 0], [3, 0])];
+    const r = technicalDrawingSvg([seg([0, 9], [1, 9])], chain, view);
+    const dashed = /stroke-dasharray="[^"]*"[^>]*d="([^"]+)"/.exec(r.svg);
+    expect(dashed, "a dashed path is present").not.toBeNull();
+    // One subpath with three points, not three separate M...L pairs.
+    expect((dashed![1].match(/M/g) ?? []).length).toBe(1);
+    expect((dashed![1].match(/L/g) ?? []).length).toBe(3);
+  });
+
+  it("derives the dash pattern from the stroke width, never a literal", () => {
+    // serialize() works in MODEL units: a hardcoded dash renders solid on a
+    // tiny drawing and as one dash on a huge one.
+    const small = technicalDrawingSvg([seg([0, 0], [0.01, 0])], [seg([0, 0.005], [0.01, 0.005])], view);
+    const large = technicalDrawingSvg([seg([0, 0], [10000, 0])], [seg([0, 5000], [10000, 5000])], view);
+    const dashOf = (svg: string) => /stroke-dasharray="([^"]+)"/.exec(svg)![1];
+    expect(dashOf(small.svg)).not.toBe(dashOf(large.svg));
+    for (const svg of [small.svg, large.svg]) {
+      for (const n of dashOf(svg).split(" ")) expect(Number(n)).toBeGreaterThan(0);
+    }
+  });
+
+  it("grows the viewBox over hidden geometry too", () => {
+    // Hidden lines are geometry; bounds that ignored them would clip them.
+    const withHidden = technicalDrawingSvg([seg([0, 0], [1, 0])], [seg([0, 0], [50, 0])], view);
+    const without = technicalDrawingSvg([seg([0, 0], [1, 0])], [], view);
+    expect(withHidden.svg).not.toBe(without.svg);
+    const widthOf = (svg: string) => Number(/width="([\d.]+)mm"/.exec(svg)![1]);
+    expect(widthOf(withHidden.svg)).toBeGreaterThan(widthOf(without.svg));
+  });
+
+  it("omits hiddenSegmentCount entirely when no hidden list was supplied", () => {
+    expect(silhouetteSvg(new Float32Array([0, 0, 0, 1, 0, 0]), [[0, 1]], view).hiddenSegmentCount).toBeUndefined();
   });
 });

@@ -53,6 +53,7 @@ import {
   promoteMeshToBrepTool,
   repairMeshTool,
   exportSvgSilhouetteTool,
+  exportTechnicalDrawingTool,
   getState,
   applyEditOps,
   runParametricScriptTool,
@@ -528,10 +529,47 @@ server.registerTool(
 );
 
 server.registerTool(
+  "export_technical_drawing",
+  {
+    description:
+      "Write a 2D TECHNICAL DRAWING to .svg or .dxf: feature edges with hidden-line removal — visible runs solid, occluded runs dashed (SVG) or on a HIDDEN layer (DXF). Unlike export_svg_silhouette, which draws an outline only, this also draws interior feature edges and shows what is behind them. Single orthographic view, no dimensions. Works for B-rep AND mesh sources: the visibility test runs on tessellated triangles and calls no OCCT hidden-line API (that family is unavailable in this build), so it is not limited to B-rep. Treat it as a review/illustration artifact — use measure/measure_exact for any dimension you need to be sure of.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write (.svg or .dxf)"),
+      view: z.string().optional().describe(`Named view: ${NAMED_VIEW_NAMES.join(", ")}. Unknown names warn and fall back to FRONT.`),
+      direction: z.tuple([z.number(), z.number(), z.number()]).optional().describe("Explicit view direction (model → camera); wins over `view`"),
+      up: z.tuple([z.number(), z.number(), z.number()]).optional(),
+      unit: z.string().optional().describe("Output unit (mm/cm/m/in/ft); a real coordinate scale, default mm"),
+      strokeWidth: z.number().optional(),
+      tessellationQuality: z.string().optional().describe('B-rep only: draft/standard/fine. Default "fine" — the drawing IS the tessellation, and a coarser one also raises the angle below which a face join reads as tangent.'),
+      creaseAngleDeg: z
+        .number()
+        .optional()
+        .describe("Mesh sources only: dihedral angle above which an interior edge is drawn. Default 35°, chosen to clear a coarse STL cylinder's own facet angle. Too low turns the drawing into a wireframe (which is warned about)."),
+      format: z.enum(["svg", "dxf"]).optional(),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      outputPath: string;
+      view?: string;
+      direction?: [number, number, number];
+      up?: [number, number, number];
+      unit?: string;
+      strokeWidth?: number;
+      tessellationQuality?: string;
+      creaseAngleDeg?: number;
+      format?: "svg" | "dxf";
+    }) => exportTechnicalDrawingTool(ctx, args)
+  )
+);
+
+server.registerTool(
   "export_svg_silhouette",
   {
     description:
-      "Write a 2D OUTLINE (silhouette) of a model to an .svg or .dxf file. OUTLINE ONLY -- there is NO hidden-line removal, so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 output unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does. Output format is \"svg\" (default) or \"dxf\" — DXF chains silhouette segments into LWPOLYLINEs (with bulges for arcs where detected) plus singleton LINEs.",
+      "Write a 2D OUTLINE (silhouette) of a model to an .svg or .dxf file. OUTLINE ONLY -- there is NO hidden-line removal here (use export_technical_drawing for that), so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 output unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does. Output format is \"svg\" (default) or \"dxf\" — DXF chains silhouette segments into LWPOLYLINEs (with bulges for arcs where detected) plus singleton LINEs.",
     inputSchema: {
       path: modelPath,
       outputPath: z.string().describe("Absolute path to write the .svg/.dxf to (must not be the source path)"),

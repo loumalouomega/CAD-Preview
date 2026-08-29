@@ -132,6 +132,8 @@ interface EditorSession {
   exportSvg(): void;
   /** Export a 2D outline (silhouette) of the model as a DXF drawing. */
   exportDxf(): void;
+  /** File ▸ Export Technical Drawing… (hidden-line removal). */
+  exportDrawing(): void;
   /** Generate and export an FE mesh (format + unit quick-picks, then a save dialog). */
   exportMesh(): void;
   /** Post a message to this session's webview — the registry entry for the
@@ -243,6 +245,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
       vscode.commands.registerCommand("cad-preview.exportSvg", withSession((s) => s.exportSvg())),
       vscode.commands.registerCommand("cad-preview.exportDxf", withSession((s) => s.exportDxf())),
+      vscode.commands.registerCommand("cad-preview.exportDrawing", withSession((s) => s.exportDrawing())),
       vscode.commands.registerCommand("cad-preview.exportMesh", withSession((s) => s.exportMesh())),
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
@@ -651,6 +654,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       },
       exportDxf: () => {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations);
+      },
+      exportDrawing: () => {
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true);
       },
       post,
     };
@@ -1098,6 +1104,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "exportDxfRequest") {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations);
+        return;
+      }
+
+      if (msg.type === "exportDrawingRequest") {
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true);
         return;
       }
 
@@ -1780,7 +1791,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     ops: EditOp[],
     viewState: ViewState | undefined,
     format: "svg" | "dxf" = "svg",
-    annotations: Annotation[] = []
+    annotations: Annotation[] = [],
+    /** Produce a technical DRAWING (hidden-line removal) rather than an
+     * outline. Shares this whole view/unit/save flow deliberately — the only
+     * difference is what the pipeline draws. */
+    hiddenLines = false
   ): Promise<void> {
     if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
       const label = format.toUpperCase();
@@ -1828,6 +1843,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           title: `${uri.path.slice(uri.path.lastIndexOf("/") + 1)} — ${picked.label}`,
           format,
           annotations,
+          hiddenLines,
         });
         for (const warning of result.warnings) post({ type: "status", text: warning });
         const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;

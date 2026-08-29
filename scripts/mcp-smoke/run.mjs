@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 39, `tools/list exposes 39 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 40, `tools/list exposes 40 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -2255,6 +2255,92 @@ try {
     console.log(`  (step.parts API unreachable in this environment: ${search.warnings?.[0]} — search/download supported:true paths were not exercised)`);
   }
   assert(true, "search_standard_parts / download_standard_part degrade gracefully regardless of network availability");
+
+  // export_technical_drawing (roadmap "2D technical drawings via triangle-based
+  // hidden-line removal"): un-blocks a Non-goal the kernel could not. The sharp
+  // assertion is the analytically-known one — a box in isometric has 12 feature
+  // edges, 9 visible and 3 hidden (the three meeting at the far corner) — which
+  // is exactly what the pure unit test asserts, now confirmed through the whole
+  // live pipeline including a real OCCT tessellation.
+  {
+    const drawingModel = path.join(dir, "drawing-box.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), drawingModel);
+    const drawingOut = path.join(dir, "drawing.svg");
+    const drawing = await call("export_technical_drawing", {
+      path: drawingModel,
+      outputPath: drawingOut,
+      view: "iso-ftr",
+    });
+    assert(
+      drawing.featureEdgeCount === 12 && drawing.segmentCount === 9 && drawing.hiddenSegmentCount === 3,
+      `an isometric box draws 12 feature edges as 9 visible + 3 hidden (got ${drawing.featureEdgeCount}/${drawing.segmentCount}/${drawing.hiddenSegmentCount})`
+    );
+    assert(drawing.warnings.length === 0, `a clean B-rep draws without warnings (got ${JSON.stringify(drawing.warnings)})`);
+
+    const svg = fs.readFileSync(drawingOut, "utf8");
+    assert(/stroke-dasharray="[^"]+"/.test(svg), "occluded runs are emitted as a dashed path");
+    {
+      // Parse the numbers rather than pattern-match them: an earlier version
+      // used /\b0\b/ and false-positived on the leading 0 of "0.156419".
+      const dash = /stroke-dasharray="([^"]+)"/.exec(svg)?.[1] ?? "";
+      const parts = dash.split(/\s+/).map(Number);
+      assert(
+        parts.length === 2 && parts.every((n) => Number.isFinite(n) && n > 0),
+        `the dash pattern is derived from the stroke width, never zero (got "${dash}")`
+      );
+    }
+    assert(!/NaN|Infinity/.test(svg), "the drawing carries no non-finite coordinates");
+
+    // It must draw MORE than the outline-only tool for the same view: that
+    // difference is the whole point of the feature.
+    const outlineOut = path.join(dir, "drawing-outline.svg");
+    const outline = await call("export_svg_silhouette", {
+      path: drawingModel,
+      outputPath: outlineOut,
+      view: "iso-ftr",
+    });
+    assert(
+      outline.segmentCount === 6 && drawing.featureEdgeCount > outline.segmentCount,
+      `the outline draws only the 6-edge silhouette where the drawing draws 12 (got ${outline.segmentCount})`
+    );
+
+    // DXF: hidden geometry on its own layer, and chained SEPARATELY from the
+    // visible runs — one concatenated chaining pass would join a visible run
+    // into a hidden one and produce a polyline that is half a lie.
+    const dxfOut = path.join(dir, "drawing.dxf");
+    const dxfDrawing = await call("export_technical_drawing", {
+      path: drawingModel,
+      outputPath: dxfOut,
+      view: "iso-ftr",
+      format: "dxf",
+    });
+    assert(dxfDrawing.hiddenSegmentCount === 3, `the DXF drawing carries the same 3 hidden runs (got ${dxfDrawing.hiddenSegmentCount})`);
+    assert(/\nHIDDEN\n/.test(fs.readFileSync(dxfOut, "utf8")), "occluded DXF geometry lands on a HIDDEN layer");
+
+    // A mesh source works too — the visibility test is triangle-based, so it is
+    // not limited to B-rep the way an OCCT HLR call would have been.
+    const meshDrawing = await call("export_technical_drawing", {
+      path: path.join(ROOT, "examples", "STL", "cube.stl"),
+      outputPath: path.join(dir, "mesh-drawing.svg"),
+      view: "iso-ftr",
+    });
+    assert(
+      meshDrawing.segmentCount === 9 && meshDrawing.hiddenSegmentCount === 3,
+      `an STL cube draws identically to the B-rep one (got ${meshDrawing.segmentCount}/${meshDrawing.hiddenSegmentCount})`
+    );
+
+    // The wireframe disaster is warned about, not silent.
+    const wireframe = await call("export_technical_drawing", {
+      path: path.join(ROOT, "examples", "STL", "large-sphere-100k.stl"),
+      outputPath: path.join(dir, "wireframe.svg"),
+      view: "front",
+      creaseAngleDeg: 0.5,
+    });
+    assert(
+      wireframe.warnings.some((w) => /wireframe/.test(w)),
+      `a crease angle below the mesh's own facet angle warns rather than silently drawing every facet (got ${JSON.stringify(wireframe.warnings)})`
+    );
+  }
 
   // hit_test (roadmap "close the pixel -> entity loop"): the sharp assertion the
   // roadmap itself named — fire a ray down a known axis at known geometry and

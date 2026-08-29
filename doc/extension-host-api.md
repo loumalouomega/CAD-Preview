@@ -29,6 +29,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/dirtyGuard.ts` | Refuses a sidecar write that would discard unsaved editor changes (fails open) |
 | `src/viewDirections.ts` | The shared named-view vocabulary (6 cardinal + 8 isometric octants), aliases, and orbit math (pure, unit-tested) |
 | `src/rayPick.ts` | Pure ray→entity picking over the tessellation (Möller–Trumbore faces, closest-approach edges/points; unit-tested) |
+| `src/hiddenLineRemoval.ts` | Exact triangle-based hidden-line removal: feature edges split into visible and occluded 2D runs (pure, unit-tested) |
 | `src/hitTestService.ts` | `hit_test`'s host-side pipeline function: loadBRep + rayPick, no browser |
 | `src/scriptLibrary.ts` | Saved-script (macro) library parse/serialize + parameter-override merge (pure, unit-tested) |
 | `src/holeStandards.ts` | ISO metric / UNC / UNF tapped-hole and clearance sizes (pure, unit-tested) |

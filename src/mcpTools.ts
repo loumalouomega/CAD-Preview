@@ -392,7 +392,7 @@ export function describeCapabilities() {
       "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
       "list_workspace_models is pure on-disk discovery over the same routing rules load_model uses — depth-capped walk, .git/node_modules never scanned, caps reported via truncated/warnings rather than a quietly-partial list. This server holds no open-document/session state anywhere, so there is nothing else to discover.",
-      "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of.",
+      "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of. For a drawing WITH hidden-line removal — interior feature edges, occluded runs dashed — use export_technical_drawing, which gets there on the same triangle adjacency rather than through the unavailable kernel API.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups, same as .stl. Still not exportable headless as a SOURCE DOCUMENT (export_brep/export_mesh always target a B-rep or a generated FE mesh, never these formats' own native representation) — edit ops can still be written to the sidecar for the extension to replay.",
@@ -3031,9 +3031,27 @@ export async function exportBRepTool(
  * Works for every source with host-side geometry: B-rep (edits baked in, via
  * the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in).
  */
+/**
+ * A 2D technical drawing: visible edges solid, occluded edges dashed.
+ *
+ * Deliberately a thin wrapper over {@link exportSvgSilhouetteTool} rather than a
+ * parallel handler — the gate, view/unit resolution, annotation read, source
+ * construction, output-path guard and write are all identical, and the only
+ * difference is that hidden-line removal runs. Duplicating that chain would be
+ * two places for the view-resolution convention to drift.
+ */
+export async function exportTechnicalDrawingTool(
+  ctx: ToolContext,
+  params: Parameters<typeof exportSvgSilhouetteTool>[1] & { creaseAngleDeg?: number }
+) {
+  return exportSvgSilhouetteTool(ctx, { ...params, hiddenLines: true });
+}
+
 export async function exportSvgSilhouetteTool(
   ctx: ToolContext,
   params: {
+    hiddenLines?: boolean;
+    creaseAngleDeg?: number;
     path: string;
     outputPath: string;
     view?: string;
@@ -3064,11 +3082,15 @@ export async function exportSvgSilhouetteTool(
   let direction: [number, number, number] = SVG_VIEWS.FRONT.direction;
   let up: [number, number, number] | undefined;
   if (params.view != null) {
-    const named = SVG_VIEWS[params.view.toUpperCase()];
+    // Resolved against the FULL named-view vocabulary (`viewDirections.ts`),
+    // not the curated 7 `SVG_VIEWS` exposes for the interactive QuickPick — a
+    // strict superset, so every name that worked before still resolves to the
+    // same direction, and the 8 isometric octants come along for free.
+    const named = resolveNamedView(params.view);
     if (!named) {
-      warnings.push(`Unknown view "${params.view}" — valid: ${Object.keys(SVG_VIEWS).join(", ")}. Falling back to FRONT.`);
+      warnings.push(`Unknown view "${params.view}" — valid: ${NAMED_VIEW_NAMES.join(", ")}. Falling back to FRONT.`);
     } else {
-      viewName = params.view.toUpperCase();
+      viewName = named.canonical.toUpperCase();
       direction = named.direction;
       up = named.up;
     }
@@ -3136,6 +3158,8 @@ export async function exportSvgSilhouetteTool(
     title: `${path.basename(modelPath)} — ${viewName}`,
     format,
     annotations,
+    hiddenLines: params.hiddenLines,
+    creaseAngleDeg: params.creaseAngleDeg,
   });
   const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;
   await fs.writeFile(outputPath, content, "utf8");
@@ -3145,6 +3169,8 @@ export async function exportSvgSilhouetteTool(
     bytes: Buffer.byteLength(content, "utf8"),
     view: viewName,
     segmentCount: result.segmentCount,
+    ...(result.hiddenSegmentCount !== undefined ? { hiddenSegmentCount: result.hiddenSegmentCount } : {}),
+    ...(result.featureEdgeCount !== undefined ? { featureEdgeCount: result.featureEdgeCount } : {}),
     triangleCount: result.triangleCount,
     unit,
     warnings: [

@@ -20,7 +20,7 @@
  * correctly, so a future arc-aware source can reuse them with no format change.
  */
 
-import { viewBasis, dimensionDrawings, type Vec3, type ViewSpec, type DimensionSource, type DimensionDrawing } from "./svgSilhouette";
+import { segmentsToPolylines, viewBasis, dimensionDrawings, type Vec3, type ViewSpec, type DimensionSource, type DimensionDrawing } from "./svgSilhouette";
 
 export interface DxfOptions {
   /** Optional DXF header title (written as a comment, not a formal header var). */
@@ -77,99 +77,16 @@ function fmt(n: number): string {
   return String(Number(n.toFixed(6))).replace(/\.0+$/, "").replace(/\.$/, "") || "0";
 }
 
-/**
- * Groups unordered line segments into chains (polylines) by endpoint
- * coincidence. Returns an ordered list of chains; each chain is an ordered
- * list of points (no duplicate closing point when closed). Remaining
- * singletons are kept separate by the caller when it matters, but this helper
- * itself produces only the chains — the caller decides whether a chain of
- * length 2 stays a LINE or becomes an LWPOLYLINE.
- *
- * Tolerance: exact string-key match on `x,y` (projected coordinates derived
- * from the same Float32 positions produce bitwise-identical doubles for shared
- * vertices, so tolerance is not needed for the silhouette path; it also keeps
- * the helper deterministic).
- */
-export function segmentsToPolylines(segments: Array<[[number, number], [number, number]]>): Array<{ points: Array<[number, number]>; closed: boolean }> {
-  if (segments.length === 0) return [];
-  const key = (p: [number, number]): string => `${p[0]},${p[1]}`;
-  // Map point key -> segment indices incident at that point (either endpoint)
-  const pointToSegs = new Map<string, number[]>();
-  for (let i = 0; i < segments.length; i++) {
-    for (const p of segments[i] as [number, number][]) {
-      const k = key(p);
-      const arr = pointToSegs.get(k);
-      if (arr) arr.push(i);
-      else pointToSegs.set(k, [i]);
-    }
-  }
-  const used = new Array<boolean>(segments.length).fill(false);
-  const chains: Array<{ points: Array<[number, number]>; closed: boolean }> = [];
-
-  const pointEqual = (a: [number, number], b: [number, number]): boolean => a[0] === b[0] && a[1] === b[1];
-
-  for (let s = 0; s < segments.length; s++) {
-    if (used[s]) continue;
-    const seg = segments[s];
-    used[s] = true;
-    const chain: Array<[number, number]> = [seg[0], seg[1]];
-
-    const extend = (): boolean => {
-      let extended = false;
-      // Extend tail
-      const tail = chain[chain.length - 1];
-      const tailKey = key(tail);
-      const candidates = pointToSegs.get(tailKey) ?? [];
-      for (const idx of candidates) {
-        if (used[idx]) continue;
-        const cand = segments[idx];
-        if (pointEqual(cand[0], tail)) {
-          chain.push(cand[1]);
-          used[idx] = true;
-          extended = true;
-          break;
-        } else if (pointEqual(cand[1], tail)) {
-          chain.push(cand[0]);
-          used[idx] = true;
-          extended = true;
-          break;
-        }
-      }
-      if (extended) return true;
-      // Extend head
-      const head = chain[0];
-      const headKey = key(head);
-      const headCandidates = pointToSegs.get(headKey) ?? [];
-      for (const idx of headCandidates) {
-        if (used[idx]) continue;
-        const cand = segments[idx];
-        if (pointEqual(cand[1], head)) {
-          chain.unshift(cand[0]);
-          used[idx] = true;
-          return true;
-        } else if (pointEqual(cand[0], head)) {
-          chain.unshift(cand[1]);
-          used[idx] = true;
-          return true;
-        }
-      }
-      return false;
-    };
-
-    while (extend()) {}
-    // Detect closure: first point equals last point => closed loop, remove duplicate tail
-    const isClosed = chain.length > 2 && pointEqual(chain[0], chain[chain.length - 1]);
-    if (isClosed) chain.pop();
-    chains.push({ points: chain, closed: isClosed });
-  }
-  return chains;
-}
 
 function serializeDxf(
   chains: Array<{ points: Array<[number, number]>; closed: boolean; bulges?: number[] }>,
   singleLines: Array<[[number, number], [number, number]]>,
   options: DxfOptions,
-  dims?: { drawings: DimensionDrawing[]; textHeight: number }
+  dims?: { drawings: DimensionDrawing[]; textHeight: number },
+  hidden?: {
+    chains: Array<{ points: Array<[number, number]>; closed: boolean }>;
+    singleLines: Array<[[number, number], [number, number]]>;
+  }
 ): { dxf: string; dimensionCount?: number } {
   const lines: string[] = [];
   const push = (code: number, value: string) => { lines.push(String(code)); lines.push(value); };
@@ -218,6 +135,33 @@ function serializeDxf(
     push(21, fmt(b[1]));
     push(31, "0");
   }
+  // Occluded geometry on its own layer.
+  //
+  // A LAYER, not a dashed linetype: this writer emits no TABLES/LTYPE section
+  // at all, so a genuine DASHED linetype would mean adding that machinery. A
+  // separate layer is the honest cheap form — a CAD user toggles or restyles it
+  // — and it is the same mechanism the DIMENSIONS glyphs already use.
+  for (const ch of hidden?.chains ?? []) {
+    if (ch.points.length < 2) continue;
+    push(0, "LWPOLYLINE");
+    push(8, "HIDDEN");
+    push(90, String(ch.points.length));
+    push(70, ch.closed ? "1" : "0");
+    for (const p of ch.points) {
+      push(10, fmt(p[0]));
+      push(20, fmt(p[1]));
+      push(42, "0");
+    }
+  }
+  for (const [a, b] of hidden?.singleLines ?? []) {
+    push(0, "LINE");
+    push(8, "HIDDEN");
+    push(10, fmt(a[0]));
+    push(20, fmt(a[1]));
+    push(11, fmt(b[0]));
+    push(21, fmt(b[1]));
+  }
+
 
   // Dimension glyphs — a separate layer so a CAD user can toggle them
   // independently of the outline geometry.
@@ -328,6 +272,48 @@ export function polylinesDxf(polylines: Float32Array[], view: ViewSpec, options:
 /**
  * Renders a mesh silhouette (triangle silhouette edges) as DXF.
  */
+/**
+ * A technical drawing as DXF: visible geometry on layer `0`, occluded geometry
+ * on layer `HIDDEN`.
+ *
+ * **Visible and hidden runs are chained SEPARATELY, and that is load-bearing.**
+ * `segmentsToPolylines` joins segments by exact endpoint match, so handing it
+ * one concatenated list would chain a visible run straight into the hidden run
+ * it meets — producing a single polyline that is half a lie, on one layer.
+ */
+export function technicalDrawingDxf(
+  visible: Array<[[number, number], [number, number]]>,
+  hidden: Array<[[number, number], [number, number]]>,
+  view: ViewSpec,
+  options: DxfOptions = {}
+): DxfResult & { hiddenSegmentCount: number } {
+  const dims = computeDimensions(options.annotations, view, options.dimensionScaleHint);
+  const split = (segs: Array<[[number, number], [number, number]]>) => {
+    const chains = segmentsToPolylines(segs);
+    const polyChains: Array<{ points: Array<[number, number]>; closed: boolean }> = [];
+    const singleLines: Array<[[number, number], [number, number]]> = [];
+    for (const ch of chains) {
+      if (!ch.closed && ch.points.length === 2) singleLines.push([ch.points[0], ch.points[1]]);
+      else polyChains.push(ch);
+    }
+    return { polyChains, singleLines };
+  };
+  const vis = split(visible);
+  const hid = split(hidden);
+  const { dxf, dimensionCount } = serializeDxf(vis.polyChains, vis.singleLines, options, dims, {
+    chains: hid.polyChains,
+    singleLines: hid.singleLines,
+  });
+  return {
+    dxf,
+    segmentCount: visible.length,
+    hiddenSegmentCount: hidden.length,
+    chainCount: vis.polyChains.length,
+    lineCount: vis.singleLines.length,
+    ...(dimensionCount !== undefined ? { dimensionCount } : {}),
+  };
+}
+
 export function silhouetteDxf(
   positions: Float32Array,
   edges: Array<[number, number]>,
@@ -359,3 +345,7 @@ export function silhouetteDxf(
   const { dxf, dimensionCount } = serializeDxf(polyChains, singleLines, options, dims);
   return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
 }
+
+/** Re-exported for backward compatibility — it moved to `svgSilhouette.ts` so
+ * the SVG writer could chain hidden runs without an import cycle. */
+export { segmentsToPolylines };

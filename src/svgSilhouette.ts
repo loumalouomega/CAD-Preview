@@ -33,6 +33,13 @@ export interface ViewBasis {
 }
 
 export interface SvgOptions {
+  /**
+   * Occluded segments, rendered dashed beneath the visible ones — the output of
+   * `hiddenLineRemoval.ts`. Already projected 2D, in the same Y-down space
+   * `project()` produces, because the hidden-line engine has to project anyway
+   * to do its depth test.
+   */
+  hiddenSegments?: Array<[[number, number], [number, number]]>;
   /** Stroke width in OUTPUT units (i.e. after any unit conversion). Defaults
    * to `max(width, height) / 500`, which keeps lines proportionate at any
    * model scale — a fixed default would vanish on a large model and swamp a
@@ -65,6 +72,8 @@ export interface SvgOptions {
 export interface SvgResult {
   svg: string;
   segmentCount: number;
+  /** Occluded segments drawn dashed (absent when none were supplied). */
+  hiddenSegmentCount?: number;
   /** Annotations whose dimension glyphs were rendered (absent when none were supplied). */
   dimensionCount?: number;
 }
@@ -152,6 +161,7 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
   const titleTag = options.title ? `<title>${escapeXml(options.title)}</title>` : "";
   const dims = options.dimensions;
   const drawings = dims?.drawings ?? [];
+  const hiddenSegments = options.hiddenSegments ?? [];
 
   // Bounds must cover the dimension glyphs too, so a drawing is never clipped
   // by its own annotations. Label points contribute their anchor (the text
@@ -164,6 +174,12 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
     if (y > maxY) maxY = y;
   };
   for (const [a, b] of segments) {
+    grow(a[0], a[1]);
+    grow(b[0], b[1]);
+  }
+  // Hidden lines are geometry too — a drawing whose bounds ignored them would
+  // clip them at the margin.
+  for (const [a, b] of hiddenSegments) {
     grow(a[0], a[1]);
     grow(b[0], b[1]);
   }
@@ -205,6 +221,36 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
     .map(([a, b]) => `M ${fmt(a[0], decimals)} ${fmt(a[1], decimals)} L ${fmt(b[0], decimals)} ${fmt(b[1], decimals)}`)
     .join(" ");
 
+  // Occluded edges, dashed, drawn FIRST so the solid outline wins wherever the
+  // two coincide.
+  //
+  // The dash pattern is derived from `strokeWidth`, never hardcoded: `serialize`
+  // works in MODEL units, so a literal `stroke-dasharray="4 2"` renders solid on
+  // a 0.03-unit-wide drawing (a 10 mm part exported in feet) and as a single
+  // dash on a 10000-unit one. Formatted with `fmtStrokeWidth`'s significant-digit
+  // path for exactly the reason that function documents.
+  let hiddenContent = "";
+  if (hiddenSegments.length > 0) {
+    // CHAINED into polylines first, and that is a correctness fix rather than a
+    // size optimization. An SVG subpath restarts the dash pattern at zero, so a
+    // segment shorter than one dash renders fully "on" — and a tessellated
+    // hidden curve (a hole rim is dozens of short segments) then draws SOLID,
+    // indistinguishable from a visible edge. Caught by looking at the output,
+    // not by any assertion: every count was correct while the drawing lied.
+    const hiddenD = segmentsToPolylines(hiddenSegments)
+      .map((chain) => {
+        const pts = chain.closed ? [...chain.points, chain.points[0]] : chain.points;
+        return pts
+          .map((p, i) => `${i === 0 ? "M" : "L"} ${fmt(p[0], decimals)} ${fmt(p[1], decimals)}`)
+          .join(" ");
+      })
+      .join(" ");
+    const dash = `${fmtStrokeWidth(strokeWidth * 12)} ${fmtStrokeWidth(strokeWidth * 6)}`;
+    hiddenContent =
+      `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(strokeWidth)}" ` +
+      `stroke-linecap="butt" stroke-dasharray="${dash}" d="${hiddenD}"/>`;
+  }
+
   // Dimension glyphs render BELOW (after) the outline path: thinner strokes
   // for glyph lines so they read as annotation rather than geometry, filled
   // arrowhead triangles, then value labels.
@@ -237,11 +283,17 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
     `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(boxWidth, decimals)}mm" height="${fmt(boxHeight, decimals)}mm" ` +
     `viewBox="${fmt(minX - pad, decimals)} ${fmt(minY - pad, decimals)} ${fmt(boxWidth, decimals)} ${fmt(boxHeight, decimals)}">` +
     titleTag +
+    hiddenContent +
     `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(strokeWidth)}" stroke-linecap="round" stroke-linejoin="round" d="${d}"/>` +
     dimContent +
     `</svg>\n`;
 
-  return { svg, segmentCount: segments.length, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
+  return {
+    svg,
+    segmentCount: segments.length,
+    ...(options.hiddenSegments !== undefined ? { hiddenSegmentCount: hiddenSegments.length } : {}),
+    ...(dimensionCount !== undefined ? { dimensionCount } : {}),
+  };
 }
 
 function escapeXml(text: string): string {
@@ -411,6 +463,112 @@ export function silhouetteSvg(
  * run, the same shape `edgeEnumeration.ts`'s `polylineFromDiscretizer`
  * produces.
  */
+/**
+ * A technical drawing: already-projected visible and hidden 2D segments.
+ *
+ * Distinct from {@link silhouetteSvg}, which projects internally from
+ * positions + vertex-index edge pairs. The hidden-line engine has to project
+ * anyway to run its depth test, so re-projecting here would be both wasteful
+ * and a second place for the projection convention to drift.
+ */
+/**
+ * Groups unordered line segments into chains (polylines) by endpoint
+ * coincidence. Returns an ordered list of chains; each chain is an ordered
+ * list of points (no duplicate closing point when closed). Remaining
+ * singletons are kept separate by the caller when it matters, but this helper
+ * itself produces only the chains — the caller decides whether a chain of
+ * length 2 stays a LINE or becomes an LWPOLYLINE.
+ *
+ * Tolerance: exact string-key match on `x,y` (projected coordinates derived
+ * from the same Float32 positions produce bitwise-identical doubles for shared
+ * vertices, so tolerance is not needed for the silhouette path; it also keeps
+ * the helper deterministic).
+ */
+export function segmentsToPolylines(segments: Array<[[number, number], [number, number]]>): Array<{ points: Array<[number, number]>; closed: boolean }> {
+  if (segments.length === 0) return [];
+  const key = (p: [number, number]): string => `${p[0]},${p[1]}`;
+  // Map point key -> segment indices incident at that point (either endpoint)
+  const pointToSegs = new Map<string, number[]>();
+  for (let i = 0; i < segments.length; i++) {
+    for (const p of segments[i] as [number, number][]) {
+      const k = key(p);
+      const arr = pointToSegs.get(k);
+      if (arr) arr.push(i);
+      else pointToSegs.set(k, [i]);
+    }
+  }
+  const used = new Array<boolean>(segments.length).fill(false);
+  const chains: Array<{ points: Array<[number, number]>; closed: boolean }> = [];
+
+  const pointEqual = (a: [number, number], b: [number, number]): boolean => a[0] === b[0] && a[1] === b[1];
+
+  for (let s = 0; s < segments.length; s++) {
+    if (used[s]) continue;
+    const seg = segments[s];
+    used[s] = true;
+    const chain: Array<[number, number]> = [seg[0], seg[1]];
+
+    const extend = (): boolean => {
+      let extended = false;
+      // Extend tail
+      const tail = chain[chain.length - 1];
+      const tailKey = key(tail);
+      const candidates = pointToSegs.get(tailKey) ?? [];
+      for (const idx of candidates) {
+        if (used[idx]) continue;
+        const cand = segments[idx];
+        if (pointEqual(cand[0], tail)) {
+          chain.push(cand[1]);
+          used[idx] = true;
+          extended = true;
+          break;
+        } else if (pointEqual(cand[1], tail)) {
+          chain.push(cand[0]);
+          used[idx] = true;
+          extended = true;
+          break;
+        }
+      }
+      if (extended) return true;
+      // Extend head
+      const head = chain[0];
+      const headKey = key(head);
+      const headCandidates = pointToSegs.get(headKey) ?? [];
+      for (const idx of headCandidates) {
+        if (used[idx]) continue;
+        const cand = segments[idx];
+        if (pointEqual(cand[1], head)) {
+          chain.unshift(cand[0]);
+          used[idx] = true;
+          return true;
+        } else if (pointEqual(cand[0], head)) {
+          chain.unshift(cand[1]);
+          used[idx] = true;
+          return true;
+        }
+      }
+      return false;
+    };
+
+    while (extend()) {}
+    // Detect closure: first point equals last point => closed loop, remove duplicate tail
+    const isClosed = chain.length > 2 && pointEqual(chain[0], chain[chain.length - 1]);
+    if (isClosed) chain.pop();
+    chains.push({ points: chain, closed: isClosed });
+  }
+  return chains;
+}
+
+export function technicalDrawingSvg(
+  visible: Array<[[number, number], [number, number]]>,
+  hidden: Array<[[number, number], [number, number]]>,
+  view: ViewSpec,
+  options: SvgOptions = {}
+): SvgResult {
+  const dims = options.dimensions ?? computeDimensions(options.annotations, view, options.dimensionScaleHint);
+  return serialize(visible, { ...options, dimensions: dims, hiddenSegments: hidden });
+}
+
 export function polylinesSvg(polylines: Float32Array[], view: ViewSpec, options: SvgOptions = {}): SvgResult {
   const basis = viewBasis(view.direction, view.up);
   const dims = options.dimensions ?? computeDimensions(options.annotations, view, options.dimensionScaleHint);
