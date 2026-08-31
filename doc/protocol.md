@@ -171,14 +171,14 @@ type EditOp =
   | { op: 'mirror'; targets: string[]; planePoint: Vec3; planeNormal: Vec3 }
   | { op: 'boolean'; kind: 'union' | 'subtract' | 'intersect'; a: string[]; b: string[] }
   | { op: 'fillet'; edges: string[]; radius: number }
-  | { op: 'chamfer'; edges: string[]; distance: number }
+  | { op: 'chamfer'; edges: string[]; distance: number; distance2?: number; angleDeg?: number; face?: string }
   | { op: 'extrude'; profile: string; dir: Vec3; length: number }
   | { op: 'revolve'; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { op: 'sweep'; profile: string; path: string }
   | { op: 'loft'; profiles: string[] }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
-  | { op: 'shell'; thickness: number; openingFaces: string[] }        // >= 1 face id; negative = walls inward
+  | { op: 'shell'; thickness: number; openingFaces: string[]; join?: 'arc'|'intersection'|'tangent' }        // >= 1 face id; negative = walls inward
   | { op: 'splitByPlane'; targets: string[]; planePoint: Vec3; planeNormal: Vec3; keep: 'both' | 'positive' | 'negative' }
   | { op: 'section'; targets: string[]; planePoint: Vec3; planeNormal: Vec3 }
   | { op: 'addBox'; center: Vec3; size: Vec3 }
@@ -186,14 +186,14 @@ type EditOp =
   | { op: 'addCylinder'; center: Vec3; axis: Vec3; radius: number; height: number }
   | { op: 'addCone'; center: Vec3; axis: Vec3; radius1: number; radius2: number; height: number }
   | { op: 'addTorus'; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number }
-  | { op: 'addPrism'; center: Vec3; axis: Vec3; radius: number; sides: number; height: number }
+  | { op: 'addPrism'; center: Vec3; axis: Vec3; radius: number; sides: number; height: number; circumscribed?: boolean }
   | { op: 'addWedge'; center: Vec3; axis: Vec3; up: Vec3; dx: number; dy: number; dz: number; ltx: number }
   | { op: 'addHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number }
   | { op: 'addCounterboreHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; cbRadius: number; cbDepth: number }
   | { op: 'addCountersinkHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number }
   | { op: 'addCircleProfile'; center: Vec3; normal: Vec3; radius: number }
   | { op: 'addRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number }
-  | { op: 'addPolygonProfile'; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number }
+  | { op: 'addPolygonProfile'; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; circumscribed?: boolean }
   | { op: 'addEllipseProfile'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number }
   | { op: 'addRoundedRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number }
   | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number }
