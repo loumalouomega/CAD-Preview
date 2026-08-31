@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
+import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS } from "./editOps";
 
 describe("validateEditOp", () => {
   it("accepts well-formed transform ops", () => {
@@ -536,5 +536,52 @@ describe("align / patternLinear / patternCircular", () => {
     expect(BREP_ONLY_OPS.has("align")).toBe(false);
     expect(BREP_ONLY_OPS.has("patternLinear")).toBe(false);
     expect(BREP_ONLY_OPS.has("patternCircular")).toBe(false);
+  });
+
+  it("accepts midplaneFaces references (XOR with the inline plane vectors)", () => {
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"] }))
+      .toEqual({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"] });
+    expect(validateEditOp({ op: "splitByPlane", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"], keep: "both" }))
+      .toEqual({ op: "splitByPlane", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"], keep: "both" });
+    expect(validateEditOp({ op: "section", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"] }))
+      .toEqual({ op: "section", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"] });
+  });
+
+  it("rejects midplaneFaces mixed with inline plane vectors, or with bad id shapes", () => {
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1] })).toBeNull();
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0", "edge-1"] })).toBeNull();
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0"] })).toBeNull();
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["solid-0", "solid-1"] })).toBeNull();
+    expect(validateEditOp({ op: "section", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"], planePoint: [0, 0, 0] })).toBeNull();
+    // Neither form present → rejected
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"] })).toBeNull();
+  });
+
+  it("accepts midaxisOf references (XOR with the inline axis pair)", () => {
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["face-0", "face-1"], angleDeg: 60, count: 4 }))
+      .toEqual({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["face-0", "face-1"], angleDeg: 60, count: 4 });
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["edge-0", "edge-1"], angleDeg: 60, count: 4 }))
+      .not.toBeNull();
+  });
+
+  it("rejects midaxisOf mixed with inline axis vectors, or mixed face/edge pairs", () => {
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["face-0", "face-1"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 4 })).toBeNull();
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["face-0", "edge-1"], angleDeg: 60, count: 4 })).toBeNull();
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["solid-0", "solid-1"], angleDeg: 60, count: 4 })).toBeNull();
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], angleDeg: 60, count: 4 })).toBeNull(); // neither form
+  });
+
+  it("guide is accepted on the 16 guide kinds and rejected elsewhere / non-boolean", () => {
+    expect(validateEditOp({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], guide: true }))
+      .toEqual({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], guide: true });
+    expect(validateEditOp({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 2, guide: false }))
+      .toEqual({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 2, guide: false });
+    expect(validateEditOp({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], guide: "yes" })).toBeNull();
+    expect(validateEditOp({ op: "addBox", center: [0, 0, 0], size: [1, 2, 3], guide: true })).toBeNull();
+  });
+
+  it("GUIDE_KINDS covers exactly the 16 profile/curve creation kinds", () => {
+    expect(GUIDE_KINDS.size).toBe(16);
+    for (const kind of GUIDE_KINDS) expect(BREP_ONLY_OPS.has(kind)).toBe(true);
   });
 });

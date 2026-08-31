@@ -168,6 +168,7 @@ const FAKE_BREP_RESULT: BRepResult = {
   points: [{ pointId: "point-0", position: [0, 0, 0] }],
   tree: { id: "root", label: "STEP", children: [{ id: "solid-0", label: "Solid 1", faceCount: 2 }] },
   opOutcomes: [],
+  guideIds: [],
 };
 
 const FAKE_MESH_RESULT: MeshResult = {

@@ -334,9 +334,15 @@ export function viewerBodyHtml(): string {
         <input type="text" id="plane-entry-normal" class="plane-vec" placeholder="nx,ny,nz" title="Plane normal">
         <button id="plane-entry-ok" title="Create the plane">Add</button>
       </div>
+      <div id="plane-mid" class="vc-row" hidden>
+        <select id="plane-mid-a" title="First plane"></select>
+        <select id="plane-mid-b" title="Second plane"></select>
+        <button id="plane-mid-ok" title="Create a plane halfway between the two (parallel normals required)">Add</button>
+      </div>
       <div class="vc-row">
         <button id="plane-save" title="Save the current clip plane as a named construction plane">Save</button>
         <button id="plane-add" title="Enter a construction plane numerically">Enter…</button>
+        <button id="plane-mid-toggle" title="Create a midplane between two saved planes">Midplane…</button>
       </div>
       <div id="planes-list" title="Named construction planes — persisted beside the model"></div>
     </div>

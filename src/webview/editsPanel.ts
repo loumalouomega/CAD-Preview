@@ -1,4 +1,5 @@
 import type { EditOp, ExprMap, Vec3, OpOutcome } from "../editOps";
+import { GUIDE_KINDS } from "../editOps";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
@@ -65,7 +66,7 @@ export type ProfileDraft = (
   | { kind: "addRoundedRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number }
   | { kind: "addSlotProfile"; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number }
   | { kind: "addTrapezoidProfile"; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number }
-) & { exprs?: ExprMap };
+) & { exprs?: ExprMap; guide?: boolean };
 
 /** A wireframe-primitive draft — self-contained (no selection needed), builds a
  * standalone point/line/arc. B-rep only (meshes have no sketch/exact topology). */
@@ -79,13 +80,14 @@ export type WireframeDraft = (
   | { kind: "addBezier"; controlPoints: Vec3[] }
   | { kind: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number }
   | { kind: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
-) & { exprs?: ExprMap };
+) & { exprs?: ExprMap; guide?: boolean };
 
 /** A modify-op draft minus its selection operands: shell's `openingFaces` come
  * from the selected surfaces, split/section `targets` from the selected
  * volumes (the wiring injects both). B-rep only. */
 export type ModifyDraft = (
   | { kind: "shell"; thickness: number }
+  | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3 }
   | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; keep: "both" | "positive" | "negative" }
   | { kind: "section"; planePoint: Vec3; planeNormal: Vec3 }
 ) & { exprs?: ExprMap };
@@ -154,6 +156,8 @@ export interface EditsPanelCallbacks {
   onBuildSurfaceFromLines: () => void;
   /** Build a solid by sewing the currently-selected surfaces (Surf mode, B-rep only). */
   onBuildVolumeFromSurfaces: () => void;
+  /** Build a stadium slot face from the currently-selected edge (Line mode, B-rep only). */
+  onBuildEdgeSlot: (width: number) => void;
   /** Fired whenever the open param form changes (a different op button
    * clicked, or the form collapsed — `null`). Lets `main.ts` show/hide/
    * retarget the Transform Gizmo for `"translate"`/`"rotate"`/`"scale"`
@@ -663,6 +667,21 @@ export class EditsPanel {
         f.appendChild(this.hint("Negative = walls grow inward (hollow); positive = outward"));
         this.applyButtonDraft("Apply", "Shell the solids owning the selected opening faces", (): ModifyDraft => ({ kind: "shell", thickness: this.readNum("thickness") }), (d) => this.cb.onApplyModify(d));
         break;
+      case "draft":
+        f.appendChild(this.hint("Tapers the selected faces (Surf mode) by the angle around the neutral plane"));
+        f.appendChild(this.numField("angleDeg", "Angle°", 5));
+        f.appendChild(this.hint("Leave Point/Normal at 0 to use each face's own plane"));
+        f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
+        f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 0]));
+        this.applyButtonDraft("Apply", "Draft the selected faces", (): ModifyDraft => {
+          const planePoint = this.readVec("planePoint");
+          const planeNormal = this.readVec("planeNormal");
+          const isZero = (v: Vec3) => v[0] === 0 && v[1] === 0 && v[2] === 0;
+          const draft: ModifyDraft = { kind: "draft", angleDeg: this.readNum("angleDeg") } as ModifyDraft;
+          if (!isZero(planePoint) && !isZero(planeNormal)) { (draft as any).planePoint = planePoint; (draft as any).planeNormal = planeNormal; }
+          return draft;
+        }, (d) => this.cb.onApplyModify(d));
+        break;
       case "splitByPlane":
         f.appendChild(this.hint("Splits the selected volumes (Vol mode) by the plane"));
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
@@ -897,6 +916,14 @@ export class EditsPanel {
         f.appendChild(this.hint("Select 4+ surfaces forming a closed shell (Surf mode)"));
         this.applyButtonDraft("Build", "Build a solid by sewing the selected surfaces", () => ({}), () => this.cb.onBuildVolumeFromSurfaces());
         break;
+      case "edgeSlot":
+        f.appendChild(this.hint("Select one edge (Line mode) to slot around"));
+        f.appendChild(this.numField("width", "Width", 2));
+        this.applyButtonDraft("Build", "Build a stadium slot around the selected edge", () => ({}) as any, () => {
+          const width = this.readNum("width");
+          this.cb.onBuildEdgeSlot(width);
+        });
+        break;
 
       // ── GEOMETRY 3D · primitives ──
       case "addBox":
@@ -1010,6 +1037,12 @@ export class EditsPanel {
           }), (d) => this.cb.onApplyHole(d));
         break;
     }
+    // Construction-geometry checkbox for every guide kind (2D profile + curve
+    // creation): one generic field, read by `applyButtonDraft`'s wrapped
+    // reader on both the Apply and preview paths. `guide` marks the built
+    // entity reference-only — rendered dimmed and excluded from feature
+    // profile resolution (roadmap item 10).
+    if (id && GUIDE_KINDS.has(id as never)) f.appendChild(this.boolField("guide", "Construction (guide)", false));
     // A freshly-opened form previews immediately from its default field
     // values — opening "Box" shows the default box before anything is typed.
     if (this.draftReader) this.cb.onPreviewDraftChanged();
@@ -1112,8 +1145,18 @@ export class EditsPanel {
    * drifting from what Apply would commit.
    */
   private applyButtonDraft<D>(label: string, title: string, read: () => D, apply: (d: D) => void): HTMLElement {
-    this.draftReader = read as () => unknown;
-    return this.applyButton(label, title, () => apply(read()));
+    // Construction-geometry checkbox: guide-kind forms get one generic
+    // `guide` field appended after their params (see `renderParams`), read
+    // here at the single seam BOTH the Apply click and the live preview
+    // flow through — so a preview can never disagree with what Apply
+    // commits, the same guarantee `applyButtonDraft` already gives.
+    const wrappedRead = (): D => {
+      const draft = read() as Record<string, unknown>;
+      if (this.activeOp && GUIDE_KINDS.has(this.activeOp as never)) draft.guide = this.readBool("guide");
+      return draft as D;
+    };
+    this.draftReader = wrappedRead as () => unknown;
+    return this.applyButton(label, title, () => apply(wrappedRead()));
   }
 
   private applyButton(label: string, title: string, onClick: () => void): HTMLElement {

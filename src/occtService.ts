@@ -5,7 +5,7 @@ import * as path from "path";
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, extractVertices, type SolidGroup, type EdgeLine, type PointEntity } from "./meshExtract";
-import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter } from "./occtOperations";
+import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter, collectGuideIds, type GuideCollector } from "./occtOperations";
 import { volumePropertiesAdaptive } from "./brepGProp";
 import { readXcafAssembly, correlateAssemblyTree, type XcafAssemblyInfo } from "./xcafTree";
 import { buildXcafDocumentForExport, writeXcafStep, readXcafFallbackShape } from "./xcafWrite";
@@ -101,6 +101,8 @@ export interface BRepResult {
    * skipped op reports `applied: false` with a diagnostic/hint instead of
    * silently changing nothing. Empty when `ops` was empty. */
   opOutcomes: OpOutcome[];
+  /** Guide-entity ids (face-N/edge-N/point-N) whose creating op had `guide:true` — empty when no guide ops. */
+  guideIds: string[];
 }
 
 /**
@@ -142,6 +144,8 @@ export interface BRepCacheEntry {
    * append can merge the suffix's outcomes onto the prefix's — the reused
    * prefix ops are not re-run, so their outcomes must be carried forward. */
   opOutcomes: OpOutcome[];
+  guideCollector: GuideCollector;
+  guideIds: string[];
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -276,18 +280,16 @@ export async function loadBRepCached(
     let opsCleanup: Array<{ delete(): void }>;
     let shape: unknown;
     let opOutcomes: OpOutcome[];
+    let guideCollector: GuideCollector;
     if (appendReusable && previous) {
       opsCleanup = previous.opsCleanup;
       const suffix = ops.slice(previous.ops.length);
       const suffixOutcomes: OpOutcome[] = [];
-      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup, suffixOutcomes);
-      // The reused prefix was not re-run; its recorded outcomes carry forward.
+      const suffixGuides: GuideCollector = { faces: [], edges: [], vertices: [] };
+      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup, suffixOutcomes, suffixGuides);
       opOutcomes = [...previous.opOutcomes, ...suffixOutcomes];
+      guideCollector = { faces: [...previous.guideCollector.faces, ...suffixGuides.faces], edges: [...previous.guideCollector.edges, ...suffixGuides.edges], vertices: [...previous.guideCollector.vertices, ...suffixGuides.vertices] };
     } else {
-      // Base reused but the replay isn't (or there was no previous entry at
-      // all) — free only the now-superseded op-replay handles; the base
-      // shape/cleanup (still referenced by `baseShape`/`baseCleanup` above)
-      // is untouched either way.
       if (baseReusable && previous) {
         for (let i = previous.opsCleanup.length - 1; i >= 0; i--) {
           try { previous.opsCleanup[i].delete(); } catch { /* ignore */ }
@@ -295,15 +297,19 @@ export async function loadBRepCached(
       }
       opsCleanup = [];
       opOutcomes = [];
-      shape = applyEditsBRep(oc, baseShape, ops, opsCleanup, opOutcomes);
+      guideCollector = { faces: [], edges: [], vertices: [] };
+      shape = applyEditsBRep(oc, baseShape, ops, opsCleanup, opOutcomes, guideCollector);
     }
 
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
     const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops, shape, opsCleanup, opOutcomes };
-    return { result: { groups, edges, points, tree, opOutcomes }, cache };
+    const guideTmp: Array<{ delete(): void }> = [];
+    const guideIds = collectGuideIds(oc, shape, guideCollector, guideTmp);
+    for (let i = guideTmp.length - 1; i >= 0; i--) try { guideTmp[i].delete(); } catch { /* ignore */ }
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops, shape, opsCleanup, opOutcomes, guideCollector, guideIds };
+    return { result: { groups, edges, points, tree, opOutcomes, guideIds }, cache };
   } catch (err) {
     throw wrapOcctFault(err);
   }
@@ -332,12 +338,16 @@ export async function loadBRep(
     const baseShape = readShape(oc, tmpName, format, cleanup);
     const assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
     const opOutcomes: OpOutcome[] = [];
-    const shape = applyEditsBRep(oc, baseShape, ops, cleanup, opOutcomes);
+    const guideCollector: GuideCollector = { faces: [], edges: [], vertices: [] };
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup, opOutcomes, guideCollector);
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
     const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
-    return { groups, edges, points, tree, opOutcomes };
+    const guideTmp: Array<{ delete(): void }> = [];
+    const guideIds = collectGuideIds(oc, shape, guideCollector, guideTmp);
+    for (let i = guideTmp.length - 1; i >= 0; i--) try { guideTmp[i].delete(); } catch { /* ignore */ }
+    return { groups, edges, points, tree, opOutcomes, guideIds };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

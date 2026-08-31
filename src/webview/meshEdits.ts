@@ -85,6 +85,8 @@ function applyOneOpMesh(
   ctx: MeshFoldCtx,
   report?: (msg: string) => void
 ): void {
+  if ((op as any).midplaneFaces) { fail(`midplaneFaces requires a B-rep source with analytic faces`); return; }
+  if ((op as any).midaxisOf) { fail(`midaxisOf requires a B-rep source with analytic faces`); return; }
   if (BREP_ONLY_OPS.has(op.op)) {
     fail(`${op.op} is B-rep only — triangle meshes have no sketch/exact topology for it`);
     return; // not meaningful on a triangle mesh
@@ -329,10 +331,10 @@ function applyMeshPattern(
           return (k: number) => new THREE.Matrix4().makeTranslation(dir.x * op.spacing * k, dir.y * op.spacing * k, dir.z * op.spacing * k);
         })()
       : (() => {
-          const axis = new THREE.Vector3(...op.axisDir);
-          if (axis.lengthSq() === 0) return () => new THREE.Matrix4();
+          const axis = new THREE.Vector3(...(op as any).axisDir);
+          if (!axis || axis.lengthSq() === 0) return () => new THREE.Matrix4();
           axis.normalize();
-          return (k: number) => conjugateAboutPoint(new THREE.Matrix4().makeRotationAxis(axis, ((op.angleDeg * k) * Math.PI) / 180), op.axisPoint);
+          return (k: number) => conjugateAboutPoint(new THREE.Matrix4().makeRotationAxis(axis, ((op as any).angleDeg * k * Math.PI) / 180), (op as any).axisPoint);
         })();
 
   let added = 0;
@@ -479,7 +481,8 @@ export function transformMatrixForOp(op: EditOp): THREE.Matrix4 | null {
       return conjugateAboutPoint(s, op.center);
     }
     case "mirror": {
-      const n = new THREE.Vector3(...op.planeNormal);
+      if ((op as any).midplaneFaces) return null;
+      const n = new THREE.Vector3(...((op as any).planeNormal ?? [0,0,0]));
       if (n.lengthSq() === 0) return new THREE.Matrix4();
       n.normalize();
       // Householder reflection R = I − 2·n·nᵀ across the plane through the origin.
@@ -490,7 +493,7 @@ export function transformMatrixForOp(op: EditOp): THREE.Matrix4 | null {
         -2 * x * z, -2 * y * z, 1 - 2 * z * z, 0,
         0, 0, 0, 1
       );
-      return conjugateAboutPoint(r, op.planePoint);
+      return conjugateAboutPoint(r, (op as any).planePoint);
     }
     default:
       return null;

@@ -213,6 +213,11 @@ export type HostToWebview =
        * Absent for mesh sources (their replay is client-side, in
        * `rebuildMeshModel`, which reports outcomes directly). */
       opOutcomes?: import("./editOps").OpOutcome[];
+      /** Guide-entity ids (face-N/edge-N/point-N) whose creating op had
+       * `guide:true` — webview renders them dimmed and refuses them as
+       * profile operands for feature ops (roadmap item 10). Absent/empty
+       * when no guide ops. */
+      guideIds?: string[];
       /**
        * When `false`, the viewer must always re-frame the new model, even if
        * its bounds would otherwise be considered contained by the last framing

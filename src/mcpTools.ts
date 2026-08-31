@@ -181,7 +181,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   translate: '{targets: id[], vec: [x,y,z]}',
   rotate: '{targets: id[], axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n}',
   scale: '{targets: id[], center: [x,y,z], factors: [sx,sy,sz]}',
-  mirror: '{targets: id[], planePoint: [x,y,z], planeNormal: [x,y,z]}',
+  mirror: '{targets: id[], planePoint?: [x,y,z], planeNormal?: [x,y,z], midplaneFaces?: [faceId, faceId] (planar, parallel — XOR with planePoint/planeNormal)}',
   boolean: '{kind: "union"|"subtract"|"intersect", a: solidId[], b: solidId[]}',
   fillet: '{edges: edgeId[], radius: n>0}',
   chamfer: '{edges: edgeId[], distance: n>0, distance2?: n>0 (asymmetric, needs face), angleDeg?: 0<n<90 (distance-angle, needs face), face?: faceId}',
@@ -193,9 +193,9 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   explode: '{factor: n}',
   mate: '{faceA: faceId, faceB: faceId (both planar)}',
   shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1), join?: "arc"|"intersection"|"tangent" (default arc)}',
-  draft: '{faces: faceId[], angleDeg: 0<n<90, planePoint?: [x,y,z], planeNormal?: [x,y,z] (neutral plane + pull direction)}',
-  splitByPlane: '{targets: solidId[], planePoint: [x,y,z], planeNormal: [x,y,z], keep: "both"|"positive"|"negative"}',
-  section: '{targets: solidId[], planePoint: [x,y,z], planeNormal: [x,y,z]}',
+  draft: '{faces: faceId[], angleDeg: 0<n<90, planePoint?: [x,y,z], planeNormal?: [x,y,z] (neutral plane + pull direction; omitted = each face\'s own plane). NOTE: this WASM build\'s draft engine (BRepOffsetAPI_DraftAngle.Build) is kernel-broken — the op validates but reports applied:false with a diagnostic}',
+  splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
+  section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], midplaneFaces?: [faceId, faceId] (XOR)}',
   addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
   addSphere: '{center: [x,y,z], radius: n>0}',
   addCylinder: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, height: n>0}',
@@ -234,7 +234,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addEdgeSlot: '{edge: edgeId, width: n>0}',
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
   patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
-  patternCircular: '{targets: solidId[], axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n, count: int>=2 (total instances, incl. original)}',
+  patternCircular: '{targets: solidId[], axisPoint?: [x,y,z], axisDir?: [x,y,z], midaxisOf?: [faceId|edgeId, faceId|edgeId] (parallel cylinder axes or straight edges — XOR with axisPoint/axisDir), angleDeg: n, count: int>=2 (total instances, incl. original)}',
 };
 
 /** All op kinds, derived from the panel catalog (which `opCatalog.test.ts`
@@ -508,6 +508,7 @@ function entitySummary(result: BRepResult) {
     edgeCount: result.edges.length,
     edgeIds: result.edges.length > 0 ? `${result.edges[0].edgeId} … ${result.edges[result.edges.length - 1].edgeId}` : null,
     pointCount: result.points.length,
+    guideIds: (result as any).guideIds ?? [],
     bbox: bboxOf(result),
   };
 }
@@ -2152,7 +2153,16 @@ export async function applyEditOps(
       if (outcome.diagnostic) entry.diagnostic = outcome.diagnostic;
       if (outcome.hint) entry.hint = outcome.hint;
     }
-    notApplied = result.opOutcomes.filter((o) => !o.applied).length;
+    // Count only THIS call's accepted ops that skipped — the replay's outcome
+    // list also covers previously-persisted ops, and a PERSISTED op that skips
+    // on every replay (e.g. a refused guide-profile extrude) must not
+    // decrement the current call's applied count. (Real defect caught by the
+    // item-10 smoke block: applied was accepted − totalStackSkips, reporting 0
+    // for a call whose single op genuinely applied.) The newly-accepted ops
+    // sit at current.ops.length.. in the outcome list. opOutcomeWarnings
+    // below still covers the whole stack — surfacing persisted-but-skipped
+    // ops is its documented job.
+    notApplied = result.opOutcomes.slice(current.ops.length).filter((o) => !o.applied).length;
     warnings.push(...opOutcomeWarnings(result.opOutcomes));
   }
 
@@ -2257,7 +2267,11 @@ async function compileAndApplyScript(
     const bytes = await readModelBytes(modelPath);
     const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, newOps);
     model = entitySummary(result);
-    notApplied = result.opOutcomes.filter((o) => !o.applied).length;
+    // Same this-call-only notApplied rule as apply_edit_ops above — the
+    // accepted ops sit at current.ops.length.. in the outcome list, and a
+    // previously-persisted op that skips on every replay must not decrement
+    // this call's applied count.
+    notApplied = result.opOutcomes.slice(current.ops.length).filter((o) => !o.applied).length;
     warnings.push(...opOutcomeWarnings(result.opOutcomes));
   }
 

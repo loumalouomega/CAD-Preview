@@ -168,7 +168,7 @@ type EditOp =
   | { op: 'translate'; targets: string[]; vec: Vec3 }
   | { op: 'rotate'; targets: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { op: 'scale'; targets: string[]; center: Vec3; factors: Vec3 }   // uniform = [s,s,s]
-  | { op: 'mirror'; targets: string[]; planePoint: Vec3; planeNormal: Vec3 }
+  | { op: 'mirror'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string] }  // XOR: inline pair or two planar parallel faces
   | { op: 'boolean'; kind: 'union' | 'subtract' | 'intersect'; a: string[]; b: string[] }
   | { op: 'fillet'; edges: string[]; radius: number }
   | { op: 'chamfer'; edges: string[]; distance: number; distance2?: number; angleDeg?: number; face?: string }
@@ -179,8 +179,10 @@ type EditOp =
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
   | { op: 'shell'; thickness: number; openingFaces: string[]; join?: 'arc'|'intersection'|'tangent' }        // >= 1 face id; negative = walls inward
-  | { op: 'splitByPlane'; targets: string[]; planePoint: Vec3; planeNormal: Vec3; keep: 'both' | 'positive' | 'negative' }
-  | { op: 'section'; targets: string[]; planePoint: Vec3; planeNormal: Vec3 }
+  | { op: 'draft'; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3 }  // 0<angle<90; omit the plane = each face's own plane
+  | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
+  | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
+  | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string] }
   | { op: 'addBox'; center: Vec3; size: Vec3 }
   | { op: 'addSphere'; center: Vec3; radius: number }
   | { op: 'addCylinder'; center: Vec3; axis: Vec3; radius: number; height: number }
@@ -191,27 +193,34 @@ type EditOp =
   | { op: 'addHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number }
   | { op: 'addCounterboreHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; cbRadius: number; cbDepth: number }
   | { op: 'addCountersinkHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number }
-  | { op: 'addCircleProfile'; center: Vec3; normal: Vec3; radius: number }
-  | { op: 'addRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number }
-  | { op: 'addPolygonProfile'; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; circumscribed?: boolean }
-  | { op: 'addEllipseProfile'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number }
-  | { op: 'addRoundedRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number }
-  | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number }
-  | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number }
-  | { op: 'addPoint'; position: Vec3 }
-  | { op: 'addLine'; start: Vec3; end: Vec3 }
-  | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number }
-  | { op: 'addPolyline'; points: Vec3[]; closed: boolean }            // >= 2 points (>= 3 when closed)
-  | { op: 'addThreePointArc'; p1: Vec3; p2: Vec3; p3: Vec3 }
-  | { op: 'addSpline'; points: Vec3[] }                               // approximating, endpoint-exact fit
-  | { op: 'addBezier'; controlPoints: Vec3[] }
-  | { op: 'addEllipseArc'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number }
-  | { op: 'addHelix'; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
+  | { op: 'addCircleProfile'; center: Vec3; normal: Vec3; radius: number; guide?: boolean }
+  | { op: 'addRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; guide?: boolean }
+  | { op: 'addPolygonProfile'; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; circumscribed?: boolean; guide?: boolean }
+  | { op: 'addEllipseProfile'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; guide?: boolean }
+  | { op: 'addRoundedRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number; guide?: boolean }
+  | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; guide?: boolean }
+  | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; guide?: boolean }
+  | { op: 'addPoint'; position: Vec3; guide?: boolean }
+  | { op: 'addLine'; start: Vec3; end: Vec3; guide?: boolean }
+  | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
+  | { op: 'addPolyline'; points: Vec3[]; closed: boolean; guide?: boolean }            // >= 2 points (>= 3 when closed)
+  | { op: 'addThreePointArc'; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean }
+  | { op: 'addSpline'; points: Vec3[]; guide?: boolean }                               // approximating, endpoint-exact fit
+  | { op: 'addBezier'; controlPoints: Vec3[]; guide?: boolean }
+  | { op: 'addEllipseArc'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
+  | { op: 'addHelix'; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; guide?: boolean }
   | { op: 'addSurfaceFromLines'; edges: string[] }   // >= 3 edge ids, must close into a loop
   | { op: 'addVolumeFromSurfaces'; faces: string[] } // >= 4 face ids, must sew into a closed shell
+  | { op: 'align'; targets: string[]; axis: 'x'|'y'|'z'; extent: 'min'|'center'|'max'; to: number }
+  | { op: 'patternLinear'; targets: string[]; direction: Vec3; spacing: number; count: number }  // count INCLUDES the original
+  | { op: 'patternCircular'; targets: string[]; axisPoint?: Vec3; axisDir?: Vec3; midaxisOf?: [string, string]; angleDeg: number; count: number }  // XOR: inline axis or two cylinder axes / parallel edges
 ```
 
 An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single tolerance gate — malformed ops are dropped, never thrown. The list is persisted in the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md).
+
+**Construction geometry** (`guide?: boolean`, roadmap item 10): any 2D profile/curve creation op may mark its entity reference-only. Guide entities render dimmed, stay pickable/measurable, and are refused as operands by the profile-resolution ops (`extrude`/`revolve`/`sweep`/`loft`/`addSurfaceFromLines`/`addVolumeFromSurfaces`) — enforced host-side (a guide operand fails that op with a diagnostic) and mirrored in the webview. The `geometry` message's `guideIds` field carries the current guide entity ids.
+
+**Midplane/midaxis references**: `mirror`/`splitByPlane`/`section` accept `midplaneFaces: [faceId, faceId]` (two planar, parallel faces — the op acts on the plane halfway between them) and `patternCircular` accepts `midaxisOf: [faceId|edgeId, faceId|edgeId]` (two cylindrical faces or two parallel straight edges). Exactly one of the reference or the inline vectors must be present; unresolvable/non-parallel references fail that op gracefully with a diagnostic. B-rep sources only — the mesh engine refuses the reference fields (it has no analytic faces; pass inline vectors instead).
 
 Every op may additionally carry an optional **parametric annotation** `exprs?: Record<string, string>` mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression over the document's named variables (`ParamVariable`, below). The addressed numeric fields always hold the last-good evaluated numbers — a cache — so every consumer that ignores `exprs` still sees a fully-resolved op; only `resolveEditOps` (`src/editVariables.ts`) reads it. `validateEditOp` sanitizes `exprs` (bad paths / non-numeric slots / syntax errors dropped per entry).
 
@@ -328,7 +337,7 @@ interface MeshRegionFit {              // src/meshRegionFit.ts
 
 ```typescript
 type HostToWebview =
-  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; autoFit?: boolean }
+  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; guideIds?: string[]; autoFit?: boolean }
   | { type: 'tree';     root: TreeNode; sourceUnit?: string }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | {
@@ -391,6 +400,8 @@ The optional `opOutcomes` array (roadmap "A failed edit op is indistinguishable 
 
 The optional `autoFit` flag (roadmap "Render on demand, not every frame") controls whether `Viewer.setModel()` may skip its auto-reframe: `false` forces a full reframe (a genuine file load / file swap), absent or `true` is containment-eligible (an edit-driven rebuild — `Viewer` skips framing when the new bounds already fit inside the last padded fit sphere so the camera stops twitching on every small edit).
 
+The optional `guideIds` array (roadmap item 10, "Cheap thin-wrapper ops") lists the `face-N`/`edge-N`/`point-N` ids whose creating op carried `guide: true` — construction geometry. The webview dims them (a 0.35 opacity multiplicand) and refuses them as operands for the six profile-resolution ops; absent/empty when no guide ops exist.
+
 ```json
 {
   "type": "geometry",
@@ -404,6 +415,7 @@ The optional `autoFit` flag (roadmap "Render on demand, not every frame") contro
   "points": [
     { "position": "DDDD...", "pointId": "point-0" }
   ],
+  "guideIds": ["edge-110"],
   "opOutcomes": [
     { "index": 0, "kind": "addBox", "applied": true },
     { "index": 1, "kind": "fillet", "applied": false,

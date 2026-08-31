@@ -3201,6 +3201,237 @@ try {
     `set_plane refuses a zero-length normal (got: ${JSON.stringify(zeroNormal)})`
   );
 
+  // set_plane's midplaneOf (roadmap item 10's "midplane references" half,
+  // host half): two parallel saved planes → a midplane with the averaged
+  // offset and mid-POINT. On the throwaway planeModel (already holding one
+  // plane), so the shared model's planes sidecar stays exactly as the
+  // preprocess section below asserts it.
+  await call("set_plane", { path: planeModel, name: "Lower datum", point: [5, 5, 8], normal: [0, 0, 1] });
+  const midPlane = await call("set_plane", { path: planeModel, midplaneOf: ["plane-0", "plane-1"] });
+  assert(
+    Math.abs(midPlane.plane.point[2] - 5.5) < 1e-9 && Math.abs(midPlane.plane.normal[2] - 1) < 1e-9,
+    `set_plane midplaneOf builds the halfway plane (got point=${JSON.stringify(midPlane.plane.point)}, normal=${JSON.stringify(midPlane.plane.normal)})`
+  );
+  assert(
+    midPlane.plane.derivedFrom === "midplane plane-0–plane-1",
+    `the midplane records its provenance (got ${midPlane.plane.derivedFrom})`
+  );
+  await call("set_plane", { path: planeModel, name: "Sideways", point: [0, 0, 0], normal: [1, 0, 0] });
+  const midNonParallel = await callTolerant("set_plane", { path: planeModel, midplaneOf: ["plane-0", "plane-3"] });
+  assert(
+    midNonParallel.error && /parallel/i.test(midNonParallel.error),
+    `set_plane midplaneOf refuses non-parallel planes (got: ${JSON.stringify(midNonParallel)})`
+  );
+  const midMissing = await callTolerant("set_plane", { path: planeModel, midplaneOf: ["plane-0", "plane-99"] });
+  assert(
+    midMissing.error && /not found/i.test(midMissing.error),
+    `set_plane midplaneOf refuses unknown plane ids (got: ${JSON.stringify(midMissing)})`
+  );
+
+  // ── Item-10 ops live round trip (roadmap "Cheap thin-wrapper ops"): draft,
+  // addEdgeSlot, guide (construction geometry + enforcement), midplaneFaces
+  // mirror, midaxisOf pattern — each asserted against an analytically-known
+  // value or cross-checked against its inline-vector equivalent, on throwaway
+  // copies per the fixture convention above.
+  const opsModel = path.join(dir, "bull-for-item10.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), opsModel);
+  const item10Box = await call("apply_edit_ops", {
+    path: opsModel,
+    ops: [{ op: "addBox", center: [80, 80, 80], size: [10, 10, 10] }],
+  });
+  assert(item10Box.applied === 1 && item10Box.model.solids.length === 2, "item-10 fixture: box added as solid-1 (faces 36..41)");
+
+  // Identify the box's two x-normal planar faces via inspect (never guessed).
+  let xPosFace = null, xNegFace = null;
+  for (const fid of item10Box.model.solids[1].faceIds) {
+    const facts = await call("inspect", { path: opsModel, entityId: fid });
+    if (facts.surfaceType !== "plane" || !facts.normal || Math.abs(Math.abs(facts.normal[0]) - 1) > 1e-6) continue;
+    if (facts.planeOrigin[0] > 80) xPosFace = { id: fid, facts };
+    else if (facts.planeOrigin[0] < 80) xNegFace = { id: fid, facts };
+  }
+  assert(xPosFace && xNegFace, `the box's ±x planar faces were identified (got ${xPosFace?.id} / ${xNegFace?.id})`);
+
+  // Draft: the op model is fully wired (validation, panel, MCP), and the
+  // bindings were probed to the exact call shape — `BRepOffsetAPI_DraftAngle_2`
+  // ctor + 5-arg `Add(face, Dir, angleRad, Pln, flag)` — but this WASM build's
+  // `Build()` RELIABLY throws an un-decodable OCCT failure on real geometry
+  // (probed across 3 fresh processes; see CLAUDE.md's item-10 section). The
+  // assertion pins the HONEST SKIP: applied:false with the kernel-limitation
+  // diagnostic, never a silent no-op, while a neighboring op still applies.
+  // Own throwaway copy — the opsModel's solid/face counts feed later asserts.
+  const draftModel = path.join(dir, "bull-for-draft.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), draftModel);
+  const draftBox = await call("apply_edit_ops", {
+    path: draftModel,
+    ops: [{ op: "addBox", center: [80, 80, 80], size: [10, 10, 10] }],
+  });
+  let dPos = null, dNeg = null;
+  for (const fid of draftBox.model.solids[1].faceIds) {
+    const facts = await call("inspect", { path: draftModel, entityId: fid });
+    if (facts.surfaceType !== "plane" || !facts.normal || Math.abs(Math.abs(facts.normal[0]) - 1) > 1e-6) continue;
+    if (facts.planeOrigin[0] > 80) dPos = { id: fid, facts };
+    else if (facts.planeOrigin[0] < 80) dNeg = { id: fid, facts };
+  }
+  assert(dPos && dNeg, `draft fixture: the box's ±x planar faces identified (${dPos?.id} / ${dNeg?.id})`);
+  const beforeDraft = await call("get_mass_properties", { path: draftModel });
+  const drafted = await call("apply_edit_ops", {
+    path: draftModel,
+    ops: [
+      { op: "addBox", center: [100, 100, 100], size: [10, 10, 10] },
+      { op: "draft", faces: [dPos.id], angleDeg: 5, planePoint: dNeg.facts.planeOrigin, planeNormal: dPos.facts.normal },
+    ],
+  });
+  assert(drafted.applied === 1 && drafted.notApplied === 1, `draft reports honestly (applied=${drafted.applied}, notApplied=${drafted.notApplied})`);
+  const draftReport = drafted.report.find((r) => r.op === "draft");
+  assert(
+    draftReport && draftReport.applied === false && /draft engine|BRepOffsetAPI_DraftAngle/i.test(draftReport.diagnostic ?? ""),
+    `the draft diagnostic names the kernel limitation (got: ${JSON.stringify(draftReport?.diagnostic)})`
+  );
+  const afterDraft = await call("get_mass_properties", { path: draftModel });
+  assert(Math.abs(afterDraft.volume - beforeDraft.volume - 1000) < 1e-2, `only the neighbor box applied — the skipped draft adds exactly its 1000 units to adaptive-integration precision (Δ=${(afterDraft.volume - beforeDraft.volume).toFixed(9)})`);
+
+  // Edge slot: slot the box's first edge (edge-98 — the box's edges follow
+  // bull's 98), assert a new free "Sketches" face whose area is exactly
+  // (edge length + width) × width.
+  const edgeFacts = await call("inspect", { path: opsModel, entityId: "edge-98" });
+  const slotWidth = 2;
+  const slotted = await call("apply_edit_ops", {
+    path: opsModel,
+    ops: [{ op: "addEdgeSlot", edge: "edge-98", width: slotWidth }],
+  });
+  assert(slotted.applied === 1 && slotted.model.solids.length === 3, `addEdgeSlot appends one free sketch face (groups: ${slotted.model.solids.map((s) => s.id).join(",")})`);
+  const sketchGroup = slotted.model.solids.find((s) => s.label === "Sketches");
+  assert(sketchGroup && sketchGroup.faceIds.length === 1, `the slot face landed under Sketches (got ${JSON.stringify(sketchGroup)})`);
+  const slotFaceFacts = await call("inspect", { path: opsModel, entityId: sketchGroup.faceIds[0] });
+  const expectedSlotArea = (edgeFacts.length + slotWidth) * slotWidth;
+  assert(
+    Math.abs(slotFaceFacts.area - expectedSlotArea) < 1e-6,
+    `the slot face's area is (edge length + width) × width (${expectedSlotArea.toFixed(6)}, got ${slotFaceFacts.area})`
+  );
+
+  // Guide (construction geometry): a guide-flagged line surfaces as a
+  // guideId on load, and a guide-flagged profile face is REFUSED as an
+  // extrude profile while a non-guide control face extrudes fine.
+  const guideModel = path.join(dir, "bull-for-guide.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), guideModel);
+  const guideOps = await call("apply_edit_ops", {
+    path: guideModel,
+    ops: [
+      { op: "addBox", center: [80, 80, 80], size: [10, 10, 10] },
+      { op: "addLine", start: [70, 70, 70], end: [74, 70, 70], guide: true },
+      { op: "addCircleProfile", center: [70, 70, 70], normal: [0, 0, 1], radius: 2, guide: true },
+      { op: "addCircleProfile", center: [70, 90, 70], normal: [0, 0, 1], radius: 2 },
+    ],
+  });
+  assert(guideOps.applied === 4, `guide fixture ops all applied (got ${guideOps.applied}/4)`);
+  const guideLoaded = await call("load_model", { path: guideModel });
+  assert(
+    Array.isArray(guideLoaded.guideIds) && guideLoaded.guideIds.length === 2,
+    `load_model reports the guide entities (line + circle face; got ${JSON.stringify(guideLoaded.guideIds)})`
+  );
+  // Face ids: bull 0..35, box 36..41, guide circle 42, control circle 43.
+  const guideExtrude = await call("apply_edit_ops", {
+    path: guideModel,
+    ops: [{ op: "extrude", profile: "face-42", dir: [0, 0, 1], length: 3 }],
+  });
+  assert(guideExtrude.applied === 0 && guideExtrude.notApplied === 1, `extruding a guide profile is refused (applied=${guideExtrude.applied})`);
+  const guideReport = guideExtrude.report.find((r) => r.op === "extrude");
+  assert(
+    guideReport && /guide/i.test(guideReport.diagnostic ?? ""),
+    `the refusal names guide geometry (got: ${JSON.stringify(guideReport?.diagnostic)})`
+  );
+  const controlExtrude = await call("apply_edit_ops", {
+    path: guideModel,
+    ops: [{ op: "extrude", profile: "face-43", dir: [0, 0, 1], length: 3 }],
+  });
+  assert(controlExtrude.applied === 1 && controlExtrude.model.solids.length === 4, `the non-guide control profile extrudes fine (${controlExtrude.model.solids.length} solids)`);
+
+  // midplaneFaces mirror: mirror the bull across the midplane of the box's
+  // two x faces (x=80) — cross-checked byte-equal against the inline-vector
+  // mirror of the SAME computed plane on a second copy.
+  const midA = path.join(dir, "bull-for-midplane-a.stp");
+  const midB = path.join(dir, "bull-for-midplane-b.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), midA);
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), midB);
+  for (const p of [midA, midB]) {
+    await call("apply_edit_ops", { path: p, ops: [{ op: "addBox", center: [80, 80, 80], size: [10, 10, 10] }] });
+  }
+  const mirroredRef = await call("apply_edit_ops", {
+    path: midA,
+    ops: [{ op: "mirror", targets: ["solid-0"], midplaneFaces: [xPosFace.id, xNegFace.id] }],
+  });
+  assert(mirroredRef.applied === 1, `midplaneFaces mirror applied (got: ${JSON.stringify(mirroredRef.report)})`);
+  const mirroredInline = await call("apply_edit_ops", {
+    path: midB,
+    ops: [{ op: "mirror", targets: ["solid-0"], planePoint: [80, 0, 0], planeNormal: [1, 0, 0] }],
+  });
+  assert(mirroredInline.applied === 1, "inline-vector mirror applied");
+  const refBull = await call("inspect", { path: midA, entityId: "solid-0" });
+  const inlineBull = await call("inspect", { path: midB, entityId: "solid-0" });
+  const bboxEq = ["min", "max"].every((k) => refBull.bbox[k].every((v, i) => Math.abs(v - inlineBull.bbox[k][i]) < 1e-6));
+  assert(bboxEq, `midplaneFaces mirror matches the inline-vector mirror exactly (${JSON.stringify(refBull.bbox)} vs ${JSON.stringify(inlineBull.bbox)})`);
+
+  // midaxisOf pattern: two parallel cylinders define the mid-axis; rotating
+  // the bull 180° about it must match the inline-axis pattern exactly.
+  const axA = path.join(dir, "bull-for-midaxis-a.stp");
+  const axB = path.join(dir, "bull-for-midaxis-b.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), axA);
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), axB);
+  const cylOps = { ops: [
+    { op: "addCylinder", center: [30, 30, 20], axis: [0, 0, 1], radius: 2, height: 10 },
+    { op: "addCylinder", center: [50, 30, 20], axis: [0, 0, 1], radius: 2, height: 10 },
+  ] };
+  for (const p of [axA, axB]) await call("apply_edit_ops", { path: p, ...cylOps });
+  const findLat = async (p, solidId) => {
+    const inv = await call("inspect", { path: p, entityId: solidId });
+    return inv.surfaceType === "cylinder" ? inv : null;
+  };
+  const axInventory = await call("load_model", { path: axA });
+  let latA = null, latB = null;
+  for (const fid of axInventory.solids[1].faceIds) {
+    const f = await call("inspect", { path: axA, entityId: fid });
+    if (f.surfaceType === "cylinder" && !latA) latA = fid;
+  }
+  for (const fid of axInventory.solids[2].faceIds) {
+    const f = await call("inspect", { path: axA, entityId: fid });
+    if (f.surfaceType === "cylinder" && !latB) latB = fid;
+  }
+  assert(latA && latB, `both cylinders' lateral faces identified (${latA} / ${latB})`);
+  const patRef = await call("apply_edit_ops", {
+    path: axA,
+    ops: [{ op: "patternCircular", targets: ["solid-0"], midaxisOf: [latA, latB], angleDeg: 180, count: 2 }],
+  });
+  assert(patRef.applied === 1, `midaxisOf pattern applied (got: ${JSON.stringify(patRef.report)})`);
+  const patInline = await call("apply_edit_ops", {
+    path: axB,
+    ops: [{ op: "patternCircular", targets: ["solid-0"], axisPoint: [40, 30, 20], axisDir: [0, 0, 1], angleDeg: 180, count: 2 }],
+  });
+  assert(patInline.applied === 1, "inline-axis pattern applied");
+  assert(patRef.model.solids.length === 4 && patInline.model.solids.length === 4, `both patterns appended exactly one copy (ref ${patRef.model.solids.length}, inline ${patInline.model.solids.length})`);
+  const refCopy = await call("inspect", { path: axA, entityId: "solid-3" });
+  const inlineCopy = await call("inspect", { path: axB, entityId: "solid-3" });
+  const copyEq = ["min", "max"].every((k) => refCopy.bbox[k].every((v, i) => Math.abs(v - inlineCopy.bbox[k][i]) < 1e-6));
+  assert(copyEq, `midaxisOf rotation matches the inline-axis rotation exactly (${JSON.stringify(refCopy.bbox)} vs ${JSON.stringify(inlineCopy.bbox)})`);
+  // Non-parallel midaxis degrades gracefully with a diagnostic.
+  const axC = path.join(dir, "bull-for-midaxis-c.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), axC);
+  await call("apply_edit_ops", { path: axC, ops: [
+    { op: "addCylinder", center: [30, 30, 20], axis: [0, 0, 1], radius: 2, height: 10 },
+    { op: "addCylinder", center: [50, 30, 20], axis: [1, 0, 0], radius: 2, height: 10 },
+  ] });
+  let latC1 = null, latC2 = null;
+  const cInventory = await call("load_model", { path: axC });
+  for (const fid of cInventory.solids[1].faceIds) { const f = await call("inspect", { path: axC, entityId: fid }); if (f.surfaceType === "cylinder" && !latC1) latC1 = fid; }
+  for (const fid of cInventory.solids[2].faceIds) { const f = await call("inspect", { path: axC, entityId: fid }); if (f.surfaceType === "cylinder" && !latC2) latC2 = fid; }
+  const patBad = await call("apply_edit_ops", {
+    path: axC,
+    ops: [{ op: "patternCircular", targets: ["solid-0"], midaxisOf: [latC1, latC2], angleDeg: 90, count: 2 }],
+  });
+  assert(
+    patBad.applied === 0 && /parallel/i.test(patBad.report.find((r) => r.op === "patternCircular")?.diagnostic ?? ""),
+    `non-parallel midaxis is refused with a diagnostic (got: ${JSON.stringify(patBad.report.find((r) => r.op === "patternCircular")?.diagnostic)})`
+  );
+
   const zipOut = path.join(dir, "bull.preprocess.zip");
   const saved = await call("save_preprocess", { path: model, outputPath: zipOut });
   assert(

@@ -31,8 +31,8 @@ export interface TranslateOp { op: "translate"; targets: string[]; vec: Vec3; }
 export interface RotateOp { op: "rotate"; targets: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; }
 /** Scale the targets about `center`; uniform scale is `[s, s, s]`. */
 export interface ScaleOp { op: "scale"; targets: string[]; center: Vec3; factors: Vec3; }
-/** Mirror the targets across the plane (`planePoint`, `planeNormal`). */
-export interface MirrorOp { op: "mirror"; targets: string[]; planePoint: Vec3; planeNormal: Vec3; }
+/** Mirror the targets across the plane (`planePoint`, `planeNormal`) or the midplane of two planar `midplaneFaces` (planar, parallel — both required, mutually exclusive with the inline pair). */
+export interface MirrorOp { op: "mirror"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; }
 /** Combine solid sets `a` and `b` (union/subtract/intersect). */
 export interface BooleanOp { op: "boolean"; kind: "union" | "subtract" | "intersect"; a: string[]; b: string[]; }
 /** Round the selected edges with radius `radius`. */
@@ -109,10 +109,10 @@ export interface ShellOp { op: "shell"; thickness: number; openingFaces: string[
 export interface DraftOp { op: "draft"; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; }
 /** Stadium slot around an existing edge: width across, length = edge length + width. */
 export interface AddEdgeSlotOp { op: "addEdgeSlot"; edge: string; width: number; }
-/** Split the target solids by the plane (`planePoint`, `planeNormal`), keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. */
-export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePoint: Vec3; planeNormal: Vec3; keep: "both" | "positive" | "negative"; }
-/** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`) as a standalone face (under "Sketches"), leaving the solids untouched. */
-export interface SectionOp { op: "section"; targets: string[]; planePoint: Vec3; planeNormal: Vec3; }
+/** Split the target solids by the plane (`planePoint`, `planeNormal`) or the midplane of two planar `midplaneFaces`, keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. */
+export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; keep: "both" | "positive" | "negative"; }
+/** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`) or the midplane of `midplaneFaces` as a standalone face (under "Sketches"), leaving the solids untouched. */
+export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; }
 /** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
 export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
 /** Build a new solid by sewing the selected faces into a closed shell. */
@@ -121,8 +121,8 @@ export interface AddVolumeFromSurfacesOp { op: "addVolumeFromSurfaces"; faces: s
 export interface AlignOp { op: "align"; targets: string[]; axis: "x" | "y" | "z"; extent: "min" | "center" | "max"; to: number; }
 /** Linear array: `count` total instances of the targets (the original plus `count - 1` new copies), each `spacing` apart along `direction`. */
 export interface PatternLinearOp { op: "patternLinear"; targets: string[]; direction: Vec3; spacing: number; count: number; }
-/** Circular array: `count` total instances of the targets (the original plus `count - 1` new copies), `angleDeg` apart about the axis through `axisPoint` along `axisDir`. */
-export interface PatternCircularOp { op: "patternCircular"; targets: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; count: number; }
+/** Circular array: `count` total instances of the targets (the original plus `count - 1` new copies), `angleDeg` apart about the axis through `axisPoint` along `axisDir`, or the mid-axis of `midaxisOf` (two cylindrical faces or two parallel line edges — both required, mutually exclusive with the inline pair). */
+export interface PatternCircularOp { op: "patternCircular"; targets: string[]; axisPoint?: Vec3; axisDir?: Vec3; midaxisOf?: [string, string]; angleDeg: number; count: number; }
 
 export type EditOp = (
   | TranslateOp | RotateOp | ScaleOp | MirrorOp
@@ -257,6 +257,25 @@ function notParallel(a: Vec3, b: Vec3): boolean {
   return cx * cx + cy * cy + cz * cz > 0;
 }
 
+export const GUIDE_KINDS: ReadonlySet<EditOpKind> = new Set([
+  "addCircleProfile","addRectangleProfile","addPolygonProfile","addEllipseProfile","addRoundedRectangleProfile","addSlotProfile","addTrapezoidProfile",
+  "addPoint","addLine","addArc","addPolyline","addThreePointArc","addSpline","addBezier","addEllipseArc","addHelix",
+]);
+
+function asFaceIdPair(v: unknown): [string, string] | null {
+  if (!Array.isArray(v) || v.length !== 2) return null;
+  if (typeof v[0] !== "string" || typeof v[1] !== "string") return null;
+  if (!/^face-\d+$/.test(v[0]) || !/^face-\d+$/.test(v[1])) return null;
+  return [v[0], v[1]];
+}
+
+function asMidaxisPair(v: unknown): [string, string] | null {
+  if (!Array.isArray(v) || v.length !== 2) return null;
+  if (typeof v[0] !== "string" || typeof v[1] !== "string") return null;
+  if (!/^(face|edge)-\d+$/.test(v[0]) || !/^(face|edge)-\d+$/.test(v[1])) return null;
+  return [v[0], v[1]];
+}
+
 /** Cap on `exprs` entries per op / expression length — a hand-edited sidecar can't balloon memory. */
 const MAX_EXPRS_PER_OP = 64;
 const MAX_EXPR_LENGTH = 256;
@@ -297,8 +316,7 @@ export function validateEditOp(raw: unknown): EditOp | null {
   const rawGuide = (raw as Record<string, unknown>).guide;
   if (rawGuide !== undefined) {
     if (typeof rawGuide !== "boolean") return null;
-    const guideKinds = new Set(["addCircleProfile","addRectangleProfile","addPolygonProfile","addEllipseProfile","addRoundedRectangleProfile","addSlotProfile","addTrapezoidProfile","addPoint","addLine","addArc","addPolyline","addThreePointArc","addSpline","addBezier","addEllipseArc","addHelix"]);
-    if (!guideKinds.has(clean.op)) return null;
+    if (!GUIDE_KINDS.has(clean.op as EditOpKind)) return null;
     (clean as unknown as Record<string, unknown>).guide = rawGuide;
   }
   const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
@@ -334,11 +352,17 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "mirror": {
       const targets = asIdArray(o.targets);
+      if (!targets) return null;
+      const hasMidplane = o.midplaneFaces !== undefined;
+      if (hasMidplane) {
+        const midplaneFaces = asFaceIdPair(o.midplaneFaces);
+        if (!midplaneFaces) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined) return null;
+        return { op: "mirror", targets, midplaneFaces } as MirrorOp;
+      }
       const planePoint = asVec3(o.planePoint);
       const planeNormal = asNonZeroVec3(o.planeNormal);
-      return targets && planePoint && planeNormal
-        ? { op: "mirror", targets, planePoint, planeNormal }
-        : null;
+      return planePoint && planeNormal ? { op: "mirror", targets, planePoint, planeNormal } : null;
     }
     case "boolean": {
       const a = asIdArray(o.a);
@@ -423,21 +447,34 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "splitByPlane": {
       const targets = asIdArray(o.targets);
-      const planePoint = asVec3(o.planePoint);
-      const planeNormal = asNonZeroVec3(o.planeNormal);
+      if (!targets) return null;
       const keep = o.keep;
       const ok = keep === "both" || keep === "positive" || keep === "negative";
-      return targets && planePoint && planeNormal && ok
-        ? { op: "splitByPlane", targets, planePoint, planeNormal, keep }
-        : null;
+      if (!ok) return null;
+      const hasMidplane = o.midplaneFaces !== undefined;
+      if (hasMidplane) {
+        const midplaneFaces = asFaceIdPair(o.midplaneFaces);
+        if (!midplaneFaces) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined) return null;
+        return { op: "splitByPlane", targets, midplaneFaces, keep } as SplitByPlaneOp;
+      }
+      const planePoint = asVec3(o.planePoint);
+      const planeNormal = asNonZeroVec3(o.planeNormal);
+      return planePoint && planeNormal ? { op: "splitByPlane", targets, planePoint, planeNormal, keep } : null;
     }
     case "section": {
       const targets = asIdArray(o.targets);
+      if (!targets) return null;
+      const hasMidplane = o.midplaneFaces !== undefined;
+      if (hasMidplane) {
+        const midplaneFaces = asFaceIdPair(o.midplaneFaces);
+        if (!midplaneFaces) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined) return null;
+        return { op: "section", targets, midplaneFaces } as SectionOp;
+      }
       const planePoint = asVec3(o.planePoint);
       const planeNormal = asNonZeroVec3(o.planeNormal);
-      return targets && planePoint && planeNormal
-        ? { op: "section", targets, planePoint, planeNormal }
-        : null;
+      return planePoint && planeNormal ? { op: "section", targets, planePoint, planeNormal } : null;
     }
     case "addBox": {
       const center = asVec3(o.center);
@@ -672,11 +709,18 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "patternCircular": {
       const targets = asIdArray(o.targets);
+      if (!targets) return null;
+      if (!isFiniteNumber(o.angleDeg) || !isCountAtLeast(o.count, 2)) return null;
+      const hasMidaxis = o.midaxisOf !== undefined;
+      if (hasMidaxis) {
+        const midaxisOf = asMidaxisPair(o.midaxisOf);
+        if (!midaxisOf) return null;
+        if (o.axisPoint !== undefined || o.axisDir !== undefined) return null;
+        return { op: "patternCircular", targets, midaxisOf, angleDeg: o.angleDeg as number, count: o.count as number } as PatternCircularOp;
+      }
       const axisPoint = asVec3(o.axisPoint);
       const axisDir = asNonZeroVec3(o.axisDir);
-      return targets && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && isCountAtLeast(o.count, 2)
-        ? { op: "patternCircular", targets, axisPoint, axisDir, angleDeg: o.angleDeg, count: o.count }
-        : null;
+      return axisPoint && axisDir ? { op: "patternCircular", targets, axisPoint, axisDir, angleDeg: o.angleDeg as number, count: o.count as number } : null;
     }
     default:
       return null;

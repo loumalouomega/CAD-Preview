@@ -1303,11 +1303,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       post({ type: "status", text: "Rendering…" });
       progress?.report({ message: "Rendering…" });
-      const { groups, edges, points, tree, opOutcomes } = result;
+      const { groups, edges, points, tree, opOutcomes, guideIds } = result;
       post({
         type: "geometry",
         autoFit,
         opOutcomes,
+        guideIds,
         meshes: groups.flatMap((g) =>
           g.faces.map((f) => ({
             positions: encodeBuffer(f.buffers.positions),

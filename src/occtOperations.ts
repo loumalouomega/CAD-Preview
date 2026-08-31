@@ -8,6 +8,115 @@ import { enumerateEdges, buildEdgeFaceAdjacency } from "./edgeEnumeration";
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
 const HASH_UPPER = 1 << 30;
 
+export interface GuideCollector { faces: any[]; edges: any[]; vertices: any[]; }
+
+function isGuideHandle(handle: any, collector: GuideCollector | undefined): boolean {
+  if (!collector) return false;
+  for (const f of collector.faces) if (f.IsSame(handle)) return true;
+  for (const e of collector.edges) if (e.IsSame(handle)) return true;
+  for (const v of collector.vertices) if (v.IsSame(handle)) return true;
+  return false;
+}
+
+function resolveMidplane(oc: any, shape: any, ids: [string, string], cleanup: Array<{ delete(): void }>, fail: OutcomeFail): { point: Vec3; normal: Vec3 } | null {
+  const faces = collectFaces(oc, shape, cleanup);
+  const a = faces[faceIndex(ids[0])];
+  const b = faces[faceIndex(ids[1])];
+  if (!a || !b) { fail(`midplane face ${!a ? ids[0] : ids[1]} does not resolve`); return null; }
+  const pa = facePlane(oc, a, cleanup);
+  const pb = facePlane(oc, b, cleanup);
+  if (!pa || !pb) { fail(`midplane requires two planar faces — ${!pa ? ids[0] : ids[1]} is not planar`); return null; }
+  const dot = pa.nl[0]*pb.nl[0]+pa.nl[1]*pb.nl[1]+pa.nl[2]*pb.nl[2];
+  if (Math.abs(Math.abs(dot) - 1) > 1e-6) { fail(`midplane requires parallel planes — ${ids[0]} and ${ids[1]} are not parallel`); return null; }
+  const nb: Vec3 = dot < 0 ? [-pb.nl[0], -pb.nl[1], -pb.nl[2]] : pb.nl;
+  const n: Vec3 = pa.nl;
+  const da = pa.pt[0]*n[0]+pa.pt[1]*n[1]+pa.pt[2]*n[2];
+  const db = pb.pt[0]*n[0]+pb.pt[1]*n[1]+pb.pt[2]*n[2];
+  const midD = (da + db) / 2;
+  const point: Vec3 = [pa.pt[0] + n[0]*(midD - da), pa.pt[1] + n[1]*(midD - da), pa.pt[2] + n[2]*(midD - da)];
+  return { point, normal: n };
+}
+
+function edgeDirection(oc: any, edge: any, cleanup: Array<{ delete(): void }>): Vec3 | null {
+  try {
+    const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_VERTEX);
+    cleanup.push(vExp);
+    const pts: any[] = [];
+    for (; vExp.More(); vExp.Next()) pts.push(oc.TopoDS.Vertex_1(vExp.Current()));
+    if (pts.length < 2) return null;
+    const p1 = oc.BRep_Tool.Pnt(pts[0]);
+    const p2 = oc.BRep_Tool.Pnt(pts[pts.length - 1]);
+    const d: Vec3 = [p2.X()-p1.X(), p2.Y()-p1.Y(), p2.Z()-p1.Z()];
+    const len = Math.hypot(d[0],d[1],d[2]);
+    return len < 1e-9 ? null : [d[0]/len, d[1]/len, d[2]/len];
+  } catch { return null; }
+}
+
+function edgeMidpoint(oc: any, edge: any, cleanup: Array<{ delete(): void }>): Vec3 | null {
+  try {
+    const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_VERTEX);
+    cleanup.push(vExp);
+    const pts: any[] = [];
+    for (; vExp.More(); vExp.Next()) pts.push(oc.TopoDS.Vertex_1(vExp.Current()));
+    if (pts.length < 2) return null;
+    const p1 = oc.BRep_Tool.Pnt(pts[0]);
+    const p2 = oc.BRep_Tool.Pnt(pts[pts.length - 1]);
+    return [(p1.X()+p2.X())/2,(p1.Y()+p2.Y())/2,(p1.Z()+p2.Z())/2];
+  } catch { return null; }
+}
+
+function resolveMidaxis(oc: any, shape: any, ids: [string, string], cleanup: Array<{ delete(): void }>, fail: OutcomeFail): { point: Vec3; dir: Vec3 } | null {
+  function faceAxis(id: string): { loc: Vec3; dir: Vec3 } | null {
+    const faces = collectFaces(oc, shape, cleanup);
+    const f = faces[faceIndex(id)];
+    if (!f) return null;
+    const info = faceSurfaceInfo(oc, f, cleanup);
+    if (info.params?.kind !== "cylinder") return null;
+    return { loc: (info.params as any).axisLocation, dir: (info.params as any).axisDirection };
+  }
+  function edgeAxis(id: string): { loc: Vec3; dir: Vec3 } | null {
+    const edges = collectEdges(oc, shape, cleanup);
+    const idx = edgeIndex(id);
+    const e = edges[idx];
+    if (!e) return null;
+    const d = edgeDirection(oc, e, cleanup);
+    const m = edgeMidpoint(oc, e, cleanup);
+    return d && m ? { loc: m, dir: d } : null;
+  }
+  const isFaceA = ids[0].startsWith("face-");
+  const isFaceB = ids[1].startsWith("face-");
+  if (isFaceA !== isFaceB) { fail(`midaxis requires two faces or two edges — got ${ids[0]} and ${ids[1]}`); return null; }
+  let a: { loc: Vec3; dir: Vec3 } | null;
+  let b: { loc: Vec3; dir: Vec3 } | null;
+  if (isFaceA) { a = faceAxis(ids[0]); b = faceAxis(ids[1]); if (!a) { fail(`midaxis: ${ids[0]} is not a cylindrical face`); return null; } if (!b) { fail(`midaxis: ${ids[1]} is not a cylindrical face`); return null; } }
+  else { a = edgeAxis(ids[0]); b = edgeAxis(ids[1]); if (!a) { fail(`midaxis: ${ids[0]} does not resolve to a straight edge`); return null; } if (!b) { fail(`midaxis: ${ids[1]} does not resolve to a straight edge`); return null; } }
+  const dot = a.dir[0]*b.dir[0]+a.dir[1]*b.dir[1]+a.dir[2]*b.dir[2];
+  if (Math.abs(Math.abs(dot) - 1) > 1e-6) { fail(`midaxis requires parallel axes — ${ids[0]} and ${ids[1]} are not parallel`); return null; }
+  const nbDir: Vec3 = dot < 0 ? [-b.dir[0],-b.dir[1],-b.dir[2]] : b.dir;
+  const midLoc: Vec3 = [(a.loc[0]+b.loc[0])/2,(a.loc[1]+b.loc[1])/2,(a.loc[2]+b.loc[2])/2];
+  const dir: Vec3 = [a.dir[0]+nbDir[0], a.dir[1]+nbDir[1], a.dir[2]+nbDir[2]];
+  const len = Math.hypot(dir[0],dir[1],dir[2]);
+  if (len < 1e-12) { fail(`midaxis axes are antiparallel and cancel`); return null; }
+  return { point: midLoc, dir: [dir[0]/len, dir[1]/len, dir[2]/len] };
+}
+
+export function collectGuideIds(oc: any, shape: any, collector: GuideCollector, cleanup: Array<{ delete(): void }>): string[] {
+  const ids: string[] = [];
+  if (collector.faces.length > 0) {
+    const faces = collectFaces(oc, shape, cleanup);
+    for (let i = 0; i < faces.length; i++) for (const gf of collector.faces) if (gf.IsSame(faces[i])) { ids.push(`face-${i}`); break; }
+  }
+  if (collector.edges.length > 0) {
+    const edges = collectEdges(oc, shape, cleanup);
+    for (let i = 0; i < edges.length; i++) for (const ge of collector.edges) if (ge.IsSame(edges[i])) { ids.push(`edge-${i}`); break; }
+  }
+  if (collector.vertices.length > 0) {
+    const vertices = collectVertices(oc, shape, cleanup);
+    for (let i = 0; i < vertices.length; i++) for (const gv of collector.vertices) if (gv.IsSame(vertices[i])) { ids.push(`point-${i}`); break; }
+  }
+  return ids;
+}
+
 /**
  * Host-side (OCCT) edit engine. Folds the replayable op-list over a freshly-read
  * base `TopoDS_Shape`, returning the edited shape to tessellate + display +
@@ -29,7 +138,7 @@ const HASH_UPPER = 1 << 30;
  * applied via `BRepBuilderAPI_Transform_2(shape, trsf, true).Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[]): any {
+export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[], guideCollector?: GuideCollector): any {
   let shape = baseShape;
   for (let index = 0; index < ops.length; index++) {
     const op = ops[index];
@@ -44,7 +153,7 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
       if (hint) outcome.hint = hint;
     };
     try {
-      shape = applyOneOp(oc, shape, op, cleanup, fail);
+      shape = applyOneOp(oc, shape, op, cleanup, fail, guideCollector);
     } catch (err) {
       // A helper's own builder throws are caught internally; reaching here is
       // an unexpected fault. Record it, then re-throw to preserve the existing
@@ -75,14 +184,14 @@ type Transformer = (s: any) => any;
  * `fail` with a reason (see {@link OpOutcome}) before returning.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail): any {
+function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail, guideCollector?: GuideCollector): any {
   switch (op.op) {
     case "translate":
     case "rotate":
     case "scale":
     case "mirror": {
-      const transform = makeTransformer(oc, op, cleanup);
-      return transform ? transformSolids(oc, shape, op.targets, transform, cleanup, fail) : shape;
+      const transform = makeTransformer(oc, op as any, cleanup, shape, fail);
+      return transform ? transformSolids(oc, shape, (op as any).targets, transform, cleanup, fail) : shape;
     }
     case "boolean":
       return booleanSolids(oc, shape, op, cleanup, fail);
@@ -93,7 +202,7 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "revolve":
     case "sweep":
     case "loft":
-      return featureModel(oc, shape, op, cleanup, fail);
+      return featureModel(oc, shape, op, cleanup, fail, guideCollector);
     case "explode":
       return explodeSolids(oc, shape, op.factor, cleanup, fail);
     case "mate":
@@ -103,9 +212,9 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "draft":
       return draftFaces(oc, shape, op, cleanup, fail);
     case "splitByPlane":
-      return splitSolidsByPlane(oc, shape, op, cleanup, fail);
+      return splitSolidsByPlane(oc, shape, op as any, cleanup, fail);
     case "section":
-      return sectionSolids(oc, shape, op, cleanup, fail);
+      return sectionSolids(oc, shape, op as any, cleanup, fail);
     case "addBox":
     case "addSphere":
     case "addCylinder":
@@ -125,7 +234,7 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addRoundedRectangleProfile":
     case "addSlotProfile":
     case "addTrapezoidProfile":
-      return addProfile(oc, shape, op, cleanup, fail);
+      return addProfile(oc, shape, op, cleanup, fail, guideCollector);
     case "addEdgeSlot":
       return addEdgeSlot(oc, shape, op, cleanup, fail);
     case "addPoint":
@@ -137,17 +246,17 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addBezier":
     case "addEllipseArc":
     case "addHelix":
-      return addWireframePrimitive(oc, shape, op, cleanup, fail);
+      return addWireframePrimitive(oc, shape, op, cleanup, fail, guideCollector);
     case "addSurfaceFromLines":
-      return addSurfaceFromLines(oc, shape, op, cleanup, fail);
+      return addSurfaceFromLines(oc, shape, op, cleanup, fail, guideCollector);
     case "addVolumeFromSurfaces":
-      return addVolumeFromSurfaces(oc, shape, op, cleanup, fail);
+      return addVolumeFromSurfaces(oc, shape, op, cleanup, fail, guideCollector);
     case "align":
       return alignSolids(oc, shape, op, cleanup, fail);
     case "patternLinear":
       return patternLinear(oc, shape, op, cleanup, fail);
     case "patternCircular":
-      return patternCircular(oc, shape, op, cleanup, fail);
+      return patternCircular(oc, shape, op as any, cleanup, fail);
     default:
       // Exhaustive over the current union — reachable only against a sidecar
       // authored on a NEWER build (the tolerant-replay case this guards).
@@ -158,24 +267,34 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
 
 /** Builds the geometric transformer for a transform op, or null if unsupported. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function makeTransformer(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>): Transformer | null {
+function makeTransformer(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>, shape?: any, fail?: OutcomeFail): Transformer | null {
   const push = <T extends { delete(): void }>(o: T): T => (cleanup.push(o), o);
 
   switch (op.op) {
     case "translate": {
       const t = push(new oc.gp_Trsf_1());
-      t.SetTranslation_1(push(vec(oc, op.vec)));
+      t.SetTranslation_1(push(vec(oc, (op as any).vec)));
       return rigid(oc, t, cleanup);
     }
     case "rotate": {
       const t = push(new oc.gp_Trsf_1());
-      const ax = push(new oc.gp_Ax1_2(push(pnt(oc, op.axisPoint)), push(dir(oc, op.axisDir))));
-      t.SetRotation_1(ax, (op.angleDeg * Math.PI) / 180);
+      const ax = push(new oc.gp_Ax1_2(push(pnt(oc, (op as any).axisPoint)), push(dir(oc, (op as any).axisDir))));
+      t.SetRotation_1(ax, ((op as any).angleDeg * Math.PI) / 180);
       return rigid(oc, t, cleanup);
     }
     case "mirror": {
+      let pt: Vec3 | null = null;
+      let nl: Vec3 | null = null;
+      const mop = op as any;
+      if (mop.midplaneFaces) {
+        if (!shape || !fail) return null;
+        const mid = resolveMidplane(oc, shape, mop.midplaneFaces, cleanup, fail);
+        if (!mid) return null;
+        pt = mid.point; nl = mid.normal;
+      } else { pt = mop.planePoint; nl = mop.planeNormal; }
+      if (!pt || !nl) return null;
       const t = push(new oc.gp_Trsf_1());
-      const ax2 = push(new oc.gp_Ax2_3(push(pnt(oc, op.planePoint)), push(dir(oc, op.planeNormal))));
+      const ax2 = push(new oc.gp_Ax2_3(push(pnt(oc, pt)), push(dir(oc, nl))));
       t.SetMirror_3(ax2);
       return rigid(oc, t, cleanup);
     }
@@ -432,12 +551,20 @@ export function patternLinear(oc: any, shape: any, op: Extract<EditOp, { op: "pa
  * `op.axisPoint` along `op.axisDir`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "patternCircular" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  let axisPoint: Vec3 = (op as any).axisPoint;
+  let axisDir: Vec3 = (op as any).axisDir;
+  if ((op as any).midaxisOf) {
+    const mid = resolveMidaxis(oc, shape, (op as any).midaxisOf, cleanup, fail!);
+    if (!mid) return shape;
+    axisPoint = mid.point; axisDir = mid.dir;
+  }
+  if (!axisPoint || !axisDir) { fail?.(`patternCircular axis not specified`); return shape; }
   const angleRad = (op.angleDeg * Math.PI) / 180;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const copyAt = (s: any, k: number): any => {
     const t = new oc.gp_Trsf_1();
     cleanup.push(t);
-    const ax = new oc.gp_Ax1_2(pnt(oc, op.axisPoint), dir(oc, op.axisDir));
+    const ax = new oc.gp_Ax1_2(pnt(oc, axisPoint), dir(oc, axisDir));
     cleanup.push(ax);
     t.SetRotation_1(ax, angleRad * k);
     return rigid(oc, t, cleanup)(s);
@@ -714,7 +841,15 @@ function isChamferWithFace(op: Extract<EditOp, { op: "chamfer" }>): boolean {
  *             BRepTools.OuterWire(face))` per profile + `.Build()` + `.Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  if (guideCollector) {
+    const faceIds: string[] = op.op === "extrude" || op.op === "revolve" ? [(op as any).profile] : op.op === "sweep" ? [(op as any).profile] : op.op === "loft" ? (op as any).profiles : [];
+    for (const fid of faceIds) {
+      const faces = collectFaces(oc, shape, cleanup);
+      const f = faces[faceIndex(fid)];
+      if (f && isGuideHandle(f, guideCollector)) { fail?.(`profile ${fid} is construction (guide) geometry — guide entities are excluded from feature resolution`); return shape; }
+    }
+  }
   const solid = buildFeatureSolid(oc, shape, op, cleanup);
   if (!solid) {
     fail?.(`${op.op} could not build a new body`, "check that the profile face-N (and, for sweep, the path edge-N) resolve to real entities");
@@ -936,12 +1071,13 @@ function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, si
  * a flat sketch in a way it mostly doesn't for a solid of revolution).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addProfile(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function addProfile(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
   const face = buildProfileFace(oc, op, cleanup);
   if (!face) {
     fail?.(`could not build the ${op.op} sketch face`, "check the profile's parameters (radius/width/height must be positive, normal a non-zero direction)");
     return shape;
   }
+  if ((op as any).guide) guideCollector?.faces.push(face);
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
   const builder = new oc.BRep_Builder();
@@ -1181,11 +1317,20 @@ function addEdgeSlot(oc: any, shape: any, op: Extract<EditOp, { op: "addEdgeSlot
  *           confirmed against the live WASM, not assumed.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
   const entity = buildWireframePrimitive(oc, op, cleanup);
   if (!entity) {
     fail?.(`could not build the ${op.op} entity`, "check the coordinates (a collinear 3-point arc, for example, cannot build an edge)");
     return shape;
+  }
+  if ((op as any).guide && guideCollector) {
+    if (op.op === "addPoint") guideCollector.vertices.push(entity);
+    else if (op.op === "addPolyline") {
+      const exp = new oc.TopExp_Explorer_2(entity, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+      cleanup.push(exp);
+      for (; exp.More(); exp.Next()) { const e = oc.TopoDS.Edge_1(exp.Current()); cleanup.push(e); guideCollector.edges.push(e); }
+      if (guideCollector.edges.length === 0) guideCollector.edges.push(entity);
+    } else guideCollector.edges.push(entity);
   }
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
@@ -1347,7 +1492,11 @@ function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): vo
  * (never a crash), consistent with this codebase's graceful-degradation rule.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  if (guideCollector) {
+    const edges = collectEdges(oc, shape, cleanup);
+    for (const id of op.edges) { const e = edges[edgeIndex(id)]; if (e && isGuideHandle(e, guideCollector)) { fail?.(`edge ${id} is construction (guide) geometry — guide entities are excluded from surface resolution`); return shape; } }
+  }
   const face = buildSurfaceFromLines(oc, shape, op, cleanup);
   if (!face) {
     fail?.(
@@ -1431,7 +1580,11 @@ function buildSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "a
  * cosmetic concern.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addVolumeFromSurfaces(oc: any, shape: any, op: Extract<EditOp, { op: "addVolumeFromSurfaces" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function addVolumeFromSurfaces(oc: any, shape: any, op: Extract<EditOp, { op: "addVolumeFromSurfaces" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  if (guideCollector) {
+    const faces = collectFaces(oc, shape, cleanup);
+    for (const id of op.faces) { const f = faces[faceIndex(id)]; if (f && isGuideHandle(f, guideCollector)) { fail?.(`face ${id} is construction (guide) geometry — guide entities are excluded from volume resolution`); return shape; } }
+  }
   const solid = buildVolumeFromSurfaces(oc, shape, op, cleanup);
   if (!solid) {
     fail?.(
@@ -1812,12 +1965,20 @@ function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, c
       return shape;
     }
     const angleRad = (op.angleDeg * Math.PI) / 180;
-    const draft = keep(new oc.BRepOffsetAPI_DraftAngle(shape));
+    // VERIFIED against the live WASM (see CLAUDE.md's item-10 section for the
+    // probing trail): the plain `BRepOffsetAPI_DraftAngle` ctor is UNBOUND
+    // ("no accessible constructor") and `_1` wants >1 params — `_2(shape)` is
+    // the working 1-arg ctor. `Add` is a 5-arg `(face, gp_Dir, angleRad,
+    // gp_Pln, flag)` — deduced from embind's own type errors, confirmed live.
+    // `gp_Pln_2(Ax3)` is the 1-arg plane form (gp_Pln_3 takes (Pnt, Dir)).
+    const draft = keep(new oc.BRepOffsetAPI_DraftAngle_2(shape));
     for (const f of picked) {
       let pln: any;
+      let pull: Vec3;
       if (op.planePoint && op.planeNormal) {
         const ax = keep(new oc.gp_Ax3_4(keep(pnt(oc, op.planePoint)), keep(dir(oc, op.planeNormal))));
-        pln = keep(new oc.gp_Pln_3(ax));
+        pln = keep(new oc.gp_Pln_2(ax));
+        pull = op.planeNormal;
       } else {
         const info = facePlane(oc, f, cleanup);
         if (!info) {
@@ -1825,22 +1986,40 @@ function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, c
           return shape;
         }
         const ax = keep(new oc.gp_Ax3_4(keep(pnt(oc, info.pt)), keep(dir(oc, info.nl))));
-        pln = keep(new oc.gp_Pln_3(ax));
+        pln = keep(new oc.gp_Pln_2(ax));
+        pull = info.nl;
       }
       try {
-        (draft as any).Add(f, angleRad, pln);
-      } catch {
-        fail?.("draft Add failed for a face");
+        draft.Add(f, dir(oc, pull), angleRad, pln, true);
+      } catch (err) {
+        fail?.(`draft Add failed for a face: ${err instanceof Error ? err.message : String(err)}`);
         return shape;
       }
     }
     try {
-      (draft as any).Build();
+      draft.Build();
     } catch {
-      fail?.("draft Build threw");
+      // Probed against the live WASM (3 fresh processes, identical result):
+      // `Add` succeeds with the verified 5-arg signature, but `Build()` — the
+      // call that actually computes the tapered shape — RELIABLY throws an
+      // un-decodable OCCT failure (a Standard_Failure with no message) on real
+      // geometry. Kernel-broken in this build, the same "green in the manifest
+      // is necessary but not sufficient" class as ShapeFix_Shape /
+      // Interface_Static.CVal / BRepExtrema_DistanceSS-max (see CLAUDE.md).
+      // The op stays: it validates, its wiring is correct, and a future OCCT
+      // build that fixes Build() needs no code change — until then this is an
+      // honest graceful skip, never a silent no-op.
+      fail?.(
+        "this OCCT build's draft engine (BRepOffsetAPI_DraftAngle.Build) failed — a kernel limitation of the bundled WASM, not an input problem",
+        "the draft op is skipped here; the surrounding ops still apply"
+      );
       return shape;
     }
-    const res = (draft as any).Shape ? (draft as any).Shape() : shape;
+    if (!draft.IsDone()) {
+      fail?.("draft Build did not complete (IsDone() false)");
+      return shape;
+    }
+    const res = draft.Shape();
     cleanup.push(res);
     return res;
   } catch {
@@ -1864,6 +2043,14 @@ function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, c
 function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "splitByPlane" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
+    let planePoint: Vec3 | null = (op as any).planePoint ?? null;
+    let planeNormal: Vec3 | null = (op as any).planeNormal ?? null;
+    if ((op as any).midplaneFaces) {
+      const mid = resolveMidplane(oc, shape, (op as any).midplaneFaces, cleanup, fail!);
+      if (!mid) return shape;
+      planePoint = mid.point; planeNormal = mid.normal;
+    }
+    if (!planePoint || !planeNormal) { fail?.(`splitByPlane plane not specified`); return shape; }
     const solids = collectSolids(oc, shape, cleanup);
     const byId = new Map(solids.map((s) => [s.id, s.solid]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1883,7 +2070,7 @@ function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "spli
     const t = keep(new oc.gp_Trsf_1());
     t.SetDisplacement(
       keep(new oc.gp_Ax3_4(keep(pnt(oc, [0, 0, 0])), keep(dir(oc, [0, 0, 1])))),
-      keep(new oc.gp_Ax3_4(keep(pnt(oc, op.planePoint)), keep(dir(oc, op.planeNormal))))
+      keep(new oc.gp_Ax3_4(keep(pnt(oc, planePoint)), keep(dir(oc, planeNormal))))
     );
     const halfSpace = rigid(oc, t, cleanup)(rawBox);
 
@@ -1939,6 +2126,14 @@ function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "spli
 function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
+    let planePoint: Vec3 | null = (op as any).planePoint ?? null;
+    let planeNormal: Vec3 | null = (op as any).planeNormal ?? null;
+    if ((op as any).midplaneFaces) {
+      const mid = resolveMidplane(oc, shape, (op as any).midplaneFaces, cleanup, fail!);
+      if (!mid) return shape;
+      planePoint = mid.point; planeNormal = mid.normal;
+    }
+    if (!planePoint || !planeNormal) { fail?.(`section plane not specified`); return shape; }
     const solids = collectSolids(oc, shape, cleanup);
     const byId = new Map(solids.map((s) => [s.id, s.solid]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1952,12 +2147,12 @@ function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" 
     }
 
     const d = Math.max(bboxDiagonal(oc, shape, cleanup), 1) * 10;
-    const [u, v] = planeBasis(op.planeNormal);
+    const [u, v] = planeBasis(planeNormal);
     const corners: Vec3[] = [
-      addScaled(op.planePoint, u, -d / 2, v, -d / 2),
-      addScaled(op.planePoint, u, d / 2, v, -d / 2),
-      addScaled(op.planePoint, u, d / 2, v, d / 2),
-      addScaled(op.planePoint, u, -d / 2, v, d / 2),
+      addScaled(planePoint, u, -d / 2, v, -d / 2),
+      addScaled(planePoint, u, d / 2, v, -d / 2),
+      addScaled(planePoint, u, d / 2, v, d / 2),
+      addScaled(planePoint, u, -d / 2, v, d / 2),
     ];
     const planeFace = buildFlatFace(oc, corners, cleanup);
     if (!planeFace) {
