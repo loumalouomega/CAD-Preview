@@ -72,39 +72,43 @@ export interface AddCounterboreHoleOp { op: "addCounterboreHole"; targets: strin
 /** Cut a countersunk hole: the plain hole plus a conical mouth from `csRadius` (> radius) tapering at included angle `csAngleDeg` (0 < angle < 180) down to `radius`. */
 export interface AddCountersinkHoleOp { op: "addCountersinkHole"; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number; }
 /** Add a standalone flat circular profile face (no thickness), for later use as an extrude/revolve/sweep/loft profile. */
-export interface AddCircleProfileOp { op: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number; }
+export interface AddCircleProfileOp { op: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number; guide?: boolean; }
 /** Add a standalone flat rectangular profile face. `up` (with `normal`) fixes its in-plane orientation. */
-export interface AddRectangleProfileOp { op: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; }
+export interface AddRectangleProfileOp { op: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; guide?: boolean; }
 /** Add a standalone flat regular `sides`-gon profile face of circumradius `radius`. When `circumscribed` is true, `radius` is the apothem. */
-export interface AddPolygonProfileOp { op: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; circumscribed?: boolean; }
+export interface AddPolygonProfileOp { op: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; circumscribed?: boolean; guide?: boolean; }
 /** Add a standalone flat elliptical profile face: `radiusX` along the in-plane `up` axis, `radiusY` perpendicular to it. */
-export interface AddEllipseProfileOp { op: "addEllipseProfile"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; }
+export interface AddEllipseProfileOp { op: "addEllipseProfile"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; guide?: boolean; }
 /** Add a standalone flat rectangle profile face with all four corners rounded to `cornerRadius` (0 < 2·cornerRadius < min(width, height) — the stadium limit case is what `addSlotProfile` is for). */
-export interface AddRoundedRectangleProfileOp { op: "addRoundedRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number; }
+export interface AddRoundedRectangleProfileOp { op: "addRoundedRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number; guide?: boolean; }
 /** Add a standalone flat stadium/slot profile face: overall `length` (including the semicircular end caps) along the in-plane `up` axis, `width` across (length > width > 0). */
-export interface AddSlotProfileOp { op: "addSlotProfile"; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; }
+export interface AddSlotProfileOp { op: "addSlotProfile"; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; guide?: boolean; }
 /** Add a standalone flat isosceles-trapezoid profile face: `bottomWidth` along the in-plane `up` axis at the bottom, `topWidth` at the top, `height` between them. */
-export interface AddTrapezoidProfileOp { op: "addTrapezoidProfile"; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; }
+export interface AddTrapezoidProfileOp { op: "addTrapezoidProfile"; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; guide?: boolean; }
 /** Add a standalone point (vertex) at `position`. Never resolved as an operand by any other op — display-only. */
-export interface AddPointOp { op: "addPoint"; position: Vec3; }
+export interface AddPointOp { op: "addPoint"; position: Vec3; guide?: boolean; }
 /** Add a standalone straight-line edge from `start` to `end`. */
-export interface AddLineOp { op: "addLine"; start: Vec3; end: Vec3; }
+export interface AddLineOp { op: "addLine"; start: Vec3; end: Vec3; guide?: boolean; }
 /** Add a standalone circular-arc edge: the circle at (`center`,`normal`,`radius`), trimmed from `startAngleDeg` to `endAngleDeg` (sweeping counterclockwise about `normal`, wrapping through 0° if `endAngleDeg < startAngleDeg`). */
-export interface AddArcOp { op: "addArc"; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; }
+export interface AddArcOp { op: "addArc"; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean; }
 /** Add a standalone polyline: straight edges through `points` in order (≥ 2; ≥ 3 when `closed`, which adds the last→first edge). */
-export interface AddPolylineOp { op: "addPolyline"; points: Vec3[]; closed: boolean; }
+export interface AddPolylineOp { op: "addPolyline"; points: Vec3[]; closed: boolean; guide?: boolean; }
 /** Add a standalone circular-arc edge through three points (must not be collinear — a collinear triple is skipped by the engine). */
-export interface AddThreePointArcOp { op: "addThreePointArc"; p1: Vec3; p2: Vec3; p3: Vec3; }
+export interface AddThreePointArcOp { op: "addThreePointArc"; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean; }
 /** Add a standalone smooth B-spline curve through `points` (approximating fit, endpoint-exact — this OCCT build has no exact interpolator bound). */
-export interface AddSplineOp { op: "addSpline"; points: Vec3[]; }
+export interface AddSplineOp { op: "addSpline"; points: Vec3[]; guide?: boolean; }
 /** Add a standalone Bézier curve with the given control points (curve passes through the first and last only). */
-export interface AddBezierOp { op: "addBezier"; controlPoints: Vec3[]; }
+export interface AddBezierOp { op: "addBezier"; controlPoints: Vec3[]; guide?: boolean; }
 /** Add a standalone elliptical-arc edge: `radiusX` along the in-plane `up` axis, `radiusY` perpendicular, trimmed from `startAngleDeg` to `endAngleDeg` (counterclockwise about `normal`). 0→360 is the full ellipse. */
-export interface AddEllipseArcOp { op: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; }
+export interface AddEllipseArcOp { op: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean; }
 /** Add a standalone helical edge: `turns` revolutions of `pitch` height each around the `axis` through `center` (the helix starts at the base), on a cylinder of `radius`. */
-export interface AddHelixOp { op: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; }
+export interface AddHelixOp { op: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; guide?: boolean; }
 /** Hollow out the solid(s) owning `openingFaces`, removing those faces and leaving walls of `|thickness|` (negative = walls grow inward — the usual hollow; positive = outward). `join` chooses the corner style — arc (default, rounded), intersection (sharp), or tangent. At least one opening face is required: this OCCT build's ThickSolid with an empty closing list yields a plain offset solid, not a hollow (verified). */
 export interface ShellOp { op: "shell"; thickness: number; openingFaces: string[]; join?: "arc" | "intersection" | "tangent"; }
+/** Taper the selected faces by `angleDeg` around a neutral plane through `planePoint` with direction `planeNormal` (neutral plane = point+normal, pull = normal). */
+export interface DraftOp { op: "draft"; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; }
+/** Stadium slot around an existing edge: width across, length = edge length + width. */
+export interface AddEdgeSlotOp { op: "addEdgeSlot"; edge: string; width: number; }
 /** Split the target solids by the plane (`planePoint`, `planeNormal`), keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. */
 export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePoint: Vec3; planeNormal: Vec3; keep: "both" | "positive" | "negative"; }
 /** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`) as a standalone face (under "Sketches"), leaving the solids untouched. */
@@ -125,13 +129,14 @@ export type EditOp = (
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
-  | ShellOp | SplitByPlaneOp | SectionOp
+  | ShellOp | DraftOp | SplitByPlaneOp | SectionOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
   | AddWedgeOp | AddHoleOp | AddCounterboreHoleOp | AddCountersinkHoleOp
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
   | AddEllipseProfileOp | AddRoundedRectangleProfileOp | AddSlotProfileOp | AddTrapezoidProfileOp
   | AddPointOp | AddLineOp | AddArcOp
   | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
+  | AddEdgeSlotOp
   | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp
   | AlignOp | PatternLinearOp | PatternCircularOp
 ) & { exprs?: ExprMap };
@@ -168,14 +173,14 @@ export type OutcomeFail = (diagnostic: string, hint?: string) => void;
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
-  "shell", "splitByPlane", "section",
+  "shell", "draft", "splitByPlane", "section",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
   "addWedge", "addHole", "addCounterboreHole", "addCountersinkHole",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
-  "addSurfaceFromLines", "addVolumeFromSurfaces",
+  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot",
   "patternLinear", "patternCircular",
 ]);
 
@@ -183,13 +188,13 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
  * The hole family is deliberately NOT here — the mesh engine cuts holes via CSG. */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
-  "shell", "splitByPlane", "section",
+  "shell", "draft", "splitByPlane", "section",
   "addWedge",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
-  "addSurfaceFromLines", "addVolumeFromSurfaces",
+  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot",
 ]);
 
 function isFiniteNumber(v: unknown): v is number {
@@ -289,6 +294,13 @@ function sanitizeExprs(raw: unknown, clean: EditOp): ExprMap | null {
 export function validateEditOp(raw: unknown): EditOp | null {
   const clean = validateEditOpCore(raw);
   if (!clean) return null;
+  const rawGuide = (raw as Record<string, unknown>).guide;
+  if (rawGuide !== undefined) {
+    if (typeof rawGuide !== "boolean") return null;
+    const guideKinds = new Set(["addCircleProfile","addRectangleProfile","addPolygonProfile","addEllipseProfile","addRoundedRectangleProfile","addSlotProfile","addTrapezoidProfile","addPoint","addLine","addArc","addPolyline","addThreePointArc","addSpline","addBezier","addEllipseArc","addHelix"]);
+    if (!guideKinds.has(clean.op)) return null;
+    (clean as unknown as Record<string, unknown>).guide = rawGuide;
+  }
   const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
   if (exprs) clean.exprs = exprs;
   return clean;
@@ -394,6 +406,20 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const out: ShellOp = { op: "shell", thickness: o.thickness, openingFaces };
       if (o.join !== undefined) out.join = o.join;
       return out;
+    }
+    case "draft": {
+      const faces = asIdArray(o.faces);
+      if (!faces || !isFiniteNumber(o.angleDeg) || o.angleDeg <= 0 || o.angleDeg >= 90) return null;
+      if (o.planePoint !== undefined && !asVec3(o.planePoint)) return null;
+      if (o.planeNormal !== undefined && !asNonZeroVec3(o.planeNormal)) return null;
+      if ((o.planePoint === undefined) !== (o.planeNormal === undefined)) return null;
+      const out: DraftOp = { op: "draft", faces, angleDeg: o.angleDeg as number };
+      if (o.planePoint) { out.planePoint = asVec3(o.planePoint)!; out.planeNormal = asNonZeroVec3(o.planeNormal!)!; }
+      return out;
+    }
+    case "addEdgeSlot": {
+      if (typeof o.edge !== "string" || !o.edge || !isPositive(o.width)) return null;
+      return { op: "addEdgeSlot", edge: o.edge, width: o.width as number };
     }
     case "splitByPlane": {
       const targets = asIdArray(o.targets);

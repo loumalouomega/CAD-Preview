@@ -193,6 +193,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   explode: '{factor: n}',
   mate: '{faceA: faceId, faceB: faceId (both planar)}',
   shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1), join?: "arc"|"intersection"|"tangent" (default arc)}',
+  draft: '{faces: faceId[], angleDeg: 0<n<90, planePoint?: [x,y,z], planeNormal?: [x,y,z] (neutral plane + pull direction)}',
   splitByPlane: '{targets: solidId[], planePoint: [x,y,z], planeNormal: [x,y,z], keep: "both"|"positive"|"negative"}',
   section: '{targets: solidId[], planePoint: [x,y,z], planeNormal: [x,y,z]}',
   addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
@@ -230,6 +231,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addHelix: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, pitch: n>0, turns: n>0}',
   addSurfaceFromLines: '{edges: edgeId[] (must connect into a closed loop)}',
   addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
+  addEdgeSlot: '{edge: edgeId, width: n>0}',
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
   patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
   patternCircular: '{targets: solidId[], axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n, count: int>=2 (total instances, incl. original)}',
@@ -2749,6 +2751,7 @@ export async function setPlane(params: {
   normal?: number[];
   derivedFrom?: string;
   remove?: boolean;
+  midplaneOf?: string[];
 }) {
   const modelPath = params.path;
   requireRoute(modelPath);
@@ -2779,6 +2782,25 @@ export async function setPlane(params: {
     }
     return [v[0], v[1], v[2]];
   };
+
+  if (params.midplaneOf !== undefined) {
+    if (!Array.isArray(params.midplaneOf) || params.midplaneOf.length !== 2 || !params.midplaneOf.every((s) => typeof s === "string")) throw new Error("midplaneOf must be [planeIdA, planeIdB].");
+    const a = planes.find((p) => p.id === params.midplaneOf![0]);
+    const b = planes.find((p) => p.id === params.midplaneOf![1]);
+    if (!a || !b) throw new Error("midplaneOf planes not found.");
+    const dot = a.normal[0]*b.normal[0]+a.normal[1]*b.normal[1]+a.normal[2]*b.normal[2];
+    if (Math.abs(Math.abs(dot) - 1) > 1e-6) throw new Error("midplane requires parallel planes.");
+    const nb: [number,number,number] = dot < 0 ? [-b.normal[0], -b.normal[1], -b.normal[2]] : [...b.normal] as [number,number,number];
+    const midN: [number,number,number] = [a.normal[0]+nb[0], a.normal[1]+nb[1], a.normal[2]+nb[2]];
+    const ml = Math.hypot(midN[0],midN[1],midN[2]);
+    if (ml < 1e-12) throw new Error("midplane normals are antiparallel and cancel.");
+    const midNormal: [number,number,number] = [midN[0]/ml, midN[1]/ml, midN[2]/ml];
+    const midPoint: [number,number,number] = [(a.point[0]+b.point[0])/2, (a.point[1]+b.point[1])/2, (a.point[2]+b.point[2])/2];
+    const plane: ConstructionPlane = { id: existing?.id ?? params.id ?? nextPlaneId(planes), name: params.name ?? existing?.name ?? `Plane ${planes.length + 1}`, point: midPoint, normal: midNormal, derivedFrom: `midplane ${a.id}–${b.id}` };
+    if (existing) planes[index] = plane; else planes.push(plane);
+    await writePlanes(modelPath, planes);
+    return { plane, planes: summarize(), warnings };
+  }
 
   const point = asVec(params.point, "point") ?? existing?.point;
   const rawNormal = asVec(params.normal, "normal") ?? existing?.normal;

@@ -23,7 +23,7 @@ export type PanelOpId =
   // EDIT — features
   | "extrude" | "revolve" | "sweep" | "loft"
   // EDIT — modify
-  | "shell" | "splitByPlane" | "section"
+  | "shell" | "draft" | "splitByPlane" | "section"
   // EDIT — assembly
   | "explode" | "mate" | "align" | "patternLinear" | "patternCircular"
   // GEOMETRY 2D — wireframe
@@ -34,7 +34,7 @@ export type PanelOpId =
   | "addCircleProfile" | "addRectangleProfile" | "addPolygonProfile"
   | "addEllipseProfile" | "addRoundedRectangleProfile" | "addSlotProfile" | "addTrapezoidProfile"
   // GEOMETRY 2D — build from selection
-  | "buildSurface"
+  | "buildSurface" | "edgeSlot"
   // GEOMETRY 3D — primitives
   | "addBox" | "addSphere" | "addCylinder" | "addCone" | "addTorus" | "addPrism" | "addWedge"
   // GEOMETRY 3D — holes (subtractive: cut into the selected volumes)
@@ -103,7 +103,7 @@ export const OP_CATALOG: {
     },
     {
       title: "Build from selection",
-      ops: [entry("buildSurface", "Surface", ["addSurfaceFromLines"])],
+      ops: [entry("buildSurface", "Surface", ["addSurfaceFromLines"]), entry("edgeSlot", "Edge Slot", ["addEdgeSlot"])],
     },
   ],
   geometry3d: [
@@ -170,6 +170,7 @@ export const OP_CATALOG: {
       title: "Modify",
       ops: [
         entry("shell", "Shell", ["shell"]),
+        entry("draft", "Draft", ["draft"]),
         entry("splitByPlane", "Split", ["splitByPlane"]),
         entry("section", "Section", ["section"]),
       ],
@@ -224,6 +225,7 @@ function describeOpBase(op: EditOp): string {
     case "explode": return `Explode ×${op.factor}`;
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
     case "shell": return `▣ Shell t=${op.thickness} (${op.openingFaces.length} openings)`;
+    case "draft": return `⬔ Draft ${op.faces.length} ${op.angleDeg}°`;
     case "splitByPlane": return `⧄ Split ${op.targets.length} (${op.keep})`;
     case "section": return `⊟ Section ${op.targets.length}`;
     case "addBox": return `+ Box ${op.size.join("×")}`;
@@ -254,6 +256,7 @@ function describeOpBase(op: EditOp): string {
     case "addHelix": return `⌇ Helix r=${op.radius} p=${op.pitch} ×${op.turns}`;
     case "addSurfaceFromLines": return `⌗ Surface from ${op.edges.length} lines`;
     case "addVolumeFromSurfaces": return `⬢ Volume from ${op.faces.length} surfaces`;
+    case "addEdgeSlot": return `▭ Edge slot w=${op.width}`;
     case "align": return `⇥ Align ${op.targets.length} ${op.axis}:${op.extent}→${op.to}`;
     case "patternLinear": return `⠿ Linear ×${op.count} (${op.direction.join(",")}) s=${op.spacing}`;
     case "patternCircular": return `⠿ Circular ×${op.count} ${op.angleDeg}°`;
@@ -315,6 +318,8 @@ export function referencedEntities(op: EditOp): string[] {
       return [op.faceA, op.faceB];
     case "shell":
       return [...op.openingFaces];
+    case "draft":
+      return [...op.faces];
     case "explode":
     case "addBox":
     case "addSphere":
@@ -340,6 +345,8 @@ export function referencedEntities(op: EditOp): string[] {
     case "addEllipseArc":
     case "addHelix":
       return [];
+    case "addEdgeSlot":
+      return [op.edge];
   }
 }
 

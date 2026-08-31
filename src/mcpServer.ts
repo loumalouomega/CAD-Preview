@@ -876,6 +876,7 @@ server.registerTool(
       point: z.array(z.number()).length(3).optional().describe("A point ON the plane, e.g. inspect's planeOrigin"),
       normal: z.array(z.number()).length(3).optional().describe("Plane normal (normalized on write), e.g. inspect's normal"),
       derivedFrom: z.string().optional().describe("Display-only provenance, e.g. \"face-12\" — never resolved back to geometry"),
+      midplaneOf: z.array(z.string()).length(2).optional().describe("Two plane-N ids; create a midplane halfway between them (normals must be parallel)"),
       remove: z.boolean().optional().describe("Remove the plane with this id instead of upserting"),
     },
   },

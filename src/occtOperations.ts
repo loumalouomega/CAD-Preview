@@ -100,6 +100,8 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
       return mateShape(oc, shape, op, cleanup, fail);
     case "shell":
       return shellSolids(oc, shape, op, cleanup, fail);
+    case "draft":
+      return draftFaces(oc, shape, op, cleanup, fail);
     case "splitByPlane":
       return splitSolidsByPlane(oc, shape, op, cleanup, fail);
     case "section":
@@ -124,6 +126,8 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addSlotProfile":
     case "addTrapezoidProfile":
       return addProfile(oc, shape, op, cleanup, fail);
+    case "addEdgeSlot":
+      return addEdgeSlot(oc, shape, op, cleanup, fail);
     case "addPoint":
     case "addLine":
     case "addArc":
@@ -1086,6 +1090,72 @@ function faceFromEdges(oc: any, edges: any[], cleanup: Array<{ delete(): void }>
   return face.IsNull() ? null : keep(face);
 }
 
+function addEdgeSlot(oc: any, shape: any, op: Extract<EditOp, { op: "addEdgeSlot" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  try {
+    const edges = collectEdges(oc, shape, cleanup);
+    const idx = edgeIndex(op.edge);
+    const edge = edges[idx];
+    if (!edge) {
+      fail?.(`edge ${op.edge} does not resolve`);
+      return shape;
+    }
+    const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_VERTEX);
+    cleanup.push(vExp);
+    const pts: any[] = [];
+    for (; vExp.More(); vExp.Next()) pts.push(oc.TopoDS.Vertex_1(vExp.Current()));
+    if (pts.length < 2) {
+      fail?.("edge has no endpoints");
+      return shape;
+    }
+    const p1 = oc.BRep_Tool.Pnt(pts[0]);
+    const p2 = oc.BRep_Tool.Pnt(pts[pts.length - 1]);
+    const mid: Vec3 = [(p1.X() + p2.X()) / 2, (p1.Y() + p2.Y()) / 2, (p1.Z() + p2.Z()) / 2];
+    const dir: Vec3 = [p2.X() - p1.X(), p2.Y() - p1.Y(), p2.Z() - p1.Z()];
+    const len = Math.hypot(dir[0], dir[1], dir[2]);
+    if (len < 1e-9) {
+      fail?.("edge is degenerate");
+      return shape;
+    }
+    const totalLen = len + op.width;
+    const hw = totalLen / 2, hw2 = op.width / 2;
+    const { edgeFaces } = buildEdgeFaceAdjacency(oc, shape, cleanup);
+    const bucket = edgeFaces.get(edge.HashCode(1 << 30));
+    const entry = bucket?.find((b) => b.edge.IsSame(edge));
+    let normal: Vec3 = [0, 0, 1];
+    if (entry && entry.faceIdxs.length > 0) {
+      const faces = collectFaces(oc, shape, cleanup);
+      const f = faces[entry.faceIdxs[0]];
+      const info = f ? facePlane(oc, f, cleanup) : null;
+      if (info) normal = info.nl;
+    }
+    const [u, v] = inPlaneBasis(normal, dir as Vec3);
+    const ux: Vec3 = [u[0] * hw, u[1] * hw, u[2] * hw];
+    const vx: Vec3 = [v[0] * hw2, v[1] * hw2, v[2] * hw2];
+    const corners: Vec3[] = [
+      addScaled(mid, ux, -1, vx, -1),
+      addScaled(mid, ux, 1, vx, -1),
+      addScaled(mid, ux, 1, vx, 1),
+      addScaled(mid, ux, -1, vx, 1),
+    ];
+    const face = buildFlatFace(oc, [corners[0], corners[1], corners[2], corners[3]], cleanup);
+    if (!face) {
+      fail?.("could not build slot face");
+      return shape;
+    }
+    const comp = new oc.TopoDS_Compound();
+    cleanup.push(comp);
+    const builder = new oc.BRep_Builder();
+    cleanup.push(builder);
+    builder.MakeCompound(comp);
+    builder.Add(comp, shape);
+    builder.Add(comp, face);
+    return comp;
+  } catch {
+    fail?.("addEdgeSlot threw");
+    return shape;
+  }
+}
+
 /**
  * Wireframe primitive creation (Point/Line/Arc): builds a bare `TopoDS_Vertex`
  * or `TopoDS_Edge` — no existing operands, no thickness — and **appends** it,
@@ -1728,6 +1798,53 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
     return comp;
   } catch {
     fail?.("the shell builder threw");
+    return shape;
+  }
+}
+
+function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const faces = collectFaces(oc, shape, cleanup);
+    const picked = op.faces.map((id) => faces[faceIndex(id)]).filter((f): f is any => f != null);
+    if (picked.length === 0) {
+      fail?.(`none of the face ids (${op.faces.join(", ")}) resolve`);
+      return shape;
+    }
+    const angleRad = (op.angleDeg * Math.PI) / 180;
+    const draft = keep(new oc.BRepOffsetAPI_DraftAngle(shape));
+    for (const f of picked) {
+      let pln: any;
+      if (op.planePoint && op.planeNormal) {
+        const ax = keep(new oc.gp_Ax3_4(keep(pnt(oc, op.planePoint)), keep(dir(oc, op.planeNormal))));
+        pln = keep(new oc.gp_Pln_3(ax));
+      } else {
+        const info = facePlane(oc, f, cleanup);
+        if (!info) {
+          fail?.("could not derive neutral plane for a drafted face");
+          return shape;
+        }
+        const ax = keep(new oc.gp_Ax3_4(keep(pnt(oc, info.pt)), keep(dir(oc, info.nl))));
+        pln = keep(new oc.gp_Pln_3(ax));
+      }
+      try {
+        (draft as any).Add(f, angleRad, pln);
+      } catch {
+        fail?.("draft Add failed for a face");
+        return shape;
+      }
+    }
+    try {
+      (draft as any).Build();
+    } catch {
+      fail?.("draft Build threw");
+      return shape;
+    }
+    const res = (draft as any).Shape ? (draft as any).Shape() : shape;
+    cleanup.push(res);
+    return res;
+  } catch {
+    fail?.("draft builder threw");
     return shape;
   }
 }
