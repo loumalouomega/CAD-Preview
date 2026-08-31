@@ -176,6 +176,7 @@ export class Viewer {
    * `selectionMode`/`SelectionSet` — see `setMeasureMode`. */
   private measureMode = false;
   private onMeasurePick: ((pick: MeasurementPick) => void) | null = null;
+  private onFitSeedPick: ((point: THREE.Vector3) => void) | null = null;
   /** Display-only overlay (marker, line, label) for the in-progress/completed
    * measurement — a scene sibling of `model`, same pattern as `meshOverlay`. */
   private measurementOverlay: THREE.Object3D | null = null;
@@ -1680,6 +1681,14 @@ export class Viewer {
     this.onMeasurePick = onPick;
   }
 
+  /** One-shot world-point pick for the Region-fit seed (roadmap item 9 Phase 2).
+   * Takes priority over `measureMode`/`selectionMode` for the next click only;
+   * the caller disarms it by calling `setFitSeedPickHandler(null)` in the
+   * callback. Reuses the same drag/gizmo guards as entity picking. */
+  setFitSeedPickHandler(onPick: ((point: THREE.Vector3) => void) | null): void {
+    this.onFitSeedPick = onPick;
+  }
+
   /** Shows a single marker at `point` — an in-progress measurement's first pick(s). */
   showMeasurementMarker(point: THREE.Vector3): void {
     this.clearMeasurementOverlay();
@@ -2259,6 +2268,16 @@ export class Viewer {
     const ndc = ndcInPane(this.paneRects[index], cssX, cssY);
     this.raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), this.panes[index].active);
     this.raycaster.params.Line.threshold = this.pickThreshold;
+
+    if (this.onFitSeedPick) {
+      const targets = collectMeasureTargets(this.model);
+      const hits = this.raycaster.intersectObjects(targets, false);
+      for (const h of hits) {
+        this.onFitSeedPick(h.point.clone());
+        return;
+      }
+      return;
+    }
 
     // Measurement takes priority for this click over the normal Parts/Edits
     // selection pick — the two are deliberately independent modes, but a

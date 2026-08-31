@@ -113,6 +113,18 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="mesh-health-body"></div>
       </div>
+      <div id="region-fit-panel" hidden>
+        <div id="region-fit-header">
+          <span id="region-fit-title">Region fit</span>
+          <div id="region-fit-actions">
+            <button id="region-fit-pick" title="Pick a point on the mesh to grow a region and fit a plane/cylinder/sphere">${icon("point")} Pick seed</button>
+            <button id="region-fit-save-plane" title="Save the fitted plane as a construction plane" disabled>${icon("save")} Save plane</button>
+            <button id="region-fit-add-cylinder" title="Add the fitted cylinder as a new body" disabled>${icon("add")} Add cylinder</button>
+            <button id="region-fit-add-sphere" title="Add the fitted sphere as a new body" disabled>${icon("add")} Add sphere</button>
+          </div>
+        </div>
+        <div id="region-fit-body"></div>
+      </div>
       <div id="macros-panel">
         <div id="macros-header">
           <span id="macros-title">Macros</span>

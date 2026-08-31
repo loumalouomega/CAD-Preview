@@ -304,6 +304,20 @@ interface MeshHealthReport {
   componentCount: number
   components: ComponentHealthReport[]
 }
+
+interface MeshRegionFit {              // src/meshRegionFit.ts
+  seedTriangle: number
+  triangleCount: number
+  capped: boolean
+  regionArea: number
+  regionDiagonal: number
+  freeEdgeCount: number
+  nonManifoldEdgeCount: number
+  candidates: Array<{ kind: 'plane'|'cylinder'|'sphere'; primitive: Primitive; residual: number|null; residualFrac: number|null }>
+  simplest: 'plane'|'cylinder'|'sphere'|null
+  simplestRule: string
+  warnings: string[]
+}
 ```
 
 `ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) — cross-document defaults only; a per-document sidecar value or a runtime toggle (the toolbar Grid button) always wins once set. `MassProperties` is computed via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources compute the equivalent client-side and never send it over this protocol at all (no host round trip) — see [Extension Host API](./extension-host-api.md) and [Webview API](./webview-api.md).
@@ -357,10 +371,14 @@ type HostToWebview =
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
+  | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
   | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
+  | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
+  | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'linkedCamera'; camera: LinkedCameraState }
   | { type: 'camerasLinked'; enabled: boolean }
 ```
@@ -804,6 +822,7 @@ type WebviewToHost =
   | { type: 'entityFactsRequest'; requestId: string; entityId: string }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string }
+  | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
@@ -1044,6 +1063,14 @@ Sent whenever a field in the open Edits-panel op form changes (and once when the
 
 ```json
 { "type": "meshHealRequest", "requestId": "1234-0.56" }
+```
+
+### `fitRegionRequest`
+
+Sent when the Region fit panel's **Pick seed** button is armed and the user clicks a surface (roadmap item 9 Phase 2). Like `meshHealRequest`, only reachable for a native `.stl`/`.obj`/`.ply`/`.gltf`/`.glb` file (the panel hides itself otherwise, mirroring `fit_mesh_region`'s own MCP-tool gate). `point` is the world-space hit point of that click. The host re-reads the currently-open document's own bytes and runs `fitMeshRegion` against them — see `MeshRegionFit` in [Shared Types](#shared-types) (the report also travels as the MCP `fit_mesh_region` tool's response). Replies with `fitRegionResult`/`fitRegionError`, correlated via `requestId` like every other request/response pair in this file. The pick itself is a one-shot capture via `Viewer.setFitSeedPickHandler` (`src/webview/viewer.ts`), which takes priority over `measureMode`/`selectionMode` for that single click.
+
+```json
+{ "type": "fitRegionRequest", "requestId": "1234-0.56", "point": [5, 5, 0] }
 ```
 
 ### `colorFieldRequest`

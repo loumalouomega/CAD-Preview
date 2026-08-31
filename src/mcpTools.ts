@@ -75,6 +75,7 @@ import type { MeshioCompanion } from "./meshioService";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
 import type { recognizePrimitives, PrimitiveReport } from "./primitiveReport";
 import type { fitMeshRegion, MeshRegionFit } from "./meshRegionFit";
+import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM } from "./meshRegionFit";
 import { parseToWeldedMesh } from "./meshHeal";
 import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
@@ -1601,8 +1602,8 @@ export async function checkMeshHealthTool(
  */
 export async function fitMeshRegionTool(
   ctx: ToolContext,
-  params: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number }
-): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeshRegionFit>> {
+  params: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number; store?: string; name?: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; stored?: { kind: string; plane?: ConstructionPlane; op?: EditOp } } & Partial<MeshRegionFit>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
@@ -1635,6 +1636,33 @@ export async function fitMeshRegionTool(
     { angleDeg: params.angleDeg, maxTriangles: params.maxTriangles },
     external
   );
+  if (params.store != null) {
+    const kind = params.store;
+    if (kind !== "plane" && kind !== "cylinder" && kind !== "sphere") {
+      throw new Error(`Invalid store "${kind}" — valid: plane, cylinder, sphere.`);
+    }
+    const warnings: string[] = [...report.warnings];
+    const w = fitStoreWarning(report as MeshRegionFit, kind as "plane" | "cylinder" | "sphere");
+    if (w) warnings.push(w);
+    if (kind === "plane") {
+      const planeData = fitConstructionPlane(report as MeshRegionFit, params.name);
+      if (!planeData) throw new Error(`No plane fit — the region has no plane candidate to store.`);
+      const planes = await readPlanes(modelPath);
+      const plane: ConstructionPlane = { id: nextPlaneId(planes), ...planeData, name: params.name ?? planeData.name, derivedFrom: FIT_DERIVED_FROM };
+      planes.push(plane);
+      await writePlanes(modelPath, planes);
+      return { format: route.format, supported: true, ...(report as MeshRegionFit), warnings, stored: { kind, plane } };
+    }
+    const op = fitOpForKind(report as MeshRegionFit, kind as "cylinder" | "sphere");
+    if (!op) throw new Error(`No ${kind} fit — the region has no ${kind} candidate to store.`);
+    const validated = validateEditOp(op);
+    if (!validated) throw new Error(`Fitted ${kind} produced an invalid op — not stored.`);
+    const current = await readEdits(modelPath);
+    const newOps = [...current.ops, validated];
+    await writeEdits(modelPath, newOps, current.variables);
+    warnings.push("Stored as a new body at that location (append-only, like every other primitive-creation op) — open the file in VS Code to see it, or export it.");
+    return { format: route.format, supported: true, ...(report as MeshRegionFit), warnings, stored: { kind, op: validated } };
+  }
   // The report carries its own warnings (a capped region, a degenerate seed, no
   // cylinder axis) — spread last so those surface rather than an empty array.
   return { format: route.format, supported: true, ...report };

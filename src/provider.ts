@@ -1219,6 +1219,26 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         }
         return;
       }
+
+      if (msg.type === "fitRegionRequest") {
+        try {
+          if (!route || route.strategy !== "three") {
+            throw new Error("Region fitting requires an STL/OBJ/PLY/glTF source.");
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const fit = await this.pipeline.fitMeshRegion(
+            bytes,
+            route.format as MeshParseFormat,
+            msg.point,
+            {},
+            await resolveGltfBuffersFor(document.uri, route.format, bytes)
+          );
+          post({ type: "fitRegionResult", requestId: msg.requestId, fit });
+        } catch (err) {
+          post({ type: "fitRegionError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
     });
 
     webviewPanel.webview.html = this.getHtml(webviewPanel.webview);

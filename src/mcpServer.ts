@@ -517,7 +517,7 @@ server.registerTool(
   "fit_mesh_region",
   {
     description:
-      "Fit a plane / cylinder / sphere to a REGION of a mesh, FACTS ONLY. Grows a region outward from the triangle nearest `seedPoint`, crossing an edge only where adjacent triangles' normals differ by less than `angleDeg` (default 40 — deliberately looser than face-splitting tolerances so the walk crosses a tessellated curve), then fits all three shapes and reports each with its own residual (largest deviation of the region's vertices, and `residualFrac` relative to the region's size). `simplest` names the first of plane<cylinder<sphere whose residualFrac is under the published threshold; `simplestRule` states that rule so you can recompute it — it is a convenience over the same numbers, never a hidden judgment. This ordering matters: a FLAT region is also fitted by an enormous sphere with a tiny residual, so choosing by residual alone would pick close to arbitrarily. A shape that cannot be fitted is ABSENT rather than present with meaningless parameters (a flat region's normals are all parallel, so no cylinder axis exists — that is the honest answer). Emits no ops. Mesh sources only (stl/obj/ply/gltf): a B-rep source already has exact surfaces, so use inspect/recognize_primitives there.",
+      "Fit a plane / cylinder / sphere to a REGION of a mesh. Grows a region outward from the triangle nearest `seedPoint`, crossing an edge only where adjacent triangles' normals differ by less than `angleDeg` (default 40 — deliberately looser than face-splitting tolerances so the walk crosses a tessellated curve), then fits all three shapes and reports each with its own residual (largest deviation of the region's vertices, and `residualFrac` relative to the region's size). `simplest` names the first of plane<cylinder<sphere whose residualFrac is under the published threshold; `simplestRule` states that rule so you can recompute it — it is a convenience over the same numbers, never a hidden judgment. This ordering matters: a FLAT region is also fitted by an enormous sphere with a tiny residual, so choosing by residual alone would pick close to arbitrarily. A shape that cannot be fitted is ABSENT rather than present with meaningless parameters (a flat region's normals are all parallel, so no cylinder axis exists — that is the honest answer). Facts only by default; opt-in `store:\"plane\"` writes a real construction plane to <model>.planes.json (visible in the Planes panel and via get_state), `store:\"cylinder\"/\"sphere\"` appends a real addCylinder/addSphere op to <model>.edits.json as a new body (append-only, like every other primitive-creation op — undoable, never a silent reclassification of the source mesh). Mesh sources only (stl/obj/ply/gltf): a B-rep source already has exact surfaces, so use inspect/recognize_primitives there.",
     inputSchema: {
       path: modelPath,
       seedPoint: z
@@ -525,10 +525,13 @@ server.registerTool(
         .describe("World-space point on the surface; the nearest triangle by centroid seeds the region"),
       angleDeg: z.number().optional().describe("Dihedral gate in degrees (default 40)"),
       maxTriangles: z.number().optional().describe("Cap on region size; the result reports `capped` when hit"),
+      store: z.enum(["plane", "cylinder", "sphere"]).optional().describe("When set, also STORE the named fit: plane -> a ConstructionPlane in the planes sidecar; cylinder/sphere -> an addCylinder/addSphere op appended to the edits sidecar as a new body. The fit is still reported either way."),
+      name: z.string().optional().describe("Name for a stored plane (only with store:plane)"),
     },
   },
-  wrap((args: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number }) =>
-    fitMeshRegionTool(ctx, args)
+  wrap(
+    (args: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number; store?: string; name?: string }) =>
+      fitMeshRegionTool(ctx, args)
   )
 );
 

@@ -13,6 +13,7 @@ import type { ClipPlaneState } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
+import type { MeshRegionFit } from "./meshRegionFit";
 import type { AnnotatedTolerance } from "./toleranceBand";
 
 export type { EditOp } from "./editOps";
@@ -390,6 +391,8 @@ export type HostToWebview =
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
   | { type: "meshHealError"; requestId: string; message: string }
+  | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }
+  | { type: "fitRegionError"; requestId: string; message: string }
   /** Live operation preview result — the same encoded payload `"geometry"`
    * carries, but for the speculative ops+draft replay. The webview builds a
    * detached group from it (never `viewer.setModel`) and tints it by intent;
@@ -537,6 +540,7 @@ export type WebviewToHost =
   | { type: "renderViewError"; requestId: string; message: string }
   | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
   | { type: "meshHealRequest"; requestId: string }
+  | { type: "fitRegionRequest"; requestId: string; point: [number, number, number] }
   | { type: "setCamerasLinked"; enabled: boolean };
 
 /** Encode a typed array to a base64 string for postMessage transport. */

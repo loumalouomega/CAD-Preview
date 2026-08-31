@@ -32,6 +32,9 @@ import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
+import { RegionFitPanel } from "./regionFitPanel";
+import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../meshRegionFit";
+import { validateEditOp } from "../editOps";
 import { StandardPartsPanel } from "./standardPartsPanel";
 import type { StandardPart } from "../stepPartsService";
 import { computeMeshMassProperties } from "./meshMassProperties";
@@ -70,7 +73,6 @@ import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
 import type { OpOutcome } from "../editOps";
-import { validateEditOp } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -1100,7 +1102,71 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
 function setMeshHealthEligibility(format: MeshParseFormat | null): void {
   meshHealthEligibleFormat = format;
   meshHealthPanel.setEligible(format !== null);
+  regionFitPanel.setEligible(format !== null);
 }
+
+let regionFitRequestId: string | null = null;
+let lastRegionFit: import("../meshRegionFit").MeshRegionFit | null = null;
+
+const regionFitPanel = new RegionFitPanel(document.getElementById("region-fit-panel")!, {
+  onPickSeed: () => {
+    if (!meshHealthEligibleFormat) return;
+    regionFitPanel.setPickArmed(true);
+    setStatus("Click a surface to pick the fit seed…");
+    viewer.setFitSeedPickHandler((point) => {
+      viewer.setFitSeedPickHandler(null);
+      regionFitPanel.setPickArmed(false);
+      const requestId = `${Date.now()}-${Math.random()}`;
+      regionFitRequestId = requestId;
+      lastRegionFit = null;
+      regionFitPanel.renderMessage("Fitting…");
+      post({ type: "fitRegionRequest", requestId, point: [point.x, point.y, point.z] });
+    });
+  },
+  onSavePlane: () => {
+    if (!lastRegionFit) return;
+    const plane = fitConstructionPlane(lastRegionFit);
+    if (!plane) {
+      setStatus("No plane fit to save.", true);
+      return;
+    }
+    const w = fitStoreWarning(lastRegionFit, "plane");
+    if (w) setStatus(w);
+    planesModel.add(plane);
+  },
+  onAddCylinder: () => {
+    if (!lastRegionFit) return;
+    const op = fitOpForKind(lastRegionFit, "cylinder");
+    if (!op) {
+      setStatus("No cylinder fit to add.", true);
+      return;
+    }
+    const validated = validateEditOp(op);
+    if (!validated) {
+      setStatus("Fitted cylinder produced an invalid op.", true);
+      return;
+    }
+    const w = fitStoreWarning(lastRegionFit, "cylinder");
+    if (w) setStatus(w);
+    editsModel.push(validated);
+  },
+  onAddSphere: () => {
+    if (!lastRegionFit) return;
+    const op = fitOpForKind(lastRegionFit, "sphere");
+    if (!op) {
+      setStatus("No sphere fit to add.", true);
+      return;
+    }
+    const validated = validateEditOp(op);
+    if (!validated) {
+      setStatus("Fitted sphere produced an invalid op.", true);
+      return;
+    }
+    const w = fitStoreWarning(lastRegionFit, "sphere");
+    if (w) setStatus(w);
+    editsModel.push(validated);
+  },
+});
 
 const standardPartsPanel = new StandardPartsPanel(document.getElementById("standard-parts-panel")!, {
   onSearch: (q: string) => {
@@ -3418,6 +3484,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         hideHoverTip();
         lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
+        viewer.setFitSeedPickHandler(null);
+        lastRegionFit = null;
+        regionFitRequestId = null;
         clearMarkupOverlay?.();
         refreshColors();
         renderAnnotationsList(); // detached status may have changed for the new model
@@ -3479,6 +3548,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "loadUrl":
       setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
+      viewer.setFitSeedPickHandler(null);
+      lastRegionFit = null;
+      regionFitRequestId = null;
       await loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase());
       break;
 
@@ -3488,6 +3560,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // check_mesh_health's MCP tool would reject that source's real path
       // the same way, so the panel stays ineligible here too.
       setMeshHealthEligibility(null);
+      viewer.setFitSeedPickHandler(null);
+      lastRegionFit = null;
+      regionFitRequestId = null;
       // Host-converted bytes (meshio++-imported document — VTK/MED/CGNS/
       // Exodus/XDMF/MDPA — funneled into an STL boundary surface via
       // `convertToStlBoundary`/`convertToStlBoundaryWithRegions`; see
@@ -3742,6 +3817,17 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "meshHealError":
       if (msg.requestId !== meshHealRequestId) break;
       meshHealthPanel.renderMessage(msg.message, true);
+      break;
+
+    case "fitRegionResult":
+      if (msg.requestId !== regionFitRequestId) break;
+      lastRegionFit = msg.fit;
+      regionFitPanel.render(msg.fit);
+      break;
+
+    case "fitRegionError":
+      if (msg.requestId !== regionFitRequestId) break;
+      regionFitPanel.renderMessage(msg.message, true);
       break;
 
     case "opPreviewResult":

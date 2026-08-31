@@ -29,6 +29,8 @@ import {
 } from "./meshRegionGrow";
 import { fitPlane, fitSphere, fitCylinder, axialExtent, type Vec3 } from "./primitiveFit";
 import { maxDeviation, type Primitive } from "./primitiveSdf";
+import type { ConstructionPlane } from "./protocol";
+import type { EditOp } from "./editOps";
 
 /**
  * Below this residual-to-size ratio a fit is reported as `simplest`.
@@ -221,6 +223,46 @@ export async function fitMeshRegion(
     simplestRule: `the first of ${FIT_SIMPLICITY_ORDER.join(" < ")} whose residualFrac < ${SIMPLEST_FIT_RESIDUAL_FRAC}`,
     warnings,
   };
+}
+
+export const FIT_DERIVED_FROM = "mesh region fit";
+
+function findCandidate(fit: MeshRegionFit, kind: FitKind): FitCandidate | undefined {
+  return fit.candidates.find((c) => c.kind === kind);
+}
+
+export function fitPlaneData(fit: MeshRegionFit): { point: Vec3; normal: Vec3 } | null {
+  const c = findCandidate(fit, "plane");
+  if (!c || c.primitive.kind !== "plane") return null;
+  return { point: c.primitive.point, normal: c.primitive.normal };
+}
+
+export function fitOpForKind(fit: MeshRegionFit, kind: "cylinder" | "sphere"): EditOp | null {
+  const c = findCandidate(fit, kind);
+  if (!c) return null;
+  if (kind === "cylinder" && c.primitive.kind === "cylinder") {
+    return { op: "addCylinder", center: c.primitive.base, axis: c.primitive.axis, radius: c.primitive.radius, height: c.primitive.height };
+  }
+  if (kind === "sphere" && c.primitive.kind === "sphere") {
+    return { op: "addSphere", center: c.primitive.center, radius: c.primitive.radius };
+  }
+  return null;
+}
+
+export function fitConstructionPlane(fit: MeshRegionFit, name?: string): Omit<ConstructionPlane, "id"> | null {
+  const d = fitPlaneData(fit);
+  if (!d) return null;
+  return { name: name ?? "Fitted plane", point: d.point, normal: d.normal, derivedFrom: FIT_DERIVED_FROM };
+}
+
+export function fitStoreWarning(fit: MeshRegionFit, kind: FitKind): string | null {
+  const c = findCandidate(fit, kind);
+  if (!c) return null;
+  if (c.residualFrac === null) return `Storing a ${kind} fit whose residual could not be computed — quality is unknown.`;
+  if (c.residualFrac >= SIMPLEST_FIT_RESIDUAL_FRAC) {
+    return `Storing a ${kind} fit whose residualFrac ${c.residualFrac.toExponential(2)} is above the published ${SIMPLEST_FIT_RESIDUAL_FRAC} bar (${c.residual !== null ? `residual ${c.residual.toExponential(2)}` : "no residual"} over diagonal ${fit.regionDiagonal.toExponential(2)}).`;
+  }
+  return null;
 }
 
 function emptyFit(seedTriangle: number, warnings: string[]): MeshRegionFit {
