@@ -33,7 +33,7 @@ import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
 import { RegionFitPanel } from "./regionFitPanel";
-import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../meshRegionFit";
+import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
 import { validateEditOp } from "../editOps";
 import { StandardPartsPanel } from "./standardPartsPanel";
 import type { StandardPart } from "../stepPartsService";
@@ -1106,7 +1106,7 @@ function setMeshHealthEligibility(format: MeshParseFormat | null): void {
 }
 
 let regionFitRequestId: string | null = null;
-let lastRegionFit: import("../meshRegionFit").MeshRegionFit | null = null;
+let lastRegionFit: import("../fitMapping").MeshRegionFit | null = null;
 
 const regionFitPanel = new RegionFitPanel(document.getElementById("region-fit-panel")!, {
   onPickSeed: () => {

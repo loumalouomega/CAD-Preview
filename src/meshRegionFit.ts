@@ -29,80 +29,27 @@ import {
 } from "./meshRegionGrow";
 import { fitPlane, fitSphere, fitCylinder, axialExtent, type Vec3 } from "./primitiveFit";
 import { maxDeviation, type Primitive } from "./primitiveSdf";
-import type { ConstructionPlane } from "./protocol";
-import type { EditOp } from "./editOps";
-
-/**
- * Below this residual-to-size ratio a fit is reported as `simplest`.
- *
- * Published as a constant, and the rule is stated in the result, so a caller
- * can recompute `simplest` from the per-candidate numbers rather than trusting
- * it. It is a convenience over facts, never a hidden judgment.
- */
-export const SIMPLEST_FIT_RESIDUAL_FRAC = 1e-3;
-
-/**
- * Candidate order, simplest first.
- *
- * **This ordering is what stops a flat region being reported as a sphere.** A
- * plane genuinely IS also fitted by an enormous sphere with a tiny residual —
- * picking a winner by residual alone would choose almost arbitrarily between
- * them. Preferring the simpler shape at equal quality is the documented
- * tie-break; publishing every candidate is what lets a caller disagree.
- */
-export const FIT_SIMPLICITY_ORDER = ["plane", "cylinder", "sphere"] as const;
-export type FitKind = (typeof FIT_SIMPLICITY_ORDER)[number];
-
-export interface FitCandidate {
-  kind: FitKind;
-  primitive: Primitive;
-  /** Largest deviation of the region's vertices from `primitive`, in the
-   * file's own units. `null` when it could not be computed — never `0`. */
-  residual: number | null;
-  /** `residual` over the region's bbox diagonal — scale-free. */
-  residualFrac: number | null;
-}
-
-export interface MeshRegionFit {
-  seedTriangle: number;
-  triangleCount: number;
-  /** True when the grow stopped at its size cap rather than at a real edge, so
-   * the region — and every fit over it — describes only part of a surface. */
-  capped: boolean;
-  regionArea: number;
-  regionDiagonal: number;
-  freeEdgeCount: number;
-  nonManifoldEdgeCount: number;
-  /** Simplest-first (plane, cylinder, sphere); a shape that could not be fitted
-   * is absent rather than present with a meaningless primitive. */
-  candidates: FitCandidate[];
-  /** The first candidate whose `residualFrac` is under
-   * {@link SIMPLEST_FIT_RESIDUAL_FRAC}, or `null` if none is. Derived purely
-   * from the published numbers. */
-  simplest: FitKind | null;
-  simplestRule: string;
-  warnings: string[];
-}
-
-/**
- * The simplest candidate whose fit is good enough, by
- * {@link FIT_SIMPLICITY_ORDER} then {@link SIMPLEST_FIT_RESIDUAL_FRAC}.
- *
- * Exported and pure so the rule this result advertises is independently
- * testable — and so a caller really can recompute it from the published
- * numbers, which is the claim `simplestRule` makes. It has to be its own
- * function to be tested at all: no fixture geometry produces two sub-threshold
- * candidates at once (a flat region has no sphere candidate, because the Kasa
- * normal equations are singular for coplanar points), so the ordering can only
- * be exercised over hand-built candidates.
- */
-export function simplestOf(candidates: readonly FitCandidate[]): FitKind | null {
-  for (const kind of FIT_SIMPLICITY_ORDER) {
-    const c = candidates.find((x) => x.kind === kind);
-    if (c && c.residualFrac !== null && c.residualFrac < SIMPLEST_FIT_RESIDUAL_FRAC) return kind;
-  }
-  return null;
-}
+import {
+  SIMPLEST_FIT_RESIDUAL_FRAC,
+  FIT_SIMPLICITY_ORDER,
+  simplestOf,
+  type FitKind,
+  type FitCandidate,
+  type MeshRegionFit,
+} from "./fitMapping";
+export {
+  SIMPLEST_FIT_RESIDUAL_FRAC,
+  FIT_SIMPLICITY_ORDER,
+  FIT_DERIVED_FROM,
+  fitPlaneData,
+  fitOpForKind,
+  fitConstructionPlane,
+  fitStoreWarning,
+  simplestOf,
+  type FitKind,
+  type FitCandidate,
+  type MeshRegionFit,
+} from "./fitMapping";
 
 export interface FitMeshRegionOptions {
   angleDeg?: number;
@@ -223,46 +170,6 @@ export async function fitMeshRegion(
     simplestRule: `the first of ${FIT_SIMPLICITY_ORDER.join(" < ")} whose residualFrac < ${SIMPLEST_FIT_RESIDUAL_FRAC}`,
     warnings,
   };
-}
-
-export const FIT_DERIVED_FROM = "mesh region fit";
-
-function findCandidate(fit: MeshRegionFit, kind: FitKind): FitCandidate | undefined {
-  return fit.candidates.find((c) => c.kind === kind);
-}
-
-export function fitPlaneData(fit: MeshRegionFit): { point: Vec3; normal: Vec3 } | null {
-  const c = findCandidate(fit, "plane");
-  if (!c || c.primitive.kind !== "plane") return null;
-  return { point: c.primitive.point, normal: c.primitive.normal };
-}
-
-export function fitOpForKind(fit: MeshRegionFit, kind: "cylinder" | "sphere"): EditOp | null {
-  const c = findCandidate(fit, kind);
-  if (!c) return null;
-  if (kind === "cylinder" && c.primitive.kind === "cylinder") {
-    return { op: "addCylinder", center: c.primitive.base, axis: c.primitive.axis, radius: c.primitive.radius, height: c.primitive.height };
-  }
-  if (kind === "sphere" && c.primitive.kind === "sphere") {
-    return { op: "addSphere", center: c.primitive.center, radius: c.primitive.radius };
-  }
-  return null;
-}
-
-export function fitConstructionPlane(fit: MeshRegionFit, name?: string): Omit<ConstructionPlane, "id"> | null {
-  const d = fitPlaneData(fit);
-  if (!d) return null;
-  return { name: name ?? "Fitted plane", point: d.point, normal: d.normal, derivedFrom: FIT_DERIVED_FROM };
-}
-
-export function fitStoreWarning(fit: MeshRegionFit, kind: FitKind): string | null {
-  const c = findCandidate(fit, kind);
-  if (!c) return null;
-  if (c.residualFrac === null) return `Storing a ${kind} fit whose residual could not be computed — quality is unknown.`;
-  if (c.residualFrac >= SIMPLEST_FIT_RESIDUAL_FRAC) {
-    return `Storing a ${kind} fit whose residualFrac ${c.residualFrac.toExponential(2)} is above the published ${SIMPLEST_FIT_RESIDUAL_FRAC} bar (${c.residual !== null ? `residual ${c.residual.toExponential(2)}` : "no residual"} over diagonal ${fit.regionDiagonal.toExponential(2)}).`;
-  }
-  return null;
 }
 
 function emptyFit(seedTriangle: number, warnings: string[]): MeshRegionFit {

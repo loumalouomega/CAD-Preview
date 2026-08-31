@@ -13,7 +13,7 @@ import type { ClipPlaneState } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
-import type { MeshRegionFit } from "./meshRegionFit";
+import type { MeshRegionFit } from "./fitMapping";
 import type { AnnotatedTolerance } from "./toleranceBand";
 
 export type { EditOp } from "./editOps";

@@ -212,7 +212,11 @@ function describeOpBase(op: EditOp): string {
     case "mirror": return `Mirror ${op.targets.length}`;
     case "boolean": return `${cap(op.kind)} ${op.a.length}↔${op.b.length}`;
     case "fillet": return `Fillet ${op.edges.length} r=${op.radius}`;
-    case "chamfer": return `Chamfer ${op.edges.length} d=${op.distance}`;
+    case "chamfer": {
+      if (op.distance2 !== undefined) return `Chamfer ${op.edges.length} ${op.distance}×${op.distance2}`;
+      if (op.angleDeg !== undefined) return `Chamfer ${op.edges.length} d=${op.distance} ${op.angleDeg}°`;
+      return `Chamfer ${op.edges.length} d=${op.distance}`;
+    }
     case "extrude": return `Extrude ${op.profile} ×${op.length}`;
     case "revolve": return `Revolve ${op.profile} ${op.angleDeg}°`;
     case "sweep": return `Sweep ${op.profile} → ${op.path}`;
@@ -293,7 +297,9 @@ export function referencedEntities(op: EditOp): string[] {
     case "boolean":
       return [...op.a, ...op.b];
     case "fillet":
+      return [...op.edges];
     case "chamfer":
+      return op.face ? [...op.edges, op.face] : [...op.edges];
     case "addSurfaceFromLines":
       return [...op.edges];
     case "addVolumeFromSurfaces":

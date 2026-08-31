@@ -37,8 +37,8 @@ export interface MirrorOp { op: "mirror"; targets: string[]; planePoint: Vec3; p
 export interface BooleanOp { op: "boolean"; kind: "union" | "subtract" | "intersect"; a: string[]; b: string[]; }
 /** Round the selected edges with radius `radius`. */
 export interface FilletOp { op: "fillet"; edges: string[]; radius: number; }
-/** Bevel the selected edges with setback `distance`. */
-export interface ChamferOp { op: "chamfer"; edges: string[]; distance: number; }
+/** Bevel the selected edges: symmetric `distance`, asymmetric `distance`/`distance2` on two sides of a reference `face`, or distance-angle `distance` at `angleDeg` to `face`. `face` is required when `distance2` or `angleDeg` is set — it chooses which side gets `distance`. */
+export interface ChamferOp { op: "chamfer"; edges: string[]; distance: number; distance2?: number; angleDeg?: number; face?: string; }
 /** Extrude a selected planar face/wire `profile` along `dir` by `length`. */
 export interface ExtrudeOp { op: "extrude"; profile: string; dir: Vec3; length: number; }
 /** Revolve a selected profile `angleDeg` about the axis (`axisPoint`, `axisDir`). */
@@ -61,8 +61,8 @@ export interface AddCylinderOp { op: "addCylinder"; center: Vec3; axis: Vec3; ra
 export interface AddConeOp { op: "addCone"; center: Vec3; axis: Vec3; radius1: number; radius2: number; height: number; }
 /** Add a torus of `majorRadius`/`minorRadius` centred at `center`, ring normal `axis`. */
 export interface AddTorusOp { op: "addTorus"; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number; }
-/** Add a regular `sides`-gon prism of circumradius `radius`/`height` with base at `center` along `axis`. */
-export interface AddPrismOp { op: "addPrism"; center: Vec3; axis: Vec3; radius: number; sides: number; height: number; }
+/** Add a regular `sides`-gon prism of circumradius `radius`/`height` with base at `center` along `axis`. When `circumscribed` is true, `radius` is the apothem (distance to each flat side). */
+export interface AddPrismOp { op: "addPrism"; center: Vec3; axis: Vec3; radius: number; sides: number; height: number; circumscribed?: boolean; }
 /** Add a right-angular wedge (OCCT `MakeWedge` semantics): base rectangle `dx`×`dy` centred at `center` in the plane ⟂ `axis`, extruded `dz` along `axis`; the far edge (at local y=dy) narrows to `ltx` along local x. `up` orients local x in the base plane. B-rep only. */
 export interface AddWedgeOp { op: "addWedge"; center: Vec3; axis: Vec3; up: Vec3; dx: number; dy: number; dz: number; ltx: number; }
 /** Cut a cylindrical hole into the target solids: mouth at `position`, drilled `depth` along `axis` (which points INTO the material), radius `radius`. */
@@ -75,8 +75,8 @@ export interface AddCountersinkHoleOp { op: "addCountersinkHole"; targets: strin
 export interface AddCircleProfileOp { op: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number; }
 /** Add a standalone flat rectangular profile face. `up` (with `normal`) fixes its in-plane orientation. */
 export interface AddRectangleProfileOp { op: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; }
-/** Add a standalone flat regular `sides`-gon profile face of circumradius `radius`. */
-export interface AddPolygonProfileOp { op: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; }
+/** Add a standalone flat regular `sides`-gon profile face of circumradius `radius`. When `circumscribed` is true, `radius` is the apothem. */
+export interface AddPolygonProfileOp { op: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; circumscribed?: boolean; }
 /** Add a standalone flat elliptical profile face: `radiusX` along the in-plane `up` axis, `radiusY` perpendicular to it. */
 export interface AddEllipseProfileOp { op: "addEllipseProfile"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; }
 /** Add a standalone flat rectangle profile face with all four corners rounded to `cornerRadius` (0 < 2·cornerRadius < min(width, height) — the stadium limit case is what `addSlotProfile` is for). */
@@ -103,8 +103,8 @@ export interface AddBezierOp { op: "addBezier"; controlPoints: Vec3[]; }
 export interface AddEllipseArcOp { op: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; }
 /** Add a standalone helical edge: `turns` revolutions of `pitch` height each around the `axis` through `center` (the helix starts at the base), on a cylinder of `radius`. */
 export interface AddHelixOp { op: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; }
-/** Hollow out the solid(s) owning `openingFaces`, removing those faces and leaving walls of `|thickness|` (negative = walls grow inward — the usual hollow; positive = outward). At least one opening face is required: this OCCT build's ThickSolid with an empty closing list yields a plain offset solid, not a hollow (verified). */
-export interface ShellOp { op: "shell"; thickness: number; openingFaces: string[]; }
+/** Hollow out the solid(s) owning `openingFaces`, removing those faces and leaving walls of `|thickness|` (negative = walls grow inward — the usual hollow; positive = outward). `join` chooses the corner style — arc (default, rounded), intersection (sharp), or tangent. At least one opening face is required: this OCCT build's ThickSolid with an empty closing list yields a plain offset solid, not a hollow (verified). */
+export interface ShellOp { op: "shell"; thickness: number; openingFaces: string[]; join?: "arc" | "intersection" | "tangent"; }
 /** Split the target solids by the plane (`planePoint`, `planeNormal`), keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. */
 export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePoint: Vec3; planeNormal: Vec3; keep: "both" | "positive" | "negative"; }
 /** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`) as a standalone face (under "Sketches"), leaving the solids untouched. */
@@ -341,7 +341,21 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "chamfer": {
       const edges = asIdArray(o.edges);
-      return edges && isFiniteNumber(o.distance) ? { op: "chamfer", edges, distance: o.distance } : null;
+      if (!edges || !isPositive(o.distance)) return null;
+      const hasD2 = o.distance2 !== undefined;
+      const hasAngle = o.angleDeg !== undefined;
+      const hasFace = o.face !== undefined;
+      if (hasD2 && hasAngle) return null;
+      if ((hasD2 || hasAngle) && !hasFace) return null;
+      if (hasFace && !hasD2 && !hasAngle) return null;
+      if (hasFace && (typeof o.face !== "string" || !o.face)) return null;
+      if (hasD2 && !isPositive(o.distance2)) return null;
+      if (hasAngle && (!isFiniteNumber(o.angleDeg) || o.angleDeg <= 0 || o.angleDeg >= 90)) return null;
+      const out: ChamferOp = { op: "chamfer", edges, distance: o.distance as number };
+      if (hasD2) out.distance2 = o.distance2 as number;
+      if (hasAngle) out.angleDeg = o.angleDeg as number;
+      if (hasFace) out.face = o.face as string;
+      return out;
     }
     case "extrude": {
       const dir = asVec3(o.dir);
@@ -375,9 +389,11 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "shell": {
       const openingFaces = asIdArray(o.openingFaces);
-      return openingFaces && isFiniteNumber(o.thickness) && o.thickness !== 0
-        ? { op: "shell", thickness: o.thickness, openingFaces }
-        : null;
+      if (!openingFaces || !isFiniteNumber(o.thickness) || o.thickness === 0) return null;
+      if (o.join !== undefined && o.join !== "arc" && o.join !== "intersection" && o.join !== "tangent") return null;
+      const out: ShellOp = { op: "shell", thickness: o.thickness, openingFaces };
+      if (o.join !== undefined) out.join = o.join;
+      return out;
     }
     case "splitByPlane": {
       const targets = asIdArray(o.targets);
@@ -435,10 +451,11 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "addPrism": {
       const center = asVec3(o.center);
       const axis = asNonZeroVec3(o.axis);
-      return center && axis && isPositive(o.radius) && isPositive(o.height)
-        && isFiniteNumber(o.sides) && Number.isInteger(o.sides) && o.sides >= 3
-        ? { op: "addPrism", center, axis, radius: o.radius, sides: o.sides, height: o.height }
-        : null;
+      if (!center || !axis || !isPositive(o.radius) || !isPositive(o.height) || !isFiniteNumber(o.sides) || !Number.isInteger(o.sides) || o.sides < 3) return null;
+      if (o.circumscribed !== undefined && typeof o.circumscribed !== "boolean") return null;
+      const out: AddPrismOp = { op: "addPrism", center, axis, radius: o.radius, sides: o.sides, height: o.height };
+      if (o.circumscribed !== undefined) out.circumscribed = o.circumscribed;
+      return out;
     }
     case "addCircleProfile": {
       const center = asVec3(o.center);
@@ -460,10 +477,11 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const center = asVec3(o.center);
       const normal = asNonZeroVec3(o.normal);
       const up = asNonZeroVec3(o.up);
-      return center && normal && up && notParallel(normal, up) && isPositive(o.radius)
-        && isFiniteNumber(o.sides) && Number.isInteger(o.sides) && o.sides >= 3
-        ? { op: "addPolygonProfile", center, normal, up, radius: o.radius, sides: o.sides }
-        : null;
+      if (!center || !normal || !up || !notParallel(normal, up) || !isPositive(o.radius) || !isFiniteNumber(o.sides) || !Number.isInteger(o.sides) || o.sides < 3) return null;
+      if (o.circumscribed !== undefined && typeof o.circumscribed !== "boolean") return null;
+      const out: AddPolygonProfileOp = { op: "addPolygonProfile", center, normal, up, radius: o.radius, sides: o.sides };
+      if (o.circumscribed !== undefined) out.circumscribed = o.circumscribed;
+      return out;
     }
     case "addWedge": {
       const center = asVec3(o.center);

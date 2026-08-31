@@ -3,7 +3,7 @@ import type { EditOp, Vec3, OpOutcome, OutcomeFail } from "./editOps";
 // at runtime, so a value import here would close a genuine require() cycle in
 // the CJS bundle.
 import type { SurfaceType, SurfaceParams } from "./entityFacts";
-import { enumerateEdges } from "./edgeEnumeration";
+import { enumerateEdges, buildEdgeFaceAdjacency } from "./edgeEnumeration";
 
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
 const HASH_UPPER = 1 << 30;
@@ -625,22 +625,54 @@ function filletEdges(oc: any, shape: any, op: Extract<EditOp, { op: "fillet" | "
     ? new oc.BRepFilletAPI_MakeFillet(shape, oc.ChFi3d_FilletShape.ChFi3d_Rational)
     : new oc.BRepFilletAPI_MakeChamfer(shape);
   cleanup.push(maker);
-  const amount = isFillet ? op.radius : op.distance;
-  for (const e of picked) maker.Add_2(amount, e);
+  if (!isFillet && isChamferWithFace(op)) {
+    const faces = collectFaces(oc, shape, cleanup);
+    const faceIdx = faceIndex(op.face!);
+    const refFace = faces[faceIdx];
+    if (!refFace) {
+      fail?.(`chamfer face ${op.face} does not resolve`, "re-check face-N ids");
+      return shape;
+    }
+    const { edgeFaces, faces: adjFaces } = buildEdgeFaceAdjacency(oc, shape, cleanup);
+    const refPos = adjFaces.findIndex((f) => f.IsSame(refFace));
+    if (refPos === -1) {
+      fail?.(`chamfer face ${op.face} is not adjacent to the model`, "pick a face that shares the chamfered edges");
+      return shape;
+    }
+    for (const e of picked) {
+      const bucket = edgeFaces.get(e.HashCode(1 << 30));
+      const entry = bucket?.find((b) => b.edge.IsSame(e));
+      if (!entry || !entry.faceIdxs.includes(refPos)) {
+        fail?.(`edge is not on face ${op.face}`, "pick edges of that face");
+        return shape;
+      }
+    }
+    if (op.distance2 !== undefined) {
+      for (const e of picked) maker.Add_3(op.distance, op.distance2!, e, refFace);
+    } else {
+      const angleRad = ((op.angleDeg as number) * Math.PI) / 180;
+      for (const e of picked) maker.AddDA(op.distance, angleRad, e, refFace);
+    }
+  } else {
+    const amount = isFillet ? op.radius : op.distance;
+    for (const e of picked) maker.Add_2(amount, e);
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let result: any;
   try {
     result = maker.Shape();
   } catch {
+    const d = isFillet ? (op as Extract<EditOp, { op: "fillet" }>).radius : op.distance;
     fail?.(
-      `the ${op.op} build threw — the ${isFillet ? "radius" : "distance"} ${amount} is likely too large for the geometry`,
+      `the ${op.op} build threw — the ${isFillet ? "radius" : "distance"} ${d} is likely too large for the geometry`,
       `try a smaller value, or fewer edges at once`
     );
     return shape;
   }
   if (!maker.IsDone()) {
-    fail?.(`the ${op.op} did not complete (IsDone() false)`, `the ${isFillet ? "radius" : "distance"} may be too large for the selected edges`);
+    const d = isFillet ? (op as Extract<EditOp, { op: "fillet" }>).radius : op.distance;
+    fail?.(`the ${op.op} did not complete (IsDone() false)`, `the ${isFillet ? "radius" : "distance"} ${d} may be too large for the selected edges`);
     return shape;
   }
   cleanup.push(result);
@@ -657,6 +689,10 @@ function edgeIndex(id: string): number {
 function faceIndex(id: string): number {
   const m = /^face-(\d+)$/.exec(id);
   return m ? Number(m[1]) : -1;
+}
+
+function isChamferWithFace(op: Extract<EditOp, { op: "chamfer" }>): boolean {
+  return op.distance2 !== undefined || op.angleDeg !== undefined;
 }
 
 /**
@@ -812,7 +848,7 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
       }
       case "addPrism": {
         const [ux, vx] = planeBasis(op.axis);
-        const points = regularPolygonPoints(op.center, ux, vx, op.radius, op.sides);
+        const points = regularPolygonPoints(op.center, ux, vx, op.radius, op.sides, op.circumscribed);
         const face = buildFlatFace(oc, points, cleanup);
         if (!face) return null;
         const [ax, ay, az] = op.axis;
@@ -865,12 +901,14 @@ function buildFlatFace(oc: any, points: Vec3[], cleanup: Array<{ delete(): void 
 }
 
 /** N points evenly spaced around `center` on the circle of `radius` spanned by
- * orthonormal in-plane basis (`u`, `v`). */
-function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, sides: number): Vec3[] {
+ * orthonormal in-plane basis (`u`, `v`). When `circumscribed` is true,
+ * `radius` is the apothem (the circle is INSIDE the polygon, sides tangent). */
+function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, sides: number, circumscribed?: boolean): Vec3[] {
+  const r = circumscribed ? radius / Math.cos(Math.PI / sides) : radius;
   const points: Vec3[] = [];
   for (let i = 0; i < sides; i++) {
     const a = (2 * Math.PI * i) / sides;
-    points.push(addScaled(center, u, Math.cos(a) * radius, v, Math.sin(a) * radius));
+    points.push(addScaled(center, u, Math.cos(a) * r, v, Math.sin(a) * r));
   }
   return points;
 }
@@ -940,7 +978,7 @@ function buildProfileFace(oc: any, op: EditOp, cleanup: Array<{ delete(): void }
       }
       case "addPolygonProfile": {
         const [u, v] = inPlaneBasis(op.normal, op.up);
-        return buildFlatFace(oc, regularPolygonPoints(op.center, u, v, op.radius, op.sides), cleanup);
+        return buildFlatFace(oc, regularPolygonPoints(op.center, u, v, op.radius, op.sides, op.circumscribed), cleanup);
       }
       case "addEllipseProfile": {
         // `gp_Elips_2(ax2, major, minor)` requires major ≥ minor; when radiusY
@@ -1656,7 +1694,12 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
     }
 
     const mode = oc.BRepOffset_Mode.BRepOffset_Skin;
-    const join = oc.GeomAbs_JoinType.GeomAbs_Arc;
+    const joinMap: Record<string, number> = {
+      arc: oc.GeomAbs_JoinType.GeomAbs_Arc,
+      intersection: oc.GeomAbs_JoinType.GeomAbs_Intersection,
+      tangent: oc.GeomAbs_JoinType.GeomAbs_Tangent,
+    };
+    const join = joinMap[op.join ?? "arc"] ?? oc.GeomAbs_JoinType.GeomAbs_Arc;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const replaced = new Map<number, any>();
     for (const [i, openings] of openingsBySolid) {

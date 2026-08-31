@@ -1,4 +1,4 @@
-import type { MeshRegionFit } from "../meshRegionFit";
+import type { MeshRegionFit } from "../fitMapping";
 
 export interface RegionFitPanelCallbacks {
   onPickSeed: () => void;

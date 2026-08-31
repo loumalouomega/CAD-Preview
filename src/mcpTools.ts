@@ -74,8 +74,9 @@ import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
 import type { recognizePrimitives, PrimitiveReport } from "./primitiveReport";
-import type { fitMeshRegion, MeshRegionFit } from "./meshRegionFit";
-import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM } from "./meshRegionFit";
+import type { fitMeshRegion } from "./meshRegionFit";
+import type { MeshRegionFit } from "./fitMapping";
+import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM } from "./fitMapping";
 import { parseToWeldedMesh } from "./meshHeal";
 import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
@@ -183,14 +184,15 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   mirror: '{targets: id[], planePoint: [x,y,z], planeNormal: [x,y,z]}',
   boolean: '{kind: "union"|"subtract"|"intersect", a: solidId[], b: solidId[]}',
   fillet: '{edges: edgeId[], radius: n>0}',
-  chamfer: '{edges: edgeId[], distance: n>0}',
+  chamfer: '{edges: edgeId[], distance: n>0, distance2?: n>0 (asymmetric, needs face), angleDeg?: 0<n<90 (distance-angle, needs face), face?: faceId}',
+
   extrude: '{profile: faceId, dir: [x,y,z], length: n>0}',
   revolve: '{profile: faceId, axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n}',
   sweep: '{profile: faceId, path: edgeId}',
   loft: '{profiles: faceId[] (>=2)}',
   explode: '{factor: n}',
   mate: '{faceA: faceId, faceB: faceId (both planar)}',
-  shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1)}',
+  shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1), join?: "arc"|"intersection"|"tangent" (default arc)}',
   splitByPlane: '{targets: solidId[], planePoint: [x,y,z], planeNormal: [x,y,z], keep: "both"|"positive"|"negative"}',
   section: '{targets: solidId[], planePoint: [x,y,z], planeNormal: [x,y,z]}',
   addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
@@ -198,7 +200,8 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addCylinder: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, height: n>0}',
   addCone: '{center: [x,y,z] (base), axis: [x,y,z], radius1: n>0, radius2: n>=0 (0 = apex), height: n>0}',
   addTorus: '{center: [x,y,z], axis: [x,y,z], majorRadius: n>0, minorRadius: n>0 (< majorRadius)}',
-  addPrism: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0 (circumradius), sides: int>=3, height: n>0}',
+  addPrism: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0 (circumradius, or apothem when circumscribed), sides: int>=3, height: n>0, circumscribed?: boolean}',
+
   addWedge: '{center: [x,y,z], axis: [x,y,z], up: [x,y,z], dx: n>0, dy: n>0, dz: n>0, ltx: n>=0}',
   addHole: '{targets: solidId[], position: [x,y,z] (mouth), axis: [x,y,z] (into material), radius: n>0, depth: n>0}',
   addCounterboreHole:
@@ -207,7 +210,8 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
     '{targets: solidId[], position: [x,y,z], axis: [x,y,z], radius: n>0, depth: n>0, csRadius: n>radius, csAngleDeg: 0<n<180}',
   addCircleProfile: '{center: [x,y,z], normal: [x,y,z], radius: n>0}',
   addRectangleProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], width: n>0, height: n>0}',
-  addPolygonProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radius: n>0, sides: int>=3}',
+  addPolygonProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radius: n>0 (circumradius, or apothem when circumscribed), sides: int>=3, circumscribed?: boolean}',
+
   addEllipseProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radiusX: n>0, radiusY: n>0}',
   addRoundedRectangleProfile:
     '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], width: n>0, height: n>0, cornerRadius: 0<2r<min(w,h)}',

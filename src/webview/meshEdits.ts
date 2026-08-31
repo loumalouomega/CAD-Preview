@@ -396,8 +396,8 @@ function buildPrimitiveMesh(op: EditOp): THREE.Mesh | null {
       return mesh;
     }
     case "addPrism": {
-      // Flat radial segments (no smoothing) give a regular N-gon cross-section.
-      const geo = new THREE.CylinderGeometry(op.radius, op.radius, op.height, op.sides);
+      const effR = op.circumscribed ? op.radius / Math.cos(Math.PI / op.sides) : op.radius;
+      const geo = new THREE.CylinderGeometry(effR, effR, op.height, op.sides);
       const mesh = new THREE.Mesh(geo, makeFaceMaterial());
       mesh.applyMatrix4(baseAlignedMatrix(op.center, op.axis, op.height));
       return mesh;
