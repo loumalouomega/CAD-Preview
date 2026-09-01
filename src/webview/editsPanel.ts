@@ -1,5 +1,6 @@
 import type { EditOp, ExprMap, Vec3, OpOutcome } from "../editOps";
 import { GUIDE_KINDS } from "../editOps";
+import type { ConstructionPlane } from "../protocol";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
@@ -21,7 +22,7 @@ export type TransformDraft = (
   | { kind: "translate"; vec: Vec3 }
   | { kind: "rotate"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "scale"; center: Vec3; factors: Vec3 }
-  | { kind: "mirror"; planePoint: Vec3; planeNormal: Vec3 }
+  | { kind: "mirror"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
 ) & { exprs?: ExprMap };
 
 export type BooleanKind = "union" | "subtract" | "intersect";
@@ -87,9 +88,9 @@ export type WireframeDraft = (
  * volumes (the wiring injects both). B-rep only. */
 export type ModifyDraft = (
   | { kind: "shell"; thickness: number }
-  | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3 }
-  | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; keep: "both" | "positive" | "negative" }
-  | { kind: "section"; planePoint: Vec3; planeNormal: Vec3 }
+  | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }
+  | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; planeId?: string; keep: "both" | "positive" | "negative" }
+  | { kind: "section"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
 ) & { exprs?: ExprMap };
 
 /** Align draft minus its `targets` (the wiring injects the selected volumes) —
@@ -260,6 +261,56 @@ export class EditsPanel {
    * The wiring calls this on load and after every variable change. */
   setVariables(values: Record<string, number>): void {
     this.variableValues = values;
+  }
+
+  private planesList: ConstructionPlane[] = [];
+  setPlanes(planes: ConstructionPlane[]): void {
+    this.planesList = [...planes];
+  }
+
+  private readPlaneId(): string | undefined {
+    const sel = this.paramsEl.querySelector<HTMLSelectElement>("select[data-name=\"planeId\"]");
+    const v = sel?.value?.trim();
+    return v ? v : undefined;
+  }
+
+  private planeSelectField(): HTMLElement {
+    const row = document.createElement("label");
+    row.className = "compose-field";
+    const span = document.createElement("span");
+    span.className = "compose-label";
+    span.textContent = "Plane";
+    row.appendChild(span);
+    const select = document.createElement("select");
+    select.className = "compose-select";
+    select.dataset.name = "planeId";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "Custom (typed vectors)";
+    select.appendChild(none);
+    for (const p of this.planesList) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name;
+      opt.title = `point (${p.point.join(", ")}) · normal (${p.normal.join(", ")})${p.derivedFrom ? ` · from ${p.derivedFrom}` : ""}`;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => {
+      const id = select.value;
+      const plane = this.planesList.find((x) => x.id === id);
+      const pointInputs = this.paramsEl.querySelectorAll<HTMLInputElement>("input[data-name=\"planePoint\"]");
+      const normalInputs = this.paramsEl.querySelectorAll<HTMLInputElement>("input[data-name=\"planeNormal\"]");
+      const disable = !!plane;
+      pointInputs.forEach((el) => { el.disabled = disable; });
+      normalInputs.forEach((el) => { el.disabled = disable; });
+      if (plane) {
+        this.setVecField("planePoint", plane.point as Vec3);
+        this.setVecField("planeNormal", plane.normal as Vec3);
+      }
+      if (this.draftReader) this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(select);
+    return row;
   }
 
   /**
@@ -607,11 +658,15 @@ export class EditsPanel {
           }), (d) => this.cb.onApplyTransform(d));
         break;
       case "mirror":
+        f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [1, 0, 0]));
-        this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => ({
-            kind: "mirror", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal"),
-          }), (d) => this.cb.onApplyTransform(d));
+        this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => {
+            const planeId = this.readPlaneId();
+            const draft: TransformDraft = { kind: "mirror", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal") } as TransformDraft;
+            if (planeId) (draft as any).planeId = planeId;
+            return draft;
+          }, (d) => this.cb.onApplyTransform(d));
         break;
 
       // ── EDIT · boolean (Set A two-step; B = live selection) ──
@@ -670,10 +725,15 @@ export class EditsPanel {
       case "draft":
         f.appendChild(this.hint("Tapers the selected faces (Surf mode) by the angle around the neutral plane"));
         f.appendChild(this.numField("angleDeg", "Angle°", 5));
-        f.appendChild(this.hint("Leave Point/Normal at 0 to use each face's own plane"));
+        f.appendChild(this.hint("Leave Point/Normal at 0 to use each face's own plane — or pick a saved plane"));
+        f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 0]));
         this.applyButtonDraft("Apply", "Draft the selected faces", (): ModifyDraft => {
+          const planeId = this.readPlaneId();
+          if (planeId) {
+            return { kind: "draft", angleDeg: this.readNum("angleDeg"), planeId, planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal") } as ModifyDraft;
+          }
           const planePoint = this.readVec("planePoint");
           const planeNormal = this.readVec("planeNormal");
           const isZero = (v: Vec3) => v[0] === 0 && v[1] === 0 && v[2] === 0;
@@ -684,24 +744,36 @@ export class EditsPanel {
         break;
       case "splitByPlane":
         f.appendChild(this.hint("Splits the selected volumes (Vol mode) by the plane"));
+        f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 1]));
         f.appendChild(this.enumField("keep", "Keep", [
           ["both", "Both"], ["positive", "Normal side"], ["negative", "Other side"],
         ], "both"));
-        this.applyButtonDraft("Apply", "Split the selected volumes by the plane", (): ModifyDraft => ({
-            kind: "splitByPlane", planePoint: this.readVec("planePoint"),
-            planeNormal: this.readVec("planeNormal"),
-            keep: this.readEnum("keep", "both") as "both" | "positive" | "negative",
-          }), (d) => this.cb.onApplyModify(d));
+        this.applyButtonDraft("Apply", "Split the selected volumes by the plane", (): ModifyDraft => {
+            const planeId = this.readPlaneId();
+            const draft: ModifyDraft = {
+              kind: "splitByPlane", planePoint: this.readVec("planePoint"),
+              planeNormal: this.readVec("planeNormal"),
+              keep: this.readEnum("keep", "both") as "both" | "positive" | "negative",
+            } as ModifyDraft;
+            if (planeId) (draft as any).planeId = planeId;
+            return draft;
+          }, (d) => this.cb.onApplyModify(d));
         break;
       case "section":
         f.appendChild(this.hint("Adds the planar cross-section of the selected volumes (Vol mode) as a sketch face"));
+        f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 1]));
-        this.applyButtonDraft("Apply", "Add the cross-section face (the solids stay untouched)", (): ModifyDraft => ({
-            kind: "section", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal"),
-          }), (d) => this.cb.onApplyModify(d));
+        this.applyButtonDraft("Apply", "Add the cross-section face (the solids stay untouched)", (): ModifyDraft => {
+            const planeId = this.readPlaneId();
+            const draft: ModifyDraft = {
+              kind: "section", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal"),
+            } as ModifyDraft;
+            if (planeId) (draft as any).planeId = planeId;
+            return draft;
+          }, (d) => this.cb.onApplyModify(d));
         break;
 
       // ── EDIT · assembly ──

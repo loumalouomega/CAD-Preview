@@ -24,6 +24,17 @@ import {
   type OpOutcome,
 } from "./editOps";
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
+import { resolvePlaneRefs } from "./planeRefs";
+async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; variables: ParamVariable[] }> {
+  const parsed = await readEditsRaw(modelPath);
+  try {
+    const planes = await readPlanes(modelPath);
+    const { ops } = resolvePlaneRefs(parsed.ops, planes);
+    return { ops, variables: parsed.variables };
+  } catch {
+    return parsed;
+  }
+}
 import { compileParametricScript } from "./parametricScript";
 import { routeFile, COMPARABLE_MESH_FORMATS, MESHIO_FORMATS, ambiguityCaveatFor, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
@@ -98,7 +109,7 @@ import {
   readScriptLibrary,
   readViewState,
   writeScriptLibrary,
-  readEdits,
+  readEdits as readEditsRaw,
   writeEdits,
   readParts,
   writeParts,
@@ -181,7 +192,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   translate: '{targets: id[], vec: [x,y,z]}',
   rotate: '{targets: id[], axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n}',
   scale: '{targets: id[], center: [x,y,z], factors: [sx,sy,sz]}',
-  mirror: '{targets: id[], planePoint?: [x,y,z], planeNormal?: [x,y,z], midplaneFaces?: [faceId, faceId] (planar, parallel — XOR with planePoint/planeNormal)}',
+  mirror: '{targets: id[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N from planes sidecar — XOR with planePoint/planeNormal and midplaneFaces; planePoint/planeNormal may ride alongside as cache), midplaneFaces?: [faceId, faceId] (planar, parallel — XOR with planePoint/planeNormal)}',
   boolean: '{kind: "union"|"subtract"|"intersect", a: solidId[], b: solidId[]}',
   fillet: '{edges: edgeId[], radius: n>0}',
   chamfer: '{edges: edgeId[], distance: n>0, distance2?: n>0 (asymmetric, needs face), angleDeg?: 0<n<90 (distance-angle, needs face), face?: faceId}',
@@ -193,9 +204,9 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   explode: '{factor: n}',
   mate: '{faceA: faceId, faceB: faceId (both planar)}',
   shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1), join?: "arc"|"intersection"|"tangent" (default arc)}',
-  draft: '{faces: faceId[], angleDeg: 0<n<90, planePoint?: [x,y,z], planeNormal?: [x,y,z] (neutral plane + pull direction; omitted = each face\'s own plane). NOTE: this WASM build\'s draft engine (BRepOffsetAPI_DraftAngle.Build) is kernel-broken — the op validates but reports applied:false with a diagnostic}',
-  splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
-  section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], midplaneFaces?: [faceId, faceId] (XOR)}',
+  draft: '{faces: faceId[], angleDeg: 0<n<90, planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N from planes sidecar; planePoint/planeNormal may ride alongside as cache) (neutral plane + pull direction; omitted = each face\'s own plane). NOTE: this WASM build\'s draft engine (BRepOffsetAPI_DraftAngle.Build) is kernel-broken — the op validates but reports applied:false with a diagnostic}',
+  splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR with planePoint/planeNormal and midplaneFaces; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
+  section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR)}',
   addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
   addSphere: '{center: [x,y,z], radius: n>0}',
   addCylinder: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, height: n>0}',
@@ -533,7 +544,7 @@ function opOutcomeWarnings(outcomes: OpOutcome[]): string[] {
 }
 
 async function sidecarSummary(modelPath: string) {
-  const { ops, variables } = await readEdits(modelPath);
+  const { ops, variables } = await readEditsResolved(modelPath);
   const parts = await readParts(modelPath);
   return {
     editOpCount: ops.length,
@@ -658,7 +669,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
   }
 
   const sidecars = await sidecarSummary(modelPath);
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, ops);
   return {
@@ -695,7 +706,7 @@ export async function getMassProperties(
     };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const properties = await ctx.pipeline.computeMassProperties(
     ctx.extensionPath,
@@ -752,7 +763,7 @@ export async function generateBomTool(
     };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.computeBom(ctx.extensionPath, bytes, route.format as BRepFormat, ops, parts);
   return { format: route.format, supported: true, rows: result.rows, bom: bomTsv(result.rows), warnings: result.warnings };
@@ -785,7 +796,7 @@ export async function inspectEntity(
     };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const facts = await ctx.pipeline.getEntityFacts(ctx.extensionPath, bytes, route.format as BRepFormat, ops, params.entityId);
   return { format: route.format, supported: true, ...facts, warnings: [] };
@@ -811,7 +822,7 @@ export async function measureTool(
     };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.measureEntities(
     ctx.extensionPath,
@@ -852,7 +863,7 @@ export async function measureExactTool(
     };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.measureExact(
     ctx.extensionPath,
@@ -1011,7 +1022,7 @@ export async function checkInterferenceTool(
     return { format: route.format, supported: true, hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], warnings };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.checkInterference(ctx.extensionPath, bytes, route.format as BRepFormat, ops, idsA, idsB);
   if (result.unresolvedA.length > 0) warnings.push(`Operand A: unresolved id(s) ${result.unresolvedA.join(", ")}.`);
@@ -1092,7 +1103,7 @@ export async function checkInterferenceAllTool(
     return { format: route.format, supported: true, pairs: [], warnings: [...warnings, "Fewer than two usable parts — nothing to compare."] };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.checkInterferenceAll(
     ctx.extensionPath,
@@ -1163,7 +1174,7 @@ export async function renderSnapshotTool(
     return { supported: false, images: [], warnings: [avail.reason ?? "Renderer unavailable."] };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const resolved = await resolveSnapshotView(modelPath, params.view);
   const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, route.format as BRepFormat, ops, {
@@ -1318,7 +1329,7 @@ export async function renderOpsPrefixTool(
     };
   }
 
-  const current = await readEdits(modelPath);
+  const current = await readEditsResolved(modelPath);
   const totalOpCount = current.ops.length;
   const idx = params.throughIndex;
   if (!Number.isInteger(idx) || idx < -1 || idx >= totalOpCount) {
@@ -1438,10 +1449,10 @@ export async function compareModelsTool(
   const warnings: string[] = [];
   const resolveSource = async (modelPath: string, route: typeof routeA): Promise<CompareSource> => {
     if (route.strategy === "occt") {
-      const [{ ops }, bytes] = await Promise.all([readEdits(modelPath), readModelBytes(modelPath)]);
+      const [{ ops }, bytes] = await Promise.all([readEditsResolved(modelPath), readModelBytes(modelPath)]);
       return { kind: "brep", bytes, format: route.format as BRepFormat, ops };
     }
-    const [{ ops }, bytes] = await Promise.all([readEdits(modelPath), readModelBytes(modelPath)]);
+    const [{ ops }, bytes] = await Promise.all([readEditsResolved(modelPath), readModelBytes(modelPath)]);
     if (ops.length > 0) {
       warnings.push(
         `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — comparing the raw file only.`
@@ -1664,7 +1675,7 @@ export async function fitMeshRegionTool(
     if (!op) throw new Error(`No ${kind} fit — the region has no ${kind} candidate to store.`);
     const validated = validateEditOp(op);
     if (!validated) throw new Error(`Fitted ${kind} produced an invalid op — not stored.`);
-    const current = await readEdits(modelPath);
+    const current = await readEditsResolved(modelPath);
     const newOps = [...current.ops, validated];
     await writeEdits(modelPath, newOps, current.variables);
     warnings.push("Stored as a new body at that location (append-only, like every other primitive-creation op) — open the file in VS Code to see it, or export it.");
@@ -1703,7 +1714,7 @@ export async function recognizePrimitivesTool(
   }
 
   const bytes = await readModelBytes(modelPath);
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const report = await ctx.pipeline.recognizePrimitives(
     ctx.extensionPath,
     bytes,
@@ -1762,7 +1773,7 @@ export async function promoteMeshToBrepTool(
     }
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   if (ops.length > 0) {
     warnings.push(`${modelPath}: pending edits are NOT baked in — ${route.format.toUpperCase()} sources have no host-side edit engine; promoting the raw file only.`);
   }
@@ -1815,7 +1826,7 @@ export async function repairMeshTool(
   assertNotSourcePath(modelPath, outputPath);
   const warnings: string[] = [];
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   if (ops.length > 0) {
     warnings.push(`${modelPath}: pending edits are NOT baked in — ${route.format.toUpperCase()} sources have no host-side edit engine; repairing the raw file only.`);
   }
@@ -1841,7 +1852,7 @@ export async function repairMeshTool(
 export async function getState(params: { path: string }) {
   const modelPath = params.path;
   requireRoute(modelPath);
-  const { ops, variables } = await readEdits(modelPath);
+  const { ops, variables } = await readEditsResolved(modelPath);
   const parts = await readParts(modelPath);
   const annotations = await readAnnotations(modelPath);
   const planes = await readPlanes(modelPath);
@@ -2125,10 +2136,12 @@ export async function applyEditOps(
     );
   }
 
-  const current = await readEdits(modelPath);
+  const current = await readEditsResolved(modelPath);
   const newOps = [...current.ops, ...accepted];
+  const planesForWrite = await readPlanes(modelPath).catch(() => [] as never[]);
+  const { ops: resolvedNewOps } = resolvePlaneRefs(newOps, planesForWrite);
   if (!params.dryRun && accepted.length > 0) {
-    await writeEdits(modelPath, newOps, current.variables);
+    await writeEdits(modelPath, resolvedNewOps, current.variables);
   }
 
   let model = null;
@@ -2137,7 +2150,7 @@ export async function applyEditOps(
     // Re-tessellate so the agent sees the post-replay entity inventory —
     // topology-changing ops renumber face-N/edge-N ids.
     const bytes = await readModelBytes(modelPath);
-    const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, newOps);
+    const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, resolvedNewOps);
     model = entitySummary(result);
     // "Accepted" meant it passed validation — the replay outcome is what
     // actually happened. Merge each not-applied op's diagnostic/hint into its
@@ -2228,7 +2241,7 @@ async function compileAndApplyScript(
   const route = requireRoute(modelPath);
   const warnings: string[] = [...extraWarnings];
 
-  const current = await readEdits(modelPath);
+  const current = await readEditsResolved(modelPath);
   const { values: documentValues } = evaluateVariables(current.variables);
   const compiled = compileParametricScript(params.script, documentValues);
   enrichScriptRejections(params.script, compiled.report);
@@ -2256,7 +2269,9 @@ async function compileAndApplyScript(
     warnings.push("Script hit a size safety cap (max 200 steps / 5000 total compiled ops) — some steps were dropped.");
   }
 
-  const newOps = [...current.ops, ...accepted];
+  const rawNewOps = [...current.ops, ...accepted];
+  const planesForWrite = await readPlanes(modelPath).catch(() => [] as never[]);
+  const { ops: newOps } = resolvePlaneRefs(rawNewOps, planesForWrite);
   if (!params.dryRun && accepted.length > 0) {
     await writeEdits(modelPath, newOps, current.variables);
   }
@@ -2312,7 +2327,7 @@ async function compileAndApplyScript(
 export async function removeEditOp(ctx: ToolContext, params: { path: string; index: number }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
-  const current = await readEdits(modelPath);
+  const current = await readEditsResolved(modelPath);
   if (!Number.isInteger(params.index) || params.index < 0 || params.index >= current.ops.length) {
     throw new Error(`Index ${params.index} out of range — the op stack has ${current.ops.length} entries (0-based).`);
   }
@@ -2375,7 +2390,7 @@ export async function screenshotShapeTool(
     return { supported: false, images: [], warnings: [avail.reason ?? "Renderer unavailable."] };
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const resolved = await resolveSnapshotView(modelPath, params.view);
   warnings.push(...resolved.warnings);
@@ -2437,7 +2452,7 @@ export async function hitTestTool(
     throw new Error("hit_test needs at least one ray: {origin: [x,y,z], direction: [x,y,z]}.");
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const bytes = await readModelBytes(modelPath);
   const result = await ctx.pipeline.hitTest(
     ctx.extensionPath,
@@ -2645,7 +2660,7 @@ export async function listStandardHoleSizes(params: { standard?: string; designa
 export async function setVariables(params: { path: string; variables: Array<{ name: string; expr: string }> }) {
   const modelPath = params.path;
   requireRoute(modelPath);
-  const current = await readEdits(modelPath);
+  const current = await readEditsResolved(modelPath);
   const previous = new Map(current.variables.map((v) => [v.name, v.value]));
 
   // Keep each carried-over variable's cached value so a failing expr freezes
@@ -2894,7 +2909,7 @@ async function resolveMeshInputHeadless(
 ): Promise<MeshGenerationInput> {
   const factor = unitScaleFactor(unit);
   if (route.strategy === "occt") {
-    const { ops } = await readEdits(modelPath);
+    const { ops } = await readEditsResolved(modelPath);
     const sourceBytes = await readModelBytes(modelPath);
     const stepBytes = await ctx.pipeline.exportBRep(
       ctx.extensionPath,
@@ -2908,7 +2923,7 @@ async function resolveMeshInputHeadless(
     return { kind: "brep", stepBytes };
   }
   if (route.format === "stl") {
-    const { ops } = await readEdits(modelPath);
+    const { ops } = await readEditsResolved(modelPath);
     if (ops.length > 0) {
       warnings.push(
         `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — STL edits replay in the webview only; the raw file bytes are meshed.`
@@ -2926,7 +2941,7 @@ async function resolveMeshInputHeadless(
     // to the bytes-in shape: its `.foam` marker's mesh lives in sibling files
     // under `<parent>/constant/polyMesh/`, so the path-based foam conversion
     // stages the case itself.
-    const { ops } = await readEdits(modelPath);
+    const { ops } = await readEditsResolved(modelPath);
     if (ops.length > 0) {
       warnings.push(
         `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file's boundary surface is meshed.`
@@ -2953,7 +2968,7 @@ async function resolveMeshInputHeadless(
     // one shape `MeshGenerationInput`'s "stl" branch (and both meshing
     // engines) accept. Edits are NOT baked in, same caveat as the raw `.stl`
     // branch above and the same reason (no host-side mesh edit engine).
-    const { ops } = await readEdits(modelPath);
+    const { ops } = await readEditsResolved(modelPath);
     if (ops.length > 0) {
       warnings.push(
         `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file bytes are meshed.`
@@ -3246,7 +3261,7 @@ export async function exportBRepTool(
     }
   }
 
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   const sourceBytes = await readModelBytes(modelPath);
   const parts = await readParts(modelPath);
   const bytes = await ctx.pipeline.exportBRep(
@@ -3389,7 +3404,7 @@ export async function exportSvgSilhouetteTool(
   }));
 
   const bytes = await readModelBytes(modelPath);
-  const { ops } = await readEdits(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
   let source: CompareSource;
   if (route.strategy === "occt") {
     source = { kind: "brep", bytes, format: route.format as BRepFormat, ops };

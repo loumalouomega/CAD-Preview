@@ -287,9 +287,6 @@ export function referencedEntities(op: EditOp): string[] {
     case "translate":
     case "rotate":
     case "scale":
-    case "mirror":
-    case "splitByPlane":
-    case "section":
     case "align":
     case "patternLinear":
     case "patternCircular":
@@ -297,6 +294,14 @@ export function referencedEntities(op: EditOp): string[] {
     case "addCounterboreHole":
     case "addCountersinkHole":
       return [...op.targets];
+    case "mirror":
+    case "splitByPlane":
+    case "section": {
+      const refs = [...(op as any).targets as string[]];
+      if ((op as any).midplaneFaces) refs.push(...(op as any).midplaneFaces as string[]);
+      if ((op as any).planeId) refs.push((op as any).planeId as string);
+      return refs;
+    }
     case "boolean":
       return [...op.a, ...op.b];
     case "fillet":
@@ -318,8 +323,11 @@ export function referencedEntities(op: EditOp): string[] {
       return [op.faceA, op.faceB];
     case "shell":
       return [...op.openingFaces];
-    case "draft":
-      return [...op.faces];
+    case "draft": {
+      const refs = [...op.faces];
+      if ((op as any).planeId) refs.push((op as any).planeId as string);
+      return refs;
+    }
     case "explode":
     case "addBox":
     case "addSphere":

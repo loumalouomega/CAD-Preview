@@ -30,6 +30,7 @@ import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import type { EditOp } from "./editOps";
 import { validateEditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
+import { resolvePlaneRefs } from "./planeRefs";
 import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri } from "./meshOptionsStore";
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
 import type { MeshGenerationInput } from "./gmshService";
@@ -433,6 +434,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const format = route.format as Extract<CadFormat, "step" | "iges" | "brep">;
         const generation = ++brepLoadGeneration.current;
         const autoFit = !showProgress;
+        const resolvedEdits = resolvePlaneRefs(currentEdits, currentPlanes).ops;
         if (showProgress) {
           void vscode.window.withProgress(
             {
@@ -463,11 +465,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
                 // just this one — an accepted trade-off of one shared child.
                 this.pipeline.cancelCurrent();
               });
-              await this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration, autoFit, progress);
+              await this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, progress);
             }
           );
         } else {
-          void this.handleBRep(document.uri, format, post, currentEdits, documentKey, generation, brepLoadGeneration, autoFit);
+          void this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit);
         }
       }
     };
@@ -583,11 +585,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     watchForExternalChange(editsSidecarUri(document.uri), () => {
       void (async () => {
         const parsed = await readEdits(document.uri);
-        if (JSON.stringify(parsed.ops) === JSON.stringify(currentEdits) && JSON.stringify(parsed.variables) === JSON.stringify(currentVariables)) {
+        const { ops: resolvedOps } = resolvePlaneRefs(parsed.ops, currentPlanes);
+        if (JSON.stringify(resolvedOps) === JSON.stringify(currentEdits) && JSON.stringify(parsed.variables) === JSON.stringify(currentVariables)) {
           return;
         }
         const previousOps = currentEdits;
-        currentEdits = parsed.ops;
+        currentEdits = resolvedOps;
         currentVariables = parsed.variables;
         if (route && route.strategy === "occt") {
           loadModel();
@@ -615,6 +618,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         currentPlanes = planes;
         post({ type: "planes", planes: currentPlanes });
         post({ type: "status", text: "Construction planes updated externally" });
+        const { ops: resolvedOps } = resolvePlaneRefs(currentEdits, currentPlanes);
+        if (JSON.stringify(resolvedOps) !== JSON.stringify(currentEdits)) {
+          const previousOps = currentEdits;
+          currentEdits = resolvedOps;
+          if (route && route.strategy === "occt") {
+            loadModel();
+            void rebindPartsOnChange(previousOps, currentEdits);
+          }
+          post({ type: "edits", ops: currentEdits, variables: currentVariables });
+        }
       })();
     });
     watchForExternalChange(annotationsSidecarUri(document.uri), () => {
@@ -705,11 +718,17 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           return;
         }
         // Load edits before the model so a B-rep source is tessellated already-edited.
-        const parsed = await readEdits(document.uri);
-        currentEdits = parsed.ops;
+        // Planes are loaded alongside edits so any `planeId` can be resolved
+        // before the first tessellation (otherwise a `planeId`-only op would
+        // have no cached vectors to fall back on).
+        const [parsed, planesInitial] = await Promise.all([readEdits(document.uri), readPlanes(document.uri)]);
+        const { ops: resolvedEdits } = resolvePlaneRefs(parsed.ops, planesInitial);
+        currentEdits = resolvedEdits;
         currentVariables = parsed.variables;
+        currentPlanes = planesInitial;
         loadModel(true);
         post({ type: "edits", ops: currentEdits, variables: currentVariables });
+        post({ type: "planes", planes: currentPlanes });
         // The meshio route's own handleMeshio() (above) owns the parts round
         // trip for that route instead (it may need to auto-create Parts from
         // region data first) — calling both would double-post "parts".
@@ -721,10 +740,6 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         void readAnnotations(document.uri).then((annotations) => {
           currentAnnotations = annotations;
           post({ type: "annotations", annotations: currentAnnotations });
-        });
-        void readPlanes(document.uri).then((planes) => {
-          currentPlanes = planes;
-          post({ type: "planes", planes: currentPlanes });
         });
         void this.sendMeshOptions(document.uri, post).then((options) => {
           currentMeshOptions = options;
@@ -1383,6 +1398,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
       const clean = validateEditOp(draftOp);
       if (!clean) throw new Error("The drafted operation is invalid and cannot be previewed.");
+      const planesForPreview = await readPlanes(uri).catch(() => [] as ConstructionPlane[]);
+      const resolvedDraft = resolvePlaneRefs([clean], planesForPreview).ops[0] ?? clean;
+      const resolvedOps = resolvePlaneRefs(ops, planesForPreview).ops;
       const bytes = await vscode.workspace.fs.readFile(uri);
       const quality = normalizeTessellationQuality(
         vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
@@ -1392,7 +1410,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         this.context.extensionPath,
         bytes,
         route.format as Extract<CadFormat, "step" | "iges" | "brep">,
-        [...ops, clean],
+        [...resolvedOps, resolvedDraft],
         tessellationParamsFor(quality)
       );
       post({

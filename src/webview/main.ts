@@ -26,6 +26,7 @@ import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
 import { evaluateVariables, resolveEditOps } from "../editVariables";
+import { resolvePlaneRefs } from "../planeRefs";
 import { extractIdentifiers } from "../paramExpr";
 import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } from "../toleranceBand";
 import { MeshingModel } from "./meshingModel";
@@ -245,6 +246,7 @@ let planesClipHandle: { applyDerivedPlane(n: THREE.Vector3, p: THREE.Vector3, la
 
 function renderPlanesList(): void {
   refreshMidplanePickers(); // the midplane creator's pickers must never offer a stale plane
+  try { (editsPanel as unknown as { setPlanes: (p: unknown[]) => void })?.setPlanes?.(planesModel.list()); } catch {}
   const container = document.getElementById("planes-list");
   if (!container) return;
   container.innerHTML = "";
@@ -444,10 +446,12 @@ function setupPlanesControls(): void {
 const editsModel = new EditsModel(syncEdits);
 const variablesModel = new VariablesModel(syncEdits);
 
-/** The op list with every expression re-evaluated against the current variables. */
+/** The op list with every expression re-evaluated against the current variables, then plane ids. */
 function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
   const { values } = evaluateVariables(variablesModel.list());
-  return resolveEditOps(editsModel.list(), values);
+  const { ops: variableResolved, issues: variableIssues } = resolveEditOps(editsModel.list(), values);
+  const { ops, issues: planeIssues } = resolvePlaneRefs(variableResolved, planesModel.list());
+  return { ops, issues: [...variableIssues, ...planeIssues] };
 }
 
 /** How many op-expression fields reference each variable (for delete warnings). */
@@ -472,8 +476,10 @@ function renderEditsUi(): void {
   // path.
   rebuildEntityRefIndex();
   const { values, errors } = evaluateVariables(variablesModel.list());
-  const { ops } = resolveEditOps(editsModel.list(), values);
+  const { ops: variableResolved } = resolveEditOps(editsModel.list(), values);
+  const { ops } = resolvePlaneRefs(variableResolved, planesModel.list());
   editsPanel.setVariables(values);
+  editsPanel.setPlanes(planesModel.list());
   // Pending (redo-buffer) ops ride along in chronological order so the history
   // renders as a full clickable timeline (op-history scrubbing, roadmap Tier
   // 2 item 1). They are NOT resolved here: they aren't applied yet, and the
@@ -1538,7 +1544,9 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     }
     case "mirror": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
-      return { op: withExprs({ op: "mirror", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal }) };
+      const op: any = { op: "mirror", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal };
+      if (d.planeId) op.planeId = d.planeId;
+      return { op: withExprs(op) };
     }
 
     // ── booleans (A captured via Set A, B = live Vol selection) ──
@@ -1612,17 +1620,24 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (selFaces.length === 0) return { error: "Select the face(s) to draft (Surf mode)." };
       if (!d.angleDeg || d.angleDeg <= 0 || d.angleDeg >= 90) return { error: "Draft angle must be between 0° and 90°." };
       const draft: any = { op: "draft", faces: selFaces, angleDeg: d.angleDeg };
-      if (d.planePoint && d.planeNormal) { draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
+      if (d.planeId) { draft.planeId = d.planeId; draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
+      else if (d.planePoint && d.planeNormal) { draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
       return { op: withExprs(draft) };
     }
-    case "splitByPlane":
+    case "splitByPlane": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to split." };
-      if (!d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
-      return { op: withExprs({ op: "splitByPlane", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal, keep: d.keep }) };
-    case "section":
+      if (!d.planeId && !d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
+      const op: any = { op: "splitByPlane", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal, keep: d.keep };
+      if (d.planeId) op.planeId = d.planeId;
+      return { op: withExprs(op) };
+    }
+    case "section": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to section." };
-      if (!d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
-      return { op: withExprs({ op: "section", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal }) };
+      if (!d.planeId && !d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
+      const op: any = { op: "section", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal };
+      if (d.planeId) op.planeId = d.planeId;
+      return { op: withExprs(op) };
+    }
 
     // ── holes ──
     case "addHole":
@@ -3630,6 +3645,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // Silent hydration, same contract as "parts"/"annotations".
       planesModel.load(msg.planes);
       renderPlanesList();
+      if (editsModel.list().some((o) => (o as unknown as Record<string, unknown>).planeId)) {
+        renderEditsUi();
+        if (pristineMesh) rebuildMeshModel();
+      }
       break;
 
     case "annotations":

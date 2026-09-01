@@ -31,8 +31,8 @@ export interface TranslateOp { op: "translate"; targets: string[]; vec: Vec3; }
 export interface RotateOp { op: "rotate"; targets: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; }
 /** Scale the targets about `center`; uniform scale is `[s, s, s]`. */
 export interface ScaleOp { op: "scale"; targets: string[]; center: Vec3; factors: Vec3; }
-/** Mirror the targets across the plane (`planePoint`, `planeNormal`) or the midplane of two planar `midplaneFaces` (planar, parallel — both required, mutually exclusive with the inline pair). */
-export interface MirrorOp { op: "mirror"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; }
+/** Mirror the targets across the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of two planar `midplaneFaces` (planar, parallel — three forms, mutually exclusive; `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache, overwritten at read time). */
+export interface MirrorOp { op: "mirror"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; }
 /** Combine solid sets `a` and `b` (union/subtract/intersect). */
 export interface BooleanOp { op: "boolean"; kind: "union" | "subtract" | "intersect"; a: string[]; b: string[]; }
 /** Round the selected edges with radius `radius`. */
@@ -105,14 +105,14 @@ export interface AddEllipseArcOp { op: "addEllipseArc"; center: Vec3; normal: Ve
 export interface AddHelixOp { op: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; guide?: boolean; }
 /** Hollow out the solid(s) owning `openingFaces`, removing those faces and leaving walls of `|thickness|` (negative = walls grow inward — the usual hollow; positive = outward). `join` chooses the corner style — arc (default, rounded), intersection (sharp), or tangent. At least one opening face is required: this OCCT build's ThickSolid with an empty closing list yields a plain offset solid, not a hollow (verified). */
 export interface ShellOp { op: "shell"; thickness: number; openingFaces: string[]; join?: "arc" | "intersection" | "tangent"; }
-/** Taper the selected faces by `angleDeg` around a neutral plane through `planePoint` with direction `planeNormal` (neutral plane = point+normal, pull = normal). */
-export interface DraftOp { op: "draft"; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; }
+/** Taper the selected faces by `angleDeg` around a neutral plane through `planePoint` with direction `planeNormal` (neutral plane = point+normal, pull = normal) or the saved construction plane `planeId` (`plane-N`); `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. Omitted = each face's own plane. */
+export interface DraftOp { op: "draft"; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; }
 /** Stadium slot around an existing edge: width across, length = edge length + width. */
 export interface AddEdgeSlotOp { op: "addEdgeSlot"; edge: string; width: number; }
-/** Split the target solids by the plane (`planePoint`, `planeNormal`) or the midplane of two planar `midplaneFaces`, keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. */
-export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; keep: "both" | "positive" | "negative"; }
-/** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`) or the midplane of `midplaneFaces` as a standalone face (under "Sketches"), leaving the solids untouched. */
-export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; }
+/** Split the target solids by the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of two planar `midplaneFaces`, keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. */
+export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; keep: "both" | "positive" | "negative"; }
+/** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of `midplaneFaces` as a standalone face (under "Sketches"), leaving the solids untouched. `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. */
+export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; }
 /** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
 export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
 /** Build a new solid by sewing the selected faces into a closed shell. */
@@ -276,6 +276,12 @@ function asMidaxisPair(v: unknown): [string, string] | null {
   return [v[0], v[1]];
 }
 
+function asPlaneId(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  if (!/^plane-\d+$/.test(v)) return null;
+  return v;
+}
+
 /** Cap on `exprs` entries per op / expression length — a hand-edited sidecar can't balloon memory. */
 const MAX_EXPRS_PER_OP = 64;
 const MAX_EXPR_LENGTH = 256;
@@ -354,11 +360,26 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const targets = asIdArray(o.targets);
       if (!targets) return null;
       const hasMidplane = o.midplaneFaces !== undefined;
+      const hasPlaneId = o.planeId !== undefined;
+      if (hasMidplane && hasPlaneId) return null;
       if (hasMidplane) {
         const midplaneFaces = asFaceIdPair(o.midplaneFaces);
         if (!midplaneFaces) return null;
-        if (o.planePoint !== undefined || o.planeNormal !== undefined) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined || o.planeId !== undefined) return null;
         return { op: "mirror", targets, midplaneFaces } as MirrorOp;
+      }
+      if (hasPlaneId) {
+        const planeId = asPlaneId(o.planeId);
+        if (!planeId) return null;
+        if (o.midplaneFaces !== undefined) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined) {
+          if (o.planePoint === undefined || o.planeNormal === undefined) return null;
+          const planePoint = asVec3(o.planePoint);
+          const planeNormal = asNonZeroVec3(o.planeNormal);
+          if (!planePoint || !planeNormal) return null;
+          return { op: "mirror", targets, planeId, planePoint, planeNormal } as MirrorOp;
+        }
+        return { op: "mirror", targets, planeId } as MirrorOp;
       }
       const planePoint = asVec3(o.planePoint);
       const planeNormal = asNonZeroVec3(o.planeNormal);
@@ -434,6 +455,19 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "draft": {
       const faces = asIdArray(o.faces);
       if (!faces || !isFiniteNumber(o.angleDeg) || o.angleDeg <= 0 || o.angleDeg >= 90) return null;
+      const hasPlaneId = o.planeId !== undefined;
+      if (hasPlaneId) {
+        const planeId = asPlaneId(o.planeId);
+        if (!planeId) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined) {
+          if (o.planePoint === undefined || o.planeNormal === undefined) return null;
+          const planePoint = asVec3(o.planePoint);
+          const planeNormal = asNonZeroVec3(o.planeNormal);
+          if (!planePoint || !planeNormal) return null;
+          return { op: "draft", faces, angleDeg: o.angleDeg as number, planeId, planePoint, planeNormal } as DraftOp;
+        }
+        return { op: "draft", faces, angleDeg: o.angleDeg as number, planeId } as DraftOp;
+      }
       if (o.planePoint !== undefined && !asVec3(o.planePoint)) return null;
       if (o.planeNormal !== undefined && !asNonZeroVec3(o.planeNormal)) return null;
       if ((o.planePoint === undefined) !== (o.planeNormal === undefined)) return null;
@@ -452,11 +486,25 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const ok = keep === "both" || keep === "positive" || keep === "negative";
       if (!ok) return null;
       const hasMidplane = o.midplaneFaces !== undefined;
+      const hasPlaneId = o.planeId !== undefined;
+      if (hasMidplane && hasPlaneId) return null;
       if (hasMidplane) {
         const midplaneFaces = asFaceIdPair(o.midplaneFaces);
         if (!midplaneFaces) return null;
-        if (o.planePoint !== undefined || o.planeNormal !== undefined) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined || o.planeId !== undefined) return null;
         return { op: "splitByPlane", targets, midplaneFaces, keep } as SplitByPlaneOp;
+      }
+      if (hasPlaneId) {
+        const planeId = asPlaneId(o.planeId);
+        if (!planeId) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined) {
+          if (o.planePoint === undefined || o.planeNormal === undefined) return null;
+          const planePoint = asVec3(o.planePoint);
+          const planeNormal = asNonZeroVec3(o.planeNormal);
+          if (!planePoint || !planeNormal) return null;
+          return { op: "splitByPlane", targets, planeId, planePoint, planeNormal, keep } as SplitByPlaneOp;
+        }
+        return { op: "splitByPlane", targets, planeId, keep } as SplitByPlaneOp;
       }
       const planePoint = asVec3(o.planePoint);
       const planeNormal = asNonZeroVec3(o.planeNormal);
@@ -466,11 +514,25 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const targets = asIdArray(o.targets);
       if (!targets) return null;
       const hasMidplane = o.midplaneFaces !== undefined;
+      const hasPlaneId = o.planeId !== undefined;
+      if (hasMidplane && hasPlaneId) return null;
       if (hasMidplane) {
         const midplaneFaces = asFaceIdPair(o.midplaneFaces);
         if (!midplaneFaces) return null;
-        if (o.planePoint !== undefined || o.planeNormal !== undefined) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined || o.planeId !== undefined) return null;
         return { op: "section", targets, midplaneFaces } as SectionOp;
+      }
+      if (hasPlaneId) {
+        const planeId = asPlaneId(o.planeId);
+        if (!planeId) return null;
+        if (o.planePoint !== undefined || o.planeNormal !== undefined) {
+          if (o.planePoint === undefined || o.planeNormal === undefined) return null;
+          const planePoint = asVec3(o.planePoint);
+          const planeNormal = asNonZeroVec3(o.planeNormal);
+          if (!planePoint || !planeNormal) return null;
+          return { op: "section", targets, planeId, planePoint, planeNormal } as SectionOp;
+        }
+        return { op: "section", targets, planeId } as SectionOp;
       }
       const planePoint = asVec3(o.planePoint);
       const planeNormal = asNonZeroVec3(o.planeNormal);
