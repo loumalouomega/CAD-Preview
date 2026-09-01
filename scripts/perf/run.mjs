@@ -111,7 +111,21 @@ function notify(method, params) {
 }
 
 async function call(name, args) {
-  const result = await request("tools/call", { name, arguments: args });
+  let result = await request("tools/call", { name, arguments: args });
+  // A WASM abort in the kernel worker surfaces as "… the kernel has been
+  // reset; try the operation again." (all four services' fault vocabularies
+  // — including the `wasmtable` signature this harness itself uncovered —
+  // reset the singleton before rethrowing). The kernel-client transparently
+  // respawns a fresh worker for the NEXT call, so one clean retry recovers.
+  // Retrying is safe here without a state-reset callback (the reason
+  // mcp-smoke's `callWithCleanRetry` needs one): this harness's two call
+  // types are read-only benchmarking — `load_model`/`generate_mesh` never
+  // persist sidecar state, so the aborted attempt cannot leave a partial
+  // write the retry would double-apply.
+  if (/kernel has been reset/i.test(result.content?.[0]?.text ?? "")) {
+    console.error(`  (kernel reset mid-${name} — retrying once on a fresh worker)`);
+    result = await request("tools/call", { name, arguments: args });
+  }
   if (result.isError) fail(`${name} returned an error: ${result.content?.[0]?.text ?? ""}`);
   return JSON.parse(result.content?.[0]?.text ?? "");
 }

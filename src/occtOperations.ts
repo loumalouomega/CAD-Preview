@@ -1,4 +1,7 @@
 import type { EditOp, Vec3, OpOutcome, OutcomeFail } from "./editOps";
+import { TOPOLOGY_CHANGING_OPS } from "./editOps";
+import type { OpBucket } from "./opBuckets";
+import { PRODUCED_ROLE } from "./opBuckets";
 // TYPE-ONLY, and that is load-bearing: `entityFacts.ts` imports this module
 // at runtime, so a value import here would close a genuine require() cycle in
 // the CJS bundle.
@@ -138,7 +141,7 @@ export function collectGuideIds(oc: any, shape: any, collector: GuideCollector, 
  * applied via `BRepBuilderAPI_Transform_2(shape, trsf, true).Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[], guideCollector?: GuideCollector): any {
+export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[], guideCollector?: GuideCollector, opBuckets?: OpBucket[]): any {
   let shape = baseShape;
   for (let index = 0; index < ops.length; index++) {
     const op = ops[index];
@@ -168,9 +171,119 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
     if (outcome.applied && shape === before) {
       fail("returned the model unchanged");
     }
+    if (opBuckets !== undefined && outcome.applied && shape !== before && TOPOLOGY_CHANGING_OPS.has(op.op)) {
+      const bucket = collectBucketForOp(oc, before, shape, index, op);
+      if (bucket) opBuckets.push(bucket);
+    }
     outcomes?.push(outcome);
   }
   return shape;
+}
+
+/**
+ * Classifies one just-applied topology-changing op's produced faces into an
+ * {@link OpBucket} — the OCCT half of `opBuckets.ts`. Mechanism: a
+ * before/after face-set diff (`HashCode` bucket + `IsSame`, the established
+ * dedup technique) finds the NEW faces; per-kind knowledge names them.
+ *
+ * The `TOPOLOGY_CHANGING_OPS` gate in {@link applyEditsBRep} is load-bearing
+ * for correctness, not just cost: rigid transforms (`translate`/`rotate`/…)
+ * run `BRepBuilderAPI_Transform_2(..., copy=true)`, which creates genuinely
+ * new TShapes — a diff across one would report EVERY face as "produced".
+ *
+ * Role semantics, per kind (all verified against the live WASM):
+ * - `extrude` and `revolve` get a `startCap` role: `BRepPrimAPI_MakePrism_1`/
+ *   `MakeRevol_1`'s `Copy=false` reuses the profile face object as the start
+ *   cap (probe-confirmed `IsSame` hit for both), so the profile face's id in
+ *   the AFTER enumeration is recorded. With `Copy=false` that face is the
+ *   SAME TShape as the operand it came from, so it can appear at two
+ *   enumeration positions (its original body's and the new solid's) — the
+ *   first match wins; both ids resolve to the same live face.
+ * - `extrude` additionally splits its produced set geometrically: `endCap`
+ *   is the produced face farthest along the extrusion direction (probe: the
+ *   cap centre sits at the profile plane + length), everything else `side`.
+ * - Every other kind names its whole produced set from `PRODUCED_ROLE`
+ *   (`band`/`inner`/`wall`/`cutFace`/`sectionFace`/`copies`/`body`), or the
+ *   generic `produced` when the table has no entry. **`band` (fillet/chamfer/
+ *   draft) and the boolean/rebuild roles include REBUILT faces, not just
+ *   genuinely-new ones** — probe-verified: filleting one box edge reports 5
+ *   faces (1 new cylinder + 4 rebuilt adjacent planes), because rebuilding a
+ *   shrunken face creates a new TShape the diff correctly catches. Those
+ *   rebuilt faces drift positionally exactly like new ones, so recording them
+ *   is the point; the role name is the op's dominant effect, not a claim
+ *   that every listed face is brand-new.
+ * - An op whose diff finds no new faces (e.g. `addPoint` — a vertex, no
+ *   faces) produces no bucket at all. Face-only: wireframe ops
+ *   (`addLine`/`addArc`/…) record nothing in Phase 1.
+ *
+ * Recorded ids are the AFTER enumeration's `face-N` positions — i.e. valid
+ * against the model state at this op's own step, not necessarily against the
+ * final shape (later ops renumber). That is the documented Phase 1 contract;
+ * re-resolution against a newer shape is prefix-replay work (Phase 2).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collectBucketForOp(oc: any, before: any, after: any, index: number, op: EditOp): OpBucket | null {
+  const tmp: Array<{ delete(): void }> = [];
+  try {
+    const beforeFaces = collectFaces(oc, before, tmp);
+    const afterFaces = collectFaces(oc, after, tmp);
+    const beforeBuckets = new Map<number, any[]>();
+    for (const f of beforeFaces) {
+      const h = f.HashCode(HASH_UPPER);
+      let b = beforeBuckets.get(h);
+      if (!b) { b = []; beforeBuckets.set(h, b); }
+      b.push(f);
+    }
+    // Produced = after faces with no `IsSame` partner in before. `startCap`
+    // is the inverse: a before face (the extrude's profile) still present in
+    // after — only ever consulted for extrude below.
+    const producedIdx: number[] = [];
+    for (let i = 0; i < afterFaces.length; i++) {
+      const f = afterFaces[i];
+      const h = f.HashCode(HASH_UPPER);
+      const bucket = beforeBuckets.get(h);
+      let found = false;
+      if (bucket) for (const bf of bucket) if (bf.IsSame(f)) { found = true; break; }
+      if (!found) producedIdx.push(i);
+    }
+    const kind = op.op;
+    const roles: Record<string, string[]> = {};
+    if (kind === "extrude" || kind === "revolve") {
+      const profileFace = collectFaces(oc, before, tmp)[faceIndex((op as { profile: string }).profile)];
+      if (profileFace) {
+        for (let i = 0; i < afterFaces.length; i++) {
+          if (afterFaces[i].IsSame(profileFace)) { roles.startCap = [`face-${i}`]; break; }
+        }
+      }
+      if (kind === "extrude") {
+        const [dx, dy, dz] = (op as { dir: Vec3 }).dir;
+        const len = Math.hypot(dx, dy, dz) || 1;
+        let bestIdx = -1;
+        let bestDot = -Infinity;
+        const remaining: number[] = [];
+        for (const i of producedIdx) {
+          const c = bboxCenter(oc, afterFaces[i], tmp);
+          const dot = (c[0] * dx + c[1] * dy + c[2] * dz) / len;
+          if (dot > bestDot) { bestDot = dot; bestIdx = i; }
+        }
+        for (const i of producedIdx) if (i !== bestIdx) remaining.push(i);
+        if (bestIdx >= 0) roles.endCap = [`face-${bestIdx}`];
+        if (remaining.length > 0) roles.side = remaining.map((i) => `face-${i}`);
+      } else if (producedIdx.length > 0) {
+        roles.produced = producedIdx.map((i) => `face-${i}`);
+      }
+    } else {
+      const role = PRODUCED_ROLE[kind] ?? "produced";
+      if (producedIdx.length > 0) roles[role] = producedIdx.map((i) => `face-${i}`);
+    }
+    if (Object.keys(roles).length === 0) return null;
+    return { op: index, kind, roles };
+  } finally {
+    // Enumerated handles are `TopoDS.Face_1` wrappers around live sub-shapes
+    // — deleting the wrappers (never the shapes themselves) right after
+    // correlation is the established `guideTmp` pattern (see occtService.ts).
+    for (let i = tmp.length - 1; i >= 0; i--) { try { tmp[i].delete(); } catch { /* ignore */ } }
+  }
 }
 
 /** A function that returns a transformed copy of the shape/solid it is given. */

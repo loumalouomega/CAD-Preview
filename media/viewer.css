@@ -1863,6 +1863,33 @@ input[type="range"].meshing-slider:focus {
   cursor: help;
 }
 
+/* Produced-face bucket chip (roadmap "Selector synthesis" Phase 1): a small
+ * "+N" per history row whose op produced faces — tooltip lists the roles +
+ * recorded ids, click transiently highlights them in the viewport. Accent
+ * matches the selection highlight's family so "this chip paints faces" reads
+ * at a glance. */
+.edit-bucket {
+  flex-shrink: 0;
+  margin-left: auto;
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 4px;
+  color: var(--vscode-descriptionForeground, #999);
+  background: transparent;
+  border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.35));
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+}
+.edit-row:hover .edit-bucket { opacity: 0.8; }
+.edit-bucket:hover { opacity: 1 !important; color: var(--vscode-foreground, #ccc); }
+.edit-bucket.active {
+  opacity: 1;
+  color: var(--vscode-focusBorder, #3794ff);
+  border-color: var(--vscode-focusBorder, #3794ff);
+}
+
 #edits-compose {
   padding: 6px 8px;
   border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);

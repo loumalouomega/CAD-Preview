@@ -485,7 +485,7 @@ function renderEditsUi(): void {
   // 2 item 1). They are NOT resolved here: they aren't applied yet, and the
   // resolve-on-read contract re-evaluates them at every future consumption
   // point anyway.
-  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList());
+  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
 }
 
@@ -496,6 +496,11 @@ function renderEditsUi(): void {
  * showing an unchanged model. Cleared whenever a genuinely new model loads
  * before its fresh outcomes arrive (the geometry post always carries them). */
 let lastOpOutcomes: OpOutcome[] | null = null;
+/** The most recent replay's per-op produced-face classification buckets (see
+ * `src/opBuckets.ts`) — set by the B-rep `"geometry"` handler, cleared by
+ * `rebuildMeshModel()` (mesh sources have no B-rep buckets). Consumed by
+ * `renderEditsUi()` so history rows can show +N chips. */
+let lastOpBuckets: import("../opBuckets").OpBucket[] | null = null;
 /** Guide-entity ids from the last B-rep `geometry` post — construction
  * geometry the feature ops (extrude/revolve/sweep/loft/buildSurface/
  * buildVolume) refuse as operands, mirrored host-side by the same rule. */
@@ -781,6 +786,15 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   // One splice + one onChange/editsChanged/re-tessellate round trip per
   // click — never a looped undo()/redo() sequence (op-history scrubbing).
   onJumpTo: (index) => editsModel.jumpTo(index),
+  // Transient highlight of a history-row bucket chip's faces (roadmap
+  // "Selector synthesis" Phase 1) — goes through `renderSelection` directly,
+  // never into the SelectionSet, so moving on restores the real selection by
+  // re-running `renderHighlight()` (the selection-groups context menu's
+  // hover-preview precedent). Bucket ids are all faces in Phase 1.
+  onHighlightBucket: (ids) => {
+    if (!ids || ids.length === 0) { renderHighlight(); return; }
+    viewer.renderSelection(ids.map((entityId) => ({ entityType: "surface" as const, entityId })));
+  },
   onApplyTransform: (draft) => {
     const id = draft.kind === "translate" ? "translate" : draft.kind === "rotate" ? "rotate" : draft.kind === "scale" ? "scale" : "mirror";
     const resolved = buildOpForPanel(id, draft);
@@ -1878,6 +1892,7 @@ function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   const outcomes: OpOutcome[] = [];
   const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
+  lastOpBuckets = null; // produced-face classification is B-rep only (no host replay for meshes)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model, opts);
   cancelOpPreview(); // setModel() already cleared the overlay; this also kills any pending/in-flight preview request
@@ -3600,6 +3615,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         hideInspectorCard(); // ditto — its facts describe the just-replaced shape
         hideHoverTip();
         lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
+        lastOpBuckets = msg.opBuckets ?? null; // fresh produced-face classification for the Edits history chips
         guideEntityIds.clear();
         for (const id of msg.guideIds ?? []) guideEntityIds.add(id); // construction geometry: dimmed, refused as feature operands
         viewer.setGuideIds(msg.guideIds ?? []);

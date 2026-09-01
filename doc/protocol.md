@@ -337,7 +337,7 @@ interface MeshRegionFit {              // src/meshRegionFit.ts
 
 ```typescript
 type HostToWebview =
-  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; guideIds?: string[]; autoFit?: boolean }
+  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; guideIds?: string[]; opBuckets?: OpBucket[]; autoFit?: boolean }
   | { type: 'tree';     root: TreeNode; sourceUnit?: string }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | {
@@ -402,6 +402,8 @@ The optional `autoFit` flag (roadmap "Render on demand, not every frame") contro
 
 The optional `guideIds` array (roadmap item 10, "Cheap thin-wrapper ops") lists the `face-N`/`edge-N`/`point-N` ids whose creating op carried `guide: true` — construction geometry. The webview dims them (a 0.35 opacity multiplicand) and refuses them as operands for the six profile-resolution ops; absent/empty when no guide ops exist.
 
+The optional `opBuckets` array (roadmap "Selector synthesis" Phase 1) carries one bucket per topology-changing op that produced faces — `{op, kind, roles}` where `roles` maps role names to `face-N` id arrays. `extrude` gets the canonical three-way split (`startCap` via `MakePrism`'s `Copy=false` identity reuse, `endCap` farthest along the extrusion direction, `side` the rest); every other kind names its whole produced set from `PRODUCED_ROLE` (`band`/`inner`/`wall`/`cutFace`/`sectionFace`/`copies`/`body`), or the generic `produced` when the table has no entry. **Recorded ids are valid against the model state at their own op's step** — later ops may renumber them; the Edits-history chip tooltip says so. A gracefully-skipped op produces no bucket. See `src/opBuckets.ts`.
+
 ```json
 {
   "type": "geometry",
@@ -416,6 +418,10 @@ The optional `guideIds` array (roadmap item 10, "Cheap thin-wrapper ops") lists 
     { "position": "DDDD...", "pointId": "point-0" }
   ],
   "guideIds": ["edge-110"],
+  "opBuckets": [
+    { "op": 0, "kind": "addBox", "roles": { "body": ["face-36", "face-37", "face-38", "face-39", "face-40", "face-41"] } },
+    { "op": 1, "kind": "extrude", "roles": { "startCap": ["face-42"], "endCap": ["face-44"], "side": ["face-43"] } }
+  ],
   "opOutcomes": [
     { "index": 0, "kind": "addBox", "applied": true },
     { "index": 1, "kind": "fillet", "applied": false,

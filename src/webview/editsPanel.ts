@@ -1,6 +1,8 @@
 import type { EditOp, ExprMap, Vec3, OpOutcome } from "../editOps";
 import { GUIDE_KINDS } from "../editOps";
 import type { ConstructionPlane } from "../protocol";
+import type { OpBucket } from "../opBuckets";
+import { bucketSummary } from "../opBuckets";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
@@ -175,6 +177,11 @@ export interface EditsPanelCallbacks {
    * pending preview is discarded. Fired BEFORE the replacement form renders,
    * so a stale preview can never outlive the form it came from. */
   onPreviewCancel: () => void;
+  /** Transiently highlights a bucket chip's face ids in the viewport (roadmap
+   * "Selector synthesis" Phase 1) — `null` clears the highlight and restores
+   * the real selection's rendering. The ids are `face-N` strings; the wiring
+   * maps them to `{entityType: "surface"}` entities. */
+  onHighlightBucket: (ids: string[] | null) => void;
 }
 
 type TabId = "geometry" | "edit";
@@ -217,6 +224,10 @@ export class EditsPanel {
   private activeTab: TabId = "geometry";
   private activeSubtab: SubtabId = "2d";
   private activeOp: PanelOpId | null = null;
+  /** The op whose history-row bucket chip is currently highlighted in the
+   * viewport (click-toggle). Reset on every render — a model rebuild already
+   * restores the real selection's rendering via `refreshColors()`. */
+  private activeBucketOp: number | null = null;
   /** Panel-local mirror of the captured boolean-A count (display only; the ids
    * themselves live in the wiring). Survives form re-renders. */
   private booleanACount = 0;
@@ -402,13 +413,26 @@ export class EditsPanel {
    * `redoOps` must be in CHRONOLOGICAL order (`EditsModel.redoList()`), i.e.
    * the order the pending ops would re-apply — matching the timeline indices
    * `onJumpTo` receives.
+   *
+   * `opBuckets` (roadmap "Selector synthesis" Phase 1 — the most recent
+   * replay's per-op produced-face classification, see `src/opBuckets.ts`)
+   * gives applied rows a `+N` chip: title = the role summary
+   * (`bucketSummary`) plus the recorded ids, click = transiently highlight
+   * those faces via `onHighlightBucket` (click again to clear). The ids are
+   * valid against the model state at their own op's step — later ops may
+   * have renumbered them — so the chip tooltip says so.
    */
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[]): void {
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null): void {
     this.undoBtn.disabled = !canUndo;
     this.redoBtn.disabled = !canRedo;
     this.clearBtn.disabled = ops.length === 0 && (redoOps?.length ?? 0) === 0;
 
     const outcomeOf = new Map((opOutcomes ?? []).map((o) => [o.index, o]));
+    const bucketOf = new Map((opBuckets ?? []).map((b) => [b.op, b]));
+    // A re-render resets the chip toggle — most render triggers coincide with
+    // a model rebuild + `refreshColors()`, which already restores the real
+    // selection's rendering.
+    this.activeBucketOp = null;
 
     this.body.innerHTML = "";
     if (ops.length === 0 && (redoOps?.length ?? 0) === 0) {
@@ -424,7 +448,7 @@ export class EditsPanel {
     const row = (
       op: EditOp,
       i: number,
-      opts: { pending: boolean; outcome?: OpOutcome }
+      opts: { pending: boolean; outcome?: OpOutcome; bucket?: OpBucket }
     ): void => {
       const li = document.createElement("li");
       li.className = opts.pending ? "edit-row edit-row-pending" : "edit-row";
@@ -463,6 +487,31 @@ export class EditsPanel {
           warn.textContent = "⚠";
           li.appendChild(warn);
         }
+        const bucket = opts.bucket;
+        if (bucket) {
+          const allIds = Object.values(bucket.roles).flat();
+          const chip = document.createElement("button");
+          chip.className = "edit-bucket";
+          chip.textContent = `+${allIds.length}`;
+          const summary = bucketSummary(bucket.roles);
+          chip.title = `Produced: ${summary}\n(${allIds.join(", ")})\nIds are as of this op's own step — later edits may renumber them. Click to highlight.`;
+          chip.addEventListener("click", (e) => {
+            e.stopPropagation(); // highlighting must not also jump to this row
+            if (this.activeBucketOp === bucket.op) {
+              this.activeBucketOp = null;
+              chip.classList.remove("active");
+              this.cb.onHighlightBucket(null);
+            } else {
+              // Only one chip highlights at a time — clear any previous one's
+              // visual state directly (rows aren't re-rendered on a click).
+              for (const el of this.body.querySelectorAll(".edit-bucket.active")) el.classList.remove("active");
+              this.activeBucketOp = bucket.op;
+              chip.classList.add("active");
+              this.cb.onHighlightBucket(allIds);
+            }
+          });
+          li.appendChild(chip);
+        }
         li.appendChild(del);
       } else {
         const redoMark = document.createElement("span");
@@ -472,7 +521,7 @@ export class EditsPanel {
       }
       ol.appendChild(li);
     };
-    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i) }));
+    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i) }));
     (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
   }

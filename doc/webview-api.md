@@ -1046,13 +1046,15 @@ Manages the `#edits-panel` DOM: two top-level tabs — **GEOMETRY** (creation op
 ```typescript
 class EditsPanel {
   constructor(panel: HTMLElement, cb: EditsPanelCallbacks)
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null): void
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null): void
   setBRepOnly(enabled: boolean): void
   setVariables(values: Record<string, number>): void  // evaluated values for expression fields
 }
 ```
 
 **Replay-outcome markers:** the optional `opOutcomes` (the most recent replay's per-op results — the B-rep path's arrive on the `"geometry"` message, the mesh path's are computed locally in `rebuildMeshModel()`; both feed `main.ts`'s shared `lastOpOutcomes` state) marks an op whose replay gracefully skipped: its history row gets a dimmed style plus a ⚠ marker whose tooltip carries the diagnostic and hint (`roadmap "A failed edit op is indistinguishable from one that did nothing", closed`). Rows with no matching outcome render unmarked.
+
+**Produced-face bucket chips (roadmap "Selector synthesis" Phase 1):** the optional `opBuckets` (B-rep only — `rebuildMeshModel()` clears the state, since mesh sources have no host replay) gives an applied row whose op produced faces a small `+N` chip (`.edit-bucket`, revealed on hover): the tooltip lists the role summary (`bucketSummary` — e.g. `start cap ×1, end cap ×1, side walls ×4`) plus the recorded `face-N` ids and a note that ids are as of that op's own step; clicking a chip transiently highlights those faces in the viewport via the new `onHighlightBucket(ids | null)` callback — `main.ts` maps the ids to `{entityType: "surface"}` entities and goes through `viewer.renderSelection()` directly, **never** into the `SelectionSet`, so moving on restores the real selection by re-running `renderHighlight()` (the selection-groups context menu's hover-preview precedent). Clicking the active chip again clears. Only one chip highlights at a time; a re-render resets the toggle (most triggers coincide with a model rebuild + `refreshColors()`, which already restores the real selection's rendering).
 
 **Expression fields:** every numeric input is `type="text"` (`inputmode= decimal`) and accepts either a plain number or an expression over the document's variables (`L*2`). The field readers (`readNum`/`readVec`/`rowVec`) evaluate non-numeric text against `setVariables`' values and side-collect the raw strings (keyed by op field path — `length`, `size[1]`, `points[2][0]`) into a pending `ExprMap`; the callbacks are **wrapped once in the constructor** so every apply transparently attaches the collected map to the outgoing draft as `draft.exprs` — or aborts with an inline `.expr-error-msg` when an expression failed — leaving the ~40 per-op apply closures untouched. `main.ts` copies `draft.exprs` onto the pushed op (remapping fillet/chamfer's shared `amount` field to the op's real `radius`/`distance` key).
 

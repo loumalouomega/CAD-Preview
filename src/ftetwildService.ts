@@ -93,7 +93,7 @@ export function resetFtetwild(): void {
  * staying self-contained in its own service file.
  */
 function isFtetwildWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message);
 }
 
 function resetFtetwildIfAbort(err: unknown): boolean {

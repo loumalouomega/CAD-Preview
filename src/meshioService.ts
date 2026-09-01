@@ -95,7 +95,7 @@ export function resetMeshio(): void {
  * each kernel's fault handling staying self-contained in its own service file.
  */
 function isMeshioWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message);
 }
 
 /**

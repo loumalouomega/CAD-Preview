@@ -524,6 +524,7 @@ function entitySummary(result: BRepResult) {
     edgeIds: result.edges.length > 0 ? `${result.edges[0].edgeId} … ${result.edges[result.edges.length - 1].edgeId}` : null,
     pointCount: result.points.length,
     guideIds: (result as any).guideIds ?? [],
+    opBuckets: (result as any).opBuckets ?? [],
     bbox: bboxOf(result),
   };
 }

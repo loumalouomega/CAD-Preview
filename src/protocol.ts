@@ -218,6 +218,12 @@ export type HostToWebview =
        * profile operands for feature ops (roadmap item 10). Absent/empty
        * when no guide ops. */
       guideIds?: string[];
+      /** Build-time classification buckets (roadmap "Selector synthesis"
+       * Phase 1): per-op classification of the faces each topology-changing
+       * op produced (roles like `endCap`/`band`/`copies`), keyed by op
+       * index. Ids are valid against the model state at their own op's
+       * step — later ops may renumber them. See `src/opBuckets.ts`. */
+      opBuckets?: import("./opBuckets").OpBucket[];
       /**
        * When `false`, the viewer must always re-frame the new model, even if
        * its bounds would otherwise be considered contained by the last framing

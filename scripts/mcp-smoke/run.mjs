@@ -269,6 +269,16 @@ try {
   assert(applied.applied === 1 && applied.rejected === 1, "apply_edit_ops accepts the box, rejects the malformed op");
   assert(applied.model.solids.length === 2, "post-replay inventory shows 2 solids");
 
+  // Op buckets (roadmap "Selector synthesis" Phase 1) — the applied addBox
+  // classifies as one bucket with role `body` over its 6 faces; the rejected
+  // malformed op (never applied) contributes nothing.
+  {
+    const buckets = applied.model.opBuckets ?? [];
+    assert(buckets.length === 1 && buckets[0].op === 0 && buckets[0].kind === "addBox", `load_model/apply_edit_ops classify the addBox as one bucket (got ${JSON.stringify(buckets.map((b) => b.kind))})`);
+    assert(Array.isArray(buckets[0].roles.body) && buckets[0].roles.body.length === 6, `the addBox bucket's body role covers exactly its 6 faces (got ${buckets[0].roles.body?.length})`);
+    assert(buckets[0].roles.body.every((id) => /^face-\d+$/.test(id)), "bucket ids are face-N strings");
+  }
+
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
 
@@ -3346,6 +3356,26 @@ try {
   });
   assert(controlExtrude.applied === 1 && controlExtrude.model.solids.length === 4, `the non-guide control profile extrudes fine (${controlExtrude.model.solids.length} solids)`);
 
+  // Op buckets for the control extrude: the response's buckets cover the
+  // whole replayed stack (addBox body ×6, addLine produces no faces so no
+  // bucket, two circle profiles body ×1 each) and the extrude itself gets
+  // the canonical three-way split — startCap (the profile face's id, via
+  // MakePrism's Copy=false identity reuse), endCap (the produced face
+  // farthest along the extrusion direction), side (the cylinder wall).
+  {
+    const buckets = controlExtrude.model.opBuckets ?? [];
+    const byKind = Object.fromEntries(buckets.map((b) => [b.kind, b]));
+    assert(byKind.addBox && byKind.addBox.roles.body?.length === 6, `the fixture's addBox bucket classifies (body ×${byKind.addBox?.roles?.body?.length})`);
+    assert(byKind.addCircleProfile && byKind.addCircleProfile.roles.body?.length === 1, `the circle profile bucket classifies (body ×${byKind.addCircleProfile?.roles?.body?.length})`);
+    assert(!byKind.addLine, "addLine produces no bucket (a wireframe op makes no faces)");
+    const ex = buckets.find((b) => b.kind === "extrude");
+    assert(ex, "the extrude op has a bucket");
+    assert(ex.roles.startCap?.length === 1, `extrude startCap via Copy=false identity reuse (got ${JSON.stringify(ex.roles.startCap)})`);
+    assert(ex.roles.endCap?.length === 1, `extrude endCap farthest-along-dir (got ${JSON.stringify(ex.roles.endCap)})`);
+    assert(ex.roles.side?.length === 1, `extrude side walls = the cylinder (got ${JSON.stringify(ex.roles.side)})`);
+    assert(!ex.roles.endCap.some((id) => ex.roles.startCap.includes(id) || ex.roles.side.includes(id)), "extrude roles are disjoint");
+  }
+
   // midplaneFaces mirror: mirror the bull across the midplane of the box's
   // two x faces (x=80) — cross-checked byte-equal against the inline-vector
   // mirror of the SAME computed plane on a second copy.
@@ -3504,6 +3534,12 @@ try {
     doomed.model && doomed.model.solids.length === 2,
     `the neighboring addBox still applied despite the doomed fillet (${doomed.model?.solids.length} solids)`
   );
+  // Op buckets: the applied addBox classifies; the gracefully-SKIPPED fillet
+  // produces no bucket at all (a skip never fabricates a classification).
+  {
+    const buckets = doomed.model.opBuckets ?? [];
+    assert(buckets.length === 1 && buckets[0].kind === "addBox" && buckets[0].roles.body?.length === 6, `the skipped fillet contributes no bucket; only the addBox classifies (got ${JSON.stringify(buckets.map((b) => b.kind))})`);
+  }
   // Reloading the same document surfaces the persisted-but-skipped op immediately.
   const doomedReload = await call("load_model", { path: doomedModel });
   assert(

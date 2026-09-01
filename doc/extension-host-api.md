@@ -719,8 +719,13 @@ interface BRepResult {
   edges: EdgeLine[]      // from meshExtract.ts (deduped edge polylines)
   points: PointEntity[]  // from meshExtract.ts (every vertex in the shape)
   tree: TreeNode         // from protocol.ts
+  opOutcomes: OpOutcome[]            // per-op replay results (editOps.ts)
+  guideIds: string[]                 // construction-geometry ids (guide: true ops)
+  opBuckets: OpBucket[]              // per-op produced-face classification (opBuckets.ts)
 }
 ```
+
+`opBuckets` (roadmap "Selector synthesis" Phase 1): one `{op, kind, roles}` entry per topology-changing op that produced faces — the mechanism is `occtOperations.ts`'s `collectBucketForOp()`, a before/after face-set diff (`HashCode` bucket + `IsSame`) run at each op boundary of the `applyEditsBRep()` fold, gated on `TOPOLOGY_CHANGING_OPS` (rigid transforms' `copy=true` rebuilds every TShape, so an ungated diff would report the whole model as "produced"). Roles: `extrude`/`revolve` record `startCap` via the profile face's `Copy=false` identity reuse (live-verified `IsSame`), `extrude` additionally splits `endCap` (farthest along the extrusion direction) from `side`; every other kind names its whole produced set from `opBuckets.ts`'s `PRODUCED_ROLE` (`band`/`inner`/`wall`/`cutFace`/`sectionFace`/`copies`/`body`, generic `produced` otherwise). **Recorded ids describe the model state at that op's own step** — later topology-changing ops renumber them; re-resolution against a newer shape is prefix-replay work deferred to Phase 2. Recorded roles include REBUILT faces, not just brand-new ones (verified live: one box-edge fillet reports 5 faces — 1 new cylinder + 4 rebuilt adjacent planes); those rebuilt faces drift positionally exactly like new ones, which is the point. Wireframe ops and face-less ops (`addPoint`) record nothing; a gracefully-skipped op produces no bucket. The cached path merges prefix+suffix buckets on incremental append exactly like `opOutcomes`.
 
 ### Functions
 
