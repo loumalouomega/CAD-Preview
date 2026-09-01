@@ -50,6 +50,7 @@ import {
   compareModelsTool,
   checkMeshHealthTool,
   recognizePrimitivesTool,
+  decomposeToPrimitivesTool,
   fitMeshRegionTool,
   transformMeshTool,
   promoteMeshToBrepTool,
@@ -511,6 +512,38 @@ server.registerTool(
     inputSchema: { path: modelPath },
   },
   wrap((args: { path: string }) => recognizePrimitivesTool(ctx, args))
+);
+
+server.registerTool(
+  "decompose_to_primitives",
+  {
+    description:
+      "Decompose an imported B-rep model into parametric primitives (Phase 3 of roadmap item 7). For each solid recognized as a box/sphere/cylinder/cone/torus (see recognize_primitives' candidate + fitResidual), emit a creation op (addBox/addSphere/etc.) with each dimension bound to a named variable via exprs — the first programmatic producer of expression strings in this repo. Optionally writes a brand-new STEP/IGES/BREP file at outputPath containing exactly those primitives (the export model, like promote_mesh_to_brep), and optionally saves the emitted script to a reusable macro library. Facts only: unrecognized solids are reported in perSolid with a reason, never a guess. This is a one-shot export/emit, not an in-place reclassification — the original file is never modified. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().optional().describe("Absolute path to write the new primitives-only B-rep file to (must not be the source path)"),
+      targetFormat: z.enum(["step", "iges", "brep"]).optional().describe("Output format for outputPath (default: step)"),
+      unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
+      saveScript: z
+        .object({
+          libraryPath: z.string().describe("Absolute path to the script-library JSON file (you name it; created on first save)"),
+          name: z.string().describe("Unique name within the library"),
+          description: z.string().optional(),
+          overwrite: z.boolean().optional(),
+        })
+        .optional()
+        .describe("When set, also saves the emitted parametric script to the library for later run_saved_script with overrides"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      outputPath?: string;
+      targetFormat?: string;
+      unit?: string;
+      saveScript?: { libraryPath: string; name: string; description?: string; overwrite?: boolean };
+    }) => decomposeToPrimitivesTool(ctx, args)
+  )
 );
 
 server.registerTool(

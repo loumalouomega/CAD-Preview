@@ -88,6 +88,8 @@ import type { recognizePrimitives, PrimitiveReport } from "./primitiveReport";
 import type { fitMeshRegion } from "./meshRegionFit";
 import type { MeshRegionFit } from "./fitMapping";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM } from "./fitMapping";
+import { emitPrimitiveOps } from "./primitiveEmit";
+import type { buildPrimitivesFile } from "./primitiveWrite";
 import { parseToWeldedMesh } from "./meshHeal";
 import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
@@ -174,6 +176,7 @@ export interface Pipeline {
   promoteMeshToBrep: typeof promoteMeshToBrep;
   repairMesh: typeof repairMesh;
   exportSvgSilhouette: typeof exportSvgSilhouette;
+  buildPrimitivesFile: typeof buildPrimitivesFile;
 }
 
 export interface ToolContext {
@@ -414,6 +417,7 @@ export function describeCapabilities() {
       "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
       "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
       "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
+      "decompose_to_primitives (B-rep sources only) recognizes each solid as a box/sphere/cylinder/cone/torus when its face inventory matches exactly and emits a creation op per recognized solid with each dimension bound to a named variable via exprs — the first programmatic producer of expression strings — plus a parametric script document; optionally writes a new B-rep file (export model, like promote_mesh_to_brep) and/or saves the script to the macro library. Unrecognized solids are reported in perSolid with a reason, never a guess. This is a one-shot emit/export, not an in-place replacement — the source file is never modified.",
       "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Decimate first if you hit it.",
       "repair_mesh (STL/OBJ/PLY/glTF sources only) writes a NEW watertight STL file at outputPath by tetrahedralizing the mesh with fTetWild and taking the resulting volume mesh's own boundary — watertight/manifold by construction regardless of how broken the input was, since fTetWild survives holes/self-intersections/non-manifold edges Gmsh's own classifySurfaces path rejects. A one-shot export (the source is untouched); the natural next step is re-running check_mesh_health/promote_mesh_to_brep on the repaired output. Unlike those two, it has no triangle-count ceiling (a different cost profile than the per-triangle OCCT sewing pipeline) — a very large/slow mesh may instead hit this server's own per-call timeout.",
       "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). On documents with many Parts, pass an explicit parts subset.",
@@ -1722,6 +1726,124 @@ export async function recognizePrimitivesTool(
     ops
   );
   return { format: route.format, supported: true, warnings: [], ...report };
+}
+
+// ---------------------------------------------------------------------------
+// decompose_to_primitives
+
+export async function decomposeToPrimitivesTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    outputPath?: string;
+    targetFormat?: string;
+    unit?: string;
+    saveScript?: { libraryPath: string; name: string; description?: string; overwrite?: boolean };
+  }
+): Promise<{
+  format: CadFormat;
+  supported: boolean;
+  warnings: string[];
+  solidCount?: number;
+  recognized?: number;
+  perSolid?: ReturnType<typeof emitPrimitiveOps>["perSolid"];
+  variables?: ParamVariable[];
+  script?: { variables: ParamVariable[]; steps: Array<{ op: unknown }> };
+  ops?: EditOp[];
+  written?: string;
+  bytes?: number;
+  savedScript?: { name: string; libraryPath: string };
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh source — primitive recognition reads exact B-rep surface parameters, which a triangle soup does not have.`],
+    };
+  }
+
+  const bytes = await readModelBytes(modelPath);
+  const { ops: currentOps, variables: currentVariables } = await readEditsResolved(modelPath);
+  const report = await ctx.pipeline.recognizePrimitives(ctx.extensionPath, bytes, route.format as BRepFormat, currentOps);
+
+  const emission = emitPrimitiveOps(report, {
+    existingVariableNames: currentVariables.map((v) => v.name),
+  });
+
+  const warnings: string[] = [...emission.warnings];
+  const script = emission.ops.length > 0 ? { variables: emission.variables, steps: emission.ops.map((op) => ({ op })) } : { variables: [], steps: [] as Array<{ op: unknown }> };
+
+  let written: string | undefined;
+  let writtenBytes: number | undefined;
+
+  if (params.outputPath) {
+    if (emission.ops.length === 0) {
+      warnings.push("No primitives recognized — nothing written.");
+    } else {
+      const targetFormat = (params.targetFormat as BRepFormat | undefined) ?? "step";
+      if (targetFormat !== "step" && targetFormat !== "iges" && targetFormat !== "brep") {
+        throw new Error(`Invalid targetFormat "${params.targetFormat}" — valid: step, iges, brep.`);
+      }
+      const outputPath = path.resolve(params.outputPath);
+      assertNotSourcePath(modelPath, outputPath);
+
+      let unit: DisplayUnit = "mm";
+      if (params.unit != null) {
+        if (!DISPLAY_UNITS.includes(params.unit as DisplayUnit)) {
+          warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm" (no conversion).`);
+        } else {
+          unit = params.unit as DisplayUnit;
+        }
+      }
+
+      const build = await ctx.pipeline.buildPrimitivesFile(ctx.extensionPath, emission.ops, targetFormat, unit);
+      warnings.push(...build.warnings);
+      await fs.writeFile(outputPath, build.bytes);
+      written = outputPath;
+      writtenBytes = build.bytes.byteLength;
+    }
+  } else if (params.targetFormat != null || params.unit != null) {
+    warnings.push("targetFormat/unit ignored without outputPath.");
+  }
+
+  let savedScript: { name: string; libraryPath: string } | undefined;
+  if (params.saveScript) {
+    if (emission.ops.length === 0) {
+      warnings.push("No primitives recognized — no script saved.");
+    } else {
+      const { libraryPath, name, description, overwrite } = params.saveScript;
+      const trimmed = name.trim();
+      if (trimmed === "") throw new Error("saveScript.name is required.");
+      const scriptDoc: Record<string, unknown> = { variables: emission.variables, steps: emission.ops.map((op) => ({ op })) };
+      const probe = compileParametricScript(scriptDoc, {});
+      if (probe.ops.length === 0) throw new Error(`Refusing to save "${trimmed}": the emitted script compiled to no ops.`);
+      const library = await readScriptLibrary(libraryPath);
+      const existed = Object.prototype.hasOwnProperty.call(library, trimmed);
+      if (existed && overwrite !== true) throw new Error(`A script named "${trimmed}" already exists — pass saveScript.overwrite: true to replace it.`);
+      const entry: ScriptLibraryEntry = { name: trimmed, script: scriptDoc };
+      if (description != null) entry.description = description;
+      library[trimmed] = entry;
+      await writeScriptLibrary(libraryPath, library);
+      savedScript = { name: trimmed, libraryPath };
+      if (existed) warnings.push(`Replaced existing script "${trimmed}".`);
+    }
+  }
+
+  return {
+    format: route.format,
+    supported: true,
+    warnings,
+    solidCount: report.solidCount,
+    recognized: emission.ops.length > 0 ? emission.perSolid.filter((p) => p.emitted).length : 0,
+    perSolid: emission.perSolid,
+    variables: emission.variables,
+    script,
+    ops: emission.ops,
+    ...(written ? { written, bytes: writtenBytes } : {}),
+    ...(savedScript ? { savedScript } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

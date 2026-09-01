@@ -46,6 +46,7 @@ import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
 import { recognizePrimitives } from "./primitiveReport";
 import { fitMeshRegion } from "./meshRegionFit";
 import { exportSvgSilhouette } from "./svgSilhouetteHost";
+import { buildPrimitivesFile } from "./primitiveWrite";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
 import { hitTest } from "./hitTestService";
@@ -139,6 +140,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   promoteMeshToBrep: promoteMeshToBrep as Handler,
   repairMesh: repairMesh as Handler,
   exportSvgSilhouette: exportSvgSilhouette as Handler,
+  buildPrimitivesFile: buildPrimitivesFile as Handler,
 };
 
 process.on("message", (msg: KernelRequest) => {
