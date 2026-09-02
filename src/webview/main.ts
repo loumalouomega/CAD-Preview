@@ -1460,6 +1460,14 @@ function opPreviewEligible(): boolean {
 /** Intent colour for a previewed op kind — green adds material, red removes
  * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
  * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
+/** The thin-wall fields of a sweep-family draft, or nothing when it isn't thin. */
+function thinOf(d: Record<string, unknown>): { thin?: number; thinOuter?: number } {
+  const thin = d.thin;
+  if (typeof thin !== "number" || !(thin > 0)) return {};
+  const outer = d.thinOuter;
+  return typeof outer === "number" && outer > 0 ? { thin, thinOuter: outer } : { thin };
+}
+
 function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
   switch (id) {
     case "booleanUnion":
@@ -1590,19 +1598,19 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     case "extrude":
       if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to extrude." };
       if (guideEntityIds.has(selFaces[0])) return { error: `${selFaces[0]} is guide (construction) geometry — guides are excluded from feature profiles.` };
-      return { op: withExprs({ op: "extrude", profile: selFaces[0], dir: d.dir, length: d.length }) };
+      return { op: withExprs({ op: "extrude", profile: selFaces[0], dir: d.dir, length: d.length, ...thinOf(d) }) };
     case "revolve":
       if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to revolve." };
       if (guideEntityIds.has(selFaces[0])) return { error: `${selFaces[0]} is guide (construction) geometry — guides are excluded from feature profiles.` };
-      return { op: withExprs({ op: "revolve", profile: selFaces[0], axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg }) };
+      return { op: withExprs({ op: "revolve", profile: selFaces[0], axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, ...thinOf(d) }) };
     case "sweep":
       if (!selFaces[0] || !selEdges[0]) return { error: "Select a profile face and a path edge for sweep." };
       if (guideEntityIds.has(selFaces[0])) return { error: `${selFaces[0]} is guide (construction) geometry — guides are excluded from feature profiles.` };
-      return { op: withExprs({ op: "sweep", profile: selFaces[0], path: selEdges[0] }) };
+      return { op: withExprs({ op: "sweep", profile: selFaces[0], path: selEdges[0], ...thinOf(d) }) };
     case "loft":
       if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from loft profiles." };
-      return { op: withExprs({ op: "loft", profiles: selFaces }) };
+      return { op: withExprs({ op: "loft", profiles: selFaces, ...thinOf(d) }) };
 
     // ── assembly ──
     case "mate":

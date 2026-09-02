@@ -36,7 +36,7 @@ export type FeatureDraft = (
   | { kind: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "sweep" }
   | { kind: "loft" }
-) & { exprs?: ExprMap };
+) & { exprs?: ExprMap; thin?: number; thinOuter?: number };
 
 /** A primitive-creation draft — self-contained (no selection needed), pushed
  * straight to an `EditOp` by the wiring. */
@@ -743,25 +743,29 @@ export class EditsPanel {
         f.appendChild(this.hint("Profile = selected face (Surf mode)"));
         f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
         f.appendChild(this.numField("length", "Length", 10));
-        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length") }), (d) => this.cb.onApplyFeature(d));
+        this.thinFields(f);
+        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "revolve":
         f.appendChild(this.hint("Profile = selected face (Surf mode)"));
         f.appendChild(this.vecField("axisPoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 360));
+        this.thinFields(f);
         this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({
             kind: "revolve", axisPoint: this.readVec("axisPoint"),
-            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"),
+            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"), ...this.readThin(),
           }), (d) => this.cb.onApplyFeature(d));
         break;
       case "sweep":
         f.appendChild(this.hint("Profile = selected face · path = selected edge"));
-        this.applyButtonDraft("Apply", "Build the feature from the selected face + edge", (): FeatureDraft => ({ kind: "sweep" }), (d) => this.cb.onApplyFeature(d));
+        this.thinFields(f);
+        this.applyButtonDraft("Apply", "Build the feature from the selected face + edge", (): FeatureDraft => ({ kind: "sweep", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "loft":
         f.appendChild(this.hint("Profiles = 2+ selected faces"));
-        this.applyButtonDraft("Apply", "Build the feature from the selected faces", (): FeatureDraft => ({ kind: "loft" }), (d) => this.cb.onApplyFeature(d));
+        this.thinFields(f);
+        this.applyButtonDraft("Apply", "Build the feature from the selected faces", (): FeatureDraft => ({ kind: "loft", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
 
       // ── EDIT · modify ──
@@ -1290,6 +1294,26 @@ export class EditsPanel {
     btn.addEventListener("click", onClick);
     row.appendChild(btn);
     return row;
+  }
+
+  /**
+   * The shared thin-wall fields for the four sweep-family forms. `Wall` = 0 is
+   * the sentinel for "not thin" (the same leave-it-at-the-default convention
+   * `draft`'s Point/Normal use), so an untouched form builds today's filled
+   * solid exactly as before.
+   */
+  private thinFields(f: HTMLElement): void {
+    f.appendChild(this.numField("thin", "Wall", 0));
+    f.appendChild(this.numField("thinOuter", "Outward", 0));
+    f.appendChild(this.hint("Wall 0 = solid. Outward = how much of the wall sits outside the profile (0 = all inward)."));
+  }
+
+  /** Reads the thin fields, omitting them entirely when Wall is 0/absent. */
+  private readThin(): { thin?: number; thinOuter?: number } {
+    const thin = this.readNum("thin");
+    if (!Number.isFinite(thin) || thin <= 0) return {};
+    const thinOuter = this.readNum("thinOuter");
+    return Number.isFinite(thinOuter) && thinOuter > 0 ? { thin, thinOuter } : { thin };
   }
 
   private hint(text: string): HTMLElement {

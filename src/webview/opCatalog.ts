@@ -205,6 +205,12 @@ export function describeOp(op: EditOp): string {
   return bindings ? `${base} [${bindings}]` : base;
 }
 
+/** " thin=2" / " thin=2/1" for a thin-walled sweep-family op; "" otherwise. */
+function thinLabel(op: { thin?: number; thinOuter?: number }): string {
+  if (op.thin === undefined) return "";
+  return op.thinOuter ? ` thin=${op.thin}/${op.thinOuter}` : ` thin=${op.thin}`;
+}
+
 function describeOpBase(op: EditOp): string {
   switch (op.op) {
     case "translate": return `Move ${op.targets.length} (${op.vec.join(", ")})`;
@@ -218,10 +224,10 @@ function describeOpBase(op: EditOp): string {
       if (op.angleDeg !== undefined) return `Chamfer ${op.edges.length} d=${op.distance} ${op.angleDeg}°`;
       return `Chamfer ${op.edges.length} d=${op.distance}`;
     }
-    case "extrude": return `Extrude ${op.profile} ×${op.length}`;
-    case "revolve": return `Revolve ${op.profile} ${op.angleDeg}°`;
-    case "sweep": return `Sweep ${op.profile} → ${op.path}`;
-    case "loft": return `Loft ${op.profiles.length} profiles`;
+    case "extrude": return `Extrude ${op.profile} ×${op.length}${thinLabel(op)}`;
+    case "revolve": return `Revolve ${op.profile} ${op.angleDeg}°${thinLabel(op)}`;
+    case "sweep": return `Sweep ${op.profile} → ${op.path}${thinLabel(op)}`;
+    case "loft": return `Loft ${op.profiles.length} profiles${thinLabel(op)}`;
     case "explode": return `Explode ×${op.factor}`;
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
     case "shell": return `▣ Shell t=${op.thickness} (${op.openingFaces.length} openings)`;

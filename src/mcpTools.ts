@@ -200,10 +200,10 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   fillet: '{edges: edgeId[], radius: n>0}',
   chamfer: '{edges: edgeId[], distance: n>0, distance2?: n>0 (asymmetric, needs face), angleDeg?: 0<n<90 (distance-angle, needs face), face?: faceId}',
 
-  extrude: '{profile: faceId, dir: [x,y,z], length: n>0}',
-  revolve: '{profile: faceId, axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n}',
-  sweep: '{profile: faceId, path: edgeId}',
-  loft: '{profiles: faceId[] (>=2)}',
+  extrude: '{profile: faceId, dir: [x,y,z], length: n>0, thin?: n>0, thinOuter?: 0<=n<=thin}',
+  revolve: '{profile: faceId, axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n, thin?: n>0, thinOuter?: 0<=n<=thin}',
+  sweep: '{profile: faceId, path: edgeId, thin?: n>0, thinOuter?: 0<=n<=thin}',
+  loft: '{profiles: faceId[] (>=2), thin?: n>0, thinOuter?: 0<=n<=thin}',
   explode: '{factor: n}',
   mate: '{faceA: faceId, faceB: faceId (both planar)}',
   shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1), join?: "arc"|"intersection"|"tangent" (default arc)}',
@@ -378,6 +378,7 @@ export function describeCapabilities() {
       "Any numeric field may carry a parametric expression via `exprs`, e.g. {op: \"addBox\", size: [20,10,5], exprs: {\"size[0]\": \"L\"}} — see set_variables.",
       "brepOnly ops are rejected for mesh-format sources (STL/OBJ/PLY/glTF). topologyChanging ops reassign face-N/edge-N ids on replay.",
       "Angles are degrees. Vec3s are [x,y,z] arrays.",
+      "extrude/revolve/sweep/loft accept an optional `thin` (total wall thickness) to build a thin-walled body instead of a filled one, plus `thinOuter` for how much of that wall sits outside the profile boundary (0 = all inward, the default; thinOuter === thin = all outward). Closed face profiles only, and the profile must not already have holes. A thin feature does NOT consume its profile sketch, unlike a plain one.",
     ],
     entityIdScheme:
       "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids.",

@@ -172,10 +172,14 @@ type EditOp =
   | { op: 'boolean'; kind: 'union' | 'subtract' | 'intersect'; a: string[]; b: string[] }
   | { op: 'fillet'; edges: string[]; radius: number }
   | { op: 'chamfer'; edges: string[]; distance: number; distance2?: number; angleDeg?: number; face?: string }
-  | { op: 'extrude'; profile: string; dir: Vec3; length: number }
-  | { op: 'revolve'; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
-  | { op: 'sweep'; profile: string; path: string }
-  | { op: 'loft'; profiles: string[] }
+  // The four sweep-family ops share an optional thin-wall annotation:
+  //   thin?: number       total wall thickness (> 0); omit for a filled solid
+  //   thinOuter?: number  how much of that wall sits OUTSIDE the profile
+  //                       boundary, in [0, thin] (0 = all inward, the default)
+  | { op: 'extrude'; profile: string; dir: Vec3; length: number; thin?: number; thinOuter?: number }
+  | { op: 'revolve'; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number }
+  | { op: 'sweep'; profile: string; path: string; thin?: number; thinOuter?: number }
+  | { op: 'loft'; profiles: string[]; thin?: number; thinOuter?: number }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
   | { op: 'shell'; thickness: number; openingFaces: string[]; join?: 'arc'|'intersection'|'tangent' }        // >= 1 face id; negative = walls inward

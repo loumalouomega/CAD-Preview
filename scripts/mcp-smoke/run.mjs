@@ -3750,6 +3750,116 @@ try {
     `the finished bracket has the 18 faces the tutorial claims (got ${bracketState.solids[0].faceIds.length})`
   );
 
+  // --- thin-walled sweep-family features (roadmap item 8, first cut) ---------
+  //
+  // Every expectation here is ANALYTIC, so a plausible-but-wrong band would
+  // fail rather than pass. The profile is a 10x10 rectangle sketch whose
+  // wall-2 band has area 100 - 36 = 64; block.stp contributes 6 faces and 12
+  // edges, so the sketch is face-6 (free faces are appended last) and an added
+  // line is edge-16. The new body is always the LAST solid, since feature ops
+  // append `compound(existing, new)`.
+  {
+    const thinModel = path.join(dir, "thin-features.stp");
+    const seedBlock = path.join(ROOT, "examples", "STP", "block.stp");
+    const resetThin = () => {
+      fs.copyFileSync(seedBlock, thinModel);
+      fs.rmSync(`${thinModel}.edits.json`, { force: true });
+    };
+    const rect = (z) => ({ op: "addRectangleProfile", center: [0, 0, z], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 10 });
+    // Applies a fresh op list against a clean copy and returns the new body's volume.
+    const thinVolume = async (label, ops, solidId = "solid-1") => {
+      resetThin();
+      const res = await callWithCleanRetry("apply_edit_ops", { path: thinModel, ops }, resetThin);
+      assert(
+        res.applied === ops.length && (res.notApplied ?? 0) === 0,
+        `${label}: every op applies (got ${JSON.stringify(res.report)})`
+      );
+      const mass = await call("get_mass_properties", { path: thinModel, entityId: solidId });
+      assert(mass.supported && typeof mass.volume === "number", `${label}: mass properties resolve for ${solidId}`);
+      return { volume: mass.volume, res };
+    };
+
+    // 1. extrude — the reference case, exact.
+    const ex = await thinVolume("thin extrude", [
+      rect(20), { op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 5, thin: 2 },
+    ]);
+    assert(Math.abs(ex.volume - 320) < 1e-6, `thin extrude is the annulus x height, exactly 320 (got ${ex.volume})`);
+    // The band's caps are ANNULAR and the profile sketch is NOT consumed (a
+    // plain extrude reuses it as the start cap; a thin one builds its own), so
+    // the bucket must name the solid's own cap rather than the leftover sketch.
+    const exBucket = (ex.res.model.opBuckets ?? []).find((b) => b.kind === "extrude");
+    assert(exBucket, "the thin extrude produced a bucket");
+    const roles = exBucket.roles;
+    assert(
+      roles.startCap?.length === 1 && roles.endCap?.length === 1 && roles.side?.length === 8,
+      `a thin extrude's buckets are start cap + end cap + 8 walls, not a misfiled sketch (got ${JSON.stringify(roles)})`
+    );
+    {
+      const all = [...roles.startCap, ...roles.endCap, ...roles.side];
+      assert(new Set(all).size === all.length, `thin extrude bucket roles are disjoint (got ${JSON.stringify(roles)})`);
+    }
+
+    // 2. revolve — Pappus. Relative tolerance: the adaptive integrator's own
+    // eps puts this ~5e-9 off the closed form, which an absolute 1e-6 on a
+    // value of ~2010 would wrongly flag.
+    const pappus = 64 * (Math.PI / 2) * 20;
+    const rev = await thinVolume("thin revolve", [
+      rect(20), { op: "revolve", profile: "face-6", axisPoint: [-20, 0, 20], axisDir: [0, 1, 0], angleDeg: 90, thin: 2 },
+    ]);
+    assert(
+      Math.abs(rev.volume - pappus) / pappus < 1e-6,
+      `thin revolve matches Pappus ${pappus.toFixed(4)} (got ${rev.volume})`
+    );
+
+    // 3. sweep — MakePipe with an ANNULAR profile, on a length-20 straight path.
+    const sw = await thinVolume("thin sweep", [
+      rect(20), { op: "addLine", start: [0, 0, 20], end: [0, 0, 40] },
+      { op: "sweep", profile: "face-6", path: "edge-16", thin: 2 },
+    ]);
+    assert(Math.abs(sw.volume - 1280) < 1e-6, `thin sweep is band area x path length, exactly 1280 (got ${sw.volume})`);
+
+    // 4. loft — the assertion that fails if the loft branch ever regresses to
+    // the outer-wire-only path, which silently lofts a FILLED solid.
+    const lo = await thinVolume("thin loft", [
+      rect(20), rect(30), { op: "loft", profiles: ["face-6", "face-7"], thin: 2 },
+    ]);
+    assert(Math.abs(lo.volume - 640) < 1e-6, `thin loft is the twin-section difference, exactly 640 (got ${lo.volume})`);
+
+    // 5. dual offset — bounded, not exact: GeomAbs_Arc rounds the outward
+    // corners, so the band is slightly smaller than the sharp-corner ideal.
+    const dual = await thinVolume("dual-offset extrude", [
+      rect(20), { op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 5, thin: 2, thinOuter: 1 },
+    ]);
+    assert(
+      dual.volume > 380 && dual.volume < 400,
+      `a dual-offset band sits just under the 400 sharp-corner ideal (arc-join corner rounding) (got ${dual.volume})`
+    );
+
+    // 6. an offset larger than the profile's half-width. OCCT reports NO error
+    // for this — it hands back an empty compound instead of an offset wire —
+    // so this pins the explicit guard, not kernel behaviour.
+    resetThin();
+    const doomedThin = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: thinModel, ops: [rect(20), { op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 5, thin: 6 }] },
+      resetThin
+    );
+    assert(
+      doomedThin.applied === 1 && doomedThin.notApplied === 1,
+      `an over-thick wall is skipped while the sketch still applies (got ${JSON.stringify(doomedThin.report)})`
+    );
+    assert(
+      doomedThin.report.some((r) => /thin-walled/i.test(r.diagnostic ?? "")),
+      `the skip names the thin build (got ${JSON.stringify(doomedThin.report.map((r) => r.diagnostic))})`
+    );
+
+    // 7. a plain (non-thin) extrude is byte-for-byte unaffected.
+    const plain = await thinVolume("plain extrude regression", [
+      rect(20), { op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 5 },
+    ]);
+    assert(Math.abs(plain.volume - 500) < 1e-6, `a non-thin extrude still fills the profile, exactly 500 (got ${plain.volume})`);
+  }
+
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");
 
   console.log("\nMCP smoke test passed.");

@@ -39,14 +39,44 @@ export interface BooleanOp { op: "boolean"; kind: "union" | "subtract" | "inters
 export interface FilletOp { op: "fillet"; edges: string[]; radius: number; }
 /** Bevel the selected edges: symmetric `distance`, asymmetric `distance`/`distance2` on two sides of a reference `face`, or distance-angle `distance` at `angleDeg` to `face`. `face` is required when `distance2` or `angleDeg` is set — it chooses which side gets `distance`. */
 export interface ChamferOp { op: "chamfer"; edges: string[]; distance: number; distance2?: number; angleDeg?: number; face?: string; }
+/**
+ * `thin` turns a feature into a thin-walled one: the profile's outline is
+ * offset into a band, and the (otherwise unchanged) builder is handed that
+ * band instead of the filled profile — so an extrude yields a tube, a revolve
+ * a hollow of revolution, and so on.
+ *
+ * `thin` is the total wall thickness (always positive). `thinOuter` says how
+ * much of that wall lies OUTSIDE the profile boundary, in `[0, thin]`:
+ * `thinOuter` omitted or `0` grows the wall entirely inward from the boundary
+ * (the usual case), `thinOuter === thin` grows it entirely outward, and
+ * anything between is the dual-offset band the roadmap names. So the two
+ * offsets applied to the profile wire are `+thinOuter` and `-(thin - thinOuter)`.
+ *
+ * A positive-only thickness plus a split is preferred over one SIGNED number
+ * because a dual-offset band needs two values regardless, and unlike
+ * {@link ShellOp.thickness} — where the sign genuinely encodes which way an
+ * existing solid's walls grow — a feature profile is essentially always
+ * thickened inward.
+ *
+ * Deliberately two FLAT fields rather than one nested `{outer, inner}` object:
+ * `paramExpr.ts`'s `parseFieldPath` accepts an identifier plus numeric indices
+ * only — it has no dotted-path form — so a nested object would make these the
+ * only numeric op fields in the codebase a parametric variable cannot drive.
+ *
+ * **Closed (face) profiles only.** All four ops resolve `profile` to a
+ * `face-N`, and an open polyline never becomes a face, so the "thin wall from
+ * an open profile" idea needs a wire/edge profile operand that does not exist
+ * yet — see CLAUDE.md.
+ */
+export interface ThinSpec { thin?: number; thinOuter?: number; }
 /** Extrude a selected planar face/wire `profile` along `dir` by `length`. */
-export interface ExtrudeOp { op: "extrude"; profile: string; dir: Vec3; length: number; }
+export interface ExtrudeOp extends ThinSpec { op: "extrude"; profile: string; dir: Vec3; length: number; }
 /** Revolve a selected profile `angleDeg` about the axis (`axisPoint`, `axisDir`). */
-export interface RevolveOp { op: "revolve"; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; }
+export interface RevolveOp extends ThinSpec { op: "revolve"; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; }
 /** Sweep a selected profile face/wire along a selected path edge. */
-export interface SweepOp { op: "sweep"; profile: string; path: string; }
+export interface SweepOp extends ThinSpec { op: "sweep"; profile: string; path: string; }
 /** Loft through 2+ selected profile faces/wires. */
-export interface LoftOp { op: "loft"; profiles: string[]; }
+export interface LoftOp extends ThinSpec { op: "loft"; profiles: string[]; }
 /** Spread every solid radially from the model centre by `factor`. */
 export interface ExplodeOp { op: "explode"; factor: number; }
 /** Align face `faceA` onto face `faceB` (basic single-constraint mate). */
@@ -288,6 +318,30 @@ function asPlaneId(v: unknown): string | null {
   return v;
 }
 
+/**
+ * Validates the optional {@link ThinSpec} annotation shared by the four
+ * sweep-family ops, returning the fields to attach (possibly empty) or `null`
+ * to reject the whole op. Mirrors `chamfer`'s optional-numeric shape: presence
+ * checks, then structural checks, then range checks.
+ *
+ * Rejects a non-positive `thin` (a zero- or negative-thickness wall is not a
+ * wall), `thinOuter` without `thin` (a split of nothing), and a `thinOuter`
+ * outside `[0, thin]` (more wall outside the boundary than there is wall).
+ */
+function asThinSpec(o: Record<string, unknown>): ThinSpec | null {
+  const hasThin = o.thin !== undefined;
+  const hasOuter = o.thinOuter !== undefined;
+  if (!hasThin && !hasOuter) return {};
+  if (hasOuter && !hasThin) return null;
+  if (!isPositive(o.thin)) return null;
+  const out: ThinSpec = { thin: o.thin };
+  if (hasOuter) {
+    if (!isFiniteNumber(o.thinOuter) || o.thinOuter < 0 || o.thinOuter > o.thin) return null;
+    out.thinOuter = o.thinOuter;
+  }
+  return out;
+}
+
 /** Cap on `exprs` entries per op / expression length — a hand-edited sidecar can't balloon memory. */
 const MAX_EXPRS_PER_OP = 64;
 const MAX_EXPR_LENGTH = 256;
@@ -422,25 +476,29 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "extrude": {
       const dir = asVec3(o.dir);
-      return typeof o.profile === "string" && dir && isFiniteNumber(o.length)
-        ? { op: "extrude", profile: o.profile, dir, length: o.length }
+      const thin = asThinSpec(o);
+      return typeof o.profile === "string" && dir && isFiniteNumber(o.length) && thin
+        ? { op: "extrude", profile: o.profile, dir, length: o.length, ...thin }
         : null;
     }
     case "revolve": {
       const axisPoint = asVec3(o.axisPoint);
       const axisDir = asVec3(o.axisDir);
-      return typeof o.profile === "string" && axisPoint && axisDir && isFiniteNumber(o.angleDeg)
-        ? { op: "revolve", profile: o.profile, axisPoint, axisDir, angleDeg: o.angleDeg }
+      const thin = asThinSpec(o);
+      return typeof o.profile === "string" && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && thin
+        ? { op: "revolve", profile: o.profile, axisPoint, axisDir, angleDeg: o.angleDeg, ...thin }
         : null;
     }
     case "sweep": {
-      return typeof o.profile === "string" && typeof o.path === "string"
-        ? { op: "sweep", profile: o.profile, path: o.path }
+      const thin = asThinSpec(o);
+      return typeof o.profile === "string" && typeof o.path === "string" && thin
+        ? { op: "sweep", profile: o.profile, path: o.path, ...thin }
         : null;
     }
     case "loft": {
       const profiles = asIdArray(o.profiles, 2);
-      return profiles ? { op: "loft", profiles } : null;
+      const thin = asThinSpec(o);
+      return profiles && thin ? { op: "loft", profiles, ...thin } : null;
     }
     case "explode": {
       return isFiniteNumber(o.factor) ? { op: "explode", factor: o.factor } : null;

@@ -465,6 +465,58 @@ describe("validateEditOp exprs annotation", () => {
   });
 });
 
+describe("thin (sweep-family thin-walled features)", () => {
+  const extrude = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "extrude", profile: "face-1", dir: [0, 0, 1], length: 5, ...extra });
+
+  it("accepts thin on all four sweep-family kinds", () => {
+    expect(extrude({ thin: 2 })).toMatchObject({ op: "extrude", thin: 2 });
+    expect(validateEditOp({ op: "revolve", profile: "face-1", axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 90, thin: 2 }))
+      .toMatchObject({ op: "revolve", thin: 2 });
+    expect(validateEditOp({ op: "sweep", profile: "face-1", path: "edge-0", thin: 2 }))
+      .toMatchObject({ op: "sweep", thin: 2 });
+    expect(validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], thin: 2 }))
+      .toMatchObject({ op: "loft", thin: 2 });
+  });
+
+  it("omits the fields entirely when not thin", () => {
+    const op = extrude({});
+    expect(op).not.toBeNull();
+    expect(op && "thin" in op).toBe(false);
+    expect(op && "thinOuter" in op).toBe(false);
+  });
+
+  it("accepts thinOuter across its whole range, including fully outward", () => {
+    expect(extrude({ thin: 2, thinOuter: 0 })).toMatchObject({ thin: 2, thinOuter: 0 });
+    expect(extrude({ thin: 2, thinOuter: 1 })).toMatchObject({ thin: 2, thinOuter: 1 });
+    expect(extrude({ thin: 2, thinOuter: 2 })).toMatchObject({ thin: 2, thinOuter: 2 });
+  });
+
+  it("rejects a non-positive or non-finite thin", () => {
+    expect(extrude({ thin: 0 })).toBeNull();
+    expect(extrude({ thin: -2 })).toBeNull();
+    expect(extrude({ thin: Number.NaN })).toBeNull();
+    expect(extrude({ thin: "2" })).toBeNull();
+  });
+
+  it("rejects thinOuter without thin, or outside [0, thin]", () => {
+    expect(extrude({ thinOuter: 1 })).toBeNull();
+    expect(extrude({ thin: 2, thinOuter: -1 })).toBeNull();
+    expect(extrude({ thin: 2, thinOuter: 3 })).toBeNull();
+    expect(extrude({ thin: 2, thinOuter: "1" })).toBeNull();
+  });
+
+  it("keeps thin expression-addressable — the reason the fields are flat", () => {
+    // `paramExpr.ts`'s parseFieldPath accepts an identifier plus numeric
+    // indices only, with no dotted form, so a nested `thin: {inner}` object
+    // would be the one numeric op field a parametric variable cannot drive.
+    const flat = extrude({ thin: 2, exprs: { thin: "wall" } });
+    expect(flat).toMatchObject({ thin: 2, exprs: { thin: "wall" } });
+    const nested = extrude({ thin: 2, exprs: { "thin.inner": "wall" } });
+    expect(nested && "exprs" in nested).toBe(false);
+  });
+});
+
 describe("align / patternLinear / patternCircular", () => {
   it("accepts well-formed align/pattern ops", () => {
     expect(validateEditOp({ op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 }))

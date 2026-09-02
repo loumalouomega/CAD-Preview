@@ -7,6 +7,7 @@ import { PRODUCED_ROLE } from "./opBuckets";
 // the CJS bundle.
 import type { SurfaceType, SurfaceParams } from "./entityFacts";
 import { enumerateEdges, buildEdgeFaceAdjacency } from "./edgeEnumeration";
+import { volumePropertiesAdaptive } from "./brepGProp";
 
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
 const HASH_UPPER = 1 << 30;
@@ -180,6 +181,16 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
   return shape;
 }
 
+/** How many wires bound `face` — 1 for a plain face, 2+ once it has holes. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wireCountOf(oc: any, face: any, cleanup: Array<{ delete(): void }>): number {
+  let n = 0;
+  const exp = new oc.TopExp_Explorer_2(face, oc.TopAbs_ShapeEnum.TopAbs_WIRE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  cleanup.push(exp);
+  for (; exp.More(); exp.Next()) n++;
+  return n;
+}
+
 /**
  * Classifies one just-applied topology-changing op's produced faces into an
  * {@link OpBucket} — the OCCT half of `opBuckets.ts`. Mechanism: a
@@ -248,8 +259,14 @@ function collectBucketForOp(oc: any, before: any, after: any, index: number, op:
     }
     const kind = op.op;
     const roles: Record<string, string[]> = {};
+    const isThin = thinSpecOf(op) !== null;
     if (kind === "extrude" || kind === "revolve") {
-      const profileFace = collectFaces(oc, before, tmp)[faceIndex((op as { profile: string }).profile)];
+      // A PLAIN extrude/revolve reuses the profile face itself as the start cap
+      // (`Copy=false`), so finding it in `after` identifies that cap. A THIN one
+      // consumes a freshly built band face instead and leaves the profile
+      // sketch behind as a free face — so this match would label the leftover
+      // sketch `startCap` even though it is not part of the new solid at all.
+      const profileFace = isThin ? null : collectFaces(oc, before, tmp)[faceIndex((op as { profile: string }).profile)];
       if (profileFace) {
         for (let i = 0; i < afterFaces.length; i++) {
           if (afterFaces[i].IsSame(profileFace)) { roles.startCap = [`face-${i}`]; break; }
@@ -260,13 +277,32 @@ function collectBucketForOp(oc: any, before: any, after: any, index: number, op:
         const len = Math.hypot(dx, dy, dz) || 1;
         let bestIdx = -1;
         let bestDot = -Infinity;
+        let firstIdx = -1;
+        let firstDot = Infinity;
         const remaining: number[] = [];
         for (const i of producedIdx) {
           const c = bboxCenter(oc, afterFaces[i], tmp);
           const dot = (c[0] * dx + c[1] * dy + c[2] * dz) / len;
           if (dot > bestDot) { bestDot = dot; bestIdx = i; }
+          // Only ANNULAR faces can be a thin extrude's caps, and requiring that
+          // is load-bearing rather than tidy: a thin extrude does not consume
+          // its profile sketch (see below), so the leftover sketch sits exactly
+          // on top of the start cap with an identical bbox. A min-dot rule
+          // alone ties between them and picked the sketch — verified. The caps
+          // are the only produced faces with an inner wire.
+          if (isThin && dot < firstDot && wireCountOf(oc, afterFaces[i], tmp) > 1) { firstDot = dot; firstIdx = i; }
         }
-        for (const i of producedIdx) if (i !== bestIdx) remaining.push(i);
+        // A THIN extrude's start cap is a band face built fresh for this op, so
+        // it does not exist in `before` and the `IsSame(profileFace)` match
+        // above cannot find it. Recover it as the annular produced face
+        // furthest BACK along `dir` — the mirror of the `endCap` max-dot rule —
+        // otherwise the start annulus is silently misfiled under `side`.
+        let thinStartIdx = -1;
+        if (!roles.startCap && isThin && firstIdx >= 0 && firstIdx !== bestIdx) {
+          roles.startCap = [`face-${firstIdx}`];
+          thinStartIdx = firstIdx;
+        }
+        for (const i of producedIdx) if (i !== bestIdx && i !== thinStartIdx) remaining.push(i);
         if (bestIdx >= 0) roles.endCap = [`face-${bestIdx}`];
         if (remaining.length > 0) roles.side = remaining.map((i) => `face-${i}`);
       } else if (producedIdx.length > 0) {
@@ -965,7 +1001,17 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
   }
   const solid = buildFeatureSolid(oc, shape, op, cleanup);
   if (!solid) {
-    fail?.(`${op.op} could not build a new body`, "check that the profile face-N (and, for sweep, the path edge-N) resolve to real entities");
+    if (thinSpecOf(op)) {
+      // A thin build has its own distinct failure modes, and an over-large
+      // offset is BY FAR the likeliest: OCCT reports no error for it, it just
+      // hands back an empty compound instead of an offset wire.
+      fail?.(
+        `${op.op} could not build a thin-walled body from ${describeThinProfile(op)}`,
+        "the wall is probably thicker than the profile's narrowest half-width — reduce thin; a profile that already has holes, or is non-planar, also cannot be thinned"
+      );
+    } else {
+      fail?.(`${op.op} could not build a new body`, "check that the profile face-N (and, for sweep, the path edge-N) resolve to real entities");
+    }
     return shape;
   }
   const comp = new oc.TopoDS_Compound();
@@ -978,6 +1024,116 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
   return comp;
 }
 
+/**
+ * The two boundary wires of a thin-walled band around a profile face's outer
+ * wire, or `null` when the profile or the offsets can't produce one.
+ *
+ * `thin` is the total wall thickness and `thinOuter` how much of it sits
+ * outside the profile boundary (see {@link ThinSpec}), so the offsets applied
+ * are `+thinOuter` and `-(thin - thinOuter)`; an offset of exactly 0 reuses the
+ * profile wire itself rather than round-tripping it through the offsetter.
+ *
+ * OCCT API, verified against the live WASM (this is the first use of
+ * `BRepOffsetAPI_MakeOffset` anywhere in this codebase):
+ * `new BRepOffsetAPI_MakeOffset_3(wire, GeomAbs_JoinType.GeomAbs_Arc, false)`
+ * — exactly 3 ctor args, the 0-arg `_1` being the default ctor — then
+ * `.Perform(offset, 0)` and `.Shape()`.
+ *
+ * **An over-large offset does NOT report failure.** Verified: offsetting a
+ * 10x10 square inward by 5, 6 or 20 returns a non-null shape that is an EMPTY
+ * COMPOUND (`TopAbs_COMPOUND`, zero edges) rather than a wire — no throw, no
+ * `IsDone` false. So the result is checked for actually being a wire before
+ * use; without that check the caller would build a degenerate solid from
+ * nothing and report a confidently-wrong volume.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function thinProfileWires(oc: any, face: any, thin: number, thinOuter: number, cleanup: Array<{ delete(): void }>): { outer: any; inner: any } | null {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  // `BRepTools.OuterWire` drops any inner wires, so a profile that already has
+  // holes would silently lose them — refuse rather than build wrong geometry.
+  if (wireCountOf(oc, face, cleanup) !== 1) return null;
+  const spine = keep(oc.BRepTools.OuterWire(face));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const offsetWire = (d: number): any => {
+    if (d === 0) return spine;
+    const mk = keep(new oc.BRepOffsetAPI_MakeOffset_3(spine, oc.GeomAbs_JoinType.GeomAbs_Arc, false));
+    mk.Perform(d, 0);
+    const s = mk.Shape();
+    if (!s || s.IsNull()) return null;
+    if (s.ShapeType().value !== oc.TopAbs_ShapeEnum.TopAbs_WIRE.value) return null; // the empty-compound case above
+    return keep(oc.TopoDS.Wire_1(s));
+  };
+  const outer = offsetWire(thinOuter);
+  const inner = offsetWire(-(thin - thinOuter));
+  if (!outer || !inner) return null;
+  return { outer, inner };
+}
+
+/** The annular face between a band's two boundary wires, or null. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function bandFaceFromWires(oc: any, outer: any, inner: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const mk = keep(new oc.BRepBuilderAPI_MakeFace_15(outer, true));
+  mk.Add(keep(oc.TopoDS.Wire_1(inner.Reversed())));
+  if (!mk.IsDone()) return null;
+  const face = keep(mk.Face());
+  return face.IsNull() ? null : face;
+}
+
+/** Names the thin profile operand(s) for a diagnostic. */
+function describeThinProfile(op: EditOp): string {
+  const single = (op as { profile?: string }).profile;
+  if (single) return single;
+  const many = (op as { profiles?: string[] }).profiles;
+  return many ? many.join(", ") : "the profile";
+}
+
+/** The `thin`/`thinOuter` pair of a sweep-family op, or null when not thin. */
+function thinSpecOf(op: EditOp): { thin: number; thinOuter: number } | null {
+  const thin = (op as { thin?: number }).thin;
+  if (thin === undefined) return null;
+  return { thin, thinOuter: (op as { thinOuter?: number }).thinOuter ?? 0 };
+}
+
+/**
+ * Signed-volume sanity gate for a thin build. Nothing downstream takes an
+ * absolute value — `massProperties.ts`, `modelDiffHost.ts`, `entityFacts.ts`
+ * and `occtService.ts` all read `props.Mass()` raw — so a reversed solid would
+ * report a NEGATIVE volume into mass properties, the BOM and model-diff. A
+ * near-zero result means the offsets collapsed the band, which is the other
+ * way a thin build fails without throwing.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function orientPositiveVolume(oc: any, solid: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const props = keep(new oc.GProp_GProps_1());
+  volumePropertiesAdaptive(oc, solid, props);
+  const v = props.Mass();
+  if (!Number.isFinite(v) || Math.abs(v) < 1e-9) return null;
+  return v < 0 ? keep(solid.Reversed()) : solid;
+}
+
+/**
+ * The profile face a feature builder should actually consume: the original
+ * face, or — when the op carries a {@link ThinSpec} — the annular band face
+ * around it. Null means the thin band could not be built.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function thinFaceFor(oc: any, face: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+  const spec = thinSpecOf(op);
+  if (!spec) return face;
+  const wires = thinProfileWires(oc, face, spec.thin, spec.thinOuter, cleanup);
+  if (!wires) return null;
+  return bandFaceFromWires(oc, wires.outer, wires.inner, cleanup);
+}
+
+/** Applies the thin sanity gate only when the op is thin; a plain feature is unchanged. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function finishThin(oc: any, op: EditOp, solid: any, cleanup: Array<{ delete(): void }>): any {
+  if (!solid || !thinSpecOf(op)) return solid;
+  return orientPositiveVolume(oc, solid, cleanup);
+}
+
 /** Builds the new solid for a feature op, or null on unresolved operands / failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
@@ -985,43 +1141,67 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
   try {
     switch (op.op) {
       case "extrude": {
-        const face = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
+        const raw = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
+        if (!raw) return null;
+        const face = thinFaceFor(oc, raw, op, cleanup);
         if (!face) return null;
         const [dx, dy, dz] = op.dir;
         const len = Math.hypot(dx, dy, dz) || 1;
         const s = op.length / len; // dir scaled so |vec| == length
         const vec = keep(new oc.gp_Vec_4(dx * s, dy * s, dz * s));
-        return keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape());
+        return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape()), cleanup);
       }
       case "revolve": {
-        const face = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
+        const raw = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
+        if (!raw) return null;
+        const face = thinFaceFor(oc, raw, op, cleanup);
         if (!face) return null;
         const ax = keep(new oc.gp_Ax1_2(keep(pnt(oc, op.axisPoint)), keep(dir(oc, op.axisDir))));
         const angle = (op.angleDeg * Math.PI) / 180;
-        return keep(keep(new oc.BRepPrimAPI_MakeRevol_1(face, ax, angle, false)).Shape());
+        return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakeRevol_1(face, ax, angle, false)).Shape()), cleanup);
       }
       case "sweep": {
         const faces = collectFaces(oc, shape, cleanup);
-        const face = faces[faceIndex(op.profile)];
+        const raw = faces[faceIndex(op.profile)];
         const edge = collectEdges(oc, shape, cleanup)[edgeIndex(op.path)];
-        if (!face || !edge) return null;
+        if (!raw || !edge) return null;
+        // Verified live: MakePipe_1 sweeps an ANNULAR profile correctly on a
+        // straight spine (exactly 1280 for a 64-area band over length 20) AND
+        // on a 90-degree arc spine (2010.6193, matching Pappus exactly), so
+        // thin sweep needs no outer/inner-and-cut fallback.
+        const face = thinFaceFor(oc, raw, op, cleanup);
+        if (!face) return null;
         const wire = keep(new oc.BRepBuilderAPI_MakeWire_2(edge)).Wire();
         keep(wire);
-        return keep(keep(new oc.BRepOffsetAPI_MakePipe_1(wire, face)).Shape());
+        return finishThin(oc, op, keep(keep(new oc.BRepOffsetAPI_MakePipe_1(wire, face)).Shape()), cleanup);
       }
       case "loft": {
         const faces = collectFaces(oc, shape, cleanup);
-        const wires = op.profiles
-          .map((id) => faces[faceIndex(id)])
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .filter((f): f is any => f != null)
-          .map((f) => keep(oc.BRepTools.OuterWire(f)));
-        if (wires.length < 2) return null;
-        const ts = keep(new oc.BRepOffsetAPI_ThruSections(true, false, 1.0e-6));
-        for (const w of wires) ts.AddWire(w);
-        ts.Build();
-        if (!ts.IsDone()) return null;
-        return keep(ts.Shape());
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const profiles = op.profiles.map((id) => faces[faceIndex(id)]).filter((f): f is any => f != null);
+        if (profiles.length < 2) return null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const loftWires = (ws: any[]): any => {
+          const ts = keep(new oc.BRepOffsetAPI_ThruSections(true, false, 1.0e-6));
+          for (const w of ws) ts.AddWire(w);
+          ts.Build();
+          return ts.IsDone() ? keep(ts.Shape()) : null;
+        };
+        const spec = thinSpecOf(op);
+        if (!spec) return loftWires(profiles.map((f) => keep(oc.BRepTools.OuterWire(f))));
+        // `ThruSections` is WIRE-based and keeps only the wires it is given, so
+        // handing it an annular band face's outer wire would silently loft a
+        // FILLED solid (verified: 813.33 for a case whose thin answer is 560).
+        // Loft the two band boundaries as separate solids and cut instead —
+        // verified exact (outer 1000, inner 360, cut 640).
+        const bands = profiles.map((f) => thinProfileWires(oc, f, spec.thin, spec.thinOuter, cleanup));
+        if (bands.some((b) => b === null)) return null;
+        const outerSolid = loftWires(bands.map((b) => b!.outer));
+        const innerSolid = loftWires(bands.map((b) => b!.inner));
+        if (!outerSolid || !innerSolid) return null;
+        const cut = keep(new oc.BRepAlgoAPI_Cut_3(outerSolid, innerSolid));
+        if (!cut.IsDone()) return null;
+        return finishThin(oc, op, keep(cut.Shape()), cleanup);
       }
       default:
         return null;
