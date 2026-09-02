@@ -1,5 +1,9 @@
 # Getting Started
 
+This page is the reference: one section per panel, feature by feature. If you would rather learn
+by building something, the [tutorials](/tutorials/) walk through a real part from start to
+finish and link back here for the details.
+
 ## Installation
 
 Install **CAD Preview** from the VS Code Marketplace:

@@ -8,10 +8,18 @@ export default defineConfig({
   // valid on disk/GitHub but outside VitePress's srcDir, so its dead-link
   // checker can't resolve them — ignore just those.
   ignoreDeadLinks: [/\.\.\/(CLAUDE|README|LICENSE)/],
+  markdown: {
+    // ```parametric blocks are JSON, and are the ones `src/docExamples.test.ts`
+    // actually compiles on every `npm test` (the fence is the opt-in marker —
+    // a plain ```json block stays illustrative). Alias it so they still get
+    // JSON syntax highlighting instead of falling back to plain text.
+    languageAlias: { parametric: 'json' },
+  },
   themeConfig: {
     nav: [
       { text: 'Home',            link: '/' },
       { text: 'Getting Started', link: '/getting-started' },
+      { text: 'Tutorials',       link: '/tutorials/' },
       { text: 'Architecture',    link: '/architecture' },
       { text: 'GitHub', link: 'https://github.com/loumalouomega/CAD-Preview' },
     ],
@@ -21,6 +29,17 @@ export default defineConfig({
         items: [
           { text: 'Getting Started', link: '/getting-started' },
           { text: 'File Formats',    link: '/file-formats' },
+        ],
+      },
+      {
+        text: 'Tutorials',
+        items: [
+          { text: 'Overview',                     link: '/tutorials/' },
+          { text: 'Your first bracket',           link: '/tutorials/bracket' },
+          { text: 'Parametric bolt-circle flange', link: '/tutorials/bolt-circle-flange' },
+          { text: 'A shelled enclosure',          link: '/tutorials/enclosure' },
+          { text: 'Prepare a part for FEA',       link: '/tutorials/fea-prep' },
+          { text: 'Model with an AI agent',       link: '/tutorials/agent-mcp' },
         ],
       },
       {

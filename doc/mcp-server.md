@@ -207,7 +207,7 @@ The interactive **Macros** sidebar panel reads and writes the same file (as `cad
 
 `run_parametric_script` is NOT a general-purpose scripting language — no code execution, no I/O — just a compiler from a small declarative document into the same `EditOp[]` shape `apply_edit_ops` accepts. A script is:
 
-```json
+```parametric
 {
   "variables": [{ "name": "R", "expr": "10" }, { "name": "N", "expr": "6" }],
   "steps": [

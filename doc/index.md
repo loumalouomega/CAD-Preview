@@ -10,6 +10,9 @@ hero:
       text: Get Started
       link: /getting-started
     - theme: alt
+      text: Tutorials
+      link: /tutorials/
+    - theme: alt
       text: Architecture
       link: /architecture
     - theme: alt
@@ -82,7 +85,7 @@ features:
 
 [![The CAD Preview editor — 3D viewer, orientation cube, Components/Parts/Edits/FE Mesh sidebar, toolbar, and view controls.](/screenshots/viewer-main.png)](/getting-started)
 
-<p style="text-align:center; opacity:0.75; margin-top:-0.5rem;"><em>Previewing a STEP model with colour-coded parts, parametric variables, and every panel live. See the <a href="/getting-started">Getting Started</a> guide for a walkthrough of each feature.</em></p>
+<p style="text-align:center; opacity:0.75; margin-top:-0.5rem;"><em>Previewing a STEP model with colour-coded parts, parametric variables, and every panel live. The <a href="/tutorials/">tutorials</a> build a real part start to finish; <a href="/getting-started">Getting Started</a> is the panel-by-panel reference.</em></p>
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; justify-content:center; margin-top:1.5rem;">
   <img src="/screenshots/edits-geometry.png" alt="Geometry creation ops" style="max-width:240px; flex:0 1 220px;" />

@@ -269,10 +269,16 @@ function asFaceIdPair(v: unknown): [string, string] | null {
   return [v[0], v[1]];
 }
 
+/** Both ids must name the SAME kind — two cylindrical faces, or two parallel
+ * line edges. A mixed `["face-0", "edge-1"]` pair has no coherent mid-axis
+ * (`resolveMidaxis` reads a face via its cylinder axis and an edge via
+ * its chord), so it is refused here rather than skipped at replay. */
 function asMidaxisPair(v: unknown): [string, string] | null {
   if (!Array.isArray(v) || v.length !== 2) return null;
   if (typeof v[0] !== "string" || typeof v[1] !== "string") return null;
-  if (!/^(face|edge)-\d+$/.test(v[0]) || !/^(face|edge)-\d+$/.test(v[1])) return null;
+  const a = /^(face|edge)-\d+$/.exec(v[0]);
+  const b = /^(face|edge)-\d+$/.exec(v[1]);
+  if (!a || !b || a[1] !== b[1]) return null;
   return [v[0], v[1]];
 }
 
