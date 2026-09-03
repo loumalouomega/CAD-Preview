@@ -4419,6 +4419,59 @@ try {
     );
   }
 
+  // --- loft smoothing (roadmap item 2: the one ThruSections knob with a
+  // measured effect) ---------------------------------------------------------
+  //
+  // Probed live: SetSmoothing moves a 4-section progressively-twisted loft
+  // -0.711% (1467.5211 -> 1457.0866), while SetContinuity/SetParType/
+  // SetMaxDegree/SetCriteriumWeight are accepted but change nothing
+  // (deliberately unexposed). Four 10x10 rectangles at z=20/25/30/35 twisted
+  // 0/20/-15/25 degrees via the in-plane `up` vector — the twist must be
+  // PROGRESSIVE: alternating-orthogonal sections were calibrated to show only
+  // float noise (~1e-11), which would make these assertions vacuous. Block.stp
+  // contributes face-0..5, the sketches are face-6..9 in order.
+  {
+    const smoothModel = path.join(dir, "loft-smooth.stp");
+    const resetSmooth = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), smoothModel);
+      fs.rmSync(`${smoothModel}.edits.json`, { force: true });
+    };
+    const deg = (d) => [Math.cos((d * Math.PI) / 180), Math.sin((d * Math.PI) / 180), 0];
+    const srect = (z, twistDeg) => ({ op: "addRectangleProfile", center: [0, 0, z], normal: [0, 0, 1], up: deg(twistDeg), width: 10, height: 10 });
+    const sections = ["face-6", "face-7", "face-8", "face-9"];
+    const loftVolume = async (label, extra) => {
+      resetSmooth();
+      const ops = [
+        srect(20, 0), srect(25, 20), srect(30, -15), srect(35, 25),
+        { op: "loft", profiles: sections, ...extra },
+      ];
+      const res = await callWithCleanRetry("apply_edit_ops", { path: smoothModel, ops }, resetSmooth);
+      assert(
+        res.applied === ops.length && (res.notApplied ?? 0) === 0,
+        `${label}: every op applies (got ${JSON.stringify(res.report)})`
+      );
+      const mass = await call("get_mass_properties", { path: smoothModel, entityId: "solid-1" });
+      assert(mass.supported && typeof mass.volume === "number", `${label}: mass properties resolve`);
+      return mass.volume;
+    };
+
+    // 1. smoothing changes the surface by the probe-measured amount — an
+    // absolute pin, not just "differs": a silently-ignored setting would give
+    // the plain volume for both.
+    const plainVol = await loftVolume("plain 4-section loft", {});
+    assert(Math.abs(plainVol - 1467.5211) < 0.05, `plain twisted loft matches the probed volume (got ${plainVol})`);
+    const smoothVol = await loftVolume("smoothed 4-section loft", { smoothing: true });
+    assert(Math.abs(smoothVol - 1457.0866) < 0.05, `smoothed twisted loft matches the probed volume (got ${smoothVol})`);
+
+    // 2. smoothing:false is byte-identical replay behavior to absent.
+    const falseVol = await loftVolume("explicit smoothing:false loft", { smoothing: false });
+    assert(falseVol === plainVol, `smoothing:false replays exactly like absent (${falseVol} vs ${plainVol})`);
+
+    // 3. thin loft + smoothing completes (the P4 verdict: shared choke point).
+    const thinSmoothVol = await loftVolume("thin smoothed loft", { thin: 2, smoothing: true });
+    assert(Number.isFinite(thinSmoothVol) && thinSmoothVol > 0, `thin + smoothing completes with sane volume (${thinSmoothVol})`);
+  }
+
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");
 
   console.log("\nMCP smoke test passed.");

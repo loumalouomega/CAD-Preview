@@ -1876,16 +1876,22 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
           return null;
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const loftWires = (ws: any[]): any => {
+        const loftWires = (ws: any[], smoothing?: boolean): any => {
           const ts = keep(new oc.BRepOffsetAPI_ThruSections(true, false, 1.0e-6));
           for (const w of ws) ts.AddWire(w);
+          // The only ThruSections knob with a measured effect in this build
+          // (probed: smoothing moves a 4-section twisted loft -0.711%;
+          // SetContinuity/SetParType/SetMaxDegree/SetCriteriumWeight are
+          // accepted but change nothing, so they are deliberately NOT
+          // exposed). Applies to every loft path below, thin included.
+          if (smoothing === true) ts.SetSmoothing(true);
           ts.Build();
           return ts.IsDone() ? keep(ts.Shape()) : null;
         };
         const spec = thinSpecOf(op);
         if (!spec) {
           if (open > 0) { fail?.(...openProfileNeedsThin(sections.find((s) => !s.closed)!)); return null; }
-          return loftWires(sections.map((s) => s.wire));
+          return loftWires(sections.map((s) => s.wire), (op as Extract<EditOp, { op: "loft" }>).smoothing);
         }
         if (open > 0) {
           // An open section's band is ONE closed boundary, so it lofts
@@ -1894,7 +1900,7 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
           if (!openThinOuterOk(op, spec)) { fail?.(...openProfileThinOuter()); return null; }
           const bands = sections.map((s) => openBandWire(oc, s.wire, spec.thin, cleanup));
           if (bands.some((b) => b === null)) { fail?.("could not build a wall around every open loft section"); return null; }
-          return finishThin(oc, op, loftWires(bands), cleanup);
+          return finishThin(oc, op, loftWires(bands, (op as Extract<EditOp, { op: "loft" }>).smoothing), cleanup);
         }
         const holed = sections.find((s) => s.holed);
         if (holed) { fail?.(`the loft profile ${holed.label} already has a hole`, "a thin wall is built from the outer boundary alone, which would silently discard it"); return null; }
@@ -1905,8 +1911,8 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
         // verified exact (outer 1000, inner 360, cut 640).
         const bands = sections.map((s) => thinProfileWires(oc, s.wire, spec.thin, spec.thinOuter, cleanup));
         if (bands.some((b) => b === null)) return null;
-        const outerSolid = loftWires(bands.map((b) => b!.outer));
-        const innerSolid = loftWires(bands.map((b) => b!.inner));
+        const outerSolid = loftWires(bands.map((b) => b!.outer), (op as Extract<EditOp, { op: "loft" }>).smoothing);
+        const innerSolid = loftWires(bands.map((b) => b!.inner), (op as Extract<EditOp, { op: "loft" }>).smoothing);
         if (!outerSolid || !innerSolid) return null;
         const cut = keep(new oc.BRepAlgoAPI_Cut_3(outerSolid, innerSolid));
         if (!cut.IsDone()) return null;

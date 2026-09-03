@@ -111,7 +111,18 @@ export interface SweepOp extends ThinSpec, ProfileOperand { op: "sweep"; path: s
  * a distinct field name because the arity differs. Every section must agree
  * on closedness; a mixed list is skipped with a diagnostic.
  */
-export interface LoftOp extends ThinSpec { op: "loft"; profiles?: string[]; profileEdgeSets?: string[][]; }
+export interface LoftOp extends ThinSpec {
+  op: "loft"; profiles?: string[]; profileEdgeSets?: string[][];
+  /**
+   * Surface smoothing across sections (`ThruSections.SetSmoothing`) — the
+   * only loft quality knob with a measured effect in this OCCT build
+   * (probed: -0.711% volume on a 4-section twisted fixture; continuity,
+   * parametrization, max-degree and criterium weights are accepted but
+   * change nothing, so they are deliberately not exposed). Omitted/false =
+   * today's behavior, byte-identical.
+   */
+  smoothing?: boolean;
+}
 /** Spread every solid radially from the model centre by `factor`. */
 export interface ExplodeOp { op: "explode"; factor: number; }
 /** Align face `faceA` onto face `faceB` (basic single-constraint mate). */
@@ -609,12 +620,16 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       if (hasFaces === hasEdgeSets) return null; // neither form, or both at once
       const thin = asThinSpec(o);
       if (!thin) return null;
+      // Smoothing is a strict boolean when present — anything else (a truthy
+      // string, a number) is a rejection, not a silent default.
+      if (o.smoothing !== undefined && typeof o.smoothing !== "boolean") return null;
+      const smoothing = o.smoothing === true ? { smoothing: true as const } : {};
       if (hasFaces) {
         const profiles = asIdArray(o.profiles, 2);
-        return profiles ? { op: "loft", profiles, ...thin } : null;
+        return profiles ? { op: "loft", profiles, ...thin, ...smoothing } : null;
       }
       const profileEdgeSets = asEdgeIdArrayList(o.profileEdgeSets, 2);
-      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin } : null;
+      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin, ...smoothing } : null;
     }
     case "explode": {
       return isFiniteNumber(o.factor) ? { op: "explode", factor: o.factor } : null;

@@ -486,6 +486,22 @@ describe("thin (sweep-family thin-walled features)", () => {
     expect(op && "thinOuter" in op).toBe(false);
   });
 
+  it("accepts loft smoothing as a strict boolean, normalizing false to absent", () => {
+    const loft = (extra: Record<string, unknown>) =>
+      validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], ...extra });
+    expect(loft({ smoothing: true })).toMatchObject({ op: "loft", smoothing: true });
+    // false normalizes to absent — the kernel treats both identically
+    // (`smoothing === true` gate), so no information is lost.
+    const off = loft({ smoothing: false });
+    expect(off).not.toBeNull();
+    expect(off && "smoothing" in off).toBe(false);
+    const bare = loft({});
+    expect(bare).not.toBeNull();
+    expect(bare && "smoothing" in bare).toBe(false);
+    expect(loft({ smoothing: 1 })).toBeNull();
+    expect(loft({ smoothing: "true" })).toBeNull();
+  });
+
   it("accepts thinOuter across its whole range, including fully outward", () => {
     expect(extrude({ thin: 2, thinOuter: 0 })).toMatchObject({ thin: 2, thinOuter: 0 });
     expect(extrude({ thin: 2, thinOuter: 1 })).toMatchObject({ thin: 2, thinOuter: 1 });

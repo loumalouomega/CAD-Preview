@@ -35,7 +35,7 @@ export type FeatureDraft = (
   | { kind: "extrude"; dir: Vec3; length: number }
   | { kind: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "sweep" }
-  | { kind: "loft" }
+  | { kind: "loft"; smoothing?: boolean }
   | { kind: "rib"; dir: Vec3; blendRadius: number }
 ) & { exprs?: ExprMap; thin?: number; thinOuter?: number };
 
@@ -798,8 +798,9 @@ export class EditsPanel {
       case "loft":
         f.appendChild(this.hint("Profiles = 2+ selected faces, or capture one section at a time"));
         f.appendChild(this.loftSectionRow());
+        f.appendChild(this.boolField("smoothing", "Smooth", false));
         this.thinFields(f);
-        this.applyButtonDraft("Apply", "Build the feature from the loft sections", (): FeatureDraft => ({ kind: "loft", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        this.applyButtonDraft("Apply", "Build the feature from the loft sections", (): FeatureDraft => ({ kind: "loft", ...(this.readBool("smoothing") ? { smoothing: true as const } : {}), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "rib":
         f.appendChild(this.hint("Spine = selected open wire (Line mode) · terminator = captured face"));

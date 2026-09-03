@@ -1714,21 +1714,25 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       };
     }
     case "loft": {
+      // Smoothing is orthogonal to section sourcing — read once, applied to
+      // every loft shape below (captured sections, live selection, thin or
+      // plain alike), since it flows into the shared loftWires choke point.
+      const smoothing = d.smoothing === true ? { smoothing: true as const } : {};
       if (loftSections.length > 0) {
         if (loftSections.length < 2) return { error: "Capture at least 2 loft sections (Add section)." };
         const guide = loftSections.flatMap((s) => s.ids).find((id) => guideEntityIds.has(id));
         if (guide) return { error: `${guide} is guide (construction) geometry — guides are excluded from loft profiles.` };
         if (loftSections.every((s) => s.kind === "face")) {
-          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...thinOf(d) }) };
+          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...smoothing, ...thinOf(d) }) };
         }
         if (loftSections.every((s) => s.kind === "edges")) {
-          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...thinOf(d) }) };
+          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...smoothing, ...thinOf(d) }) };
         }
         return { error: "Loft sections must be all faces or all edge wires — clear and re-capture." };
       }
       if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft, or capture sections one at a time." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from loft profiles." };
-      return { op: withExprs({ op: "loft", profiles: selFaces, ...thinOf(d) }) };
+      return { op: withExprs({ op: "loft", profiles: selFaces, ...smoothing, ...thinOf(d) }) };
     }
 
     // ── assembly ──
