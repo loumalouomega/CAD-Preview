@@ -22,6 +22,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   draft: { op: "draft", faces: ["face-0"], angleDeg: 10 },
   splitByPlane: { op: "splitByPlane", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1], keep: "both" },
   section: { op: "section", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1] },
+  rib: { op: "rib", spineEdges: ["edge-0", "edge-1"], dir: [0, 0, 1], thin: 2, upTo: "face-0" },
   addBox: { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] },
   addSphere: { op: "addSphere", center: [0, 0, 0], radius: 5 },
   addCylinder: { op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, height: 10 },

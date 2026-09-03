@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="60" height="80" viewBox="0 0 60 80">
+<path fill-rule="nonzero" fill="rgb(87.5%, 87.5%, 87.5%)" fill-opacity="1" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" stroke="rgb(0%, 0%, 0%)" stroke-opacity="1" stroke-miterlimit="10" d="M 5 55 L 55 55 L 55 65 L 5 65 Z"/>
+<path fill-rule="nonzero" fill="rgb(90%, 90%, 90%)" fill-opacity="1" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" stroke="rgb(0%, 0%, 0%)" stroke-opacity="1" stroke-miterlimit="10" d="M 25 55 L 25 10 L 35 10 L 35 55 Z"/>
+</svg>

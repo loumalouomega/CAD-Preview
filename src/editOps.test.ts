@@ -166,7 +166,7 @@ describe("validateEditOp", () => {
   });
 
   it("modify ops are topology-changing, B-rep only", () => {
-    for (const kind of ["shell", "splitByPlane", "section"] as const) {
+    for (const kind of ["shell", "splitByPlane", "section", "rib"] as const) {
       expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
       expect(BREP_ONLY_OPS.has(kind)).toBe(true);
     }
@@ -584,6 +584,37 @@ describe("extrude up-to-face terminator", () => {
 
   it("composes with thin on the terminator form", () => {
     expect(validateEditOp({ ...base, upToFace: "face-9", thin: 2 })).toMatchObject({ upToFace: "face-9", thin: 2 });
+  });
+});
+
+describe("rib", () => {
+  const rib = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "rib", spineEdges: ["edge-0", "edge-1"], dir: [0, 0, 1], thin: 2, upTo: "face-3", ...extra });
+
+  it("accepts a well-formed rib (blend optional, defaulting downstream)", () => {
+    expect(rib({})).toMatchObject({ op: "rib", spineEdges: ["edge-0", "edge-1"], thin: 2, upTo: "face-3" });
+    expect(rib({ blendRadius: 0.5 })).toMatchObject({ blendRadius: 0.5 });
+    expect(rib({ blendRadius: 0 })).toMatchObject({ blendRadius: 0 });
+    expect(rib({ thinOuter: 1 })).toMatchObject({ thinOuter: 1 }); // exactly thin/2: symmetric
+  });
+
+  it("rejects a missing/meaningless spine, direction-less, thin-less, or terminator-less rib", () => {
+    expect(validateEditOp({ op: "rib", dir: [0, 0, 1], thin: 2, upTo: "face-3" })).toBeNull(); // no spineEdges key
+    expect(rib({ spineEdges: [] })).toBeNull();
+    expect(rib({ spineEdges: ["face-0"] })).toBeNull(); // face smuggled into the edge form
+    expect(rib({ spineEdges: ["edge-0", "face-1"] })).toBeNull();
+    expect(rib({ thin: 0 })).toBeNull();
+    expect(rib({ thin: -2 })).toBeNull();
+    expect(validateEditOp({ op: "rib", spineEdges: ["edge-0"], dir: [0, 0, 1], thin: 2 })).toBeNull(); // no upTo
+    expect(rib({ upTo: "edge-0" })).toBeNull();
+    expect(rib({ upTo: "face-x" })).toBeNull();
+  });
+
+  it("rejects asymmetric thinOuter and negative blendRadius", () => {
+    expect(rib({ thinOuter: 0.5 })).toBeNull(); // not exactly thin/2 — open wire has no outside
+    expect(rib({ thinOuter: 2 })).toBeNull();
+    expect(rib({ blendRadius: -1 })).toBeNull();
+    expect(rib({ blendRadius: "0.5" })).toBeNull();
   });
 });
 

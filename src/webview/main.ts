@@ -532,6 +532,8 @@ type LoftSection = { kind: "face"; ids: string[] } | { kind: "edges"; ids: strin
 let sweepPath: string | null = null;
 /** Extrude's captured terminator face — see `EditsPanelCallbacks.onCaptureTerminator`. */
 let extrudeTerminator: string | null = null;
+/** Rib's captured terminator face — see `EditsPanelCallbacks.onCaptureRibTerminator`. */
+let ribTerminator: string | null = null;
 /** Loft's captured sections — see `EditsPanelCallbacks.onCaptureLoftSection`. */
 let loftSections: LoftSection[] = [];
 const selectedVolumes = (): string[] =>
@@ -845,6 +847,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     return extrudeTerminator;
   },
   onClearTerminator: () => { extrudeTerminator = null; scheduleOpPreview(); },
+  onCaptureRibTerminator: () => {
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    if (faces.length !== 1) { setStatus("Select exactly one face (Surf mode) to capture as the rib terminator.", true); return ribTerminator; }
+    ribTerminator = faces[0];
+    scheduleOpPreview();
+    return ribTerminator;
+  },
+  onClearRibTerminator: () => { ribTerminator = null; scheduleOpPreview(); },
   onCaptureLoftSection: () => {
     const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
     const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
@@ -872,6 +882,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     sweepPath = null;
     loftSections = [];
     extrudeTerminator = null;
+    ribTerminator = null;
     editsPanel.resetFeatureCaptures();
     setStatus("");
   },
@@ -1541,6 +1552,7 @@ function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
     case "revolve":
     case "sweep":
     case "loft":
+    case "rib":
     case "patternLinear":
     case "patternCircular":
       return "add";
@@ -1679,6 +1691,27 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       const profile = profileOperandFromSelection(selFaces, sweepPath ? profileEdges : []);
       if ("error" in profile) return { error: `${profile.error} to sweep.` };
       return { op: withExprs({ op: "sweep", ...profile.operand, path, ...thinOf(d) }) };
+    }
+    case "rib": {
+      if (!ribTerminator) return { error: "Capture a terminator face (Set terminator) before building a rib — a rib has no length to fall back on." };
+      if (!/^face-\d+$/.test(ribTerminator)) return { error: "Captured terminator is not a face id — clear and re-capture it." };
+      if (guideEntityIds.has(ribTerminator)) return { error: `${ribTerminator} is guide (construction) geometry — guides are excluded from rib terminators.` };
+      if (selEdges.length === 0) return { error: "Select spine edges (Line mode) before building a rib." };
+      const ribGuide = selEdges.find((e) => guideEntityIds.has(e));
+      if (ribGuide) return { error: `${ribGuide} is guide (construction) geometry — guides are excluded from rib spines.` };
+      if (d.thin === undefined || !Number.isFinite(d.thin) || d.thin <= 0) return { error: "Set a Wall thickness greater than 0 — a rib without thickness encloses nothing." };
+      const thin = d.thin as number;
+      return {
+        op: withExprs({
+          op: "rib",
+          spineEdges: selEdges,
+          dir: d.dir,
+          thin,
+          ...(d.thinOuter !== undefined ? { thinOuter: d.thinOuter } : {}),
+          upTo: ribTerminator,
+          ...(Number.isFinite(d.blendRadius) ? { blendRadius: d.blendRadius } : {}),
+        }),
+      };
     }
     case "loft": {
       if (loftSections.length > 0) {

@@ -36,6 +36,7 @@ export type FeatureDraft = (
   | { kind: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "sweep" }
   | { kind: "loft" }
+  | { kind: "rib"; dir: Vec3; blendRadius: number }
 ) & { exprs?: ExprMap; thin?: number; thinOuter?: number };
 
 /** A primitive-creation draft — self-contained (no selection needed), pushed
@@ -135,6 +136,13 @@ export interface EditsPanelCallbacks {
   onCaptureSweepPath: () => string | null;
   /** Forget the captured sweep path (back to "the one selected edge is the path"). */
   onClearSweepPath: () => void;
+  /** Capture the selected face as the rib terminator; returns its id, or null
+   * when nothing suitable is selected. The spine (edges) and the terminator
+   * (face) live in different pick modes, but capturing keeps the terminator
+   * stable across selection changes, like the sweep path. */
+  onCaptureRibTerminator: () => string | null;
+  /** Forget the captured rib terminator (a rib cannot apply without one). */
+  onClearRibTerminator: () => void;
   /** Capture the current selection as one more loft section; returns the new count. */
   onCaptureLoftSection: () => number;
   /** Forget every captured loft section (back to "the selected faces are the sections"). */
@@ -253,6 +261,8 @@ export class EditsPanel {
   private loftSectionCount = 0;
 
   private terminator: string | null = null;
+
+  private ribTerminator: string | null = null;
   private readonly tabButtons = new Map<TabId, HTMLButtonElement>();
   private readonly subtabButtons = new Map<SubtabId, HTMLButtonElement>();
   private readonly tabContents = new Map<string, HTMLElement>(); // "geometry:2d" | "geometry:3d" | "edit"
@@ -790,6 +800,15 @@ export class EditsPanel {
         f.appendChild(this.loftSectionRow());
         this.thinFields(f);
         this.applyButtonDraft("Apply", "Build the feature from the loft sections", (): FeatureDraft => ({ kind: "loft", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        break;
+      case "rib":
+        f.appendChild(this.hint("Spine = selected open wire (Line mode) · terminator = captured face"));
+        f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
+        f.appendChild(this.numField("thin", "Wall", 2));
+        f.appendChild(this.numField("blendRadius", "Blend", 0));
+        f.appendChild(this.hint("Wall is required (a rib without thickness encloses nothing). Blend 0 = fuse only."));
+        f.appendChild(this.ribTerminatorRow());
+        this.applyButtonDraft("Apply", "Build the rib from the selected spine edges", (): FeatureDraft => ({ kind: "rib", dir: this.readVec("dir"), blendRadius: this.readNum("blendRadius"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
 
       // ── EDIT · modify ──
@@ -1330,7 +1349,8 @@ export class EditsPanel {
     this.sweepPath = null;
     this.loftSectionCount = 0;
     this.terminator = null;
-    if (this.activeOp === "sweep" || this.activeOp === "loft" || this.activeOp === "extrude") this.renderParams();
+    this.ribTerminator = null;
+    if (this.activeOp === "sweep" || this.activeOp === "loft" || this.activeOp === "extrude" || this.activeOp === "rib") this.renderParams();
   }
 
   /**
@@ -1403,6 +1423,42 @@ export class EditsPanel {
     clear.addEventListener("click", () => {
       this.cb.onClearSweepPath();
       this.sweepPath = null;
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(set);
+    row.appendChild(clear);
+    row.appendChild(status);
+    return row;
+  }
+
+  /**
+   * Rib's required terminator capture — a rib cannot apply without one (there
+   * is no length to fall back on, unlike extrude's optional terminator).
+   */
+  private ribTerminatorRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.ribTerminator ? `to: ${this.ribTerminator}` : "to: —"; };
+    render();
+    const set = document.createElement("button");
+    set.className = "compose-apply";
+    set.textContent = "Set terminator";
+    set.title = "Capture the selected face as the rib terminator";
+    set.addEventListener("click", () => {
+      this.ribTerminator = this.cb.onCaptureRibTerminator();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget the captured terminator";
+    clear.addEventListener("click", () => {
+      this.cb.onClearRibTerminator();
+      this.ribTerminator = null;
       render();
       this.cb.onPreviewDraftChanged();
     });

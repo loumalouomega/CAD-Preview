@@ -216,6 +216,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1), join?: "arc"|"intersection"|"tangent" (default arc)}',
   draft: '{faces: faceId[], angleDeg: 0<n<90, planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N from planes sidecar; planePoint/planeNormal may ride alongside as cache) (neutral plane + pull direction; omitted = each face\'s own plane). NOTE: this WASM build\'s draft engine (BRepOffsetAPI_DraftAngle.Build) is kernel-broken — the op validates but reports applied:false with a diagnostic}',
   splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR with planePoint/planeNormal and midplaneFaces; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
+  rib: '{spineEdges: edgeId[] (open wire, assembled in any order), dir: [x,y,z], thin: n>0 (required; symmetric — thinOuter must be absent or exactly thin/2), upTo: faceId (planar terminator — wall runs to its plane plus one thin of embed, then fuses), blendRadius?: n>=0 (junction blend; default thin/4; 0 = fuse only)}',
   section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR)}',
   addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
   addSphere: '{center: [x,y,z], radius: n>0}',

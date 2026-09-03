@@ -4147,6 +4147,136 @@ try {
     );
   }
 
+  // --- rib() (roadmap item 2: open spine + up-to-face + fuse + blend) --------
+  //
+  // Same analytic discipline. Support box 20x20x10 (volume 4000) + cap box
+  // 20x20x2 (800) on block.stp (60); open 2-segment spine on z=10, wall 2
+  // (band 32+PI), extruded +Z to the cap bottom (z=16) with one-thin embed,
+  // fused, junction blended at the default thin/4 = 0.5. Visible wall is 6
+  // tall: 4000 + 800 + 60 + 6*(32+PI), plus concave-fillet fill on top.
+  {
+    const ribModel = path.join(dir, "rib.stp");
+    const resetRib = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), ribModel);
+      fs.rmSync(`${ribModel}.edits.json`, { force: true });
+    };
+    resetRib();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 5], size: [20, 20, 10] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 17], size: [20, 20, 2] }] },
+      resetRib
+    );
+    const ribLoaded = await call("load_model", { path: ribModel });
+    const ribEdgeBase = ribLoaded.edgeCount;
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: ribModel,
+        ops: [{ op: "addPolyline", points: [[10, 2, 10], [10, 10, 10], [10, 18, 10]], closed: false }],
+      },
+      resetRib
+    );
+    const ribSpine = [`edge-${ribEdgeBase}`, `edge-${ribEdgeBase + 1}`];
+    const ribLoaded2 = await call("load_model", { path: ribModel });
+    let ribTerm = null;
+    let ribBehind = null;
+    for (const s of ribLoaded2.solids) {
+      for (const fid of s.faceIds) {
+        const f = await call("inspect", { path: ribModel, entityId: fid });
+        if (Math.abs((f.area ?? 0) - 400) < 1e-6 && Math.abs(f.center[2] - 16) < 1e-6) ribTerm = fid;
+        if (Math.abs((f.area ?? 0) - 12) < 1e-6 && Math.abs(f.center[2] - (-2.5)) < 1e-6) ribBehind = fid;
+      }
+    }
+    assert(ribTerm !== null, "rib terminator (cap bottom, area 400 at z=16) found");
+    assert(ribBehind !== null, "behind-plane face (seed bottom, z=-2.5) found for the miss case");
+
+    // 1. full rib: fuse + blend. Base is exact; the blend adds concave fill.
+    const BAND = 2 * 16 + Math.PI;
+    const ribBase = 60 + 4000 + 800 + BAND * 6;
+    const ribbed = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "rib", spineEdges: ribSpine, dir: [0, 0, 1], thin: 2, upTo: ribTerm }] },
+      resetRib
+    );
+    assert(ribbed.applied === 1, `rib applies (got ${JSON.stringify(ribbed.report)})`);
+    const ribMass = await call("get_mass_properties", { path: ribModel });
+    assert(
+      ribMass.volume > ribBase - 0.1 && ribMass.volume < ribBase + 10,
+      `fused+blended rib is the analytic base ${ribBase.toFixed(2)} plus concave fill (got ${ribMass.volume})`
+    );
+
+    // 2. fuse-only twin (blendRadius 0) is exact to the base — and the blended
+    // twin exceeds it by exactly the fillet fill, proving the blend ran.
+    resetRib();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 5], size: [20, 20, 10] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 17], size: [20, 20, 2] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: ribModel,
+        ops: [{ op: "addPolyline", points: [[10, 2, 10], [10, 10, 10], [10, 18, 10]], closed: false }] },
+      resetRib
+    );
+    const ribbedFlat = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "rib", spineEdges: ribSpine, dir: [0, 0, 1], thin: 2, upTo: ribTerm, blendRadius: 0 }] },
+      resetRib
+    );
+    assert(ribbedFlat.applied === 1, `fuse-only rib applies (got ${JSON.stringify(ribbedFlat.report)})`);
+    const ribFlatMass = await call("get_mass_properties", { path: ribModel });
+    assert(Math.abs(ribFlatMass.volume - ribBase) < 0.1, `fuse-only rib is exactly the analytic base (got ${ribFlatMass.volume})`);
+    assert(ribMass.volume > ribFlatMass.volume, `blended rib exceeds fuse-only by the concave fill (${ribMass.volume} vs ${ribFlatMass.volume})`);
+
+    // 3. bucket roles: fused wall faces land under "side".
+    const ribBuckets = (await call("load_model", { path: ribModel })).opBuckets ?? [];
+    const ribBucket = ribBuckets.find((b) => b.kind === "rib");
+    assert((ribBucket?.roles?.side?.length ?? 0) > 0, `rib bucket carries side faces (got ${JSON.stringify(ribBucket?.roles)})`);
+
+    // 4. miss (terminator behind the spine) skips with a diagnostic — on a
+    // fresh setup history so the spine/terminator ids are known-valid (a fuse
+    // renumbers everything after it, so reusing post-rib ids here would test
+    // resolve-failure instead of the miss path).
+    resetRib();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 5], size: [20, 20, 10] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 17], size: [20, 20, 2] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: ribModel,
+        ops: [{ op: "addPolyline", points: [[10, 2, 10], [10, 10, 10], [10, 18, 10]], closed: false }] },
+      resetRib
+    );
+    const ribMiss = await call("apply_edit_ops", {
+      path: ribModel,
+      ops: [{ op: "rib", spineEdges: ribSpine, dir: [0, 0, 1], upTo: ribBehind }],
+    });
+    assert(
+      ribMiss.applied === 0 && ribMiss.report.some((r) => /behind|miss/i.test(r.diagnostic ?? "")),
+      `a behind-plane rib terminator skips (got ${JSON.stringify(ribMiss.report.map((r) => r.diagnostic))})`
+    );
+  }
+
   // --- open-profile (wire) operand, roadmap item 8 --------------------------
   //
   // Same analytic discipline as the thin block above. block.stp is 6 faces /

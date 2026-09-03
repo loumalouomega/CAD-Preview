@@ -116,6 +116,19 @@ export interface LoftOp extends ThinSpec { op: "loft"; profiles?: string[]; prof
 export interface ExplodeOp { op: "explode"; factor: number; }
 /** Align face `faceA` onto face `faceB` (basic single-constraint mate). */
 export interface MateOp { op: "mate"; faceA: string; faceB: string; }
+/**
+ * Build a rib from an open spine sketch: a thin wall around the spine wire
+ * (`spineEdges`, assembled like an open `profileEdges` wire), extruded along
+ * `dir` until it meets the terminator face `upTo` (planar only — the same
+ * plane semantics as {@link ExtrudeOp}'s `upToFace`, plus one wall-thickness
+ * of embed so the wall robustly intersects for fusing), fused into the
+ * existing model (unlike every feature op's append), with the wall↔body
+ * junction blended at `blendRadius` (`0` or omitted = fuse only, no blend).
+ * `thin` is required (a rib without thickness encloses nothing) and symmetric
+ * (an open wire has no inside/outside, so `thinOuter` must be absent or
+ * exactly `thin / 2` — the open-profile rule).
+ */
+export interface RibOp { op: "rib"; spineEdges: string[]; dir: Vec3; thin: number; thinOuter?: number; upTo: string; blendRadius?: number; }
 /** Add a box centred at `center` with full extents `size`. A cube is a box with equal `size` components. */
 export interface AddBoxOp { op: "addBox"; center: Vec3; size: Vec3; }
 /** Add a sphere of `radius` centred at `center`. */
@@ -194,7 +207,7 @@ export type EditOp = (
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
-  | ShellOp | DraftOp | SplitByPlaneOp | SectionOp
+  | ShellOp | DraftOp | SplitByPlaneOp | SectionOp | RibOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
   | AddWedgeOp | AddHoleOp | AddCounterboreHoleOp | AddCountersinkHoleOp
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
@@ -238,7 +251,7 @@ export type OutcomeFail = (diagnostic: string, hint?: string) => void;
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
-  "shell", "draft", "splitByPlane", "section",
+  "shell", "draft", "splitByPlane", "section", "rib",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
   "addWedge", "addHole", "addCounterboreHole", "addCountersinkHole",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
@@ -253,7 +266,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
  * The hole family is deliberately NOT here — the mesh engine cuts holes via CSG. */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
-  "shell", "draft", "splitByPlane", "section",
+  "shell", "draft", "splitByPlane", "section", "rib",
   "addWedge",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
@@ -704,6 +717,21 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const planePoint = asVec3(o.planePoint);
       const planeNormal = asNonZeroVec3(o.planeNormal);
       return planePoint && planeNormal ? { op: "section", targets, planePoint, planeNormal } : null;
+    }
+    case "rib": {
+      // An open spine has no inside/outside, so thinOuter is meaningless
+      // there (the open-profile rule): absent, or exactly half the wall.
+      const spineEdges = asEdgeIdArray(o.spineEdges);
+      const dir = asVec3(o.dir);
+      const upTo = asFaceId(o.upTo);
+      if (!spineEdges || !dir || !upTo) return null;
+      if (!isFiniteNumber(o.thin) || o.thin <= 0) return null;
+      if (o.thinOuter !== undefined && o.thinOuter !== (o.thin as number) / 2) return null;
+      if (o.blendRadius !== undefined && (!isFiniteNumber(o.blendRadius) || (o.blendRadius as number) < 0)) return null;
+      const out: RibOp = { op: "rib", spineEdges, dir, thin: o.thin as number, upTo };
+      if (o.thinOuter !== undefined) out.thinOuter = o.thinOuter as number;
+      if (o.blendRadius !== undefined) out.blendRadius = o.blendRadius as number;
+      return out;
     }
     case "addBox": {
       const center = asVec3(o.center);

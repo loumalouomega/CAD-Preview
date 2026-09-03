@@ -84,6 +84,10 @@ export const PRODUCED_ROLE: Record<string, string> = {
   revolve: "produced",
   sweep: "produced",
   loft: "produced",
+  // A fused rib's new faces are the wall's outer/inner sides above the
+  // support surface (the embedded part vanishes into the solid) — "side",
+  // the same walls an extrude names, not a new role.
+  rib: "side",
 };
 
 /** Human-readable role labels for the Edits-history chips (webview). */
