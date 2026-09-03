@@ -4,6 +4,18 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.8.0] - 2026-09-03
+
+### Added
+
+- **Thin-walled features.** `extrude`/`revolve`/`sweep`/`loft` accept an optional `thin` (total wall thickness) to build a thin-walled body — a tube, a hollow of revolution, a walled sweep or loft — instead of a filled one, plus `thinOuter` for how much of that wall sits outside the profile boundary (`0`, the default, grows it entirely inward; `thinOuter === thin` entirely outward; anything between straddles the outline). The profile's outline is offset into a band before the ordinary builder runs, so the result is an ordinary solid in every other respect; unlike a plain feature, a thin one does **not** consume its profile sketch, so the sketch stays available to reuse. A profile that already has a hole is refused rather than silently losing it, and a wall thicker than the profile's own narrowest half-width is skipped with an explanatory diagnostic. Both fields are ordinary numeric op fields a parametric variable can drive.
+- **Open-profile (wire) operands for the same four ops.** `extrude`/`revolve`/`sweep`/`loft` can now build from a set of picked **edges** (`profileEdges`/`profileEdgeSets`) as well as a sketch face — closing the "closed face profiles only" limitation thin-walled features shipped with. A closed edge selection behaves like the equivalent face; an **open** edge chain (an open polyline's own segments, for instance) requires `thin` and produces a walled body whose ends are rounded off, since an open profile encloses no area to fill. The interactive panel gained **Set path** (sweep) and **Add section**/**Clear** (loft) capture buttons so the profile-vs-path and per-section ambiguity that a wire operand introduces can be resolved by clicking, the same way boolean operand A is already captured.
+- **Three new narrative tutorials** under `doc/tutorials/` — building an L-bracket (primitives, booleans, fillets, holes), a shelled enclosure from a 2D profile sketch (extrude + shell), and preparing a part for finite-element analysis (naming regions, mesh refinement, exporting to Kratos MDPA) — each with numbered steps and a compiled, gated "Full operation list" block.
+
+### Fixed
+
+- **Three transitive dependencies carrying published high/moderate-severity advisories** (`fast-uri`, `nanoid`, `qs`, pulled in via `ajv`/`postcss`/`express`) bumped to their patched versions via `package.json` overrides; none of the three ship in the packaged `.vsix` (they're build/dev-time only), so this closes the alerts without any runtime behavior change.
+
 ## [1.7.0] - 2026-08-29
 
 ### Added
@@ -301,6 +313,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.5.1...v1.7.0
 [1.5.1]: https://github.com/loumalouomega/CAD-Preview/compare/v1.4.1...v1.5.1
 [1.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.4.1...v1.5.0
