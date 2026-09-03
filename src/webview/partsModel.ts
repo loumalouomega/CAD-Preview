@@ -140,5 +140,11 @@ function clone(p: Part): Part {
     lines: [...p.lines],
     points: [...p.points],
     meshSize: p.meshSize,
+    // A stored selector is data, not derived state — dropping it here would
+    // silently unpersist the query on the next autosave (the exact
+    // `AnnotationsModel.clone`-omitted-`tolerance` defect class). The query
+    // object itself is treated as immutable downstream (never mutated in
+    // place — resolution returns new arrays), so a shared reference is safe.
+    ...(p.selector && p.selectorOpKind ? { selector: p.selector, selectorOpKind: p.selectorOpKind } : {}),
   };
 }

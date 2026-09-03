@@ -425,6 +425,59 @@ try {
     );
   }
 
+  // Selector persistence (Phase A) — same block.stp+box+fillet shape on its own
+  // copy: synthesize the band cylinder, persist via set_part, append an
+  // unrelated op (the part must re-resolve to the same cylinder through
+  // maybeRebindParts), then remove the MIDDLE op (stored op index now
+  // addresses a different kind — the cache must freeze with a warning, and
+  // the stored query itself must survive the splice).
+  {
+    const persistModel = path.join(dir, "block-for-selector-persist.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), persistModel);
+    await call("apply_edit_ops", {
+      path: persistModel,
+      ops: [{ op: "addBox", center: [100, 0, 0], size: [10, 20, 30] }],
+    });
+    await call("apply_edit_ops", {
+      path: persistModel,
+      ops: [{ op: "fillet", edges: ["edge-12"], radius: 1 }],
+    });
+    const persistLoaded = await call("load_model", { path: persistModel });
+    const persistBand = ((persistLoaded.opBuckets ?? []).find((b) => b.op === 1)?.roles?.band ?? []);
+    let persistTarget = null;
+    for (const id of persistBand) {
+      const facts = await call("inspect", { path: persistModel, entityId: id });
+      if (facts.surfaceType === "cylinder") persistTarget = id;
+    }
+    assert(persistTarget !== null, "the persist fixture's band bucket holds a cylindrical face");
+    const synthResult = await call("synthesize_selector", { path: persistModel, op: 1, role: "band", entityId: persistTarget });
+    assert(synthResult.query !== null, "synthesize_selector names the band cylinder for persistence");
+
+    await call("set_part", { path: persistModel, name: "Fillet", surfaces: [persistTarget], selector: synthResult.query });
+    const storedPart = (await call("get_state", { path: persistModel })).parts.find((p) => p.name === "Fillet");
+    assert(
+      storedPart?.selector !== undefined && storedPart?.selectorOpKind === "fillet",
+      "set_part persists the query with a server-derived op-kind tag (never caller-supplied)"
+    );
+
+    await call("apply_edit_ops", {
+      path: persistModel,
+      ops: [{ op: "addBox", center: [-100, 0, 0], size: [5, 5, 5] }],
+    });
+    const revivedPart = (await call("get_state", { path: persistModel })).parts.find((p) => p.name === "Fillet");
+    assert(revivedPart.surfaces.length === 1, `append re-resolved the part (got ${JSON.stringify(revivedPart.surfaces)})`);
+    const revivedPartFacts = await call("inspect", { path: persistModel, entityId: revivedPart.surfaces[0] });
+    assert(revivedPartFacts.surfaceType === "cylinder", "the re-resolved part surface is still the cylinder");
+
+    const removed = await call("remove_edit_op", { path: persistModel, index: 0 });
+    assert(
+      JSON.stringify(removed.warnings ?? []).match(/kept cached surfaces|Rebound|dropped/i) !== null,
+      "middle splice surfaces a rebind/selector warning rather than going quiet"
+    );
+    const splicedPart = (await call("get_state", { path: persistModel })).parts.find((p) => p.name === "Fillet");
+    assert(splicedPart.selector !== undefined, "the stored query itself survives the splice (only the cache may freeze)");
+  }
+
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
 

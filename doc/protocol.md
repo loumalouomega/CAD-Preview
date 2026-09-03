@@ -66,13 +66,15 @@ interface Part {
   name: string
   color: string       // CSS hex, e.g. "#ff8800"
   volumes: string[]   // solid ids
-  surfaces: string[]  // face ids
+  surfaces: string[]  // face ids (last-good cache when selector is set)
   lines: string[]     // edge ids
   points: string[]    // point ids
+  selector?: SelectorQuery   // re-executable query naming surfaces; host re-resolves it (annotation+cache)
+  selectorOpKind?: string    // producing op's kind at synthesis time (stale-index guard)
 }
 ```
 
-A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats have no assignable lines or points). Parts are persisted in the JSON sidecar — see [File Formats](./file-formats.md).
+A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats have no assignable lines or points). Parts are persisted in the JSON sidecar — see [File Formats](./file-formats.md). When `selector` is set, the host re-resolves it against the current op list on open and after every op-list change and overwrites `surfaces` only on an oracle-clean result; otherwise the cache freezes with a warning (including when the stored op index now addresses a different op kind — checked via `selectorOpKind`).
 
 ### `Annotation`
 

@@ -507,6 +507,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
+        // Stored selectors resolve FIRST (authoritative — a query that hits
+        // is exact by construction) and the heuristic rebind pass runs on the
+        // result, so a query-covered part never also gets geometrically
+        // remapped underneath its own resolution. Selector warnings surface
+        // on the status line; the parts message below carries the final ids.
+        const selected = await this.pipeline.resolvePartSelectors(
+          this.context.extensionPath,
+          bytes,
+          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+          newOps,
+          currentParts
+        );
+        if (selected.parts !== currentParts) currentParts = selected.parts;
+        for (const warning of selected.warnings) post({ type: "status", text: warning });
         const result = await this.pipeline.rebindPartsAcrossOps(
           this.context.extensionPath,
           bytes,
@@ -733,8 +747,32 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // trip for that route instead (it may need to auto-create Parts from
         // region data first) — calling both would double-post "parts".
         if (!route || route.strategy !== "meshio") {
-          void this.sendParts(document.uri, post).then((parts) => {
+          void this.sendParts(document.uri, post).then(async (parts) => {
             currentParts = parts;
+            // Heal a stale selector cache on open (a part whose query still
+            // hits keeps its stored ids; anything else freezes with a status
+            // line, same terms as the edit-driven path below). Gated inside
+            // resolvePartSelectors to docs carrying no selector at all.
+            if (route?.strategy === "occt" && currentParts.some((p) => p.selector !== undefined)) {
+              try {
+                const bytes = await vscode.workspace.fs.readFile(document.uri);
+                const selected = await this.pipeline.resolvePartSelectors(
+                  this.context.extensionPath,
+                  bytes,
+                  route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+                  currentEdits,
+                  currentParts
+                );
+                if (selected.parts !== currentParts) {
+                  currentParts = selected.parts;
+                  await writeParts(document.uri, currentParts);
+                  post({ type: "parts", parts: currentParts });
+                }
+                for (const warning of selected.warnings) post({ type: "status", text: warning });
+              } catch (err) {
+                post({ type: "error", message: `Could not resolve stored selectors: ${(err as Error).message}` });
+              }
+            }
           });
         }
         void readAnnotations(document.uri).then((annotations) => {

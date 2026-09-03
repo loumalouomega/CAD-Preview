@@ -941,17 +941,18 @@ server.registerTool(
   "set_part",
   {
     description:
-      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), and optional per-part meshSize refinement. Omitted fields keep their current values; meshSize: null clears it.",
+      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), and optional per-part meshSize refinement. Omitted fields keep their current values; meshSize: null clears it. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Part name (the upsert key)"),
       remove: z.boolean().optional().describe("Remove the part instead of upserting"),
       color: z.string().optional().describe("CSS hex colour, e.g. #ff8800"),
       volumes: z.array(z.string()).optional().describe("solid-N ids"),
-      surfaces: z.array(z.string()).optional().describe("face-N ids"),
+      surfaces: z.array(z.string()).optional().describe("face-N ids (last-good cache when selector is set)"),
       lines: z.array(z.string()).optional().describe("edge-N ids"),
       points: z.array(z.string()).optional().describe("point-N ids"),
       meshSize: z.number().nullable().optional().describe("Target element size for local refinement; null clears"),
+      selector: z.looseObject({}).nullable().optional().describe("SelectorQuery to store (validated structurally); null clears a stored one"),
     },
   },
   wrap(
@@ -965,6 +966,7 @@ server.registerTool(
       lines?: string[];
       points?: string[];
       meshSize?: number | null;
+      selector?: unknown;
     }) => setPart(args)
   )
 );

@@ -60,6 +60,7 @@ import type { MassProperties } from "./massProperties";
 import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult } from "./entityFacts";
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
+import type { Part } from "./protocol";
 import type { OpOutcome } from "./editOps";
 import type { ModelDiff } from "./modelDiff";
 import type { MeshHealthReport, PromoteMeshResult } from "./meshHeal";
@@ -392,6 +393,12 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     })),
     resolveBucketSelector: vi.fn(async () => ({ ids: [], unresolved: [], matches: [], bindable: true })),
     synthesizeSelector: vi.fn(async () => ({ query: null, ids: [], matches: [], bindable: true, reason: "fake" })),
+    resolvePartSelectors: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, _ops: unknown[], parts: Part[]) => ({
+      parts, // identity pass-through by default — matches the real "no selectors / nothing changed" no-op contract
+      resolved: 0,
+      frozen: 0,
+      warnings: [],
+    })),
     ...overrides,
   } as Pipeline;
 }
@@ -1915,6 +1922,30 @@ describe("set_part", () => {
     expect((await readParts(stpModel))[0].meshSize).toBeUndefined();
     const result = await setPart({ path: stpModel, name: "P", meshSize: -3 });
     expect(result.warnings[0]).toMatch(/positive/);
+  });
+
+  it("stores a selector with a server-derived op-kind tag, and clears it with null", async () => {
+    const { writeEdits } = await import("./mcpSidecars");
+    await writeEdits(stpModel, [{ op: "addBox", center: [0, 0, 0], size: [5, 5, 5] }] as unknown as EditOp[], []);
+    await setPart({
+      path: stpModel,
+      name: "P",
+      surfaces: ["face-0"],
+      selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } },
+    });
+    const stored = (await readParts(stpModel))[0];
+    expect(stored.selector).toEqual({ version: 1, source: { kind: "bucket", op: 0, role: "body" } });
+    expect(stored.selectorOpKind).toBe("addBox"); // derived from the current op list, never caller-supplied
+    await setPart({ path: stpModel, name: "P", selector: null });
+    const cleared = (await readParts(stpModel))[0];
+    expect(cleared.selector).toBeUndefined();
+    expect(cleared.selectorOpKind).toBeUndefined();
+  });
+
+  it("rejects a malformed selector and an out-of-range bucket op", async () => {
+    await expect(setPart({ path: stpModel, name: "P", selector: { version: 1, source: { kind: "bucket", op: 0, role: "nope" } } })).rejects.toThrow(/Invalid selector/);
+    await expect(setPart({ path: stpModel, name: "P", selector: { version: 1, source: { kind: "bucket", op: 7, role: "body" } } })).rejects.toThrow(/out of range/);
+    expect(await readParts(stpModel)).toHaveLength(0); // nothing persisted on rejection
   });
 });
 

@@ -1,4 +1,5 @@
 import type { Part } from "./protocol";
+import { validateSelectorQuery } from "./selectorQuery";
 
 /** Pure (vscode-free) parse/serialize for the parts sidecar — unit-testable. */
 
@@ -35,6 +36,12 @@ export function parsePartsJson(text: string): Part[] {
     if (!raw || typeof raw !== "object") continue;
     const p = raw as Partial<Part>;
     if (typeof p.name !== "string" || typeof p.color !== "string") continue;
+    // A malformed selector is dropped while the part survives on its raw ids
+    // (tolerant-parse discipline); the op-kind tag rides alongside or not at
+    // all — a dangling kind with no query is meaningless, so both validate
+    // together.
+    const selector = validateSelectorQuery((p as { selector?: unknown }).selector);
+    const selectorOpKind = typeof p.selectorOpKind === "string" && p.selectorOpKind.length > 0 ? p.selectorOpKind : undefined;
     parts.push({
       name: p.name,
       color: p.color,
@@ -46,6 +53,7 @@ export function parsePartsJson(text: string): Part[] {
         typeof p.meshSize === "number" && Number.isFinite(p.meshSize) && p.meshSize > 0
           ? p.meshSize
           : undefined,
+      ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),
     });
   }
   return parts;

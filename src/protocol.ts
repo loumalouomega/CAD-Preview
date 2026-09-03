@@ -15,6 +15,7 @@ import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 import type { MeshRegionFit } from "./fitMapping";
 import type { AnnotatedTolerance } from "./toleranceBand";
+import type { SelectorQuery } from "./selectorQuery";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -67,6 +68,19 @@ export interface Part {
   lines: string[];     // edge ids
   points: string[];    // point (vertex) ids
   meshSize?: number;   // optional Gmsh target element size for local refinement
+  /**
+   * Optional re-executable selector (roadmap "Selector synthesis") naming
+   * this part's surfaces without baking in positional ids. The `surfaces`
+   * array stays as the synchronous last-good cache (annotation+cache, the
+   * `exprs`/`planeId` precedent): every consumer keeps reading plain ids,
+   * only the host resolver reads `selector` and overwrites the cache on an
+   * oracle-clean re-resolution. `selectorOpKind` is the producing op's kind
+   * at synthesis time — a positional `op` index silently repoints after an
+   * op-list splice, so a kind mismatch freezes the cache with a warning
+   * instead of resolving against the wrong op.
+   */
+  selector?: SelectorQuery;
+  selectorOpKind?: string;
 }
 
 /** Which measurement is being taken — shared between the webview's

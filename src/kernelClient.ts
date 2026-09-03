@@ -191,6 +191,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     rebindPartsAcrossOps: (...args) => callKernel("rebindPartsAcrossOps", args) as ReturnType<Pipeline["rebindPartsAcrossOps"]>,
     resolveBucketSelector: (...args) => callKernel("resolveBucketSelector", args) as ReturnType<Pipeline["resolveBucketSelector"]>,
     synthesizeSelector: (...args) => callKernel("synthesizeSelector", args) as ReturnType<Pipeline["synthesizeSelector"]>,
+    resolvePartSelectors: (...args) => callKernel("resolvePartSelectors", args) as ReturnType<Pipeline["resolvePartSelectors"]>,
     renderSnapshot: (...args) => callKernel("renderSnapshot", args) as ReturnType<Pipeline["renderSnapshot"]>,
     isRenderAvailable: (...args) => callKernel("isRenderAvailable", args) as ReturnType<Pipeline["isRenderAvailable"]>,
     searchStandardParts: (...args) => callKernel("searchStandardParts", args) as ReturnType<Pipeline["searchStandardParts"]>,

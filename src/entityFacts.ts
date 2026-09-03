@@ -1614,3 +1614,195 @@ export async function synthesizeSelector(
     }
   }
 }
+
+export interface PartSelectorResolution {
+  /** Parts with `surfaces` overwritten by oracle-clean re-resolution (fresh
+   * objects); unselected parts keep their reference. Same reference as the
+   * input array when nothing changed, so callers cheaply skip the sidecar
+   * write — the `rebindPartsAcrossOps` contract. */
+  parts: Part[];
+  resolved: number;
+  /** Parts carrying a query that stayed on cache, with per-part reasons. */
+  frozen: number;
+  warnings: string[];
+}
+
+/**
+ * Part-level selector persistence — roadmap item 1 (final piece), Phase A.
+ * Re-resolves every part's stored `selector` against the CURRENT `ops` list
+ * and overwrites its `surfaces` cache on an oracle-clean result, so a stored
+ * pick tracks the model instead of its positional ids.
+ *
+ * Batching is load-bearing, not premature: ONE full replay + face
+ * fingerprints serves every part, plus ONE prefix replay per DISTINCT bucket
+ * op (parts sharing an op share its prefix) — never a prefix+full pair per
+ * part. Acceptance per part is strict: bucket path needs zero unresolved
+ * reference ids AND (with an induced layer) a non-empty surviving set whose
+ * every match is within tolerance; scene path needs a non-empty selection.
+ * Anything else freezes the cache with a warning (variables' delete
+ * convention) — overwriting with an empty set would wipe the part, and
+ * trusting a partial match would silently repoint it, the exact
+ * misleading-false-match mode the ladder's oracle exists to prevent.
+ *
+ * Stale-index guard: a bucket query's `op` is positional, and `remove`/undo
+ * shifts every later index. The stored `selectorOpKind` (the producing op's
+ * kind at synthesis time) must equal the CURRENT `ops[op].op` kind, or the
+ * part freezes with a warning instead of resolving against the wrong op.
+ * Pattern producers freeze the same way (`bindable: false` is a refusal to
+ * guess an instance, not a failure). Malformed stored queries freeze too —
+ * the part survives on its raw ids (tolerant-parse discipline).
+ */
+export async function resolvePartSelectors(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  parts: Part[]
+): Promise<PartSelectorResolution> {
+  const empty = { parts, resolved: 0, frozen: 0, warnings: [] as string[] };
+  const candidates = parts.filter((p) => p.selector !== undefined && p.selectorOpKind !== undefined);
+  if (candidates.length === 0) return empty;
+
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/ps.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanupFull: Array<{ delete(): void }> = [];
+  // One prefix cleanup per distinct bucket op (shared across parts on it).
+  const prefixCleanups = new Map<number, Array<{ delete(): void }>>();
+  const cleanupOf = (key: number): Array<{ delete(): void }> => {
+    let c = prefixCleanups.get(key);
+    if (!c) {
+      c = [];
+      prefixCleanups.set(key, c);
+    }
+    return c;
+  };
+  try {
+    const fullShape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupFull), ops, cleanupFull);
+    const fullFaceSigs = collectAllEntitySignatures(oc, fullShape, cleanupFull).filter((s) => s.kind === "face");
+    const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, fullShape, cleanupFull), 1e-6);
+    const allFacts = allFaceFilterableFacts(oc, fullShape, cleanupFull);
+
+    // Prefix replay per distinct bucket op, shared by every part on it.
+    interface PrefixData {
+      buckets: OpBucket[];
+      sigs: EntitySignature[];
+    }
+    const prefixes = new Map<number, PrefixData>();
+    const prefixOf = (opIndex: number): PrefixData => {
+      let data = prefixes.get(opIndex);
+      if (!data) {
+        const cleanup = cleanupOf(opIndex);
+        const buckets: OpBucket[] = [];
+        const shape = applyEditsBRep(
+          oc,
+          readShape(oc, tmpName, format, cleanup),
+          ops.slice(0, opIndex + 1),
+          cleanup,
+          undefined,
+          undefined,
+          buckets
+        );
+        data = { buckets, sigs: collectAllEntitySignatures(oc, shape, cleanup).filter((s) => s.kind === "face") };
+        prefixes.set(opIndex, data);
+      }
+      return data;
+    };
+
+    const warnings: string[] = [];
+    let resolved = 0;
+    let frozen = 0;
+    let changed = false;
+    const out = parts.map((part) => {
+      if (part.selector === undefined || part.selectorOpKind === undefined) return part;
+      const freeze = (reason: string): Part => {
+        frozen++;
+        warnings.push(`Part "${part.name}": kept cached surfaces (${reason}).`);
+        return part;
+      };
+      const query = validateSelectorQuery(part.selector);
+      if (!query) return freeze("stored selector is malformed");
+      if (query.source.kind === "scene") {
+        const { filter, rank } = query.source;
+        let survivors = filter !== undefined ? applyFaceFilter(allFacts, filter) : [...allFacts];
+        if (rank !== undefined) survivors = rankFaces(survivors, rank);
+        if (survivors.length === 0) return freeze("scene query currently selects nothing");
+        const ids = survivors.map((f) => f.id);
+        if (JSON.stringify(ids) === JSON.stringify(part.surfaces)) return part;
+        resolved++;
+        changed = true;
+        return { ...part, surfaces: ids };
+      }
+      // Bucket path.
+      const opIndex = query.source.op;
+      if (opIndex >= ops.length) return freeze(`stored op index ${opIndex} is out of range after an op-list change`);
+      if (ops[opIndex].op !== part.selectorOpKind) {
+        return freeze(`stored op ${opIndex} is now "${ops[opIndex].op}", not "${part.selectorOpKind}" — the list changed under it`);
+      }
+      if (!isBindableSelector(ops, query)) return freeze("producing op is a pattern instance");
+      const { buckets, sigs: prefixSigs } = prefixOf(opIndex);
+      const refIds = bucketReferenceIds(buckets, query);
+      if (refIds.length === 0) return freeze("producing op recorded no faces for this role");
+      const refSet = new Set(refIds);
+      const matches = rebindEntities(
+        prefixSigs.filter((s) => refSet.has(s.id)),
+        fullFaceSigs,
+        toleranceAbs
+      );
+      const matchedOld = new Set(matches.map((m) => m.oldId));
+      if (refIds.some((id) => !matchedOld.has(id))) return freeze("a reference face has no confident match");
+      const { filter, rank } = query.source;
+      let survivors = matches.map((m) => m.newId);
+      if (filter !== undefined || rank !== undefined) {
+        const facts = faceFilterableFacts(oc, fullShape, survivors, cleanupFull);
+        const byId = new Map(facts.map((f) => [f.id, f]));
+        survivors = survivors.filter((id) => byId.has(id));
+        if (filter !== undefined) {
+          const kept = new Set(applyFaceFilter([...byId.values()], filter).map((f) => f.id));
+          survivors = survivors.filter((id) => kept.has(id));
+        }
+        if (rank !== undefined) {
+          const ranked = rankFaces(
+            survivors.map((id) => byId.get(id)).filter((f): f is FilterableFace => f !== undefined),
+            rank
+          );
+          const keptIds = new Set(ranked.map((f) => f.id));
+          survivors = survivors.filter((id) => keptIds.has(id));
+        }
+        if (survivors.length === 0) return freeze("induced layer currently selects nothing");
+      }
+      if (JSON.stringify(survivors) === JSON.stringify(part.surfaces)) return part;
+      resolved++;
+      changed = true;
+      return { ...part, surfaces: survivors };
+    });
+
+    if (!changed) return { parts, resolved, frozen, warnings };
+    return { parts: out, resolved, frozen, warnings };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanupFull.length - 1; i >= 0; i--) {
+      try {
+        cleanupFull[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const cleanup of prefixCleanups.values()) {
+      for (let i = cleanup.length - 1; i >= 0; i--) {
+        try {
+          cleanup[i].delete();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}

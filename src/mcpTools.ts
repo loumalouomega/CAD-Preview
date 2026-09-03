@@ -49,6 +49,7 @@ import {
   type MeshOptions,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
+import { validateSelectorQuery } from "./selectorQuery";
 import { envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
@@ -64,6 +65,7 @@ import type {
   rebindPartsAcrossOps,
   resolveBucketSelector,
   synthesizeSelector,
+  resolvePartSelectors,
   EntityFacts,
   MeasureResult,
   ExactMeasureKind,
@@ -162,6 +164,7 @@ export interface Pipeline {
   rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
   resolveBucketSelector: typeof resolveBucketSelector;
   synthesizeSelector: typeof synthesizeSelector;
+  resolvePartSelectors: typeof resolvePartSelectors;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
   searchStandardParts: typeof searchStandardParts;
@@ -2325,23 +2328,38 @@ async function maybeRebindParts(
   droppedCount: number;
   annotationReboundCount: number;
   annotationDroppedCount: number;
+  selectorWarnings: string[];
 } | null> {
   if (route.strategy !== "occt" || oldOps.length === newOps.length) return null;
   const [parts, annotations] = await Promise.all([readParts(modelPath), readAnnotations(modelPath)]);
   if (parts.length === 0 && annotations.length === 0) return null;
   const bytes = await readModelBytes(modelPath);
+  // Stored selectors resolve first (authoritative); the heuristic rebind pass
+  // below runs on the result, same order as the interactive path.
+  const selected = await ctx.pipeline.resolvePartSelectors(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    newOps,
+    parts
+  );
+  const resolvedParts = selected.parts;
+  if (selected.parts !== parts) await writeParts(modelPath, selected.parts);
   const result = await ctx.pipeline.rebindPartsAcrossOps(
     ctx.extensionPath,
     bytes,
     route.format as BRepFormat,
     oldOps,
     newOps,
-    parts,
+    resolvedParts,
     annotations
   );
   const partsChanged = result.parts !== parts;
   const annotationsChanged = result.annotations !== annotations;
-  if (!partsChanged && !annotationsChanged) return null; // nothing topology-changing, or nothing matched
+  // A frozen selector still warns even when nothing persisted — dropping the
+  // warnings here would make a silently-stale query, the failure this whole
+  // feature exists to prevent.
+  if (!partsChanged && !annotationsChanged && selected.warnings.length === 0) return null; // nothing topology-changing, or nothing matched
   if (partsChanged) await writeParts(modelPath, result.parts);
   if (annotationsChanged) await writeAnnotations(modelPath, result.annotations);
   return {
@@ -2349,6 +2367,7 @@ async function maybeRebindParts(
     droppedCount: result.stats.dropped,
     annotationReboundCount: result.annotationStats.rebound,
     annotationDroppedCount: result.annotationStats.dropped,
+    selectorWarnings: selected.warnings,
   };
 }
 
@@ -2363,6 +2382,7 @@ function rebindWarningText(
   if (rebind.annotationReboundCount > 0 || rebind.annotationDroppedCount > 0) {
     text += ` Also rebound ${rebind.annotationReboundCount} annotation anchor id(s); dropped ${rebind.annotationDroppedCount}.`;
   }
+  for (const warning of rebind.selectorWarnings) text += ` ${warning}`;
   return text;
 }
 
@@ -2975,6 +2995,15 @@ export async function setPart(params: {
   lines?: string[];
   points?: string[];
   meshSize?: number | null;
+  /**
+   * Optional re-executable selector (roadmap "Selector synthesis") stored
+   * beside the raw ids as annotation+cache: the host re-resolves it against
+   * the current op list and overwrites `surfaces` on an oracle-clean result.
+   * The producing-op-kind tag is derived server-side from the current op list
+   * (bucket) or recorded as `"scene"` — never caller-supplied, so it cannot
+   * be mismatched at write time. Pass `selector: null` to clear a stored one.
+   */
+  selector?: unknown;
 }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -2990,6 +3019,33 @@ export async function setPart(params: {
   }
 
   const existing: Part | undefined = parts[index];
+  // A stored selector is validated structurally here; the op-kind tag is
+  // derived from the CURRENT op list (bucket) so write-time mismatch is
+  // impossible by construction. A later op-list splice is caught at resolve
+  // time by comparing against this tag (fail-fast freeze, never a repoint).
+  let selector = existing?.selector;
+  let selectorOpKind = existing?.selectorOpKind;
+  if (params.selector !== undefined) {
+    if (params.selector === null) {
+      selector = undefined;
+      selectorOpKind = undefined;
+    } else {
+      const parsed = validateSelectorQuery(params.selector);
+      if (!parsed) throw new Error("Invalid selector query — expected a whole-bucket or scene SelectorQuery (see resolve_selector).");
+      if (parsed.source.kind === "bucket") {
+        const { ops } = await readEditsResolved(modelPath);
+        const opIndex = parsed.source.op;
+        if (opIndex >= ops.length) {
+          throw new Error(`Selector op ${opIndex} is out of range (op list has ${ops.length} ops).`);
+        }
+        selector = parsed;
+        selectorOpKind = ops[opIndex].op;
+      } else {
+        selector = parsed;
+        selectorOpKind = "scene";
+      }
+    }
+  }
   const part: Part = {
     name: params.name,
     color: params.color ?? existing?.color ?? PART_COLORS[parts.length % PART_COLORS.length],
@@ -3003,6 +3059,7 @@ export async function setPart(params: {
         : typeof params.meshSize === "number" && Number.isFinite(params.meshSize) && params.meshSize > 0
           ? params.meshSize
           : existing?.meshSize,
+    ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),
   };
   if (typeof params.meshSize === "number" && !(Number.isFinite(params.meshSize) && params.meshSize > 0)) {
     warnings.push("meshSize must be a positive number — ignored.");
