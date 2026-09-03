@@ -2677,6 +2677,24 @@ describe("resolve_selector", () => {
     expect(pipeline.resolveBucketSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], query);
   });
 
+  it("forwards an induced filter/rank to the pipeline and reports the narrowed set", async () => {
+    const selector = {
+      version: 1,
+      source: { kind: "bucket", op: 0, role: "side", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } },
+    };
+    const pipeline = fakePipeline({
+      resolveBucketSelector: vi.fn(async () => ({
+        ids: ["face-7"],
+        unresolved: [],
+        matches: [{ oldId: "face-7", newId: "face-7", centreDistance: 0, measureDeltaPct: 0 }],
+        bindable: true,
+      })),
+    });
+    const result = await resolveSelectorTool(ctx(pipeline), { path: stpModel, selector });
+    expect(result.ids).toEqual(["face-7"]);
+    expect(pipeline.resolveBucketSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], selector);
+  });
+
   it("warns on unresolved ids and on bindable:false without throwing", async () => {
     const unresolved = ctx(
       fakePipeline({

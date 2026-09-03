@@ -299,6 +299,40 @@ try {
     );
   }
 
+  // resolve_selector rung 2 (induced filter + rank) — own fixture copy so the
+  // extra ops never disturb the main model's downstream assertions. A
+  // non-cube box has three distinct face-area pairs, so largestN(1) over its
+  // planar body faces names exactly one face; an impossible threshold names
+  // honestly none (never a fallback to the whole bucket).
+  {
+    const selModel = path.join(dir, "bull-for-selector-rung2.stp");
+    fs.copyFileSync(FIXTURE, selModel);
+    await call("apply_edit_ops", {
+      path: selModel,
+      ops: [{ op: "addBox", center: [200, 0, 0], size: [10, 20, 30] }],
+    });
+    const ranked = await call("resolve_selector", {
+      path: selModel,
+      selector: {
+        version: 1,
+        source: { kind: "bucket", op: 0, role: "body", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } },
+      },
+    });
+    assert(
+      ranked.supported === true && ranked.ids.length === 1 && ranked.matches.length === 1,
+      `resolve_selector rung 2 narrows the body to its single largest planar face (got ${JSON.stringify(ranked.ids)})`
+    );
+    assert(
+      ranked.matches[0].centreDistance < 1e-6 && ranked.matches[0].measureDeltaPct < 1e-6,
+      "the ranked survivor's oracle is still ~0 (resolve-then-filter on current-shape facts)"
+    );
+    const empty = await call("resolve_selector", {
+      path: selModel,
+      selector: { version: 1, source: { kind: "bucket", op: 0, role: "body", filter: { kind: "areaGte", value: 1e12 } } },
+    });
+    assert(empty.ids.length === 0 && empty.matches.length === 0, "an impossible induced predicate resolves to an honest empty, never the whole bucket");
+  }
+
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
 

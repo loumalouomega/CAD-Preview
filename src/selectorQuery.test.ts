@@ -25,6 +25,30 @@ describe("selectorQuery: validateSelectorQuery", () => {
     }
   });
 
+  it("accepts the rung-2 induced layer and round-trips it", () => {
+    const q = validateSelectorQuery({
+      version: 1,
+      source: { kind: "bucket", op: 3, role: "endCap", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } },
+    });
+    expect(q).toEqual({
+      version: 1,
+      source: { kind: "bucket", op: 3, role: "endCap", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } },
+    });
+    expect(JSON.parse(JSON.stringify(q))).toEqual(q);
+  });
+
+  it("a malformed induced layer fails the whole query (never a half-understood predicate)", () => {
+    expect(
+      validateSelectorQuery({ version: 1, source: { kind: "bucket", op: 0, role: "body", filter: { kind: "alongX" } } })
+    ).toBeNull();
+    expect(
+      validateSelectorQuery({ version: 1, source: { kind: "bucket", op: 0, role: "body", rank: { by: "area", order: "max", n: 0 } } })
+    ).toBeNull();
+    expect(
+      validateSelectorQuery({ version: 1, source: { kind: "bucket", op: 0, role: "body", filter: { kind: "normal", dir: [0, 0, 0] } } })
+    ).toBeNull();
+  });
+
   it("rejects malformed input without throwing", () => {
     expect(validateSelectorQuery(null)).toBeNull();
     expect(validateSelectorQuery([])).toBeNull();

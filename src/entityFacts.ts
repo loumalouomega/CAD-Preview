@@ -19,6 +19,7 @@ import {
   validateSelectorQuery,
   type SelectorQuery,
 } from "./selectorQuery";
+import { matchesFacePredicate, rankFaces, type FilterableFace } from "./selectorPredicate";
 import type { OpBucket } from "./opBuckets";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp";
@@ -1182,14 +1183,17 @@ export async function rebindPartsAcrossOps(
 }
 
 export interface BucketSelectorResult {
-  /** Current-model `face-N` ids the bucket query resolves to (may be empty). */
+  /** Current-model `face-N` ids the bucket query resolves to (may be empty —
+   * after the rung-2 induced layer narrows the set, or when nothing matched). */
   ids: string[];
   /** Reference (step-local) ids with no confident match in the current shape. */
   unresolved: string[];
   /** Geometric matches behind `ids` — centre distance + measure delta per pair,
    * the same oracle shape `rebindPartsAcrossOps` already reports. A resolved id
    * is trustworthy only with a ~0 `centreDistance`, exactly as the closed
-   * entity-rebinding work verifies itself in `npm run mcp:smoke`. */
+   * entity-rebinding work verifies itself in `npm run mcp:smoke`. Filtered to
+   * the surviving ids when the rung-2 induced layer narrows the set, so the
+   * oracle always describes exactly what `ids` holds. */
   matches: EntityRebindMatch[];
   /** `false` when rung 1 cannot name the pick (pattern-instance producer) —
    * routed to a future scene-wide predicate rung, never a guessed instance. */
@@ -1198,11 +1202,51 @@ export interface BucketSelectorResult {
 }
 
 /**
+ * Bulk exact face facts for the rung-2 induced layer — one `collectFaces`
+ * pass plus a `faceSurfaceInfo` + adaptive-area read per requested id, inside
+ * the caller's own cleanup arrays (same discipline as every other reader in
+ * this file). Only the ids the bucket match already resolved are ever read,
+ * so this adds per-candidate adaptor reads to the two replays rung 1 already
+ * pays — never a new replay. An id that no longer indexes a live face is
+ * skipped (the match already reported it via `unresolved` when it never
+ * matched at all; a face lost between the match and this read degrades to
+ * absence, never a fabricated fact).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function faceFilterableFacts(
+  oc: any,
+  shape: any,
+  ids: string[],
+  cleanup: Array<{ delete(): void }>
+): FilterableFace[] {
+  const faces = collectFaces(oc, shape, cleanup);
+  const out: FilterableFace[] = [];
+  for (const id of ids) {
+    const m = /^face-(\d+)$/.exec(id);
+    if (!m) continue;
+    const face = faces[parseInt(m[1], 10)];
+    if (!face) continue;
+    const info = faceSurfaceInfo(oc, face, cleanup);
+    const props = new oc.GProp_GProps_1();
+    cleanup.push(props);
+    surfacePropertiesAdaptive(oc, face, props);
+    out.push({
+      id,
+      area: props.Mass(),
+      surfaceType: info.type,
+      normal: info.params?.kind === "plane" ? info.params.normal : null,
+    });
+  }
+  return out;
+}
+
+/**
  * Re-executable whole-bucket selector — roadmap item 1 ("Selector synthesis"),
- * ladder rung 1. Resolves `{version: 1, source: {kind: "bucket", op, role}}`
+ * ladder rungs 1–2. Resolves `{version: 1, source: {kind: "bucket", op, role}}`
  * ("the faces op N produced in role R") against the CURRENT `ops` list, so a
  * recorded `OpBucket`'s step-local ids never need to be trusted against a
- * newer shape.
+ * newer shape; an optional rung-2 `filter`/`rank` narrows that set by exact
+ * current-shape facts ("op 3's `endCap` face with the largest area").
  *
  * Mechanism: replay the prefix `ops[0..op]` with an `opBuckets` collector to
  * re-derive the reference ids (never trusting caller-supplied ids), fingerprint
@@ -1213,8 +1257,15 @@ export interface BucketSelectorResult {
  * so a caller verifies "the SAME entity" by comparing geometry, not by
  * trusting the resolution.
  *
- * A producing op that gracefully skipped records no bucket (rung-1 honest
- * empty, never a fabricated match); a pattern-instance producer is refused via
+ * Ordering is load-bearing: the induced layer filters on CURRENT-shape facts
+ * read AFTER the match (rank after resolve), never on prefix-shape facts —
+ * the cheaper filter-then-match order would let a dimension edit between the
+ * prefix and current states silently promote a face that only matched the old
+ * geometry. An induced selection of zero is an honest `ids: []` (the
+ * skip-producer precedent), never a fallback to the whole bucket.
+ *
+ * A producing op that gracefully skipped records no bucket (honest empty,
+ * never a fabricated match); a pattern-instance producer is refused via
  * `bindable: false` (the roadmap's bindability gate — a name would be
  * ambiguous across instances). Malformed queries and out-of-range op indices
  * throw (caller-input-shape misuse, failing fast like every other tool).
@@ -1277,10 +1328,47 @@ export async function resolveBucketSelector(
 
     const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, fullShape, cleanupFull), 1e-6);
     const matches = rebindEntities(refSigs, fullSigs, toleranceAbs);
-    const ids = matches.map((m) => m.newId);
     const matchedOld = new Set(matches.map((m) => m.oldId));
     const unresolved = refIds.filter((id) => !matchedOld.has(id));
-    return { ids, unresolved, matches, bindable: true };
+
+    // Rung-2 induced layer (resolve-then-filter — see the doc comment above
+    // for why the cheaper reverse order would be wrong). No layer present is
+    // the rung-1 path exactly: every matched id survives with its oracle.
+    const { filter, rank } = query.source;
+    if (filter === undefined && rank === undefined) {
+      return { ids: matches.map((m) => m.newId), unresolved, matches, bindable: true };
+    }
+    const facts = faceFilterableFacts(
+      oc,
+      fullShape,
+      matches.map((m) => m.newId),
+      cleanupFull
+    );
+    const byId = new Map(facts.map((f) => [f.id, f]));
+    // A resolved id with no readable fact (lost between match and read)
+    // degrades to absence — the same direction as every other graceful skip
+    // in this file, never a fabricated predicate evaluation.
+    let survivors = matches.filter((m) => byId.has(m.newId));
+    if (filter !== undefined) {
+      survivors = survivors.filter((m) => {
+        const f = byId.get(m.newId);
+        return f !== undefined && matchesFacePredicate(f, filter);
+      });
+    }
+    if (rank !== undefined) {
+      const ranked = rankFaces(
+        survivors.map((m) => byId.get(m.newId)).filter((f): f is FilterableFace => f !== undefined),
+        rank
+      );
+      const kept = new Set(ranked.map((f) => f.id));
+      survivors = survivors.filter((m) => kept.has(m.newId));
+    }
+    return {
+      ids: survivors.map((m) => m.newId),
+      unresolved,
+      matches: survivors,
+      bindable: true,
+    };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

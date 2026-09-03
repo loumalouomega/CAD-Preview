@@ -372,7 +372,7 @@ server.registerTool(
   "resolve_selector",
   {
     description:
-      "Facts only (see describe_capabilities' verdictConventions): re-executable whole-bucket selector (roadmap Selector synthesis, rung 1) — resolves {version: 1, source: {kind: 'bucket', op, role}} ('the faces op N produced in role R') against the CURRENT op list. Returns current face-N ids plus the centre-distance/measure-delta oracle behind each (trustworthy only at ~0 distance); unresolved names reference ids with no confident match. A pattern-instance producer returns bindable:false (ambiguous across instances, never guessed); a skipped op resolves to an honest empty. Read-only, never mutates the model. B-rep sources only headless.",
+      "Facts only (see describe_capabilities' verdictConventions): re-executable whole-bucket selector (roadmap Selector synthesis, rungs 1-2) — resolves {version: 1, source: {kind: 'bucket', op, role}} ('the faces op N produced in role R') against the CURRENT op list, with an optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts) plus rank ({by:'area',order:'max'|'min',n}, e.g. the largest endCap face). Returns current face-N ids plus the centre-distance/measure-delta oracle behind each (trustworthy only at ~0 distance); unresolved names reference ids with no confident match, and an induced selection of zero is an honest empty, never a fallback to the whole bucket. A pattern-instance producer returns bindable:false (ambiguous across instances, never guessed); a skipped op resolves to an honest empty. Read-only, never mutates the model. B-rep sources only headless.",
     inputSchema: {
       path: modelPath,
       selector: z
@@ -382,6 +382,24 @@ server.registerTool(
             kind: z.literal("bucket"),
             op: z.number().int().min(0),
             role: z.string(),
+            filter: z
+              .union([
+                z.object({ kind: z.literal("planar") }),
+                z.object({ kind: z.literal("surfaceType"), type: z.string() }),
+                z.object({
+                  kind: z.literal("normal"),
+                  dir: z.tuple([z.number(), z.number(), z.number()]),
+                  toleranceDeg: z.number().optional(),
+                }),
+                z.object({ kind: z.literal("areaGte"), value: z.number() }),
+                z.object({ kind: z.literal("areaLte"), value: z.number() }),
+              ])
+              .optional()
+              .describe("Optional induced predicate over the bucket's faces (planar, surfaceType, normal dir, area thresholds) — evaluated against current-shape exact facts"),
+            rank: z
+              .object({ by: z.literal("area"), order: z.enum(["max", "min"]), n: z.number().int().min(1) })
+              .optional()
+              .describe("Optional top-N by area over the (possibly filtered) faces, e.g. {by:'area',order:'max',n:1} for the largest"),
           }),
         })
         .describe("Whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} — op is the 0-based op index, role is the bucket role (e.g. endCap, side, band, body)"),

@@ -1,6 +1,6 @@
 /**
  * Re-executable selector queries — roadmap item 1 ("Selector synthesis"),
- * ladder rung 1: whole-bucket queries.
+ * ladder rungs 1–2: whole-bucket queries plus an induced predicate layer.
  *
  * Phase 1 (closed) records per-op classification buckets (`opBuckets.ts`):
  * which `face-N` ids each topology-changing op produced, valid against the
@@ -8,32 +8,40 @@
  * `{version: 1, source: {kind: "bucket", op, role}}` names "the faces op N
  * produced in role R" without baking in positional ids, so a later replay can
  * re-derive the CURRENT ids by geometric match instead of trusting stale ones.
+ * Rung 2 narrows that set without baking in coordinates: an optional
+ * `filter` (a `FacePredicate` from `selectorPredicate.ts` — planar, surface
+ * type, normal direction, area thresholds) plus an optional `rank` (top-N by
+ * area), e.g. "op 3's `endCap` face with the largest area".
  *
  * Pure and vscode/OCCT/THREE-free (same split as `opBuckets.ts`/
  * `entityRebind.ts`): this module holds the query shape, the tolerant gate,
  * the bindability check, and the bucket-id extraction helper. The OCCT-
- * touching half (prefix replay + `rebindEntities` match + oracle compare)
- * lives in `entityFacts.ts`'s `resolveBucketSelector` — same pure/impure
- * split as `entityRebind.ts`/`entityFacts.ts`.
+ * touching half (prefix replay + `rebindEntities` match + oracle compare +
+ * current-shape fact fetch for the induced layer) lives in `entityFacts.ts`'s
+ * `resolveBucketSelector` — same pure/impure split as
+ * `entityRebind.ts`/`entityFacts.ts`.
  *
  * Scope discipline (roadmap): the query language stays a small predicate AST
  * persisted as JSON, resolved by a tolerant gate — NOT a new expression
  * language and NOT executable code (same call as `paramExpr.ts`, which
- * rejected `eval()` on CSP grounds). Later rungs (induced predicate,
- * scene-wide predicate, bucket indices) grow this union; rung 1 is the
- * bucket source only.
+ * rejected `eval()` on CSP grounds). Later rungs (scene-wide predicate,
+ * bucket indices) grow this union; edge-direction/smoothness leaves need
+ * live-WASM probes first and are out of rung 2 (no host field exists).
  */
 
 import { ROLE_LABELS, type OpBucket, type OpRole } from "./opBuckets";
+import { validateFacePredicate, validateSelectorRank, type FacePredicate, type SelectorRank } from "./selectorPredicate";
 import type { EditOp } from "./editOps";
 
-/** Rung-1 query: "the faces op N produced in role R". */
+/** Rung-1 query: "the faces op N produced in role R", optionally narrowed by
+ * a rung-2 induced `filter` and/or `rank` (both evaluated against the CURRENT
+ * shape's exact facts, never the prefix shape's — see `resolveBucketSelector`). */
 export interface BucketSelector {
   version: 1;
-  source: { kind: "bucket"; op: number; role: OpRole };
+  source: { kind: "bucket"; op: number; role: OpRole; filter?: FacePredicate; rank?: SelectorRank };
 }
 
-/** Union grows in later rungs; rung 1 has the single bucket source. */
+/** Union grows in later rungs; rungs 1–2 share the single bucket source. */
 export type SelectorQuery = BucketSelector;
 
 /** Caps mirroring `sanitizeExprs`' self-healing discipline (no silent unbounded input). */
@@ -62,7 +70,32 @@ export function validateSelectorQuery(raw: unknown): SelectorQuery | null {
   const op = source.op;
   if (typeof op !== "number" || !Number.isInteger(op) || op < 0 || op > MAX_SELECTOR_OP_INDEX) return null;
   if (!isValidRole(source.role)) return null;
-  return { version: 1, source: { kind: "bucket", op, role: source.role } };
+  // Rung-2 induced layer — both fields optional; a malformed layer fails the
+  // WHOLE query (a half-understood predicate is worse than a rejection, the
+  // same whole-op rule `validateEditOpCore` applies to a bad core field
+  // rather than `sanitizeExprs`' drop-the-entry rule).
+  let filter: FacePredicate | undefined;
+  if (source.filter !== undefined) {
+    const parsed = validateFacePredicate(source.filter);
+    if (!parsed) return null;
+    filter = parsed;
+  }
+  let rank: SelectorRank | undefined;
+  if (source.rank !== undefined) {
+    const parsed = validateSelectorRank(source.rank);
+    if (!parsed) return null;
+    rank = parsed;
+  }
+  return {
+    version: 1,
+    source: {
+      kind: "bucket",
+      op,
+      role: source.role,
+      ...(filter ? { filter } : {}),
+      ...(rank ? { rank } : {}),
+    },
+  };
 }
 
 /**
