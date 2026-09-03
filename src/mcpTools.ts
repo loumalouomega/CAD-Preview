@@ -384,6 +384,7 @@ export function describeCapabilities() {
     opNotes: [
       "Pass ops as raw JSON objects with an `op` kind field; they are validated by the same tolerant gate the extension uses (malformed ops are rejected with a reason, never crash).",
       "Any numeric field may carry a parametric expression via `exprs`, e.g. {op: \"addBox\", size: [20,10,5], exprs: {\"size[0]\": \"L\"}} — see set_variables.",
+      "Any id-bearing operand field may carry a stored selector via `targetQueries` (plus `targetQueryKinds` tags for bucket queries), e.g. {op: \"boolean\", kind: \"union\", a: [...], b: [...], targetQueries: {a: {version: 1, source: {kind: \"scene\", filter: {kind: \"planar\"}}}}}. Queries resolve against the CURRENT op list at every load (bucket = the producing op's recorded faces re-matched geometrically; scene = a whole-model filter/rank) and overwrite the field's cached ids for that replay; the sidecar is untouched. A scalar slot (profile/face/path/faceA/faceB/upToFace/upTo/edge) needs exactly one resolved id or the field freezes to its cache; every freeze surfaces as a load_model warning. Forward references (producing op not strictly before the consuming one) and queries inside repeat bodies are refused. Mesh sources never resolve queries — they replay on cached ids.",
       "brepOnly ops are rejected for mesh-format sources (STL/OBJ/PLY/glTF). topologyChanging ops reassign face-N/edge-N ids on replay.",
       "Angles are degrees. Vec3s are [x,y,z] arrays.",
       "extrude/revolve/sweep/loft accept an optional `thin` (total wall thickness) to build a thin-walled body instead of a filled one, plus `thinOuter` for how much of that wall sits outside the profile boundary (0 = all inward, the default; thinOuter === thin = all outward). The profile must not already have holes, and a thin feature does NOT consume its profile sketch, unlike a plain one.",
@@ -696,8 +697,10 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     sidecars,
     // A persisted op that silently skipped on a PREVIOUS session is reported
     // here the moment the model is loaded — the agent learns immediately
-    // rather than after wondering why nothing changed.
-    warnings: opOutcomeWarnings(result.opOutcomes),
+    // rather than after wondering why nothing changed. Query-freeze warnings
+    // ride the same channel (an operand query that froze replays on cached
+    // ids; the agent needs to know the query was not honored).
+    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? [])],
   };
 }
 

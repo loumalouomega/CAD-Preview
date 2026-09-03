@@ -19,6 +19,7 @@
  */
 
 import { parseFieldPath, getNumericField, parseExprSyntax } from "./paramExpr";
+import { validateSelectorQuery, type SelectorQuery } from "./selectorQuery";
 
 export type Vec3 = [number, number, number];
 
@@ -228,9 +229,70 @@ export type EditOp = (
   | AddEdgeSlotOp
   | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp
   | AlignOp | PatternLinearOp | PatternCircularOp
-) & { exprs?: ExprMap };
+) & {
+  exprs?: ExprMap;
+  /**
+   * Optional per-operand-field stored queries (roadmap "Selector synthesis",
+   * op-operand persistence) — e.g. `{ a: {...}, b: {...} }` on a boolean —
+   * resolved host-side against the current op list with the plain id arrays
+   * kept as the last-good cache (annotation+cache, the `exprs`/`planeId`
+   * precedent). `targetQueryKinds` carries one producing-op-kind tag per
+   * field (the Phase-A `selectorOpKind` guard, per field): a stored index
+   * that now addresses a different op kind freezes instead of repointing.
+   */
+  targetQueries?: Record<string, SelectorQuery>;
+  /**
+   * One producing-op-kind tag per BUCKET query field (scene queries carry no
+   * tag — they have no producer). The stale-index guard: a bucket query's
+   * stored `op` is positional, so the tag must equal the current op's kind
+   * at resolve time or the field freezes instead of repointing.
+   */
+  targetQueryKinds?: Record<string, string>;
+};
 
 export type EditOpKind = EditOp["op"];
+
+/**
+ * Operand fields addressable by a stored query, per op kind — the same field
+ * list `referencedEntities` (`src/webview/opCatalog.ts`) enumerates, kept as
+ * the single source of truth so the two cannot drift (that function can't be
+ * imported here: it lives in the webview tree — this table mirrors it
+ * deliberately, and `editOps.test.ts` locks the two together).
+ */
+export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
+  translate: ["targets"], rotate: ["targets"], scale: ["targets"], mirror: ["targets"],
+  boolean: ["a", "b"], fillet: ["edges"], chamfer: ["edges", "face"],
+  extrude: ["profile", "profileEdges", "upToFace"], revolve: ["profile", "profileEdges"],
+  sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets"],
+  explode: [], mate: ["faceA", "faceB"],
+  shell: ["openingFaces"], draft: ["faces"], splitByPlane: ["targets"], section: ["targets"],
+  rib: ["spineEdges", "upTo"],
+  addBox: [], addSphere: [], addCylinder: [], addCone: [], addTorus: [], addPrism: [],
+  addWedge: [], addHole: ["targets"], addCounterboreHole: ["targets"], addCountersinkHole: ["targets"],
+  addCircleProfile: [], addRectangleProfile: [], addPolygonProfile: [],
+  addEllipseProfile: [], addRoundedRectangleProfile: [], addSlotProfile: [], addTrapezoidProfile: [],
+  addPoint: [], addLine: [], addArc: [],
+  addPolyline: [], addThreePointArc: [], addSpline: [], addBezier: [], addEllipseArc: [], addHelix: [],
+  addEdgeSlot: ["edge"],
+  addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"],
+  align: ["targets"], patternLinear: ["targets"], patternCircular: ["targets"],
+};
+
+/**
+ * Operand fields holding a SINGLE id (not an array) — a stored query on one
+ * of these resolves only to exactly one id, never "the first of many" (an
+ * implicit choice would be a silent decision). Array fields take the full
+ * resolved set.
+ */
+export const SCALAR_OPERAND_FIELDS: ReadonlySet<string> = new Set([
+  "profile", "face", "path", "edge", "faceA", "faceB", "upToFace", "upTo",
+]);
+
+/** True when any op in the list carries stored operand queries — the cheap
+ * gate every replay path checks so query-free documents pay nothing. */
+export function hasTargetQueries(ops: EditOp[]): boolean {
+  return ops.some((op) => op.targetQueries !== undefined);
+}
 
 /**
  * Per-op replay outcome, reported by BOTH engines (roadmap "A failed edit op
@@ -482,6 +544,51 @@ function sanitizeExprs(raw: unknown, clean: EditOp): ExprMap | null {
  * structural checks here so callers never have to re-validate. A valid `exprs`
  * annotation (see {@link sanitizeExprs}) is carried onto the clean op.
  */
+/**
+ * Sanitize a raw `targetQueries` annotation against the already-validated op:
+ * keep only entries whose key names a real operand field of THIS op kind
+ * (`QUERYABLE_OPERAND_FIELDS` — a query on a non-operand field is meaningless)
+ * and whose value passes `validateSelectorQuery`, each paired with a
+ * non-empty string kind tag (a dangling tag or tagless query is dropped, the
+ * Phase-A sidecar rule). Bad entries are dropped per-entry, never whole-op
+ * rejection — same tolerance-gate style as `sanitizeExprs`.
+ */
+function sanitizeTargetQueries(
+  rawOp: unknown,
+  clean: EditOp
+): { queries: Record<string, SelectorQuery>; kinds: Record<string, string> } | null {
+  if (!rawOp || typeof rawOp !== "object" || Array.isArray(rawOp)) return null;
+  const rawQueries = (rawOp as Record<string, unknown>).targetQueries;
+  if (!rawQueries || typeof rawQueries !== "object" || Array.isArray(rawQueries)) return null;
+  const fields = QUERYABLE_OPERAND_FIELDS[clean.op as EditOpKind] ?? [];
+  // NOTE: kind tags live on the RAW op beside `targetQueries`, not inside it
+  // — and never on `clean` (they are validated here, not in the per-kind
+  // core cases).
+  const rawKinds = (rawOp as Record<string, unknown>).targetQueryKinds;
+  const tags: Record<string, unknown> =
+    rawKinds && typeof rawKinds === "object" && !Array.isArray(rawKinds)
+      ? (rawKinds as Record<string, unknown>)
+      : {};
+  const queries: Record<string, SelectorQuery> = {};
+  const kinds: Record<string, string> = {};
+  for (const [key, value] of Object.entries(rawQueries as Record<string, unknown>)) {
+    if (!(fields as readonly string[]).includes(key)) continue;
+    const parsed = validateSelectorQuery(value);
+    if (!parsed) continue;
+    // Scene queries have no producing op, so there is no kind to tag with —
+    // the tag rule below applies to bucket queries only.
+    if (parsed.source.kind === "scene") {
+      queries[key] = parsed;
+      continue;
+    }
+    const tag = tags[key];
+    if (typeof tag !== "string" || tag.length === 0) continue;
+    queries[key] = parsed;
+    kinds[key] = tag;
+  }
+  return Object.keys(queries).length > 0 ? { queries, kinds } : null;
+}
+
 export function validateEditOp(raw: unknown): EditOp | null {
   const clean = validateEditOpCore(raw);
   if (!clean) return null;
@@ -493,6 +600,11 @@ export function validateEditOp(raw: unknown): EditOp | null {
   }
   const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
   if (exprs) clean.exprs = exprs;
+  const targetQueries = sanitizeTargetQueries(raw, clean);
+  if (targetQueries) {
+    clean.targetQueries = targetQueries.queries;
+    if (Object.keys(targetQueries.kinds).length > 0) clean.targetQueryKinds = targetQueries.kinds;
+  }
   return clean;
 }
 

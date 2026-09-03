@@ -193,6 +193,16 @@ function compileRepeatStep(
         reasons.push(`iteration ${n}: invalid op`);
         continue;
       }
+      // Stored operand queries are refused in repeat bodies: a bucket query's
+      // producing index addresses the list AS AUTHORED, but every iteration
+      // bakes into a DIFFERENT final list position — a query that resolves
+      // against the authored list is meaningless (and misleadingly resolvable)
+      // against the baked one.
+      if (validated.targetQueries !== undefined) {
+        rejected++;
+        reasons.push(`iteration ${n}: targetQueries cannot be used inside a repeat body (indices are baked, not replayed)`);
+        continue;
+      }
       const baked = bakeAndStripExprs(validated, iterValues, reasons, n);
       if (!baked) {
         rejected++;

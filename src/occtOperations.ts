@@ -334,9 +334,11 @@ type Transformer = (s: any) => any;
  * same handle when the op is a no-op). Unimplemented ops are skipped so a sidecar
  * authored against a newer build never hard-fails an older one. A skip calls
  * `fail` with a reason (see {@link OpOutcome}) before returning.
+ * Exported for `opQueryResolve.ts`'s interleaved resolution fold — the one
+ * external consumer; the main replay path stays inside this file.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail, guideCollector?: GuideCollector): any {
+export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail, guideCollector?: GuideCollector): any {
   switch (op.op) {
     case "translate":
     case "rotate":

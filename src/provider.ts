@@ -1356,7 +1356,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       post({ type: "status", text: "Rendering…" });
       progress?.report({ message: "Rendering…" });
-      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds } = result;
+      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings } = result;
+      // A frozen operand query replays on its cached ids — the user must know
+      // the query was not honored rather than staring at unchanged geometry.
+      for (const w of queryWarnings ?? []) post({ type: "status", text: w });
       post({
         type: "geometry",
         autoFit,

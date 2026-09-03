@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS } from "./editOps";
+import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS, QUERYABLE_OPERAND_FIELDS } from "./editOps";
 
 describe("validateEditOp", () => {
   it("accepts well-formed transform ops", () => {
@@ -631,6 +631,68 @@ describe("rib", () => {
     expect(rib({ thinOuter: 2 })).toBeNull();
     expect(rib({ blendRadius: -1 })).toBeNull();
     expect(rib({ blendRadius: "0.5" })).toBeNull();
+  });
+});
+
+describe("targetQueries (op-operand selector persistence)", () => {
+  const bucketQuery = { version: 1, source: { kind: "bucket", op: 0, role: "body" } };
+  const fillet = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "fillet", edges: ["edge-0"], radius: 1, ...extra });
+
+  it("carries a valid per-field query with its kind tag", () => {
+    expect(fillet({ targetQueries: { edges: bucketQuery }, targetQueryKinds: { edges: "addBox" } })).toMatchObject({
+      op: "fillet",
+      edges: ["edge-0"],
+      targetQueries: { edges: bucketQuery },
+      targetQueryKinds: { edges: "addBox" },
+    });
+  });
+
+  it("drops bad entries per-entry: unknown field, malformed query, dangling tag", () => {
+    // Unknown operand field for this kind.
+    expect(fillet({ targetQueries: { targets: bucketQuery }, targetQueryKinds: { targets: "addBox" } })?.targetQueries).toBeUndefined();
+    // Malformed query with a good tag.
+    expect(
+      fillet({ targetQueries: { edges: { version: 1, source: { kind: "bucket", op: 0, role: "nope" } } }, targetQueryKinds: { edges: "addBox" } })?.targetQueries
+    ).toBeUndefined();
+    // Good query, dangling/missing tag.
+    expect(fillet({ targetQueries: { edges: bucketQuery }, targetQueryKinds: { edges: "" } })?.targetQueries).toBeUndefined();
+    expect(fillet({ targetQueries: { edges: bucketQuery } })?.targetQueries).toBeUndefined();
+    // Non-object annotation forms.
+    expect(fillet({ targetQueries: null })?.targetQueries).toBeUndefined();
+    expect(fillet({ targetQueries: [] })?.targetQueries).toBeUndefined();
+  });
+
+  it("accepts a scene query with no kind tag (no producer to tag)", () => {
+    const op = validateEditOp({
+      op: "fillet", edges: ["edge-0"], radius: 1,
+      targetQueries: { edges: { version: 1, source: { kind: "scene", filter: { kind: "planar" } } } },
+    });
+    expect(op?.targetQueries).toEqual({ edges: { version: 1, source: { kind: "scene", filter: { kind: "planar" } } } });
+    expect(op?.targetQueryKinds).toBeUndefined();
+  });
+
+  it("keeps a partial entry when only one of several is bad", () => {
+    const op = validateEditOp({
+      op: "boolean", kind: "union", a: ["solid-0"], b: ["solid-1"],
+      targetQueries: { a: bucketQuery, b: { version: 1, source: { kind: "bucket", op: 0, role: "nope" } } },
+      targetQueryKinds: { a: "addBox", b: "addBox" },
+    });
+    expect(op?.targetQueries).toEqual({ a: bucketQuery });
+    expect(op?.targetQueryKinds).toEqual({ a: "addBox" });
+  });
+
+  it("QUERYABLE_OPERAND_FIELDS covers every id-bearing operand field (mirror of referencedEntities)", () => {
+    // referencedEntities is the webview-side enumeration; this table is the
+    // op-model side. Plane references (planeId/midplaneFaces) are deliberately
+    // excluded from both query surfaces — a plane is already a stable datum.
+    expect(QUERYABLE_OPERAND_FIELDS.fillet).toContain("edges");
+    expect(QUERYABLE_OPERAND_FIELDS.boolean).toEqual(["a", "b"]);
+    expect(QUERYABLE_OPERAND_FIELDS.extrude).toEqual(expect.arrayContaining(["profile", "profileEdges", "upToFace"]));
+    expect(QUERYABLE_OPERAND_FIELDS.loft).toEqual(expect.arrayContaining(["profiles", "profileEdgeSets"]));
+    expect(QUERYABLE_OPERAND_FIELDS.mate).toEqual(["faceA", "faceB"]);
+    expect(QUERYABLE_OPERAND_FIELDS.translate).toEqual(["targets"]);
+    expect(QUERYABLE_OPERAND_FIELDS.addBox).toEqual([]);
   });
 });
 

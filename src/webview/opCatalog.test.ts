@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { OP_CATALOG, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
-import { BREP_ONLY_OPS, type EditOp, type EditOpKind } from "../editOps";
+import { BREP_ONLY_OPS, QUERYABLE_OPERAND_FIELDS, type EditOp, type EditOpKind } from "../editOps";
 
 /** One representative well-formed op per kind, for describeOp coverage. */
 const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
@@ -192,6 +192,45 @@ describe("referencedEntities", () => {
     const op: EditOp = { op: "fillet", edges: ["edge-1"], radius: 1 };
     referencedEntities(op).push("edge-999");
     expect(op.edges).toEqual(["edge-1"]);
+  });
+
+  it("covers every QUERYABLE_OPERAND_FIELDS entry (the op-model side of query storage)", () => {
+    // Lock the two enumerations together: a field the sanitizer accepts must
+    // be visible to hover tooltips, or a stored query names an entity the UI
+    // claims no op mentions. Plane references (planeId/midplaneFaces) are
+    // excluded from both surfaces by design — a plane is already a datum.
+    const sampleFor = (field: string): { value: unknown; ids: string[] } => {
+      switch (field) {
+        case "profiles": return { value: ["__Q0", "__Q1"], ids: ["__Q0", "__Q1"] };
+        case "profileEdgeSets": return { value: [["__Q0"]], ids: ["__Q0"] };
+        case "profile": case "face": case "path": case "edge":
+        case "upToFace": case "upTo": case "faceA": case "faceB":
+          return { value: "__Q0", ids: ["__Q0"] };
+        default: return { value: ["__Q0"], ids: ["__Q0"] };
+      }
+    };
+    // Mutually-exclusive operand forms: setting one requires clearing its
+    // sibling, or the op is invalid input (and referencedEntities rightfully
+    // assumes valid ops — e.g. spreading a deleted boolean side would throw).
+    const conflicts: Record<string, string[][]> = {
+      extrude: [["profile", "profileEdges"]],
+      revolve: [["profile", "profileEdges"]],
+      sweep: [["profile", "profileEdges"]],
+      loft: [["profiles", "profileEdgeSets"]],
+    };
+    for (const kind of Object.keys(QUERYABLE_OPERAND_FIELDS) as EditOpKind[]) {
+      for (const field of QUERYABLE_OPERAND_FIELDS[kind]) {
+        const op = { ...(REPRESENTATIVE_OPS[kind] as unknown as Record<string, unknown>) };
+        for (const group of conflicts[kind] ?? []) {
+          if (group.includes(field)) for (const sibling of group) if (sibling !== field) delete op[sibling];
+        }
+        const { value, ids } = sampleFor(field);
+        op[field] = value;
+        expect(referencedEntities(op as unknown as EditOp), `${kind}.${field} is read`).toEqual(
+          expect.arrayContaining(ids)
+        );
+      }
+    }
   });
 });
 

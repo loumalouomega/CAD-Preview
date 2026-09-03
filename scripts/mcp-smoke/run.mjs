@@ -478,6 +478,118 @@ try {
     assert(splicedPart.selector !== undefined, "the stored query itself survives the splice (only the cache may freeze)");
   }
 
+  // Op-operand queries (Phase B) — block.stp + a 10x20x30 box at [200,0,0],
+  // then an extrude whose `profile` is a BUCKET QUERY (op 0's largest body
+  // face — one of the two 600-area x-normal faces), exercising: live
+  // resolution, re-resolution after an unrelated append, the forward-
+  // reference freeze on a middle splice, and the kind-tag mismatch freeze.
+  // The sidecar keeps queries + cached ids untouched throughout (replay-only
+  // resolution).
+  {
+    const oqModel = path.join(dir, "opquery.stp");
+    const resetOq = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), oqModel);
+      fs.rmSync(`${oqModel}.edits.json`, { force: true });
+    };
+    resetOq();
+    const oqQuery = { version: 1, source: { kind: "bucket", op: 0, role: "body", rank: { by: "area", order: "max", n: 1 } } };
+    const oqExtrude = {
+      op: "extrude", profile: "face-6", dir: [1, 0, 0], length: 5,
+      targetQueries: { profile: oqQuery }, targetQueryKinds: { profile: "addBox" },
+    };
+    const oqApplied = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: oqModel, ops: [{ op: "addBox", center: [200, 0, 0], size: [10, 20, 30] }, oqExtrude] },
+      resetOq
+    );
+    assert(oqApplied.applied === 2, `op-operand fixture applies (got ${JSON.stringify(oqApplied.report)})`);
+    // The extrusion resolves to a 600-area face extruded 5 along its own
+    // normal → exactly 3000 (an un-resolved cached "face-6" would be a seed
+    // face — 12..20 area — and could never give 3000).
+    const oqLoaded = await call("load_model", { path: oqModel });
+    assert(
+      oqLoaded.warnings.length === 0,
+      `op-operand resolution surfaces no warnings on the happy path (got ${JSON.stringify(oqLoaded.warnings)})`
+    );
+    const oqMass = await call("get_mass_properties", { path: oqModel, entityId: "solid-2" });
+    assert(
+      Math.abs(oqMass.volume - 3000) < 1e-6,
+      `the queried profile resolved to a 600-area face (extrusion volume ${oqMass.volume}, expect 3000)`
+    );
+
+    // 1. unrelated append: the query re-resolves to the SAME face.
+    await call("apply_edit_ops", { path: oqModel, ops: [{ op: "addBox", center: [-200, 0, 0], size: [10, 10, 10] }] });
+    const oqLoaded2 = await call("load_model", { path: oqModel });
+    assert(oqLoaded2.warnings.length === 0, `re-resolution after append stays clean (got ${JSON.stringify(oqLoaded2.warnings)})`);
+    const oqMass2 = await call("get_mass_properties", { path: oqModel, entityId: "solid-2" });
+    assert(Math.abs(oqMass2.volume - 3000) < 1e-6, `re-resolved extrusion is unchanged after the append (${oqMass2.volume})`);
+
+    // 2. the SIDECAR keeps queries + caches (replay-only resolution).
+    const oqSidecar = JSON.parse(fs.readFileSync(`${oqModel}.edits.json`, "utf8"));
+    const oqStored = oqSidecar.ops.find((o) => o.op === "extrude");
+    assert(
+      oqStored?.targetQueries?.profile !== undefined && oqStored.targetQueryKinds?.profile === "addBox",
+      "the sidecar keeps the stored query + kind tag untouched (resolution is replay-only)"
+    );
+
+    // 3. middle splice: the query's producing index now points at itself —
+    // a forward reference → freeze to cached ids, surfaced as a warning.
+    await call("remove_edit_op", { path: oqModel, index: 0 });
+    const oqLoaded3 = await call("load_model", { path: oqModel });
+    assert(
+      oqLoaded3.warnings.some((w) => /frozen to cached ids/.test(w) && /not before this op/.test(w)),
+      `a forward reference freezes with a named warning (got ${JSON.stringify(oqLoaded3.warnings)})`
+    );
+
+    // 4. kind-tag mismatch — a FRESH model for deterministic ordering:
+    // [cylinder, extrude(query op 0, tag "addBox")] — index 0 is an
+    // addCylinder, so the tag guard fires before geometry is consulted.
+    const oqModel2 = path.join(dir, "opquery2.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), oqModel2);
+    await call("apply_edit_ops", {
+      path: oqModel2,
+      ops: [
+        { op: "addCylinder", center: [-300, 0, 0], axis: [0, 0, 1], radius: 5, height: 10 },
+        oqExtrude,
+      ],
+    });
+    const oqLoaded4 = await call("load_model", { path: oqModel2 });
+    assert(
+      oqLoaded4.warnings.some((w) => /does not match the op now at index 0/.test(w)),
+      `a kind-tag mismatch freezes with a named warning (got ${JSON.stringify(oqLoaded4.warnings)})`
+    );
+  }
+
+  // Op-operand queries in repeat bodies are refused (indices are baked).
+  {
+    const oqScriptModel = path.join(dir, "opquery-repeat.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), oqScriptModel);
+    const oqScript = await call("run_parametric_script", {
+      path: oqScriptModel,
+      script: {
+        steps: [
+          {
+            repeat: {
+              times: 2,
+              indexVar: "i",
+              body: [
+                {
+                  op: "extrude", profile: "face-0", dir: [0, 0, 1], length: 5,
+                  targetQueries: { profile: { version: 1, source: { kind: "bucket", op: 0, role: "body" } } },
+                  targetQueryKinds: { profile: "addBox" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    assert(
+      oqScript.report?.some((r) => r.kind === "repeat" && (r.reasons ?? []).some((x) => /targetQueries cannot be used inside a repeat body/.test(x))),
+      `a query inside a repeat body is refused by name (got ${JSON.stringify(oqScript.report)})`
+    );
+  }
+
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
 
