@@ -62,6 +62,7 @@ import type {
   checkInterference,
   checkInterferenceAll,
   rebindPartsAcrossOps,
+  resolveBucketSelector,
   EntityFacts,
   MeasureResult,
   ExactMeasureKind,
@@ -158,6 +159,7 @@ export interface Pipeline {
   checkInterference: typeof checkInterference;
   checkInterferenceAll: typeof checkInterferenceAll;
   rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
+  resolveBucketSelector: typeof resolveBucketSelector;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
   searchStandardParts: typeof searchStandardParts;
@@ -382,7 +384,7 @@ export function describeCapabilities() {
       "extrude/revolve/sweep/loft take their profile in either of two mutually exclusive forms: a `face-N` (`profile`/`profiles`), or a set of `edge-N` ids assembled into one wire (`profileEdges`/`profileEdgeSets`) — which is how an OPEN sketch (an `addPolyline` with `closed: false`) is consumed. The edges may be listed in any order; a disconnected set is skipped with a diagnostic. A closed edge set behaves exactly like the equivalent face. An OPEN one encloses no area and therefore REQUIRES `thin`: its wall is centred on the spine with semicircular ends, so `thinOuter` has no meaning there and is refused unless it is exactly thin/2. Every section of a loft must agree on closedness.",
     ],
     entityIdScheme:
-      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids.",
+      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids. resolve_selector re-resolves a recorded op-bucket (op index + role, e.g. an extrude's endCap) to its CURRENT face-N ids with a centre-distance oracle per match — a re-executable query instead of a stale positional id.",
     verdictConventions: [
       "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
       "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
@@ -433,6 +435,7 @@ export function describeCapabilities() {
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written; edits/parts/annotations/construction planes/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open.",
       "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
+      "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first rung of the Selector-synthesis ladder. Each returned id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance); unresolved names reference ids with no confident match, and bindable:false means the producing op was a pattern instance (ambiguous across instances, never guessed).",
     ],
   };
 }
@@ -1139,6 +1142,72 @@ export async function checkInterferenceAllTool(
   }
 
   return { format: route.format, supported: true, pairs: namedPairs, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// resolve_selector
+
+/**
+ * Re-executable whole-bucket selector (roadmap item 1, ladder rung 1) —
+ * resolves `{version: 1, source: {kind: "bucket", op, role}}` ("the faces op
+ * N produced in role R") against the CURRENT op list, so a recorded
+ * `OpBucket`'s step-local ids are never trusted against a newer shape.
+ * Facts only: `ids` are the current-model `face-N` ids, `matches` carry the
+ * centre-distance/measure-delta oracle behind each one (a resolved id is
+ * trustworthy only at ~0 distance, the same bar entity-rebinding verifies
+ * itself against in `npm run mcp:smoke`), `unresolved` names reference ids
+ * with no confident match. A pattern-instance producer returns
+ * `bindable: false` with a reason (routed to a future scene-wide rung, never
+ * a guessed instance); a skipped/wireframe op with no bucket resolves to an
+ * honest empty. B-rep sources only headless (needs exact replay geometry).
+ */
+export async function resolveSelectorTool(
+  ctx: ToolContext,
+  params: { path: string; selector: unknown }
+): Promise<{
+  format: CadFormat;
+  supported: boolean;
+  warnings: string[];
+  ids?: string[];
+  unresolved?: string[];
+  matches?: Array<{ oldId: string; newId: string; centreDistance: number; measureDeltaPct: number }>;
+  bindable?: boolean;
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: selector resolution needs exact B-rep replay geometry, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEditsResolved(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.resolveBucketSelector(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    ops,
+    params.selector
+  );
+  const warnings: string[] = [];
+  if (!result.bindable) {
+    warnings.push(result.reason ?? "Selector is not bindable at rung 1 (pattern-instance producer).");
+  } else if (result.unresolved.length > 0) {
+    warnings.push(`Unresolved reference id(s): ${result.unresolved.join(", ")}.`);
+  }
+  return {
+    format: route.format,
+    supported: true,
+    warnings,
+    ids: result.ids,
+    unresolved: result.unresolved,
+    matches: result.matches,
+    bindable: result.bindable,
+  };
 }
 
 // ---------------------------------------------------------------------------

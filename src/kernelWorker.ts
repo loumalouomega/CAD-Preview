@@ -28,7 +28,7 @@ console.debug = console.error.bind(console);
 import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, type BRepCacheEntry, type BRepResult } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled, repairMesh } from "./gmshService";
 import { computeMassProperties, computeBom } from "./massProperties";
-import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps } from "./entityFacts";
+import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps, resolveBucketSelector } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
@@ -119,6 +119,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   checkInterference: checkInterference as Handler,
   checkInterferenceAll: checkInterferenceAll as Handler,
   rebindPartsAcrossOps: rebindPartsAcrossOps as Handler,
+  resolveBucketSelector: resolveBucketSelector as Handler,
   renderSnapshot: renderSnapshot as Handler,
   isRenderAvailable: isRenderAvailable as Handler,
   searchStandardParts: searchStandardParts as Handler,

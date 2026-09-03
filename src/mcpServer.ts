@@ -37,6 +37,7 @@ import {
   checkToleranceTool,
   checkInterferenceTool,
   checkInterferenceAllTool,
+  resolveSelectorTool,
   renderSnapshotTool,
   renderOpsPrefixTool,
   hitTestTool,
@@ -365,6 +366,28 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; parts?: string[] }) => checkInterferenceAllTool(ctx, args))
+);
+
+server.registerTool(
+  "resolve_selector",
+  {
+    description:
+      "Facts only (see describe_capabilities' verdictConventions): re-executable whole-bucket selector (roadmap Selector synthesis, rung 1) — resolves {version: 1, source: {kind: 'bucket', op, role}} ('the faces op N produced in role R') against the CURRENT op list. Returns current face-N ids plus the centre-distance/measure-delta oracle behind each (trustworthy only at ~0 distance); unresolved names reference ids with no confident match. A pattern-instance producer returns bindable:false (ambiguous across instances, never guessed); a skipped op resolves to an honest empty. Read-only, never mutates the model. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      selector: z
+        .object({
+          version: z.literal(1),
+          source: z.object({
+            kind: z.literal("bucket"),
+            op: z.number().int().min(0),
+            role: z.string(),
+          }),
+        })
+        .describe("Whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} — op is the 0-based op index, role is the bucket role (e.g. endCap, side, band, body)"),
+    },
+  },
+  wrap((args: { path: string; selector: unknown }) => resolveSelectorTool(ctx, args))
 );
 
 server.registerTool(

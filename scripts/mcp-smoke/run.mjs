@@ -279,6 +279,26 @@ try {
     assert(buckets[0].roles.body.every((id) => /^face-\d+$/.test(id)), "bucket ids are face-N strings");
   }
 
+  // resolve_selector (roadmap "Selector synthesis", rung 1) — the op-0 body
+  // bucket re-resolves against the current model: the same 6 ids with a ~0
+  // centre-distance oracle (the SAME faces, not coincidental ones), plus the
+  // honest degradations (mesh source → supported:false, out-of-range op throws).
+  {
+    const sel = await call("resolve_selector", {
+      path: model,
+      selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } },
+    });
+    assert(
+      sel.supported === true && sel.bindable === true && sel.ids.length === 6 && sel.unresolved.length === 0,
+      `resolve_selector re-resolves the op-0 body bucket to 6 ids (got ${JSON.stringify(sel.ids)})`
+    );
+    assert(
+      sel.ids.every((id) => /^face-\d+$/.test(id)) &&
+        sel.matches.every((m) => m.centreDistance < 1e-6 && m.measureDeltaPct < 1e-6),
+      "resolve_selector's oracle is ~0 distance/delta for every match (same geometry, verified not trusted)"
+    );
+  }
+
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
 

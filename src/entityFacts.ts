@@ -12,7 +12,14 @@ import {
   faceSurfaceInfo,
   combineSolids,
 } from "./occtOperations";
-import { rebindEntities, remapPartEntityIds, type EntitySignature } from "./entityRebind";
+import { rebindEntities, remapPartEntityIds, type EntityRebindMatch, type EntitySignature } from "./entityRebind";
+import {
+  bucketReferenceIds,
+  isBindableSelector,
+  validateSelectorQuery,
+  type SelectorQuery,
+} from "./selectorQuery";
+import type { OpBucket } from "./opBuckets";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
@@ -1172,4 +1179,129 @@ export async function rebindPartsAcrossOps(
   }
 
   return { parts: currentParts, annotations: currentAnnotations, stats, annotationStats };
+}
+
+export interface BucketSelectorResult {
+  /** Current-model `face-N` ids the bucket query resolves to (may be empty). */
+  ids: string[];
+  /** Reference (step-local) ids with no confident match in the current shape. */
+  unresolved: string[];
+  /** Geometric matches behind `ids` — centre distance + measure delta per pair,
+   * the same oracle shape `rebindPartsAcrossOps` already reports. A resolved id
+   * is trustworthy only with a ~0 `centreDistance`, exactly as the closed
+   * entity-rebinding work verifies itself in `npm run mcp:smoke`. */
+  matches: EntityRebindMatch[];
+  /** `false` when rung 1 cannot name the pick (pattern-instance producer) —
+   * routed to a future scene-wide predicate rung, never a guessed instance. */
+  bindable: boolean;
+  reason?: string;
+}
+
+/**
+ * Re-executable whole-bucket selector — roadmap item 1 ("Selector synthesis"),
+ * ladder rung 1. Resolves `{version: 1, source: {kind: "bucket", op, role}}`
+ * ("the faces op N produced in role R") against the CURRENT `ops` list, so a
+ * recorded `OpBucket`'s step-local ids never need to be trusted against a
+ * newer shape.
+ *
+ * Mechanism: replay the prefix `ops[0..op]` with an `opBuckets` collector to
+ * re-derive the reference ids (never trusting caller-supplied ids), fingerprint
+ * that prefix shape, replay the full list, and match the reference subset via
+ * `rebindEntities` at the shared `1e-3 * bboxDiagonal` tolerance — the same
+ * match `rebindPartsAcrossOps` uses, at zero new matching code. The returned
+ * `matches` ARE the oracle: each carries `centreDistance`/`measureDeltaPct`,
+ * so a caller verifies "the SAME entity" by comparing geometry, not by
+ * trusting the resolution.
+ *
+ * A producing op that gracefully skipped records no bucket (rung-1 honest
+ * empty, never a fabricated match); a pattern-instance producer is refused via
+ * `bindable: false` (the roadmap's bindability gate — a name would be
+ * ambiguous across instances). Malformed queries and out-of-range op indices
+ * throw (caller-input-shape misuse, failing fast like every other tool).
+ */
+export async function resolveBucketSelector(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  queryRaw: unknown
+): Promise<BucketSelectorResult> {
+  const query: SelectorQuery | null = validateSelectorQuery(queryRaw);
+  if (!query) {
+    throw new Error(
+      'Invalid selector query — expected {version: 1, source: {kind: "bucket", op: <op index>, role: <role>}}.'
+    );
+  }
+  const opIndex = query.source.op;
+  if (opIndex >= ops.length) {
+    throw new Error(`Selector query op ${opIndex} is out of range (op list has ${ops.length} ops).`);
+  }
+  if (!isBindableSelector(ops, query)) {
+    return {
+      ids: [],
+      unresolved: [],
+      matches: [],
+      bindable: false,
+      reason: `Producing op ${opIndex} (${ops[opIndex].op}) is a pattern instance — ambiguous across instances, routed to a future scene-wide predicate rung.`,
+    };
+  }
+
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/bs.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanupPrefix: Array<{ delete(): void }> = [];
+  const cleanupFull: Array<{ delete(): void }> = [];
+  try {
+    const prefixOps = ops.slice(0, opIndex + 1);
+    const prefixBuckets: OpBucket[] = [];
+    const prefixShape = applyEditsBRep(
+      oc,
+      readShape(oc, tmpName, format, cleanupPrefix),
+      prefixOps,
+      cleanupPrefix,
+      undefined,
+      undefined,
+      prefixBuckets
+    );
+    const prefixSigs = collectAllEntitySignatures(oc, prefixShape, cleanupPrefix).filter((s) => s.kind === "face");
+    const refIds = bucketReferenceIds(prefixBuckets, query);
+    if (refIds.length === 0) {
+      return { ids: [], unresolved: [], matches: [], bindable: true };
+    }
+    const refSet = new Set(refIds);
+    const refSigs = prefixSigs.filter((s) => refSet.has(s.id));
+
+    const fullShape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupFull), ops, cleanupFull);
+    const fullSigs = collectAllEntitySignatures(oc, fullShape, cleanupFull).filter((s) => s.kind === "face");
+
+    const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, fullShape, cleanupFull), 1e-6);
+    const matches = rebindEntities(refSigs, fullSigs, toleranceAbs);
+    const ids = matches.map((m) => m.newId);
+    const matchedOld = new Set(matches.map((m) => m.oldId));
+    const unresolved = refIds.filter((id) => !matchedOld.has(id));
+    return { ids, unresolved, matches, bindable: true };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanupFull.length - 1; i >= 0; i--) {
+      try {
+        cleanupFull[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    for (let i = cleanupPrefix.length - 1; i >= 0; i--) {
+      try {
+        cleanupPrefix[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
 }

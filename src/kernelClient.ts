@@ -189,6 +189,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     checkInterference: (...args) => callKernel("checkInterference", args) as ReturnType<Pipeline["checkInterference"]>,
     checkInterferenceAll: (...args) => callKernel("checkInterferenceAll", args) as ReturnType<Pipeline["checkInterferenceAll"]>,
     rebindPartsAcrossOps: (...args) => callKernel("rebindPartsAcrossOps", args) as ReturnType<Pipeline["rebindPartsAcrossOps"]>,
+    resolveBucketSelector: (...args) => callKernel("resolveBucketSelector", args) as ReturnType<Pipeline["resolveBucketSelector"]>,
     renderSnapshot: (...args) => callKernel("renderSnapshot", args) as ReturnType<Pipeline["renderSnapshot"]>,
     isRenderAvailable: (...args) => callKernel("isRenderAvailable", args) as ReturnType<Pipeline["isRenderAvailable"]>,
     searchStandardParts: (...args) => callKernel("searchStandardParts", args) as ReturnType<Pipeline["searchStandardParts"]>,
