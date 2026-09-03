@@ -37,7 +37,7 @@ jobs:
       # `CLAUDE.md`'s "Webview and host-side test harnesses".
 
       - name: Cache VS Code for integration tests
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .vscode-test
           key: vscode-test-${{ runner.os }}
