@@ -373,6 +373,58 @@ try {
     );
   }
 
+  // synthesize_selector (induction) — own block.stp copy: box + fillet, so op
+  // 1's band bucket holds exactly one cylindrical face among rebuilt planes.
+  // The synthesized query must name it with a qualitative leaf (never an area
+  // literal), re-execute to exactly that id at ~0 oracle distance, and still
+  // hit the same cylinder after an unrelated append (transferability — what
+  // makes the query better than the raw id).
+  {
+    const synthModel = path.join(dir, "block-for-synthesize.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), synthModel);
+    await call("apply_edit_ops", {
+      path: synthModel,
+      ops: [{ op: "addBox", center: [100, 0, 0], size: [10, 20, 30] }],
+    });
+    // block.stp has 12 edges (edge-0..11); the added box appends edge-12..23.
+    const filleted = await call("apply_edit_ops", {
+      path: synthModel,
+      ops: [{ op: "fillet", edges: ["edge-12"], radius: 1 }],
+    });
+    assert(filleted.applied === 1, `fillet applied for the synthesis fixture (got ${JSON.stringify(filleted.report)})`);
+    const synthLoaded = await call("load_model", { path: synthModel });
+    const bandIds = ((synthLoaded.opBuckets ?? []).find((b) => b.op === 1)?.roles?.band ?? []);
+    let target = null;
+    for (const id of bandIds) {
+      const facts = await call("inspect", { path: synthModel, entityId: id });
+      if (facts.surfaceType === "cylinder") target = id;
+    }
+    assert(target !== null, `the band bucket holds exactly one cylindrical face (band: ${JSON.stringify(bandIds)})`);
+
+    const synth = await call("synthesize_selector", { path: synthModel, op: 1, role: "band", entityId: target });
+    assert(synth.supported === true && synth.bindable === true && synth.query !== null, "synthesize_selector names the band cylinder");
+    assert(
+      JSON.stringify(synth.ids) === JSON.stringify([target]) && synth.matches[0].centreDistance < 1e-6,
+      `synthesized query re-executes to exactly [${target}] at ~0 oracle distance`
+    );
+    assert(
+      !/\d{2,}\.\d+/.test(JSON.stringify(synth.query)),
+      `synthesized query carries no baked coordinate (got ${JSON.stringify(synth.query.source)})`
+    );
+
+    await call("apply_edit_ops", {
+      path: synthModel,
+      ops: [{ op: "addBox", center: [-100, 0, 0], size: [5, 5, 5] }],
+    });
+    const revived = await call("resolve_selector", { path: synthModel, selector: synth.query });
+    assert(revived.ids.length === 1, `the query still resolves to one face after an unrelated append (got ${JSON.stringify(revived.ids)})`);
+    const revivedFacts = await call("inspect", { path: synthModel, entityId: revived.ids[0] });
+    assert(
+      revivedFacts.surfaceType === "cylinder" && revived.matches[0].centreDistance < 1e-6,
+      "the re-resolved face is still the band cylinder at ~0 oracle distance (transferability)"
+    );
+  }
+
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
 

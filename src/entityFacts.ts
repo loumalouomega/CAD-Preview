@@ -20,7 +20,8 @@ import {
   type SelectorQuery,
 } from "./selectorQuery";
 import { applyFaceFilter, rankFaces, type FilterableFace } from "./selectorPredicate";
-import type { OpBucket } from "./opBuckets";
+import { induceSelector } from "./selectorInduce";
+import { ROLE_LABELS, type OpBucket } from "./opBuckets";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
@@ -1347,8 +1348,8 @@ export async function resolveBucketSelector(
     }
   }
 
-  const opIndex = query.source.op;
-  if (opIndex >= ops.length) {
+  const opIndex = query.source.kind === "bucket" ? query.source.op : -1;
+  if (query.source.kind === "bucket" && opIndex >= ops.length) {
     throw new Error(`Selector query op ${opIndex} is out of range (op list has ${ops.length} ops).`);
   }
   if (!isBindableSelector(ops, query)) {
@@ -1427,6 +1428,168 @@ export async function resolveBucketSelector(
       matches: survivors,
       bindable: true,
     };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanupFull.length - 1; i >= 0; i--) {
+      try {
+        cleanupFull[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    for (let i = cleanupPrefix.length - 1; i >= 0; i--) {
+      try {
+        cleanupPrefix[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export interface SynthesizeResult {
+  /** The induced query — `null` when nothing executes to exactly the picked
+   * entity (never a guess; `reason` names why). Re-executable through
+   * `resolveBucketSelector` and stable across dimension edits that preserve
+   * the qualitative facts it was induced from. */
+  query: SelectorQuery | null;
+  /** Current-model ids the query resolves to (exactly `[entityId]` when
+   * `query` is non-null — enforced below, not assumed). */
+  ids: string[];
+  /** The geometric oracle behind `ids`, filtered to the survivors (same
+   * `centreDistance ~ 0` trust rule as `resolveBucketSelector`). */
+  matches: EntityRebindMatch[];
+  bindable: boolean;
+  reason?: string;
+}
+
+/**
+ * Constant-free-first synthesis — roadmap item 1 ("Selector synthesis"),
+ * induction. Turns a picked `entityId` produced by op `opIndex` in `role`
+ * into a `SelectorQuery` that re-executes to exactly that entity.
+ *
+ * Mechanism, in one prefix + one full replay (no second resolve call): the
+ * rung-1 front half (prefix replay with `opBuckets` collector → reference
+ * ids → full replay → `rebindEntities` match) establishes the CURRENT ids
+ * with the geometric oracle; `faceFilterableFacts` builds the search
+ * universe from the resolved ids; `induceSelector` searches it
+ * constant-free-first; the winner is accepted only if it re-executes to
+ * exactly `[entityId]` AND every surviving match has `centreDistance ~ 0`.
+ * That conjunction is the live-kernel half of the oracle rule: pure
+ * re-execution proves the layer selects the target within this call's facts,
+ * the match distances prove those facts are the same geometry (not a
+ * coincidental face), and the resolver reads the same deterministic OCCT
+ * values on any later call — so no separate re-resolve is needed to close
+ * the loop.
+ *
+ * Honest nulls (all `bindable: true`, all with `reason`): skipped/empty
+ * bucket, `entityId` outside the bucket's resolved set, inducer finds no
+ * exact query. Pattern producers refuse via `bindable: false` (same gate as
+ * `resolveBucketSelector`). Malformed op/role/id shapes throw (caller-input
+ * misuse, failing fast like every other tool).
+ */
+export async function synthesizeSelector(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  opIndex: number,
+  role: string,
+  entityId: string
+): Promise<SynthesizeResult> {
+  if (!Number.isInteger(opIndex) || opIndex < 0 || opIndex >= ops.length) {
+    throw new Error(`synthesize_selector op ${String(opIndex)} is out of range (op list has ${ops.length} ops).`);
+  }
+  if (typeof role !== "string" || !(role in ROLE_LABELS)) {
+    throw new Error(`synthesize_selector role ${JSON.stringify(role)} is not a known bucket role.`);
+  }
+  if (typeof entityId !== "string" || !/^(solid|face|edge|point)-\d+$/.test(entityId)) {
+    throw new Error(`synthesize_selector entityId ${JSON.stringify(entityId)} is not a positional entity id.`);
+  }
+
+  const bare = validateSelectorQuery({ version: 1, source: { kind: "bucket", op: opIndex, role } });
+  if (!bare || bare.source.kind !== "bucket") {
+    throw new Error(`synthesize_selector op ${opIndex} / role ${JSON.stringify(role)} is not a valid bucket query.`);
+  }
+  if (!isBindableSelector(ops, bare)) {
+    return {
+      query: null,
+      ids: [],
+      matches: [],
+      bindable: false,
+      reason: `Producing op ${opIndex} (${ops[opIndex].op}) is a pattern instance — ambiguous across instances, resolvable via a scene-wide query instead.`,
+    };
+  }
+
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/ss.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanupPrefix: Array<{ delete(): void }> = [];
+  const cleanupFull: Array<{ delete(): void }> = [];
+  try {
+    const prefixOps = ops.slice(0, opIndex + 1);
+    const prefixBuckets: OpBucket[] = [];
+    const prefixShape = applyEditsBRep(
+      oc,
+      readShape(oc, tmpName, format, cleanupPrefix),
+      prefixOps,
+      cleanupPrefix,
+      undefined,
+      undefined,
+      prefixBuckets
+    );
+    const prefixSigs = collectAllEntitySignatures(oc, prefixShape, cleanupPrefix).filter((s) => s.kind === "face");
+    const refIds = bucketReferenceIds(prefixBuckets, bare);
+    if (refIds.length === 0) {
+      return { query: null, ids: [], matches: [], bindable: true, reason: `Op ${opIndex} recorded no "${role}" bucket (skipped or faceless op).` };
+    }
+    const refSet = new Set(refIds);
+    const refSigs = prefixSigs.filter((s) => refSet.has(s.id));
+
+    const fullShape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupFull), ops, cleanupFull);
+    const fullSigs = collectAllEntitySignatures(oc, fullShape, cleanupFull).filter((s) => s.kind === "face");
+
+    const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, fullShape, cleanupFull), 1e-6);
+    const matches = rebindEntities(refSigs, fullSigs, toleranceAbs);
+    const byNewId = new Map(matches.map((m) => [m.newId, m]));
+    if (!byNewId.has(entityId)) {
+      return {
+        query: null,
+        ids: [],
+        matches: [],
+        bindable: true,
+        reason: `Entity ${entityId} is not among op ${opIndex}'s resolved "${role}" faces — nothing to name.`,
+      };
+    }
+    const universe = faceFilterableFacts(
+      oc,
+      fullShape,
+      matches.map((m) => m.newId),
+      cleanupFull
+    );
+    const query = induceSelector({ op: opIndex, role: bare.source.role, universe, targets: [entityId] });
+    if (!query) {
+      return { query: null, ids: [], matches: [], bindable: true, reason: `No exact query names ${entityId} within op ${opIndex}'s "${role}" faces.` };
+    }
+    // Accept only on exact re-execution with a clean oracle: the induced
+    // layer must select exactly the picked entity out of this call's own
+    // facts, and its match must be geometrically exact.
+    const { filter, rank } = query.source.kind === "bucket" ? query.source : { filter: undefined, rank: undefined };
+    let survivors = filter !== undefined ? applyFaceFilter(universe, filter) : [...universe];
+    if (rank !== undefined) survivors = rankFaces(survivors, rank);
+    const survivorIds = survivors.map((f) => f.id);
+    const oracle = byNewId.get(entityId);
+    if (survivorIds.length !== 1 || survivorIds[0] !== entityId || !oracle || oracle.centreDistance >= 1e-6) {
+      return { query: null, ids: [], matches: [], bindable: true, reason: `Induced query failed its own oracle check for ${entityId}.` };
+    }
+    return { query, ids: survivorIds, matches: [oracle], bindable: true };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

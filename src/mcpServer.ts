@@ -38,6 +38,7 @@ import {
   checkInterferenceTool,
   checkInterferenceAllTool,
   resolveSelectorTool,
+  synthesizeSelectorTool,
   renderSnapshotTool,
   renderOpsPrefixTool,
   hitTestTool,
@@ -421,6 +422,21 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; selector: unknown }) => resolveSelectorTool(ctx, args))
+);
+
+server.registerTool(
+  "synthesize_selector",
+  {
+    description:
+      "Facts only (see describe_capabilities' verdictConventions): constant-free-first synthesis (roadmap Selector synthesis, induction) — turns a picked entityId produced by op N in bucket role R into a SelectorQuery that re-executes to exactly that entity. Tries qualitative leaves first (planar, surfaceType, axis-snapped normal, rank), the exact picked normal next, area literals last — so the returned query survives dimension edits that break raw coordinates. The query is verified live before returning (exact re-execution plus centreDistance ~ 0 on every match); query:null with a reason means nothing names the entity exactly — never a guess. A pattern producer returns bindable:false. Read-only, never mutates the model. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      op: z.number().int().min(0).describe("0-based op index that produced the entity"),
+      role: z.string().describe("Bucket role the entity was produced in (e.g. body, endCap, side, band)"),
+      entityId: z.string().describe("Picked face-N id to name (must be among the bucket's currently-resolved faces)"),
+    },
+  },
+  wrap((args: { path: string; op: number; role: string; entityId: string }) => synthesizeSelectorTool(ctx, args))
 );
 
 server.registerTool(

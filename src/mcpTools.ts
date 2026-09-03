@@ -63,6 +63,7 @@ import type {
   checkInterferenceAll,
   rebindPartsAcrossOps,
   resolveBucketSelector,
+  synthesizeSelector,
   EntityFacts,
   MeasureResult,
   ExactMeasureKind,
@@ -160,6 +161,7 @@ export interface Pipeline {
   checkInterferenceAll: typeof checkInterferenceAll;
   rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
   resolveBucketSelector: typeof resolveBucketSelector;
+  synthesizeSelector: typeof synthesizeSelector;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
   searchStandardParts: typeof searchStandardParts;
@@ -436,6 +438,7 @@ export function describeCapabilities() {
       "The CAD source file is never written; edits/parts/annotations/construction planes/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open.",
       "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
       "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first three rungs of the Selector-synthesis ladder. An optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts; one leaf or an AND-list) plus rank ({by:'area',order:'max'|'min',n}) narrows the bucket without baking in coordinates (e.g. the largest endCap face) — or {version: 1, source: {kind: 'scene', filter?, rank?}} drops the bucket anchor entirely (at least one of filter/rank required), e.g. the largest planar face in the model, in a single replay. Each returned bucket id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance; the scene path returns no matches — the exact facts are the oracle); unresolved names reference ids with no confident match, an induced selection of zero is an honest empty (never a fallback), and bindable:false means the producing op was a pattern instance (use a scene query to match across all copies instead).",
+      "synthesize_selector (B-rep sources only) is resolve_selector's inverse: given a picked entityId plus its producing op/role, it induces the constant-free-first query naming exactly that entity (qualitative leaves before the exact normal, area literals last) and verifies it live (exact re-execution plus centreDistance ~ 0) before returning — query:null with a reason means nothing exact exists, never a guess.",
     ],
   };
 }
@@ -1212,6 +1215,69 @@ export async function resolveSelectorTool(
     warnings,
     ids: result.ids,
     unresolved: result.unresolved,
+    matches: result.matches,
+    bindable: result.bindable,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// synthesize_selector
+
+/**
+ * Constant-free-first synthesis (roadmap item 1, induction) — turns a picked
+ * `entityId` produced by op `op` in bucket `role` into a `SelectorQuery`
+ * that re-executes to exactly that entity, verified live before returning
+ * (exact re-execution plus `centreDistance ~ 0` on every surviving match).
+ * Facts only: `query` is `null` with a `reason` when nothing names the entity
+ * exactly (never a guess); a pattern producer returns `bindable: false`.
+ * Read-only, never mutates the model. B-rep sources only headless.
+ */
+export async function synthesizeSelectorTool(
+  ctx: ToolContext,
+  params: { path: string; op: number; role: string; entityId: string }
+): Promise<{
+  format: CadFormat;
+  supported: boolean;
+  warnings: string[];
+  query?: import("./selectorQuery").SelectorQuery | null;
+  ids?: string[];
+  matches?: Array<{ oldId: string; newId: string; centreDistance: number; measureDeltaPct: number }>;
+  bindable?: boolean;
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: selector synthesis needs exact B-rep replay geometry, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEditsResolved(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.synthesizeSelector(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    ops,
+    params.op,
+    params.role,
+    params.entityId
+  );
+  const warnings: string[] = [];
+  if (!result.bindable) {
+    warnings.push(result.reason ?? "Selector is not bindable (pattern-instance producer).");
+  } else if (!result.query) {
+    warnings.push(result.reason ?? "No exact query names this entity.");
+  }
+  return {
+    format: route.format,
+    supported: true,
+    warnings,
+    query: result.query,
+    ids: result.ids,
     matches: result.matches,
     bindable: result.bindable,
   };

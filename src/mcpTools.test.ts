@@ -21,6 +21,7 @@ import {
   checkInterferenceTool,
   checkInterferenceAllTool,
   resolveSelectorTool,
+  synthesizeSelectorTool,
   renderSnapshotTool,
   renderOpsPrefixTool,
   searchStandardPartsTool,
@@ -390,6 +391,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       annotationStats: { considered: 0, rebound: 0, dropped: 0 },
     })),
     resolveBucketSelector: vi.fn(async () => ({ ids: [], unresolved: [], matches: [], bindable: true })),
+    synthesizeSelector: vi.fn(async () => ({ query: null, ids: [], matches: [], bindable: true, reason: "fake" })),
     ...overrides,
   } as Pipeline;
 }
@@ -2735,6 +2737,66 @@ describe("resolve_selector", () => {
     const r2 = await resolveSelectorTool(unbindable, { path: stpModel, selector: query });
     expect(r2.supported).toBe(true);
     expect(r2.ids).toEqual([]);
+    expect(r2.warnings.join("\n")).toMatch(/pattern instance/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// synthesize_selector
+
+describe("synthesize_selector", () => {
+  it("rejects mesh-format sources like every other B-rep-only entity tool", async () => {
+    const result = await synthesizeSelectorTool(ctx(), { path: stlModel, op: 0, role: "body", entityId: "face-0" });
+    expect(result.supported).toBe(false);
+  });
+
+  it("passes op/role/entityId to the pipeline and surfaces the verified query", async () => {
+    const query = { version: 1 as const, source: { kind: "bucket" as const, op: 0, role: "body" as const, filter: { kind: "planar" as const } } };
+    const pipeline = fakePipeline({
+      synthesizeSelector: vi.fn(async () => ({
+        query,
+        ids: ["face-0"],
+        matches: [{ oldId: "face-0", newId: "face-0", centreDistance: 0, measureDeltaPct: 0 }],
+        bindable: true,
+      })),
+    });
+    const result = await synthesizeSelectorTool(ctx(pipeline), { path: stpModel, op: 0, role: "body", entityId: "face-0" });
+    expect(result.supported).toBe(true);
+    expect(result.query).toEqual(query);
+    expect(result.ids).toEqual(["face-0"]);
+    expect(result.warnings).toEqual([]);
+    expect(pipeline.synthesizeSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], 0, "body", "face-0");
+  });
+
+  it("warns on honest-null and on bindable:false without throwing", async () => {
+    const empty = ctx(
+      fakePipeline({
+        synthesizeSelector: vi.fn(async () => ({
+          query: null,
+          ids: [],
+          matches: [],
+          bindable: true,
+          reason: "No exact query names face-0 within op 0's \"body\" faces.",
+        })),
+      })
+    );
+    const r1 = await synthesizeSelectorTool(empty, { path: stpModel, op: 0, role: "body", entityId: "face-0" });
+    expect(r1.query).toBeNull();
+    expect(r1.warnings.join("\n")).toMatch(/No exact query/);
+
+    const unbindable = ctx(
+      fakePipeline({
+        synthesizeSelector: vi.fn(async () => ({
+          query: null,
+          ids: [],
+          matches: [],
+          bindable: false,
+          reason: "Producing op 1 (patternLinear) is a pattern instance.",
+        })),
+      })
+    );
+    const r2 = await synthesizeSelectorTool(unbindable, { path: stpModel, op: 1, role: "copies", entityId: "face-0" });
+    expect(r2.query).toBeNull();
     expect(r2.warnings.join("\n")).toMatch(/pattern instance/);
   });
 });
