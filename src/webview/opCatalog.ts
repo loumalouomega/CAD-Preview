@@ -23,7 +23,7 @@ export type PanelOpId =
   // EDIT — features
   | "extrude" | "revolve" | "sweep" | "loft"
   // EDIT — modify
-  | "shell" | "splitByPlane" | "section"
+  | "shell" | "draft" | "splitByPlane" | "section"
   // EDIT — assembly
   | "explode" | "mate" | "align" | "patternLinear" | "patternCircular"
   // GEOMETRY 2D — wireframe
@@ -34,7 +34,7 @@ export type PanelOpId =
   | "addCircleProfile" | "addRectangleProfile" | "addPolygonProfile"
   | "addEllipseProfile" | "addRoundedRectangleProfile" | "addSlotProfile" | "addTrapezoidProfile"
   // GEOMETRY 2D — build from selection
-  | "buildSurface"
+  | "buildSurface" | "edgeSlot"
   // GEOMETRY 3D — primitives
   | "addBox" | "addSphere" | "addCylinder" | "addCone" | "addTorus" | "addPrism" | "addWedge"
   // GEOMETRY 3D — holes (subtractive: cut into the selected volumes)
@@ -103,7 +103,7 @@ export const OP_CATALOG: {
     },
     {
       title: "Build from selection",
-      ops: [entry("buildSurface", "Surface", ["addSurfaceFromLines"])],
+      ops: [entry("buildSurface", "Surface", ["addSurfaceFromLines"]), entry("edgeSlot", "Edge Slot", ["addEdgeSlot"])],
     },
   ],
   geometry3d: [
@@ -170,6 +170,7 @@ export const OP_CATALOG: {
       title: "Modify",
       ops: [
         entry("shell", "Shell", ["shell"]),
+        entry("draft", "Draft", ["draft"]),
         entry("splitByPlane", "Split", ["splitByPlane"]),
         entry("section", "Section", ["section"]),
       ],
@@ -204,6 +205,28 @@ export function describeOp(op: EditOp): string {
   return bindings ? `${base} [${bindings}]` : base;
 }
 
+/**
+ * A sweep-family op's profile operand, in whichever of its two mutually
+ * exclusive forms is present: the `face-N`, or the edges of its wire joined
+ * with `+`.
+ */
+function profileLabel(op: { profile?: string; profileEdges?: string[] }): string {
+  if (op.profile !== undefined) return op.profile;
+  return op.profileEdges?.join("+") ?? "?";
+}
+
+/** Every entity id a single-profile operand mentions, in either form. */
+function profileOperandIds(op: { profile?: string; profileEdges?: string[] }): string[] {
+  if (op.profile !== undefined) return [op.profile];
+  return [...(op.profileEdges ?? [])];
+}
+
+/** " thin=2" / " thin=2/1" for a thin-walled sweep-family op; "" otherwise. */
+function thinLabel(op: { thin?: number; thinOuter?: number }): string {
+  if (op.thin === undefined) return "";
+  return op.thinOuter ? ` thin=${op.thin}/${op.thinOuter}` : ` thin=${op.thin}`;
+}
+
 function describeOpBase(op: EditOp): string {
   switch (op.op) {
     case "translate": return `Move ${op.targets.length} (${op.vec.join(", ")})`;
@@ -212,14 +235,19 @@ function describeOpBase(op: EditOp): string {
     case "mirror": return `Mirror ${op.targets.length}`;
     case "boolean": return `${cap(op.kind)} ${op.a.length}↔${op.b.length}`;
     case "fillet": return `Fillet ${op.edges.length} r=${op.radius}`;
-    case "chamfer": return `Chamfer ${op.edges.length} d=${op.distance}`;
-    case "extrude": return `Extrude ${op.profile} ×${op.length}`;
-    case "revolve": return `Revolve ${op.profile} ${op.angleDeg}°`;
-    case "sweep": return `Sweep ${op.profile} → ${op.path}`;
-    case "loft": return `Loft ${op.profiles.length} profiles`;
+    case "chamfer": {
+      if (op.distance2 !== undefined) return `Chamfer ${op.edges.length} ${op.distance}×${op.distance2}`;
+      if (op.angleDeg !== undefined) return `Chamfer ${op.edges.length} d=${op.distance} ${op.angleDeg}°`;
+      return `Chamfer ${op.edges.length} d=${op.distance}`;
+    }
+    case "extrude": return `Extrude ${profileLabel(op)} ×${op.length}${thinLabel(op)}`;
+    case "revolve": return `Revolve ${profileLabel(op)} ${op.angleDeg}°${thinLabel(op)}`;
+    case "sweep": return `Sweep ${profileLabel(op)} → ${op.path}${thinLabel(op)}`;
+    case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${thinLabel(op)}`;
     case "explode": return `Explode ×${op.factor}`;
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
     case "shell": return `▣ Shell t=${op.thickness} (${op.openingFaces.length} openings)`;
+    case "draft": return `⬔ Draft ${op.faces.length} ${op.angleDeg}°`;
     case "splitByPlane": return `⧄ Split ${op.targets.length} (${op.keep})`;
     case "section": return `⊟ Section ${op.targets.length}`;
     case "addBox": return `+ Box ${op.size.join("×")}`;
@@ -250,6 +278,7 @@ function describeOpBase(op: EditOp): string {
     case "addHelix": return `⌇ Helix r=${op.radius} p=${op.pitch} ×${op.turns}`;
     case "addSurfaceFromLines": return `⌗ Surface from ${op.edges.length} lines`;
     case "addVolumeFromSurfaces": return `⬢ Volume from ${op.faces.length} surfaces`;
+    case "addEdgeSlot": return `▭ Edge slot w=${op.width}`;
     case "align": return `⇥ Align ${op.targets.length} ${op.axis}:${op.extent}→${op.to}`;
     case "patternLinear": return `⠿ Linear ×${op.count} (${op.direction.join(",")}) s=${op.spacing}`;
     case "patternCircular": return `⠿ Circular ×${op.count} ${op.angleDeg}°`;
@@ -280,9 +309,6 @@ export function referencedEntities(op: EditOp): string[] {
     case "translate":
     case "rotate":
     case "scale":
-    case "mirror":
-    case "splitByPlane":
-    case "section":
     case "align":
     case "patternLinear":
     case "patternCircular":
@@ -290,25 +316,40 @@ export function referencedEntities(op: EditOp): string[] {
     case "addCounterboreHole":
     case "addCountersinkHole":
       return [...op.targets];
+    case "mirror":
+    case "splitByPlane":
+    case "section": {
+      const refs = [...(op as any).targets as string[]];
+      if ((op as any).midplaneFaces) refs.push(...(op as any).midplaneFaces as string[]);
+      if ((op as any).planeId) refs.push((op as any).planeId as string);
+      return refs;
+    }
     case "boolean":
       return [...op.a, ...op.b];
     case "fillet":
+      return [...op.edges];
     case "chamfer":
+      return op.face ? [...op.edges, op.face] : [...op.edges];
     case "addSurfaceFromLines":
       return [...op.edges];
     case "addVolumeFromSurfaces":
       return [...op.faces];
     case "extrude":
     case "revolve":
-      return [op.profile];
+      return profileOperandIds(op);
     case "sweep":
-      return [op.profile, op.path];
+      return [...profileOperandIds(op), op.path];
     case "loft":
-      return [...op.profiles];
+      return op.profiles ? [...op.profiles] : (op.profileEdgeSets ?? []).flat();
     case "mate":
       return [op.faceA, op.faceB];
     case "shell":
       return [...op.openingFaces];
+    case "draft": {
+      const refs = [...op.faces];
+      if ((op as any).planeId) refs.push((op as any).planeId as string);
+      return refs;
+    }
     case "explode":
     case "addBox":
     case "addSphere":
@@ -334,6 +375,8 @@ export function referencedEntities(op: EditOp): string[] {
     case "addEllipseArc":
     case "addHelix":
       return [];
+    case "addEdgeSlot":
+      return [op.edge];
   }
 }
 

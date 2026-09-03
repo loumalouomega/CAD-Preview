@@ -10,6 +10,9 @@ hero:
       text: Get Started
       link: /getting-started
     - theme: alt
+      text: Tutorials
+      link: /tutorials/
+    - theme: alt
       text: Architecture
       link: /architecture
     - theme: alt
@@ -43,7 +46,7 @@ features:
 
   - icon: ✏️
     title: Non-destructive Editing
-    details: Apply transforms (move / rotate / scale / mirror — with a draggable 3D Transform Gizmo live-previewing the drag, plus optional grid/entity-point snapping), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate / align / linear & circular pattern), primitive creation (box/cube, sphere, cylinder, cone, torus, prism, wedge, holes/counterbore/countersink), 2D profile sketches and curves (circle, rectangle, polygon, ellipse, rounded rectangle, slot, trapezoid, spline, Bézier, helix, …) for use as extrude/revolve/sweep/loft profiles, modify ops (shell, split, section), SVG import (trace a `.svg`'s paths into sketch polylines), and bottom-up wireframe modeling (points, lines, arcs → surfaces from lines → volumes from surfaces). Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
+    details: Apply transforms (move / rotate / scale / mirror — with a draggable 3D Transform Gizmo live-previewing the drag, plus optional grid/entity-point snapping), booleans (unite / subtract / intersect), fillet/chamfer, feature modeling (extrude / revolve / sweep / loft), assembly ops (explode / mate / align / linear & circular pattern), primitive creation (box/cube, sphere, cylinder, cone, torus, prism, wedge, holes/counterbore/countersink), 2D profile sketches and curves (circle, rectangle, polygon, ellipse, rounded rectangle, slot, trapezoid, spline, Bézier, helix, …) for use as extrude/revolve/sweep/loft profiles, modify ops (shell, draft, split, section), construction geometry (guide-marked reference-only sketches), edge slots, SVG import (trace a `.svg`'s paths into sketch polylines), and bottom-up wireframe modeling (points, lines, arcs → surfaces from lines → volumes from surfaces). Edits are undoable, replayable, and autosaved to a `<model>.edits.json` sidecar — the CAD file stays read-only, and edits are baked in only on Export.
 
   - icon: 🔬
     title: Display Modes & Grid Helpers
@@ -82,7 +85,7 @@ features:
 
 [![The CAD Preview editor — 3D viewer, orientation cube, Components/Parts/Edits/FE Mesh sidebar, toolbar, and view controls.](/screenshots/viewer-main.png)](/getting-started)
 
-<p style="text-align:center; opacity:0.75; margin-top:-0.5rem;"><em>Previewing a STEP model with colour-coded parts, parametric variables, and every panel live. See the <a href="/getting-started">Getting Started</a> guide for a walkthrough of each feature.</em></p>
+<p style="text-align:center; opacity:0.75; margin-top:-0.5rem;"><em>Previewing a STEP model with colour-coded parts, parametric variables, and every panel live. The <a href="/tutorials/">tutorials</a> build a real part start to finish; <a href="/getting-started">Getting Started</a> is the panel-by-panel reference.</em></p>
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; justify-content:center; margin-top:1.5rem;">
   <img src="/screenshots/edits-geometry.png" alt="Geometry creation ops" style="max-width:240px; flex:0 1 220px;" />

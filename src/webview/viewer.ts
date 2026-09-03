@@ -176,6 +176,7 @@ export class Viewer {
    * `selectionMode`/`SelectionSet` — see `setMeasureMode`. */
   private measureMode = false;
   private onMeasurePick: ((pick: MeasurementPick) => void) | null = null;
+  private onFitSeedPick: ((point: THREE.Vector3) => void) | null = null;
   /** Display-only overlay (marker, line, label) for the in-progress/completed
    * measurement — a scene sibling of `model`, same pattern as `meshOverlay`. */
   private measurementOverlay: THREE.Object3D | null = null;
@@ -1219,9 +1220,49 @@ export class Viewer {
       const mat = obj.material as THREE.MeshStandardMaterial;
       const base = (mat.userData.baseOpacity as number | undefined) ?? 1;
       const selected = groupId === null || obj.userData.groupId === groupId;
-      mat.opacity = base * xrayFactor * (selected ? 1 : 0.08);
+      const guideFactor = this.guideIds.has(obj.userData.entityId as string) ? Viewer.GUIDE_DIM : 1;
+      mat.opacity = base * xrayFactor * (selected ? 1 : 0.08) * guideFactor;
       mat.transparent = mat.opacity < 1;
       mat.needsUpdate = true;
+    });
+    this.requestRender();
+  }
+
+  /** Guide-entity dim factor — construction geometry stays visible but reads
+   * as reference-only. A multiplicand in `highlightGroup()`'s existing
+   * `baseOpacity` composition (never a raw `opacity` write), per that
+   * formula's one-writer rule. */
+  private static readonly GUIDE_DIM = 0.35;
+
+  /** Sets which entity ids are construction (guide) geometry and re-applies
+   * the dim. Faces go through `highlightGroup()`'s composition; edges and
+   * points get a direct (safe) opacity write — nothing else writes their
+   * opacity (`renderSelection` only touches colour). Called from `main.ts`'s
+   * `geometry` handler before `refreshColors()`, and re-applied on every
+   * rebuild the same way visibility state is. */
+  setGuideIds(ids: string[]): void {
+    this.guideIds = new Set(ids);
+    this.highlightGroup(this.highlightedGroupId); // re-apply face opacities incl. the guide factor
+    this.applyGuideDim();
+  }
+
+  private guideIds: Set<string> = new Set();
+
+  private applyGuideDim(): void {
+    this.model?.traverse((obj) => {
+      const isGuide = this.guideIds.has(obj.userData.entityId as string);
+      if (!isGuide && !(obj instanceof THREE.Line) && !(obj instanceof THREE.Sprite)) return;
+      if (obj instanceof THREE.Line) {
+        const mat = obj.material as THREE.LineBasicMaterial;
+        mat.transparent = isGuide;
+        mat.opacity = isGuide ? Viewer.GUIDE_DIM : 1;
+        mat.needsUpdate = true;
+      } else if (obj instanceof THREE.Sprite) {
+        const mat = obj.material as THREE.SpriteMaterial;
+        mat.transparent = isGuide;
+        mat.opacity = isGuide ? Viewer.GUIDE_DIM : 1;
+        mat.needsUpdate = true;
+      }
     });
     this.requestRender();
   }
@@ -1678,6 +1719,14 @@ export class Viewer {
   /** Registers the callback fired on every measurement raycast hit. */
   setOnMeasurePick(onPick: ((pick: MeasurementPick) => void) | null): void {
     this.onMeasurePick = onPick;
+  }
+
+  /** One-shot world-point pick for the Region-fit seed (roadmap item 9 Phase 2).
+   * Takes priority over `measureMode`/`selectionMode` for the next click only;
+   * the caller disarms it by calling `setFitSeedPickHandler(null)` in the
+   * callback. Reuses the same drag/gizmo guards as entity picking. */
+  setFitSeedPickHandler(onPick: ((point: THREE.Vector3) => void) | null): void {
+    this.onFitSeedPick = onPick;
   }
 
   /** Shows a single marker at `point` — an in-progress measurement's first pick(s). */
@@ -2259,6 +2308,16 @@ export class Viewer {
     const ndc = ndcInPane(this.paneRects[index], cssX, cssY);
     this.raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), this.panes[index].active);
     this.raycaster.params.Line.threshold = this.pickThreshold;
+
+    if (this.onFitSeedPick) {
+      const targets = collectMeasureTargets(this.model);
+      const hits = this.raycaster.intersectObjects(targets, false);
+      for (const h of hits) {
+        this.onFitSeedPick(h.point.clone());
+        return;
+      }
+      return;
+    }
 
     // Measurement takes priority for this click over the normal Parts/Edits
     // selection pick — the two are deliberately independent modes, but a

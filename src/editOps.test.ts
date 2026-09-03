@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
+import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS } from "./editOps";
 
 describe("validateEditOp", () => {
   it("accepts well-formed transform ops", () => {
@@ -465,6 +465,105 @@ describe("validateEditOp exprs annotation", () => {
   });
 });
 
+describe("thin (sweep-family thin-walled features)", () => {
+  const extrude = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "extrude", profile: "face-1", dir: [0, 0, 1], length: 5, ...extra });
+
+  it("accepts thin on all four sweep-family kinds", () => {
+    expect(extrude({ thin: 2 })).toMatchObject({ op: "extrude", thin: 2 });
+    expect(validateEditOp({ op: "revolve", profile: "face-1", axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 90, thin: 2 }))
+      .toMatchObject({ op: "revolve", thin: 2 });
+    expect(validateEditOp({ op: "sweep", profile: "face-1", path: "edge-0", thin: 2 }))
+      .toMatchObject({ op: "sweep", thin: 2 });
+    expect(validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], thin: 2 }))
+      .toMatchObject({ op: "loft", thin: 2 });
+  });
+
+  it("omits the fields entirely when not thin", () => {
+    const op = extrude({});
+    expect(op).not.toBeNull();
+    expect(op && "thin" in op).toBe(false);
+    expect(op && "thinOuter" in op).toBe(false);
+  });
+
+  it("accepts thinOuter across its whole range, including fully outward", () => {
+    expect(extrude({ thin: 2, thinOuter: 0 })).toMatchObject({ thin: 2, thinOuter: 0 });
+    expect(extrude({ thin: 2, thinOuter: 1 })).toMatchObject({ thin: 2, thinOuter: 1 });
+    expect(extrude({ thin: 2, thinOuter: 2 })).toMatchObject({ thin: 2, thinOuter: 2 });
+  });
+
+  it("rejects a non-positive or non-finite thin", () => {
+    expect(extrude({ thin: 0 })).toBeNull();
+    expect(extrude({ thin: -2 })).toBeNull();
+    expect(extrude({ thin: Number.NaN })).toBeNull();
+    expect(extrude({ thin: "2" })).toBeNull();
+  });
+
+  it("rejects thinOuter without thin, or outside [0, thin]", () => {
+    expect(extrude({ thinOuter: 1 })).toBeNull();
+    expect(extrude({ thin: 2, thinOuter: -1 })).toBeNull();
+    expect(extrude({ thin: 2, thinOuter: 3 })).toBeNull();
+    expect(extrude({ thin: 2, thinOuter: "1" })).toBeNull();
+  });
+
+  it("keeps thin expression-addressable — the reason the fields are flat", () => {
+    // `paramExpr.ts`'s parseFieldPath accepts an identifier plus numeric
+    // indices only, with no dotted form, so a nested `thin: {inner}` object
+    // would be the one numeric op field a parametric variable cannot drive.
+    const flat = extrude({ thin: 2, exprs: { thin: "wall" } });
+    expect(flat).toMatchObject({ thin: 2, exprs: { thin: "wall" } });
+    const nested = extrude({ thin: 2, exprs: { "thin.inner": "wall" } });
+    expect(nested && "exprs" in nested).toBe(false);
+  });
+});
+
+describe("profile operand (open/closed wire profiles)", () => {
+  const extrude = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "extrude", dir: [0, 0, 1], length: 5, ...extra });
+
+  it("accepts either operand form on the three single-profile kinds", () => {
+    expect(extrude({ profile: "face-1" })).toMatchObject({ profile: "face-1" });
+    expect(extrude({ profileEdges: ["edge-2", "edge-3"] })).toMatchObject({ profileEdges: ["edge-2", "edge-3"] });
+    expect(validateEditOp({ op: "revolve", profileEdges: ["edge-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 90 }))
+      .toMatchObject({ op: "revolve", profileEdges: ["edge-0"] });
+    expect(validateEditOp({ op: "sweep", profileEdges: ["edge-0"], path: "edge-9" }))
+      .toMatchObject({ op: "sweep", profileEdges: ["edge-0"], path: "edge-9" });
+  });
+
+  it("rejects neither form, and both forms at once", () => {
+    expect(extrude({})).toBeNull();
+    expect(extrude({ profile: "face-1", profileEdges: ["edge-2"] })).toBeNull();
+    expect(validateEditOp({ op: "sweep", path: "edge-9" })).toBeNull();
+    expect(validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], profileEdgeSets: [["edge-0"], ["edge-1"]] })).toBeNull();
+    expect(validateEditOp({ op: "loft" })).toBeNull();
+  });
+
+  it("pattern-checks the edge ids, unlike the face form", () => {
+    // The id SHAPE is what distinguishes the two operand forms, so a face id
+    // smuggled into the edge form would be a silently-wrong operand rather
+    // than a resolve-time miss.
+    expect(extrude({ profileEdges: ["face-2"] })).toBeNull();
+    expect(extrude({ profileEdges: ["edge-2", "face-3"] })).toBeNull();
+    expect(extrude({ profileEdges: ["edge-x"] })).toBeNull();
+    expect(extrude({ profileEdges: [] })).toBeNull();
+    expect(extrude({ profileEdges: "edge-2" })).toBeNull();
+  });
+
+  it("accepts loft's per-section edge form and checks its arity", () => {
+    expect(validateEditOp({ op: "loft", profileEdgeSets: [["edge-0", "edge-1"], ["edge-2"]] }))
+      .toMatchObject({ profileEdgeSets: [["edge-0", "edge-1"], ["edge-2"]] });
+    expect(validateEditOp({ op: "loft", profileEdgeSets: [["edge-0"]] })).toBeNull(); // one section is not a loft
+    expect(validateEditOp({ op: "loft", profileEdgeSets: [["edge-0"], []] })).toBeNull(); // an empty section
+    expect(validateEditOp({ op: "loft", profileEdgeSets: [["edge-0"], ["face-1"]] })).toBeNull();
+    expect(validateEditOp({ op: "loft", profileEdgeSets: ["edge-0"] })).toBeNull(); // not nested
+  });
+
+  it("composes with thin and with exprs", () => {
+    expect(extrude({ profileEdges: ["edge-2"], thin: 2, exprs: { thin: "wall" } }))
+      .toMatchObject({ profileEdges: ["edge-2"], thin: 2, exprs: { thin: "wall" } });
+  });
+});
+
 describe("align / patternLinear / patternCircular", () => {
   it("accepts well-formed align/pattern ops", () => {
     expect(validateEditOp({ op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 }))
@@ -536,5 +635,52 @@ describe("align / patternLinear / patternCircular", () => {
     expect(BREP_ONLY_OPS.has("align")).toBe(false);
     expect(BREP_ONLY_OPS.has("patternLinear")).toBe(false);
     expect(BREP_ONLY_OPS.has("patternCircular")).toBe(false);
+  });
+
+  it("accepts midplaneFaces references (XOR with the inline plane vectors)", () => {
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"] }))
+      .toEqual({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"] });
+    expect(validateEditOp({ op: "splitByPlane", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"], keep: "both" }))
+      .toEqual({ op: "splitByPlane", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"], keep: "both" });
+    expect(validateEditOp({ op: "section", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"] }))
+      .toEqual({ op: "section", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"] });
+  });
+
+  it("rejects midplaneFaces mixed with inline plane vectors, or with bad id shapes", () => {
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1] })).toBeNull();
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0", "edge-1"] })).toBeNull();
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["face-0"] })).toBeNull();
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"], midplaneFaces: ["solid-0", "solid-1"] })).toBeNull();
+    expect(validateEditOp({ op: "section", targets: ["solid-0"], midplaneFaces: ["face-0", "face-1"], planePoint: [0, 0, 0] })).toBeNull();
+    // Neither form present → rejected
+    expect(validateEditOp({ op: "mirror", targets: ["solid-0"] })).toBeNull();
+  });
+
+  it("accepts midaxisOf references (XOR with the inline axis pair)", () => {
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["face-0", "face-1"], angleDeg: 60, count: 4 }))
+      .toEqual({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["face-0", "face-1"], angleDeg: 60, count: 4 });
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["edge-0", "edge-1"], angleDeg: 60, count: 4 }))
+      .not.toBeNull();
+  });
+
+  it("rejects midaxisOf mixed with inline axis vectors, or mixed face/edge pairs", () => {
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["face-0", "face-1"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 4 })).toBeNull();
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["face-0", "edge-1"], angleDeg: 60, count: 4 })).toBeNull();
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], midaxisOf: ["solid-0", "solid-1"], angleDeg: 60, count: 4 })).toBeNull();
+    expect(validateEditOp({ op: "patternCircular", targets: ["solid-0"], angleDeg: 60, count: 4 })).toBeNull(); // neither form
+  });
+
+  it("guide is accepted on the 16 guide kinds and rejected elsewhere / non-boolean", () => {
+    expect(validateEditOp({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], guide: true }))
+      .toEqual({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], guide: true });
+    expect(validateEditOp({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 2, guide: false }))
+      .toEqual({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 2, guide: false });
+    expect(validateEditOp({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], guide: "yes" })).toBeNull();
+    expect(validateEditOp({ op: "addBox", center: [0, 0, 0], size: [1, 2, 3], guide: true })).toBeNull();
+  });
+
+  it("GUIDE_KINDS covers exactly the 16 profile/curve creation kinds", () => {
+    expect(GUIDE_KINDS.size).toBe(16);
+    for (const kind of GUIDE_KINDS) expect(BREP_ONLY_OPS.has(kind)).toBe(true);
   });
 });

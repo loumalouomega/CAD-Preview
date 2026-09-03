@@ -19,6 +19,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   explode: { op: "explode", factor: 1 },
   mate: { op: "mate", faceA: "face-0", faceB: "face-1" },
   shell: { op: "shell", thickness: -1, openingFaces: ["face-0"] },
+  draft: { op: "draft", faces: ["face-0"], angleDeg: 10 },
   splitByPlane: { op: "splitByPlane", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1], keep: "both" },
   section: { op: "section", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1] },
   addBox: { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] },
@@ -49,6 +50,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   addHelix: { op: "addHelix", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, pitch: 3, turns: 2 },
   addSurfaceFromLines: { op: "addSurfaceFromLines", edges: ["edge-0", "edge-1", "edge-2"] },
   addVolumeFromSurfaces: { op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] },
+  addEdgeSlot: { op: "addEdgeSlot", edge: "edge-0", width: 2 },
   align: { op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 },
   patternLinear: { op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 4 },
   patternCircular: { op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 6 },
@@ -97,6 +99,12 @@ describe("OP_CATALOG", () => {
 });
 
 describe("describeOp", () => {
+  it("labels a wire-form profile by its edges", () => {
+    expect(describeOp({ op: "extrude", profileEdges: ["edge-2", "edge-3"], dir: [0, 0, 1], length: 5 }))
+      .toContain("edge-2+edge-3");
+    expect(describeOp({ op: "loft", profileEdgeSets: [["edge-0"], ["edge-1"]] })).toContain("2 profiles");
+  });
+
   it("returns a non-empty label for every op kind", () => {
     for (const op of Object.values(REPRESENTATIVE_OPS)) {
       const label = describeOp(op);
@@ -162,6 +170,15 @@ describe("referencedEntities", () => {
       .toEqual(["face-7", "edge-3"]);
     expect(referencedEntities({ op: "mate", faceA: "face-1", faceB: "face-2" }))
       .toEqual(["face-1", "face-2"]);
+  });
+
+  it("reads the wire form of a profile operand", () => {
+    expect(referencedEntities({ op: "extrude", profileEdges: ["edge-2", "edge-3"], dir: [0, 0, 1], length: 2 }))
+      .toEqual(["edge-2", "edge-3"]);
+    expect(referencedEntities({ op: "sweep", profileEdges: ["edge-2"], path: "edge-3" }))
+      .toEqual(["edge-2", "edge-3"]);
+    expect(referencedEntities({ op: "loft", profileEdgeSets: [["edge-0", "edge-1"], ["edge-2"]] }))
+      .toEqual(["edge-0", "edge-1", "edge-2"]);
   });
 
   it("returns nothing for ops that genuinely name no entity", () => {

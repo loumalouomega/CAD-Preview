@@ -30,6 +30,38 @@ npm install
 | `npm run docs:screenshots` | Regenerate every feature screenshot under `doc/public/screenshots/` |
 | `npm run mcp` | Run the standalone MCP server (`dist/mcp-server.js`; requires a prior build) |
 | `npm run mcp:smoke` | Build, then run the real-WASM end-to-end MCP smoke test (see [MCP Server](./mcp-server.md)) |
+| `npm run perf` | Build, then benchmark load/mesh times against `scripts/perf/baseline.json` |
+| `npm run test:webview` | Playwright assertions over the real viewer bundle (needs a display server) |
+| `npm run test:integration` | The host-side suite inside a real VS Code (needs a display server) |
+
+### Running the toolchain without `node` on `PATH` (Flatpak VS Code)
+
+The Flatpak VS Code sandbox ships no standalone Node, and the host's `/usr/bin/node` is not loadable from inside it. VS Code's own Electron binary runs as Node, which is enough for the whole toolchain:
+
+```sh
+ELECTRON_RUN_AS_NODE=1 /app/extra/vscode/code --version   # prints the Node version
+```
+
+There is no bundled `npm`, so invoke the local tools by path rather than through a script name — `node_modules/typescript/bin/tsc --noEmit`, `node_modules/vitest/vitest.mjs run`, `esbuild.mjs`, `scripts/mcp-smoke/run.mjs`. Anything that spawns a `node` child (the MCP smoke harness spawns `dist/mcp-server.js`) also needs a `node` shim on `PATH`:
+
+```sh
+printf '#!/bin/sh\nexec env ELECTRON_RUN_AS_NODE=1 /app/extra/vscode/code "$@"\n' > /tmp/bin/node && chmod +x /tmp/bin/node
+PATH=/tmp/bin:$PATH node scripts/mcp-smoke/run.mjs
+```
+
+Playwright looks for its browsers under `XDG_CACHE_HOME`, which the sandbox
+remaps, so point it at the real download instead:
+`PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright`. With that set,
+`vitest`, `esbuild.mjs`, `mcp:smoke`, `webview-test` and `docs:screenshots`
+all run under this recipe.
+
+`test:integration` is the one that does **not**. Its launcher spawns
+`process.execPath` — which under this recipe is the Electron binary, not
+Node — with `ELECTRON_RUN_AS_NODE` deliberately deleted (see the long comment
+in `test/integration/run.mjs` explaining why that deletion is required for the
+spawned VS Code). The launcher therefore starts as a GUI VS Code that treats
+its script argument as a file to open, and exits 0 having run nothing. Run
+that suite from a normal terminal with a real `node` on `PATH`.
 
 ## Regenerating Documentation Screenshots
 
@@ -159,16 +191,7 @@ CAD-Preview/
 
 Unit tests use [Vitest](https://vitest.dev/). They run headlessly — no display server or VS Code host needed.
 
-| Test file | Covers |
-| --- | --- |
-| `src/fileRouter.test.ts` | Extension → `FileRoute` mapping |
-| `src/exportTargets.test.ts` | Export target matrix per route, extension map |
-| `src/meshExtract.test.ts` | `extractFaceGeometry`, winding order, index conversion |
-| `src/webview/cameraControls.test.ts` | `orbit`, `pan`, `dolly`, `setDirection`, `viewDirection` |
-| `src/webview/orientationCube.test.ts` | Cube initialization, `syncCamera`, `faceNormalToDirection` |
-| `src/webview/viewer.test.ts` | `Viewer` construction, `setModel`, `fitView` |
-| `src/webview/meshLoaders.test.ts` | Loader dispatch by format |
-| `src/webview/meshExporters.test.ts` | Exporter dispatch by format, base64 round-trip |
+Every test lives beside the module it covers, as `<module>.test.ts` (currently ~110 files under `src/`), so the file list is not duplicated here — it would only rot. The convention is that anything **pure** gets a unit test: the sidecar parsers, `editOps.ts`'s validation gate, the geometry/mesh math, the webview's DOM-free models. Modules that need the OCCT/Gmsh/meshio WASM or a live DOM are verified by `npm run mcp:smoke` and `npm run test:webview` instead.
 
 Run all tests: `npm test`
 
@@ -197,8 +220,10 @@ See `.github/workflows/ci.yml`. Two jobs:
 2. `npm ci` — clean install
 3. `npm run build` — bundle + type-check
 4. `npm test` — unit tests
-5. `npm run package` — produce `.vsix`
-6. Upload `.vsix` as a workflow artifact
+5. `npm run test:webview` — Playwright assertions over the real viewer bundle (under `xvfb-run`)
+6. `npm run test:integration` — the host-side suite in a real VS Code (under `xvfb-run`, retried on network flakes)
+7. `npm run package` — produce `.vsix`
+8. Upload `.vsix` as a workflow artifact
 
 **`release`** (only on `v*` tags):
 

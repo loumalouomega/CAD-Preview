@@ -50,6 +50,7 @@ import {
   compareModelsTool,
   checkMeshHealthTool,
   recognizePrimitivesTool,
+  decomposeToPrimitivesTool,
   fitMeshRegionTool,
   transformMeshTool,
   promoteMeshToBrepTool,
@@ -514,10 +515,42 @@ server.registerTool(
 );
 
 server.registerTool(
+  "decompose_to_primitives",
+  {
+    description:
+      "Decompose an imported B-rep model into parametric primitives (Phase 3 of roadmap item 7). For each solid recognized as a box/sphere/cylinder/cone/torus (see recognize_primitives' candidate + fitResidual), emit a creation op (addBox/addSphere/etc.) with each dimension bound to a named variable via exprs — the first programmatic producer of expression strings in this repo. Optionally writes a brand-new STEP/IGES/BREP file at outputPath containing exactly those primitives (the export model, like promote_mesh_to_brep), and optionally saves the emitted script to a reusable macro library. Facts only: unrecognized solids are reported in perSolid with a reason, never a guess. This is a one-shot export/emit, not an in-place reclassification — the original file is never modified. B-rep sources only headless.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().optional().describe("Absolute path to write the new primitives-only B-rep file to (must not be the source path)"),
+      targetFormat: z.enum(["step", "iges", "brep"]).optional().describe("Output format for outputPath (default: step)"),
+      unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
+      saveScript: z
+        .object({
+          libraryPath: z.string().describe("Absolute path to the script-library JSON file (you name it; created on first save)"),
+          name: z.string().describe("Unique name within the library"),
+          description: z.string().optional(),
+          overwrite: z.boolean().optional(),
+        })
+        .optional()
+        .describe("When set, also saves the emitted parametric script to the library for later run_saved_script with overrides"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      outputPath?: string;
+      targetFormat?: string;
+      unit?: string;
+      saveScript?: { libraryPath: string; name: string; description?: string; overwrite?: boolean };
+    }) => decomposeToPrimitivesTool(ctx, args)
+  )
+);
+
+server.registerTool(
   "fit_mesh_region",
   {
     description:
-      "Fit a plane / cylinder / sphere to a REGION of a mesh, FACTS ONLY. Grows a region outward from the triangle nearest `seedPoint`, crossing an edge only where adjacent triangles' normals differ by less than `angleDeg` (default 40 — deliberately looser than face-splitting tolerances so the walk crosses a tessellated curve), then fits all three shapes and reports each with its own residual (largest deviation of the region's vertices, and `residualFrac` relative to the region's size). `simplest` names the first of plane<cylinder<sphere whose residualFrac is under the published threshold; `simplestRule` states that rule so you can recompute it — it is a convenience over the same numbers, never a hidden judgment. This ordering matters: a FLAT region is also fitted by an enormous sphere with a tiny residual, so choosing by residual alone would pick close to arbitrarily. A shape that cannot be fitted is ABSENT rather than present with meaningless parameters (a flat region's normals are all parallel, so no cylinder axis exists — that is the honest answer). Emits no ops. Mesh sources only (stl/obj/ply/gltf): a B-rep source already has exact surfaces, so use inspect/recognize_primitives there.",
+      "Fit a plane / cylinder / sphere to a REGION of a mesh. Grows a region outward from the triangle nearest `seedPoint`, crossing an edge only where adjacent triangles' normals differ by less than `angleDeg` (default 40 — deliberately looser than face-splitting tolerances so the walk crosses a tessellated curve), then fits all three shapes and reports each with its own residual (largest deviation of the region's vertices, and `residualFrac` relative to the region's size). `simplest` names the first of plane<cylinder<sphere whose residualFrac is under the published threshold; `simplestRule` states that rule so you can recompute it — it is a convenience over the same numbers, never a hidden judgment. This ordering matters: a FLAT region is also fitted by an enormous sphere with a tiny residual, so choosing by residual alone would pick close to arbitrarily. A shape that cannot be fitted is ABSENT rather than present with meaningless parameters (a flat region's normals are all parallel, so no cylinder axis exists — that is the honest answer). Facts only by default; opt-in `store:\"plane\"` writes a real construction plane to <model>.planes.json (visible in the Planes panel and via get_state), `store:\"cylinder\"/\"sphere\"` appends a real addCylinder/addSphere op to <model>.edits.json as a new body (append-only, like every other primitive-creation op — undoable, never a silent reclassification of the source mesh). Mesh sources only (stl/obj/ply/gltf): a B-rep source already has exact surfaces, so use inspect/recognize_primitives there.",
     inputSchema: {
       path: modelPath,
       seedPoint: z
@@ -525,10 +558,13 @@ server.registerTool(
         .describe("World-space point on the surface; the nearest triangle by centroid seeds the region"),
       angleDeg: z.number().optional().describe("Dihedral gate in degrees (default 40)"),
       maxTriangles: z.number().optional().describe("Cap on region size; the result reports `capped` when hit"),
+      store: z.enum(["plane", "cylinder", "sphere"]).optional().describe("When set, also STORE the named fit: plane -> a ConstructionPlane in the planes sidecar; cylinder/sphere -> an addCylinder/addSphere op appended to the edits sidecar as a new body. The fit is still reported either way."),
+      name: z.string().optional().describe("Name for a stored plane (only with store:plane)"),
     },
   },
-  wrap((args: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number }) =>
-    fitMeshRegionTool(ctx, args)
+  wrap(
+    (args: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number; store?: string; name?: string }) =>
+      fitMeshRegionTool(ctx, args)
   )
 );
 
@@ -873,6 +909,7 @@ server.registerTool(
       point: z.array(z.number()).length(3).optional().describe("A point ON the plane, e.g. inspect's planeOrigin"),
       normal: z.array(z.number()).length(3).optional().describe("Plane normal (normalized on write), e.g. inspect's normal"),
       derivedFrom: z.string().optional().describe("Display-only provenance, e.g. \"face-12\" — never resolved back to geometry"),
+      midplaneOf: z.array(z.string()).length(2).optional().describe("Two plane-N ids; create a midplane halfway between them (normals must be parallel)"),
       remove: z.boolean().optional().describe("Remove the plane with this id instead of upserting"),
     },
   },

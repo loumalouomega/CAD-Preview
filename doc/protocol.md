@@ -168,50 +168,69 @@ type EditOp =
   | { op: 'translate'; targets: string[]; vec: Vec3 }
   | { op: 'rotate'; targets: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { op: 'scale'; targets: string[]; center: Vec3; factors: Vec3 }   // uniform = [s,s,s]
-  | { op: 'mirror'; targets: string[]; planePoint: Vec3; planeNormal: Vec3 }
+  | { op: 'mirror'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string] }  // XOR: inline pair or two planar parallel faces
   | { op: 'boolean'; kind: 'union' | 'subtract' | 'intersect'; a: string[]; b: string[] }
   | { op: 'fillet'; edges: string[]; radius: number }
-  | { op: 'chamfer'; edges: string[]; distance: number }
-  | { op: 'extrude'; profile: string; dir: Vec3; length: number }
-  | { op: 'revolve'; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
-  | { op: 'sweep'; profile: string; path: string }
-  | { op: 'loft'; profiles: string[] }
+  | { op: 'chamfer'; edges: string[]; distance: number; distance2?: number; angleDeg?: number; face?: string }
+  // The four sweep-family ops share an optional thin-wall annotation:
+  //   thin?: number       total wall thickness (> 0); omit for a filled solid
+  //   thinOuter?: number  how much of that wall sits OUTSIDE the profile
+  //                       boundary, in [0, thin] (0 = all inward, the default)
+  // Their profile comes in two mutually exclusive forms — exactly one:
+  //   profile / profiles            a face-N (a sketch, or any face)
+  //   profileEdges / profileEdgeSets  edge-N ids assembled into one wire,
+  //                       which is how an OPEN sketch is consumed. An open
+  //                       wire encloses no area, so it REQUIRES `thin` and
+  //                       refuses `thinOuter` (it has no inside or outside).
+  | { op: 'extrude'; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; thin?: number; thinOuter?: number }
+  | { op: 'revolve'; profile?: string; profileEdges?: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number }
+  | { op: 'sweep'; profile?: string; profileEdges?: string[]; path: string; thin?: number; thinOuter?: number }
+  | { op: 'loft'; profiles?: string[]; profileEdgeSets?: string[][]; thin?: number; thinOuter?: number }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
-  | { op: 'shell'; thickness: number; openingFaces: string[] }        // >= 1 face id; negative = walls inward
-  | { op: 'splitByPlane'; targets: string[]; planePoint: Vec3; planeNormal: Vec3; keep: 'both' | 'positive' | 'negative' }
-  | { op: 'section'; targets: string[]; planePoint: Vec3; planeNormal: Vec3 }
+  | { op: 'shell'; thickness: number; openingFaces: string[]; join?: 'arc'|'intersection'|'tangent' }        // >= 1 face id; negative = walls inward
+  | { op: 'draft'; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3 }  // 0<angle<90; omit the plane = each face's own plane
+  | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
+  | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
+  | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string] }
   | { op: 'addBox'; center: Vec3; size: Vec3 }
   | { op: 'addSphere'; center: Vec3; radius: number }
   | { op: 'addCylinder'; center: Vec3; axis: Vec3; radius: number; height: number }
   | { op: 'addCone'; center: Vec3; axis: Vec3; radius1: number; radius2: number; height: number }
   | { op: 'addTorus'; center: Vec3; axis: Vec3; majorRadius: number; minorRadius: number }
-  | { op: 'addPrism'; center: Vec3; axis: Vec3; radius: number; sides: number; height: number }
+  | { op: 'addPrism'; center: Vec3; axis: Vec3; radius: number; sides: number; height: number; circumscribed?: boolean }
   | { op: 'addWedge'; center: Vec3; axis: Vec3; up: Vec3; dx: number; dy: number; dz: number; ltx: number }
   | { op: 'addHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number }
   | { op: 'addCounterboreHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; cbRadius: number; cbDepth: number }
   | { op: 'addCountersinkHole'; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number }
-  | { op: 'addCircleProfile'; center: Vec3; normal: Vec3; radius: number }
-  | { op: 'addRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number }
-  | { op: 'addPolygonProfile'; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number }
-  | { op: 'addEllipseProfile'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number }
-  | { op: 'addRoundedRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number }
-  | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number }
-  | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number }
-  | { op: 'addPoint'; position: Vec3 }
-  | { op: 'addLine'; start: Vec3; end: Vec3 }
-  | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number }
-  | { op: 'addPolyline'; points: Vec3[]; closed: boolean }            // >= 2 points (>= 3 when closed)
-  | { op: 'addThreePointArc'; p1: Vec3; p2: Vec3; p3: Vec3 }
-  | { op: 'addSpline'; points: Vec3[] }                               // approximating, endpoint-exact fit
-  | { op: 'addBezier'; controlPoints: Vec3[] }
-  | { op: 'addEllipseArc'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number }
-  | { op: 'addHelix'; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
+  | { op: 'addCircleProfile'; center: Vec3; normal: Vec3; radius: number; guide?: boolean }
+  | { op: 'addRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; guide?: boolean }
+  | { op: 'addPolygonProfile'; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; circumscribed?: boolean; guide?: boolean }
+  | { op: 'addEllipseProfile'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; guide?: boolean }
+  | { op: 'addRoundedRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number; guide?: boolean }
+  | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; guide?: boolean }
+  | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; guide?: boolean }
+  | { op: 'addPoint'; position: Vec3; guide?: boolean }
+  | { op: 'addLine'; start: Vec3; end: Vec3; guide?: boolean }
+  | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
+  | { op: 'addPolyline'; points: Vec3[]; closed: boolean; guide?: boolean }            // >= 2 points (>= 3 when closed)
+  | { op: 'addThreePointArc'; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean }
+  | { op: 'addSpline'; points: Vec3[]; guide?: boolean }                               // approximating, endpoint-exact fit
+  | { op: 'addBezier'; controlPoints: Vec3[]; guide?: boolean }
+  | { op: 'addEllipseArc'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
+  | { op: 'addHelix'; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; guide?: boolean }
   | { op: 'addSurfaceFromLines'; edges: string[] }   // >= 3 edge ids, must close into a loop
   | { op: 'addVolumeFromSurfaces'; faces: string[] } // >= 4 face ids, must sew into a closed shell
+  | { op: 'align'; targets: string[]; axis: 'x'|'y'|'z'; extent: 'min'|'center'|'max'; to: number }
+  | { op: 'patternLinear'; targets: string[]; direction: Vec3; spacing: number; count: number }  // count INCLUDES the original
+  | { op: 'patternCircular'; targets: string[]; axisPoint?: Vec3; axisDir?: Vec3; midaxisOf?: [string, string]; angleDeg: number; count: number }  // XOR: inline axis or two cylinder axes / parallel edges
 ```
 
 An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single tolerance gate — malformed ops are dropped, never thrown. The list is persisted in the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md).
+
+**Construction geometry** (`guide?: boolean`, roadmap item 10): any 2D profile/curve creation op may mark its entity reference-only. Guide entities render dimmed, stay pickable/measurable, and are refused as operands by the profile-resolution ops (`extrude`/`revolve`/`sweep`/`loft`/`addSurfaceFromLines`/`addVolumeFromSurfaces`) — enforced host-side (a guide operand fails that op with a diagnostic) and mirrored in the webview. The `geometry` message's `guideIds` field carries the current guide entity ids.
+
+**Midplane/midaxis references**: `mirror`/`splitByPlane`/`section` accept `midplaneFaces: [faceId, faceId]` (two planar, parallel faces — the op acts on the plane halfway between them) and `patternCircular` accepts `midaxisOf: [faceId|edgeId, faceId|edgeId]` (two cylindrical faces or two parallel straight edges). Exactly one of the reference or the inline vectors must be present; unresolvable/non-parallel references fail that op gracefully with a diagnostic. B-rep sources only — the mesh engine refuses the reference fields (it has no analytic faces; pass inline vectors instead).
 
 Every op may additionally carry an optional **parametric annotation** `exprs?: Record<string, string>` mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression over the document's named variables (`ParamVariable`, below). The addressed numeric fields always hold the last-good evaluated numbers — a cache — so every consumer that ignores `exprs` still sees a fully-resolved op; only `resolveEditOps` (`src/editVariables.ts`) reads it. `validateEditOp` sanitizes `exprs` (bad paths / non-numeric slots / syntax errors dropped per entry).
 
@@ -304,6 +323,20 @@ interface MeshHealthReport {
   componentCount: number
   components: ComponentHealthReport[]
 }
+
+interface MeshRegionFit {              // src/meshRegionFit.ts
+  seedTriangle: number
+  triangleCount: number
+  capped: boolean
+  regionArea: number
+  regionDiagonal: number
+  freeEdgeCount: number
+  nonManifoldEdgeCount: number
+  candidates: Array<{ kind: 'plane'|'cylinder'|'sphere'; primitive: Primitive; residual: number|null; residualFrac: number|null }>
+  simplest: 'plane'|'cylinder'|'sphere'|null
+  simplestRule: string
+  warnings: string[]
+}
 ```
 
 `ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) — cross-document defaults only; a per-document sidecar value or a runtime toggle (the toolbar Grid button) always wins once set. `MassProperties` is computed via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources compute the equivalent client-side and never send it over this protocol at all (no host round trip) — see [Extension Host API](./extension-host-api.md) and [Webview API](./webview-api.md).
@@ -314,7 +347,7 @@ interface MeshHealthReport {
 
 ```typescript
 type HostToWebview =
-  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; autoFit?: boolean }
+  | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; guideIds?: string[]; opBuckets?: OpBucket[]; autoFit?: boolean }
   | { type: 'tree';     root: TreeNode; sourceUnit?: string }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | {
@@ -357,10 +390,14 @@ type HostToWebview =
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
+  | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
   | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
+  | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
+  | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'linkedCamera'; camera: LinkedCameraState }
   | { type: 'camerasLinked'; enabled: boolean }
 ```
@@ -372,6 +409,10 @@ Sent after B-rep tessellation. Contains every face as an encoded mesh, every uni
 The optional `opOutcomes` array (roadmap "A failed edit op is indistinguishable from one that did nothing", closed) carries one entry per replayed op — `{index, kind, applied, diagnostic?, hint?}` in list order. An op that gracefully skipped during the host's B-rep replay (unresolved operands after id drift, a builder throw, `IsDone() === false`) reports `applied: false` with a human-readable `diagnostic` and an actionable `hint`, which the webview renders as a ⚠ marker on that op's row in the Edits history instead of silently showing an unchanged model. Absent for mesh sources — their replay is client-side (`rebuildMeshModel()` → `applyEditsMesh(root, ops, outcomes)`), which reports outcomes directly without a protocol round trip.
 
 The optional `autoFit` flag (roadmap "Render on demand, not every frame") controls whether `Viewer.setModel()` may skip its auto-reframe: `false` forces a full reframe (a genuine file load / file swap), absent or `true` is containment-eligible (an edit-driven rebuild — `Viewer` skips framing when the new bounds already fit inside the last padded fit sphere so the camera stops twitching on every small edit).
+
+The optional `guideIds` array (roadmap item 10, "Cheap thin-wrapper ops") lists the `face-N`/`edge-N`/`point-N` ids whose creating op carried `guide: true` — construction geometry. The webview dims them (a 0.35 opacity multiplicand) and refuses them as operands for the six profile-resolution ops; absent/empty when no guide ops exist.
+
+The optional `opBuckets` array (roadmap "Selector synthesis" Phase 1) carries one bucket per topology-changing op that produced faces — `{op, kind, roles}` where `roles` maps role names to `face-N` id arrays. `extrude` gets the canonical three-way split (`startCap` via `MakePrism`'s `Copy=false` identity reuse, `endCap` farthest along the extrusion direction, `side` the rest); every other kind names its whole produced set from `PRODUCED_ROLE` (`band`/`inner`/`wall`/`cutFace`/`sectionFace`/`copies`/`body`), or the generic `produced` when the table has no entry. **Recorded ids are valid against the model state at their own op's step** — later ops may renumber them; the Edits-history chip tooltip says so. A gracefully-skipped op produces no bucket. See `src/opBuckets.ts`.
 
 ```json
 {
@@ -385,6 +426,11 @@ The optional `autoFit` flag (roadmap "Render on demand, not every frame") contro
   ],
   "points": [
     { "position": "DDDD...", "pointId": "point-0" }
+  ],
+  "guideIds": ["edge-110"],
+  "opBuckets": [
+    { "op": 0, "kind": "addBox", "roles": { "body": ["face-36", "face-37", "face-38", "face-39", "face-40", "face-41"] } },
+    { "op": 1, "kind": "extrude", "roles": { "startCap": ["face-42"], "endCap": ["face-44"], "side": ["face-43"] } }
   ],
   "opOutcomes": [
     { "index": 0, "kind": "addBox", "applied": true },
@@ -804,6 +850,7 @@ type WebviewToHost =
   | { type: 'entityFactsRequest'; requestId: string; entityId: string }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string }
+  | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
@@ -1044,6 +1091,14 @@ Sent whenever a field in the open Edits-panel op form changes (and once when the
 
 ```json
 { "type": "meshHealRequest", "requestId": "1234-0.56" }
+```
+
+### `fitRegionRequest`
+
+Sent when the Region fit panel's **Pick seed** button is armed and the user clicks a surface (roadmap item 9 Phase 2). Like `meshHealRequest`, only reachable for a native `.stl`/`.obj`/`.ply`/`.gltf`/`.glb` file (the panel hides itself otherwise, mirroring `fit_mesh_region`'s own MCP-tool gate). `point` is the world-space hit point of that click. The host re-reads the currently-open document's own bytes and runs `fitMeshRegion` against them — see `MeshRegionFit` in [Shared Types](#shared-types) (the report also travels as the MCP `fit_mesh_region` tool's response). Replies with `fitRegionResult`/`fitRegionError`, correlated via `requestId` like every other request/response pair in this file. The pick itself is a one-shot capture via `Viewer.setFitSeedPickHandler` (`src/webview/viewer.ts`), which takes priority over `measureMode`/`selectionMode` for that single click.
+
+```json
+{ "type": "fitRegionRequest", "requestId": "1234-0.56", "point": [5, 5, 0] }
 ```
 
 ### `colorFieldRequest`

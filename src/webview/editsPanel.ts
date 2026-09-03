@@ -1,4 +1,8 @@
 import type { EditOp, ExprMap, Vec3, OpOutcome } from "../editOps";
+import { GUIDE_KINDS } from "../editOps";
+import type { ConstructionPlane } from "../protocol";
+import type { OpBucket } from "../opBuckets";
+import { bucketSummary } from "../opBuckets";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
@@ -20,7 +24,7 @@ export type TransformDraft = (
   | { kind: "translate"; vec: Vec3 }
   | { kind: "rotate"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "scale"; center: Vec3; factors: Vec3 }
-  | { kind: "mirror"; planePoint: Vec3; planeNormal: Vec3 }
+  | { kind: "mirror"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
 ) & { exprs?: ExprMap };
 
 export type BooleanKind = "union" | "subtract" | "intersect";
@@ -32,7 +36,7 @@ export type FeatureDraft = (
   | { kind: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "sweep" }
   | { kind: "loft" }
-) & { exprs?: ExprMap };
+) & { exprs?: ExprMap; thin?: number; thinOuter?: number };
 
 /** A primitive-creation draft — self-contained (no selection needed), pushed
  * straight to an `EditOp` by the wiring. */
@@ -65,7 +69,7 @@ export type ProfileDraft = (
   | { kind: "addRoundedRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number }
   | { kind: "addSlotProfile"; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number }
   | { kind: "addTrapezoidProfile"; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number }
-) & { exprs?: ExprMap };
+) & { exprs?: ExprMap; guide?: boolean };
 
 /** A wireframe-primitive draft — self-contained (no selection needed), builds a
  * standalone point/line/arc. B-rep only (meshes have no sketch/exact topology). */
@@ -79,15 +83,16 @@ export type WireframeDraft = (
   | { kind: "addBezier"; controlPoints: Vec3[] }
   | { kind: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number }
   | { kind: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
-) & { exprs?: ExprMap };
+) & { exprs?: ExprMap; guide?: boolean };
 
 /** A modify-op draft minus its selection operands: shell's `openingFaces` come
  * from the selected surfaces, split/section `targets` from the selected
  * volumes (the wiring injects both). B-rep only. */
 export type ModifyDraft = (
   | { kind: "shell"; thickness: number }
-  | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; keep: "both" | "positive" | "negative" }
-  | { kind: "section"; planePoint: Vec3; planeNormal: Vec3 }
+  | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }
+  | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; planeId?: string; keep: "both" | "positive" | "negative" }
+  | { kind: "section"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
 ) & { exprs?: ExprMap };
 
 /** Align draft minus its `targets` (the wiring injects the selected volumes) —
@@ -124,6 +129,16 @@ export interface EditsPanelCallbacks {
   onApplyFillet: (kind: "fillet" | "chamfer", amount: number, exprs?: ExprMap) => void;
   /** Apply a feature-modeling op; operands come from the selected faces/edges (B-rep only). */
   onApplyFeature: (draft: FeatureDraft) => void;
+  /** Capture the selected edge as the sweep path; returns its id, or null when
+   * nothing suitable is selected. Needed because a sweep's profile and its path
+   * are BOTH edge picks once open-wire profiles exist. */
+  onCaptureSweepPath: () => string | null;
+  /** Forget the captured sweep path (back to "the one selected edge is the path"). */
+  onClearSweepPath: () => void;
+  /** Capture the current selection as one more loft section; returns the new count. */
+  onCaptureLoftSection: () => number;
+  /** Forget every captured loft section (back to "the selected faces are the sections"). */
+  onClearLoftSections: () => void;
   /** Explode the assembly: spread bodies radially by `factor` (all formats). */
   onApplyExplode: (factor: number, exprs?: ExprMap) => void;
   /** Live-preview drag of the Explode slider — moves the already-displayed
@@ -154,6 +169,8 @@ export interface EditsPanelCallbacks {
   onBuildSurfaceFromLines: () => void;
   /** Build a solid by sewing the currently-selected surfaces (Surf mode, B-rep only). */
   onBuildVolumeFromSurfaces: () => void;
+  /** Build a stadium slot face from the currently-selected edge (Line mode, B-rep only). */
+  onBuildEdgeSlot: (width: number) => void;
   /** Fired whenever the open param form changes (a different op button
    * clicked, or the form collapsed — `null`). Lets `main.ts` show/hide/
    * retarget the Transform Gizmo for `"translate"`/`"rotate"`/`"scale"`
@@ -170,6 +187,11 @@ export interface EditsPanelCallbacks {
    * pending preview is discarded. Fired BEFORE the replacement form renders,
    * so a stale preview can never outlive the form it came from. */
   onPreviewCancel: () => void;
+  /** Transiently highlights a bucket chip's face ids in the viewport (roadmap
+   * "Selector synthesis" Phase 1) — `null` clears the highlight and restores
+   * the real selection's rendering. The ids are `face-N` strings; the wiring
+   * maps them to `{entityType: "surface"}` entities. */
+  onHighlightBucket: (ids: string[] | null) => void;
 }
 
 type TabId = "geometry" | "edit";
@@ -212,9 +234,15 @@ export class EditsPanel {
   private activeTab: TabId = "geometry";
   private activeSubtab: SubtabId = "2d";
   private activeOp: PanelOpId | null = null;
+  /** The op whose history-row bucket chip is currently highlighted in the
+   * viewport (click-toggle). Reset on every render — a model rebuild already
+   * restores the real selection's rendering via `refreshColors()`. */
+  private activeBucketOp: number | null = null;
   /** Panel-local mirror of the captured boolean-A count (display only; the ids
    * themselves live in the wiring). Survives form re-renders. */
   private booleanACount = 0;
+  private sweepPath: string | null = null;
+  private loftSectionCount = 0;
 
   private readonly tabButtons = new Map<TabId, HTMLButtonElement>();
   private readonly subtabButtons = new Map<SubtabId, HTMLButtonElement>();
@@ -256,6 +284,56 @@ export class EditsPanel {
    * The wiring calls this on load and after every variable change. */
   setVariables(values: Record<string, number>): void {
     this.variableValues = values;
+  }
+
+  private planesList: ConstructionPlane[] = [];
+  setPlanes(planes: ConstructionPlane[]): void {
+    this.planesList = [...planes];
+  }
+
+  private readPlaneId(): string | undefined {
+    const sel = this.paramsEl.querySelector<HTMLSelectElement>("select[data-name=\"planeId\"]");
+    const v = sel?.value?.trim();
+    return v ? v : undefined;
+  }
+
+  private planeSelectField(): HTMLElement {
+    const row = document.createElement("label");
+    row.className = "compose-field";
+    const span = document.createElement("span");
+    span.className = "compose-label";
+    span.textContent = "Plane";
+    row.appendChild(span);
+    const select = document.createElement("select");
+    select.className = "compose-select";
+    select.dataset.name = "planeId";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "Custom (typed vectors)";
+    select.appendChild(none);
+    for (const p of this.planesList) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name;
+      opt.title = `point (${p.point.join(", ")}) · normal (${p.normal.join(", ")})${p.derivedFrom ? ` · from ${p.derivedFrom}` : ""}`;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => {
+      const id = select.value;
+      const plane = this.planesList.find((x) => x.id === id);
+      const pointInputs = this.paramsEl.querySelectorAll<HTMLInputElement>("input[data-name=\"planePoint\"]");
+      const normalInputs = this.paramsEl.querySelectorAll<HTMLInputElement>("input[data-name=\"planeNormal\"]");
+      const disable = !!plane;
+      pointInputs.forEach((el) => { el.disabled = disable; });
+      normalInputs.forEach((el) => { el.disabled = disable; });
+      if (plane) {
+        this.setVecField("planePoint", plane.point as Vec3);
+        this.setVecField("planeNormal", plane.normal as Vec3);
+      }
+      if (this.draftReader) this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(select);
+    return row;
   }
 
   /**
@@ -347,13 +425,26 @@ export class EditsPanel {
    * `redoOps` must be in CHRONOLOGICAL order (`EditsModel.redoList()`), i.e.
    * the order the pending ops would re-apply — matching the timeline indices
    * `onJumpTo` receives.
+   *
+   * `opBuckets` (roadmap "Selector synthesis" Phase 1 — the most recent
+   * replay's per-op produced-face classification, see `src/opBuckets.ts`)
+   * gives applied rows a `+N` chip: title = the role summary
+   * (`bucketSummary`) plus the recorded ids, click = transiently highlight
+   * those faces via `onHighlightBucket` (click again to clear). The ids are
+   * valid against the model state at their own op's step — later ops may
+   * have renumbered them — so the chip tooltip says so.
    */
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[]): void {
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null): void {
     this.undoBtn.disabled = !canUndo;
     this.redoBtn.disabled = !canRedo;
     this.clearBtn.disabled = ops.length === 0 && (redoOps?.length ?? 0) === 0;
 
     const outcomeOf = new Map((opOutcomes ?? []).map((o) => [o.index, o]));
+    const bucketOf = new Map((opBuckets ?? []).map((b) => [b.op, b]));
+    // A re-render resets the chip toggle — most render triggers coincide with
+    // a model rebuild + `refreshColors()`, which already restores the real
+    // selection's rendering.
+    this.activeBucketOp = null;
 
     this.body.innerHTML = "";
     if (ops.length === 0 && (redoOps?.length ?? 0) === 0) {
@@ -369,7 +460,7 @@ export class EditsPanel {
     const row = (
       op: EditOp,
       i: number,
-      opts: { pending: boolean; outcome?: OpOutcome }
+      opts: { pending: boolean; outcome?: OpOutcome; bucket?: OpBucket }
     ): void => {
       const li = document.createElement("li");
       li.className = opts.pending ? "edit-row edit-row-pending" : "edit-row";
@@ -408,6 +499,31 @@ export class EditsPanel {
           warn.textContent = "⚠";
           li.appendChild(warn);
         }
+        const bucket = opts.bucket;
+        if (bucket) {
+          const allIds = Object.values(bucket.roles).flat();
+          const chip = document.createElement("button");
+          chip.className = "edit-bucket";
+          chip.textContent = `+${allIds.length}`;
+          const summary = bucketSummary(bucket.roles);
+          chip.title = `Produced: ${summary}\n(${allIds.join(", ")})\nIds are as of this op's own step — later edits may renumber them. Click to highlight.`;
+          chip.addEventListener("click", (e) => {
+            e.stopPropagation(); // highlighting must not also jump to this row
+            if (this.activeBucketOp === bucket.op) {
+              this.activeBucketOp = null;
+              chip.classList.remove("active");
+              this.cb.onHighlightBucket(null);
+            } else {
+              // Only one chip highlights at a time — clear any previous one's
+              // visual state directly (rows aren't re-rendered on a click).
+              for (const el of this.body.querySelectorAll(".edit-bucket.active")) el.classList.remove("active");
+              this.activeBucketOp = bucket.op;
+              chip.classList.add("active");
+              this.cb.onHighlightBucket(allIds);
+            }
+          });
+          li.appendChild(chip);
+        }
         li.appendChild(del);
       } else {
         const redoMark = document.createElement("span");
@@ -417,7 +533,7 @@ export class EditsPanel {
       }
       ol.appendChild(li);
     };
-    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i) }));
+    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i) }));
     (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
   }
@@ -603,11 +719,15 @@ export class EditsPanel {
           }), (d) => this.cb.onApplyTransform(d));
         break;
       case "mirror":
+        f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [1, 0, 0]));
-        this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => ({
-            kind: "mirror", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal"),
-          }), (d) => this.cb.onApplyTransform(d));
+        this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => {
+            const planeId = this.readPlaneId();
+            const draft: TransformDraft = { kind: "mirror", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal") } as TransformDraft;
+            if (planeId) (draft as any).planeId = planeId;
+            return draft;
+          }, (d) => this.cb.onApplyTransform(d));
         break;
 
       // ── EDIT · boolean (Set A two-step; B = live selection) ──
@@ -632,28 +752,34 @@ export class EditsPanel {
 
       // ── EDIT · features ──
       case "extrude":
-        f.appendChild(this.hint("Profile = selected face (Surf mode)"));
+        f.appendChild(this.hint("Profile = selected face (Surf mode), or selected edges (Line mode)"));
         f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
         f.appendChild(this.numField("length", "Length", 10));
-        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length") }), (d) => this.cb.onApplyFeature(d));
+        this.thinFields(f);
+        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "revolve":
-        f.appendChild(this.hint("Profile = selected face (Surf mode)"));
+        f.appendChild(this.hint("Profile = selected face (Surf mode), or selected edges (Line mode)"));
         f.appendChild(this.vecField("axisPoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 360));
+        this.thinFields(f);
         this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({
             kind: "revolve", axisPoint: this.readVec("axisPoint"),
-            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"),
+            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"), ...this.readThin(),
           }), (d) => this.cb.onApplyFeature(d));
         break;
       case "sweep":
-        f.appendChild(this.hint("Profile = selected face · path = selected edge"));
-        this.applyButtonDraft("Apply", "Build the feature from the selected face + edge", (): FeatureDraft => ({ kind: "sweep" }), (d) => this.cb.onApplyFeature(d));
+        f.appendChild(this.hint("Profile = selected face · path = selected edge. For an edge profile, capture the path first."));
+        f.appendChild(this.sweepPathRow());
+        this.thinFields(f);
+        this.applyButtonDraft("Apply", "Build the feature from the selected profile + path", (): FeatureDraft => ({ kind: "sweep", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "loft":
-        f.appendChild(this.hint("Profiles = 2+ selected faces"));
-        this.applyButtonDraft("Apply", "Build the feature from the selected faces", (): FeatureDraft => ({ kind: "loft" }), (d) => this.cb.onApplyFeature(d));
+        f.appendChild(this.hint("Profiles = 2+ selected faces, or capture one section at a time"));
+        f.appendChild(this.loftSectionRow());
+        this.thinFields(f);
+        this.applyButtonDraft("Apply", "Build the feature from the loft sections", (): FeatureDraft => ({ kind: "loft", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
 
       // ── EDIT · modify ──
@@ -663,26 +789,58 @@ export class EditsPanel {
         f.appendChild(this.hint("Negative = walls grow inward (hollow); positive = outward"));
         this.applyButtonDraft("Apply", "Shell the solids owning the selected opening faces", (): ModifyDraft => ({ kind: "shell", thickness: this.readNum("thickness") }), (d) => this.cb.onApplyModify(d));
         break;
+      case "draft":
+        f.appendChild(this.hint("Tapers the selected faces (Surf mode) by the angle around the neutral plane"));
+        f.appendChild(this.numField("angleDeg", "Angle°", 5));
+        f.appendChild(this.hint("Leave Point/Normal at 0 to use each face's own plane — or pick a saved plane"));
+        f.appendChild(this.planeSelectField());
+        f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
+        f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 0]));
+        this.applyButtonDraft("Apply", "Draft the selected faces", (): ModifyDraft => {
+          const planeId = this.readPlaneId();
+          if (planeId) {
+            return { kind: "draft", angleDeg: this.readNum("angleDeg"), planeId, planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal") } as ModifyDraft;
+          }
+          const planePoint = this.readVec("planePoint");
+          const planeNormal = this.readVec("planeNormal");
+          const isZero = (v: Vec3) => v[0] === 0 && v[1] === 0 && v[2] === 0;
+          const draft: ModifyDraft = { kind: "draft", angleDeg: this.readNum("angleDeg") } as ModifyDraft;
+          if (!isZero(planePoint) && !isZero(planeNormal)) { (draft as any).planePoint = planePoint; (draft as any).planeNormal = planeNormal; }
+          return draft;
+        }, (d) => this.cb.onApplyModify(d));
+        break;
       case "splitByPlane":
         f.appendChild(this.hint("Splits the selected volumes (Vol mode) by the plane"));
+        f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 1]));
         f.appendChild(this.enumField("keep", "Keep", [
           ["both", "Both"], ["positive", "Normal side"], ["negative", "Other side"],
         ], "both"));
-        this.applyButtonDraft("Apply", "Split the selected volumes by the plane", (): ModifyDraft => ({
-            kind: "splitByPlane", planePoint: this.readVec("planePoint"),
-            planeNormal: this.readVec("planeNormal"),
-            keep: this.readEnum("keep", "both") as "both" | "positive" | "negative",
-          }), (d) => this.cb.onApplyModify(d));
+        this.applyButtonDraft("Apply", "Split the selected volumes by the plane", (): ModifyDraft => {
+            const planeId = this.readPlaneId();
+            const draft: ModifyDraft = {
+              kind: "splitByPlane", planePoint: this.readVec("planePoint"),
+              planeNormal: this.readVec("planeNormal"),
+              keep: this.readEnum("keep", "both") as "both" | "positive" | "negative",
+            } as ModifyDraft;
+            if (planeId) (draft as any).planeId = planeId;
+            return draft;
+          }, (d) => this.cb.onApplyModify(d));
         break;
       case "section":
         f.appendChild(this.hint("Adds the planar cross-section of the selected volumes (Vol mode) as a sketch face"));
+        f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 1]));
-        this.applyButtonDraft("Apply", "Add the cross-section face (the solids stay untouched)", (): ModifyDraft => ({
-            kind: "section", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal"),
-          }), (d) => this.cb.onApplyModify(d));
+        this.applyButtonDraft("Apply", "Add the cross-section face (the solids stay untouched)", (): ModifyDraft => {
+            const planeId = this.readPlaneId();
+            const draft: ModifyDraft = {
+              kind: "section", planePoint: this.readVec("planePoint"), planeNormal: this.readVec("planeNormal"),
+            } as ModifyDraft;
+            if (planeId) (draft as any).planeId = planeId;
+            return draft;
+          }, (d) => this.cb.onApplyModify(d));
         break;
 
       // ── EDIT · assembly ──
@@ -897,6 +1055,14 @@ export class EditsPanel {
         f.appendChild(this.hint("Select 4+ surfaces forming a closed shell (Surf mode)"));
         this.applyButtonDraft("Build", "Build a solid by sewing the selected surfaces", () => ({}), () => this.cb.onBuildVolumeFromSurfaces());
         break;
+      case "edgeSlot":
+        f.appendChild(this.hint("Select one edge (Line mode) to slot around"));
+        f.appendChild(this.numField("width", "Width", 2));
+        this.applyButtonDraft("Build", "Build a stadium slot around the selected edge", () => ({}) as any, () => {
+          const width = this.readNum("width");
+          this.cb.onBuildEdgeSlot(width);
+        });
+        break;
 
       // ── GEOMETRY 3D · primitives ──
       case "addBox":
@@ -1010,6 +1176,12 @@ export class EditsPanel {
           }), (d) => this.cb.onApplyHole(d));
         break;
     }
+    // Construction-geometry checkbox for every guide kind (2D profile + curve
+    // creation): one generic field, read by `applyButtonDraft`'s wrapped
+    // reader on both the Apply and preview paths. `guide` marks the built
+    // entity reference-only — rendered dimmed and excluded from feature
+    // profile resolution (roadmap item 10).
+    if (id && GUIDE_KINDS.has(id as never)) f.appendChild(this.boolField("guide", "Construction (guide)", false));
     // A freshly-opened form previews immediately from its default field
     // values — opening "Box" shows the default box before anything is typed.
     if (this.draftReader) this.cb.onPreviewDraftChanged();
@@ -1112,8 +1284,18 @@ export class EditsPanel {
    * drifting from what Apply would commit.
    */
   private applyButtonDraft<D>(label: string, title: string, read: () => D, apply: (d: D) => void): HTMLElement {
-    this.draftReader = read as () => unknown;
-    return this.applyButton(label, title, () => apply(read()));
+    // Construction-geometry checkbox: guide-kind forms get one generic
+    // `guide` field appended after their params (see `renderParams`), read
+    // here at the single seam BOTH the Apply click and the live preview
+    // flow through — so a preview can never disagree with what Apply
+    // commits, the same guarantee `applyButtonDraft` already gives.
+    const wrappedRead = (): D => {
+      const draft = read() as Record<string, unknown>;
+      if (this.activeOp && GUIDE_KINDS.has(this.activeOp as never)) draft.guide = this.readBool("guide");
+      return draft as D;
+    };
+    this.draftReader = wrappedRead as () => unknown;
+    return this.applyButton(label, title, () => apply(wrappedRead()));
   }
 
   private applyButton(label: string, title: string, onClick: () => void): HTMLElement {
@@ -1126,6 +1308,116 @@ export class EditsPanel {
     btn.addEventListener("click", onClick);
     row.appendChild(btn);
     return row;
+  }
+
+  /**
+   * Forgets the sweep path / loft sections and redraws the open form, so the
+   * displayed capture state can't outlive the ids it names — those are
+   * renumbered by the very op that just applied. Mirrors `renderBooleanForm`'s
+   * own reset of `booleanACount` on Apply.
+   */
+  resetFeatureCaptures(): void {
+    this.sweepPath = null;
+    this.loftSectionCount = 0;
+    if (this.activeOp === "sweep" || this.activeOp === "loft") this.renderParams();
+  }
+
+  /**
+   * Sweep's optional path capture. A sweep's profile and its path are both
+   * edge picks now that an open wire can be a profile, so the two cannot be
+   * told apart from one flat Line-mode selection — capturing the path first
+   * disambiguates, exactly as `Set A` does for a boolean's two volume sets.
+   * With nothing captured, the form behaves as it always did: the selected
+   * face is the profile and the selected edge is the path.
+   */
+  private sweepPathRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.sweepPath ? `path: ${this.sweepPath}` : "path: —"; };
+    render();
+    const set = document.createElement("button");
+    set.className = "compose-apply";
+    set.textContent = "Set path";
+    set.title = "Capture the selected edge as the sweep path, freeing the rest of the selection to be the profile";
+    set.addEventListener("click", () => {
+      this.sweepPath = this.cb.onCaptureSweepPath();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget the captured path";
+    clear.addEventListener("click", () => {
+      this.cb.onClearSweepPath();
+      this.sweepPath = null;
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(set);
+    row.appendChild(clear);
+    row.appendChild(status);
+    return row;
+  }
+
+  /**
+   * Loft's optional per-section capture — the only way to give it OPEN
+   * sections, since each one is a set of edges and a single flat selection
+   * cannot express "these edges are section 1, those are section 2".
+   * With nothing captured, the selected faces are the sections, as before.
+   */
+  private loftSectionRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.loftSectionCount > 0 ? `sections: ${this.loftSectionCount}` : "sections: —"; };
+    render();
+    const add = document.createElement("button");
+    add.className = "compose-apply";
+    add.textContent = "Add section";
+    add.title = "Capture the current selection (a face, or a set of edges) as one loft section";
+    add.addEventListener("click", () => {
+      this.loftSectionCount = this.cb.onCaptureLoftSection();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget every captured section";
+    clear.addEventListener("click", () => {
+      this.cb.onClearLoftSections();
+      this.loftSectionCount = 0;
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(add);
+    row.appendChild(clear);
+    row.appendChild(status);
+    return row;
+  }
+
+  /**
+   * The shared thin-wall fields for the four sweep-family forms. `Wall` = 0 is
+   * the sentinel for "not thin" (the same leave-it-at-the-default convention
+   * `draft`'s Point/Normal use), so an untouched form builds today's filled
+   * solid exactly as before.
+   */
+  private thinFields(f: HTMLElement): void {
+    f.appendChild(this.numField("thin", "Wall", 0));
+    f.appendChild(this.numField("thinOuter", "Outward", 0));
+    f.appendChild(this.hint("Wall 0 = solid. Outward = how much of the wall sits outside the profile (0 = all inward)."));
+  }
+
+  /** Reads the thin fields, omitting them entirely when Wall is 0/absent. */
+  private readThin(): { thin?: number; thinOuter?: number } {
+    const thin = this.readNum("thin");
+    if (!Number.isFinite(thin) || thin <= 0) return {};
+    const thinOuter = this.readNum("thinOuter");
+    return Number.isFinite(thinOuter) && thinOuter > 0 ? { thin, thinOuter } : { thin };
   }
 
   private hint(text: string): HTMLElement {

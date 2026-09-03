@@ -13,6 +13,7 @@ import type { ClipPlaneState } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
+import type { MeshRegionFit } from "./fitMapping";
 import type { AnnotatedTolerance } from "./toleranceBand";
 
 export type { EditOp } from "./editOps";
@@ -212,6 +213,17 @@ export type HostToWebview =
        * Absent for mesh sources (their replay is client-side, in
        * `rebuildMeshModel`, which reports outcomes directly). */
       opOutcomes?: import("./editOps").OpOutcome[];
+      /** Guide-entity ids (face-N/edge-N/point-N) whose creating op had
+       * `guide:true` — webview renders them dimmed and refuses them as
+       * profile operands for feature ops (roadmap item 10). Absent/empty
+       * when no guide ops. */
+      guideIds?: string[];
+      /** Build-time classification buckets (roadmap "Selector synthesis"
+       * Phase 1): per-op classification of the faces each topology-changing
+       * op produced (roles like `endCap`/`band`/`copies`), keyed by op
+       * index. Ids are valid against the model state at their own op's
+       * step — later ops may renumber them. See `src/opBuckets.ts`. */
+      opBuckets?: import("./opBuckets").OpBucket[];
       /**
        * When `false`, the viewer must always re-frame the new model, even if
        * its bounds would otherwise be considered contained by the last framing
@@ -390,6 +402,8 @@ export type HostToWebview =
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
   | { type: "meshHealError"; requestId: string; message: string }
+  | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }
+  | { type: "fitRegionError"; requestId: string; message: string }
   /** Live operation preview result — the same encoded payload `"geometry"`
    * carries, but for the speculative ops+draft replay. The webview builds a
    * detached group from it (never `viewer.setModel`) and tints it by intent;
@@ -537,6 +551,7 @@ export type WebviewToHost =
   | { type: "renderViewError"; requestId: string; message: string }
   | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
   | { type: "meshHealRequest"; requestId: string }
+  | { type: "fitRegionRequest"; requestId: string; point: [number, number, number] }
   | { type: "setCamerasLinked"; enabled: boolean };
 
 /** Encode a typed array to a base64 string for postMessage transport. */

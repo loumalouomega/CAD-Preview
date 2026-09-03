@@ -26,12 +26,16 @@ import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
 import { evaluateVariables, resolveEditOps } from "../editVariables";
+import { resolvePlaneRefs } from "../planeRefs";
 import { extractIdentifiers } from "../paramExpr";
 import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } from "../toleranceBand";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
+import { RegionFitPanel } from "./regionFitPanel";
+import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
+import { validateEditOp, GUIDE_KINDS } from "../editOps";
 import { StandardPartsPanel } from "./standardPartsPanel";
 import type { StandardPart } from "../stepPartsService";
 import { computeMeshMassProperties } from "./meshMassProperties";
@@ -70,7 +74,6 @@ import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
 import type { OpOutcome } from "../editOps";
-import { validateEditOp } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -242,6 +245,8 @@ const planesModel = new PlanesModel(() => {
 let planesClipHandle: { applyDerivedPlane(n: THREE.Vector3, p: THREE.Vector3, label: string): void; getState(): ClipState } | null = null;
 
 function renderPlanesList(): void {
+  refreshMidplanePickers(); // the midplane creator's pickers must never offer a stale plane
+  try { (editsPanel as unknown as { setPlanes: (p: unknown[]) => void })?.setPlanes?.(planesModel.list()); } catch {}
   const container = document.getElementById("planes-list");
   if (!container) return;
   container.innerHTML = "";
@@ -309,6 +314,25 @@ function parseVecField(text: string): [number, number, number] | null {
   return [parts[0], parts[1], parts[2]];
 }
 
+/** Keeps the midplane creator's two plane `<select>`s in step with the saved
+ * planes (called from `renderPlanesList`, so a plane added/deleted while the
+ * picker row is open never offers a stale id). */
+function refreshMidplanePickers(): void {
+  const midA = document.getElementById("plane-mid-a") as HTMLSelectElement | null;
+  const midB = document.getElementById("plane-mid-b") as HTMLSelectElement | null;
+  if (!midA || !midB) return;
+  const planes = planesModel.list();
+  for (const sel of [midA, midB]) {
+    sel.innerHTML = "";
+    for (const p of planes) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    }
+  }
+}
+
 function setupPlanesControls(): void {
   const saveBtn = document.getElementById("plane-save");
   const addBtn = document.getElementById("plane-add");
@@ -365,6 +389,47 @@ function setupPlanesControls(): void {
     if (entry) entry.hidden = true;
     setStatus("Added a construction plane.");
   });
+
+  // ── Midplane creator (roadmap item 10's "midplane references" half) ──────
+  // Computes client-side over the two picked saved planes — the same math and
+  // validation `set_plane`'s `midplaneOf` applies headlessly — and stores a
+  // RESOLVED plane, per the planes sidecar's "resolved vectors, never a live
+  // reference" convention.
+  const midToggle = document.getElementById("plane-mid-toggle");
+  const midRow = document.getElementById("plane-mid");
+  const midA = document.getElementById("plane-mid-a") as HTMLSelectElement | null;
+  const midB = document.getElementById("plane-mid-b") as HTMLSelectElement | null;
+  const midOk = document.getElementById("plane-mid-ok");
+
+  midToggle?.addEventListener("click", () => {
+    if (!midRow) return;
+    midRow.hidden = !midRow.hidden;
+    refreshMidplanePickers();
+  });
+
+  midOk?.addEventListener("click", () => {
+    const planes = planesModel.list();
+    const a = planes.find((p) => p.id === midA?.value);
+    const b = planes.find((p) => p.id === midB?.value);
+    if (!a || !b) {
+      setStatus("Pick two saved planes to build a midplane between.", true);
+      return;
+    }
+    const dot = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
+    if (Math.abs(Math.abs(dot) - 1) > 1e-6) {
+      setStatus("Midplane requires parallel plane normals.", true);
+      return;
+    }
+    const nb: [number, number, number] = dot < 0 ? [-b.normal[0], -b.normal[1], -b.normal[2]] : b.normal;
+    const n: [number, number, number] = a.normal;
+    const da = a.point[0]*n[0] + a.point[1]*n[1] + a.point[2]*n[2];
+    const db = b.point[0]*n[0] + b.point[1]*n[1] + b.point[2]*n[2];
+    const midD = (da + db) / 2;
+    const point: [number, number, number] = [a.point[0] + n[0]*(midD - da), a.point[1] + n[1]*(midD - da), a.point[2] + n[2]*(midD - da)];
+    planesModel.add({ name: `Plane ${planesModel.size + 1}`, point, normal: n, derivedFrom: `midplane ${a.id}–${b.id}` });
+    if (midRow) midRow.hidden = true;
+    setStatus(`Added the midplane of ${a.name} and ${b.name}.`);
+  });
 }
 
 // ── Edits (replayable op-stack) + parametric variables ───────────────────
@@ -381,10 +446,12 @@ function setupPlanesControls(): void {
 const editsModel = new EditsModel(syncEdits);
 const variablesModel = new VariablesModel(syncEdits);
 
-/** The op list with every expression re-evaluated against the current variables. */
+/** The op list with every expression re-evaluated against the current variables, then plane ids. */
 function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
   const { values } = evaluateVariables(variablesModel.list());
-  return resolveEditOps(editsModel.list(), values);
+  const { ops: variableResolved, issues: variableIssues } = resolveEditOps(editsModel.list(), values);
+  const { ops, issues: planeIssues } = resolvePlaneRefs(variableResolved, planesModel.list());
+  return { ops, issues: [...variableIssues, ...planeIssues] };
 }
 
 /** How many op-expression fields reference each variable (for delete warnings). */
@@ -409,14 +476,16 @@ function renderEditsUi(): void {
   // path.
   rebuildEntityRefIndex();
   const { values, errors } = evaluateVariables(variablesModel.list());
-  const { ops } = resolveEditOps(editsModel.list(), values);
+  const { ops: variableResolved } = resolveEditOps(editsModel.list(), values);
+  const { ops } = resolvePlaneRefs(variableResolved, planesModel.list());
   editsPanel.setVariables(values);
+  editsPanel.setPlanes(planesModel.list());
   // Pending (redo-buffer) ops ride along in chronological order so the history
   // renders as a full clickable timeline (op-history scrubbing, roadmap Tier
   // 2 item 1). They are NOT resolved here: they aren't applied yet, and the
   // resolve-on-read contract re-evaluates them at every future consumption
   // point anyway.
-  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList());
+  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
 }
 
@@ -427,6 +496,15 @@ function renderEditsUi(): void {
  * showing an unchanged model. Cleared whenever a genuinely new model loads
  * before its fresh outcomes arrive (the geometry post always carries them). */
 let lastOpOutcomes: OpOutcome[] | null = null;
+/** The most recent replay's per-op produced-face classification buckets (see
+ * `src/opBuckets.ts`) — set by the B-rep `"geometry"` handler, cleared by
+ * `rebuildMeshModel()` (mesh sources have no B-rep buckets). Consumed by
+ * `renderEditsUi()` so history rows can show +N chips. */
+let lastOpBuckets: import("../opBuckets").OpBucket[] | null = null;
+/** Guide-entity ids from the last B-rep `geometry` post — construction
+ * geometry the feature ops (extrude/revolve/sweep/loft/buildSurface/
+ * buildVolume) refuse as operands, mirrored host-side by the same rule. */
+const guideEntityIds: Set<string> = new Set();
 
 /** Fired on every op-stack or variable mutation: resolve, persist, re-display. */
 function syncEdits(): void {
@@ -448,6 +526,12 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
 
 /** Captured boolean operand A (volume ids); operand B is the live selection. */
 let booleanA: string[] = [];
+/** One captured loft section: a single face, or the edges of one wire. */
+type LoftSection = { kind: "face"; ids: string[] } | { kind: "edges"; ids: string[] };
+/** Sweep's captured path edge — see `EditsPanelCallbacks.onCaptureSweepPath`. */
+let sweepPath: string | null = null;
+/** Loft's captured sections — see `EditsPanelCallbacks.onCaptureLoftSection`. */
+let loftSections: LoftSection[] = [];
 const selectedVolumes = (): string[] =>
   selection.list().filter((e) => e.entityType === "volume").map((e) => e.entityId);
 
@@ -708,6 +792,15 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   // One splice + one onChange/editsChanged/re-tessellate round trip per
   // click — never a looped undo()/redo() sequence (op-history scrubbing).
   onJumpTo: (index) => editsModel.jumpTo(index),
+  // Transient highlight of a history-row bucket chip's faces (roadmap
+  // "Selector synthesis" Phase 1) — goes through `renderSelection` directly,
+  // never into the SelectionSet, so moving on restores the real selection by
+  // re-running `renderHighlight()` (the selection-groups context menu's
+  // hover-preview precedent). Bucket ids are all faces in Phase 1.
+  onHighlightBucket: (ids) => {
+    if (!ids || ids.length === 0) { renderHighlight(); return; }
+    viewer.renderSelection(ids.map((entityId) => ({ entityType: "surface" as const, entityId })));
+  },
   onApplyTransform: (draft) => {
     const id = draft.kind === "translate" ? "translate" : draft.kind === "rotate" ? "rotate" : draft.kind === "scale" ? "scale" : "mirror";
     const resolved = buildOpForPanel(id, draft);
@@ -734,6 +827,24 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     renderHighlight();
     setStatus("");
   },
+  onCaptureSweepPath: () => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length !== 1) { setStatus("Select exactly one edge (Line mode) to capture as the sweep path.", true); return sweepPath; }
+    sweepPath = edges[0];
+    scheduleOpPreview();
+    return sweepPath;
+  },
+  onClearSweepPath: () => { sweepPath = null; scheduleOpPreview(); },
+  onCaptureLoftSection: () => {
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (faces.length > 0) loftSections.push({ kind: "face", ids: [faces[0]] });
+    else if (edges.length > 0) loftSections.push({ kind: "edges", ids: edges });
+    else setStatus("Select a profile face, or the edges of one profile wire, before adding a loft section.", true);
+    scheduleOpPreview();
+    return loftSections.length;
+  },
+  onClearLoftSections: () => { loftSections = []; scheduleOpPreview(); },
   onApplyFillet: (kind, amount, exprs) => {
     const resolved = buildOpForPanel(kind, { amount, exprs: exprs?.amount ? { amount: exprs.amount } : undefined });
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply.", true); return; }
@@ -746,6 +857,11 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this feature.", true); return; }
     cancelOpPreview();
     editsModel.push(resolved.op);
+    // The applied op renumbers entity ids, so any captured path/sections now
+    // name the wrong geometry — drop them, as `onApplyBoolean` drops A.
+    sweepPath = null;
+    loftSections = [];
+    editsPanel.resetFeatureCaptures();
     setStatus("");
   },
   onApplyExplode: (factor, exprs) => {
@@ -830,6 +946,8 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       setStatus("Select 3+ lines (Line mode) forming a closed loop.", true);
       return;
     }
+    const guideEdge = edges.find((e) => guideEntityIds.has(e));
+    if (guideEdge) { setStatus(`${guideEdge} is guide (construction) geometry — guides are excluded from surface resolution.`, true); return; }
     editsModel.push({ op: "addSurfaceFromLines", edges });
     setStatus("");
   },
@@ -839,7 +957,16 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       setStatus("Select 4+ surfaces (Surf mode) forming a closed shell.", true);
       return;
     }
+    const guideFace = faces.find((f) => guideEntityIds.has(f));
+    if (guideFace) { setStatus(`${guideFace} is guide (construction) geometry — guides are excluded from volume resolution.`, true); return; }
     editsModel.push({ op: "addVolumeFromSurfaces", faces });
+    setStatus("");
+  },
+  onBuildEdgeSlot: (width: number) => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length !== 1) { setStatus("Select exactly one edge (Line mode) for the slot.", true); return; }
+    if (!(width > 0)) { setStatus("Slot width must be positive.", true); return; }
+    editsModel.push({ op: "addEdgeSlot", edge: edges[0], width });
     setStatus("");
   },
   onFormChanged: updateGizmoForForm,
@@ -1100,7 +1227,71 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
 function setMeshHealthEligibility(format: MeshParseFormat | null): void {
   meshHealthEligibleFormat = format;
   meshHealthPanel.setEligible(format !== null);
+  regionFitPanel.setEligible(format !== null);
 }
+
+let regionFitRequestId: string | null = null;
+let lastRegionFit: import("../fitMapping").MeshRegionFit | null = null;
+
+const regionFitPanel = new RegionFitPanel(document.getElementById("region-fit-panel")!, {
+  onPickSeed: () => {
+    if (!meshHealthEligibleFormat) return;
+    regionFitPanel.setPickArmed(true);
+    setStatus("Click a surface to pick the fit seed…");
+    viewer.setFitSeedPickHandler((point) => {
+      viewer.setFitSeedPickHandler(null);
+      regionFitPanel.setPickArmed(false);
+      const requestId = `${Date.now()}-${Math.random()}`;
+      regionFitRequestId = requestId;
+      lastRegionFit = null;
+      regionFitPanel.renderMessage("Fitting…");
+      post({ type: "fitRegionRequest", requestId, point: [point.x, point.y, point.z] });
+    });
+  },
+  onSavePlane: () => {
+    if (!lastRegionFit) return;
+    const plane = fitConstructionPlane(lastRegionFit);
+    if (!plane) {
+      setStatus("No plane fit to save.", true);
+      return;
+    }
+    const w = fitStoreWarning(lastRegionFit, "plane");
+    if (w) setStatus(w);
+    planesModel.add(plane);
+  },
+  onAddCylinder: () => {
+    if (!lastRegionFit) return;
+    const op = fitOpForKind(lastRegionFit, "cylinder");
+    if (!op) {
+      setStatus("No cylinder fit to add.", true);
+      return;
+    }
+    const validated = validateEditOp(op);
+    if (!validated) {
+      setStatus("Fitted cylinder produced an invalid op.", true);
+      return;
+    }
+    const w = fitStoreWarning(lastRegionFit, "cylinder");
+    if (w) setStatus(w);
+    editsModel.push(validated);
+  },
+  onAddSphere: () => {
+    if (!lastRegionFit) return;
+    const op = fitOpForKind(lastRegionFit, "sphere");
+    if (!op) {
+      setStatus("No sphere fit to add.", true);
+      return;
+    }
+    const validated = validateEditOp(op);
+    if (!validated) {
+      setStatus("Fitted sphere produced an invalid op.", true);
+      return;
+    }
+    const w = fitStoreWarning(lastRegionFit, "sphere");
+    if (w) setStatus(w);
+    editsModel.push(validated);
+  },
+});
 
 const standardPartsPanel = new StandardPartsPanel(document.getElementById("standard-parts-panel")!, {
   onSearch: (q: string) => {
@@ -1295,6 +1486,33 @@ function opPreviewEligible(): boolean {
   return open !== null && open !== "explode" && open !== "translate" && open !== "rotate" && open !== "scale";
 }
 
+/**
+ * Resolves a single-profile sweep-family operand from the live selection: a
+ * Surf-mode face wins, otherwise the Line-mode edges form the profile wire.
+ * Guides are refused in both forms — an `addPolyline { guide: true }` is
+ * exactly the construction spine someone would otherwise try to extrude.
+ */
+function profileOperandFromSelection(selFaces: string[], selEdges: string[]): { operand: { profile: string } | { profileEdges: string[] } } | { error: string } {
+  if (selFaces[0]) {
+    if (guideEntityIds.has(selFaces[0])) return { error: `${selFaces[0]} is guide (construction) geometry — guides are excluded from feature profiles` };
+    return { operand: { profile: selFaces[0] } };
+  }
+  if (selEdges.length > 0) {
+    const guide = selEdges.find((e) => guideEntityIds.has(e));
+    if (guide) return { error: `${guide} is guide (construction) geometry — guides are excluded from feature profiles` };
+    return { operand: { profileEdges: selEdges } };
+  }
+  return { error: "Select a profile face (Surf mode) or profile edges (Line mode)" };
+}
+
+/** The thin-wall fields of a sweep-family draft, or nothing when it isn't thin. */
+function thinOf(d: Record<string, unknown>): { thin?: number; thinOuter?: number } {
+  const thin = d.thin;
+  if (typeof thin !== "number" || !(thin > 0)) return {};
+  const outer = d.thinOuter;
+  return typeof outer === "number" && outer > 0 ? { thin, thinOuter: outer } : { thin };
+}
+
 /** Intent colour for a previewed op kind — green adds material, red removes
  * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
  * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
@@ -1342,9 +1560,10 @@ function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
     case "section":
     case "buildSurface":
     case "buildVolume":
+    case "edgeSlot":
       return "ref";
     default:
-      return undefined; // mirror, align, fillet, chamfer — neutral
+      return undefined; // mirror, draft, align, fillet, chamfer — neutral
   }
 }
 
@@ -1358,6 +1577,18 @@ function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
  * `validateEditOp` remains the authoritative gate downstream either way.
  */
 function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op?: EditOp; error?: string } {
+  const res = buildOpForPanelCore(id, rawDraft);
+  // Construction-geometry flag: the panel's generic `guide` checkbox rides
+  // every guide-kind draft (see `editsPanel.applyButtonDraft`) — copied onto
+  // the resolved op here so BOTH the Apply push and the live preview carry
+  // it, exactly like `exprs` above.
+  if (res.op && (rawDraft as Record<string, any>).guide === true && GUIDE_KINDS.has(res.op.op)) {
+    (res.op as unknown as Record<string, unknown>).guide = true;
+  }
+  return res;
+}
+
+function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): { op?: EditOp; error?: string } {
   const d = rawDraft as Record<string, any> & { exprs?: Record<string, string> };
   const withExprs = (op: EditOp): EditOp => {
     if (d.exprs && Object.keys(d.exprs).length > 0) op.exprs = d.exprs;
@@ -1383,7 +1614,9 @@ function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op
     }
     case "mirror": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) before applying a transform." };
-      return { op: withExprs({ op: "mirror", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal }) };
+      const op: any = { op: "mirror", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal };
+      if (d.planeId) op.planeId = d.planeId;
+      return { op: withExprs(op) };
     }
 
     // ── booleans (A captured via Set A, B = live Vol selection) ──
@@ -1410,18 +1643,44 @@ function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op
     }
 
     // ── feature modeling ──
-    case "extrude":
-      if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to extrude." };
-      return { op: withExprs({ op: "extrude", profile: selFaces[0], dir: d.dir, length: d.length }) };
-    case "revolve":
-      if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to revolve." };
-      return { op: withExprs({ op: "revolve", profile: selFaces[0], axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg }) };
-    case "sweep":
-      if (!selFaces[0] || !selEdges[0]) return { error: "Select a profile face and a path edge for sweep." };
-      return { op: withExprs({ op: "sweep", profile: selFaces[0], path: selEdges[0] }) };
-    case "loft":
-      if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft." };
-      return { op: withExprs({ op: "loft", profiles: selFaces }) };
+    case "extrude": {
+      const profile = profileOperandFromSelection(selFaces, selEdges);
+      if ("error" in profile) return { error: `${profile.error} to extrude.` };
+      return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, length: d.length, ...thinOf(d) }) };
+    }
+    case "revolve": {
+      const profile = profileOperandFromSelection(selFaces, selEdges);
+      if ("error" in profile) return { error: `${profile.error} to revolve.` };
+      return { op: withExprs({ op: "revolve", ...profile.operand, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, ...thinOf(d) }) };
+    }
+    case "sweep": {
+      // With a path captured, the rest of the selection is free to be an edge
+      // profile; without one, the single selected edge is the path, as before.
+      const path = sweepPath ?? selEdges[0];
+      if (!path) return { error: "Select a path edge (Line mode) for sweep." };
+      if (guideEntityIds.has(path)) return { error: `${path} is guide (construction) geometry — guides are excluded from sweep paths.` };
+      const profileEdges = selEdges.filter((e) => e !== path);
+      const profile = profileOperandFromSelection(selFaces, sweepPath ? profileEdges : []);
+      if ("error" in profile) return { error: `${profile.error} to sweep.` };
+      return { op: withExprs({ op: "sweep", ...profile.operand, path, ...thinOf(d) }) };
+    }
+    case "loft": {
+      if (loftSections.length > 0) {
+        if (loftSections.length < 2) return { error: "Capture at least 2 loft sections (Add section)." };
+        const guide = loftSections.flatMap((s) => s.ids).find((id) => guideEntityIds.has(id));
+        if (guide) return { error: `${guide} is guide (construction) geometry — guides are excluded from loft profiles.` };
+        if (loftSections.every((s) => s.kind === "face")) {
+          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...thinOf(d) }) };
+        }
+        if (loftSections.every((s) => s.kind === "edges")) {
+          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...thinOf(d) }) };
+        }
+        return { error: "Loft sections must be all faces or all edge wires — clear and re-capture." };
+      }
+      if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft, or capture sections one at a time." };
+      if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from loft profiles." };
+      return { op: withExprs({ op: "loft", profiles: selFaces, ...thinOf(d) }) };
+    }
 
     // ── assembly ──
     case "mate":
@@ -1449,14 +1708,28 @@ function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op
       if (d.thickness === 0) return { error: "Thickness must be non-zero." };
       return { op: withExprs({ op: "shell", thickness: d.thickness, openingFaces: selFaces }) };
     }
-    case "splitByPlane":
+    case "draft": {
+      if (selFaces.length === 0) return { error: "Select the face(s) to draft (Surf mode)." };
+      if (!d.angleDeg || d.angleDeg <= 0 || d.angleDeg >= 90) return { error: "Draft angle must be between 0° and 90°." };
+      const draft: any = { op: "draft", faces: selFaces, angleDeg: d.angleDeg };
+      if (d.planeId) { draft.planeId = d.planeId; draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
+      else if (d.planePoint && d.planeNormal) { draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
+      return { op: withExprs(draft) };
+    }
+    case "splitByPlane": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to split." };
-      if (!d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
-      return { op: withExprs({ op: "splitByPlane", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal, keep: d.keep }) };
-    case "section":
+      if (!d.planeId && !d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
+      const op: any = { op: "splitByPlane", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal, keep: d.keep };
+      if (d.planeId) op.planeId = d.planeId;
+      return { op: withExprs(op) };
+    }
+    case "section": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to section." };
-      if (!d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
-      return { op: withExprs({ op: "section", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal }) };
+      if (!d.planeId && !d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };
+      const op: any = { op: "section", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal };
+      if (d.planeId) op.planeId = d.planeId;
+      return { op: withExprs(op) };
+    }
 
     // ── holes ──
     case "addHole":
@@ -1576,9 +1849,11 @@ function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op
     // ── build from selection ──
     case "buildSurface":
       if (selEdges.length < 3) return { error: "Select 3+ lines (Line mode) forming a closed loop." };
+      if (selEdges.some((e) => guideEntityIds.has(e))) return { error: "Guide (construction) edges are excluded from surface resolution." };
       return { op: { op: "addSurfaceFromLines", edges: selEdges } };
     case "buildVolume":
       if (selFaces.length < 4) return { error: "Select 4+ surfaces (Surf mode) forming a closed shell." };
+      if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from volume resolution." };
       return { op: { op: "addVolumeFromSurfaces", faces: selFaces } };
 
     default:
@@ -1695,6 +1970,7 @@ function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   const outcomes: OpOutcome[] = [];
   const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
+  lastOpBuckets = null; // produced-face classification is B-rep only (no host replay for meshes)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model, opts);
   cancelOpPreview(); // setModel() already cleared the overlay; this also kills any pending/in-flight preview request
@@ -3417,7 +3693,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         hideInspectorCard(); // ditto — its facts describe the just-replaced shape
         hideHoverTip();
         lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
+        lastOpBuckets = msg.opBuckets ?? null; // fresh produced-face classification for the Edits history chips
+        guideEntityIds.clear();
+        for (const id of msg.guideIds ?? []) guideEntityIds.add(id); // construction geometry: dimmed, refused as feature operands
+        viewer.setGuideIds(msg.guideIds ?? []);
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
+        viewer.setFitSeedPickHandler(null);
+        lastRegionFit = null;
+        regionFitRequestId = null;
         clearMarkupOverlay?.();
         refreshColors();
         renderAnnotationsList(); // detached status may have changed for the new model
@@ -3456,6 +3739,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // Silent hydration, same contract as "parts"/"annotations".
       planesModel.load(msg.planes);
       renderPlanesList();
+      if (editsModel.list().some((o) => (o as unknown as Record<string, unknown>).planeId)) {
+        renderEditsUi();
+        if (pristineMesh) rebuildMeshModel();
+      }
       break;
 
     case "annotations":
@@ -3479,6 +3766,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "loadUrl":
       setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
+      viewer.setFitSeedPickHandler(null);
+      lastRegionFit = null;
+      regionFitRequestId = null;
       await loadMeshObjectFromUrl(msg.url, msg.format, msg.format.toUpperCase());
       break;
 
@@ -3488,6 +3778,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // check_mesh_health's MCP tool would reject that source's real path
       // the same way, so the panel stays ineligible here too.
       setMeshHealthEligibility(null);
+      viewer.setFitSeedPickHandler(null);
+      lastRegionFit = null;
+      regionFitRequestId = null;
       // Host-converted bytes (meshio++-imported document — VTK/MED/CGNS/
       // Exodus/XDMF/MDPA — funneled into an STL boundary surface via
       // `convertToStlBoundary`/`convertToStlBoundaryWithRegions`; see
@@ -3742,6 +4035,17 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "meshHealError":
       if (msg.requestId !== meshHealRequestId) break;
       meshHealthPanel.renderMessage(msg.message, true);
+      break;
+
+    case "fitRegionResult":
+      if (msg.requestId !== regionFitRequestId) break;
+      lastRegionFit = msg.fit;
+      regionFitPanel.render(msg.fit);
+      break;
+
+    case "fitRegionError":
+      if (msg.requestId !== regionFitRequestId) break;
+      regionFitPanel.renderMessage(msg.message, true);
       break;
 
     case "opPreviewResult":

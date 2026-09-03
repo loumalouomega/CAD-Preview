@@ -190,13 +190,31 @@ const SMOOTH_DIHEDRAL_THRESHOLD_DEG = 1.0;
  * dihedral angle for those cases, and both are genuinely real features a
  * user would want to see regardless.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function classifyEdgeSmoothness(
+export interface EdgeFaceAdjacency {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  faces: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  edgeFaces: Map<number, Array<{ edge: any; faceIdxs: number[] }>>;
+}
+
+/**
+ * Face-driven edge→face adjacency for the whole `shape`.
+ *
+ * This is the walk `classifyEdgeSmoothness` already needed for its dihedral
+ * test, extracted so `chamfer`'s distance-angle / two-distance variants
+ * (which need a reference face known to be adjacent to each edge) can reuse
+ * the same verified adjacency rather than reimplementing the HashCode+IsSame
+ * walk a second time. The walk is independent of `enumerateEdges`'s own
+ * shape-level edge explorer — results are correlated by `IsSame` identity,
+ * never by iteration order.
+ */
+export function buildEdgeFaceAdjacency(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   oc: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   shape: any,
-  edges: EnumeratedEdge[],
   cleanup: Array<{ delete(): void }>
-): boolean[] {
+): EdgeFaceAdjacency {
   const faceExp = new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
   cleanup.push(faceExp);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -240,7 +258,17 @@ export function classifyEdgeSmoothness(
       entry.faceIdxs.push(fi);
     }
   }
+  return { faces, edgeFaces };
+}
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function classifyEdgeSmoothness(
+  oc: any,
+  shape: any,
+  edges: EnumeratedEdge[],
+  cleanup: Array<{ delete(): void }>
+): boolean[] {
+  const { faces, edgeFaces } = buildEdgeFaceAdjacency(oc, shape, cleanup);
   return edges.map(({ edge }) => {
     const bucket = edgeFaces.get(edge.HashCode(HASH_UPPER));
     const entry = bucket?.find((b) => b.edge.IsSame(edge));

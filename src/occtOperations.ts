@@ -1,12 +1,125 @@
 import type { EditOp, Vec3, OpOutcome, OutcomeFail } from "./editOps";
+import { TOPOLOGY_CHANGING_OPS } from "./editOps";
+import type { OpBucket } from "./opBuckets";
+import { PRODUCED_ROLE } from "./opBuckets";
 // TYPE-ONLY, and that is load-bearing: `entityFacts.ts` imports this module
 // at runtime, so a value import here would close a genuine require() cycle in
 // the CJS bundle.
 import type { SurfaceType, SurfaceParams } from "./entityFacts";
-import { enumerateEdges } from "./edgeEnumeration";
+import { enumerateEdges, buildEdgeFaceAdjacency } from "./edgeEnumeration";
+import { volumePropertiesAdaptive } from "./brepGProp";
 
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
 const HASH_UPPER = 1 << 30;
+
+export interface GuideCollector { faces: any[]; edges: any[]; vertices: any[]; }
+
+function isGuideHandle(handle: any, collector: GuideCollector | undefined): boolean {
+  if (!collector) return false;
+  for (const f of collector.faces) if (f.IsSame(handle)) return true;
+  for (const e of collector.edges) if (e.IsSame(handle)) return true;
+  for (const v of collector.vertices) if (v.IsSame(handle)) return true;
+  return false;
+}
+
+function resolveMidplane(oc: any, shape: any, ids: [string, string], cleanup: Array<{ delete(): void }>, fail: OutcomeFail): { point: Vec3; normal: Vec3 } | null {
+  const faces = collectFaces(oc, shape, cleanup);
+  const a = faces[faceIndex(ids[0])];
+  const b = faces[faceIndex(ids[1])];
+  if (!a || !b) { fail(`midplane face ${!a ? ids[0] : ids[1]} does not resolve`); return null; }
+  const pa = facePlane(oc, a, cleanup);
+  const pb = facePlane(oc, b, cleanup);
+  if (!pa || !pb) { fail(`midplane requires two planar faces — ${!pa ? ids[0] : ids[1]} is not planar`); return null; }
+  const dot = pa.nl[0]*pb.nl[0]+pa.nl[1]*pb.nl[1]+pa.nl[2]*pb.nl[2];
+  if (Math.abs(Math.abs(dot) - 1) > 1e-6) { fail(`midplane requires parallel planes — ${ids[0]} and ${ids[1]} are not parallel`); return null; }
+  const nb: Vec3 = dot < 0 ? [-pb.nl[0], -pb.nl[1], -pb.nl[2]] : pb.nl;
+  const n: Vec3 = pa.nl;
+  const da = pa.pt[0]*n[0]+pa.pt[1]*n[1]+pa.pt[2]*n[2];
+  const db = pb.pt[0]*n[0]+pb.pt[1]*n[1]+pb.pt[2]*n[2];
+  const midD = (da + db) / 2;
+  const point: Vec3 = [pa.pt[0] + n[0]*(midD - da), pa.pt[1] + n[1]*(midD - da), pa.pt[2] + n[2]*(midD - da)];
+  return { point, normal: n };
+}
+
+function edgeDirection(oc: any, edge: any, cleanup: Array<{ delete(): void }>): Vec3 | null {
+  try {
+    const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_VERTEX);
+    cleanup.push(vExp);
+    const pts: any[] = [];
+    for (; vExp.More(); vExp.Next()) pts.push(oc.TopoDS.Vertex_1(vExp.Current()));
+    if (pts.length < 2) return null;
+    const p1 = oc.BRep_Tool.Pnt(pts[0]);
+    const p2 = oc.BRep_Tool.Pnt(pts[pts.length - 1]);
+    const d: Vec3 = [p2.X()-p1.X(), p2.Y()-p1.Y(), p2.Z()-p1.Z()];
+    const len = Math.hypot(d[0],d[1],d[2]);
+    return len < 1e-9 ? null : [d[0]/len, d[1]/len, d[2]/len];
+  } catch { return null; }
+}
+
+function edgeMidpoint(oc: any, edge: any, cleanup: Array<{ delete(): void }>): Vec3 | null {
+  try {
+    const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_VERTEX);
+    cleanup.push(vExp);
+    const pts: any[] = [];
+    for (; vExp.More(); vExp.Next()) pts.push(oc.TopoDS.Vertex_1(vExp.Current()));
+    if (pts.length < 2) return null;
+    const p1 = oc.BRep_Tool.Pnt(pts[0]);
+    const p2 = oc.BRep_Tool.Pnt(pts[pts.length - 1]);
+    return [(p1.X()+p2.X())/2,(p1.Y()+p2.Y())/2,(p1.Z()+p2.Z())/2];
+  } catch { return null; }
+}
+
+function resolveMidaxis(oc: any, shape: any, ids: [string, string], cleanup: Array<{ delete(): void }>, fail: OutcomeFail): { point: Vec3; dir: Vec3 } | null {
+  function faceAxis(id: string): { loc: Vec3; dir: Vec3 } | null {
+    const faces = collectFaces(oc, shape, cleanup);
+    const f = faces[faceIndex(id)];
+    if (!f) return null;
+    const info = faceSurfaceInfo(oc, f, cleanup);
+    if (info.params?.kind !== "cylinder") return null;
+    return { loc: (info.params as any).axisLocation, dir: (info.params as any).axisDirection };
+  }
+  function edgeAxis(id: string): { loc: Vec3; dir: Vec3 } | null {
+    const edges = collectEdges(oc, shape, cleanup);
+    const idx = edgeIndex(id);
+    const e = edges[idx];
+    if (!e) return null;
+    const d = edgeDirection(oc, e, cleanup);
+    const m = edgeMidpoint(oc, e, cleanup);
+    return d && m ? { loc: m, dir: d } : null;
+  }
+  const isFaceA = ids[0].startsWith("face-");
+  const isFaceB = ids[1].startsWith("face-");
+  if (isFaceA !== isFaceB) { fail(`midaxis requires two faces or two edges — got ${ids[0]} and ${ids[1]}`); return null; }
+  let a: { loc: Vec3; dir: Vec3 } | null;
+  let b: { loc: Vec3; dir: Vec3 } | null;
+  if (isFaceA) { a = faceAxis(ids[0]); b = faceAxis(ids[1]); if (!a) { fail(`midaxis: ${ids[0]} is not a cylindrical face`); return null; } if (!b) { fail(`midaxis: ${ids[1]} is not a cylindrical face`); return null; } }
+  else { a = edgeAxis(ids[0]); b = edgeAxis(ids[1]); if (!a) { fail(`midaxis: ${ids[0]} does not resolve to a straight edge`); return null; } if (!b) { fail(`midaxis: ${ids[1]} does not resolve to a straight edge`); return null; } }
+  const dot = a.dir[0]*b.dir[0]+a.dir[1]*b.dir[1]+a.dir[2]*b.dir[2];
+  if (Math.abs(Math.abs(dot) - 1) > 1e-6) { fail(`midaxis requires parallel axes — ${ids[0]} and ${ids[1]} are not parallel`); return null; }
+  const nbDir: Vec3 = dot < 0 ? [-b.dir[0],-b.dir[1],-b.dir[2]] : b.dir;
+  const midLoc: Vec3 = [(a.loc[0]+b.loc[0])/2,(a.loc[1]+b.loc[1])/2,(a.loc[2]+b.loc[2])/2];
+  const dir: Vec3 = [a.dir[0]+nbDir[0], a.dir[1]+nbDir[1], a.dir[2]+nbDir[2]];
+  const len = Math.hypot(dir[0],dir[1],dir[2]);
+  if (len < 1e-12) { fail(`midaxis axes are antiparallel and cancel`); return null; }
+  return { point: midLoc, dir: [dir[0]/len, dir[1]/len, dir[2]/len] };
+}
+
+export function collectGuideIds(oc: any, shape: any, collector: GuideCollector, cleanup: Array<{ delete(): void }>): string[] {
+  const ids: string[] = [];
+  if (collector.faces.length > 0) {
+    const faces = collectFaces(oc, shape, cleanup);
+    for (let i = 0; i < faces.length; i++) for (const gf of collector.faces) if (gf.IsSame(faces[i])) { ids.push(`face-${i}`); break; }
+  }
+  if (collector.edges.length > 0) {
+    const edges = collectEdges(oc, shape, cleanup);
+    for (let i = 0; i < edges.length; i++) for (const ge of collector.edges) if (ge.IsSame(edges[i])) { ids.push(`edge-${i}`); break; }
+  }
+  if (collector.vertices.length > 0) {
+    const vertices = collectVertices(oc, shape, cleanup);
+    for (let i = 0; i < vertices.length; i++) for (const gv of collector.vertices) if (gv.IsSame(vertices[i])) { ids.push(`point-${i}`); break; }
+  }
+  return ids;
+}
 
 /**
  * Host-side (OCCT) edit engine. Folds the replayable op-list over a freshly-read
@@ -29,7 +142,7 @@ const HASH_UPPER = 1 << 30;
  * applied via `BRepBuilderAPI_Transform_2(shape, trsf, true).Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[]): any {
+export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[], guideCollector?: GuideCollector, opBuckets?: OpBucket[]): any {
   let shape = baseShape;
   for (let index = 0; index < ops.length; index++) {
     const op = ops[index];
@@ -44,7 +157,7 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
       if (hint) outcome.hint = hint;
     };
     try {
-      shape = applyOneOp(oc, shape, op, cleanup, fail);
+      shape = applyOneOp(oc, shape, op, cleanup, fail, guideCollector);
     } catch (err) {
       // A helper's own builder throws are caught internally; reaching here is
       // an unexpected fault. Record it, then re-throw to preserve the existing
@@ -59,9 +172,157 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
     if (outcome.applied && shape === before) {
       fail("returned the model unchanged");
     }
+    if (opBuckets !== undefined && outcome.applied && shape !== before && TOPOLOGY_CHANGING_OPS.has(op.op)) {
+      const bucket = collectBucketForOp(oc, before, shape, index, op);
+      if (bucket) opBuckets.push(bucket);
+    }
     outcomes?.push(outcome);
   }
   return shape;
+}
+
+/** How many wires bound `face` — 1 for a plain face, 2+ once it has holes. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wireCountOf(oc: any, face: any, cleanup: Array<{ delete(): void }>): number {
+  let n = 0;
+  const exp = new oc.TopExp_Explorer_2(face, oc.TopAbs_ShapeEnum.TopAbs_WIRE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  cleanup.push(exp);
+  for (; exp.More(); exp.Next()) n++;
+  return n;
+}
+
+/**
+ * Classifies one just-applied topology-changing op's produced faces into an
+ * {@link OpBucket} — the OCCT half of `opBuckets.ts`. Mechanism: a
+ * before/after face-set diff (`HashCode` bucket + `IsSame`, the established
+ * dedup technique) finds the NEW faces; per-kind knowledge names them.
+ *
+ * The `TOPOLOGY_CHANGING_OPS` gate in {@link applyEditsBRep} is load-bearing
+ * for correctness, not just cost: rigid transforms (`translate`/`rotate`/…)
+ * run `BRepBuilderAPI_Transform_2(..., copy=true)`, which creates genuinely
+ * new TShapes — a diff across one would report EVERY face as "produced".
+ *
+ * Role semantics, per kind (all verified against the live WASM):
+ * - `extrude` and `revolve` get a `startCap` role: `BRepPrimAPI_MakePrism_1`/
+ *   `MakeRevol_1`'s `Copy=false` reuses the profile face object as the start
+ *   cap (probe-confirmed `IsSame` hit for both), so the profile face's id in
+ *   the AFTER enumeration is recorded. With `Copy=false` that face is the
+ *   SAME TShape as the operand it came from, so it can appear at two
+ *   enumeration positions (its original body's and the new solid's) — the
+ *   first match wins; both ids resolve to the same live face.
+ * - `extrude` additionally splits its produced set geometrically: `endCap`
+ *   is the produced face farthest along the extrusion direction (probe: the
+ *   cap centre sits at the profile plane + length), everything else `side`.
+ * - Every other kind names its whole produced set from `PRODUCED_ROLE`
+ *   (`band`/`inner`/`wall`/`cutFace`/`sectionFace`/`copies`/`body`), or the
+ *   generic `produced` when the table has no entry. **`band` (fillet/chamfer/
+ *   draft) and the boolean/rebuild roles include REBUILT faces, not just
+ *   genuinely-new ones** — probe-verified: filleting one box edge reports 5
+ *   faces (1 new cylinder + 4 rebuilt adjacent planes), because rebuilding a
+ *   shrunken face creates a new TShape the diff correctly catches. Those
+ *   rebuilt faces drift positionally exactly like new ones, so recording them
+ *   is the point; the role name is the op's dominant effect, not a claim
+ *   that every listed face is brand-new.
+ * - An op whose diff finds no new faces (e.g. `addPoint` — a vertex, no
+ *   faces) produces no bucket at all. Face-only: wireframe ops
+ *   (`addLine`/`addArc`/…) record nothing in Phase 1.
+ *
+ * Recorded ids are the AFTER enumeration's `face-N` positions — i.e. valid
+ * against the model state at this op's own step, not necessarily against the
+ * final shape (later ops renumber). That is the documented Phase 1 contract;
+ * re-resolution against a newer shape is prefix-replay work (Phase 2).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collectBucketForOp(oc: any, before: any, after: any, index: number, op: EditOp): OpBucket | null {
+  const tmp: Array<{ delete(): void }> = [];
+  try {
+    const beforeFaces = collectFaces(oc, before, tmp);
+    const afterFaces = collectFaces(oc, after, tmp);
+    const beforeBuckets = new Map<number, any[]>();
+    for (const f of beforeFaces) {
+      const h = f.HashCode(HASH_UPPER);
+      let b = beforeBuckets.get(h);
+      if (!b) { b = []; beforeBuckets.set(h, b); }
+      b.push(f);
+    }
+    // Produced = after faces with no `IsSame` partner in before. `startCap`
+    // is the inverse: a before face (the extrude's profile) still present in
+    // after — only ever consulted for extrude below.
+    const producedIdx: number[] = [];
+    for (let i = 0; i < afterFaces.length; i++) {
+      const f = afterFaces[i];
+      const h = f.HashCode(HASH_UPPER);
+      const bucket = beforeBuckets.get(h);
+      let found = false;
+      if (bucket) for (const bf of bucket) if (bf.IsSame(f)) { found = true; break; }
+      if (!found) producedIdx.push(i);
+    }
+    const kind = op.op;
+    const roles: Record<string, string[]> = {};
+    const isThin = thinSpecOf(op) !== null;
+    if (kind === "extrude" || kind === "revolve") {
+      // A PLAIN extrude/revolve reuses the profile face itself as the start cap
+      // (`Copy=false`), so finding it in `after` identifies that cap. A THIN one
+      // consumes a freshly built band face instead and leaves the profile
+      // sketch behind as a free face — so this match would label the leftover
+      // sketch `startCap` even though it is not part of the new solid at all.
+      // `profile` is optional since the wire-operand form shipped; an
+      // edge-set profile has no face to match, so this branch is skipped.
+      const profileId = (op as { profile?: string }).profile;
+      const profileFace = isThin || profileId === undefined ? null : collectFaces(oc, before, tmp)[faceIndex(profileId)];
+      if (profileFace) {
+        for (let i = 0; i < afterFaces.length; i++) {
+          if (afterFaces[i].IsSame(profileFace)) { roles.startCap = [`face-${i}`]; break; }
+        }
+      }
+      if (kind === "extrude") {
+        const [dx, dy, dz] = (op as { dir: Vec3 }).dir;
+        const len = Math.hypot(dx, dy, dz) || 1;
+        let bestIdx = -1;
+        let bestDot = -Infinity;
+        let firstIdx = -1;
+        let firstDot = Infinity;
+        const remaining: number[] = [];
+        for (const i of producedIdx) {
+          const c = bboxCenter(oc, afterFaces[i], tmp);
+          const dot = (c[0] * dx + c[1] * dy + c[2] * dz) / len;
+          if (dot > bestDot) { bestDot = dot; bestIdx = i; }
+          // Only ANNULAR faces can be a thin extrude's caps, and requiring that
+          // is load-bearing rather than tidy: a thin extrude does not consume
+          // its profile sketch (see below), so the leftover sketch sits exactly
+          // on top of the start cap with an identical bbox. A min-dot rule
+          // alone ties between them and picked the sketch — verified. The caps
+          // are the only produced faces with an inner wire.
+          if (isThin && dot < firstDot && wireCountOf(oc, afterFaces[i], tmp) > 1) { firstDot = dot; firstIdx = i; }
+        }
+        // A THIN extrude's start cap is a band face built fresh for this op, so
+        // it does not exist in `before` and the `IsSame(profileFace)` match
+        // above cannot find it. Recover it as the annular produced face
+        // furthest BACK along `dir` — the mirror of the `endCap` max-dot rule —
+        // otherwise the start annulus is silently misfiled under `side`.
+        let thinStartIdx = -1;
+        if (!roles.startCap && isThin && firstIdx >= 0 && firstIdx !== bestIdx) {
+          roles.startCap = [`face-${firstIdx}`];
+          thinStartIdx = firstIdx;
+        }
+        for (const i of producedIdx) if (i !== bestIdx && i !== thinStartIdx) remaining.push(i);
+        if (bestIdx >= 0) roles.endCap = [`face-${bestIdx}`];
+        if (remaining.length > 0) roles.side = remaining.map((i) => `face-${i}`);
+      } else if (producedIdx.length > 0) {
+        roles.produced = producedIdx.map((i) => `face-${i}`);
+      }
+    } else {
+      const role = PRODUCED_ROLE[kind] ?? "produced";
+      if (producedIdx.length > 0) roles[role] = producedIdx.map((i) => `face-${i}`);
+    }
+    if (Object.keys(roles).length === 0) return null;
+    return { op: index, kind, roles };
+  } finally {
+    // Enumerated handles are `TopoDS.Face_1` wrappers around live sub-shapes
+    // — deleting the wrappers (never the shapes themselves) right after
+    // correlation is the established `guideTmp` pattern (see occtService.ts).
+    for (let i = tmp.length - 1; i >= 0; i--) { try { tmp[i].delete(); } catch { /* ignore */ } }
+  }
 }
 
 /** A function that returns a transformed copy of the shape/solid it is given. */
@@ -75,14 +336,14 @@ type Transformer = (s: any) => any;
  * `fail` with a reason (see {@link OpOutcome}) before returning.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail): any {
+function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail, guideCollector?: GuideCollector): any {
   switch (op.op) {
     case "translate":
     case "rotate":
     case "scale":
     case "mirror": {
-      const transform = makeTransformer(oc, op, cleanup);
-      return transform ? transformSolids(oc, shape, op.targets, transform, cleanup, fail) : shape;
+      const transform = makeTransformer(oc, op as any, cleanup, shape, fail);
+      return transform ? transformSolids(oc, shape, (op as any).targets, transform, cleanup, fail) : shape;
     }
     case "boolean":
       return booleanSolids(oc, shape, op, cleanup, fail);
@@ -93,17 +354,19 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "revolve":
     case "sweep":
     case "loft":
-      return featureModel(oc, shape, op, cleanup, fail);
+      return featureModel(oc, shape, op, cleanup, fail, guideCollector);
     case "explode":
       return explodeSolids(oc, shape, op.factor, cleanup, fail);
     case "mate":
       return mateShape(oc, shape, op, cleanup, fail);
     case "shell":
       return shellSolids(oc, shape, op, cleanup, fail);
+    case "draft":
+      return draftFaces(oc, shape, op, cleanup, fail);
     case "splitByPlane":
-      return splitSolidsByPlane(oc, shape, op, cleanup, fail);
+      return splitSolidsByPlane(oc, shape, op as any, cleanup, fail);
     case "section":
-      return sectionSolids(oc, shape, op, cleanup, fail);
+      return sectionSolids(oc, shape, op as any, cleanup, fail);
     case "addBox":
     case "addSphere":
     case "addCylinder":
@@ -123,7 +386,9 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addRoundedRectangleProfile":
     case "addSlotProfile":
     case "addTrapezoidProfile":
-      return addProfile(oc, shape, op, cleanup, fail);
+      return addProfile(oc, shape, op, cleanup, fail, guideCollector);
+    case "addEdgeSlot":
+      return addEdgeSlot(oc, shape, op, cleanup, fail);
     case "addPoint":
     case "addLine":
     case "addArc":
@@ -133,17 +398,17 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addBezier":
     case "addEllipseArc":
     case "addHelix":
-      return addWireframePrimitive(oc, shape, op, cleanup, fail);
+      return addWireframePrimitive(oc, shape, op, cleanup, fail, guideCollector);
     case "addSurfaceFromLines":
-      return addSurfaceFromLines(oc, shape, op, cleanup, fail);
+      return addSurfaceFromLines(oc, shape, op, cleanup, fail, guideCollector);
     case "addVolumeFromSurfaces":
-      return addVolumeFromSurfaces(oc, shape, op, cleanup, fail);
+      return addVolumeFromSurfaces(oc, shape, op, cleanup, fail, guideCollector);
     case "align":
       return alignSolids(oc, shape, op, cleanup, fail);
     case "patternLinear":
       return patternLinear(oc, shape, op, cleanup, fail);
     case "patternCircular":
-      return patternCircular(oc, shape, op, cleanup, fail);
+      return patternCircular(oc, shape, op as any, cleanup, fail);
     default:
       // Exhaustive over the current union — reachable only against a sidecar
       // authored on a NEWER build (the tolerant-replay case this guards).
@@ -154,24 +419,34 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
 
 /** Builds the geometric transformer for a transform op, or null if unsupported. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function makeTransformer(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>): Transformer | null {
+function makeTransformer(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>, shape?: any, fail?: OutcomeFail): Transformer | null {
   const push = <T extends { delete(): void }>(o: T): T => (cleanup.push(o), o);
 
   switch (op.op) {
     case "translate": {
       const t = push(new oc.gp_Trsf_1());
-      t.SetTranslation_1(push(vec(oc, op.vec)));
+      t.SetTranslation_1(push(vec(oc, (op as any).vec)));
       return rigid(oc, t, cleanup);
     }
     case "rotate": {
       const t = push(new oc.gp_Trsf_1());
-      const ax = push(new oc.gp_Ax1_2(push(pnt(oc, op.axisPoint)), push(dir(oc, op.axisDir))));
-      t.SetRotation_1(ax, (op.angleDeg * Math.PI) / 180);
+      const ax = push(new oc.gp_Ax1_2(push(pnt(oc, (op as any).axisPoint)), push(dir(oc, (op as any).axisDir))));
+      t.SetRotation_1(ax, ((op as any).angleDeg * Math.PI) / 180);
       return rigid(oc, t, cleanup);
     }
     case "mirror": {
+      let pt: Vec3 | null = null;
+      let nl: Vec3 | null = null;
+      const mop = op as any;
+      if (mop.midplaneFaces) {
+        if (!shape || !fail) return null;
+        const mid = resolveMidplane(oc, shape, mop.midplaneFaces, cleanup, fail);
+        if (!mid) return null;
+        pt = mid.point; nl = mid.normal;
+      } else { pt = mop.planePoint; nl = mop.planeNormal; }
+      if (!pt || !nl) return null;
       const t = push(new oc.gp_Trsf_1());
-      const ax2 = push(new oc.gp_Ax2_3(push(pnt(oc, op.planePoint)), push(dir(oc, op.planeNormal))));
+      const ax2 = push(new oc.gp_Ax2_3(push(pnt(oc, pt)), push(dir(oc, nl))));
       t.SetMirror_3(ax2);
       return rigid(oc, t, cleanup);
     }
@@ -428,12 +703,20 @@ export function patternLinear(oc: any, shape: any, op: Extract<EditOp, { op: "pa
  * `op.axisPoint` along `op.axisDir`. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "patternCircular" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  let axisPoint: Vec3 = (op as any).axisPoint;
+  let axisDir: Vec3 = (op as any).axisDir;
+  if ((op as any).midaxisOf) {
+    const mid = resolveMidaxis(oc, shape, (op as any).midaxisOf, cleanup, fail!);
+    if (!mid) return shape;
+    axisPoint = mid.point; axisDir = mid.dir;
+  }
+  if (!axisPoint || !axisDir) { fail?.(`patternCircular axis not specified`); return shape; }
   const angleRad = (op.angleDeg * Math.PI) / 180;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const copyAt = (s: any, k: number): any => {
     const t = new oc.gp_Trsf_1();
     cleanup.push(t);
-    const ax = new oc.gp_Ax1_2(pnt(oc, op.axisPoint), dir(oc, op.axisDir));
+    const ax = new oc.gp_Ax1_2(pnt(oc, axisPoint), dir(oc, axisDir));
     cleanup.push(ax);
     t.SetRotation_1(ax, angleRad * k);
     return rigid(oc, t, cleanup)(s);
@@ -625,22 +908,54 @@ function filletEdges(oc: any, shape: any, op: Extract<EditOp, { op: "fillet" | "
     ? new oc.BRepFilletAPI_MakeFillet(shape, oc.ChFi3d_FilletShape.ChFi3d_Rational)
     : new oc.BRepFilletAPI_MakeChamfer(shape);
   cleanup.push(maker);
-  const amount = isFillet ? op.radius : op.distance;
-  for (const e of picked) maker.Add_2(amount, e);
+  if (!isFillet && isChamferWithFace(op)) {
+    const faces = collectFaces(oc, shape, cleanup);
+    const faceIdx = faceIndex(op.face!);
+    const refFace = faces[faceIdx];
+    if (!refFace) {
+      fail?.(`chamfer face ${op.face} does not resolve`, "re-check face-N ids");
+      return shape;
+    }
+    const { edgeFaces, faces: adjFaces } = buildEdgeFaceAdjacency(oc, shape, cleanup);
+    const refPos = adjFaces.findIndex((f) => f.IsSame(refFace));
+    if (refPos === -1) {
+      fail?.(`chamfer face ${op.face} is not adjacent to the model`, "pick a face that shares the chamfered edges");
+      return shape;
+    }
+    for (const e of picked) {
+      const bucket = edgeFaces.get(e.HashCode(1 << 30));
+      const entry = bucket?.find((b) => b.edge.IsSame(e));
+      if (!entry || !entry.faceIdxs.includes(refPos)) {
+        fail?.(`edge is not on face ${op.face}`, "pick edges of that face");
+        return shape;
+      }
+    }
+    if (op.distance2 !== undefined) {
+      for (const e of picked) maker.Add_3(op.distance, op.distance2!, e, refFace);
+    } else {
+      const angleRad = ((op.angleDeg as number) * Math.PI) / 180;
+      for (const e of picked) maker.AddDA(op.distance, angleRad, e, refFace);
+    }
+  } else {
+    const amount = isFillet ? op.radius : op.distance;
+    for (const e of picked) maker.Add_2(amount, e);
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let result: any;
   try {
     result = maker.Shape();
   } catch {
+    const d = isFillet ? (op as Extract<EditOp, { op: "fillet" }>).radius : op.distance;
     fail?.(
-      `the ${op.op} build threw — the ${isFillet ? "radius" : "distance"} ${amount} is likely too large for the geometry`,
+      `the ${op.op} build threw — the ${isFillet ? "radius" : "distance"} ${d} is likely too large for the geometry`,
       `try a smaller value, or fewer edges at once`
     );
     return shape;
   }
   if (!maker.IsDone()) {
-    fail?.(`the ${op.op} did not complete (IsDone() false)`, `the ${isFillet ? "radius" : "distance"} may be too large for the selected edges`);
+    const d = isFillet ? (op as Extract<EditOp, { op: "fillet" }>).radius : op.distance;
+    fail?.(`the ${op.op} did not complete (IsDone() false)`, `the ${isFillet ? "radius" : "distance"} ${d} may be too large for the selected edges`);
     return shape;
   }
   cleanup.push(result);
@@ -659,6 +974,10 @@ function faceIndex(id: string): number {
   return m ? Number(m[1]) : -1;
 }
 
+function isChamferWithFace(op: Extract<EditOp, { op: "chamfer" }>): boolean {
+  return op.distance2 !== undefined || op.angleDeg !== undefined;
+}
+
 /**
  * Feature modeling: builds a new solid from a selected profile face/wire and
  * **appends** it to the model as an additional body (a compound of the existing
@@ -674,10 +993,46 @@ function faceIndex(id: string): number {
  *             BRepTools.OuterWire(face))` per profile + `.Build()` + `.Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
-  const solid = buildFeatureSolid(oc, shape, op, cleanup);
+function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  if (guideCollector) {
+    // Both operand forms are checked: a guide face can't be a profile, and
+    // neither can a guide edge — an `addPolyline { guide: true }` is exactly
+    // the kind of construction spine someone would otherwise try to extrude.
+    // The sweep PATH edge is checked too; it used to be the one operand of
+    // this family that a guide could still slip through.
+    const single = op.op === "extrude" || op.op === "revolve" || op.op === "sweep" ? (op as any).profile : undefined;
+    const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single] : [];
+    const edgeIds: string[] = op.op === "loft"
+      ? ((op as any).profileEdgeSets ?? []).flat()
+      : [...((op as any).profileEdges ?? []), ...(op.op === "sweep" ? [(op as any).path] : [])];
+    if (faceIds.length > 0) {
+      const faces = collectFaces(oc, shape, cleanup);
+      for (const fid of faceIds) {
+        const f = faces[faceIndex(fid)];
+        if (f && isGuideHandle(f, guideCollector)) { fail?.(`profile ${fid} is construction (guide) geometry — guide entities are excluded from feature resolution`); return shape; }
+      }
+    }
+    if (edgeIds.length > 0) {
+      const edges = collectEdges(oc, shape, cleanup);
+      for (const eid of edgeIds) {
+        const e = edges[edgeIndex(eid)];
+        if (e && isGuideHandle(e, guideCollector)) { fail?.(`edge ${eid} is construction (guide) geometry — guide entities are excluded from feature resolution`); return shape; }
+      }
+    }
+  }
+  const solid = buildFeatureSolid(oc, shape, op, cleanup, fail);
   if (!solid) {
-    fail?.(`${op.op} could not build a new body`, "check that the profile face-N (and, for sweep, the path edge-N) resolve to real entities");
+    if (thinSpecOf(op)) {
+      // A thin build has its own distinct failure modes, and an over-large
+      // offset is BY FAR the likeliest: OCCT reports no error for it, it just
+      // hands back an empty compound instead of an offset wire.
+      fail?.(
+        `${op.op} could not build a thin-walled body from ${describeThinProfile(op)}`,
+        "the wall is probably thicker than the profile's narrowest half-width — reduce thin; a profile that already has holes, or is non-planar, also cannot be thinned"
+      );
+    } else {
+      fail?.(`${op.op} could not build a new body`, "check that the profile (a face-N, or a connected set of edge-N ids) and, for sweep, the path edge-N resolve to real entities");
+    }
     return shape;
   }
   const comp = new oc.TopoDS_Compound();
@@ -690,50 +1045,467 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
   return comp;
 }
 
+/**
+ * The two boundary wires of a thin-walled band around a CLOSED profile wire
+ * (a face's outer wire, or one assembled from picked edges), or `null` when
+ * the offsets can't produce one. The open-wire case is
+ * {@link openBandFaceFromWire} — a genuinely different construction.
+ *
+ * `thin` is the total wall thickness and `thinOuter` how much of it sits
+ * outside the profile boundary (see {@link ThinSpec}), so the offsets applied
+ * are `+thinOuter` and `-(thin - thinOuter)`; an offset of exactly 0 reuses the
+ * profile wire itself rather than round-tripping it through the offsetter.
+ *
+ * The `isOpenResult` ctor arg is `false` here, which for a CLOSED spine means
+ * "offset outward for a positive distance". Verified live that this holds
+ * regardless of the spine's winding: a hand-assembled rectangle wire built
+ * clockwise and one built counter-clockwise both grow to 192.566 at `+2` and
+ * shrink to 36 at `-2`, so a user-picked edge set needs no orientation fix-up.
+ *
+ * OCCT API, verified against the live WASM (this is the first use of
+ * `BRepOffsetAPI_MakeOffset` anywhere in this codebase):
+ * `new BRepOffsetAPI_MakeOffset_3(wire, GeomAbs_JoinType.GeomAbs_Arc, false)`
+ * — exactly 3 ctor args, the 0-arg `_1` being the default ctor — then
+ * `.Perform(offset, 0)` and `.Shape()`.
+ *
+ * **An over-large offset does NOT report failure.** Verified: offsetting a
+ * 10x10 square inward by 5, 6 or 20 returns a non-null shape that is an EMPTY
+ * COMPOUND (`TopAbs_COMPOUND`, zero edges) rather than a wire — no throw, no
+ * `IsDone` false. So the result is checked for actually being a wire before
+ * use; without that check the caller would build a degenerate solid from
+ * nothing and report a confidently-wrong volume.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function thinProfileWires(oc: any, spine: any, thin: number, thinOuter: number, cleanup: Array<{ delete(): void }>): { outer: any; inner: any } | null {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const offsetWire = (d: number): any => {
+    if (d === 0) return spine;
+    const mk = keep(new oc.BRepOffsetAPI_MakeOffset_3(spine, oc.GeomAbs_JoinType.GeomAbs_Arc, false));
+    mk.Perform(d, 0);
+    const s = mk.Shape();
+    if (!s || s.IsNull()) return null;
+    if (s.ShapeType().value !== oc.TopAbs_ShapeEnum.TopAbs_WIRE.value) return null; // the empty-compound case above
+    return keep(oc.TopoDS.Wire_1(s));
+  };
+  const outer = offsetWire(thinOuter);
+  const inner = offsetWire(-(thin - thinOuter));
+  if (!outer || !inner) return null;
+  return { outer, inner };
+}
+
+/**
+ * True when `wire` forms a closed loop.
+ *
+ * There is no usable closedness API in this binding — recorded while building
+ * `addSurfaceFromLines`, which had to accept a best-effort face from an open
+ * chain for exactly this reason: `BRepTools.IsReallyClosed`/`DetectClosedness`
+ * need arguments the binding doesn't expose, and `ShapeAnalysis_Wire.
+ * CheckClosed` did not distinguish a closed 4-edge square from an open 3-edge
+ * chain. Here the answer is load-bearing (it picks between two completely
+ * different band constructions), so it is computed from topology instead:
+ * tally each vertex's degree across the wire's own edges, using the same
+ * `HashCode` bucket + `IsSame` dedup `enumerateEdges`/`buildEdgeFaceAdjacency`
+ * already rely on. A closed loop has every vertex shared by two edges; an open
+ * chain has exactly two free ends.
+ *
+ * Verified live: a 1-edge open wire reports 2 free ends of 2 vertices, a
+ * 2-edge open chain 2 of 3, and a 4-edge rectangle 0 of 4.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wireIsClosed(oc: any, wire: any, cleanup: Array<{ delete(): void }>): boolean {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const buckets = new Map<number, Array<{ vertex: any; degree: number }>>();
+  const edges = keep(new oc.TopExp_Explorer_2(wire, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+  for (; edges.More(); edges.Next()) {
+    const edge = keep(oc.TopoDS.Edge_1(edges.Current()));
+    const verts = keep(new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    for (; verts.More(); verts.Next()) {
+      const vertex = keep(oc.TopoDS.Vertex_1(verts.Current()));
+      const hash = vertex.HashCode(HASH_UPPER);
+      const bucket = buckets.get(hash);
+      const seen = bucket?.find((v) => v.vertex.IsSame(vertex));
+      if (seen) seen.degree++;
+      else if (bucket) bucket.push({ vertex, degree: 1 });
+      else buckets.set(hash, [{ vertex, degree: 1 }]);
+    }
+  }
+  for (const bucket of buckets.values()) for (const v of bucket) if (v.degree === 1) return false;
+  return true;
+}
+
+/**
+ * The closed band boundary around an OPEN profile wire, as a face, or `null`.
+ *
+ * Genuinely different from {@link thinProfileWires}' two-offset construction:
+ * an open spine has no interior to offset into, so the band is a single closed
+ * loop straddling it. `BRepOffsetAPI_MakeOffset` produces exactly that when
+ * asked for a NON-open result — which is the opposite of what the name
+ * suggests and is worth stating, since the alternative silently returns
+ * something usable-looking:
+ *
+ * - `isOpenResult = true` gives a ONE-SIDED offset (an open wire on whichever
+ *   side the sign of the distance selects) — **not** a band;
+ * - `isOpenResult = false` gives the closed band of half-width `|d|`,
+ *   symmetric about the spine, with semicircular end caps. The sign of `d` is
+ *   irrelevant.
+ *
+ * Verified live to be exact: a length-10 spine at `d = 1` encloses
+ * `2·d·L + π·d²` = 23.141593, and at `d = 2`, 52.566371; a quarter-circle
+ * spine of radius 10 gives 34.557519 by the same formula. So the band's total
+ * width is `2·d`, and `thin` (a TOTAL thickness) maps to `d = thin / 2`.
+ *
+ * **A wire that is a single straight edge throws** (`___cxa_can_catch is not
+ * defined` — an Emscripten exception-machinery failure surfacing as an
+ * ordinary JS error, which the module survives). A lone straight line has no
+ * offset direction defined; a lone ARC offsets fine. Splitting the line at its
+ * midpoint into two collinear edges makes it work and yields the identical
+ * exact area, so that is done rather than refusing what is otherwise a
+ * completely reasonable profile — see {@link splitLoneLine}.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function openBandWire(oc: any, spine: any, thin: number, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const usable = splitLoneLine(oc, spine, cleanup);
+    const mk = keep(new oc.BRepOffsetAPI_MakeOffset_3(usable, oc.GeomAbs_JoinType.GeomAbs_Arc, false));
+    mk.Perform(thin / 2, 0);
+    const s = mk.Shape();
+    if (!s || s.IsNull()) return null;
+    keep(s);
+    if (s.ShapeType().value !== oc.TopAbs_ShapeEnum.TopAbs_WIRE.value) return null;
+    return keep(oc.TopoDS.Wire_1(s));
+  } catch {
+    return null;
+  }
+}
+
+/** {@link openBandWire} closed off into the face a feature builder consumes. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function openBandFaceFromWire(oc: any, spine: any, thin: number, cleanup: Array<{ delete(): void }>): any {
+  const boundary = openBandWire(oc, spine, thin, cleanup);
+  return boundary ? faceFromWire(oc, boundary, cleanup) : null;
+}
+
+/** A planar face bounded by one closed wire, or null. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function faceFromWire(oc: any, wire: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const mk = keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true));
+  if (!mk.IsDone()) return null;
+  const face = keep(mk.Face());
+  return face.IsNull() ? null : face;
+}
+
+/**
+ * Returns `wire` unchanged, or — when it is a single straight edge, the one
+ * shape this build's offsetter refuses (see {@link openBandFaceFromWire}) — an
+ * equivalent two-edge wire split at the midpoint.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function splitLoneLine(oc: any, wire: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const edges: any[] = [];
+  const exp = keep(new oc.TopExp_Explorer_2(wire, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+  for (; exp.More(); exp.Next()) edges.push(keep(oc.TopoDS.Edge_1(exp.Current())));
+  if (edges.length !== 1) return wire;
+  try {
+    const curve = keep(new oc.BRepAdaptor_Curve_2(edges[0]));
+    if (curve.GetType().value !== oc.GeomAbs_CurveType.GeomAbs_Line.value) return wire;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ends: any[] = [];
+    const verts = keep(new oc.TopExp_Explorer_2(edges[0], oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    for (; verts.More(); verts.Next()) ends.push(keep(oc.BRep_Tool.Pnt(keep(oc.TopoDS.Vertex_1(verts.Current())))));
+    if (ends.length !== 2) return wire;
+    const mid = keep(new oc.gp_Pnt_3((ends[0].X() + ends[1].X()) / 2, (ends[0].Y() + ends[1].Y()) / 2, (ends[0].Z() + ends[1].Z()) / 2));
+    const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+    mkWire.Add_1(keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(ends[0], mid)).Edge()));
+    mkWire.Add_1(keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(mid, ends[1])).Edge()));
+    return mkWire.IsDone() ? keep(mkWire.Wire()) : wire;
+  } catch {
+    return wire;
+  }
+}
+
+/** The annular face between a band's two boundary wires, or null. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function bandFaceFromWires(oc: any, outer: any, inner: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const mk = keep(new oc.BRepBuilderAPI_MakeFace_15(outer, true));
+  mk.Add(keep(oc.TopoDS.Wire_1(inner.Reversed())));
+  if (!mk.IsDone()) return null;
+  const face = keep(mk.Face());
+  return face.IsNull() ? null : face;
+}
+
+/** Names the thin profile operand(s) for a diagnostic, in either form. */
+function describeThinProfile(op: EditOp): string {
+  const single = (op as { profile?: string }).profile;
+  if (single) return single;
+  const edges = (op as { profileEdges?: string[] }).profileEdges;
+  if (edges) return edges.join(", ");
+  const many = (op as { profiles?: string[] }).profiles;
+  if (many) return many.join(", ");
+  const sets = (op as { profileEdgeSets?: string[][] }).profileEdgeSets;
+  return sets ? sets.map((ids) => ids.join("+")).join(", ") : "the profile";
+}
+
+/** The `thin`/`thinOuter` pair of a sweep-family op, or null when not thin. */
+function thinSpecOf(op: EditOp): { thin: number; thinOuter: number } | null {
+  const thin = (op as { thin?: number }).thin;
+  if (thin === undefined) return null;
+  return { thin, thinOuter: (op as { thinOuter?: number }).thinOuter ?? 0 };
+}
+
+/**
+ * Signed-volume sanity gate for a thin build. Nothing downstream takes an
+ * absolute value — `massProperties.ts`, `modelDiffHost.ts`, `entityFacts.ts`
+ * and `occtService.ts` all read `props.Mass()` raw — so a reversed solid would
+ * report a NEGATIVE volume into mass properties, the BOM and model-diff. A
+ * near-zero result means the offsets collapsed the band, which is the other
+ * way a thin build fails without throwing.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function orientPositiveVolume(oc: any, solid: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const props = keep(new oc.GProp_GProps_1());
+  volumePropertiesAdaptive(oc, solid, props);
+  const v = props.Mass();
+  if (!Number.isFinite(v) || Math.abs(v) < 1e-9) return null;
+  return v < 0 ? keep(solid.Reversed()) : solid;
+}
+
+/**
+ * One resolved profile section: the wire that defines it, whether that wire
+ * closes, and — when it came from a `face-N` — the face itself, which the
+ * plain (non-thin) path consumes directly so its inner wires (holes) survive.
+ */
+interface ProfileSection {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  face: any | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  wire: any;
+  closed: boolean;
+  /** True when a face profile already has inner wires — a thin band would silently lose them. */
+  holed: boolean;
+  /** For diagnostics. */
+  label: string;
+}
+
+/**
+ * Resolves a sweep-family {@link ProfileOperand} — either a `face-N` or a set
+ * of `edge-N` ids assembled into one wire — to a {@link ProfileSection}.
+ *
+ * The edge form reuses `buildSurfaceFromLines`' verified recipe
+ * (`BRepBuilderAPI_MakeWire_1` + `.Add_1()` per edge), whose `.IsDone()` is
+ * the disconnected-set gate and which joins edges by shared vertices in
+ * whatever order they were picked. It deliberately does NOT copy that
+ * function's "at least 3 edges" rule: a closed loop needs three, but an open
+ * profile is perfectly legitimate as one edge.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function resolveProfileSection(oc: any, shape: any, faceId: string | undefined, edgeIds: string[] | undefined, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): ProfileSection | null {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  if (faceId !== undefined) {
+    const face = collectFaces(oc, shape, cleanup)[faceIndex(faceId)];
+    if (!face) { fail?.(`profile ${faceId} did not resolve to a face`, "the id may have been renumbered by an earlier topology-changing op — re-inspect the model"); return null; }
+    return { face, wire: keep(oc.BRepTools.OuterWire(face)), closed: true, holed: wireCountOf(oc, face, cleanup) !== 1, label: faceId };
+  }
+  const ids = edgeIds ?? [];
+  const label = ids.join(", ");
+  const all = collectEdges(oc, shape, cleanup);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const picked: any[] = [];
+  for (const id of ids) {
+    const edge = all[edgeIndex(id)];
+    if (!edge) { fail?.(`profile edge ${id} did not resolve`, "the id may have been renumbered by an earlier topology-changing op — re-inspect the model"); return null; }
+    picked.push(edge);
+  }
+  if (picked.length === 0) { fail?.("the profile named no edges"); return null; }
+  const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+  for (const edge of picked) mkWire.Add_1(edge);
+  if (!mkWire.IsDone()) { fail?.(`the profile edges (${label}) do not connect into a single wire`, "pick edges that meet end-to-end — a disconnected set has no profile"); return null; }
+  const wire = keep(mkWire.Wire());
+  return { face: null, wire, closed: wireIsClosed(oc, wire, cleanup), holed: false, label };
+}
+
+/**
+ * The face a feature builder should actually consume for one section — the
+ * whole feature in four quadrants:
+ *
+ * |            | plain                          | thin                              |
+ * |------------|--------------------------------|-----------------------------------|
+ * | face id    | the face itself (holes kept)   | two-offset annular band           |
+ * | closed wire| a face built from the wire     | two-offset annular band           |
+ * | open wire  | **refused** — encloses no area | symmetric band about the spine    |
+ *
+ * Null means the section could not produce a usable face; `fail` has already
+ * been given the specific reason at every branch that returns one.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function profileFaceFor(oc: any, section: ProfileSection, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const spec = thinSpecOf(op);
+  if (!spec) {
+    if (section.face) return section.face;
+    if (!section.closed) { fail?.(...openProfileNeedsThin(section)); return null; }
+    const face = faceFromWire(oc, section.wire, cleanup);
+    if (!face) fail?.(`the profile edges (${section.label}) did not bound a face`);
+    return face;
+  }
+  if (!section.closed) {
+    if (!openThinOuterOk(op, spec)) { fail?.(...openProfileThinOuter()); return null; }
+    const face = openBandFaceFromWire(oc, section.wire, spec.thin, cleanup);
+    if (!face) fail?.(`could not build a wall around the open profile (${section.label})`, "a lone straight edge is split automatically, but a self-intersecting spine, or a wall wider than the spine's own turns, has no band");
+    return face;
+  }
+  if (section.holed) { fail?.(`the profile ${section.label} already has a hole`, "a thin wall is built from the outer boundary alone, which would silently discard it"); return null; }
+  const wires = thinProfileWires(oc, section.wire, spec.thin, spec.thinOuter, cleanup);
+  if (!wires) return null; // featureModel's thin diagnostic covers the over-thick case
+  return bandFaceFromWires(oc, wires.outer, wires.inner, cleanup);
+}
+
+/** The `thinOuter` rule for an open profile — see {@link ThinSpec}. */
+function openThinOuterOk(op: EditOp, spec: { thin: number; thinOuter: number }): boolean {
+  // `thinSpecOf` defaults an ABSENT `thinOuter` to 0, which is the common case
+  // and must stay allowed, so the raw field is what decides.
+  const raw = (op as { thinOuter?: number }).thinOuter;
+  return raw === undefined || raw === spec.thin / 2;
+}
+
+function openProfileNeedsThin(section: ProfileSection): [string, string] {
+  return [
+    `the profile (${section.label}) is an open wire, which encloses no area`,
+    "add `thin` to build a walled body from it, or pick edges that close into a loop",
+  ];
+}
+
+function openProfileThinOuter(): [string, string] {
+  return [
+    "`thinOuter` has no meaning for an open profile — an open wire has no inside or outside",
+    "omit `thinOuter` (the wall is centred on the spine), or set it to exactly thin/2",
+  ];
+}
+
+/** Applies the thin sanity gate only when the op is thin; a plain feature is unchanged. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function finishThin(oc: any, op: EditOp, solid: any, cleanup: Array<{ delete(): void }>): any {
+  if (!solid || !thinSpecOf(op)) return solid;
+  return orientPositiveVolume(oc, solid, cleanup);
+}
+
+/**
+ * Resolves the single-profile ops' operand and turns it into the face their
+ * builder consumes, or null (with `fail` already told why).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function featureProfileFace(oc: any, shape: any, op: EditOp & { profile?: string; profileEdges?: string[] }, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const section = resolveProfileSection(oc, shape, op.profile, op.profileEdges, cleanup, fail);
+  return section ? profileFaceFor(oc, section, op, cleanup, fail) : null;
+}
+
 /** Builds the new solid for a feature op, or null on unresolved operands / failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     switch (op.op) {
       case "extrude": {
-        const face = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
+        const face = featureProfileFace(oc, shape, op, cleanup, fail);
         if (!face) return null;
         const [dx, dy, dz] = op.dir;
         const len = Math.hypot(dx, dy, dz) || 1;
         const s = op.length / len; // dir scaled so |vec| == length
         const vec = keep(new oc.gp_Vec_4(dx * s, dy * s, dz * s));
-        return keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape());
+        return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape()), cleanup);
       }
       case "revolve": {
-        const face = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
+        const face = featureProfileFace(oc, shape, op, cleanup, fail);
         if (!face) return null;
         const ax = keep(new oc.gp_Ax1_2(keep(pnt(oc, op.axisPoint)), keep(dir(oc, op.axisDir))));
         const angle = (op.angleDeg * Math.PI) / 180;
-        return keep(keep(new oc.BRepPrimAPI_MakeRevol_1(face, ax, angle, false)).Shape());
+        return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakeRevol_1(face, ax, angle, false)).Shape()), cleanup);
       }
       case "sweep": {
-        const faces = collectFaces(oc, shape, cleanup);
-        const face = faces[faceIndex(op.profile)];
         const edge = collectEdges(oc, shape, cleanup)[edgeIndex(op.path)];
-        if (!face || !edge) return null;
+        if (!edge) { fail?.(`the sweep path ${op.path} did not resolve to an edge`); return null; }
+        // Verified live: MakePipe_1 sweeps an ANNULAR profile correctly on a
+        // straight spine (exactly 1280 for a 64-area band over length 20) AND
+        // on a 90-degree arc spine (2010.6193, matching Pappus exactly), so
+        // thin sweep needs no outer/inner-and-cut fallback. It sweeps an
+        // open-profile band the same way (verified: 462.8318 for a 23.1416
+        // band over length 20).
+        const face = featureProfileFace(oc, shape, op, cleanup, fail);
+        if (!face) return null;
         const wire = keep(new oc.BRepBuilderAPI_MakeWire_2(edge)).Wire();
         keep(wire);
-        return keep(keep(new oc.BRepOffsetAPI_MakePipe_1(wire, face)).Shape());
+        return finishThin(oc, op, keep(keep(new oc.BRepOffsetAPI_MakePipe_1(wire, face)).Shape()), cleanup);
       }
       case "loft": {
-        const faces = collectFaces(oc, shape, cleanup);
-        const wires = op.profiles
-          .map((id) => faces[faceIndex(id)])
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .filter((f): f is any => f != null)
-          .map((f) => keep(oc.BRepTools.OuterWire(f)));
-        if (wires.length < 2) return null;
-        const ts = keep(new oc.BRepOffsetAPI_ThruSections(true, false, 1.0e-6));
-        for (const w of wires) ts.AddWire(w);
-        ts.Build();
-        if (!ts.IsDone()) return null;
-        return keep(ts.Shape());
+        // One section per profile, in either operand form. Unlike the other
+        // three, loft historically filtered unresolved ids out silently and
+        // only failed below 2 survivors; resolving each section explicitly
+        // reports WHICH one is missing instead.
+        const sections: ProfileSection[] = [];
+        if (op.profiles) {
+          for (const id of op.profiles) {
+            const section = resolveProfileSection(oc, shape, id, undefined, cleanup, fail);
+            if (!section) return null;
+            sections.push(section);
+          }
+        } else {
+          for (const ids of op.profileEdgeSets ?? []) {
+            const section = resolveProfileSection(oc, shape, undefined, ids, cleanup, fail);
+            if (!section) return null;
+            sections.push(section);
+          }
+        }
+        if (sections.length < 2) { fail?.("loft needs at least 2 profile sections"); return null; }
+        // Every section must agree, because the two thin constructions are
+        // genuinely different shapes — a closed section yields an outer and an
+        // inner boundary to loft and cut, an open one a single band boundary.
+        const open = sections.filter((s) => !s.closed).length;
+        if (open !== 0 && open !== sections.length) {
+          fail?.("loft mixes open and closed profile sections", "every section must close, or none — the two build a thin wall in different ways");
+          return null;
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const loftWires = (ws: any[]): any => {
+          const ts = keep(new oc.BRepOffsetAPI_ThruSections(true, false, 1.0e-6));
+          for (const w of ws) ts.AddWire(w);
+          ts.Build();
+          return ts.IsDone() ? keep(ts.Shape()) : null;
+        };
+        const spec = thinSpecOf(op);
+        if (!spec) {
+          if (open > 0) { fail?.(...openProfileNeedsThin(sections.find((s) => !s.closed)!)); return null; }
+          return loftWires(sections.map((s) => s.wire));
+        }
+        if (open > 0) {
+          // An open section's band is ONE closed boundary, so it lofts
+          // directly — no outer/inner pair and no cut. Verified: two identical
+          // 23.1416 bands 10 apart loft to 231.4159.
+          if (!openThinOuterOk(op, spec)) { fail?.(...openProfileThinOuter()); return null; }
+          const bands = sections.map((s) => openBandWire(oc, s.wire, spec.thin, cleanup));
+          if (bands.some((b) => b === null)) { fail?.("could not build a wall around every open loft section"); return null; }
+          return finishThin(oc, op, loftWires(bands), cleanup);
+        }
+        const holed = sections.find((s) => s.holed);
+        if (holed) { fail?.(`the loft profile ${holed.label} already has a hole`, "a thin wall is built from the outer boundary alone, which would silently discard it"); return null; }
+        // `ThruSections` is WIRE-based and keeps only the wires it is given, so
+        // handing it an annular band face's outer wire would silently loft a
+        // FILLED solid (verified: 813.33 for a case whose thin answer is 560).
+        // Loft the two band boundaries as separate solids and cut instead —
+        // verified exact (outer 1000, inner 360, cut 640).
+        const bands = sections.map((s) => thinProfileWires(oc, s.wire, spec.thin, spec.thinOuter, cleanup));
+        if (bands.some((b) => b === null)) return null;
+        const outerSolid = loftWires(bands.map((b) => b!.outer));
+        const innerSolid = loftWires(bands.map((b) => b!.inner));
+        if (!outerSolid || !innerSolid) return null;
+        const cut = keep(new oc.BRepAlgoAPI_Cut_3(outerSolid, innerSolid));
+        if (!cut.IsDone()) return null;
+        return finishThin(oc, op, keep(cut.Shape()), cleanup);
       }
       default:
         return null;
@@ -812,7 +1584,7 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
       }
       case "addPrism": {
         const [ux, vx] = planeBasis(op.axis);
-        const points = regularPolygonPoints(op.center, ux, vx, op.radius, op.sides);
+        const points = regularPolygonPoints(op.center, ux, vx, op.radius, op.sides, op.circumscribed);
         const face = buildFlatFace(oc, points, cleanup);
         if (!face) return null;
         const [ax, ay, az] = op.axis;
@@ -865,12 +1637,14 @@ function buildFlatFace(oc: any, points: Vec3[], cleanup: Array<{ delete(): void 
 }
 
 /** N points evenly spaced around `center` on the circle of `radius` spanned by
- * orthonormal in-plane basis (`u`, `v`). */
-function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, sides: number): Vec3[] {
+ * orthonormal in-plane basis (`u`, `v`). When `circumscribed` is true,
+ * `radius` is the apothem (the circle is INSIDE the polygon, sides tangent). */
+function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, sides: number, circumscribed?: boolean): Vec3[] {
+  const r = circumscribed ? radius / Math.cos(Math.PI / sides) : radius;
   const points: Vec3[] = [];
   for (let i = 0; i < sides; i++) {
     const a = (2 * Math.PI * i) / sides;
-    points.push(addScaled(center, u, Math.cos(a) * radius, v, Math.sin(a) * radius));
+    points.push(addScaled(center, u, Math.cos(a) * r, v, Math.sin(a) * r));
   }
   return points;
 }
@@ -894,12 +1668,13 @@ function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, si
  * a flat sketch in a way it mostly doesn't for a solid of revolution).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addProfile(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function addProfile(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
   const face = buildProfileFace(oc, op, cleanup);
   if (!face) {
     fail?.(`could not build the ${op.op} sketch face`, "check the profile's parameters (radius/width/height must be positive, normal a non-zero direction)");
     return shape;
   }
+  if ((op as any).guide) guideCollector?.faces.push(face);
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
   const builder = new oc.BRep_Builder();
@@ -940,7 +1715,7 @@ function buildProfileFace(oc: any, op: EditOp, cleanup: Array<{ delete(): void }
       }
       case "addPolygonProfile": {
         const [u, v] = inPlaneBasis(op.normal, op.up);
-        return buildFlatFace(oc, regularPolygonPoints(op.center, u, v, op.radius, op.sides), cleanup);
+        return buildFlatFace(oc, regularPolygonPoints(op.center, u, v, op.radius, op.sides, op.circumscribed), cleanup);
       }
       case "addEllipseProfile": {
         // `gp_Elips_2(ax2, major, minor)` requires major ≥ minor; when radiusY
@@ -1048,6 +1823,72 @@ function faceFromEdges(oc: any, edges: any[], cleanup: Array<{ delete(): void }>
   return face.IsNull() ? null : keep(face);
 }
 
+function addEdgeSlot(oc: any, shape: any, op: Extract<EditOp, { op: "addEdgeSlot" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  try {
+    const edges = collectEdges(oc, shape, cleanup);
+    const idx = edgeIndex(op.edge);
+    const edge = edges[idx];
+    if (!edge) {
+      fail?.(`edge ${op.edge} does not resolve`);
+      return shape;
+    }
+    const vExp = new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_VERTEX);
+    cleanup.push(vExp);
+    const pts: any[] = [];
+    for (; vExp.More(); vExp.Next()) pts.push(oc.TopoDS.Vertex_1(vExp.Current()));
+    if (pts.length < 2) {
+      fail?.("edge has no endpoints");
+      return shape;
+    }
+    const p1 = oc.BRep_Tool.Pnt(pts[0]);
+    const p2 = oc.BRep_Tool.Pnt(pts[pts.length - 1]);
+    const mid: Vec3 = [(p1.X() + p2.X()) / 2, (p1.Y() + p2.Y()) / 2, (p1.Z() + p2.Z()) / 2];
+    const dir: Vec3 = [p2.X() - p1.X(), p2.Y() - p1.Y(), p2.Z() - p1.Z()];
+    const len = Math.hypot(dir[0], dir[1], dir[2]);
+    if (len < 1e-9) {
+      fail?.("edge is degenerate");
+      return shape;
+    }
+    const totalLen = len + op.width;
+    const hw = totalLen / 2, hw2 = op.width / 2;
+    const { edgeFaces } = buildEdgeFaceAdjacency(oc, shape, cleanup);
+    const bucket = edgeFaces.get(edge.HashCode(1 << 30));
+    const entry = bucket?.find((b) => b.edge.IsSame(edge));
+    let normal: Vec3 = [0, 0, 1];
+    if (entry && entry.faceIdxs.length > 0) {
+      const faces = collectFaces(oc, shape, cleanup);
+      const f = faces[entry.faceIdxs[0]];
+      const info = f ? facePlane(oc, f, cleanup) : null;
+      if (info) normal = info.nl;
+    }
+    const [u, v] = inPlaneBasis(normal, dir as Vec3);
+    const ux: Vec3 = [u[0] * hw, u[1] * hw, u[2] * hw];
+    const vx: Vec3 = [v[0] * hw2, v[1] * hw2, v[2] * hw2];
+    const corners: Vec3[] = [
+      addScaled(mid, ux, -1, vx, -1),
+      addScaled(mid, ux, 1, vx, -1),
+      addScaled(mid, ux, 1, vx, 1),
+      addScaled(mid, ux, -1, vx, 1),
+    ];
+    const face = buildFlatFace(oc, [corners[0], corners[1], corners[2], corners[3]], cleanup);
+    if (!face) {
+      fail?.("could not build slot face");
+      return shape;
+    }
+    const comp = new oc.TopoDS_Compound();
+    cleanup.push(comp);
+    const builder = new oc.BRep_Builder();
+    cleanup.push(builder);
+    builder.MakeCompound(comp);
+    builder.Add(comp, shape);
+    builder.Add(comp, face);
+    return comp;
+  } catch {
+    fail?.("addEdgeSlot threw");
+    return shape;
+  }
+}
+
 /**
  * Wireframe primitive creation (Point/Line/Arc): builds a bare `TopoDS_Vertex`
  * or `TopoDS_Edge` — no existing operands, no thickness — and **appends** it,
@@ -1073,11 +1914,20 @@ function faceFromEdges(oc: any, edges: any[], cleanup: Array<{ delete(): void }>
  *           confirmed against the live WASM, not assumed.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
   const entity = buildWireframePrimitive(oc, op, cleanup);
   if (!entity) {
     fail?.(`could not build the ${op.op} entity`, "check the coordinates (a collinear 3-point arc, for example, cannot build an edge)");
     return shape;
+  }
+  if ((op as any).guide && guideCollector) {
+    if (op.op === "addPoint") guideCollector.vertices.push(entity);
+    else if (op.op === "addPolyline") {
+      const exp = new oc.TopExp_Explorer_2(entity, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+      cleanup.push(exp);
+      for (; exp.More(); exp.Next()) { const e = oc.TopoDS.Edge_1(exp.Current()); cleanup.push(e); guideCollector.edges.push(e); }
+      if (guideCollector.edges.length === 0) guideCollector.edges.push(entity);
+    } else guideCollector.edges.push(entity);
   }
   const comp = new oc.TopoDS_Compound();
   cleanup.push(comp);
@@ -1239,7 +2089,11 @@ function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): vo
  * (never a crash), consistent with this codebase's graceful-degradation rule.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  if (guideCollector) {
+    const edges = collectEdges(oc, shape, cleanup);
+    for (const id of op.edges) { const e = edges[edgeIndex(id)]; if (e && isGuideHandle(e, guideCollector)) { fail?.(`edge ${id} is construction (guide) geometry — guide entities are excluded from surface resolution`); return shape; } }
+  }
   const face = buildSurfaceFromLines(oc, shape, op, cleanup);
   if (!face) {
     fail?.(
@@ -1323,7 +2177,11 @@ function buildSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "a
  * cosmetic concern.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addVolumeFromSurfaces(oc: any, shape: any, op: Extract<EditOp, { op: "addVolumeFromSurfaces" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function addVolumeFromSurfaces(oc: any, shape: any, op: Extract<EditOp, { op: "addVolumeFromSurfaces" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  if (guideCollector) {
+    const faces = collectFaces(oc, shape, cleanup);
+    for (const id of op.faces) { const f = faces[faceIndex(id)]; if (f && isGuideHandle(f, guideCollector)) { fail?.(`face ${id} is construction (guide) geometry — guide entities are excluded from volume resolution`); return shape; } }
+  }
   const solid = buildVolumeFromSurfaces(oc, shape, op, cleanup);
   if (!solid) {
     fail?.(
@@ -1656,7 +2514,12 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
     }
 
     const mode = oc.BRepOffset_Mode.BRepOffset_Skin;
-    const join = oc.GeomAbs_JoinType.GeomAbs_Arc;
+    const joinMap: Record<string, number> = {
+      arc: oc.GeomAbs_JoinType.GeomAbs_Arc,
+      intersection: oc.GeomAbs_JoinType.GeomAbs_Intersection,
+      tangent: oc.GeomAbs_JoinType.GeomAbs_Tangent,
+    };
+    const join = joinMap[op.join ?? "arc"] ?? oc.GeomAbs_JoinType.GeomAbs_Arc;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const replaced = new Map<number, any>();
     for (const [i, openings] of openingsBySolid) {
@@ -1689,6 +2552,79 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
   }
 }
 
+function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const faces = collectFaces(oc, shape, cleanup);
+    const picked = op.faces.map((id) => faces[faceIndex(id)]).filter((f): f is any => f != null);
+    if (picked.length === 0) {
+      fail?.(`none of the face ids (${op.faces.join(", ")}) resolve`);
+      return shape;
+    }
+    const angleRad = (op.angleDeg * Math.PI) / 180;
+    // VERIFIED against the live WASM (see CLAUDE.md's item-10 section for the
+    // probing trail): the plain `BRepOffsetAPI_DraftAngle` ctor is UNBOUND
+    // ("no accessible constructor") and `_1` wants >1 params — `_2(shape)` is
+    // the working 1-arg ctor. `Add` is a 5-arg `(face, gp_Dir, angleRad,
+    // gp_Pln, flag)` — deduced from embind's own type errors, confirmed live.
+    // `gp_Pln_2(Ax3)` is the 1-arg plane form (gp_Pln_3 takes (Pnt, Dir)).
+    const draft = keep(new oc.BRepOffsetAPI_DraftAngle_2(shape));
+    for (const f of picked) {
+      let pln: any;
+      let pull: Vec3;
+      if (op.planePoint && op.planeNormal) {
+        const ax = keep(new oc.gp_Ax3_4(keep(pnt(oc, op.planePoint)), keep(dir(oc, op.planeNormal))));
+        pln = keep(new oc.gp_Pln_2(ax));
+        pull = op.planeNormal;
+      } else {
+        const info = facePlane(oc, f, cleanup);
+        if (!info) {
+          fail?.("could not derive neutral plane for a drafted face");
+          return shape;
+        }
+        const ax = keep(new oc.gp_Ax3_4(keep(pnt(oc, info.pt)), keep(dir(oc, info.nl))));
+        pln = keep(new oc.gp_Pln_2(ax));
+        pull = info.nl;
+      }
+      try {
+        draft.Add(f, dir(oc, pull), angleRad, pln, true);
+      } catch (err) {
+        fail?.(`draft Add failed for a face: ${err instanceof Error ? err.message : String(err)}`);
+        return shape;
+      }
+    }
+    try {
+      draft.Build();
+    } catch {
+      // Probed against the live WASM (3 fresh processes, identical result):
+      // `Add` succeeds with the verified 5-arg signature, but `Build()` — the
+      // call that actually computes the tapered shape — RELIABLY throws an
+      // un-decodable OCCT failure (a Standard_Failure with no message) on real
+      // geometry. Kernel-broken in this build, the same "green in the manifest
+      // is necessary but not sufficient" class as ShapeFix_Shape /
+      // Interface_Static.CVal / BRepExtrema_DistanceSS-max (see CLAUDE.md).
+      // The op stays: it validates, its wiring is correct, and a future OCCT
+      // build that fixes Build() needs no code change — until then this is an
+      // honest graceful skip, never a silent no-op.
+      fail?.(
+        "this OCCT build's draft engine (BRepOffsetAPI_DraftAngle.Build) failed — a kernel limitation of the bundled WASM, not an input problem",
+        "the draft op is skipped here; the surrounding ops still apply"
+      );
+      return shape;
+    }
+    if (!draft.IsDone()) {
+      fail?.("draft Build did not complete (IsDone() false)");
+      return shape;
+    }
+    const res = draft.Shape();
+    cleanup.push(res);
+    return res;
+  } catch {
+    fail?.("draft builder threw");
+    return shape;
+  }
+}
+
 /**
  * Splits the target solids by a plane, keeping the piece on the normal side
  * ("positive"), the opposite piece ("negative"), or both. Implemented as a
@@ -1704,6 +2640,14 @@ function shellSolids(oc: any, shape: any, op: Extract<EditOp, { op: "shell" }>, 
 function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "splitByPlane" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
+    let planePoint: Vec3 | null = (op as any).planePoint ?? null;
+    let planeNormal: Vec3 | null = (op as any).planeNormal ?? null;
+    if ((op as any).midplaneFaces) {
+      const mid = resolveMidplane(oc, shape, (op as any).midplaneFaces, cleanup, fail!);
+      if (!mid) return shape;
+      planePoint = mid.point; planeNormal = mid.normal;
+    }
+    if (!planePoint || !planeNormal) { fail?.(`splitByPlane plane not specified`); return shape; }
     const solids = collectSolids(oc, shape, cleanup);
     const byId = new Map(solids.map((s) => [s.id, s.solid]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1723,7 +2667,7 @@ function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "spli
     const t = keep(new oc.gp_Trsf_1());
     t.SetDisplacement(
       keep(new oc.gp_Ax3_4(keep(pnt(oc, [0, 0, 0])), keep(dir(oc, [0, 0, 1])))),
-      keep(new oc.gp_Ax3_4(keep(pnt(oc, op.planePoint)), keep(dir(oc, op.planeNormal))))
+      keep(new oc.gp_Ax3_4(keep(pnt(oc, planePoint)), keep(dir(oc, planeNormal))))
     );
     const halfSpace = rigid(oc, t, cleanup)(rawBox);
 
@@ -1779,6 +2723,14 @@ function splitSolidsByPlane(oc: any, shape: any, op: Extract<EditOp, { op: "spli
 function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
+    let planePoint: Vec3 | null = (op as any).planePoint ?? null;
+    let planeNormal: Vec3 | null = (op as any).planeNormal ?? null;
+    if ((op as any).midplaneFaces) {
+      const mid = resolveMidplane(oc, shape, (op as any).midplaneFaces, cleanup, fail!);
+      if (!mid) return shape;
+      planePoint = mid.point; planeNormal = mid.normal;
+    }
+    if (!planePoint || !planeNormal) { fail?.(`section plane not specified`); return shape; }
     const solids = collectSolids(oc, shape, cleanup);
     const byId = new Map(solids.map((s) => [s.id, s.solid]));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1792,12 +2744,12 @@ function sectionSolids(oc: any, shape: any, op: Extract<EditOp, { op: "section" 
     }
 
     const d = Math.max(bboxDiagonal(oc, shape, cleanup), 1) * 10;
-    const [u, v] = planeBasis(op.planeNormal);
+    const [u, v] = planeBasis(planeNormal);
     const corners: Vec3[] = [
-      addScaled(op.planePoint, u, -d / 2, v, -d / 2),
-      addScaled(op.planePoint, u, d / 2, v, -d / 2),
-      addScaled(op.planePoint, u, d / 2, v, d / 2),
-      addScaled(op.planePoint, u, -d / 2, v, d / 2),
+      addScaled(planePoint, u, -d / 2, v, -d / 2),
+      addScaled(planePoint, u, d / 2, v, -d / 2),
+      addScaled(planePoint, u, d / 2, v, d / 2),
+      addScaled(planePoint, u, -d / 2, v, d / 2),
     ];
     const planeFace = buildFlatFace(oc, corners, cleanup);
     if (!planeFace) {

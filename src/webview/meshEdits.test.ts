@@ -622,4 +622,34 @@ describe("dense-mesh CSG guard (three-bvh-csg)", () => {
     expect(outcomes[0].applied).toBe(true);
     expect(report).not.toHaveBeenCalled();
   });
+
+  it("midplaneFaces references are refused with a clear diagnostic on the mesh path", () => {
+    const root = new THREE.Group();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10));
+    root.add(mesh);
+    root.traverse((o) => { o.userData.groupId = "node-0"; });
+    const outcomes: OpOutcome[] = [];
+    applyEditsMesh(
+      root,
+      [{ op: "mirror", targets: ["node-0"], midplaneFaces: ["face-0", "face-1"] } as unknown as EditOp],
+      outcomes
+    );
+    expect(outcomes[0].applied).toBe(false);
+    expect(outcomes[0].diagnostic).toContain("midplaneFaces requires a B-rep source");
+  });
+
+  it("midaxisOf references are refused with a clear diagnostic on the mesh path", () => {
+    const root = new THREE.Group();
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10));
+    root.add(mesh);
+    root.traverse((o) => { o.userData.groupId = "node-0"; });
+    const outcomes: OpOutcome[] = [];
+    applyEditsMesh(
+      root,
+      [{ op: "patternCircular", targets: ["node-0"], midaxisOf: ["face-0", "face-1"], angleDeg: 60, count: 4 } as unknown as EditOp],
+      outcomes
+    );
+    expect(outcomes[0].applied).toBe(false);
+    expect(outcomes[0].diagnostic).toContain("midaxisOf requires a B-rep source");
+  });
 });
