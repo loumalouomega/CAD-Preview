@@ -15,6 +15,7 @@ import {
   type Annotation,
   type ConstructionPlane,
   type ViewState,
+  type SelectorSynthesizeResultEntry,
 } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
@@ -1120,6 +1121,42 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           post({ type: "entityFactsResult", requestId: msg.requestId, facts });
         } catch (err) {
           post({ type: "entityFactsError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "selectorSynthesizeRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Pinning an operand as a query requires a B-rep source; mesh sources have no produced-face classification to induce from.");
+          }
+          if (msg.entityIds.length === 0 || msg.entityIds.length > 25) {
+            throw new Error(`Cannot synthesize queries for ${msg.entityIds.length} entities — pick between 1 and 25.`);
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const format = route.format as Extract<CadFormat, "step" | "iges" | "brep">;
+          const results: SelectorSynthesizeResultEntry[] = [];
+          for (const entityId of msg.entityIds) {
+            try {
+              const r = await this.pipeline.synthesizeSelector(
+                this.context.extensionPath,
+                bytes,
+                format,
+                currentEdits,
+                msg.op,
+                msg.role,
+                entityId
+              );
+              // The kind tag is stamped here from the producing op itself —
+              // server-derived (the `set_part` precedent), never caller-supplied.
+              results.push({ entityId, query: r.query, kind: r.query ? currentEdits[msg.op]?.op ?? null : null, reason: r.reason });
+            } catch (err) {
+              results.push({ entityId, query: null, kind: null, reason: (err as Error).message });
+            }
+          }
+          post({ type: "selectorSynthesizeResult", requestId: msg.requestId, results });
+        } catch (err) {
+          post({ type: "selectorSynthesizeError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }

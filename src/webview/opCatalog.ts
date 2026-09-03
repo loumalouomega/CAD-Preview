@@ -408,3 +408,20 @@ export function buildEntityReferenceIndex(ops: EditOp[]): Map<string, number[]> 
   });
   return index;
 }
+
+/**
+ * Op buttons whose param form carries the "pin selection as query" row
+ * (roadmap "Selector synthesis" follow-up: the interactive half of
+ * op-operand persistence). Deliberately only the face-operand forms:
+ * `synthesizeSelector`'s universe is `faceFilterableFacts` — buckets record
+ * `face-N` ids and the predicate layer names faces — so an edge/volume pick
+ * could never induce (the kernel answers an honest null, but offering the
+ * row there would be a dead surface). Edge/volume predicates and joint
+ * multi-entity induction each unlock more forms with a one-line change here.
+ */
+export const QUERYABLE_PANEL_FORMS: ReadonlySet<PanelOpId> = new Set([
+  "extrude",
+  "revolve",
+  "shell",
+  "draft",
+]);

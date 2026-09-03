@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OP_CATALOG, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex } from "./opCatalog";
+import { OP_CATALOG, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { BREP_ONLY_OPS, QUERYABLE_OPERAND_FIELDS, type EditOp, type EditOpKind } from "../editOps";
 
@@ -95,6 +95,14 @@ describe("OP_CATALOG", () => {
       for (const e of cat.ops) {
         expect(e.brepOnly, `${e.id} in 2D tab`).toBe(true);
       }
+    }
+  });
+
+  it("keeps every pin-as-query form B-rep-only (mesh sources have no buckets to induce from)", () => {
+    const byId = new Map(allCatalogEntries().map((e) => [e.id, e]));
+    for (const id of QUERYABLE_PANEL_FORMS) {
+      expect(byId.has(id), `catalog entry for ${id}`).toBe(true);
+      expect(byId.get(id)?.brepOnly, `${id} brepOnly`).toBe(true);
     }
   });
 });

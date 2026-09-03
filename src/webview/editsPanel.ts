@@ -5,6 +5,7 @@ import type { OpBucket } from "../opBuckets";
 import { bucketSummary } from "../opBuckets";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
+import { QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
@@ -207,6 +208,13 @@ export interface EditsPanelCallbacks {
    * the real selection's rendering. The ids are `face-N` strings; the wiring
    * maps them to `{entityType: "surface"}` entities. */
   onHighlightBucket: (ids: string[] | null) => void;
+  /** Induce a stored operand query for the currently-selected faces against
+   * the given producing op's `role` bucket (the "pin as query" row in
+   * `QUERYABLE_PANEL_FORMS` forms). The wiring reads the live selection,
+   * posts `selectorSynthesizeRequest`, and stages the result as pending for
+   * the open form — attached at Apply only while the selection still names
+   * the same faces. Takes raw bucket coordinates, never a draft. */
+  onSynthesizeQuery: (op: number, role: string) => void;
 }
 
 type TabId = "geometry" | "edit";
@@ -353,6 +361,133 @@ export class EditsPanel {
     });
     row.appendChild(select);
     return row;
+  }
+
+  /**
+   * Buckets the open form's query row can induce from — refreshed from every
+   * `geometry` message (the wiring calls this with the fresh `opBuckets`),
+   * since each replay renumbers the faces a bucket names. Buckets with no
+   * roles offer nothing to pin against and are dropped here, not in the row.
+   */
+  private queryBuckets: OpBucket[] = [];
+  setQueryBuckets(buckets: OpBucket[]): void {
+    this.queryBuckets = buckets.filter((b) => Object.keys(b.roles ?? {}).length > 0);
+    this.refreshQueryRow();
+  }
+
+  /** Repopulates a query row's selects (the open form's, or a freshly-built
+   * one passed directly): buckets in arrival order, roles of the selected
+   * bucket, previous choices preserved when still present. */
+  private refreshQueryRow(row?: Element | null): void {
+    if (!this.activeOp || !QUERYABLE_PANEL_FORMS.has(this.activeOp)) return;
+    const target = row ?? this.paramsEl.querySelector(".compose-query-row");
+    if (!target) return;
+    const bucketSel = target.querySelector<HTMLSelectElement>("select[data-name=\"queryBucket\"]");
+    const roleSel = target.querySelector<HTMLSelectElement>("select[data-name=\"queryRole\"]");
+    if (!bucketSel || !roleSel) return;
+    const prevBucket = bucketSel.value;
+    bucketSel.innerHTML = "";
+    for (const b of this.queryBuckets) {
+      const opt = document.createElement("option");
+      opt.value = String(b.op);
+      opt.textContent = `op ${b.op} (${b.kind})`;
+      bucketSel.appendChild(opt);
+    }
+    if (this.queryBuckets.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "no produced faces yet";
+      bucketSel.appendChild(opt);
+    } else if ([...bucketSel.options].some((o) => o.value === prevBucket)) {
+      bucketSel.value = prevBucket;
+    }
+    this.refreshQueryRoles(target);
+  }
+
+  private refreshQueryRoles(row?: Element | null): void {
+    const target = row ?? this.paramsEl.querySelector(".compose-query-row");
+    const bucketSel = target?.querySelector<HTMLSelectElement>("select[data-name=\"queryBucket\"]");
+    const roleSel = target?.querySelector<HTMLSelectElement>("select[data-name=\"queryRole\"]");
+    if (!bucketSel || !roleSel) return;
+    const bucket = this.queryBuckets.find((b) => String(b.op) === bucketSel.value);
+    const prevRole = roleSel.value;
+    roleSel.innerHTML = "";
+    for (const role of Object.keys(bucket?.roles ?? {})) {
+      const opt = document.createElement("option");
+      opt.value = role;
+      opt.textContent = role;
+      roleSel.appendChild(opt);
+    }
+    if ([...roleSel.options].some((o) => o.value === prevRole)) roleSel.value = prevRole;
+  }
+
+  /**
+   * The "pin selection as query" row for face-operand forms (`extrude`,
+   * `revolve`, `shell`, `draft` — see `QUERYABLE_PANEL_FORMS`): a producing-
+   * bucket picker plus a Synthesize button. The panel owns only the bucket
+   * coordinates; the wiring reads the live selection, runs the host round
+   * trip, and stages the result — the row itself never sees entity ids, which
+   * is what keeps it from duplicating `buildOpForPanel`'s operand mapping.
+   */
+  private queryRow(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "compose-query-row";
+    const label = document.createElement("span");
+    label.className = "compose-label";
+    label.textContent = "Pin query";
+    label.title = "Name the selected face as a stored operand query against a produced-faces bucket, so the reference survives renumbering by later edits. Face operands only; select exactly one face.";
+    wrap.appendChild(label);
+    const bucketSel = document.createElement("select");
+    bucketSel.className = "compose-select";
+    bucketSel.dataset.name = "queryBucket";
+    bucketSel.title = "Producing op whose bucket names the selected face";
+    wrap.appendChild(bucketSel);
+    const roleSel = document.createElement("select");
+    roleSel.className = "compose-select";
+    roleSel.dataset.name = "queryRole";
+    roleSel.title = "Bucket role the selected face was produced under";
+    wrap.appendChild(roleSel);
+    bucketSel.addEventListener("change", () => this.refreshQueryRoles());
+    const btn = document.createElement("button");
+    btn.className = "compose-apply";
+    btn.textContent = "Synthesize";
+    btn.title = "Induce a query naming the selected face against this bucket (host round trip)";
+    btn.addEventListener("click", () => {
+      // An empty bucket picker (no produced faces yet) must refuse locally —
+      // `Number("")` is 0, which would post a doomed round trip for op 0.
+      if (bucketSel.value === "" || roleSel.value === "") return;
+      const op = Number(bucketSel.value);
+      if (!Number.isInteger(op)) return;
+      this.cb.onSynthesizeQuery(op, roleSel.value);
+    });
+    wrap.appendChild(btn);
+    const result = document.createElement("div");
+    result.className = "compose-query-result";
+    result.dataset.name = "queryResult";
+    wrap.appendChild(result);
+    this.refreshQueryRow(wrap);
+    return wrap;
+  }
+
+  /** Renders the synthesize outcome into the open form's query row: the staged
+   * query summary, or the kernel's honest refusal. Cleared whenever the form
+   * re-renders (a fresh row starts blank — the staged query itself lives in
+   * the wiring's pending state, not here). */
+  showQueryResult(text: string, isError = false): void {
+    const el = this.paramsEl.querySelector("[data-name=\"queryResult\"]");
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle("error", isError);
+  }
+
+  /** Disables the Synthesize button while a round trip is in flight, so a
+   * second click can't interleave two inductions for the same row. */
+  setQueryBusy(busy: boolean): void {
+    const row = this.paramsEl.querySelector(".compose-query-row");
+    const btn = row?.querySelector<HTMLButtonElement>("button");
+    if (!btn) return;
+    btn.disabled = busy;
+    btn.textContent = busy ? "Synthesizing…" : "Synthesize";
   }
 
   /**
@@ -712,6 +847,7 @@ export class EditsPanel {
   private renderParams(): void {
     const f = this.paramsEl;
     f.innerHTML = "";
+    this.pendingApplyRow = null;
     const id = this.activeOp;
     if (!id) return;
 
@@ -776,6 +912,7 @@ export class EditsPanel {
         f.appendChild(this.numField("length", "Length", 10));
         f.appendChild(this.terminatorRow());
         this.thinFields(f);
+        f.appendChild(this.queryRow());
         this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "revolve":
@@ -784,6 +921,7 @@ export class EditsPanel {
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 360));
         this.thinFields(f);
+        f.appendChild(this.queryRow());
         this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({
             kind: "revolve", axisPoint: this.readVec("axisPoint"),
             axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"), ...this.readThin(),
@@ -817,6 +955,7 @@ export class EditsPanel {
         f.appendChild(this.hint("Hollows the solids owning the selected faces; the faces become openings (Surf mode)"));
         f.appendChild(this.numField("thickness", "Thickness", -1));
         f.appendChild(this.hint("Negative = walls grow inward (hollow); positive = outward"));
+        f.appendChild(this.queryRow());
         this.applyButtonDraft("Apply", "Shell the solids owning the selected opening faces", (): ModifyDraft => ({ kind: "shell", thickness: this.readNum("thickness") }), (d) => this.cb.onApplyModify(d));
         break;
       case "draft":
@@ -826,6 +965,7 @@ export class EditsPanel {
         f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 0]));
+        f.appendChild(this.queryRow());
         this.applyButtonDraft("Apply", "Draft the selected faces", (): ModifyDraft => {
           const planeId = this.readPlaneId();
           if (planeId) {
@@ -1212,6 +1352,13 @@ export class EditsPanel {
     // entity reference-only — rendered dimmed and excluded from feature
     // profile resolution (roadmap item 10).
     if (id && GUIDE_KINDS.has(id as never)) f.appendChild(this.boolField("guide", "Construction (guide)", false));
+    // The form's Apply row, registered by `applyButtonDraft` during the
+    // switch above — appended here, after every param row, so no form can
+    // silently render without its commit button (see its doc comment).
+    if (this.pendingApplyRow) {
+      f.appendChild(this.pendingApplyRow);
+      this.pendingApplyRow = null;
+    }
     // A freshly-opened form previews immediately from its default field
     // values — opening "Box" shows the default box before anything is typed.
     if (this.draftReader) this.cb.onPreviewDraftChanged();
@@ -1307,13 +1454,21 @@ export class EditsPanel {
   }
 
   /**
-   * Creates the form's Apply button AND registers its draft literal as the
-   * live-preview reader. The draft literal is the EXACT object the Apply
-   * click pushes — read fresh from the fields on every preview tick and on
-   * every Apply — which is what makes a preview structurally incapable of
-   * drifting from what Apply would commit.
+   * Creates the form's Apply button, appends it to the form (at the end of
+   * `renderParams`, so it always lands after every param row), AND registers
+   * its draft literal as the live-preview reader. The draft literal is the
+   * EXACT object the Apply click pushes — read fresh from the fields on every
+   * preview tick and on every Apply — which is what makes a preview
+   * structurally incapable of drifting from what Apply would commit.
+   *
+   * The button is appended centrally (not at each call site) because an
+   * earlier refactor dropped the `f.appendChild(...)` wrapper from every call
+   * site at once, silently leaving every form without an Apply button — a
+   * whole class of "dead surface" no test caught, since nothing ever asserted
+   * the button exists. Centralizing the append makes that unrepeatable: a
+   * form that registers a draft reader always renders its commit button.
    */
-  private applyButtonDraft<D>(label: string, title: string, read: () => D, apply: (d: D) => void): HTMLElement {
+  private applyButtonDraft<D>(label: string, title: string, read: () => D, apply: (d: D) => void): void {
     // Construction-geometry checkbox: guide-kind forms get one generic
     // `guide` field appended after their params (see `renderParams`), read
     // here at the single seam BOTH the Apply click and the live preview
@@ -1325,8 +1480,13 @@ export class EditsPanel {
       return draft as D;
     };
     this.draftReader = wrappedRead as () => unknown;
-    return this.applyButton(label, title, () => apply(wrappedRead()));
+    this.pendingApplyRow = this.applyButton(label, title, () => apply(wrappedRead()));
   }
+
+  /** The Apply row the current form registered (appended centrally at the end
+   * of `renderParams`). Reset on every render so a form without one (boolean,
+   * explode) can never inherit the previous form's button. */
+  private pendingApplyRow: HTMLElement | null = null;
 
   private applyButton(label: string, title: string, onClick: () => void): HTMLElement {
     const row = document.createElement("div");

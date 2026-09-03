@@ -390,6 +390,8 @@ type HostToWebview =
   | { type: 'macroApplyOps'; ops: EditOp[] }
   | { type: 'entityFactsResult'; requestId: string; facts: EntityFacts }
   | { type: 'entityFactsError'; requestId: string; message: string }
+  | { type: 'selectorSynthesizeResult'; requestId: string; results: SelectorSynthesizeResultEntry[] }
+  | { type: 'selectorSynthesizeError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
@@ -701,6 +703,18 @@ Driven by **selection, not hover**: `getEntityFacts` has no shape cache, so ever
 { "type": "entityFactsError", "requestId": "1234-0.56", "message": "Geometry classification requires a B-rep source; a mesh has no analytic surface type." }
 ```
 
+### `selectorSynthesizeResult` / `selectorSynthesizeError`
+
+Sent in reply to `selectorSynthesizeRequest` — the Edits panel's **Pin query** row (Extrude/Revolve/Shell/Draft forms), the interactive half of op-operand query persistence. The host loops the existing `synthesizeSelector` pipeline function once per requested id — one prefix+full replay each, capped at 25 ids per request — and stamps each result's `kind` from the producing op itself, so the stored `targetQueryKinds` tag is server-derived, never caller-supplied. A `null` query is an honest refusal (`reason` names why: not among the bucket's resolved faces, pattern producer, no exact query), never a guess; a malformed id degrades to a per-id reason rather than failing the whole batch. Only the B-rep gate fails the request as a whole (`selectorSynthesizeError`), same as `entityFactsRequest`.
+
+```json
+{ "type": "selectorSynthesizeRequest", "requestId": "1234-0.56", "op": 2, "role": "endCap", "entityIds": ["face-6"] }
+```
+
+```json
+{ "type": "selectorSynthesizeResult", "requestId": "1234-0.56", "results": [{ "entityId": "face-6", "query": { "version": 1, "source": { "kind": "bucket", "op": 2, "role": "endCap" } }, "kind": "extrude" }] }
+```
+
 `curveType` is the edge-side counterpart of `surfaceType`, which had no analogue before this: `"line" | "circle" | "ellipse" | "hyperbola" | "parabola" | "bezier" | "bspline" | "other"`, set only for an edge. It uses the same `BRepAdaptor_Curve_2(edge).GetType()` call `measure_exact`'s `"radius"` kind already exercises against the live WASM, so it needed no new probing — and `inspect` gets it for free.
 
 ### `measureExactResult` / `measureExactError`
@@ -852,6 +866,7 @@ type WebviewToHost =
   | { type: 'macroSaveCurrent' }
   | { type: 'macroDelete'; name: string }
   | { type: 'entityFactsRequest'; requestId: string; entityId: string }
+  | { type: 'selectorSynthesizeRequest'; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
