@@ -19,7 +19,7 @@ import {
   validateSelectorQuery,
   type SelectorQuery,
 } from "./selectorQuery";
-import { matchesFacePredicate, rankFaces, type FilterableFace } from "./selectorPredicate";
+import { applyFaceFilter, rankFaces, type FilterableFace } from "./selectorPredicate";
 import type { OpBucket } from "./opBuckets";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp";
@@ -1213,6 +1213,20 @@ export interface BucketSelectorResult {
  * absence, never a fabricated fact).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+function filterableFactForFace(oc: any, face: any, id: string, cleanup: Array<{ delete(): void }>): FilterableFace {
+  const info = faceSurfaceInfo(oc, face, cleanup);
+  const props = new oc.GProp_GProps_1();
+  cleanup.push(props);
+  surfacePropertiesAdaptive(oc, face, props);
+  return {
+    id,
+    area: props.Mass(),
+    surfaceType: info.type,
+    normal: info.params?.kind === "plane" ? info.params.normal : null,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function faceFilterableFacts(
   oc: any,
   shape: any,
@@ -1226,36 +1240,45 @@ function faceFilterableFacts(
     if (!m) continue;
     const face = faces[parseInt(m[1], 10)];
     if (!face) continue;
-    const info = faceSurfaceInfo(oc, face, cleanup);
-    const props = new oc.GProp_GProps_1();
-    cleanup.push(props);
-    surfacePropertiesAdaptive(oc, face, props);
-    out.push({
-      id,
-      area: props.Mass(),
-      surfaceType: info.type,
-      normal: info.params?.kind === "plane" ? info.params.normal : null,
-    });
+    out.push(filterableFactForFace(oc, face, id, cleanup));
   }
   return out;
 }
 
 /**
- * Re-executable whole-bucket selector — roadmap item 1 ("Selector synthesis"),
- * ladder rungs 1–2. Resolves `{version: 1, source: {kind: "bucket", op, role}}`
- * ("the faces op N produced in role R") against the CURRENT `ops` list, so a
+ * Whole-model exact face facts for the rung-3 scene resolver — one
+ * `collectFaces` pass plus a `faceSurfaceInfo` + adaptive-area read per face,
+ * inside the caller's own cleanup arrays. The sibling of `faceFilterableFacts`
+ * above, which indexes only already-resolved ids; this one walks every face
+ * because a scene query has no bucket anchor to narrow by. Same cleanup-array
+ * discipline, no new OCCT API, no probe.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function allFaceFilterableFacts(oc: any, shape: any, cleanup: Array<{ delete(): void }>): FilterableFace[] {
+  return collectFaces(oc, shape, cleanup).map((face, i) => filterableFactForFace(oc, face, `face-${i}`, cleanup));
+}
+
+/**
+ * Re-executable selectors — roadmap item 1 ("Selector synthesis"), ladder
+ * rungs 1–3. The bucket source (`{kind: "bucket", op, role}` — "the faces op
+ * N produced in role R") resolves against the CURRENT `ops` list, so a
  * recorded `OpBucket`'s step-local ids never need to be trusted against a
  * newer shape; an optional rung-2 `filter`/`rank` narrows that set by exact
- * current-shape facts ("op 3's `endCap` face with the largest area").
+ * current-shape facts ("op 3's `endCap` face with the largest area"). The
+ * scene source (`{kind: "scene", filter?, rank?}`) drops the anchor entirely
+ * ("the largest planar face in the model") and resolves in a single full
+ * replay.
  *
- * Mechanism: replay the prefix `ops[0..op]` with an `opBuckets` collector to
- * re-derive the reference ids (never trusting caller-supplied ids), fingerprint
- * that prefix shape, replay the full list, and match the reference subset via
- * `rebindEntities` at the shared `1e-3 * bboxDiagonal` tolerance — the same
- * match `rebindPartsAcrossOps` uses, at zero new matching code. The returned
- * `matches` ARE the oracle: each carries `centreDistance`/`measureDeltaPct`,
- * so a caller verifies "the SAME entity" by comparing geometry, not by
- * trusting the resolution.
+ * Bucket mechanism: replay the prefix `ops[0..op]` with an `opBuckets`
+ * collector to re-derive the reference ids (never trusting caller-supplied
+ * ids), fingerprint that prefix shape, replay the full list, and match the
+ * reference subset via `rebindEntities` at the shared `1e-3 * bboxDiagonal`
+ * tolerance — the same match `rebindPartsAcrossOps` uses, at zero new
+ * matching code. The returned `matches` ARE the oracle: each carries
+ * `centreDistance`/`measureDeltaPct`, so a caller verifies "the SAME entity"
+ * by comparing geometry, not by trusting the resolution. The scene path
+ * returns `matches: []` — with no reference set there is nothing to match
+ * against; the exact facts themselves are the oracle.
  *
  * Ordering is load-bearing: the induced layer filters on CURRENT-shape facts
  * read AFTER the match (rank after resolve), never on prefix-shape facts —
@@ -1267,8 +1290,10 @@ function faceFilterableFacts(
  * A producing op that gracefully skipped records no bucket (honest empty,
  * never a fabricated match); a pattern-instance producer is refused via
  * `bindable: false` (the roadmap's bindability gate — a name would be
- * ambiguous across instances). Malformed queries and out-of-range op indices
- * throw (caller-input-shape misuse, failing fast like every other tool).
+ * ambiguous across instances; a scene query dissolves this by returning
+ * matches across all copies). Malformed queries, bare scene queries, and
+ * out-of-range op indices throw (caller-input-shape misuse, failing fast
+ * like every other tool).
  */
 export async function resolveBucketSelector(
   extensionPath: string,
@@ -1280,9 +1305,48 @@ export async function resolveBucketSelector(
   const query: SelectorQuery | null = validateSelectorQuery(queryRaw);
   if (!query) {
     throw new Error(
-      'Invalid selector query — expected {version: 1, source: {kind: "bucket", op: <op index>, role: <role>}}.'
+      'Invalid selector query — expected {version: 1, source: ({kind: "bucket", op: <op index>, role: <role>} | {kind: "scene", filter?, rank?})}.'
     );
   }
+
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/bs.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  // Rung-3 scene resolver: no bucket anchor, so no prefix replay, no
+  // reference set, and no geometric match — a single full replay, then the
+  // induced layer over whole-model exact facts. The `matches` oracle is
+  // meaningless with no reference set (returned empty); the facts themselves
+  // are the oracle. `bindable` is always true here by construction — with no
+  // producing op there is no instance to be ambiguous across, which is what
+  // dissolves (not solves) the pattern-instance problem rung 1 refuses.
+  if (query.source.kind === "scene") {
+    const cleanup: Array<{ delete(): void }> = [];
+    try {
+      const shape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanup), ops, cleanup);
+      let survivors = allFaceFilterableFacts(oc, shape, cleanup);
+      const { filter, rank } = query.source;
+      if (filter !== undefined) survivors = applyFaceFilter(survivors, filter);
+      if (rank !== undefined) survivors = rankFaces(survivors, rank);
+      return { ids: survivors.map((f) => f.id), unresolved: [], matches: [], bindable: true };
+    } catch (err) {
+      throw wrapOcctFault(err);
+    } finally {
+      for (let i = cleanup.length - 1; i >= 0; i--) {
+        try {
+          cleanup[i].delete();
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        oc.FS.unlink(tmpName);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   const opIndex = query.source.op;
   if (opIndex >= ops.length) {
     throw new Error(`Selector query op ${opIndex} is out of range (op list has ${ops.length} ops).`);
@@ -1293,13 +1357,9 @@ export async function resolveBucketSelector(
       unresolved: [],
       matches: [],
       bindable: false,
-      reason: `Producing op ${opIndex} (${ops[opIndex].op}) is a pattern instance — ambiguous across instances, routed to a future scene-wide predicate rung.`,
+      reason: `Producing op ${opIndex} (${ops[opIndex].op}) is a pattern instance — ambiguous across instances, resolvable via a scene-wide query instead.`,
     };
   }
-
-  const oc = await getOcct(extensionPath);
-  const tmpName = `/bs.${format}`;
-  oc.FS.writeFile(tmpName, bytes);
 
   const cleanupPrefix: Array<{ delete(): void }> = [];
   const cleanupFull: Array<{ delete(): void }> = [];
@@ -1350,10 +1410,8 @@ export async function resolveBucketSelector(
     // in this file, never a fabricated predicate evaluation.
     let survivors = matches.filter((m) => byId.has(m.newId));
     if (filter !== undefined) {
-      survivors = survivors.filter((m) => {
-        const f = byId.get(m.newId);
-        return f !== undefined && matchesFacePredicate(f, filter);
-      });
+      const kept = new Set(applyFaceFilter([...byId.values()], filter).map((f) => f.id));
+      survivors = survivors.filter((m) => kept.has(m.newId));
     }
     if (rank !== undefined) {
       const ranked = rankFaces(

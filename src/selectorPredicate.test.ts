@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SELECTOR_DIRECTION_TOLERANCE_DEG,
+  applyFaceFilter,
   filterFaces,
   matchesFacePredicate,
   rankFaces,
@@ -108,6 +109,15 @@ describe("selectorPredicate: filterFaces + rankFaces", () => {
 
   it("filterFaces preserves input order", () => {
     expect(filterFaces(faces, { kind: "areaGte", value: 20 }).map((f) => f.id)).toEqual(["face-0", "face-1", "face-2"]);
+  });
+
+  it("applyFaceFilter intersects a conjunction (AND semantics)", () => {
+    expect(applyFaceFilter(faces, [{ kind: "planar" }, { kind: "areaGte", value: 20 }]).map((f) => f.id)).toEqual([
+      "face-0",
+      "face-1",
+    ]);
+    expect(applyFaceFilter(faces, [{ kind: "planar" }, { kind: "areaGte", value: 1e12 }])).toEqual([]);
+    expect(applyFaceFilter(faces, { kind: "planar" }).map((f) => f.id)).toEqual(["face-0", "face-1"]);
   });
 
   it("rankFaces picks largest/smallest with deterministic tie-break", () => {

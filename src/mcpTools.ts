@@ -435,7 +435,7 @@ export function describeCapabilities() {
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written; edits/parts/annotations/construction planes/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open.",
       "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
-      "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first two rungs of the Selector-synthesis ladder. An optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts) plus rank ({by:'area',order:'max'|'min',n}) narrows the bucket without baking in coordinates (e.g. the largest endCap face). Each returned id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance); unresolved names reference ids with no confident match, an induced selection of zero is an honest empty (never a fallback to the whole bucket), and bindable:false means the producing op was a pattern instance (ambiguous across instances, never guessed).",
+      "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first three rungs of the Selector-synthesis ladder. An optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts; one leaf or an AND-list) plus rank ({by:'area',order:'max'|'min',n}) narrows the bucket without baking in coordinates (e.g. the largest endCap face) — or {version: 1, source: {kind: 'scene', filter?, rank?}} drops the bucket anchor entirely (at least one of filter/rank required), e.g. the largest planar face in the model, in a single replay. Each returned bucket id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance; the scene path returns no matches — the exact facts are the oracle); unresolved names reference ids with no confident match, an induced selection of zero is an honest empty (never a fallback), and bindable:false means the producing op was a pattern instance (use a scene query to match across all copies instead).",
     ],
   };
 }
@@ -1148,21 +1148,25 @@ export async function checkInterferenceAllTool(
 // resolve_selector
 
 /**
- * Re-executable whole-bucket selector (roadmap item 1, ladder rungs 1–2) —
- * resolves `{version: 1, source: {kind: "bucket", op, role}}` ("the faces op
- * N produced in role R") against the CURRENT op list, so a recorded
- * `OpBucket`'s step-local ids are never trusted against a newer shape; an
- * optional induced `filter`/`rank` narrows the set by exact current-shape
- * facts (see `selectorPredicate.ts`). Facts only: `ids` are the
- * current-model `face-N` ids, `matches` carry the centre-distance/
- * measure-delta oracle behind each one (a resolved id is trustworthy only at
- * ~0 distance, the same bar entity-rebinding verifies itself against in `npm
- * run mcp:smoke`), `unresolved` names reference ids with no confident match,
+ * Re-executable selectors (roadmap item 1, ladder rungs 1–3) — resolves
+ * `{version: 1, source: {kind: "bucket", op, role}}` ("the faces op N produced
+ * in role R") against the CURRENT op list, so a recorded `OpBucket`'s
+ * step-local ids are never trusted against a newer shape; an optional
+ * induced `filter`/`rank` narrows the set by exact current-shape facts (see
+ * `selectorPredicate.ts`) — or `{version: 1, source: {kind: "scene",
+ * filter?, rank?}}` with no bucket anchor at all, resolved in a single full
+ * replay (at least one of `filter`/`rank` required). Facts only: `ids` are
+ * the current-model `face-N` ids, `matches` carry the centre-distance/
+ * measure-delta oracle behind each bucket match (a resolved id is trustworthy
+ * only at ~0 distance, the same bar entity-rebinding verifies itself against
+ * in `npm run mcp:smoke`; the scene path returns no matches — the exact facts
+ * are the oracle), `unresolved` names reference ids with no confident match,
  * and an induced selection of zero is an honest empty (never a fallback to
- * the whole bucket). A pattern-instance producer returns `bindable: false`
- * with a reason (routed to a future scene-wide rung, never a guessed
- * instance); a skipped/wireframe op with no bucket resolves to an honest
- * empty. B-rep sources only headless (needs exact replay geometry).
+ * the whole bucket). A bucket query whose producing op was a pattern instance
+ * returns `bindable: false` with a reason (ambiguous across instances — use a
+ * scene query to match across all copies instead); a skipped/wireframe op
+ * with no bucket resolves to an honest empty. B-rep sources only headless
+ * (needs exact replay geometry).
  */
 export async function resolveSelectorTool(
   ctx: ToolContext,

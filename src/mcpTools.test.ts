@@ -2695,6 +2695,18 @@ describe("resolve_selector", () => {
     expect(pipeline.resolveBucketSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], selector);
   });
 
+  it("forwards a scene query to the pipeline (no bucket anchor needed)", async () => {
+    const selector = { version: 1, source: { kind: "scene", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } } };
+    const pipeline = fakePipeline({
+      resolveBucketSelector: vi.fn(async () => ({ ids: ["face-3"], unresolved: [], matches: [], bindable: true })),
+    });
+    const result = await resolveSelectorTool(ctx(pipeline), { path: stpModel, selector });
+    expect(result.supported).toBe(true);
+    expect(result.ids).toEqual(["face-3"]);
+    expect(result.warnings).toEqual([]);
+    expect(pipeline.resolveBucketSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], selector);
+  });
+
   it("warns on unresolved ids and on bindable:false without throwing", async () => {
     const unresolved = ctx(
       fakePipeline({

@@ -333,6 +333,46 @@ try {
     assert(empty.ids.length === 0 && empty.matches.length === 0, "an impossible induced predicate resolves to an honest empty, never the whole bucket");
   }
 
+  // resolve_selector rung 3 (scene-wide predicate, no bucket anchor) — own
+  // block.stp copy (a 3×4×5 box: faces pair up as 12/15/20-area, all planar),
+  // so every count is analytically known: largest-1 names exactly one face
+  // (cross-checked via inspect, the established oracle bar), and a pattern
+  // copy doubles the planar count while staying bindable — the instance
+  // problem rung 1 refuses is dissolved, not solved.
+  {
+    const sceneModel = path.join(dir, "block-for-selector-rung3.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), sceneModel);
+    const scene = await call("resolve_selector", {
+      path: sceneModel,
+      selector: { version: 1, source: { kind: "scene", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } } },
+    });
+    assert(
+      scene.supported === true && scene.bindable === true && scene.ids.length === 1 && scene.matches.length === 0,
+      `resolve_selector rung 3 names the single largest planar face (got ${JSON.stringify(scene.ids)})`
+    );
+    const facts = await call("inspect", { path: sceneModel, entityId: scene.ids[0] });
+    assert(Math.abs(facts.area - 20) < 1e-6, `the scene survivor really is a 20-area face (got ${facts.area})`);
+
+    const conj = await call("resolve_selector", {
+      path: sceneModel,
+      selector: { version: 1, source: { kind: "scene", filter: [{ kind: "planar" }, { kind: "areaGte", value: 15 }] } },
+    });
+    assert(conj.ids.length === 4, `scene conjunction planar+area>=15 names the 15/15/20/20 faces (got ${JSON.stringify(conj.ids)})`);
+
+    await call("apply_edit_ops", {
+      path: sceneModel,
+      ops: [{ op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 50, count: 2 }],
+    });
+    const across = await call("resolve_selector", {
+      path: sceneModel,
+      selector: { version: 1, source: { kind: "scene", filter: { kind: "planar" } } },
+    });
+    assert(
+      across.bindable === true && across.ids.length === 12,
+      `scene matches across pattern copies: 12 planar faces over 2 instances (got ${across.ids.length})`
+    );
+  }
+
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
   assert(sidecar.ops.length === 1 && sidecar.ops[0].op === "addBox", "edits sidecar is valid JSON with the op");
 

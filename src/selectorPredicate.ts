@@ -149,6 +149,14 @@ export function filterFaces(faces: FilterableFace[], predicate: FacePredicate): 
   return faces.filter((f) => matchesFacePredicate(f, predicate));
 }
 
+/** Applies an induced filter layer — one leaf or an AND-conjunction — to a
+ * face list. Shared by the bucket and scene resolvers so the two cannot
+ * disagree on conjunction semantics. */
+export function applyFaceFilter(faces: FilterableFace[], filter: FacePredicate | FacePredicate[]): FilterableFace[] {
+  const leaves = Array.isArray(filter) ? filter : [filter];
+  return faces.filter((f) => leaves.every((leaf) => matchesFacePredicate(f, leaf)));
+}
+
 /**
  * Top-N selection by area — the host-side `largestN`/`smallestN`. Faces with
  * `area: null` sort LAST in either order (unknown size is never "largest");

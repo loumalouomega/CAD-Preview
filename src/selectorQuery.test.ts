@@ -49,6 +49,43 @@ describe("selectorQuery: validateSelectorQuery", () => {
     ).toBeNull();
   });
 
+  it("accepts the rung-3 scene source and round-trips it", () => {
+    const q = validateSelectorQuery({
+      version: 1,
+      source: { kind: "scene", filter: [{ kind: "planar" }, { kind: "areaGte", value: 10 }], rank: { by: "area", order: "max", n: 1 } },
+    });
+    expect(q).toEqual({
+      version: 1,
+      source: { kind: "scene", filter: [{ kind: "planar" }, { kind: "areaGte", value: 10 }], rank: { by: "area", order: "max", n: 1 } },
+    });
+    expect(JSON.parse(JSON.stringify(q))).toEqual(q);
+  });
+
+  it("rejects a bare scene query (names the entire model, never meant)", () => {
+    expect(validateSelectorQuery({ version: 1, source: { kind: "scene" } })).toBeNull();
+    expect(validateSelectorQuery({ version: 1, source: { kind: "scene", filter: [] } })).toBeNull();
+    expect(validateSelectorQuery({ version: 1, source: { kind: "scene", filter: [{ kind: "planar" }, { kind: "alongX" }] } })).toBeNull();
+    expect(
+      validateSelectorQuery({
+        version: 1,
+        source: { kind: "scene", rank: { by: "area", order: "max", n: 1 }, filter: [{ kind: "planar" }, { kind: "planar" }, { kind: "planar" }, { kind: "planar" }, { kind: "planar" }, { kind: "planar" }, { kind: "planar" }, { kind: "planar" }, { kind: "planar" }] },
+      })
+    ).toBeNull();
+  });
+
+  it("a scene query is always bindable (no producing op to be ambiguous across)", () => {
+    expect(isBindableSelector([], { version: 1, source: { kind: "scene", rank: { by: "area", order: "max", n: 1 } } })).toBe(true);
+  });
+
+  it("bucketReferenceIds ignores scene queries (no anchor, no reference set)", () => {
+    expect(
+      bucketReferenceIds([{ op: 0, kind: "addBox", roles: { body: ["face-0"] } }], {
+        version: 1,
+        source: { kind: "scene", filter: { kind: "planar" } },
+      })
+    ).toEqual([]);
+  });
+
   it("rejects malformed input without throwing", () => {
     expect(validateSelectorQuery(null)).toBeNull();
     expect(validateSelectorQuery([])).toBeNull();
