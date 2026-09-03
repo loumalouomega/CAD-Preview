@@ -49,6 +49,20 @@ printf '#!/bin/sh\nexec env ELECTRON_RUN_AS_NODE=1 /app/extra/vscode/code "$@"\n
 PATH=/tmp/bin:$PATH node scripts/mcp-smoke/run.mjs
 ```
 
+Playwright looks for its browsers under `XDG_CACHE_HOME`, which the sandbox
+remaps, so point it at the real download instead:
+`PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright`. With that set,
+`vitest`, `esbuild.mjs`, `mcp:smoke`, `webview-test` and `docs:screenshots`
+all run under this recipe.
+
+`test:integration` is the one that does **not**. Its launcher spawns
+`process.execPath` — which under this recipe is the Electron binary, not
+Node — with `ELECTRON_RUN_AS_NODE` deliberately deleted (see the long comment
+in `test/integration/run.mjs` explaining why that deletion is required for the
+spawned VS Code). The launcher therefore starts as a GUI VS Code that treats
+its script argument as a file to open, and exits 0 having run nothing. Run
+that suite from a normal terminal with a real `node` on `PATH`.
+
 ## Regenerating Documentation Screenshots
 
 The per-feature screenshots embedded in the docs are generated automatically — they are **not** hand-captured — so they stay in lockstep with the real UI:

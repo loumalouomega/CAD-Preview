@@ -63,20 +63,47 @@ export interface ChamferOp { op: "chamfer"; edges: string[]; distance: number; d
  * only — it has no dotted-path form — so a nested object would make these the
  * only numeric op fields in the codebase a parametric variable cannot drive.
  *
- * **Closed (face) profiles only.** All four ops resolve `profile` to a
- * `face-N`, and an open polyline never becomes a face, so the "thin wall from
- * an open profile" idea needs a wire/edge profile operand that does not exist
- * yet — see CLAUDE.md.
+ * **Open profiles are symmetric, and `thinOuter` is refused for them.** An
+ * open wire (see {@link ExtrudeOp.profileEdges}) has no inside or outside, so
+ * "how much of the wall sits outside the boundary" names nothing — and the
+ * kernel only offers a band centred on the spine anyway (probed: an open
+ * wire's offset is symmetric of half-width `thin / 2`, with semicircular end
+ * caps). A `thinOuter` that isn't exactly `thin / 2` is therefore skipped at
+ * replay with a diagnostic rather than silently ignored.
  */
 export interface ThinSpec { thin?: number; thinOuter?: number; }
-/** Extrude a selected planar face/wire `profile` along `dir` by `length`. */
-export interface ExtrudeOp extends ThinSpec { op: "extrude"; profile: string; dir: Vec3; length: number; }
+/**
+ * The profile a sweep-family op consumes, in one of two mutually exclusive
+ * forms — exactly one must be present, mirroring {@link MirrorOp}'s own
+ * three-form XOR:
+ *
+ * - `profile` — a `face-N`, the original form. A sketch face, or any face of
+ *   the model. Its inner wires (holes) are preserved for a plain feature.
+ * - `profileEdges` — a set of `edge-N` ids assembled into one wire, so an
+ *   OPEN sketch (an `addPolyline` with `closed: false`, whose segments each
+ *   get their own `edge-N`) can finally be consumed. The edges may be given
+ *   in any order — OCCT's wire builder joins them by shared vertices — and a
+ *   genuinely disconnected set is skipped with a diagnostic.
+ *
+ * A CLOSED edge set behaves exactly like the equivalent face. An OPEN one
+ * encloses no area, so it **requires** {@link ThinSpec.thin}: the wall is what
+ * gives it a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
+ */
+export interface ProfileOperand { profile?: string; profileEdges?: string[]; }
+/** Extrude a selected planar face, or a wire of selected edges, along `dir` by `length`. */
+export interface ExtrudeOp extends ThinSpec, ProfileOperand { op: "extrude"; dir: Vec3; length: number; }
 /** Revolve a selected profile `angleDeg` about the axis (`axisPoint`, `axisDir`). */
-export interface RevolveOp extends ThinSpec { op: "revolve"; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; }
-/** Sweep a selected profile face/wire along a selected path edge. */
-export interface SweepOp extends ThinSpec { op: "sweep"; profile: string; path: string; }
-/** Loft through 2+ selected profile faces/wires. */
-export interface LoftOp extends ThinSpec { op: "loft"; profiles: string[]; }
+export interface RevolveOp extends ThinSpec, ProfileOperand { op: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; }
+/** Sweep a selected profile along a selected path edge. */
+export interface SweepOp extends ThinSpec, ProfileOperand { op: "sweep"; path: string; }
+/**
+ * Loft through 2+ selected profile sections. `profiles` (face ids) and
+ * `profileEdgeSets` (one `edge-N` set per section) are mutually exclusive —
+ * the same XOR {@link ProfileOperand} applies to the single-profile ops, with
+ * a distinct field name because the arity differs. Every section must agree
+ * on closedness; a mixed list is skipped with a diagnostic.
+ */
+export interface LoftOp extends ThinSpec { op: "loft"; profiles?: string[]; profileEdgeSets?: string[][]; }
 /** Spread every solid radially from the model centre by `factor`. */
 export interface ExplodeOp { op: "explode"; factor: number; }
 /** Align face `faceA` onto face `faceB` (basic single-constraint mate). */
@@ -312,6 +339,46 @@ function asMidaxisPair(v: unknown): [string, string] | null {
   return [v[0], v[1]];
 }
 
+/**
+ * A non-empty array of `edge-N` ids for a {@link ProfileOperand}'s wire form.
+ *
+ * Unlike {@link asIdArray} — which only checks "array of strings", so an
+ * unresolvable id is a replay-time skip — the id SHAPE is what distinguishes
+ * this operand form from the face form, so a `face-N` smuggled in here would
+ * be a silently-wrong operand rather than a miss. Refused up front, matching
+ * {@link asMidaxisPair}'s reasoning.
+ */
+function asEdgeIdArray(v: unknown, min = 1): string[] | null {
+  if (!Array.isArray(v) || v.length < min) return null;
+  if (!v.every((x) => typeof x === "string" && /^edge-\d+$/.test(x))) return null;
+  return v as string[];
+}
+
+/** `loft`'s per-section form: ≥ `min` non-empty {@link asEdgeIdArray}s. */
+function asEdgeIdArrayList(v: unknown, min = 2): string[][] | null {
+  if (!Array.isArray(v) || v.length < min) return null;
+  const out: string[][] = [];
+  for (const item of v) {
+    const ids = asEdgeIdArray(item);
+    if (!ids) return null;
+    out.push(ids);
+  }
+  return out;
+}
+
+/**
+ * Resolves a single-profile op's mutually exclusive {@link ProfileOperand}:
+ * exactly one of `profile` / `profileEdges`, never both and never neither.
+ */
+function asProfileOperand(o: Record<string, unknown>): ProfileOperand | null {
+  const hasFace = o.profile !== undefined;
+  const hasEdges = o.profileEdges !== undefined;
+  if (hasFace === hasEdges) return null; // neither form, or both at once
+  if (hasFace) return typeof o.profile === "string" ? { profile: o.profile } : null;
+  const edges = asEdgeIdArray(o.profileEdges);
+  return edges ? { profileEdges: edges } : null;
+}
+
 function asPlaneId(v: unknown): string | null {
   if (typeof v !== "string") return null;
   if (!/^plane-\d+$/.test(v)) return null;
@@ -477,28 +544,39 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "extrude": {
       const dir = asVec3(o.dir);
       const thin = asThinSpec(o);
-      return typeof o.profile === "string" && dir && isFiniteNumber(o.length) && thin
-        ? { op: "extrude", profile: o.profile, dir, length: o.length, ...thin }
+      const profile = asProfileOperand(o);
+      return profile && dir && isFiniteNumber(o.length) && thin
+        ? { op: "extrude", ...profile, dir, length: o.length, ...thin }
         : null;
     }
     case "revolve": {
       const axisPoint = asVec3(o.axisPoint);
       const axisDir = asVec3(o.axisDir);
       const thin = asThinSpec(o);
-      return typeof o.profile === "string" && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && thin
-        ? { op: "revolve", profile: o.profile, axisPoint, axisDir, angleDeg: o.angleDeg, ...thin }
+      const profile = asProfileOperand(o);
+      return profile && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && thin
+        ? { op: "revolve", ...profile, axisPoint, axisDir, angleDeg: o.angleDeg, ...thin }
         : null;
     }
     case "sweep": {
       const thin = asThinSpec(o);
-      return typeof o.profile === "string" && typeof o.path === "string" && thin
-        ? { op: "sweep", profile: o.profile, path: o.path, ...thin }
+      const profile = asProfileOperand(o);
+      return profile && typeof o.path === "string" && thin
+        ? { op: "sweep", ...profile, path: o.path, ...thin }
         : null;
     }
     case "loft": {
-      const profiles = asIdArray(o.profiles, 2);
+      const hasFaces = o.profiles !== undefined;
+      const hasEdgeSets = o.profileEdgeSets !== undefined;
+      if (hasFaces === hasEdgeSets) return null; // neither form, or both at once
       const thin = asThinSpec(o);
-      return profiles && thin ? { op: "loft", profiles, ...thin } : null;
+      if (!thin) return null;
+      if (hasFaces) {
+        const profiles = asIdArray(o.profiles, 2);
+        return profiles ? { op: "loft", profiles, ...thin } : null;
+      }
+      const profileEdgeSets = asEdgeIdArrayList(o.profileEdgeSets, 2);
+      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin } : null;
     }
     case "explode": {
       return isFiniteNumber(o.factor) ? { op: "explode", factor: o.factor } : null;

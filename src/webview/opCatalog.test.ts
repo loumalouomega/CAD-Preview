@@ -99,6 +99,12 @@ describe("OP_CATALOG", () => {
 });
 
 describe("describeOp", () => {
+  it("labels a wire-form profile by its edges", () => {
+    expect(describeOp({ op: "extrude", profileEdges: ["edge-2", "edge-3"], dir: [0, 0, 1], length: 5 }))
+      .toContain("edge-2+edge-3");
+    expect(describeOp({ op: "loft", profileEdgeSets: [["edge-0"], ["edge-1"]] })).toContain("2 profiles");
+  });
+
   it("returns a non-empty label for every op kind", () => {
     for (const op of Object.values(REPRESENTATIVE_OPS)) {
       const label = describeOp(op);
@@ -164,6 +170,15 @@ describe("referencedEntities", () => {
       .toEqual(["face-7", "edge-3"]);
     expect(referencedEntities({ op: "mate", faceA: "face-1", faceB: "face-2" }))
       .toEqual(["face-1", "face-2"]);
+  });
+
+  it("reads the wire form of a profile operand", () => {
+    expect(referencedEntities({ op: "extrude", profileEdges: ["edge-2", "edge-3"], dir: [0, 0, 1], length: 2 }))
+      .toEqual(["edge-2", "edge-3"]);
+    expect(referencedEntities({ op: "sweep", profileEdges: ["edge-2"], path: "edge-3" }))
+      .toEqual(["edge-2", "edge-3"]);
+    expect(referencedEntities({ op: "loft", profileEdgeSets: [["edge-0", "edge-1"], ["edge-2"]] }))
+      .toEqual(["edge-0", "edge-1", "edge-2"]);
   });
 
   it("returns nothing for ops that genuinely name no entity", () => {

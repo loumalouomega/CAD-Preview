@@ -266,7 +266,10 @@ function collectBucketForOp(oc: any, before: any, after: any, index: number, op:
       // consumes a freshly built band face instead and leaves the profile
       // sketch behind as a free face — so this match would label the leftover
       // sketch `startCap` even though it is not part of the new solid at all.
-      const profileFace = isThin ? null : collectFaces(oc, before, tmp)[faceIndex((op as { profile: string }).profile)];
+      // `profile` is optional since the wire-operand form shipped; an
+      // edge-set profile has no face to match, so this branch is skipped.
+      const profileId = (op as { profile?: string }).profile;
+      const profileFace = isThin || profileId === undefined ? null : collectFaces(oc, before, tmp)[faceIndex(profileId)];
       if (profileFace) {
         for (let i = 0; i < afterFaces.length; i++) {
           if (afterFaces[i].IsSame(profileFace)) { roles.startCap = [`face-${i}`]; break; }
@@ -992,14 +995,32 @@ function isChamferWithFace(op: Extract<EditOp, { op: "chamfer" }>): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
   if (guideCollector) {
-    const faceIds: string[] = op.op === "extrude" || op.op === "revolve" ? [(op as any).profile] : op.op === "sweep" ? [(op as any).profile] : op.op === "loft" ? (op as any).profiles : [];
-    for (const fid of faceIds) {
+    // Both operand forms are checked: a guide face can't be a profile, and
+    // neither can a guide edge — an `addPolyline { guide: true }` is exactly
+    // the kind of construction spine someone would otherwise try to extrude.
+    // The sweep PATH edge is checked too; it used to be the one operand of
+    // this family that a guide could still slip through.
+    const single = op.op === "extrude" || op.op === "revolve" || op.op === "sweep" ? (op as any).profile : undefined;
+    const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single] : [];
+    const edgeIds: string[] = op.op === "loft"
+      ? ((op as any).profileEdgeSets ?? []).flat()
+      : [...((op as any).profileEdges ?? []), ...(op.op === "sweep" ? [(op as any).path] : [])];
+    if (faceIds.length > 0) {
       const faces = collectFaces(oc, shape, cleanup);
-      const f = faces[faceIndex(fid)];
-      if (f && isGuideHandle(f, guideCollector)) { fail?.(`profile ${fid} is construction (guide) geometry — guide entities are excluded from feature resolution`); return shape; }
+      for (const fid of faceIds) {
+        const f = faces[faceIndex(fid)];
+        if (f && isGuideHandle(f, guideCollector)) { fail?.(`profile ${fid} is construction (guide) geometry — guide entities are excluded from feature resolution`); return shape; }
+      }
+    }
+    if (edgeIds.length > 0) {
+      const edges = collectEdges(oc, shape, cleanup);
+      for (const eid of edgeIds) {
+        const e = edges[edgeIndex(eid)];
+        if (e && isGuideHandle(e, guideCollector)) { fail?.(`edge ${eid} is construction (guide) geometry — guide entities are excluded from feature resolution`); return shape; }
+      }
     }
   }
-  const solid = buildFeatureSolid(oc, shape, op, cleanup);
+  const solid = buildFeatureSolid(oc, shape, op, cleanup, fail);
   if (!solid) {
     if (thinSpecOf(op)) {
       // A thin build has its own distinct failure modes, and an over-large
@@ -1010,7 +1031,7 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
         "the wall is probably thicker than the profile's narrowest half-width — reduce thin; a profile that already has holes, or is non-planar, also cannot be thinned"
       );
     } else {
-      fail?.(`${op.op} could not build a new body`, "check that the profile face-N (and, for sweep, the path edge-N) resolve to real entities");
+      fail?.(`${op.op} could not build a new body`, "check that the profile (a face-N, or a connected set of edge-N ids) and, for sweep, the path edge-N resolve to real entities");
     }
     return shape;
   }
@@ -1025,13 +1046,21 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
 }
 
 /**
- * The two boundary wires of a thin-walled band around a profile face's outer
- * wire, or `null` when the profile or the offsets can't produce one.
+ * The two boundary wires of a thin-walled band around a CLOSED profile wire
+ * (a face's outer wire, or one assembled from picked edges), or `null` when
+ * the offsets can't produce one. The open-wire case is
+ * {@link openBandFaceFromWire} — a genuinely different construction.
  *
  * `thin` is the total wall thickness and `thinOuter` how much of it sits
  * outside the profile boundary (see {@link ThinSpec}), so the offsets applied
  * are `+thinOuter` and `-(thin - thinOuter)`; an offset of exactly 0 reuses the
  * profile wire itself rather than round-tripping it through the offsetter.
+ *
+ * The `isOpenResult` ctor arg is `false` here, which for a CLOSED spine means
+ * "offset outward for a positive distance". Verified live that this holds
+ * regardless of the spine's winding: a hand-assembled rectangle wire built
+ * clockwise and one built counter-clockwise both grow to 192.566 at `+2` and
+ * shrink to 36 at `-2`, so a user-picked edge set needs no orientation fix-up.
  *
  * OCCT API, verified against the live WASM (this is the first use of
  * `BRepOffsetAPI_MakeOffset` anywhere in this codebase):
@@ -1047,12 +1076,8 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
  * nothing and report a confidently-wrong volume.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function thinProfileWires(oc: any, face: any, thin: number, thinOuter: number, cleanup: Array<{ delete(): void }>): { outer: any; inner: any } | null {
+function thinProfileWires(oc: any, spine: any, thin: number, thinOuter: number, cleanup: Array<{ delete(): void }>): { outer: any; inner: any } | null {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
-  // `BRepTools.OuterWire` drops any inner wires, so a profile that already has
-  // holes would silently lose them — refuse rather than build wrong geometry.
-  if (wireCountOf(oc, face, cleanup) !== 1) return null;
-  const spine = keep(oc.BRepTools.OuterWire(face));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const offsetWire = (d: number): any => {
     if (d === 0) return spine;
@@ -1069,6 +1094,141 @@ function thinProfileWires(oc: any, face: any, thin: number, thinOuter: number, c
   return { outer, inner };
 }
 
+/**
+ * True when `wire` forms a closed loop.
+ *
+ * There is no usable closedness API in this binding — recorded while building
+ * `addSurfaceFromLines`, which had to accept a best-effort face from an open
+ * chain for exactly this reason: `BRepTools.IsReallyClosed`/`DetectClosedness`
+ * need arguments the binding doesn't expose, and `ShapeAnalysis_Wire.
+ * CheckClosed` did not distinguish a closed 4-edge square from an open 3-edge
+ * chain. Here the answer is load-bearing (it picks between two completely
+ * different band constructions), so it is computed from topology instead:
+ * tally each vertex's degree across the wire's own edges, using the same
+ * `HashCode` bucket + `IsSame` dedup `enumerateEdges`/`buildEdgeFaceAdjacency`
+ * already rely on. A closed loop has every vertex shared by two edges; an open
+ * chain has exactly two free ends.
+ *
+ * Verified live: a 1-edge open wire reports 2 free ends of 2 vertices, a
+ * 2-edge open chain 2 of 3, and a 4-edge rectangle 0 of 4.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wireIsClosed(oc: any, wire: any, cleanup: Array<{ delete(): void }>): boolean {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const buckets = new Map<number, Array<{ vertex: any; degree: number }>>();
+  const edges = keep(new oc.TopExp_Explorer_2(wire, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+  for (; edges.More(); edges.Next()) {
+    const edge = keep(oc.TopoDS.Edge_1(edges.Current()));
+    const verts = keep(new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    for (; verts.More(); verts.Next()) {
+      const vertex = keep(oc.TopoDS.Vertex_1(verts.Current()));
+      const hash = vertex.HashCode(HASH_UPPER);
+      const bucket = buckets.get(hash);
+      const seen = bucket?.find((v) => v.vertex.IsSame(vertex));
+      if (seen) seen.degree++;
+      else if (bucket) bucket.push({ vertex, degree: 1 });
+      else buckets.set(hash, [{ vertex, degree: 1 }]);
+    }
+  }
+  for (const bucket of buckets.values()) for (const v of bucket) if (v.degree === 1) return false;
+  return true;
+}
+
+/**
+ * The closed band boundary around an OPEN profile wire, as a face, or `null`.
+ *
+ * Genuinely different from {@link thinProfileWires}' two-offset construction:
+ * an open spine has no interior to offset into, so the band is a single closed
+ * loop straddling it. `BRepOffsetAPI_MakeOffset` produces exactly that when
+ * asked for a NON-open result — which is the opposite of what the name
+ * suggests and is worth stating, since the alternative silently returns
+ * something usable-looking:
+ *
+ * - `isOpenResult = true` gives a ONE-SIDED offset (an open wire on whichever
+ *   side the sign of the distance selects) — **not** a band;
+ * - `isOpenResult = false` gives the closed band of half-width `|d|`,
+ *   symmetric about the spine, with semicircular end caps. The sign of `d` is
+ *   irrelevant.
+ *
+ * Verified live to be exact: a length-10 spine at `d = 1` encloses
+ * `2·d·L + π·d²` = 23.141593, and at `d = 2`, 52.566371; a quarter-circle
+ * spine of radius 10 gives 34.557519 by the same formula. So the band's total
+ * width is `2·d`, and `thin` (a TOTAL thickness) maps to `d = thin / 2`.
+ *
+ * **A wire that is a single straight edge throws** (`___cxa_can_catch is not
+ * defined` — an Emscripten exception-machinery failure surfacing as an
+ * ordinary JS error, which the module survives). A lone straight line has no
+ * offset direction defined; a lone ARC offsets fine. Splitting the line at its
+ * midpoint into two collinear edges makes it work and yields the identical
+ * exact area, so that is done rather than refusing what is otherwise a
+ * completely reasonable profile — see {@link splitLoneLine}.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function openBandWire(oc: any, spine: any, thin: number, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const usable = splitLoneLine(oc, spine, cleanup);
+    const mk = keep(new oc.BRepOffsetAPI_MakeOffset_3(usable, oc.GeomAbs_JoinType.GeomAbs_Arc, false));
+    mk.Perform(thin / 2, 0);
+    const s = mk.Shape();
+    if (!s || s.IsNull()) return null;
+    keep(s);
+    if (s.ShapeType().value !== oc.TopAbs_ShapeEnum.TopAbs_WIRE.value) return null;
+    return keep(oc.TopoDS.Wire_1(s));
+  } catch {
+    return null;
+  }
+}
+
+/** {@link openBandWire} closed off into the face a feature builder consumes. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function openBandFaceFromWire(oc: any, spine: any, thin: number, cleanup: Array<{ delete(): void }>): any {
+  const boundary = openBandWire(oc, spine, thin, cleanup);
+  return boundary ? faceFromWire(oc, boundary, cleanup) : null;
+}
+
+/** A planar face bounded by one closed wire, or null. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function faceFromWire(oc: any, wire: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const mk = keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true));
+  if (!mk.IsDone()) return null;
+  const face = keep(mk.Face());
+  return face.IsNull() ? null : face;
+}
+
+/**
+ * Returns `wire` unchanged, or — when it is a single straight edge, the one
+ * shape this build's offsetter refuses (see {@link openBandFaceFromWire}) — an
+ * equivalent two-edge wire split at the midpoint.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function splitLoneLine(oc: any, wire: any, cleanup: Array<{ delete(): void }>): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const edges: any[] = [];
+  const exp = keep(new oc.TopExp_Explorer_2(wire, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+  for (; exp.More(); exp.Next()) edges.push(keep(oc.TopoDS.Edge_1(exp.Current())));
+  if (edges.length !== 1) return wire;
+  try {
+    const curve = keep(new oc.BRepAdaptor_Curve_2(edges[0]));
+    if (curve.GetType().value !== oc.GeomAbs_CurveType.GeomAbs_Line.value) return wire;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ends: any[] = [];
+    const verts = keep(new oc.TopExp_Explorer_2(edges[0], oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    for (; verts.More(); verts.Next()) ends.push(keep(oc.BRep_Tool.Pnt(keep(oc.TopoDS.Vertex_1(verts.Current())))));
+    if (ends.length !== 2) return wire;
+    const mid = keep(new oc.gp_Pnt_3((ends[0].X() + ends[1].X()) / 2, (ends[0].Y() + ends[1].Y()) / 2, (ends[0].Z() + ends[1].Z()) / 2));
+    const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+    mkWire.Add_1(keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(ends[0], mid)).Edge()));
+    mkWire.Add_1(keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(mid, ends[1])).Edge()));
+    return mkWire.IsDone() ? keep(mkWire.Wire()) : wire;
+  } catch {
+    return wire;
+  }
+}
+
 /** The annular face between a band's two boundary wires, or null. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function bandFaceFromWires(oc: any, outer: any, inner: any, cleanup: Array<{ delete(): void }>): any {
@@ -1080,12 +1240,16 @@ function bandFaceFromWires(oc: any, outer: any, inner: any, cleanup: Array<{ del
   return face.IsNull() ? null : face;
 }
 
-/** Names the thin profile operand(s) for a diagnostic. */
+/** Names the thin profile operand(s) for a diagnostic, in either form. */
 function describeThinProfile(op: EditOp): string {
   const single = (op as { profile?: string }).profile;
   if (single) return single;
+  const edges = (op as { profileEdges?: string[] }).profileEdges;
+  if (edges) return edges.join(", ");
   const many = (op as { profiles?: string[] }).profiles;
-  return many ? many.join(", ") : "the profile";
+  if (many) return many.join(", ");
+  const sets = (op as { profileEdgeSets?: string[][] }).profileEdgeSets;
+  return sets ? sets.map((ids) => ids.join("+")).join(", ") : "the profile";
 }
 
 /** The `thin`/`thinOuter` pair of a sweep-family op, or null when not thin. */
@@ -1114,17 +1278,114 @@ function orientPositiveVolume(oc: any, solid: any, cleanup: Array<{ delete(): vo
 }
 
 /**
- * The profile face a feature builder should actually consume: the original
- * face, or — when the op carries a {@link ThinSpec} — the annular band face
- * around it. Null means the thin band could not be built.
+ * One resolved profile section: the wire that defines it, whether that wire
+ * closes, and — when it came from a `face-N` — the face itself, which the
+ * plain (non-thin) path consumes directly so its inner wires (holes) survive.
+ */
+interface ProfileSection {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  face: any | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  wire: any;
+  closed: boolean;
+  /** True when a face profile already has inner wires — a thin band would silently lose them. */
+  holed: boolean;
+  /** For diagnostics. */
+  label: string;
+}
+
+/**
+ * Resolves a sweep-family {@link ProfileOperand} — either a `face-N` or a set
+ * of `edge-N` ids assembled into one wire — to a {@link ProfileSection}.
+ *
+ * The edge form reuses `buildSurfaceFromLines`' verified recipe
+ * (`BRepBuilderAPI_MakeWire_1` + `.Add_1()` per edge), whose `.IsDone()` is
+ * the disconnected-set gate and which joins edges by shared vertices in
+ * whatever order they were picked. It deliberately does NOT copy that
+ * function's "at least 3 edges" rule: a closed loop needs three, but an open
+ * profile is perfectly legitimate as one edge.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function thinFaceFor(oc: any, face: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function resolveProfileSection(oc: any, shape: any, faceId: string | undefined, edgeIds: string[] | undefined, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): ProfileSection | null {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  if (faceId !== undefined) {
+    const face = collectFaces(oc, shape, cleanup)[faceIndex(faceId)];
+    if (!face) { fail?.(`profile ${faceId} did not resolve to a face`, "the id may have been renumbered by an earlier topology-changing op — re-inspect the model"); return null; }
+    return { face, wire: keep(oc.BRepTools.OuterWire(face)), closed: true, holed: wireCountOf(oc, face, cleanup) !== 1, label: faceId };
+  }
+  const ids = edgeIds ?? [];
+  const label = ids.join(", ");
+  const all = collectEdges(oc, shape, cleanup);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const picked: any[] = [];
+  for (const id of ids) {
+    const edge = all[edgeIndex(id)];
+    if (!edge) { fail?.(`profile edge ${id} did not resolve`, "the id may have been renumbered by an earlier topology-changing op — re-inspect the model"); return null; }
+    picked.push(edge);
+  }
+  if (picked.length === 0) { fail?.("the profile named no edges"); return null; }
+  const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+  for (const edge of picked) mkWire.Add_1(edge);
+  if (!mkWire.IsDone()) { fail?.(`the profile edges (${label}) do not connect into a single wire`, "pick edges that meet end-to-end — a disconnected set has no profile"); return null; }
+  const wire = keep(mkWire.Wire());
+  return { face: null, wire, closed: wireIsClosed(oc, wire, cleanup), holed: false, label };
+}
+
+/**
+ * The face a feature builder should actually consume for one section — the
+ * whole feature in four quadrants:
+ *
+ * |            | plain                          | thin                              |
+ * |------------|--------------------------------|-----------------------------------|
+ * | face id    | the face itself (holes kept)   | two-offset annular band           |
+ * | closed wire| a face built from the wire     | two-offset annular band           |
+ * | open wire  | **refused** — encloses no area | symmetric band about the spine    |
+ *
+ * Null means the section could not produce a usable face; `fail` has already
+ * been given the specific reason at every branch that returns one.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function profileFaceFor(oc: any, section: ProfileSection, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const spec = thinSpecOf(op);
-  if (!spec) return face;
-  const wires = thinProfileWires(oc, face, spec.thin, spec.thinOuter, cleanup);
-  if (!wires) return null;
+  if (!spec) {
+    if (section.face) return section.face;
+    if (!section.closed) { fail?.(...openProfileNeedsThin(section)); return null; }
+    const face = faceFromWire(oc, section.wire, cleanup);
+    if (!face) fail?.(`the profile edges (${section.label}) did not bound a face`);
+    return face;
+  }
+  if (!section.closed) {
+    if (!openThinOuterOk(op, spec)) { fail?.(...openProfileThinOuter()); return null; }
+    const face = openBandFaceFromWire(oc, section.wire, spec.thin, cleanup);
+    if (!face) fail?.(`could not build a wall around the open profile (${section.label})`, "a lone straight edge is split automatically, but a self-intersecting spine, or a wall wider than the spine's own turns, has no band");
+    return face;
+  }
+  if (section.holed) { fail?.(`the profile ${section.label} already has a hole`, "a thin wall is built from the outer boundary alone, which would silently discard it"); return null; }
+  const wires = thinProfileWires(oc, section.wire, spec.thin, spec.thinOuter, cleanup);
+  if (!wires) return null; // featureModel's thin diagnostic covers the over-thick case
   return bandFaceFromWires(oc, wires.outer, wires.inner, cleanup);
+}
+
+/** The `thinOuter` rule for an open profile — see {@link ThinSpec}. */
+function openThinOuterOk(op: EditOp, spec: { thin: number; thinOuter: number }): boolean {
+  // `thinSpecOf` defaults an ABSENT `thinOuter` to 0, which is the common case
+  // and must stay allowed, so the raw field is what decides.
+  const raw = (op as { thinOuter?: number }).thinOuter;
+  return raw === undefined || raw === spec.thin / 2;
+}
+
+function openProfileNeedsThin(section: ProfileSection): [string, string] {
+  return [
+    `the profile (${section.label}) is an open wire, which encloses no area`,
+    "add `thin` to build a walled body from it, or pick edges that close into a loop",
+  ];
+}
+
+function openProfileThinOuter(): [string, string] {
+  return [
+    "`thinOuter` has no meaning for an open profile — an open wire has no inside or outside",
+    "omit `thinOuter` (the wall is centred on the spine), or set it to exactly thin/2",
+  ];
 }
 
 /** Applies the thin sanity gate only when the op is thin; a plain feature is unchanged. */
@@ -1134,16 +1395,24 @@ function finishThin(oc: any, op: EditOp, solid: any, cleanup: Array<{ delete(): 
   return orientPositiveVolume(oc, solid, cleanup);
 }
 
+/**
+ * Resolves the single-profile ops' operand and turns it into the face their
+ * builder consumes, or null (with `fail` already told why).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function featureProfileFace(oc: any, shape: any, op: EditOp & { profile?: string; profileEdges?: string[] }, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const section = resolveProfileSection(oc, shape, op.profile, op.profileEdges, cleanup, fail);
+  return section ? profileFaceFor(oc, section, op, cleanup, fail) : null;
+}
+
 /** Builds the new solid for a feature op, or null on unresolved operands / failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     switch (op.op) {
       case "extrude": {
-        const raw = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
-        if (!raw) return null;
-        const face = thinFaceFor(oc, raw, op, cleanup);
+        const face = featureProfileFace(oc, shape, op, cleanup, fail);
         if (!face) return null;
         const [dx, dy, dz] = op.dir;
         const len = Math.hypot(dx, dy, dz) || 1;
@@ -1152,34 +1421,55 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
         return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape()), cleanup);
       }
       case "revolve": {
-        const raw = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
-        if (!raw) return null;
-        const face = thinFaceFor(oc, raw, op, cleanup);
+        const face = featureProfileFace(oc, shape, op, cleanup, fail);
         if (!face) return null;
         const ax = keep(new oc.gp_Ax1_2(keep(pnt(oc, op.axisPoint)), keep(dir(oc, op.axisDir))));
         const angle = (op.angleDeg * Math.PI) / 180;
         return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakeRevol_1(face, ax, angle, false)).Shape()), cleanup);
       }
       case "sweep": {
-        const faces = collectFaces(oc, shape, cleanup);
-        const raw = faces[faceIndex(op.profile)];
         const edge = collectEdges(oc, shape, cleanup)[edgeIndex(op.path)];
-        if (!raw || !edge) return null;
+        if (!edge) { fail?.(`the sweep path ${op.path} did not resolve to an edge`); return null; }
         // Verified live: MakePipe_1 sweeps an ANNULAR profile correctly on a
         // straight spine (exactly 1280 for a 64-area band over length 20) AND
         // on a 90-degree arc spine (2010.6193, matching Pappus exactly), so
-        // thin sweep needs no outer/inner-and-cut fallback.
-        const face = thinFaceFor(oc, raw, op, cleanup);
+        // thin sweep needs no outer/inner-and-cut fallback. It sweeps an
+        // open-profile band the same way (verified: 462.8318 for a 23.1416
+        // band over length 20).
+        const face = featureProfileFace(oc, shape, op, cleanup, fail);
         if (!face) return null;
         const wire = keep(new oc.BRepBuilderAPI_MakeWire_2(edge)).Wire();
         keep(wire);
         return finishThin(oc, op, keep(keep(new oc.BRepOffsetAPI_MakePipe_1(wire, face)).Shape()), cleanup);
       }
       case "loft": {
-        const faces = collectFaces(oc, shape, cleanup);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const profiles = op.profiles.map((id) => faces[faceIndex(id)]).filter((f): f is any => f != null);
-        if (profiles.length < 2) return null;
+        // One section per profile, in either operand form. Unlike the other
+        // three, loft historically filtered unresolved ids out silently and
+        // only failed below 2 survivors; resolving each section explicitly
+        // reports WHICH one is missing instead.
+        const sections: ProfileSection[] = [];
+        if (op.profiles) {
+          for (const id of op.profiles) {
+            const section = resolveProfileSection(oc, shape, id, undefined, cleanup, fail);
+            if (!section) return null;
+            sections.push(section);
+          }
+        } else {
+          for (const ids of op.profileEdgeSets ?? []) {
+            const section = resolveProfileSection(oc, shape, undefined, ids, cleanup, fail);
+            if (!section) return null;
+            sections.push(section);
+          }
+        }
+        if (sections.length < 2) { fail?.("loft needs at least 2 profile sections"); return null; }
+        // Every section must agree, because the two thin constructions are
+        // genuinely different shapes — a closed section yields an outer and an
+        // inner boundary to loft and cut, an open one a single band boundary.
+        const open = sections.filter((s) => !s.closed).length;
+        if (open !== 0 && open !== sections.length) {
+          fail?.("loft mixes open and closed profile sections", "every section must close, or none — the two build a thin wall in different ways");
+          return null;
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const loftWires = (ws: any[]): any => {
           const ts = keep(new oc.BRepOffsetAPI_ThruSections(true, false, 1.0e-6));
@@ -1188,13 +1478,27 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
           return ts.IsDone() ? keep(ts.Shape()) : null;
         };
         const spec = thinSpecOf(op);
-        if (!spec) return loftWires(profiles.map((f) => keep(oc.BRepTools.OuterWire(f))));
+        if (!spec) {
+          if (open > 0) { fail?.(...openProfileNeedsThin(sections.find((s) => !s.closed)!)); return null; }
+          return loftWires(sections.map((s) => s.wire));
+        }
+        if (open > 0) {
+          // An open section's band is ONE closed boundary, so it lofts
+          // directly — no outer/inner pair and no cut. Verified: two identical
+          // 23.1416 bands 10 apart loft to 231.4159.
+          if (!openThinOuterOk(op, spec)) { fail?.(...openProfileThinOuter()); return null; }
+          const bands = sections.map((s) => openBandWire(oc, s.wire, spec.thin, cleanup));
+          if (bands.some((b) => b === null)) { fail?.("could not build a wall around every open loft section"); return null; }
+          return finishThin(oc, op, loftWires(bands), cleanup);
+        }
+        const holed = sections.find((s) => s.holed);
+        if (holed) { fail?.(`the loft profile ${holed.label} already has a hole`, "a thin wall is built from the outer boundary alone, which would silently discard it"); return null; }
         // `ThruSections` is WIRE-based and keeps only the wires it is given, so
         // handing it an annular band face's outer wire would silently loft a
         // FILLED solid (verified: 813.33 for a case whose thin answer is 560).
         // Loft the two band boundaries as separate solids and cut instead —
         // verified exact (outer 1000, inner 360, cut 640).
-        const bands = profiles.map((f) => thinProfileWires(oc, f, spec.thin, spec.thinOuter, cleanup));
+        const bands = sections.map((s) => thinProfileWires(oc, s.wire, spec.thin, spec.thinOuter, cleanup));
         if (bands.some((b) => b === null)) return null;
         const outerSolid = loftWires(bands.map((b) => b!.outer));
         const innerSolid = loftWires(bands.map((b) => b!.inner));

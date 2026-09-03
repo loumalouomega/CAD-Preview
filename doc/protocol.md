@@ -176,10 +176,16 @@ type EditOp =
   //   thin?: number       total wall thickness (> 0); omit for a filled solid
   //   thinOuter?: number  how much of that wall sits OUTSIDE the profile
   //                       boundary, in [0, thin] (0 = all inward, the default)
-  | { op: 'extrude'; profile: string; dir: Vec3; length: number; thin?: number; thinOuter?: number }
-  | { op: 'revolve'; profile: string; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number }
-  | { op: 'sweep'; profile: string; path: string; thin?: number; thinOuter?: number }
-  | { op: 'loft'; profiles: string[]; thin?: number; thinOuter?: number }
+  // Their profile comes in two mutually exclusive forms — exactly one:
+  //   profile / profiles            a face-N (a sketch, or any face)
+  //   profileEdges / profileEdgeSets  edge-N ids assembled into one wire,
+  //                       which is how an OPEN sketch is consumed. An open
+  //                       wire encloses no area, so it REQUIRES `thin` and
+  //                       refuses `thinOuter` (it has no inside or outside).
+  | { op: 'extrude'; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; thin?: number; thinOuter?: number }
+  | { op: 'revolve'; profile?: string; profileEdges?: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number }
+  | { op: 'sweep'; profile?: string; profileEdges?: string[]; path: string; thin?: number; thinOuter?: number }
+  | { op: 'loft'; profiles?: string[]; profileEdgeSets?: string[][]; thin?: number; thinOuter?: number }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
   | { op: 'shell'; thickness: number; openingFaces: string[]; join?: 'arc'|'intersection'|'tangent' }        // >= 1 face id; negative = walls inward

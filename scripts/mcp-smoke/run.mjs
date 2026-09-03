@@ -3860,6 +3860,148 @@ try {
     assert(Math.abs(plain.volume - 500) < 1e-6, `a non-thin extrude still fills the profile, exactly 500 (got ${plain.volume})`);
   }
 
+  // --- open-profile (wire) operand, roadmap item 8 --------------------------
+  //
+  // Same analytic discipline as the thin block above. block.stp is 6 faces /
+  // 12 edges, so a rectangle sketch is face-6 and ITS wire's edges are
+  // edge-12..15; a polyline added instead of the sketch starts at edge-12.
+  //
+  // An OPEN spine's wall is a band of half-width thin/2 with semicircular end
+  // caps, so its cross-section is exactly `thin*L + PI*(thin/2)^2` — 20 + PI
+  // for a length-10 spine at thin 2. The revolve/sweep/loft products of that
+  // are compared RELATIVELY: the adaptive integrator's own eps puts them a few
+  // parts in 1e8 off the closed form, which an absolute 1e-6 would flag.
+  {
+    const wireModel = path.join(dir, "wire-profiles.stp");
+    const seedBlock = path.join(ROOT, "examples", "STP", "block.stp");
+    const resetWire = () => {
+      fs.copyFileSync(seedBlock, wireModel);
+      fs.rmSync(`${wireModel}.edits.json`, { force: true });
+    };
+    const rect = (z) => ({ op: "addRectangleProfile", center: [0, 0, z], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 10 });
+    const spine = (z) => ({ op: "addPolyline", points: [[0, 0, z], [5, 0, z], [10, 0, z]], closed: false });
+    const RECT_EDGES = ["edge-12", "edge-13", "edge-14", "edge-15"];
+    const BAND = 20 + Math.PI; // thin*L + PI*(thin/2)^2 for L=10, thin=2
+    const wireVolume = async (label, ops, solidId = "solid-1") => {
+      resetWire();
+      const res = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops }, resetWire);
+      assert(
+        res.applied === ops.length && (res.notApplied ?? 0) === 0,
+        `${label}: every op applies (got ${JSON.stringify(res.report)})`
+      );
+      const mass = await call("get_mass_properties", { path: wireModel, entityId: solidId });
+      assert(mass.supported && typeof mass.volume === "number", `${label}: mass properties resolve for ${solidId}`);
+      return mass.volume;
+    };
+    const wireSkip = async (label, ops) => {
+      resetWire();
+      const res = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops }, resetWire);
+      assert(res.notApplied === 1, `${label}: exactly one op is skipped (got ${JSON.stringify(res.report)})`);
+      return res.report.map((r) => r.diagnostic ?? "").join(" | ");
+    };
+
+    // 1. THE cross-check: the same rectangle, addressed as a face and as its
+    // own four edges, must give the SAME answer. A resolver that quietly built
+    // a different wire would show up here and nowhere else.
+    const viaFace = await wireVolume("closed wire vs face (face form)", [
+      rect(20), { op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 5, thin: 2 },
+    ]);
+    const viaEdges = await wireVolume("closed wire vs face (edge form)", [
+      rect(20), { op: "extrude", profileEdges: RECT_EDGES, dir: [0, 0, 1], length: 5, thin: 2 },
+    ]);
+    assert(
+      Math.abs(viaFace - 320) < 1e-6 && viaFace === viaEdges,
+      `a closed edge set and its face extrude identically, exactly 320 (face ${viaFace}, edges ${viaEdges})`
+    );
+
+    // 2. a closed edge set with NO thin fills, like the face would.
+    const filled = await wireVolume("closed wire, plain", [
+      rect(20), { op: "extrude", profileEdges: RECT_EDGES, dir: [0, 0, 1], length: 5 },
+    ]);
+    assert(Math.abs(filled - 500) < 1e-6, `a closed edge profile fills without thin, exactly 500 (got ${filled})`);
+
+    // 3. the point of the whole item: an OPEN polyline becomes a walled body.
+    const openExtrude = await wireVolume("open spine extrude", [
+      spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5, thin: 2 },
+    ]);
+    assert(
+      Math.abs(openExtrude - BAND * 5) / (BAND * 5) < 1e-6,
+      `an open spine extrudes to band x height, ${(BAND * 5).toFixed(6)} (got ${openExtrude})`
+    );
+
+    // 4. a spine that is ONE straight edge. This build's offsetter throws on a
+    // lone line (verified), so the resolver splits it at its midpoint — the
+    // result must be identical to the two-segment spine above, not a skip.
+    const loneLine = await wireVolume("open spine, single straight edge", [
+      { op: "addPolyline", points: [[0, 0, 20], [10, 0, 20]], closed: false },
+      { op: "extrude", profileEdges: ["edge-12"], dir: [0, 0, 1], length: 5, thin: 2 },
+    ]);
+    assert(
+      Math.abs(loneLine - openExtrude) / openExtrude < 1e-9,
+      `a lone straight edge is split and gives the same body (got ${loneLine} vs ${openExtrude})`
+    );
+
+    // 5. revolve / sweep / loft over open profiles. Pappus for the revolve:
+    // the band's centroid sits 25 from an axis 20 to the left of the spine.
+    const openRevolve = await wireVolume("open spine revolve", [
+      spine(0), { op: "revolve", profileEdges: ["edge-12", "edge-13"], axisPoint: [-20, 0, 0], axisDir: [0, 1, 0], angleDeg: 90, thin: 2 },
+    ]);
+    const pappus = BAND * (Math.PI / 2) * 25;
+    assert(
+      Math.abs(openRevolve - pappus) / pappus < 1e-6,
+      `an open spine revolves to Pappus ${pappus.toFixed(4)} (got ${openRevolve})`
+    );
+    const openSweep = await wireVolume("open spine sweep", [
+      spine(0), { op: "addLine", start: [0, 0, 0], end: [0, 0, 20] },
+      { op: "sweep", profileEdges: ["edge-12", "edge-13"], path: "edge-14", thin: 2 },
+    ]);
+    assert(
+      Math.abs(openSweep - BAND * 20) / (BAND * 20) < 1e-6,
+      `an open spine sweeps to band x path length, ${(BAND * 20).toFixed(6)} (got ${openSweep})`
+    );
+    const openLoft = await wireVolume("open sections loft", [
+      spine(0), spine(10),
+      { op: "loft", profileEdgeSets: [["edge-12", "edge-13"], ["edge-14", "edge-15"]], thin: 2 },
+    ]);
+    assert(
+      Math.abs(openLoft - BAND * 10) / (BAND * 10) < 1e-6,
+      `two identical open sections loft to band x separation, ${(BAND * 10).toFixed(6)} (got ${openLoft})`
+    );
+
+    // 6. the refusals, each naming its own cause rather than a generic failure.
+    const noThin = await wireSkip("open profile without thin", [
+      spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5 },
+    ]);
+    assert(/open wire, which encloses no area/i.test(noThin), `an open profile without thin is refused by name (got ${noThin})`);
+
+    const badOuter = await wireSkip("open profile with thinOuter", [
+      spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5, thin: 2, thinOuter: 0.5 },
+    ]);
+    assert(/thinOuter.*no meaning for an open profile/i.test(badOuter), `thinOuter on an open profile is refused by name (got ${badOuter})`);
+
+    const disconnected = await wireSkip("disconnected edge profile", [
+      rect(20), { op: "addPolyline", points: [[50, 0, 20], [60, 0, 20]], closed: false },
+      { op: "extrude", profileEdges: ["edge-12", "edge-16"], dir: [0, 0, 1], length: 5, thin: 2 },
+    ]);
+    assert(/do not connect into a single wire/i.test(disconnected), `a disconnected edge set is refused by name (got ${disconnected})`);
+
+    const mixedLoft = await wireSkip("loft mixing open and closed sections", [
+      rect(20), spine(30),
+      { op: "loft", profileEdgeSets: [RECT_EDGES, ["edge-16", "edge-17"]], thin: 2 },
+    ]);
+    assert(/mixes open and closed/i.test(mixedLoft), `a mixed-closedness loft is refused by name (got ${mixedLoft})`);
+
+    // 7. thinOuter EQUAL to thin/2 is the symmetric band and must be accepted —
+    // the rule is "no meaning", not "never allowed".
+    const symmetric = await wireVolume("open profile, thinOuter = thin/2", [
+      spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5, thin: 2, thinOuter: 1 },
+    ]);
+    assert(
+      Math.abs(symmetric - openExtrude) / openExtrude < 1e-9,
+      `thinOuter = thin/2 is the same symmetric band (got ${symmetric} vs ${openExtrude})`
+    );
+  }
+
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");
 
   console.log("\nMCP smoke test passed.");

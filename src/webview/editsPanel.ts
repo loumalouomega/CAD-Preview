@@ -129,6 +129,16 @@ export interface EditsPanelCallbacks {
   onApplyFillet: (kind: "fillet" | "chamfer", amount: number, exprs?: ExprMap) => void;
   /** Apply a feature-modeling op; operands come from the selected faces/edges (B-rep only). */
   onApplyFeature: (draft: FeatureDraft) => void;
+  /** Capture the selected edge as the sweep path; returns its id, or null when
+   * nothing suitable is selected. Needed because a sweep's profile and its path
+   * are BOTH edge picks once open-wire profiles exist. */
+  onCaptureSweepPath: () => string | null;
+  /** Forget the captured sweep path (back to "the one selected edge is the path"). */
+  onClearSweepPath: () => void;
+  /** Capture the current selection as one more loft section; returns the new count. */
+  onCaptureLoftSection: () => number;
+  /** Forget every captured loft section (back to "the selected faces are the sections"). */
+  onClearLoftSections: () => void;
   /** Explode the assembly: spread bodies radially by `factor` (all formats). */
   onApplyExplode: (factor: number, exprs?: ExprMap) => void;
   /** Live-preview drag of the Explode slider — moves the already-displayed
@@ -231,6 +241,8 @@ export class EditsPanel {
   /** Panel-local mirror of the captured boolean-A count (display only; the ids
    * themselves live in the wiring). Survives form re-renders. */
   private booleanACount = 0;
+  private sweepPath: string | null = null;
+  private loftSectionCount = 0;
 
   private readonly tabButtons = new Map<TabId, HTMLButtonElement>();
   private readonly subtabButtons = new Map<SubtabId, HTMLButtonElement>();
@@ -740,14 +752,14 @@ export class EditsPanel {
 
       // ── EDIT · features ──
       case "extrude":
-        f.appendChild(this.hint("Profile = selected face (Surf mode)"));
+        f.appendChild(this.hint("Profile = selected face (Surf mode), or selected edges (Line mode)"));
         f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
         f.appendChild(this.numField("length", "Length", 10));
         this.thinFields(f);
         this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "revolve":
-        f.appendChild(this.hint("Profile = selected face (Surf mode)"));
+        f.appendChild(this.hint("Profile = selected face (Surf mode), or selected edges (Line mode)"));
         f.appendChild(this.vecField("axisPoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 360));
@@ -758,14 +770,16 @@ export class EditsPanel {
           }), (d) => this.cb.onApplyFeature(d));
         break;
       case "sweep":
-        f.appendChild(this.hint("Profile = selected face · path = selected edge"));
+        f.appendChild(this.hint("Profile = selected face · path = selected edge. For an edge profile, capture the path first."));
+        f.appendChild(this.sweepPathRow());
         this.thinFields(f);
-        this.applyButtonDraft("Apply", "Build the feature from the selected face + edge", (): FeatureDraft => ({ kind: "sweep", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        this.applyButtonDraft("Apply", "Build the feature from the selected profile + path", (): FeatureDraft => ({ kind: "sweep", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "loft":
-        f.appendChild(this.hint("Profiles = 2+ selected faces"));
+        f.appendChild(this.hint("Profiles = 2+ selected faces, or capture one section at a time"));
+        f.appendChild(this.loftSectionRow());
         this.thinFields(f);
-        this.applyButtonDraft("Apply", "Build the feature from the selected faces", (): FeatureDraft => ({ kind: "loft", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        this.applyButtonDraft("Apply", "Build the feature from the loft sections", (): FeatureDraft => ({ kind: "loft", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
 
       // ── EDIT · modify ──
@@ -1293,6 +1307,96 @@ export class EditsPanel {
     btn.title = title;
     btn.addEventListener("click", onClick);
     row.appendChild(btn);
+    return row;
+  }
+
+  /**
+   * Forgets the sweep path / loft sections and redraws the open form, so the
+   * displayed capture state can't outlive the ids it names — those are
+   * renumbered by the very op that just applied. Mirrors `renderBooleanForm`'s
+   * own reset of `booleanACount` on Apply.
+   */
+  resetFeatureCaptures(): void {
+    this.sweepPath = null;
+    this.loftSectionCount = 0;
+    if (this.activeOp === "sweep" || this.activeOp === "loft") this.renderParams();
+  }
+
+  /**
+   * Sweep's optional path capture. A sweep's profile and its path are both
+   * edge picks now that an open wire can be a profile, so the two cannot be
+   * told apart from one flat Line-mode selection — capturing the path first
+   * disambiguates, exactly as `Set A` does for a boolean's two volume sets.
+   * With nothing captured, the form behaves as it always did: the selected
+   * face is the profile and the selected edge is the path.
+   */
+  private sweepPathRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.sweepPath ? `path: ${this.sweepPath}` : "path: —"; };
+    render();
+    const set = document.createElement("button");
+    set.className = "compose-apply";
+    set.textContent = "Set path";
+    set.title = "Capture the selected edge as the sweep path, freeing the rest of the selection to be the profile";
+    set.addEventListener("click", () => {
+      this.sweepPath = this.cb.onCaptureSweepPath();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget the captured path";
+    clear.addEventListener("click", () => {
+      this.cb.onClearSweepPath();
+      this.sweepPath = null;
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(set);
+    row.appendChild(clear);
+    row.appendChild(status);
+    return row;
+  }
+
+  /**
+   * Loft's optional per-section capture — the only way to give it OPEN
+   * sections, since each one is a set of edges and a single flat selection
+   * cannot express "these edges are section 1, those are section 2".
+   * With nothing captured, the selected faces are the sections, as before.
+   */
+  private loftSectionRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.loftSectionCount > 0 ? `sections: ${this.loftSectionCount}` : "sections: —"; };
+    render();
+    const add = document.createElement("button");
+    add.className = "compose-apply";
+    add.textContent = "Add section";
+    add.title = "Capture the current selection (a face, or a set of edges) as one loft section";
+    add.addEventListener("click", () => {
+      this.loftSectionCount = this.cb.onCaptureLoftSection();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget every captured section";
+    clear.addEventListener("click", () => {
+      this.cb.onClearLoftSections();
+      this.loftSectionCount = 0;
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(add);
+    row.appendChild(clear);
+    row.appendChild(status);
     return row;
   }
 

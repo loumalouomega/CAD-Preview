@@ -526,6 +526,12 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
 
 /** Captured boolean operand A (volume ids); operand B is the live selection. */
 let booleanA: string[] = [];
+/** One captured loft section: a single face, or the edges of one wire. */
+type LoftSection = { kind: "face"; ids: string[] } | { kind: "edges"; ids: string[] };
+/** Sweep's captured path edge — see `EditsPanelCallbacks.onCaptureSweepPath`. */
+let sweepPath: string | null = null;
+/** Loft's captured sections — see `EditsPanelCallbacks.onCaptureLoftSection`. */
+let loftSections: LoftSection[] = [];
 const selectedVolumes = (): string[] =>
   selection.list().filter((e) => e.entityType === "volume").map((e) => e.entityId);
 
@@ -821,6 +827,24 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     renderHighlight();
     setStatus("");
   },
+  onCaptureSweepPath: () => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length !== 1) { setStatus("Select exactly one edge (Line mode) to capture as the sweep path.", true); return sweepPath; }
+    sweepPath = edges[0];
+    scheduleOpPreview();
+    return sweepPath;
+  },
+  onClearSweepPath: () => { sweepPath = null; scheduleOpPreview(); },
+  onCaptureLoftSection: () => {
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (faces.length > 0) loftSections.push({ kind: "face", ids: [faces[0]] });
+    else if (edges.length > 0) loftSections.push({ kind: "edges", ids: edges });
+    else setStatus("Select a profile face, or the edges of one profile wire, before adding a loft section.", true);
+    scheduleOpPreview();
+    return loftSections.length;
+  },
+  onClearLoftSections: () => { loftSections = []; scheduleOpPreview(); },
   onApplyFillet: (kind, amount, exprs) => {
     const resolved = buildOpForPanel(kind, { amount, exprs: exprs?.amount ? { amount: exprs.amount } : undefined });
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply.", true); return; }
@@ -833,6 +857,11 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this feature.", true); return; }
     cancelOpPreview();
     editsModel.push(resolved.op);
+    // The applied op renumbers entity ids, so any captured path/sections now
+    // name the wrong geometry — drop them, as `onApplyBoolean` drops A.
+    sweepPath = null;
+    loftSections = [];
+    editsPanel.resetFeatureCaptures();
     setStatus("");
   },
   onApplyExplode: (factor, exprs) => {
@@ -1457,9 +1486,25 @@ function opPreviewEligible(): boolean {
   return open !== null && open !== "explode" && open !== "translate" && open !== "rotate" && open !== "scale";
 }
 
-/** Intent colour for a previewed op kind — green adds material, red removes
- * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
- * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
+/**
+ * Resolves a single-profile sweep-family operand from the live selection: a
+ * Surf-mode face wins, otherwise the Line-mode edges form the profile wire.
+ * Guides are refused in both forms — an `addPolyline { guide: true }` is
+ * exactly the construction spine someone would otherwise try to extrude.
+ */
+function profileOperandFromSelection(selFaces: string[], selEdges: string[]): { operand: { profile: string } | { profileEdges: string[] } } | { error: string } {
+  if (selFaces[0]) {
+    if (guideEntityIds.has(selFaces[0])) return { error: `${selFaces[0]} is guide (construction) geometry — guides are excluded from feature profiles` };
+    return { operand: { profile: selFaces[0] } };
+  }
+  if (selEdges.length > 0) {
+    const guide = selEdges.find((e) => guideEntityIds.has(e));
+    if (guide) return { error: `${guide} is guide (construction) geometry — guides are excluded from feature profiles` };
+    return { operand: { profileEdges: selEdges } };
+  }
+  return { error: "Select a profile face (Surf mode) or profile edges (Line mode)" };
+}
+
 /** The thin-wall fields of a sweep-family draft, or nothing when it isn't thin. */
 function thinOf(d: Record<string, unknown>): { thin?: number; thinOuter?: number } {
   const thin = d.thin;
@@ -1468,6 +1513,9 @@ function thinOf(d: Record<string, unknown>): { thin?: number; thinOuter?: number
   return typeof outer === "number" && outer > 0 ? { thin, thinOuter: outer } : { thin };
 }
 
+/** Intent colour for a previewed op kind — green adds material, red removes
+ * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
+ * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
 function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
   switch (id) {
     case "booleanUnion":
@@ -1595,22 +1643,44 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     }
 
     // ── feature modeling ──
-    case "extrude":
-      if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to extrude." };
-      if (guideEntityIds.has(selFaces[0])) return { error: `${selFaces[0]} is guide (construction) geometry — guides are excluded from feature profiles.` };
-      return { op: withExprs({ op: "extrude", profile: selFaces[0], dir: d.dir, length: d.length, ...thinOf(d) }) };
-    case "revolve":
-      if (!selFaces[0]) return { error: "Select a profile face (Surf mode) to revolve." };
-      if (guideEntityIds.has(selFaces[0])) return { error: `${selFaces[0]} is guide (construction) geometry — guides are excluded from feature profiles.` };
-      return { op: withExprs({ op: "revolve", profile: selFaces[0], axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, ...thinOf(d) }) };
-    case "sweep":
-      if (!selFaces[0] || !selEdges[0]) return { error: "Select a profile face and a path edge for sweep." };
-      if (guideEntityIds.has(selFaces[0])) return { error: `${selFaces[0]} is guide (construction) geometry — guides are excluded from feature profiles.` };
-      return { op: withExprs({ op: "sweep", profile: selFaces[0], path: selEdges[0], ...thinOf(d) }) };
-    case "loft":
-      if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft." };
+    case "extrude": {
+      const profile = profileOperandFromSelection(selFaces, selEdges);
+      if ("error" in profile) return { error: `${profile.error} to extrude.` };
+      return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, length: d.length, ...thinOf(d) }) };
+    }
+    case "revolve": {
+      const profile = profileOperandFromSelection(selFaces, selEdges);
+      if ("error" in profile) return { error: `${profile.error} to revolve.` };
+      return { op: withExprs({ op: "revolve", ...profile.operand, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, ...thinOf(d) }) };
+    }
+    case "sweep": {
+      // With a path captured, the rest of the selection is free to be an edge
+      // profile; without one, the single selected edge is the path, as before.
+      const path = sweepPath ?? selEdges[0];
+      if (!path) return { error: "Select a path edge (Line mode) for sweep." };
+      if (guideEntityIds.has(path)) return { error: `${path} is guide (construction) geometry — guides are excluded from sweep paths.` };
+      const profileEdges = selEdges.filter((e) => e !== path);
+      const profile = profileOperandFromSelection(selFaces, sweepPath ? profileEdges : []);
+      if ("error" in profile) return { error: `${profile.error} to sweep.` };
+      return { op: withExprs({ op: "sweep", ...profile.operand, path, ...thinOf(d) }) };
+    }
+    case "loft": {
+      if (loftSections.length > 0) {
+        if (loftSections.length < 2) return { error: "Capture at least 2 loft sections (Add section)." };
+        const guide = loftSections.flatMap((s) => s.ids).find((id) => guideEntityIds.has(id));
+        if (guide) return { error: `${guide} is guide (construction) geometry — guides are excluded from loft profiles.` };
+        if (loftSections.every((s) => s.kind === "face")) {
+          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...thinOf(d) }) };
+        }
+        if (loftSections.every((s) => s.kind === "edges")) {
+          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...thinOf(d) }) };
+        }
+        return { error: "Loft sections must be all faces or all edge wires — clear and re-capture." };
+      }
+      if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft, or capture sections one at a time." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from loft profiles." };
       return { op: withExprs({ op: "loft", profiles: selFaces, ...thinOf(d) }) };
+    }
 
     // ── assembly ──
     case "mate":

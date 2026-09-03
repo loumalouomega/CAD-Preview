@@ -205,6 +205,22 @@ export function describeOp(op: EditOp): string {
   return bindings ? `${base} [${bindings}]` : base;
 }
 
+/**
+ * A sweep-family op's profile operand, in whichever of its two mutually
+ * exclusive forms is present: the `face-N`, or the edges of its wire joined
+ * with `+`.
+ */
+function profileLabel(op: { profile?: string; profileEdges?: string[] }): string {
+  if (op.profile !== undefined) return op.profile;
+  return op.profileEdges?.join("+") ?? "?";
+}
+
+/** Every entity id a single-profile operand mentions, in either form. */
+function profileOperandIds(op: { profile?: string; profileEdges?: string[] }): string[] {
+  if (op.profile !== undefined) return [op.profile];
+  return [...(op.profileEdges ?? [])];
+}
+
 /** " thin=2" / " thin=2/1" for a thin-walled sweep-family op; "" otherwise. */
 function thinLabel(op: { thin?: number; thinOuter?: number }): string {
   if (op.thin === undefined) return "";
@@ -224,10 +240,10 @@ function describeOpBase(op: EditOp): string {
       if (op.angleDeg !== undefined) return `Chamfer ${op.edges.length} d=${op.distance} ${op.angleDeg}°`;
       return `Chamfer ${op.edges.length} d=${op.distance}`;
     }
-    case "extrude": return `Extrude ${op.profile} ×${op.length}${thinLabel(op)}`;
-    case "revolve": return `Revolve ${op.profile} ${op.angleDeg}°${thinLabel(op)}`;
-    case "sweep": return `Sweep ${op.profile} → ${op.path}${thinLabel(op)}`;
-    case "loft": return `Loft ${op.profiles.length} profiles${thinLabel(op)}`;
+    case "extrude": return `Extrude ${profileLabel(op)} ×${op.length}${thinLabel(op)}`;
+    case "revolve": return `Revolve ${profileLabel(op)} ${op.angleDeg}°${thinLabel(op)}`;
+    case "sweep": return `Sweep ${profileLabel(op)} → ${op.path}${thinLabel(op)}`;
+    case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${thinLabel(op)}`;
     case "explode": return `Explode ×${op.factor}`;
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
     case "shell": return `▣ Shell t=${op.thickness} (${op.openingFaces.length} openings)`;
@@ -320,11 +336,11 @@ export function referencedEntities(op: EditOp): string[] {
       return [...op.faces];
     case "extrude":
     case "revolve":
-      return [op.profile];
+      return profileOperandIds(op);
     case "sweep":
-      return [op.profile, op.path];
+      return [...profileOperandIds(op), op.path];
     case "loft":
-      return [...op.profiles];
+      return op.profiles ? [...op.profiles] : (op.profileEdgeSets ?? []).flat();
     case "mate":
       return [op.faceA, op.faceB];
     case "shell":
