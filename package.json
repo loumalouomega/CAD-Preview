@@ -322,7 +322,7 @@
     "opencascade.js": "^1.1.1",
     "three": "^0.185.1",
     "three-bvh-csg": "^0.0.18",
-    "three-mesh-bvh": "^0.9.10",
+    "three-mesh-bvh": "^0.9.14",
     "zod": "^4.4.3"
   },
   "devDependencies": {
