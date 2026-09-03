@@ -139,6 +139,13 @@ export interface EditsPanelCallbacks {
   onCaptureLoftSection: () => number;
   /** Forget every captured loft section (back to "the selected faces are the sections"). */
   onClearLoftSections: () => void;
+  /** Capture the selected face as the extrude terminator; returns its id, or
+   * null when nothing suitable is selected. Needed because the profile and
+   * the terminator are BOTH face picks — a flat Surf-mode selection cannot
+   * express which face terminates. */
+  onCaptureTerminator: () => string | null;
+  /** Forget the captured terminator (back to "Length extrudes by the typed amount"). */
+  onClearTerminator: () => void;
   /** Explode the assembly: spread bodies radially by `factor` (all formats). */
   onApplyExplode: (factor: number, exprs?: ExprMap) => void;
   /** Live-preview drag of the Explode slider — moves the already-displayed
@@ -242,8 +249,10 @@ export class EditsPanel {
    * themselves live in the wiring). Survives form re-renders. */
   private booleanACount = 0;
   private sweepPath: string | null = null;
+
   private loftSectionCount = 0;
 
+  private terminator: string | null = null;
   private readonly tabButtons = new Map<TabId, HTMLButtonElement>();
   private readonly subtabButtons = new Map<SubtabId, HTMLButtonElement>();
   private readonly tabContents = new Map<string, HTMLElement>(); // "geometry:2d" | "geometry:3d" | "edit"
@@ -755,6 +764,7 @@ export class EditsPanel {
         f.appendChild(this.hint("Profile = selected face (Surf mode), or selected edges (Line mode)"));
         f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
         f.appendChild(this.numField("length", "Length", 10));
+        f.appendChild(this.terminatorRow());
         this.thinFields(f);
         this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
@@ -1319,7 +1329,47 @@ export class EditsPanel {
   resetFeatureCaptures(): void {
     this.sweepPath = null;
     this.loftSectionCount = 0;
-    if (this.activeOp === "sweep" || this.activeOp === "loft") this.renderParams();
+    this.terminator = null;
+    if (this.activeOp === "sweep" || this.activeOp === "loft" || this.activeOp === "extrude") this.renderParams();
+  }
+
+  /**
+   * Extrude's optional terminator capture. The profile and the terminator are
+   * both Surf-mode face picks, so one flat selection cannot express which
+   * face terminates — capturing first disambiguates, exactly as `Set path`
+   * does for sweep. With nothing captured, Length extrudes by the typed
+   * amount, as before.
+   */
+  private terminatorRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.terminator ? `to: ${this.terminator}` : "to: —"; };
+    render();
+    const set = document.createElement("button");
+    set.className = "compose-apply";
+    set.textContent = "Set terminator";
+    set.title = "Capture the selected face as the up-to-face terminator, freeing the rest of the selection to be the profile";
+    set.addEventListener("click", () => {
+      this.terminator = this.cb.onCaptureTerminator();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget the captured terminator";
+    clear.addEventListener("click", () => {
+      this.cb.onClearTerminator();
+      this.terminator = null;
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(set);
+    row.appendChild(clear);
+    row.appendChild(status);
+    return row;
   }
 
   /**

@@ -207,7 +207,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   fillet: '{edges: edgeId[], radius: n>0}',
   chamfer: '{edges: edgeId[], distance: n>0, distance2?: n>0 (asymmetric, needs face), angleDeg?: 0<n<90 (distance-angle, needs face), face?: faceId}',
 
-  extrude: '{profile: faceId | profileEdges: edgeId[] (exactly one), dir: [x,y,z], length: n>0, thin?: n>0, thinOuter?: 0<=n<=thin}',
+  extrude: '{profile: faceId | profileEdges: edgeId[] (exactly one), dir: [x,y,z], length: n>0 | upToFace: faceId (exactly one of length/upToFace; planar terminator — extrusion runs to its plane, miss/parallel skips), thin?: n>0, thinOuter?: 0<=n<=thin}',
   revolve: '{profile: faceId | profileEdges: edgeId[] (exactly one), axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n, thin?: n>0, thinOuter?: 0<=n<=thin}',
   sweep: '{profile: faceId | profileEdges: edgeId[] (exactly one), path: edgeId, thin?: n>0, thinOuter?: 0<=n<=thin}',
   loft: '{profiles: faceId[] (>=2) | profileEdgeSets: edgeId[][] (>=2, exactly one form), thin?: n>0, thinOuter?: 0<=n<=thin}',

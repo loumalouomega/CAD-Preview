@@ -564,6 +564,29 @@ describe("profile operand (open/closed wire profiles)", () => {
   });
 });
 
+describe("extrude up-to-face terminator", () => {
+  const base = { op: "extrude", profile: "face-1", dir: [0, 0, 1] } as const;
+  const extrude = (extra: Record<string, unknown>) => validateEditOp({ ...base, length: 5, ...extra });
+
+  it("accepts exactly one of length / upToFace", () => {
+    expect(extrude({})).toMatchObject({ op: "extrude", length: 5 });
+    expect(validateEditOp({ ...base, upToFace: "face-9" })).toMatchObject({ op: "extrude", upToFace: "face-9" });
+    expect(validateEditOp({ ...base, length: 5, upToFace: "face-9" })).toBeNull(); // both at once
+    expect(validateEditOp({ ...base })).toBeNull(); // neither
+  });
+
+  it("pattern-checks the terminator id (a smuggled form is a rejection, not a miss)", () => {
+    expect(validateEditOp({ ...base, upToFace: "edge-2" })).toBeNull();
+    expect(validateEditOp({ ...base, upToFace: "face-x" })).toBeNull();
+    expect(validateEditOp({ ...base, upToFace: 7 })).toBeNull();
+    expect(validateEditOp({ ...base, upToFace: "face-9", length: "5" as unknown as number })).toBeNull();
+  });
+
+  it("composes with thin on the terminator form", () => {
+    expect(validateEditOp({ ...base, upToFace: "face-9", thin: 2 })).toMatchObject({ upToFace: "face-9", thin: 2 });
+  });
+});
+
 describe("align / patternLinear / patternCircular", () => {
   it("accepts well-formed align/pattern ops", () => {
     expect(validateEditOp({ op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 }))

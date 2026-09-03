@@ -4059,6 +4059,94 @@ try {
     assert(Math.abs(plain.volume - 500) < 1e-6, `a non-thin extrude still fills the profile, exactly 500 (got ${plain.volume})`);
   }
 
+  // --- extrude up-to-face terminator (roadmap item 2) -------------------------
+  //
+  // block.stp is a 3x4x5 box (volume 60, faces pair up by area). A 20x20x2 box
+  // added on top contributes 800; its bottom face (area 400 at z=12.5) is the
+  // terminator for the block's own top face (area 12 at z=2.5), so the derived
+  // length is analytically 10 — twin-copy checked against inline length: 10.
+  {
+    const uptoModel = path.join(dir, "uptoface.stp");
+    const resetUpto = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), uptoModel);
+      fs.rmSync(`${uptoModel}.edits.json`, { force: true });
+    };
+    resetUpto();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: uptoModel, ops: [{ op: "addBox", center: [0, 0, 13.5], size: [20, 20, 2] }] },
+      resetUpto
+    );
+    const uptoLoaded = await call("load_model", { path: uptoModel });
+    let uptoProfile = null;
+    let uptoTerm = null;
+    for (const s of uptoLoaded.solids) {
+      for (const fid of s.faceIds) {
+        const f = await call("inspect", { path: uptoModel, entityId: fid });
+        if (Math.abs((f.area ?? 0) - 12) < 1e-6 && Math.abs(f.center[2] - 2.5) < 1e-6) uptoProfile = fid;
+        if (Math.abs((f.area ?? 0) - 400) < 1e-6 && Math.abs(f.center[2] - 12.5) < 1e-6) uptoTerm = fid;
+      }
+    }
+    assert(uptoProfile !== null && uptoTerm !== null, `profile (z=2.5) and terminator (z=12.5) faces found (got ${uptoProfile}, ${uptoTerm})`);
+
+    // 1. twin cross-check: up-to-face vs inline length 10 — byte-identical.
+    const uptoRes = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: uptoModel, ops: [{ op: "extrude", profile: uptoProfile, dir: [0, 0, 1], upToFace: uptoTerm }] },
+      resetUpto
+    );
+    assert(uptoRes.applied === 1, `up-to-face extrude applies (got ${JSON.stringify(uptoRes.report)})`);
+    const uptoMass = await call("get_mass_properties", { path: uptoModel });
+    resetUpto();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: uptoModel,
+        ops: [
+          { op: "addBox", center: [0, 0, 13.5], size: [20, 20, 2] },
+          { op: "extrude", profile: uptoProfile, dir: [0, 0, 1], length: 10 },
+        ],
+      },
+      resetUpto
+    );
+    const inlineMass = await call("get_mass_properties", { path: uptoModel });
+    assert(
+      Math.abs(uptoMass.volume - inlineMass.volume) < 1e-6,
+      `up-to-face volume ${uptoMass.volume} equals the inline-length twin ${inlineMass.volume}`
+    );
+    assert(Math.abs(uptoMass.volume - 980) < 1e-4, `total is block 60 + box 800 + 12x10 tube (got ${uptoMass.volume})`);
+
+    // 2. bucket roles survive derived lengths (startCap identity, endCap split).
+    const uptoBuckets = (await call("load_model", { path: uptoModel })).opBuckets ?? [];
+    const uptoBucket = uptoBuckets.find((b) => b.kind === "extrude" && b.op === 1);
+    assert(
+      uptoBucket?.roles?.startCap?.length === 1 && uptoBucket?.roles?.endCap?.length === 1 && (uptoBucket?.roles?.side?.length ?? 0) > 0,
+      `derived-length extrude keeps startCap/endCap/side roles (got ${JSON.stringify(uptoBucket?.roles)})`
+    );
+
+    // 3. miss (terminator coplanar with the profile — distance zero) skips
+    // with a diagnostic. The profile's own face is the deterministic
+    // zero-distance terminator: no face discovery needed, t is exactly 0.
+    const miss = await call("apply_edit_ops", {
+      path: uptoModel,
+      ops: [{ op: "extrude", profile: uptoProfile, dir: [0, 0, 1], upToFace: uptoProfile }],
+    });
+    assert(
+      miss.applied === 0 && miss.notApplied === 1 && miss.report.some((r) => /behind|miss/i.test(r.diagnostic ?? "")),
+      `a coplanar terminator skips with a miss diagnostic (got ${JSON.stringify(miss.report.map((r) => r.diagnostic))})`
+    );
+
+    // 4. parallel direction skips with a diagnostic.
+    const parallel = await call("apply_edit_ops", {
+      path: uptoModel,
+      ops: [{ op: "extrude", profile: uptoProfile, dir: [1, 0, 0], upToFace: uptoTerm }],
+    });
+    assert(
+      parallel.applied === 0 && parallel.notApplied === 1 && parallel.report.some((r) => /parallel/i.test(r.diagnostic ?? "")),
+      `a parallel direction skips with a diagnostic (got ${JSON.stringify(parallel.report.map((r) => r.diagnostic))})`
+    );
+  }
+
   // --- open-profile (wire) operand, roadmap item 8 --------------------------
   //
   // Same analytic discipline as the thin block above. block.stp is 6 faces /

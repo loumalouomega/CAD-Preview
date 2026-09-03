@@ -240,7 +240,9 @@ function describeOpBase(op: EditOp): string {
       if (op.angleDeg !== undefined) return `Chamfer ${op.edges.length} d=${op.distance} ${op.angleDeg}°`;
       return `Chamfer ${op.edges.length} d=${op.distance}`;
     }
-    case "extrude": return `Extrude ${profileLabel(op)} ×${op.length}${thinLabel(op)}`;
+    case "extrude": return (op as any).upToFace
+      ? `Extrude ${profileLabel(op)} → ${(op as any).upToFace as string}${thinLabel(op)}`
+      : `Extrude ${profileLabel(op)} ×${(op as any).length as number}${thinLabel(op)}`;
     case "revolve": return `Revolve ${profileLabel(op)} ${op.angleDeg}°${thinLabel(op)}`;
     case "sweep": return `Sweep ${profileLabel(op)} → ${op.path}${thinLabel(op)}`;
     case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${thinLabel(op)}`;
@@ -335,6 +337,7 @@ export function referencedEntities(op: EditOp): string[] {
     case "addVolumeFromSurfaces":
       return [...op.faces];
     case "extrude":
+      return [...profileOperandIds(op), ...((op as any).upToFace ? [(op as any).upToFace as string] : [])];
     case "revolve":
       return profileOperandIds(op);
     case "sweep":

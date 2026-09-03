@@ -90,8 +90,16 @@ export interface ThinSpec { thin?: number; thinOuter?: number; }
  * gives it a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
  */
 export interface ProfileOperand { profile?: string; profileEdges?: string[]; }
-/** Extrude a selected planar face, or a wire of selected edges, along `dir` by `length`. */
-export interface ExtrudeOp extends ThinSpec, ProfileOperand { op: "extrude"; dir: Vec3; length: number; }
+/**
+ * Extrude a selected planar face, or a wire of selected edges, along `dir` —
+ * either by an explicit `length` or up to the terminator face `upToFace`
+ * (exactly one of the two, mirroring {@link ProfileOperand}'s own XOR).
+ * `upToFace` terminates at the terminator's PLANE (planar faces only): the
+ * extrusion runs from the profile plane to the terminator plane along `dir`,
+ * so a miss (terminator behind the profile) or a parallel direction skips
+ * gracefully rather than building a wrong solid.
+ */
+export interface ExtrudeOp extends ThinSpec, ProfileOperand { op: "extrude"; dir: Vec3; length?: number; upToFace?: string; }
 /** Revolve a selected profile `angleDeg` about the axis (`axisPoint`, `axisDir`). */
 export interface RevolveOp extends ThinSpec, ProfileOperand { op: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; }
 /** Sweep a selected profile along a selected path edge. */
@@ -319,6 +327,13 @@ export const GUIDE_KINDS: ReadonlySet<EditOpKind> = new Set([
   "addPoint","addLine","addArc","addPolyline","addThreePointArc","addSpline","addBezier","addEllipseArc","addHelix",
 ]);
 
+/** A single `face-N` id — refused up front (like {@link asEdgeIdArray}, not
+ * the lenient {@link asIdArray}) so a smuggled id form is a validation
+ * rejection rather than a silently-wrong operand at replay. */
+function asFaceId(v: unknown): string | null {
+  return typeof v === "string" && /^face-\d+$/.test(v) ? v : null;
+}
+
 function asFaceIdPair(v: unknown): [string, string] | null {
   if (!Array.isArray(v) || v.length !== 2) return null;
   if (typeof v[0] !== "string" || typeof v[1] !== "string") return null;
@@ -545,9 +560,19 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const dir = asVec3(o.dir);
       const thin = asThinSpec(o);
       const profile = asProfileOperand(o);
-      return profile && dir && isFiniteNumber(o.length) && thin
-        ? { op: "extrude", ...profile, dir, length: o.length, ...thin }
-        : null;
+      // Terminator: exactly one of an explicit length or a face to extrude up
+      // to — never both, never neither (the ProfileOperand XOR shape).
+      const hasLength = o.length !== undefined;
+      const hasUpToFace = o.upToFace !== undefined;
+      if (hasLength === hasUpToFace) return null;
+      if (!(profile && dir && thin)) return null;
+      if (hasLength) {
+        return isFiniteNumber(o.length)
+          ? { op: "extrude", ...profile, dir, length: o.length, ...thin }
+          : null;
+      }
+      const upToFace = asFaceId(o.upToFace);
+      return upToFace ? { op: "extrude", ...profile, dir, upToFace, ...thin } : null;
     }
     case "revolve": {
       const axisPoint = asVec3(o.axisPoint);

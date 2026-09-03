@@ -530,6 +530,8 @@ let booleanA: string[] = [];
 type LoftSection = { kind: "face"; ids: string[] } | { kind: "edges"; ids: string[] };
 /** Sweep's captured path edge — see `EditsPanelCallbacks.onCaptureSweepPath`. */
 let sweepPath: string | null = null;
+/** Extrude's captured terminator face — see `EditsPanelCallbacks.onCaptureTerminator`. */
+let extrudeTerminator: string | null = null;
 /** Loft's captured sections — see `EditsPanelCallbacks.onCaptureLoftSection`. */
 let loftSections: LoftSection[] = [];
 const selectedVolumes = (): string[] =>
@@ -835,6 +837,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     return sweepPath;
   },
   onClearSweepPath: () => { sweepPath = null; scheduleOpPreview(); },
+  onCaptureTerminator: () => {
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    if (faces.length !== 1) { setStatus("Select exactly one face (Surf mode) to capture as the extrude terminator.", true); return extrudeTerminator; }
+    extrudeTerminator = faces[0];
+    scheduleOpPreview();
+    return extrudeTerminator;
+  },
+  onClearTerminator: () => { extrudeTerminator = null; scheduleOpPreview(); },
   onCaptureLoftSection: () => {
     const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
     const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
@@ -861,6 +871,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     // name the wrong geometry — drop them, as `onApplyBoolean` drops A.
     sweepPath = null;
     loftSections = [];
+    extrudeTerminator = null;
     editsPanel.resetFeatureCaptures();
     setStatus("");
   },
@@ -1646,6 +1657,11 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     case "extrude": {
       const profile = profileOperandFromSelection(selFaces, selEdges);
       if ("error" in profile) return { error: `${profile.error} to extrude.` };
+      if (extrudeTerminator) {
+        if (!/^face-\d+$/.test(extrudeTerminator)) return { error: "Captured terminator is not a face id — clear and re-capture it." };
+        if (guideEntityIds.has(extrudeTerminator)) return { error: `${extrudeTerminator} is guide (construction) geometry — guides are excluded from extrude terminators.` };
+        return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, upToFace: extrudeTerminator, ...thinOf(d) }) };
+      }
       return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, length: d.length, ...thinOf(d) }) };
     }
     case "revolve": {

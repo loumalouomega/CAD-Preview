@@ -1001,7 +1001,8 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
     // The sweep PATH edge is checked too; it used to be the one operand of
     // this family that a guide could still slip through.
     const single = op.op === "extrude" || op.op === "revolve" || op.op === "sweep" ? (op as any).profile : undefined;
-    const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single] : [];
+    const terminator: string[] = op.op === "extrude" && typeof (op as any).upToFace === "string" ? [(op as any).upToFace as string] : [];
+    const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single, ...terminator] : [...terminator];
     const edgeIds: string[] = op.op === "loft"
       ? ((op as any).profileEdgeSets ?? []).flat()
       : [...((op as any).profileEdges ?? []), ...(op.op === "sweep" ? [(op as any).path] : [])];
@@ -1405,6 +1406,91 @@ function featureProfileFace(oc: any, shape: any, op: EditOp & { profile?: string
   return section ? profileFaceFor(oc, section, op, cleanup, fail) : null;
 }
 
+/**
+ * Derives an extrusion length from a terminator face (`upToFace`) — the
+ * distance from the profile plane to the terminator plane along `dir`, or
+ * `null` (with `fail` told exactly why) when there is no usable answer.
+ *
+ * This is deliberately plane math over the two faces' analytic planes
+ * (`faceSurfaceInfo`, verified), NOT a `BRepAlgoAPI_Section` call: probed
+ * live, `BRepAlgoAPI_Section` has no accessible constructor in this build
+ * (`BindingError`) and its 0-arg form exposes no shape setters (only
+ * `Build`/`IsDone`/`Shape`) — the fourth "green is necessary but not
+ * sufficient" instance in this codebase. An overshoot-prism +
+ * half-space-`Common` composition (the `splitSolidsByPlane` call shape) was
+ * probed as the fallback and verified exact (z=[10,25], volume 1500 on the
+ * analytic fixture), but a directly-built prism at the derived length is
+ * cheaper and equally exact, so that is what the caller builds — the
+ * fallback pattern stands validated for a future cut-variant, not used here.
+ *
+ * Semantics: up-to-face terminates at the terminator's PLANE (mainstream
+ * "up to surface" behavior for the footprint-covered case). A zero/negative
+ * distance (terminator behind or coplanar with the profile) is a MISS, and a
+ * direction perpendicular to the plane normal is PARALLEL — both skip
+ * gracefully rather than building a degenerate or unbounded solid, and a
+ * non-planar profile or terminator is refused (no plane to measure to).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extrudeLengthUpToFace(
+  oc: any,
+  shape: any,
+  profileFace: any,
+  op: Extract<EditOp, { op: "extrude" }>,
+  cleanup: Array<{ delete(): void }>,
+  fail?: OutcomeFail
+): number | null {
+  const upToFace = op.upToFace as string | undefined;
+  const term = upToFace === undefined ? undefined : collectFaces(oc, shape, cleanup)[faceIndex(upToFace)];
+  if (!term) {
+    fail?.(
+      `up-to-face ${upToFace} did not resolve to a face`,
+      "re-check face-N ids — load_model re-lists them after topology-changing ops"
+    );
+    return null;
+  }
+  const profInfo = faceSurfaceInfo(oc, profileFace, cleanup);
+  if (profInfo.type !== "plane" || !profInfo.params || profInfo.params.kind !== "plane") {
+    fail?.("up-to-face extrusion needs a planar profile face", "sketch a flat profile (Circle, Rectangle, Polygon) instead");
+    return null;
+  }
+  const termInfo = faceSurfaceInfo(oc, term, cleanup);
+  if (termInfo.type !== "plane" || !termInfo.params || termInfo.params.kind !== "plane") {
+    fail?.(
+      `up-to-face ${upToFace} is a ${termInfo.type} surface, not a plane`,
+      "only planar terminator faces are supported — curved faces are a queued follow-up"
+    );
+    return null;
+  }
+  const [dx, dy, dz] = op.dir;
+  const len = Math.hypot(dx, dy, dz);
+  if (!(len > 0)) {
+    fail?.("extrusion direction has zero length", "give a non-zero dir vector");
+    return null;
+  }
+  const n = termInfo.params.normal;
+  const denom = (dx * n[0] + dy * n[1] + dz * n[2]) / len;
+  if (Math.abs(denom) < 1e-9) {
+    fail?.(
+      `extrusion direction is parallel to ${upToFace}'s plane — it never meets the terminator`,
+      "rotate the direction out of the terminator plane, or pick a different terminator face"
+    );
+    return null;
+  }
+  const p0 = profInfo.params.origin;
+  const p1 = termInfo.params.origin;
+  // Sign-independent: when the normal points back toward the profile, both
+  // numerator and denominator are negative and the quotient stays positive.
+  const t = ((p1[0] - p0[0]) * n[0] + (p1[1] - p0[1]) * n[1] + (p1[2] - p0[2]) * n[2]) / denom;
+  if (!(t > 1e-9)) {
+    fail?.(
+      `terminator ${upToFace} lies behind (or on) the profile plane along the extrusion direction`,
+      "flip the extrusion direction, or pick a terminator face ahead of the profile"
+    );
+    return null;
+  }
+  return t;
+}
+
 /** Builds the new solid for a feature op, or null on unresolved operands / failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
@@ -1414,9 +1500,23 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
       case "extrude": {
         const face = featureProfileFace(oc, shape, op, cleanup, fail);
         if (!face) return null;
+        // Terminator form derives the length from the up-to-face plane;
+        // explicit-length form uses it directly. Either way the SAME prism
+        // builder below runs, so thin-wall handling, Copy=false start-cap
+        // identity, and bucket roles behave identically for both forms.
+        let length = op.length;
+        if (op.upToFace !== undefined) {
+          const derived = extrudeLengthUpToFace(oc, shape, face, op, cleanup, fail);
+          if (derived === null) return null;
+          length = derived;
+        }
+        if (length === undefined || !Number.isFinite(length)) {
+          fail?.("extrusion has neither a usable length nor a resolvable up-to-face terminator");
+          return null;
+        }
         const [dx, dy, dz] = op.dir;
         const len = Math.hypot(dx, dy, dz) || 1;
-        const s = op.length / len; // dir scaled so |vec| == length
+        const s = length / len; // dir scaled so |vec| == length
         const vec = keep(new oc.gp_Vec_4(dx * s, dy * s, dz * s));
         return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape()), cleanup);
       }
