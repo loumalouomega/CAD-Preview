@@ -19,7 +19,7 @@ These screenshots are **generated, not hand-captured**, so they never drift from
 | File | Role |
 | --- | --- |
 | `make-fixtures.mjs` | esbuild-bundles `fixtures-entry.ts` (Node/CJS) and runs it. It calls the **real** host modules — `loadBRep` (OpenCascade tessellation) and `generateMesh` (Gmsh) — on `examples/STP/bull.stp`, and writes the exact `HostToWebview` message payloads plus small realistic `parts`/`edits` and the shared viewer DOM to `fixtures/` (git-ignored). Requires `dist/*.wasm`, so `npm run build` runs first. |
-| `fixtures-entry.ts` | The generator logic (imports `src/` host modules; `vscode`-free). |
+| `fixtures-entry.ts` | The generator logic (imports `src/` host modules; `vscode`-free). Also tessellates the tutorials' cumulative op-prefixes from `block.stp` (`tutorial-*-geometry/tree.json`) plus one `exportBRep`-baked bracket mesh (`tutorial-fea-meshingResult.json`) for the per-step shots. |
 | `harness.mjs` | **The shared Playwright harness**: the static server, the `/__harness` page (the shared `viewerBodyHtml()` + an `acquireVsCodeApi` stub + `media/viewer.{js,css}`), the SwiftShader Chromium flags, and `populate()` — whose message ordering is load-bearing. Imported by `capture.mjs` **and** by `scripts/webview-test/run.mjs`. |
 | `capture.mjs` | Drives that harness for screenshots: posts the fixtures so the UI shows genuine geometry, walks each panel, and writes one PNG per feature. |
 

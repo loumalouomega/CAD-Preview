@@ -35,6 +35,8 @@ Look at the **Components** tree: the new face appears under a group called **Ske
 under a solid. A bare face is not a body, and it is there to be picked and fed into something
 else.
 
+![The rectangle sketch as a bare face, listed under Sketches.](/screenshots/tutorial-enclosure-sketch.png)
+
 ![The Components tree listing the model's solids and a separate Sketches group.](/screenshots/components-tree.png)
 
 ## Step 2 — Extrude it
@@ -47,6 +49,8 @@ else.
 The box now runs from z = −3 to z = 45. The **Sketches** group is empty again: extrude reuses the
 profile face as the new solid's bottom cap rather than copying it, so the sketch is *consumed*,
 not duplicated.
+
+![The extruded solid box before shelling.](/screenshots/tutorial-enclosure-extruded.png)
 
 ## Step 3 — Read what the extrude produced
 
@@ -72,6 +76,8 @@ without hunting for its current index.
 A **negative** thickness offsets inward, so the outer dimensions stay put and 6 mm of wall is
 taken from the inside. The result is an open-topped box: 6 mm walls, a 6 mm floor spanning
 z = −3 to z = 3 — which is exactly what buries the seed block's ±2.5.
+
+![The shelled open-topped enclosure.](/screenshots/tutorial-enclosure-done.png)
 
 ::: tip Shell needs at least one opening face
 With an empty opening list, the operation returns a smaller solid rather than a hollow one — it

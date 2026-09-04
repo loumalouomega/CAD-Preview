@@ -62,7 +62,7 @@ the next step.
 The mesh appears as an overlay on top of the model, coloured **per part** — so you can see at a
 glance that your named regions ended up where you meant them.
 
-![The generated FE mesh overlay drawn over the model.](/screenshots/mesh-overlay.png)
+![The generated FE mesh overlay drawn over the bracket.](/screenshots/tutorial-fea-mesh.png)
 
 With `Size max = 4` and the bolt holes at `1.5`, this bracket meshes to roughly 1200 nodes and
 3600 elements in well under a second.

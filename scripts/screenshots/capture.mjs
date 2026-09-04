@@ -184,6 +184,43 @@ const SHOTS = [
     },
     target: {},
   },
+  // --- Tutorial per-step shots (roadmap Tier 3 item 4) --------------------
+  // Each posts its own cumulative-prefix geometry + tree with populate()'s
+  // exact geometry → viewState(null) → sleep → tree → sleep ordering (the
+  // viewState post is load-bearing for first-load framing). Full-page
+  // targets avoid the fixed-clip silent-cut trap file-menu.png documents.
+  ...[
+    "tutorial-bracket-fused",
+    "tutorial-bracket-done",
+    "tutorial-flange-tools",
+    "tutorial-flange-done",
+    "tutorial-enclosure-sketch",
+    "tutorial-enclosure-extruded",
+    "tutorial-enclosure-done",
+  ].map((name) => ({
+    file: `${name}.png`,
+    setup: async (page) => {
+      await post(page, fixture(`${name}-geometry`));
+      await post(page, { type: "viewState", view: null });
+      await sleep(700);
+      await post(page, fixture(`${name}-tree`));
+      await sleep(700);
+    },
+    target: {},
+  })),
+  {
+    file: "tutorial-fea-mesh.png",
+    setup: async (page) => {
+      await post(page, fixture("tutorial-bracket-done-geometry"));
+      await post(page, { type: "viewState", view: null });
+      await sleep(700);
+      await post(page, fixture("tutorial-bracket-done-tree"));
+      await sleep(700);
+      await post(page, fixture("tutorial-fea-meshingResult"));
+      await sleep(900);
+    },
+    target: {},
+  },
 ];
 
 async function main() {

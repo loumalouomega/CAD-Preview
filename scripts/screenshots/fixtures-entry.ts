@@ -16,7 +16,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
-import { loadBRep } from "../../src/occtService";
+import { loadBRep, exportBRep } from "../../src/occtService";
 import { generateMesh, type MeshGenerationInput } from "../../src/gmshService";
 import { encodeBuffer, type Part } from "../../src/protocol";
 import { DEFAULT_MESH_OPTIONS } from "../../src/meshOptions";
@@ -146,6 +146,89 @@ async function main(): Promise<void> {
     nodeCount: result.nodeCount,
     elementCount: result.elementCount,
     elapsedMs,
+  });
+
+  // --- Tutorial step fixtures (roadmap Tier 3 item 4) ----------------------
+  // Every tutorial starts from block.stp (not bull.stp) and its op-list ids
+  // were probed live (pinned in scripts/mcp-smoke/run.mjs). Each entry below
+  // is a cumulative prefix of its page's "Full operation list", tessellated
+  // via the already-4-parameter loadBRep — no new kernel surface.
+  const BLOCK = path.join(ROOT, "examples", "STP", "block.stp");
+  const blockBytes = new Uint8Array(fs.readFileSync(BLOCK));
+  const bracketOps = [
+    { op: "addBox", center: [0, 0, 0], size: [60, 40, 6] },
+    { op: "addBox", center: [0, -17, 18], size: [60, 6, 30] },
+    { op: "boolean", kind: "union", a: ["solid-1"], b: ["solid-2"] },
+    { op: "fillet", edges: ["edge-13"], radius: 4 },
+    { op: "addCounterboreHole", targets: ["solid-0"], position: [-22, 10, 3], axis: [0, 0, -1], radius: 3, depth: 6, cbRadius: 5, cbDepth: 2 },
+    { op: "addCounterboreHole", targets: ["solid-0"], position: [22, 10, 3], axis: [0, 0, -1], radius: 3, depth: 6, cbRadius: 5, cbDepth: 2 },
+  ];
+  const flangeToolOps = [
+    { op: "addCylinder", center: [0, 0, -5], axis: [0, 0, 1], radius: 40, height: 10 },
+    { op: "addCylinder", center: [30, 0, -10], axis: [0, 0, 1], radius: 3, height: 20 },
+    { op: "patternCircular", targets: ["solid-2"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 45, count: 8 },
+  ];
+  const flangeDoneOps = [
+    ...flangeToolOps,
+    { op: "boolean", kind: "subtract", a: ["solid-1"], b: ["solid-2", "solid-3", "solid-4", "solid-5", "solid-6", "solid-7", "solid-8", "solid-9"] },
+  ];
+  const enclosureSketchOps = [
+    { op: "addRectangleProfile", center: [0, 0, -3], normal: [0, 0, 1], up: [0, 1, 0], width: 80, height: 60 },
+  ];
+  const enclosureExtrudedOps = [
+    ...enclosureSketchOps,
+    { op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 48 },
+  ];
+  const enclosureDoneOps = [
+    ...enclosureExtrudedOps,
+    { op: "shell", thickness: -6, openingFaces: ["face-11"] },
+  ];
+  const tutorialSteps: Array<{ name: string; ops: unknown[] }> = [
+    { name: "tutorial-bracket-fused", ops: bracketOps.slice(0, 3) },
+    { name: "tutorial-bracket-done", ops: bracketOps },
+    { name: "tutorial-flange-tools", ops: flangeToolOps },
+    { name: "tutorial-flange-done", ops: flangeDoneOps },
+    { name: "tutorial-enclosure-sketch", ops: enclosureSketchOps },
+    { name: "tutorial-enclosure-extruded", ops: enclosureExtrudedOps },
+    { name: "tutorial-enclosure-done", ops: enclosureDoneOps },
+  ];
+  for (const step of tutorialSteps) {
+    const r = await loadBRep(ROOT, blockBytes, "step", step.ops as never[]);
+    writeJson(`${step.name}-geometry.json`, {
+      type: "geometry",
+      meshes: r.groups.flatMap((g) =>
+        g.faces.map((f) => ({
+          positions: encodeBuffer(f.buffers.positions),
+          indices: encodeBuffer(f.buffers.indices),
+          groupId: g.id,
+          faceId: f.faceId,
+        }))
+      ),
+      edges: r.edges.map((e) => ({ positions: encodeBuffer(e.positions), edgeId: e.edgeId })),
+      points: r.points.map((p) => ({ position: encodeBuffer(new Float32Array(p.position)), pointId: p.pointId })),
+    });
+    writeJson(`${step.name}-tree.json`, { type: "tree", root: r.tree });
+    console.log(`  tutorial fixture: ${step.name} (${r.groups.length} solids)`);
+  }
+
+  // FEA-prep overlay: the finished bracket meshed at the tutorial's own
+  // Size max = 4, so the shot shows the overlay the reader gets.
+  console.log("  running Gmsh for the tutorial bracket (fea-prep shot)…");
+  const bracketStepBytes = await exportBRep(ROOT, blockBytes, "step", "step", bracketOps as never[]);
+  const tutorialMeshInput: MeshGenerationInput = { kind: "brep", stepBytes: bracketStepBytes };
+  const tutorialMeshOptions = { ...DEFAULT_MESH_OPTIONS, sizeMax: 4 };
+  const tutorialMeshStartedAt = Date.now();
+  const tutorialMesh = await generateMesh(ROOT, tutorialMeshInput, tutorialMeshOptions, []);
+  console.log(`  tutorial mesh: ${tutorialMesh.nodeCount} nodes, ${tutorialMesh.elementCount} elements in ${Date.now() - tutorialMeshStartedAt} ms`);
+  writeJson("tutorial-fea-meshingResult.json", {
+    type: "meshingResult",
+    positions: encodeBuffer(tutorialMesh.positions),
+    indices: encodeBuffer(tutorialMesh.indices),
+    edges: encodeBuffer(tutorialMesh.edges),
+    elementGroups: tutorialMesh.elementGroups,
+    nodeCount: tutorialMesh.nodeCount,
+    elementCount: tutorialMesh.elementCount,
+    elapsedMs: Date.now() - tutorialMeshStartedAt,
   });
 
   writeJson("meta.json", { model: path.basename(MODEL), diagonal: diag, generatedAt: new Date().toISOString() });

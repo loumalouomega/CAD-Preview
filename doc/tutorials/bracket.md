@@ -46,6 +46,8 @@ and you can see the seam.
 
 The seam disappears and the two boxes become a single 11-face solid.
 
+![The fused L-bracket after the union — plate and wall as one body.](/screenshots/tutorial-bracket-fused.png)
+
 ::: warning The union renumbers the solids
 A boolean rebuilds the model as *result first, then everything it did not touch* — so the fused
 bracket becomes `solid-0` and the seed block moves to `solid-1`. This is the entity-id drift that
@@ -81,6 +83,8 @@ plate.
 ![The Edits history listing the applied operations, each with an undo and a remove control.](/screenshots/edit-history.png)
 
 The bracket is done: 18 faces, 52 edges.
+
+![The finished bracket with filleted inside corner and two counterbored holes.](/screenshots/tutorial-bracket-done.png)
 
 ## Step 6 — Undo, jump, and export
 
