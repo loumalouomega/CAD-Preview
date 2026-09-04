@@ -4,6 +4,19 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.10.0] - 2026-09-04
+
+### Added
+
+- **New Blank Model — start with no source file.** **File ▾ → New Blank Model…**, the `CAD Preview: New Blank Model…` command, and a second button in the Models view's welcome all create an empty `.brep` document and open it, so the Edits panel's whole creation vocabulary (primitives, 2D sketch profiles, bottom-up wireframe modeling, booleans, fillets, patterns) can be used from scratch rather than only on top of an existing model. A blank document is an ordinary B-rep document whose source is an empty compound: everything you author lives in the replayable `<model>.brep.edits.json` op-list exactly as it does for an edited STEP, and the CAD file stays read-only. It refuses to overwrite an existing file rather than blanking a model whose edit history would then replay against nothing. Export bakes the geometry into a standalone file.
+- **Collapsible sidebar sections.** Every sidebar section — Components, Parts, Edits, FE Mesh, Mass Properties, Mesh Health, Region fit, Macros, Standard Parts — now has a chevron in its header that collapses it to just that header, independently, so the panel can be reduced to what you are actually using. Collapsing one of the two space-filling panels (Parts, Edits) hands its space back to the rest. The layout is remembered per document in the existing `<model>.view.json` sidecar (`collapsedPanels`, a purely additive field — an older sidecar restores exactly as before, and an untouched one stays byte-stable).
+
+### Fixed
+
+- **The Mesh Health and Region fit panels were visible for every source format**, including B-rep files where they have nothing to show. Both panels carried an unconditional `display: flex` rule, which beats the `hidden` attribute's effect, so the source-format eligibility check that was supposed to hide them was inert. They now appear only for a native STL/OBJ/PLY/glTF source, as documented.
+- **An empty shape no longer crashes the OCCT kernel.** Handing a shape with no sub-shapes to `BRepMesh_IncrementalMesh_2` aborted the whole WebAssembly instance — a hard fault, not a recoverable error — leaving every later operation in that session failing until the extension host restarted. Tessellation now returns an empty result for such a shape instead. Reachable from any edit that reduces a model to nothing (a boolean that cuts the last solid away, or undoing past the last op that produced geometry), as well as from the new blank documents above.
+- **The Region fit and Standard Parts panel headers rendered unstyled** — neither matched any rule in the stylesheet. All nine sidebar headers now share one class instead of a hand-maintained id list that had already drifted.
+
 ## [1.9.2] - 2026-09-04
 
 ### Fixed
@@ -347,6 +360,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.10.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.8.0...v1.9.0
