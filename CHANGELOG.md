@@ -4,6 +4,15 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.9.1] - 2026-09-04
+
+### Fixed
+
+- **Release job no longer loses the whole release to a Marketplace outage.** v1.9.0's `vsce publish` step failed on a transient HTTP 503 from `marketplace.visualstudio.com`, and because that step sat upstream of "Create GitHub Release", the tag was left with no release and no `.vsix` attached even though the build itself was fully green. The publish step now retries with backoff (matching the existing precedent for `update.code.visualstudio.com`), the PAT is passed via the `VSCE_PAT` environment variable instead of a `-p` flag so it never appears in the child process's argv, and the release step runs unconditionally on non-cancellation so a Marketplace hiccup can no longer cost the GitHub release.
+- **`package-lock.json`'s embedded root-package version brought back in sync** with `package.json` — it had silently lagged one release behind since the v1.9.0 bump.
+
+This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itself never reached the Marketplace.
+
 ## [1.9.0] - 2026-09-04
 
 ### Added
@@ -330,6 +339,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.9.1]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.5.1...v1.7.0
