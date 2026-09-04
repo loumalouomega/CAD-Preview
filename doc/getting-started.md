@@ -45,6 +45,8 @@ Open any supported file — for example, from the Explorer or via `File > Open F
 
 You can also drag a file from the OS file explorer (or another editor tab) and drop it onto the 3D view to open it the same way. If the browser drop event doesn't expose a real filesystem path for the dropped item, CAD Preview falls back to showing the normal **Open…** dialog instead of silently failing.
 
+The **CAD Preview** icon in the Activity Bar opens the **Models** view: every CAD/mesh file in the open workspace folder(s), discovered with the same routing rules (and the same depth cap and `.git`/`node_modules` exclusions) as the headless `list_workspace_models` tool. Click a file to open it in the 3D viewer; the toolbar offers the same **Open…** dialog plus **Refresh**. With no folder open — or no models found — the view shows an **Open CAD File…** button instead.
+
 ### Supported Formats
 
 | Format      | Extensions      | Rendering Pipeline                         |

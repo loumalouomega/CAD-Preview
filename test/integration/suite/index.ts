@@ -29,6 +29,7 @@ import * as vscode from "vscode";
 import { installModalStubs, pick, save, cancel, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
 import { writePlanes } from "../../../src/planesStore";
+import { ModelsTreeDataProvider } from "../../../src/modelsView";
 
 const EXTENSION_ID = "kratos-multiphysics.cad-preview";
 const VIEW_TYPE = "cad-preview.mesh";
@@ -118,6 +119,7 @@ test("the extension is installed, activates, and registers its commands", async 
     "cad-preview.open", "cad-preview.compareModels", "cad-preview.whatsNew",
     "cad-preview.export", "cad-preview.saveAs", "cad-preview.exportSvg",
     "cad-preview.exportDxf", "cad-preview.savePreprocess", "cad-preview.loadPreprocess",
+    "cad-preview.refreshModels",
   ]) {
     assert(commands.includes(id), `command ${id} is registered`);
   }
@@ -501,7 +503,72 @@ test("the dirty-buffer guard also protects .planes.json", async () => {
   );
 });
 
-  for (const c of CASES) {
+/**
+ * The Models activity-bar view — the only way to reach a CAD document without
+ * the file dialog or an already-open editor. Drives a second provider instance
+ * directly (the class is exported, so no production seam is needed for that),
+ * pointed at a temp workspace folder added for exactly this case.
+ */
+test("Models view lists workspace CAD files, skips the rest, and opens on click", async () => {
+  const dir = tempDir();
+  fs.copyFileSync(STEP_FIXTURE, path.join(dir, "block.stp"));
+  fs.writeFileSync(path.join(dir, "notes.txt"), "not a model");
+  fs.mkdirSync(path.join(dir, "sub", "deep"), { recursive: true });
+  fs.copyFileSync(STEP_FIXTURE, path.join(dir, "sub", "deep", "nested.stp"));
+  fs.mkdirSync(path.join(dir, "node_modules"), { recursive: true });
+  fs.copyFileSync(STEP_FIXTURE, path.join(dir, "node_modules", "evil.stp"));
+
+  const added = vscode.workspace.updateWorkspaceFolders(0, null, { uri: vscode.Uri.file(dir) });
+  assert(added, "the temp folder joins the workspace for this case");
+  assert(
+    await waitFor(() => (vscode.workspace.workspaceFolders ?? []).length > 0, 10000),
+    "the workspace change propagates before the tree is read"
+  );
+  const provider = new ModelsTreeDataProvider(VIEW_TYPE);
+  try {
+    // Other cases stage their own temp dirs, so the workspace may hold
+    // several roots — descend from this case's folder node explicitly (which
+    // also covers the multi-root path).
+    const roots = await provider.getChildren();
+    const mine = roots.find(
+      (e) => e.kind === "folder" && (e.uri.fsPath === dir || e.uri.toString() === vscode.Uri.file(dir).toString())
+    );
+    assert(!!mine, `this case's folder node resolves (got ${JSON.stringify(roots.map((e) => e.label))})`);
+    const root = await provider.getChildren(mine);
+    const labels = root.map((e) => (e.kind === "file" ? e.label : `dir:${e.label}`));
+    assert(labels.includes("block.stp"), `the root model is listed (got ${JSON.stringify(labels)})`);
+    assert(!labels.some((l) => l.includes("notes.txt")), "a non-model file is not listed");
+    assert(!labels.some((l) => l.includes("evil.stp")), "node_modules is never descended into");
+    assert(labels.some((l) => l.includes("sub")), "a subfolder is listed");
+
+    const sub = root.find((e) => e.kind === "folder" && e.label === "sub");
+    assert(!!sub, "the sub folder node resolves");
+    const deep = (await provider.getChildren(sub)).find((e) => e.kind === "folder" && e.label === "deep");
+    assert(!!deep, "a nested folder node resolves");
+    const nested = await provider.getChildren(deep);
+    assert(nested.some((e) => e.kind === "file" && e.label === "nested.stp"), "a model three levels down is listed");
+
+    const file = root.find((e) => e.kind === "file" && e.label === "block.stp");
+    assert(!!file, "the file node resolves");
+    const item = provider.getTreeItem(file!);
+    const cmd = item.command as { command: string; arguments: unknown[] } | undefined;
+    assert(cmd?.command === "vscode.openWith", "a file opens via vscode.openWith");
+    assert(
+      (cmd?.arguments?.[1] as string) === VIEW_TYPE &&
+        ((cmd?.arguments?.[0] as vscode.Uri)?.fsPath ?? "").endsWith("block.stp"),
+      "openWith targets the CAD Preview custom editor with the file's URI"
+    );
+
+    await vscode.commands.executeCommand("cad-preview.refreshModels");
+    assert(true, "cad-preview.refreshModels runs without throwing");
+  } finally {
+    provider.dispose();
+    vscode.workspace.updateWorkspaceFolders(0, 1);
+  }
+  await closeAll();
+});
+
+for (const c of CASES) {
     console.log(`\n${c.name}`);
     try {
       await c.run();

@@ -174,6 +174,15 @@ export function routeFile(filePath: string): FileRoute | undefined {
 }
 
 /**
+ * Every registered extension key (including the compound `post.msh`), for
+ * callers that need the set rather than one lookup — the Models activity-bar
+ * view builds its file-watcher glob from this instead of hand-copying the
+ * table a second time (the open-file dialog's filter list in `provider.ts`
+ * predates this and stays as-is).
+ */
+export const ROUTED_EXTENSIONS: readonly string[] = Object.keys(EXTENSION_MAP);
+
+/**
  * Returns the `EXTENSION_MAP` key `routeFile` matches for `filePath` — the
  * longest registered suffix of its basename — or `undefined` if none is
  * registered. Exported so an extension-keyed lookup elsewhere resolves the

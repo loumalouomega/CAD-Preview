@@ -106,10 +106,38 @@
         "priority": "default"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cad-preview",
+          "title": "CAD Preview",
+          "icon": "images/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cad-preview": [
+        {
+          "id": "cad-preview.models",
+          "name": "Models"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "cad-preview.models",
+        "contents": "No CAD models found in this workspace.\n[Open CAD File…](command:cad-preview.open)"
+      }
+    ],
     "commands": [
       {
         "command": "cad-preview.open",
         "title": "CAD Preview: Open File…"
+      },
+      {
+        "command": "cad-preview.refreshModels",
+        "title": "CAD Preview: Refresh Models",
+        "icon": "$(refresh)"
       },
       {
         "command": "cad-preview.save",
@@ -242,6 +270,29 @@
         {
           "command": "cad-preview.exportMesh",
           "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.refreshModels",
+          "when": "view == cad-preview.models"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "cad-preview.open",
+          "when": "view == cad-preview.models",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cad-preview.refreshModels",
+          "when": "view == cad-preview.models",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "revealInExplorer",
+          "when": "view == cad-preview.models",
+          "group": "2_files@1"
         }
       ]
     },

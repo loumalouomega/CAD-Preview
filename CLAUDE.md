@@ -33,6 +33,7 @@ This project is licensed **GPL-2.0-or-later** (not MIT) because it bundles `@lou
 - **Lazy WASM init.** Never call the factory in `activate()`. Initialize it on the first B-rep open and memoize it as a module singleton (`src/occtService.ts`). Opening a pure-mesh file (STL/OBJ/PLY/glTF) must never load the WASM.
 - **Routing.** B-rep (`.step/.stp/.iges/.igs/.brep`) → OCCT pipeline. Mesh (`.stl/.obj/.ply/.gltf/.glb`) → native Three.js loaders via `webview.asWebviewUri`. See `src/fileRouter.ts`.
 - **Custom editor.** Use `CustomReadonlyEditorProvider` (preview only, no edit/undo/save), registered from `contributes.customEditors`.
+- **Models activity-bar view** (`src/modelsView.ts`, the second UI surface beside the custom editor). A `TreeDataProvider` over `vscode.workspace.fs` lists every workspace file `routeFile()` accepts; clicking one runs the same `vscode.openWith(…, "cad-preview.mesh")` the open dialog ends with. `viewType` is constructor-injected, never imported from `provider.ts` — importing the provider would drag gmsh/meshio/playwright into the `test/integration` suite bundle, which builds with only `vscode` external. Extension list comes from `fileRouter.ts`'s `ROUTED_EXTENSIONS`, never a second copy.
 
 ## WASM loading — critical detail
 
