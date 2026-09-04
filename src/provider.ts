@@ -248,6 +248,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     };
     return [
       vscode.commands.registerCommand("cad-preview.open", () => void this.openFileDialog()),
+      // Deliberately NOT `withSession` — like `open`/`loadPreprocess`, this
+      // creates a document and so must work with no CAD tab focused.
+      vscode.commands.registerCommand("cad-preview.new", () => void this.newBlankModelDialog()),
       vscode.commands.registerCommand("cad-preview.save", withSession((s) => void s.save())),
       vscode.commands.registerCommand("cad-preview.saveAs", withSession((s) => s.export())),
       vscode.commands.registerCommand("cad-preview.export", withSession((s) => s.export())),
@@ -289,6 +292,88 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   /** Opens a file dropped onto the viewer (drag-and-drop) at an already-known path. */
   private async openPathInEditor(path: string): Promise<void> {
     await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(path), CadPreviewProvider.viewType);
+  }
+
+  /**
+   * File ▸ New Blank Model… — creates an empty B-rep document and opens it,
+   * so the Edits panel's creation ops (Box/Sphere/…, 2D sketches, wireframe
+   * points/lines/arcs → Surface → Volume) can be used from scratch rather
+   * than only on top of someone else's model. Those ops already need no
+   * existing operands (`occtOperations.addPrimitive` appends into
+   * `compound(existing + new)`, and "existing" being empty is fine); the only
+   * thing missing was a document to start from.
+   *
+   * **The source file is an EMPTY COMPOUND and stays that way.** Everything
+   * the user authors lives in the replayable `<file>.brep.edits.json`
+   * op-list, exactly as it does for an edited `bull.stp` — the read-only-CAD
+   * invariant is untouched. Writing the file here does not bend it either:
+   * creation happens BEFORE any editor session exists, precisely like
+   * `loadPreprocessDialog` and `handlePromoteToBrep` already do.
+   *
+   * **`.brep`, not `.step`**, even though a probe confirmed all three writers
+   * accept an empty compound: BREP is OCCT's own native serialization, it
+   * carries no unit header to declare for geometry that isn't there yet, and
+   * it skips `handleBRep`'s STEP/IGES `latin1` unit-detection path entirely.
+   * Consequence, since `exportTargetsFor` excludes a document's own format:
+   * Export… offers STEP/IGES + every mesh target, but not BREP.
+   *
+   * Host-only and session-free, like `openFileDialog`/`loadPreprocessDialog`
+   * — it must work with no CAD tab focused at all.
+   */
+  private async newBlankModelDialog(): Promise<void> {
+    try {
+      const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const destUri = await vscode.window.showSaveDialog({
+        defaultUri: folder ? vscode.Uri.joinPath(folder, "untitled.brep") : undefined,
+        saveLabel: "Create",
+        filters: { "CAD (B-rep)": ["brep"] },
+      });
+      if (!destUri) return;
+
+      // The dialog's filter is advisory on some platforms, so verify the
+      // extension actually routes — the same cross-check, and the same
+      // reasoning, as `loadPreprocessDialog`'s.
+      const route = routeFile(destUri.path);
+      if (!route || route.strategy !== "occt" || route.format !== "brep") {
+        void vscode.window.showErrorMessage(
+          `A blank model must be created as a .brep file — "${destUri.path.slice(destUri.path.lastIndexOf("/") + 1)}" is not one.`
+        );
+        return;
+      }
+
+      // Refuse to overwrite. Blanking an existing model would leave its own
+      // `.edits.json` replaying against an empty base — geometry that looks
+      // plausible and is silently wrong, which is the failure mode this
+      // codebase rejects features over. VS Code's own overwrite prompt reads
+      // as routine and is easy to click through, so this refuses explicitly
+      // and names the fix, per the `dirtyGuard`/`assertNotSourcePath`
+      // convention.
+      let exists = true;
+      try {
+        await vscode.workspace.fs.stat(destUri);
+      } catch {
+        exists = false;
+      }
+      if (exists) {
+        void vscode.window.showErrorMessage(
+          `"${destUri.path.slice(destUri.path.lastIndexOf("/") + 1)}" already exists. New Blank Model only creates new files — use File ▸ Open… to open the existing one.`
+        );
+        return;
+      }
+
+      // Reuses the pipeline function `decompose_to_primitives` already goes
+      // through; an empty op list is a supported input (see its doc comment).
+      const built = await this.pipeline.buildPrimitivesFile(this.context.extensionPath, [], "brep", "mm");
+      await vscode.workspace.fs.writeFile(destUri, built.bytes);
+
+      void vscode.window.showInformationMessage(
+        "Blank model created. Build it with the Edits panel — your geometry is stored beside it in the .edits.json sidecar, so keep the pair together, or use File ▸ Export… / Save Preprocess… to produce a standalone file."
+      );
+
+      await vscode.commands.executeCommand("vscode.openWith", destUri, CadPreviewProvider.viewType);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`New blank model failed: ${(err as Error).message}`);
+    }
   }
 
   openCustomDocument(uri: vscode.Uri): CadDocument {
@@ -944,6 +1029,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "openFile") {
         void this.openFileDialog();
+        return;
+      }
+
+      // Like `openFile`, this ignores `route` — it creates a document rather
+      // than acting on this one.
+      if (msg.type === "newBlank") {
+        void this.newBlankModelDialog();
         return;
       }
 

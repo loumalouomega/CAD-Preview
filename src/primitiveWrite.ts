@@ -7,13 +7,32 @@ import type { CadFormat } from "./fileRouter";
 
 type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
 
+/**
+ * Replays `ops` over an EMPTY `TopoDS_Compound` and writes the result as a
+ * brand-new B-rep file. Two callers, deliberately different in shape:
+ *
+ * - `mcpTools.ts`'s `decompose_to_primitives`, which emits one creation op per
+ *   recognized solid. It guards `emission.ops.length === 0` itself (warning
+ *   "No primitives recognized — nothing written." rather than writing a file),
+ *   so this function never sees an empty list from that path.
+ * - `provider.ts`'s `newBlankModelDialog()` ("New Blank Model…"), which passes
+ *   `[]` ON PURPOSE: an empty compound IS the document. Everything the user
+ *   then authors lives in the replayable `<file>.edits.json` op-list, exactly
+ *   as it does for an edited `bull.stp` — the source file stays read-only.
+ *
+ * So an empty `ops` list is a supported input producing a valid empty-compound
+ * file, NOT an error. This function used to throw on it; that throw was dead
+ * code (the one caller already guarded), and removing it is what lets the
+ * blank-document flow reuse this path with zero new kernel plumbing —
+ * `buildPrimitivesFile` was already a `Pipeline` key (`mcpTools.ts`'s
+ * interface, `kernelWorker.ts`'s dispatch table, `kernelClient.ts`'s client).
+ */
 export async function buildPrimitivesFile(
   extensionPath: string,
   ops: EditOp[],
   targetFormat: BRepFormat,
   unit: DisplayUnit = "mm"
 ): Promise<{ bytes: Uint8Array; warnings: string[] }> {
-  if (ops.length === 0) throw new Error("No primitives to write — nothing was recognized.");
   const oc = await getOcct(extensionPath);
   const outPath = `/p.${targetFormat}`;
   const cleanup: Array<{ delete(): void }> = [];

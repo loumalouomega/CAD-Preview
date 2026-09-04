@@ -5,6 +5,10 @@ import type { PaneViewState, ViewState } from "./protocol";
 import type { ClipAxis } from "./webview/clipping";
 import { DISPLAY_MODES } from "./webview/displayMode";
 import { PANE_LAYOUTS, paneCount, type PaneLayoutId } from "./webview/viewerPanes";
+// Value import, and safe: `collapsiblePanels.ts` is pure data + pure functions
+// with no DOM access at module scope and no three.js import, the same reason
+// `displayMode`/`viewerPanes` above can be imported by value from the host.
+import { sanitizeCollapsedPanels } from "./webview/collapsiblePanels";
 
 /** Pure (vscode-free) parse/serialize for the view-state sidecar — unit-testable. */
 
@@ -16,6 +20,7 @@ interface SidecarFile {
   view: ViewState;
   layout?: unknown;
   panes?: unknown;
+  collapsedPanels?: unknown;
 }
 
 const CLIP_AXES: readonly ClipAxis[] = ["x", "y", "z"];
@@ -93,6 +98,14 @@ export function parseViewStateJson(text: string): ViewState | null {
 
   const base: ViewState = { viewDirection, cameraUp, orthographic, displayMode, clip };
 
+  // Collapsed sidebar sections — additive and tolerant, like `layout`/`panes`.
+  // This MUST be folded in before the `layout === "1x1"` early return below,
+  // or a single-pane sidecar (the overwhelmingly common case) would silently
+  // drop it. `sanitizeCollapsedPanels` filters a hand-edited or
+  // written-by-a-newer-build list down to ids this build actually knows.
+  const collapsedPanels = sanitizeCollapsedPanels(file?.collapsedPanels);
+  if (collapsedPanels.length > 0) base.collapsedPanels = collapsedPanels;
+
   // Optional split-view layout — purely additive, tolerant.
   const rawLayout = file?.layout;
   const layoutValid = typeof rawLayout === "string" && (PANE_LAYOUTS as readonly string[]).includes(rawLayout);
@@ -120,8 +133,8 @@ export function parseViewStateJson(text: string): ViewState | null {
 
 /** Serializes view state to the sidecar JSON text (pretty-printed, trailing newline). */
 export function serializeViewStateJson(sourceName: string, view: ViewState): string {
-  const { layout, panes, ...viewCore } = view;
-  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes"> } = {
+  const { layout, panes, collapsedPanels, ...viewCore } = view;
+  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels"> } = {
     version: VIEW_STATE_SIDECAR_VERSION,
     source: sourceName,
     view: viewCore,
@@ -129,6 +142,11 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   if (layout && layout !== "1x1") {
     (file as SidecarFile).layout = layout;
     if (panes && panes.length > 0) (file as SidecarFile).panes = panes;
+  }
+  // A top-level sibling of `view`, not a field inside it — the destructure
+  // above is what keeps the two halves agreeing about where it lives.
+  if (collapsedPanels && collapsedPanels.length > 0) {
+    (file as SidecarFile).collapsedPanels = collapsedPanels;
   }
   return JSON.stringify(file, null, 2) + "\n";
 }

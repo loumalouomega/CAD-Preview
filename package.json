@@ -126,13 +126,17 @@
     "viewsWelcome": [
       {
         "view": "cad-preview.models",
-        "contents": "No CAD models found in this workspace.\n[Open CAD File…](command:cad-preview.open)"
+        "contents": "No CAD models found in this workspace.\n[Open CAD File…](command:cad-preview.open)\n[New Blank Model…](command:cad-preview.new)"
       }
     ],
     "commands": [
       {
         "command": "cad-preview.open",
         "title": "CAD Preview: Open File…"
+      },
+      {
+        "command": "cad-preview.new",
+        "title": "CAD Preview: New Blank Model…"
       },
       {
         "command": "cad-preview.refreshModels",

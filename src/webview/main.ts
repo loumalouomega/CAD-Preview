@@ -71,6 +71,7 @@ import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArc
 import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
+import { setupCollapsiblePanels, type CollapsiblePanelsHandle } from "./collapsiblePanels";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
@@ -3124,6 +3125,7 @@ function setupFileMenu(): void {
       msg();
     });
 
+  item("menu-new", () => post({ type: "newBlank" }));
   item("menu-open", () => post({ type: "openFile" }));
   item("menu-save", () => post({ type: "saveSidecars" }));
   item("menu-saveas", () => post({ type: "exportRequest" }));
@@ -3735,6 +3737,7 @@ function setupMarkupControls(): void {
 // both call sites below already tolerate that (`?.`).
 let appearanceControls: AppearanceControlsHandle | null = null;
 let clippingControls: ClippingControlsHandle | null = null;
+let collapsiblePanels: CollapsiblePanelsHandle | null = null;
 
 try {
   setupViewControls();
@@ -3752,6 +3755,10 @@ try {
   setupPlanesControls();
   setupMarkupControls();
   setupColorFieldControls();
+  // Collapsing a section moves no camera, so — exactly like the split-view
+  // layout picker — the toggle has to ask for the save itself rather than
+  // relying on `viewer.onViewChanged`.
+  collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
   setupThemeReactivity();
   // Split view: when the focused pane changes (a click in another pane), UI
   // that mirrors FOCUSED-pane state must re-read it — projection is per-pane,
@@ -3814,6 +3821,10 @@ function applyViewState(state: ViewState): void {
   }
   appearanceControls?.applyDisplayMode(state.displayMode);
   clippingControls?.applyState(state.clip);
+  // Restore, not echo: `setCollapsed` deliberately never fires the toggle's
+  // `onChange`, so reopening a document can't rewrite the sidecar it just read
+  // (the same silent-`load()` contract `PartsModel`/`PlanesModel` follow).
+  collapsiblePanels?.setCollapsed(state.collapsedPanels ?? []);
 }
 
 function applyInitialViewIfNeeded(): void {
@@ -3875,6 +3886,8 @@ function scheduleViewSave(): void {
       view.layout = layout;
       view.panes = viewer.getPaneViewStates();
     }
+    const collapsed = collapsiblePanels?.getCollapsed() ?? [];
+    if (collapsed.length > 0) view.collapsedPanels = collapsed;
     post({ type: "viewChanged", view });
   }, VIEW_SAVE_DEBOUNCE_MS);
 }

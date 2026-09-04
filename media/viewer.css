@@ -187,13 +187,12 @@ body {
   display: flex;
 }
 
-#tree-header,
-#parts-header,
-#edits-header,
-#meshing-header,
-#mass-header,
-#mesh-health-header,
-#macros-header {
+/* One class, not a hand-maintained id list. That list had already drifted
+   twice: `#region-fit-header` and `#standard-parts-header` matched NO rule in
+   this file and rendered unstyled. `.panel-header` is set on all nine headers
+   in `viewerDom.ts` and is also what the collapse rule below keys off, so the
+   two can never disagree about which element is a header. */
+.panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -207,12 +206,58 @@ body {
   flex-shrink: 0;
 }
 
+/* Deliberately still an id list, NOT `.panel-header`: `#region-fit-panel` and
+   `#standard-parts-panel` already carry `border-top` on the panel itself, so
+   giving their headers one too would double the rule. */
 #edits-header,
 #meshing-header,
 #mass-header,
 #mesh-health-header,
 #macros-header {
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+/* ── Collapsible sidebar sections ───────────────────────────────────────
+   Three INDEPENDENT visibility mechanisms act on these panels and must never
+   fight: `#tree-panel.visible` (whether the Components tree is shown at all),
+   the `hidden` property on `#mesh-health-panel`/`#region-fit-panel` (source-
+   format eligibility), and `.collapsed` here. The first two set `display` on
+   the PANEL; this one therefore must not — it only ever hides the panel's own
+   non-header children. That is what makes the three compose in any
+   combination instead of overriding one another.
+
+   `> :not(.panel-header)` rather than `#x-body` because the panels are not
+   uniform: `#meshing-panel` has four body siblings (progress/body/status/
+   quality) and `#standard-parts-panel` three (search-row/body/status).
+
+   `flex: 0 0 auto` is load-bearing for `#parts-panel` and `#edits-panel`
+   only — both are `flex: 1`, so without it a collapsed header would still
+   claim its share of the column. The rest are already `flex-shrink: 0`. */
+#side > .collapsed > :not(.panel-header) {
+  display: none;
+}
+
+#side > .collapsed {
+  flex: 0 0 auto;
+}
+
+.panel-chevron {
+  width: 12px;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  padding: 0;
+  margin-right: 2px;
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.panel-chevron:hover {
+  opacity: 1;
 }
 
 #tree-header {
@@ -1545,6 +1590,17 @@ input[type="range"].meshing-slider:focus {
   max-height: 30%;
   overflow: hidden;
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+/* An author `display` rule beats the UA's `[hidden] { display: none }`, so the
+   rule above made `meshHealthPanel.ts`/`regionFitPanel.ts`'s `panel.hidden =
+   !eligible` completely INERT — both panels rendered for every source format,
+   including B-rep, where they have nothing to show. This is the third instance
+   of a hazard this file already documents twice (`#measure-tol-group[hidden]`,
+   `#plane-entry[hidden]`); `#id[attr]` (1,1,0) beats `#id` (1,0,0). */
+#mesh-health-panel[hidden],
+#region-fit-panel[hidden] {
+  display: none;
 }
 
 #mesh-health-body {

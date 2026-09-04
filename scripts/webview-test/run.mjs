@@ -1089,6 +1089,196 @@ test("context menu: volume mode says why it has no groups instead of showing a b
   );
 });
 
+// ── Collapsible sidebar sections ──────────────────────────────────────────
+//
+// The chevrons, the collapse geometry, and the `.view.json` round trip. The
+// geometry assertions are the point: a `.collapsed` rule that hid the header
+// too, or one that left a `flex: 1` panel still claiming its share of the
+// column, would both look "collapsed" to a class-name assertion.
+
+test("collapse: every sidebar section has a working chevron", async (page) => {
+  await populate(page);
+  const panels = [
+    "tree-panel", "parts-panel", "edits-panel", "meshing-panel", "mass-panel",
+    "mesh-health-panel", "region-fit-panel", "macros-panel", "standard-parts-panel",
+  ];
+  const missing = await page.evaluate(
+    (ids) => ids.filter((id) => !document.querySelector(`#${id} > .panel-header > .panel-chevron`)),
+    panels
+  );
+  assert(missing.length === 0, `all ${panels.length} sections have a chevron (missing: ${JSON.stringify(missing)})`);
+
+  // The chevron must be a SIBLING of the title, never a child — TreePanel
+  // overwrites `#tree-title.textContent` on every render and would wipe it.
+  const chevronSurvivesTreeRender = await page.evaluate(
+    () => document.querySelector("#tree-header > .panel-chevron") !== null &&
+          document.querySelector("#tree-title .panel-chevron") === null
+  );
+  assert(chevronSurvivesTreeRender, "the tree chevron is a sibling of #tree-title, not nested inside it");
+});
+
+test("collapse: collapsing hides the body but keeps the header, and frees the column", async (page) => {
+  await populate(page);
+  // #parts-panel is one of the two `flex: 1` panels — the case where a
+  // missing `flex: 0 0 auto` would leave a collapsed header still eating
+  // vertical space even though its body is hidden.
+  const before = await page.evaluate(() => document.getElementById("parts-panel").getBoundingClientRect().height);
+  await page.click("#parts-header > .panel-chevron");
+  const after = await page.evaluate(() => {
+    const panel = document.getElementById("parts-panel");
+    const header = document.getElementById("parts-header");
+    const body = document.getElementById("parts-body");
+    return {
+      panelH: panel.getBoundingClientRect().height,
+      headerH: header.getBoundingClientRect().height,
+      bodyH: body.getBoundingClientRect().height,
+      collapsed: panel.classList.contains("collapsed"),
+      chevron: header.querySelector(".panel-chevron").getAttribute("aria-expanded"),
+    };
+  });
+  assert(after.collapsed, "the panel gained the .collapsed class");
+  assert(after.headerH > 0, `the header stays visible (${after.headerH.toFixed(1)}px)`);
+  assert(after.bodyH === 0, `the body is hidden (${after.bodyH.toFixed(1)}px)`);
+  assert(
+    after.panelH < before && Math.abs(after.panelH - after.headerH) < 2,
+    `the panel shrank to just its header (${before.toFixed(1)} → ${after.panelH.toFixed(1)}px, header ${after.headerH.toFixed(1)}px)`
+  );
+  assert(after.chevron === "false", "aria-expanded reflects the collapsed state");
+
+  await page.click("#parts-header > .panel-chevron");
+  const restored = await page.evaluate(() => ({
+    bodyH: document.getElementById("parts-body").getBoundingClientRect().height,
+    collapsed: document.getElementById("parts-panel").classList.contains("collapsed"),
+  }));
+  assert(!restored.collapsed && restored.bodyH > 0, "clicking again expands it back");
+});
+
+test("collapse: hides EVERY body sibling, not just #x-body", async (page) => {
+  await populate(page);
+  // #meshing-panel has four (progress/body/status/quality) and is the reason
+  // the CSS uses `> :not(.panel-header)` rather than naming `#x-body`.
+  await page.click("#meshing-header > .panel-chevron");
+  const visible = await page.evaluate(() =>
+    Array.from(document.getElementById("meshing-panel").children)
+      .filter((el) => el.getBoundingClientRect().height > 0)
+      .map((el) => el.id || el.className)
+  );
+  assert(
+    visible.length === 1 && visible[0] === "meshing-header",
+    `only the header remains visible (got ${JSON.stringify(visible)})`
+  );
+});
+
+test("collapse: state is saved to and restored from view state", async (page) => {
+  await populate(page);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#mass-header > .panel-chevron");
+  await sleep(900); // VIEW_SAVE_DEBOUNCE_MS is 500
+
+  const saved = await page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1) ?? null
+  );
+  assert(saved !== null, "collapsing posts a viewChanged (no camera moved, so the toggle must ask for it)");
+  assert(
+    saved !== null && eq(saved.view.collapsedPanels, ["mass-panel"]),
+    `the saved view state names the collapsed section (got ${JSON.stringify(saved?.view?.collapsedPanels)})`
+  );
+
+  // Restore: a viewState post must apply the set wholesale — and must NOT
+  // echo a save back, or reopening a document would rewrite the sidecar it
+  // just read.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await post(page, {
+    type: "viewState",
+    view: {
+      viewDirection: [1, 0.8, 1], cameraUp: [0, 1, 0], orthographic: false,
+      displayMode: "shaded", clip: null, collapsedPanels: ["edits-panel", "macros-panel"],
+    },
+  });
+  await sleep(900);
+  const state = await page.evaluate(() => ({
+    mass: document.getElementById("mass-panel").classList.contains("collapsed"),
+    edits: document.getElementById("edits-panel").classList.contains("collapsed"),
+    macros: document.getElementById("macros-panel").classList.contains("collapsed"),
+    // `applyViewState` also reframes the camera, and that legitimately fires
+    // `onViewChanged` → `scheduleViewSave` — an echo that predates collapse
+    // state entirely. So the property worth asserting is not "no echo" but
+    // that any echo carries the JUST-RESTORED set: `getCollapsed()` reads the
+    // live DOM, so a handle that cached a stale list (or a `setCollapsed`
+    // that only moved the class) would write the OLD set straight back over
+    // the sidecar it just read.
+    echo: ((window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1) ?? null)?.view?.collapsedPanels ?? null,
+  }));
+  assert(state.edits && state.macros, "the restored sections collapsed");
+  assert(!state.mass, "a section absent from the restored set expanded again");
+  assert(
+    state.echo === null || eq(state.echo, ["edits-panel", "macros-panel"]),
+    `any autosave echoed after a restore carries the restored set, never the pre-restore one (got ${JSON.stringify(state.echo)})`
+  );
+});
+
+// ── Source-format gating of the two eligibility-gated panels ──────────────
+//
+// `#mesh-health-panel { display: flex }` beat the UA's `[hidden]` rule, so
+// `panel.hidden = !eligible` was completely inert and both panels rendered for
+// every source format. Nothing covered this.
+
+test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", async (page) => {
+  await populate(page); // the fixture is bull.stp — a B-rep, so both are ineligible
+  const shown = await page.evaluate(() => ({
+    meshHealth: document.getElementById("mesh-health-panel").getBoundingClientRect().height,
+    regionFit: document.getElementById("region-fit-panel").getBoundingClientRect().height,
+    hiddenAttr: document.getElementById("mesh-health-panel").hidden,
+  }));
+  assert(shown.hiddenAttr, "the host marked #mesh-health-panel hidden for a B-rep source");
+  assert(shown.meshHealth === 0, `#mesh-health-panel renders nothing (got ${shown.meshHealth}px)`);
+  assert(shown.regionFit === 0, `#region-fit-panel renders nothing (got ${shown.regionFit}px)`);
+});
+
+// ── New Blank Model ───────────────────────────────────────────────────────
+
+test("new blank: the File menu item posts newBlank", async (page) => {
+  await populate(page);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#file-menu");
+  await page.click("#menu-new");
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "newBlank"));
+  assert(sent.length === 1, `clicking New Blank Model posts exactly one newBlank (got ${sent.length})`);
+  assert(await dropdownOpen(page, "file-dropdown") === false, "the menu closes after the click");
+});
+
+test("new blank: an EMPTY geometry message yields a usable blank document", async (page) => {
+  // The blank-document webview contract, host-free: `handleBRep` posts a
+  // `geometry` with no meshes/edges/points for a document whose source is an
+  // empty compound, and the webview must treat that as a real B-rep model —
+  // sidebar shown, B-rep-only edit ops enabled — not as a failed load.
+  await post(page, { type: "geometry", meshes: [], edges: [], points: [], autoFit: false });
+  await post(page, { type: "viewState", view: null });
+  await sleep(700);
+  await post(page, { type: "tree", root: { id: "root", label: "BREP", children: [] } });
+  await sleep(400);
+
+  const state = await page.evaluate(() => ({
+    sidebar: document.getElementById("side").classList.contains("visible"),
+    status: (document.getElementById("status")?.textContent ?? "").trim(),
+    opButtons: document.querySelectorAll("#edits-panel .op-btn").length,
+    // `setBRepOnly(true)` clears `.disabled` from every B-rep-only op button
+    // and empties the 2D subtab's "Requires a B-rep source" tooltip. A blank
+    // document that never reached that call would leave the sketch/fillet half
+    // of the catalog greyed out — usable for nothing.
+    disabledOps: document.querySelectorAll("#edits-panel .op-btn.disabled").length,
+    subtab2dTitle: (document.querySelector("#edits-panel .edits-subtab[title]")?.getAttribute("title") ?? "").trim(),
+  }));
+  assert(state.sidebar, "the sidebar is shown for an empty B-rep document");
+  assert(!/failed|error/i.test(state.status), `no error status (got ${JSON.stringify(state.status)})`);
+  assert(state.opButtons > 0, `the Edits panel rendered its op catalog (${state.opButtons} buttons)`);
+  assert(
+    state.disabledOps === 0,
+    `every op button is enabled — setBRepOnly(true) ran for the empty B-rep (got ${state.disabledOps} disabled)`
+  );
+  assert(state.subtab2dTitle === "", `the 2D sketch subtab is not greyed (got ${JSON.stringify(state.subtab2dTitle)})`);
+});
+
 // ── Runner ────────────────────────────────────────────────────────────────
 
 // ── Clip plane and the stencil clip cap ───────────────────────────────────

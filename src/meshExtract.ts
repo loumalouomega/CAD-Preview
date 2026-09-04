@@ -249,6 +249,37 @@ function extractFreeFaces(oc: any, shape: any, claimed: Map<number, any[]>): Geo
 export function tessellateByGroup(oc: any, shape: any, quality: TessellationParams = TESSELLATION_PRESETS.standard): SolidGroup[] {
   const cleanup: Array<{ delete(): void }> = [];
   try {
+    // An EMPTY compound aborts the WASM module outright inside
+    // `BRepMesh_IncrementalMesh_2` — not an OCCT exception `wrapOcctFault`
+    // can wrap, but a hard `wasmTable.get(...) is not a function` that
+    // poisons the whole instance until `resetOcct()` runs. Probed live and
+    // narrowed to exactly this constructor: an empty compound reads back
+    // non-null with a valid `TopAbs_COMPOUND` type, the solid explorer walks
+    // it (0 solids), and `extractEdges`/`extractVertices` both return `[]`
+    // cleanly — only the mesher dies.
+    //
+    // The threshold is "no sub-shapes at all", NOT "no faces": a compound
+    // holding one edge and one vertex (what a blank document looks like the
+    // moment the user draws a line before any surface) was probed and the
+    // mesher survives it with `IsDone() === true`. So the guard tests for
+    // any vertex — every real face/edge/solid carries at least one, and a
+    // shape with none has no geometry to tessellate anyway. Returning `[]`
+    // is the honest answer, not a degradation.
+    //
+    // Reachable from "New Blank Model…" (an empty compound IS the source
+    // document until the first creation op) and, before this guard, from any
+    // op list that reduced an ordinary document to nothing — e.g. a boolean
+    // that cuts a solid away entirely, or undoing back past the last op that
+    // produced geometry.
+    const anyVertex = new oc.TopExp_Explorer_2(
+      shape,
+      oc.TopAbs_ShapeEnum.TopAbs_VERTEX,
+      oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+    );
+    const isEmpty = !anyVertex.More();
+    anyVertex.delete();
+    if (isEmpty) return [];
+
     const mesher = new oc.BRepMesh_IncrementalMesh_2(
       shape,
       quality.linearDeflection,

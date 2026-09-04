@@ -212,6 +212,17 @@ export interface ViewState {
   layout?: PaneLayoutId;
   /** Per-pane camera states, one per pane of {@link ViewState.layout}, row-major. */
   panes?: PaneViewState[];
+  /**
+   * Sidebar sections currently collapsed to just their header, by panel id
+   * (`"parts-panel"`, `"meshing-panel"`, …) — see
+   * `src/webview/collapsiblePanels.ts`'s `COLLAPSIBLE_PANELS`, which is the
+   * only source of valid ids and is what `sanitizeCollapsedPanels` filters a
+   * hand-edited sidecar against. Absent/empty means every section is
+   * expanded, so an older sidecar restores exactly as before. Purely a
+   * display preference, like `displayMode` — it never affects geometry, and
+   * there is deliberately no MCP surface for it.
+   */
+  collapsedPanels?: string[];
 }
 
 /** Messages sent from the extension host to the webview. */
@@ -524,6 +535,9 @@ export type WebviewToHost =
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "viewChanged"; view: ViewState }
   | { type: "openFile" }
+  /** File ▸ New Blank Model… — host-only, like `openFile`: it needs no
+   * document and ignores the current route, since it CREATES one. */
+  | { type: "newBlank" }
   | { type: "openPath"; path: string }
   | { type: "saveSidecars" }
   | { type: "exportRequest" }

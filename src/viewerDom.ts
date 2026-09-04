@@ -22,6 +22,8 @@ export function viewerBodyHtml(): string {
     <div id="file-menu-wrap" class="tb-menu-wrap">
       <button id="file-menu" class="tb-menu" title="File menu" aria-haspopup="true" aria-expanded="false">${icon("home")} File ▾</button>
       <div id="file-dropdown" class="tb-dropdown hidden" role="menu">
+        <button id="menu-new" role="menuitem" title="Start an empty model you can build from scratch with the Edits panel — writes a new .brep file, then opens it">${icon("add")} New Blank Model…</button>
+        <div class="tb-sep"></div>
         <button id="menu-open" role="menuitem" title="Open a CAD/mesh file">${icon("open")} Open…</button>
         <button id="menu-save" role="menuitem" title="Save parts/edits/mesh sidecars now">${icon("save")} Save</button>
         <button id="menu-saveas" role="menuitem" title="Export the model to a new file/format">${icon("saveAs")} Save As…</button>
@@ -40,7 +42,8 @@ export function viewerBodyHtml(): string {
   <div id="layout">
     <div id="side">
       <div id="tree-panel">
-        <div id="tree-header">
+        <div id="tree-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="tree-title">Components</span>
           <input id="tree-filter" type="search" placeholder="Filter…" title="Filter components by name">
           <button id="tree-close" title="Close panel">${icon("close")}</button>
@@ -48,7 +51,8 @@ export function viewerBodyHtml(): string {
         <div id="tree-body"></div>
       </div>
       <div id="parts-panel">
-        <div id="parts-header">
+        <div id="parts-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="parts-title">Parts</span>
           <div id="parts-header-actions">
             <button id="parts-isolate" title="Isolate the selected part (show only it)">${icon("isolate")} Isolate</button>
@@ -58,7 +62,8 @@ export function viewerBodyHtml(): string {
         <div id="parts-body"></div>
       </div>
       <div id="edits-panel">
-        <div id="edits-header">
+        <div id="edits-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="edits-title">Edits</span>
           <div id="edits-actions">
             <button id="edits-undo" title="Undo last edit" disabled>${icon("undo")}</button>
@@ -79,7 +84,8 @@ export function viewerBodyHtml(): string {
         </div>
       </div>
       <div id="meshing-panel">
-        <div id="meshing-header">
+        <div id="meshing-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="meshing-title">FE Mesh</span>
           <div id="meshing-actions">
             <button id="meshing-generate" title="Generate mesh">${icon("generate")} Generate</button>
@@ -96,14 +102,16 @@ export function viewerBodyHtml(): string {
         <div id="meshing-quality"></div>
       </div>
       <div id="mass-panel">
-        <div id="mass-header">
+        <div id="mass-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="mass-title">Mass Properties</span>
           <button id="mass-refresh" title="Compute for the current selection, or the whole model if nothing is selected">${icon("generate")} Compute</button>
         </div>
         <div id="mass-body"></div>
       </div>
       <div id="mesh-health-panel" hidden>
-        <div id="mesh-health-header">
+        <div id="mesh-health-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="mesh-health-title">Mesh Health</span>
           <div id="mesh-health-actions">
             <button id="mesh-health-check" title="Read-only diagnostic: checks whether this mesh could be closed into a valid B-rep solid, and at what tolerance/cost — does not promote or change anything">${icon("generate")} Check Healability</button>
@@ -114,7 +122,8 @@ export function viewerBodyHtml(): string {
         <div id="mesh-health-body"></div>
       </div>
       <div id="region-fit-panel" hidden>
-        <div id="region-fit-header">
+        <div id="region-fit-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="region-fit-title">Region fit</span>
           <div id="region-fit-actions">
             <button id="region-fit-pick" title="Pick a point on the mesh to grow a region and fit a plane/cylinder/sphere">${icon("point")} Pick seed</button>
@@ -126,14 +135,16 @@ export function viewerBodyHtml(): string {
         <div id="region-fit-body"></div>
       </div>
       <div id="macros-panel">
-        <div id="macros-header">
+        <div id="macros-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="macros-title">Macros</span>
           <button id="macros-save" title="Save the current edit history as a reusable, parameterized macro">${icon("save")} Save current</button>
         </div>
         <div id="macros-body"></div>
       </div>
       <div id="standard-parts-panel">
-        <div id="standard-parts-header">
+        <div id="standard-parts-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="standard-parts-title">Standard Parts</span>
         </div>
         <div id="standard-parts-search-row">

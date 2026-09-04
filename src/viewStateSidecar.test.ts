@@ -105,3 +105,90 @@ describe("view-state clip: the optional arbitrary normal", () => {
     expect(withClip({ axis: "w", offsetFrac: 0, normal: [1, 0, 0] })?.clip).toBeNull();
   });
 });
+
+describe("view-state: collapsed sidebar sections", () => {
+  it("round-trips through serialize → parse", () => {
+    const view: ViewState = { ...validView, collapsedPanels: ["parts-panel", "mass-panel"] };
+    expect(parseViewStateJson(serializeViewStateJson("bull.stp", view))).toEqual(view);
+  });
+
+  it("writes collapsedPanels as a TOP-LEVEL sibling of `view`, never inside it", () => {
+    // The serialize destructure is what enforces this; if it regressed, the
+    // field would land inside `view` and the parse below would never find it.
+    const file = JSON.parse(
+      serializeViewStateJson("bull.stp", { ...validView, collapsedPanels: ["parts-panel"] })
+    );
+    expect(file.collapsedPanels).toEqual(["parts-panel"]);
+    expect(file.view.collapsedPanels).toBeUndefined();
+  });
+
+  it("survives a SINGLE-PANE sidecar — the case the layout early-return would swallow", () => {
+    // `parseViewStateJson` returns early for `layout: "1x1"`/absent, which is
+    // the overwhelmingly common shape. Parsing collapsedPanels after that
+    // return would silently drop it for almost every real document.
+    const text = JSON.stringify({
+      version: VIEW_STATE_SIDECAR_VERSION,
+      source: "bull.stp",
+      view: validView,
+      collapsedPanels: ["edits-panel"],
+    });
+    expect(parseViewStateJson(text)?.collapsedPanels).toEqual(["edits-panel"]);
+
+    const withLayout = JSON.stringify({
+      version: VIEW_STATE_SIDECAR_VERSION,
+      source: "bull.stp",
+      view: validView,
+      layout: "1x1",
+      collapsedPanels: ["edits-panel"],
+    });
+    expect(parseViewStateJson(withLayout)?.collapsedPanels).toEqual(["edits-panel"]);
+  });
+
+  it("survives alongside a real split-view layout too", () => {
+    const view: ViewState = {
+      ...validView,
+      layout: "1x2",
+      panes: [
+        { viewDirection: [1, 0, 0], cameraUp: [0, 1, 0], orthographic: false },
+        { viewDirection: [0, 0, 1], cameraUp: [0, 1, 0], orthographic: true },
+      ],
+      collapsedPanels: ["macros-panel"],
+    };
+    expect(parseViewStateJson(serializeViewStateJson("bull.stp", view))?.collapsedPanels).toEqual(["macros-panel"]);
+  });
+
+  it("omits the key entirely when nothing is collapsed, so an untouched sidecar stays byte-stable", () => {
+    const text = serializeViewStateJson("bull.stp", validView);
+    expect(JSON.parse(text)).not.toHaveProperty("collapsedPanels");
+    expect(parseViewStateJson(text)?.collapsedPanels).toBeUndefined();
+    expect(serializeViewStateJson("bull.stp", { ...validView, collapsedPanels: [] })).toBe(text);
+  });
+
+  it("sanitizes a hand-edited list rather than trusting it", () => {
+    const text = JSON.stringify({
+      version: VIEW_STATE_SIDECAR_VERSION,
+      source: "bull.stp",
+      view: validView,
+      collapsedPanels: ["app", "parts-panel", 7],
+    });
+    expect(parseViewStateJson(text)?.collapsedPanels).toEqual(["parts-panel"]);
+  });
+
+  it("ignores a non-array collapsedPanels without dropping the rest of the record", () => {
+    const text = JSON.stringify({
+      version: VIEW_STATE_SIDECAR_VERSION,
+      source: "bull.stp",
+      view: validView,
+      collapsedPanels: "parts-panel",
+    });
+    const parsed = parseViewStateJson(text);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.collapsedPanels).toBeUndefined();
+    expect(parsed?.displayMode).toBe("shaded");
+  });
+
+  it("an older sidecar with no collapsedPanels parses exactly as before", () => {
+    const text = JSON.stringify({ version: 1, source: "bull.stp", view: validView });
+    expect(parseViewStateJson(text)).toEqual(validView);
+  });
+});
