@@ -57,7 +57,7 @@ jobs:
       # (ETIMEDOUT/ENETUNREACH) fails the whole job even though nothing here
       # is actually broken, so retry a few times with backoff before giving up.
       - name: Test (integration, real VS Code host)
-        uses: nick-fields/retry@v3
+        uses: nick-fields/retry@v4
         with:
           timeout_minutes: 10
           max_attempts: 3
