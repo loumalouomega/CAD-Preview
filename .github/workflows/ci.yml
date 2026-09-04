@@ -37,7 +37,7 @@ jobs:
       # `CLAUDE.md`'s "Webview and host-side test harnesses".
 
       - name: Cache VS Code for integration tests
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .vscode-test
           key: vscode-test-${{ runner.os }}
@@ -57,7 +57,7 @@ jobs:
       # (ETIMEDOUT/ENETUNREACH) fails the whole job even though nothing here
       # is actually broken, so retry a few times with backoff before giving up.
       - name: Test (integration, real VS Code host)
-        uses: nick-fields/retry@v3
+        uses: nick-fields/retry@v4
         with:
           timeout_minutes: 10
           max_attempts: 3

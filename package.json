@@ -322,11 +322,11 @@
     "opencascade.js": "^1.1.1",
     "three": "^0.185.1",
     "three-bvh-csg": "^0.0.18",
-    "three-mesh-bvh": "^0.9.10",
-    "zod": "^4.4.3"
+    "three-mesh-bvh": "^0.9.14",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "@types/three": "^0.185.4",
     "@types/vscode": "^1.134.0",
     "@vscode/test-electron": "^3.1.0",
