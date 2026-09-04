@@ -60,20 +60,6 @@ Several items below were identified by comparing against [SketchForge-3D](https:
 
     **If ever built, the one concrete technical lesson worth carrying over verbatim**: device discovery by HID usage-page/usage, not vendor ID — the exact bug SindriCAD's own comment records hitting once.
 
-### Tier 3 — Documentation and onboarding
-
-*Admission: closes a gap in how the extension explains itself — to a new user, a contributor, or an agent — with no kernel/webview/MCP capability change; the deliverable is `doc/**` content plus, at most, the tests and CI gates that keep it honest. Ranked last because nothing here blocks or is blocked by the feature tiers above, not because it is low-value.*
-
-4. **A coverage gate for agent-facing docs** (**S–M**; Phase 1 — executing the examples — has **shipped**, see `CLAUDE.md`'s "Executable doc examples" section). A ` ```parametric ` fence is now the per-block opt-in marker, `src/docExamples.ts` extracts those blocks from `doc/**`, and `src/docExamples.test.ts` compiles each through the real `compileParametricScript`, failing on a syntax error, a renamed op kind or field, or a block that compiles to nothing. It runs in `npm test`, so it gates CI. What is still unverified is *coverage*: nothing checks that every op kind is documented **somewhere**.
-
-    **Phase 2 — a gate with three failure modes, not one.** The authoritative symbol list already exists and needs no new registry: `describeCapabilities()`' op catalog is exactly the set that must be documented. The gate fails on **missing** (a documented-nowhere op kind), on **stale** (a doc claiming an op kind that no longer exists — *this* is the half that catches renames, and the half most such gates omit), and on **unused-allowlist** (an opt-out entry that is now documented or no longer exported, so the escape hatch garbage-collects itself rather than rotting). Keep the allowlist a committed file with a `# reason` comment per entry so every opt-out shows up in review — the same "no silent skips" discipline `validateEditOp`'s rejections and every MCP `warnings` array already follow. `src/docExamples.ts`'s tree walk is the piece to build on; it was put in `src/` rather than under `scripts/` for exactly this reason.
-
-    **Deliberately still NOT proposing a separate `llm-docs/` tree.** FluidCAD needs one because its MCP server is a *thin proxy with no other doc channel*; CAD-Preview already ships `describe_capabilities` as a first-class tool returning the op catalog, parameter docs, entity-id scheme, export matrix, and `verdictConventions` in one call. Duplicating that into a second hand-maintained tree would create exactly the drift this item exists to prevent.
-
-    **One adjacent gap worth closing with it**: `npm run docs:build` — the only thing that dead-link-checks `doc/**` — runs in the separate `docs.yml` workflow (push-to-master / manual), **not** in `ci.yml`. A broken intra-doc link therefore reaches `master` before anything notices. Adding one `npm run docs:build` step to `ci.yml` is a one-line change and squarely this item's business.
-
-    **Verification**: the gate is pure Node/TypeScript, unit-testable against a temp fixture tree (a doc covering every kind, one missing a kind, one naming a kind that does not exist), plus the gate running green over the real `doc/` tree. No WASM, no webview, no F5 caveat.
-
 ## Non-goals / known constraints
 
 - **Writing the CAD source file** — never. The read-only invariant (sidecar persistence, export-only baking) is architectural, not a missing feature.

@@ -16,8 +16,9 @@
  * Pure: no vscode, no WASM, no DOM. `readDocExamples` is the only function that
  * touches the filesystem, and only to read. Nothing in `src/`'s four bundle
  * entry points imports this module, so esbuild never sees it — it lives here
- * beside every other pure module rather than under `scripts/` so that item 12
- * Phase 2's coverage gate can share the same tree walk.
+ * beside every other pure module rather than under `scripts/` so that the
+ * op-coverage gate (`docOpCoverage.ts`) shares the same tree walk
+ * (`walkMarkdownFiles`).
  */
 
 import * as fs from "node:fs";
@@ -81,12 +82,14 @@ export function extractDocExamples(file: string, text: string): DocExample[] {
 }
 
 /**
- * Walks `root` for `*.md` and returns every example, ordered by file then line.
+ * Every `*.md` file under `root`, as relative POSIX paths ordered by file.
  * Recurses into subdirectories (so `doc/tutorials/` is covered) but skips
  * VitePress's own `.vitepress/` build/config tree and any dotted directory.
+ * Shared with `docOpCoverage.ts`'s coverage walk so the two gates traverse
+ * the same tree — that module was put in `src/` for exactly this reuse.
  */
-export function readDocExamples(root: string): DocExample[] {
-  const out: DocExample[] = [];
+export function walkMarkdownFiles(root: string): string[] {
+  const out: string[] = [];
   const walk = (dir: string, prefix: string): void => {
     const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
@@ -94,12 +97,21 @@ export function readDocExamples(root: string): DocExample[] {
       const full = path.join(dir, entry.name);
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(full, rel);
-      else if (entry.isFile() && entry.name.endsWith(".md")) {
-        out.push(...extractDocExamples(rel, fs.readFileSync(full, "utf8")));
-      }
+      else if (entry.isFile() && entry.name.endsWith(".md")) out.push(rel);
     }
   };
   walk(root, "");
+  return out;
+}
+
+/**
+ * Walks `root` for `*.md` and returns every example, ordered by file then line.
+ */
+export function readDocExamples(root: string): DocExample[] {
+  const out: DocExample[] = [];
+  for (const rel of walkMarkdownFiles(root)) {
+    out.push(...extractDocExamples(rel, fs.readFileSync(path.join(root, rel), "utf8")));
+  }
   return out;
 }
 

@@ -1,0 +1,14 @@
+# Op-coverage allowlist — roadmap Tier 3 item 4, Phase 2.
+#
+# One op kind per line. Each entry excuses a LIVE kind from the gate's
+# "missing" check, and MUST carry its reason as a `#` comment on the line(s)
+# above it, so every opt-out shows up in review — the same "no silent skips"
+# discipline `validateEditOp`'s rejections and every MCP `warnings` array
+# already follow.
+#
+# An entry becomes UNUSED (and fails the gate until removed) when its kind is
+# removed from the op model or gains a real mention in `doc/**`.
+#
+# Currently empty: every live op kind is named somewhere in `doc/**`
+# (`rib` is covered by `doc/roadmap.md` until that item closes, plus by the
+# user-facing table in `doc/getting-started.md`).

@@ -68,7 +68,7 @@ The same capability catalog `describe_capabilities` returns is also available as
 
 Both surfaces call the same `describeCapabilities()` source — there is no second hand-maintained copy to drift.
 
-A distributable agent skill lives at `skills/CAD-Preview/SKILL.md` (triggered on tool availability `mcp__cad-preview__*`). It mirrors the instructions plus workflow guidance — plan in generic CAD vocabulary before mapping to ops, a snapshot-cost calculus, sub-agents-read-they-never-build, and volume-as-regression-check. See `doc/roadmap.md` item 5 for the full rationale.
+A distributable agent skill lives at `skills/CAD-Preview/SKILL.md` (triggered on tool availability `mcp__cad-preview__*`). It mirrors the instructions plus workflow guidance — plan in generic CAD vocabulary before mapping to ops, a snapshot-cost calculus, sub-agents-read-they-never-build, and volume-as-regression-check. See `doc/roadmap.md` item 4 for the full rationale.
 
 ## Tools
 
