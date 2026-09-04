@@ -8,6 +8,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | --- | --- |
 | `src/webview/main.ts` | Entry point, VS Code API, message routing, UI wiring |
 | `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
+| `src/webview/collapsiblePanels.ts` | The sidebar-section registry, its `.view.json` sanitizer, and the chevron wiring (partly unit-tested) |
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
 | `src/webview/cameraControls.ts` | Pure camera math utilities (unit-testable) |
 | `src/webview/viewerPanes.ts` | Pure split-view pane-layout math: pane rects, pointer→pane mapping, pane-relative NDC, GL-viewport conversion (unit-tested) |
@@ -131,6 +132,31 @@ function hasMultipleNodes(root: TreeNode): boolean
 Returns `true` if the root has more than one child (or any grandchild). The tree panel is shown only when this is true.
 
 ---
+
+## `src/webview/collapsiblePanels.ts`
+
+Collapses any sidebar section down to just its header, so the interface can be reduced to the panels actually in use. State persists per document in `<model>.view.json` (`ViewState.collapsedPanels`).
+
+```typescript
+const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the nine sections, in #side order
+
+function sanitizeCollapsedPanels(ids: unknown): string[]
+function setupCollapsiblePanels(onChange: () => void): CollapsiblePanelsHandle | null
+
+interface CollapsiblePanelsHandle {
+  getCollapsed(): string[];
+  setCollapsed(ids: string[]): void;   // restore path — never fires `onChange`
+}
+```
+
+- **Markup contract**: every section is `#x-panel > #x-header.panel-header > button.panel-chevron`, with the chevron as the header's first child. It must be a **sibling** of `#x-title`, never nested inside it — `TreePanel` overwrites `#tree-title.textContent` on every render and would wipe a nested chevron.
+- **A dedicated chevron button, not a click-anywhere header.** Every header already holds action buttons (Isolate/New, Undo/Redo/Clear, Generate/Export/Clear plus two `<select>`s, Compute, Check/Promote/Repair, …) and `#tree-header` additionally holds `<input id="tree-filter">`, which a header-wide handler would toggle on every keystroke's click. A button is also focusable and carries `aria-expanded`.
+- **Three independent visibility mechanisms act on these panels and must not fight**: `#tree-panel.visible` (whether the Components tree is shown at all), the `hidden` property on `#mesh-health-panel`/`#region-fit-panel` (source-format eligibility), and `.collapsed`. The first two set `display` on the *panel*; the collapse CSS therefore never does — it only hides the panel's own non-header children (`#side > .collapsed > :not(.panel-header)`) and drops the panel to `flex: 0 0 auto`. That last part is load-bearing for `#parts-panel`/`#edits-panel`, the two `flex: 1` panels, where a collapsed header would otherwise still claim its share of the column.
+- The `:not(.panel-header)` child selector rather than `#x-body` because the panels are not uniform: `#meshing-panel` has four body siblings (progress/body/status/quality) and `#standard-parts-panel` three (search-row/body/status).
+- **Returns `null`, never throws**, when the sidebar is missing — same reason as `setupDropdown` below.
+- `setCollapsed` is the restore path and deliberately does not fire `onChange`, the same silent-`load()` contract `PartsModel`/`PlanesModel` follow, so reopening a document cannot rewrite the sidecar it just read.
+- `#variables-section` is deliberately **not** collapsible here: it is nested inside the already-scrolling `#edits-scroll`, and the FE Mesh panel's "Advanced settings" chevron is the precedent to copy if nested collapse is ever wanted.
+- Module scope holds only the registry array; all DOM access is inside the exported functions, per this repo's no-DOM-at-import rule (vitest runs without jsdom).
 
 ## `src/webview/dropdownMenu.ts`
 

@@ -119,7 +119,7 @@ test("the extension is installed, activates, and registers its commands", async 
     "cad-preview.open", "cad-preview.compareModels", "cad-preview.whatsNew",
     "cad-preview.export", "cad-preview.saveAs", "cad-preview.exportSvg",
     "cad-preview.exportDxf", "cad-preview.savePreprocess", "cad-preview.loadPreprocess",
-    "cad-preview.refreshModels",
+    "cad-preview.refreshModels", "cad-preview.new",
   ]) {
     assert(commands.includes(id), `command ${id} is registered`);
   }
@@ -390,6 +390,92 @@ test("an external .planes.json edit is reconciled into the webview", async () =>
     sub.dispose();
   }
   await closeAll();
+});
+
+/**
+ * File ▸ New Blank Model… — the whole point of the feature is that the file it
+ * creates is an ORDINARY document, so this drives the real command through the
+ * real provider rather than checking the write in isolation.
+ *
+ * Deliberately NOT added to the session-gated list below: like `open`, it
+ * creates a document and so must work with no editor focused. This case runs
+ * after `closeAll()` for exactly that reason.
+ */
+test("New Blank Model creates a readable .brep and opens it", async () => {
+  await closeAll();
+  const dest = path.join(tempDir(), "blank.brep");
+
+  // Watch what the provider posts while the new document loads. This is what
+  // proves the blank document actually TESSELLATES: its source shape is an
+  // empty compound, which aborted the whole OCCT WASM instance inside
+  // `BRepMesh_IncrementalMesh_2` until `tessellateByGroup` learned to return
+  // early for a shape with no sub-shapes at all. Without that guard this posts
+  // an `error` and never a `geometry`, and the tab would still open — so the
+  // tab assertion alone would not catch it.
+  const ext = vscode.extensions.getExtension(EXTENSION_ID);
+  const api = ext?.exports as { onDidPostMessage?: vscode.Event<{ type: string }> } | undefined;
+  const posted: string[] = [];
+  const sub = api?.onDidPostMessage?.((m) => { posted.push(m.type); });
+
+  let openedByCommand = false;
+  await withModals([save(dest)], async () => {
+    await vscode.commands.executeCommand("cad-preview.new");
+    await waitForFile(dest);
+    // Wait for the command's OWN `vscode.openWith` rather than issuing a
+    // second one: a duplicate open on the same URI races the first and can
+    // leave a tab behind that `closeAll()` has already run past, which then
+    // wedges a later `updateWorkspaceFolders`. Waiting here also makes this a
+    // stronger assertion — that the COMMAND opens the document, not just that
+    // the file it wrote happens to be openable.
+    openedByCommand = await waitFor(
+      () => vscode.window.tabGroups.activeTabGroup.activeTab?.label === path.basename(dest),
+      20000
+    );
+    await sleep(4000); // the provider resolves the webview + loads geometry asynchronously
+  });
+
+  assert(fs.existsSync(dest), `a file was created at the chosen path (${dest})`);
+  const bytes = fs.existsSync(dest) ? fs.readFileSync(dest) : Buffer.alloc(0);
+  assert(bytes.byteLength > 0, `the blank model is non-empty (${bytes.byteLength} bytes)`);
+  // Not just "some bytes": OCCT's own BREP serialization has a fixed header,
+  // so this catches a zero-filled or half-written file that would still pass a
+  // length check and then fail opaquely on open.
+  assert(
+    bytes.toString("latin1").startsWith("DBRep_DrawableShape"),
+    "the bytes are a real OCCT BREP document, not a placeholder"
+  );
+  assert(openedByCommand, "the command opened the created file in the CAD Preview custom editor");
+
+  sub?.dispose();
+  assert(
+    posted.includes("geometry"),
+    `the empty document tessellated and posted geometry (saw ${JSON.stringify(posted.slice(-8))})`
+  );
+  assert(
+    !posted.includes("error"),
+    `no error was posted while loading the blank document (saw ${JSON.stringify(posted.slice(-8))})`
+  );
+  await closeAll();
+});
+
+test("New Blank Model refuses to overwrite an existing file", async () => {
+  await closeAll();
+  const dest = path.join(tempDir(), "existing.brep");
+  const original = Buffer.from("PRE-EXISTING CONTENT, MUST NOT BE TOUCHED");
+  fs.writeFileSync(dest, original);
+
+  await withModals([save(dest)], async () => {
+    await vscode.commands.executeCommand("cad-preview.new");
+    await sleep(1500);
+  });
+
+  // Blanking an existing model would leave its own `.edits.json` replaying
+  // against an empty base — geometry that looks plausible and is silently
+  // wrong. The refusal must leave the file byte-identical.
+  assert(
+    fs.readFileSync(dest).equals(original),
+    "the pre-existing file is byte-identical after the refused create"
+  );
 });
 
 test("session-gated commands are silent no-ops with no editor focused", async () => {

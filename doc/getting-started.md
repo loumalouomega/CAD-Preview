@@ -45,7 +45,18 @@ Open any supported file — for example, from the Explorer or via `File > Open F
 
 You can also drag a file from the OS file explorer (or another editor tab) and drop it onto the 3D view to open it the same way. If the browser drop event doesn't expose a real filesystem path for the dropped item, CAD Preview falls back to showing the normal **Open…** dialog instead of silently failing.
 
-The **CAD Preview** icon in the Activity Bar opens the **Models** view: every CAD/mesh file in the open workspace folder(s), discovered with the same routing rules (and the same depth cap and `.git`/`node_modules` exclusions) as the headless `list_workspace_models` tool. Click a file to open it in the 3D viewer; the toolbar offers the same **Open…** dialog plus **Refresh**. With no folder open — or no models found — the view shows an **Open CAD File…** button instead.
+The **CAD Preview** icon in the Activity Bar opens the **Models** view: every CAD/mesh file in the open workspace folder(s), discovered with the same routing rules (and the same depth cap and `.git`/`node_modules` exclusions) as the headless `list_workspace_models` tool. Click a file to open it in the 3D viewer; the toolbar offers the same **Open…** dialog plus **Refresh**. With no folder open — or no models found — the view shows **Open CAD File…** and **New Blank Model…** buttons instead.
+
+### Starting from Scratch
+
+You don't need an existing file. **File ▾ → New Blank Model…** (also `CAD Preview: New Blank Model…` in the Command Palette, and a button in the Models view when a workspace has no models) asks where to put a new `.brep` file, creates it empty, and opens it. From there the **Edits** panel's whole creation vocabulary is available — primitives (Box, Sphere, Cylinder, Cone, Torus, Prism, Wedge), 2D sketch profiles to extrude/revolve/sweep/loft, and bottom-up wireframe modeling (points → lines/arcs → **Build → Surface** → **Build → Volume**) — plus booleans, fillets, chamfers, patterns and everything else that works on a B-rep source.
+
+Two things are worth knowing about how a blank model is stored:
+
+- **The `.brep` file itself stays empty.** Exactly as for an edited STEP file, your geometry is an ordered, replayable op-list in the `<model>.brep.edits.json` sidecar beside it; the CAD file is never written. Keep the pair together, or use **Export…** / **Save Preprocess…** to produce something standalone.
+- **Export offers STEP/IGES and the mesh formats, but not BREP** — the export list always excludes a document's own format. Export to STEP for a file that carries the geometry itself.
+
+New Blank Model only ever creates new files: if you point it at a path that already exists it refuses rather than overwriting, since blanking a model would leave its existing edit history replaying against nothing.
 
 ### Supported Formats
 
@@ -90,6 +101,14 @@ The **CAD Preview** icon in the Activity Bar opens the **Models** view: every CA
 
 Opening a STEP/IGES/BREP file for the first time (or reopening one after an external change) shows a native VS Code progress notification with a **Cancel** button while OpenCascade parses and tessellates it. Clicking Cancel stops the result from being applied — the toolbar status line immediately shows "Cancelled" — though the underlying computation, once started, always finishes in the background regardless; a subsequent edit or reopen starts a fresh load. Routine edits (adding/undoing an operation) don't show this notification — with the model already parsed, they're normally near-instant and stay on the lightweight toolbar status line only.
 
+### Collapsing Sidebar Sections
+
+Every sidebar section — Components, Parts, Edits, FE Mesh, Mass Properties, Mesh Health, Region fit, Macros, Standard Parts — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
+
+The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
+
+Sections that don't apply to the current file (Mesh Health and Region fit are shown only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this.
+
 ### Camera Interaction
 
 | Action | Control          |
@@ -106,6 +125,7 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 
 | Item | Action | Shortcut |
 | --- | --- | --- |
+| **New Blank Model…** | Start an empty model and build it from scratch with the Edits panel — see [Starting from Scratch](#starting-from-scratch) | — |
 | **Open…** | Pick another CAD/mesh file and open it in CAD Preview | Ctrl+O |
 | **Save** | Immediately flush the parts/annotations/edits/mesh sidecars (`.parts.json` / `.annotations.json` / `.edits.json` / `.mesh.json`). The CAD file itself is read-only and never written; the sidecars also autosave on a ~500 ms debounce, so this just forces an immediate write. | Ctrl+S |
 | **Save As…** | Convert the model to a new file/format via the [Export](#exporting-a-model) flow | Ctrl+Shift+S |
@@ -118,7 +138,7 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | **Export Silhouette DXF…** | The same outline flow with a DXF serializer (`LWPOLYLINE` chains + `LINE` singletons), saved with a `.dxf` extension | — |
 | **Export Technical Drawing…** | A 2D drawing with **hidden-line removal**: feature edges solid where visible, dashed where hidden behind the part. Unlike the two silhouette exports it draws interior edges too, so a hole's far rim shows dashed. Same view and unit picks; SVG or DXF (where hidden geometry lands on a `HIDDEN` layer). Still a review artifact — no dimensions, single view | — |
 
-![The File dropdown open, showing Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, Import DXF, and the two Silhouette exports.](/screenshots/file-menu.png)
+![The File dropdown open, showing New Blank Model, Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, Import DXF, and the silhouette/technical-drawing exports.](/screenshots/file-menu.png)
 
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette). The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't override VS Code's global Open/Save elsewhere.
 

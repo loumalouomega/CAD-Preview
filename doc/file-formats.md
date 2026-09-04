@@ -40,6 +40,8 @@ B-rep files describe solid geometry analytically (surfaces, edges, vertices) rat
 2. **Tessellate** — `BRepMesh_IncrementalMesh_2` with:
    - Linear deflection: `0.1`
    - Angular deflection: `0.5` (radians)
+
+   A shape with **no sub-shapes at all** (an empty `TopoDS_Compound`) skips this step entirely and yields zero groups. That is not merely an optimization: handing an empty compound to `BRepMesh_IncrementalMesh_2` aborts the whole OCCT WASM instance — a hard fault, not a catchable OCCT exception — so the guard is what makes an empty document (see below) and any op list that reduces a model to nothing degrade honestly instead of poisoning the kernel. A shape that has vertices/edges but no faces meshes fine and is deliberately left alone.
 3. **Extract faces** — `TopExp_Explorer` walks the `TopoDS_Shape`, visiting each `TopoDS_Face`. For each face, the triangulation (`Poly_Triangulation`) is pulled from the location-transformed face and converted to WebGL-ready `Float32Array` positions and `Uint32Array` indices. Each face gets a stable id (`face-N`, deterministic explorer order) and records its parent solid.
 4. **Extract edges** — `extractEdges()` walks every `TopoDS_Edge`, de-duplicating shared edges by `HashCode` + `IsSame` (this OCCT build does not bind `TopTools_IndexedMapOfShape`), and discretizes each unique edge to a polyline via `BRepAdaptor_Curve` + `GCPnts_UniformDeflection`. Each gets a stable id (`edge-N`).
 5. **Group** — faces are collected into `SolidGroup`s, one per top-level solid (`TopAbs_SOLID`). In the webview each face becomes its own `THREE.Mesh` and each edge its own `THREE.Line`, parented under a per-solid `THREE.Group` — so faces, edges, and solids can all be picked and coloured independently.
@@ -234,6 +236,12 @@ Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops
 
 > **Entity-id drift:** topology-changing ops (booleans, fillet, feature modeling) re-tessellate into new `face-*`/`edge-*` ids, so a part assignment made before such an op may no longer resolve afterwards. The tolerant parts parser drops unresolved ids on reload, so this degrades gracefully rather than erroring.
 
+### Blank documents
+
+**File ▾ → New Blank Model…** creates a `.brep` file holding an **empty compound** and opens it. Everything authored afterwards lives in this same `.edits.json` op-list, so a blank document is just the general "base shape ∘ ops" model with an empty base — no new concept, no new sidecar, and the CAD file stays read-only exactly as for an imported STEP.
+
+BREP rather than STEP or IGES: a live probe confirmed all three writers accept an empty compound, so this is a preference rather than a constraint, but BREP is OCCT's native serialization, carries no unit header to declare for geometry that isn't there yet, and skips the STEP/IGES unit-detection read path. Two consequences worth knowing: the `.brep` on disk never grows (ship it together with its `.edits.json`, or Export/Save Preprocess to get something standalone), and since the export list always excludes a document's own format, a blank document's **Export…** offers STEP/IGES plus every mesh format but not BREP.
+
 ## Mesh Options Sidecar (`<model>.mesh.json`) and Generated `.geo` Script
 
 The **FE Mesh** panel's finite-element mesh generation settings (via [Gmsh](https://gmsh.info) compiled to WebAssembly — see [GMSH Integration](./gmsh-integration.md)) are stored in a **third** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.mesh.json`. Like parts and edits, this never modifies the CAD file. It is read on open (`readMeshOptions()`) and autosaved, debounced (~500 ms, its own timer), on every options change (`writeMeshOptions()`), both in `src/meshOptionsStore.ts`; parse/serialize live in the vscode-free `src/meshOptionsSidecar.ts` so they are unit-tested.
@@ -278,7 +286,7 @@ A `sizeMax` of `1e22` is Gmsh's "unbounded" sentinel: it means "no explicit targ
 
 ## View State Sidecar (`<model>.view.json`)
 
-The persisted **camera orientation, display mode, ortho/perspective toggle, and clip plane** (roadmap "View-state persistence", closed) are stored in a **fourth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.view.json`. Like the other three, this never modifies the CAD file. It is read on open (`readViewState()`) and autosaved, debounced (~500 ms, its own timer), on every user-facing view change — camera orbit/pan/zoom/dolly, Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, the clip axis/offset/toggle, **or the split-view layout picker / any per-pane camera move** (Phase 2) — both in `src/viewStateStore.ts`; parse/serialize live in the vscode-free `src/viewStateSidecar.ts` so they are unit-tested.
+The persisted **camera orientation, display mode, ortho/perspective toggle, and clip plane** (roadmap "View-state persistence", closed) are stored in a **fourth** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.view.json`. Like the other three, this never modifies the CAD file. It is read on open (`readViewState()`) and autosaved, debounced (~500 ms, its own timer), on every user-facing view change — camera orbit/pan/zoom/dolly, Fit/Reset, the orientation gizmo, the Ortho/Persp toggle, a Display mode button, the clip axis/offset/toggle, **or the split-view layout picker / any per-pane camera move** (Phase 2), **or collapsing/expanding a sidebar section** — both in `src/viewStateStore.ts`; parse/serialize live in the vscode-free `src/viewStateSidecar.ts` so they are unit-tested.
 
 ```json
 {
@@ -295,11 +303,14 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
   "panes": [
     { "viewDirection": [1, 0, 0], "cameraUp": [0, 1, 0], "orthographic": false },
     { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }
-  ]
+  ],
+  "collapsedPanels": ["meshing-panel", "standard-parts-panel"]
 }
 ```
 
 `layout` (`"1x1"|"1x2"|"2x1"|"2x2"`, Phase 2 — absent/`"1x1"` = single pane) and `panes` (one `PaneViewState` per pane of that layout, row-major) are optional siblings of `view` at the file's top level, never inside `view` itself; a `1×1` session writes neither, so existing single-pane sidecars stay byte-stable. `view` stays the focused/single-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — purely additive, no version bump. Only camera state (`viewDirection`/`cameraUp`/`orthographic`) is per-pane; display mode and clip stay global, matching Phase 1's scoping.
+
+`collapsedPanels` is a third such optional top-level sibling: the sidebar sections currently collapsed to just their header, by panel id. Valid ids come only from `COLLAPSIBLE_PANELS` (`src/webview/collapsiblePanels.ts`), and a hand-edited or newer-build list is filtered against it on read, so an unknown id is dropped rather than reaching some other element. Absent or empty (the default) means every section is expanded, so an older sidecar restores exactly as before and an untouched one stays byte-stable — again purely additive, no version bump.
 
 `viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox, not a raw plane constant — measured along the clip's **active normal**. `clip` may carry an optional explicit unit `normal` (`{axis, offsetFrac, normal?}`) which wins over `axis` when present; `axis` is still always written, set to that normal's dominant axis, so an older build restores a sensible neighbouring clip instead of none. A malformed `normal` drops only itself, leaving the clip as its axis form — unlike a malformed `axis`, which still drops the whole `clip`. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`, an unknown `layout` → ignored as `"1x1"`, a bad per-pane entry → falls back to `view`'s own direction/up/ortho for that pane, a short/long `panes` array → padded/truncated to `paneCount(layout)`).
 

@@ -49,9 +49,10 @@ const SHOTS = [
     // Height must cover every item in the dropdown — it grew by one row when
     // "Export Silhouette SVG…" was added, and a too-short clip silently cuts
     // the last entry off rather than failing the run. Two more rows landed
-    // with Import/Export DXF (285 → 342), and one more with Export Technical
-    // Drawing (342 → 371).
-    target: { clip: { x: 0, y: 0, width: 320, height: 371 } },
+    // with Import/Export DXF (285 → 342), one more with Export Technical
+    // Drawing (342 → 371), and one more plus a separator with New Blank Model
+    // (371 → 410).
+    target: { clip: { x: 0, y: 0, width: 320, height: 410 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the

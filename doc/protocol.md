@@ -152,12 +152,15 @@ interface ViewState {
   clip: ClipPlaneState | null                // global — null = clipping off
   layout?: PaneLayoutId                      // split-view layout; absent/"1x1" = single pane (Phase 2)
   panes?: PaneViewState[]                    // one per pane of `layout`, row-major; absent = single pane
+  collapsedPanels?: string[]                 // sidebar sections collapsed to their header, by panel id
 }
 ```
 
 Persisted camera orientation, display mode, ortho/perspective, and clip plane (roadmap "View-state persistence", closed) — see [File Formats](./file-formats.md) for the `<model>.view.json` sidecar. Deliberately does **not** include explode-preview state (session-only by design) or raw camera position/target/distance: `Viewer.frame(direction)` auto-derives both from the model's current bounding box, so a normalized direction + up vector is enough and survives edits that change the model's extents.
 
 Phase 2 (roadmap "Split view", Phase 2) adds `layout` + per-pane camera states. `layout` defaults to `"1x1"` when absent (an older sidecar or a session that never entered split view); `panes` holds one `PaneViewState` per pane of that layout, row-major, and is only meaningful when `layout !== "1x1"`. `view` (the focused direction/up/ortho) stays the single-pane/focused-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — see [File Formats](./file-formats.md). Display mode and clip stay global; only camera state (direction/up/ortho) is per-pane.
+
+`collapsedPanels` lists the sidebar sections currently collapsed to just their header, by panel id (`"parts-panel"`, `"meshing-panel"`, …). The only source of valid ids is `COLLAPSIBLE_PANELS` in `src/webview/collapsiblePanels.ts`, and `sanitizeCollapsedPanels` filters a hand-edited or newer-build sidecar against it on read, so an unknown id is dropped rather than reaching some other element. Absent or empty means every section is expanded, so an older sidecar restores exactly as before and an untouched one stays byte-stable. Purely a display preference, like `displayMode` — it never affects geometry, and there is deliberately no MCP surface for it. Like `layout`/`panes`, it is a top-level sibling of `view` in the file, added with **no** `VIEW_STATE_SIDECAR_VERSION` bump.
 
 `clip` carries an optional explicit `normal` (roadmap "Arbitrary and reusable construction planes", Phases 1+2) that wins over the `axis` preset when present. `axis` is written **regardless**, set to the custom normal's dominant axis — so an older build, which only knows the axis form, restores a sensible neighbouring clip rather than failing its axis check and silently switching clipping off entirely. `offsetFrac` is measured along whichever normal is active.
 
