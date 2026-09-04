@@ -109,10 +109,30 @@ jobs:
       - name: Package extension (.vsix)
         run: npm run package -- --out cad-preview-${{ github.ref_name }}.vsix
 
+      # marketplace.visualstudio.com is a network call this job has no control
+      # over, and it does go down: v1.9.0's publish died on a plain HTTP 503
+      # seconds after starting, with nothing here actually broken. Retry with
+      # backoff before giving up, the same way the integration test above
+      # handles update.code.visualstudio.com. The PAT goes through the
+      # VSCE_PAT env var rather than `-p` on the command line so it never
+      # appears in the child process's argv.
       - name: Publish to VS Code Marketplace
-        run: npx vsce publish --packagePath cad-preview-${{ github.ref_name }}.vsix -p ${{ secrets.VSCE_PAT }}
+        uses: nick-fields/retry@v4
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: npx vsce publish --packagePath cad-preview-${{ github.ref_name }}.vsix
 
+      # Deliberately NOT gated on the publish succeeding. The GitHub Release is
+      # independent of the Marketplace, and when v1.9.0's publish hit that 503
+      # the tag was left with no release and no .vsix attached even though the
+      # package built fine. `!cancelled()` still lets the job report failure, so
+      # a genuine publish problem stays visible.
       - name: Create GitHub Release
+        if: ${{ !cancelled() }}
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
