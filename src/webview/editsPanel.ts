@@ -38,7 +38,7 @@ export type FeatureDraft = (
   | { kind: "sweep" }
   | { kind: "loft"; smoothing?: boolean }
   | { kind: "rib"; dir: Vec3; blendRadius: number }
-) & { exprs?: ExprMap; thin?: number; thinOuter?: number };
+) & { exprs?: ExprMap; thin?: number; thinOuter?: number; pickRaw?: string };
 
 /** A primitive-creation draft — self-contained (no selection needed), pushed
  * straight to an `EditOp` by the wiring. */
@@ -95,7 +95,8 @@ export type ModifyDraft = (
   | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }
   | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; planeId?: string; keep: "both" | "positive" | "negative" }
   | { kind: "section"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
-) & { exprs?: ExprMap };
+  | { kind: "drill"; dir: Vec3; length: number }
+) & { exprs?: ExprMap; pickRaw?: string };
 
 /** Align draft minus its `targets` (the wiring injects the selected volumes) —
  * a pure rigid move, like translate, so it works on every format. */
@@ -912,8 +913,10 @@ export class EditsPanel {
         f.appendChild(this.numField("length", "Length", 10));
         f.appendChild(this.terminatorRow());
         this.thinFields(f);
+        f.appendChild(this.pickField());
+        f.appendChild(this.hint("Regions = which enclosed areas of a multi-region profile to use: blank (face as modeled), all, or indices like 0,2 (0 = outer boundary)."));
         f.appendChild(this.queryRow());
-        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin(), ...this.readPickRaw() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "revolve":
         f.appendChild(this.hint("Profile = selected face (Surf mode), or selected edges (Line mode)"));
@@ -921,17 +924,19 @@ export class EditsPanel {
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 360));
         this.thinFields(f);
+        f.appendChild(this.pickField());
         f.appendChild(this.queryRow());
         this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({
             kind: "revolve", axisPoint: this.readVec("axisPoint"),
-            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"), ...this.readThin(),
+            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"), ...this.readThin(), ...this.readPickRaw(),
           }), (d) => this.cb.onApplyFeature(d));
         break;
       case "sweep":
         f.appendChild(this.hint("Profile = selected face · path = selected edge. For an edge profile, capture the path first."));
         f.appendChild(this.sweepPathRow());
         this.thinFields(f);
-        this.applyButtonDraft("Apply", "Build the feature from the selected profile + path", (): FeatureDraft => ({ kind: "sweep", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        f.appendChild(this.pickField());
+        this.applyButtonDraft("Apply", "Build the feature from the selected profile + path", (): FeatureDraft => ({ kind: "sweep", ...this.readThin(), ...this.readPickRaw() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "loft":
         f.appendChild(this.hint("Profiles = 2+ selected faces, or capture one section at a time"));
@@ -1011,6 +1016,16 @@ export class EditsPanel {
             if (planeId) (draft as any).planeId = planeId;
             return draft;
           }, (d) => this.cb.onApplyModify(d));
+        break;
+      case "drill":
+        f.appendChild(this.hint("Cuts the selected profile (Surf/Line mode) through the selected volumes (Vol mode)"));
+        f.appendChild(this.vecField("dir", "Dir", [0, 0, -1]));
+        f.appendChild(this.numField("length", "Length", 10));
+        f.appendChild(this.pickField());
+        f.appendChild(this.hint("Regions = which enclosed areas of a multi-region profile to cut: blank (face as modeled), all, or indices like 0,2 (0 = outer boundary)."));
+        this.applyButtonDraft("Apply", "Cut the profile regions through the selected volumes", (): ModifyDraft => ({
+            kind: "drill", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readPickRaw(),
+          }), (d) => this.cb.onApplyModify(d));
         break;
 
       // ── EDIT · assembly ──
@@ -1685,6 +1700,34 @@ export class EditsPanel {
     if (!Number.isFinite(thin) || thin <= 0) return {};
     const thinOuter = this.readNum("thinOuter");
     return Number.isFinite(thinOuter) && thinOuter > 0 ? { thin, thinOuter } : { thin };
+  }
+
+  /**
+   * Region-pick row for the single-profile feature forms (extrude/revolve/
+   * sweep) and drill: which enclosed regions of a multi-region profile to
+   * consume. Empty = the face as modeled; the raw string travels on the
+   * draft for `main.ts`'s `pickOf` to parse (one parse site, shared with
+   * the live preview path).
+   */
+  private pickField(): HTMLElement {
+    const row = document.createElement("label");
+    row.className = "compose-field";
+    const span = document.createElement("span");
+    span.className = "compose-label";
+    span.textContent = "Regions";
+    row.appendChild(span);
+    const input = this.numericInput();
+    input.dataset.name = "pick";
+    input.value = "";
+    input.placeholder = "outer";
+    row.appendChild(input);
+    return row;
+  }
+
+  private readPickRaw(): { pickRaw?: string } {
+    const inp = this.paramsEl.querySelector<HTMLInputElement>(`input[data-name="pick"]`);
+    const raw = inp ? inp.value.trim() : "";
+    return raw ? { pickRaw: raw } : {};
   }
 
   private hint(text: string): HTMLElement {

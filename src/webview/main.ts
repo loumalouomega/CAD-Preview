@@ -75,7 +75,7 @@ import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./m
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
-import type { OpOutcome } from "../editOps";
+import type { OpOutcome, RegionPick } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -1559,6 +1559,23 @@ function thinOf(d: Record<string, unknown>): { thin?: number; thinOuter?: number
   return typeof outer === "number" && outer > 0 ? { thin, thinOuter: outer } : { thin };
 }
 
+/**
+ * The region-pick field of a profile draft, parsed from the panel's raw
+ * string (blank = absent). An unparseable value is an error here — unlike
+ * `thinOf`'s silent drop — because there is no sensible default for a
+ * half-typed pick, and the op model would otherwise receive a silently
+ * different operand than the form shows.
+ */
+function pickOf(d: Record<string, unknown>): { pick?: RegionPick } | { pickError: string } {
+  const raw = d.pickRaw;
+  if (raw === undefined || raw === "") return {};
+  if (typeof raw !== "string") return { pickError: "Regions must be blank, all, or indices like 0,2." };
+  const t = raw.trim().toLowerCase();
+  if (t === "outer" || t === "all") return { pick: t };
+  if (/^\d+(,\d+)*$/.test(t)) return { pick: t.split(",").map(Number) };
+  return { pickError: `Regions must be blank, "outer", "all", or indices like "0,2" — got "${raw.trim()}".` };
+}
+
 /** Intent colour for a previewed op kind — green adds material, red removes
  * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
  * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
@@ -1585,6 +1602,7 @@ function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
     case "addHole":
     case "addCounterboreHole":
     case "addCountersinkHole":
+    case "drill":
     case "shell":
     case "splitByPlane":
       return "cut";
@@ -1841,17 +1859,21 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     case "extrude": {
       const profile = profileOperandFromSelection(selFaces, selEdges);
       if ("error" in profile) return { error: `${profile.error} to extrude.` };
+      const pick = pickOf(d);
+      if ("pickError" in pick) return { error: pick.pickError };
       if (extrudeTerminator) {
         if (!/^face-\d+$/.test(extrudeTerminator)) return { error: "Captured terminator is not a face id — clear and re-capture it." };
         if (guideEntityIds.has(extrudeTerminator)) return { error: `${extrudeTerminator} is guide (construction) geometry — guides are excluded from extrude terminators.` };
-        return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, upToFace: extrudeTerminator, ...thinOf(d) }) };
+        return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, upToFace: extrudeTerminator, ...thinOf(d), ...pick }) };
       }
-      return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, length: d.length, ...thinOf(d) }) };
+      return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, length: d.length, ...thinOf(d), ...pick }) };
     }
     case "revolve": {
       const profile = profileOperandFromSelection(selFaces, selEdges);
       if ("error" in profile) return { error: `${profile.error} to revolve.` };
-      return { op: withExprs({ op: "revolve", ...profile.operand, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, ...thinOf(d) }) };
+      const pick = pickOf(d);
+      if ("pickError" in pick) return { error: pick.pickError };
+      return { op: withExprs({ op: "revolve", ...profile.operand, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, ...thinOf(d), ...pick }) };
     }
     case "sweep": {
       // With a path captured, the rest of the selection is free to be an edge
@@ -1862,7 +1884,9 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       const profileEdges = selEdges.filter((e) => e !== path);
       const profile = profileOperandFromSelection(selFaces, sweepPath ? profileEdges : []);
       if ("error" in profile) return { error: `${profile.error} to sweep.` };
-      return { op: withExprs({ op: "sweep", ...profile.operand, path, ...thinOf(d) }) };
+      const pick = pickOf(d);
+      if ("pickError" in pick) return { error: pick.pickError };
+      return { op: withExprs({ op: "sweep", ...profile.operand, path, ...thinOf(d), ...pick }) };
     }
     case "rib": {
       if (!ribTerminator) return { error: "Capture a terminator face (Set terminator) before building a rib — a rib has no length to fall back on." };
@@ -1954,6 +1978,14 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       const op: any = { op: "section", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal };
       if (d.planeId) op.planeId = d.planeId;
       return { op: withExprs(op) };
+    }
+    case "drill": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to drill through." };
+      const profile = profileOperandFromSelection(selFaces, selEdges);
+      if ("error" in profile) return { error: `${profile.error} to drill.` };
+      const pick = pickOf(d);
+      if ("pickError" in pick) return { error: pick.pickError };
+      return { op: withExprs({ op: "drill", targets: selVolumes, ...profile.operand, dir: d.dir, length: d.length, ...pick }) };
     }
 
     // ── holes ──

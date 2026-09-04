@@ -23,7 +23,7 @@ export type PanelOpId =
   // EDIT — features
   | "extrude" | "revolve" | "sweep" | "loft" | "rib"
   // EDIT — modify
-  | "shell" | "draft" | "splitByPlane" | "section"
+  | "shell" | "draft" | "splitByPlane" | "section" | "drill"
   // EDIT — assembly
   | "explode" | "mate" | "align" | "patternLinear" | "patternCircular"
   // GEOMETRY 2D — wireframe
@@ -174,6 +174,7 @@ export const OP_CATALOG: {
         entry("draft", "Draft", ["draft"]),
         entry("splitByPlane", "Split", ["splitByPlane"]),
         entry("section", "Section", ["section"]),
+        entry("drill", "Drill", ["drill"]),
       ],
     },
     {
@@ -257,6 +258,7 @@ function describeOpBase(op: EditOp): string {
     case "draft": return `⬔ Draft ${op.faces.length} ${op.angleDeg}°`;
     case "splitByPlane": return `⧄ Split ${op.targets.length} (${op.keep})`;
     case "section": return `⊟ Section ${op.targets.length}`;
+    case "drill": return `⦿ Drill ${op.targets.length} ${profileLabel(op)} ×${op.length}`;
     case "addBox": return `+ Box ${op.size.join("×")}`;
     case "addSphere": return `+ Sphere r=${op.radius}`;
     case "addCylinder": return `+ Cylinder r=${op.radius} h=${op.height}`;
@@ -323,6 +325,8 @@ export function referencedEntities(op: EditOp): string[] {
     case "addCounterboreHole":
     case "addCountersinkHole":
       return [...op.targets];
+    case "drill":
+      return [...op.targets, ...profileOperandIds(op)];
     case "mirror":
     case "splitByPlane":
     case "section": {

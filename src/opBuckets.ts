@@ -59,6 +59,7 @@ export const PRODUCED_ROLE: Record<string, string> = {
   addHole: "wall",
   addCounterboreHole: "wall",
   addCountersinkHole: "wall",
+  drill: "wall",
   splitByPlane: "cutFace",
   section: "sectionFace",
   patternLinear: "copies",

@@ -942,6 +942,57 @@ test("pin as query: synthesize stages a query and Apply attaches it", async (pag
   );
 });
 
+/**
+ * Drill composer + Regions row — the pick/drill item's panel surface. Guards
+ * the dead-surface class (a catalog button whose form never renders, or an
+ * Apply that crashes on an empty selection instead of refusing it).
+ */
+test("drill form renders with regions row; extrude form carries one too", async (page) => {
+  await populate(page);
+  const openForm = async (name) => {
+    await page.evaluate((n) => {
+      const btn = [...document.querySelectorAll(".op-btn")].find(
+        (b) => b.querySelector(".op-name")?.textContent === n
+      );
+      btn?.click();
+    }, name);
+    await sleep(200);
+  };
+  const paramNames = () =>
+    page.evaluate(() => [...document.querySelectorAll("#edits-params [data-name]")].map((el) => el.dataset.name));
+
+  await openForm("Drill");
+  const drillNames = await paramNames();
+  for (const f of ["dir", "length", "pick"]) {
+    assert(drillNames.includes(f), `the Drill form has a ${f} field (got ${JSON.stringify(drillNames)})`);
+  }
+  const drillApply = await page.evaluate(
+    () => [...document.querySelectorAll("#edits-params .compose-apply")].map((b) => b.textContent)
+  );
+  assert(drillApply.includes("Apply"), "the Drill form offers its Apply button");
+
+  // Apply with nothing selected must refuse gracefully — an explanatory
+  // status (not a silent no-op), no editsChanged, no crash (an uncaught
+  // throw would fail the run via pageerror).
+  await page.evaluate(() => {
+    [...document.querySelectorAll("#edits-params .compose-apply")]
+      .find((b) => b.textContent === "Apply")
+      ?.click();
+  });
+  await sleep(300);
+  const drillStatus = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(
+    /volumes.*Vol mode/i.test(drillStatus),
+    `drill Apply with no selection explains itself (got ${JSON.stringify(drillStatus)})`
+  );
+  const sentAfter = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").length);
+  assert(sentAfter === 0, "drill Apply with no selection posts no editsChanged");
+
+  await openForm("Extrude");
+  const extrudeNames = await paramNames();
+  assert(extrudeNames.includes("pick"), `the Extrude form carries the Regions row (got ${JSON.stringify(extrudeNames)})`);
+});
+
 /** Turns picking on in the given mode and closes the dropdown behind it. */
 async function enablePicking(page, mode) {
   await page.click("#select-menu");

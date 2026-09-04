@@ -55,6 +55,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   align: { op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 },
   patternLinear: { op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 4 },
   patternCircular: { op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 6 },
+  drill: { op: "drill", targets: ["solid-0"], profile: "face-0", dir: [0, 0, -1], length: 10 },
 };
 
 describe("OP_CATALOG", () => {
@@ -225,6 +226,7 @@ describe("referencedEntities", () => {
       revolve: [["profile", "profileEdges"]],
       sweep: [["profile", "profileEdges"]],
       loft: [["profiles", "profileEdgeSets"]],
+      drill: [["profile", "profileEdges"]],
     };
     for (const kind of Object.keys(QUERYABLE_OPERAND_FIELDS) as EditOpKind[]) {
       for (const field of QUERYABLE_OPERAND_FIELDS[kind]) {

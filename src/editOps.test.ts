@@ -816,3 +816,61 @@ describe("align / patternLinear / patternCircular", () => {
     for (const kind of GUIDE_KINDS) expect(BREP_ONLY_OPS.has(kind)).toBe(true);
   });
 });
+
+describe("pick (region selector) + drill", () => {
+  const extrude = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "extrude", profile: "face-1", dir: [0, 0, 1], length: 5, ...extra });
+  const drill = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "drill", targets: ["solid-0"], profile: "face-1", dir: [0, 0, -1], length: 10, ...extra });
+
+  it("omits pick entirely when absent", () => {
+    const op = extrude({});
+    expect(op).not.toBeNull();
+    expect(op && "pick" in op).toBe(false);
+    expect(drill({})).toMatchObject({ op: "drill", targets: ["solid-0"] });
+  });
+
+  it("accepts outer/all/index lists on extrude, revolve, sweep, and drill", () => {
+    expect(extrude({ pick: "outer" })).toMatchObject({ pick: "outer" });
+    expect(extrude({ pick: "all" })).toMatchObject({ pick: "all" });
+    expect(extrude({ pick: [0] })).toMatchObject({ pick: [0] });
+    expect(extrude({ pick: [0, 2] })).toMatchObject({ pick: [0, 2] });
+    expect(validateEditOp({ op: "revolve", profile: "face-1", axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 90, pick: [1] }))
+      .toMatchObject({ pick: [1] });
+    expect(validateEditOp({ op: "sweep", profileEdges: ["edge-1", "edge-2"], path: "edge-0", pick: "all" }))
+      .toMatchObject({ pick: "all" });
+    expect(drill({ pick: [0, 1] })).toMatchObject({ pick: [0, 1] });
+  });
+
+  it("dedupes repeated indices rather than rejecting", () => {
+    expect(extrude({ pick: [0, 0, 1] })).toMatchObject({ pick: [0, 1] });
+  });
+
+  it("rejects malformed picks", () => {
+    expect(extrude({ pick: [] })).toBeNull();
+    expect(extrude({ pick: [-1] })).toBeNull();
+    expect(extrude({ pick: [1.5] })).toBeNull();
+    expect(extrude({ pick: ["0"] })).toBeNull();
+    expect(extrude({ pick: "inner" })).toBeNull();
+    expect(extrude({ pick: 0 })).toBeNull();
+  });
+
+  it("rejects pick on loft and rib (no per-section addressing)", () => {
+    expect(validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], pick: [0] })).toBeNull();
+    expect(validateEditOp({ op: "rib", spineEdges: ["edge-0"], dir: [0, 0, 1], thin: 2, upTo: "face-0", pick: "all" })).toBeNull();
+  });
+
+  it("rejects drill without targets/profile/dir/length", () => {
+    expect(validateEditOp({ op: "drill", profile: "face-1", dir: [0, 0, -1], length: 10 })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], dir: [0, 0, -1], length: 10 })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], profile: "face-1", length: 10 })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], profile: "face-1", dir: [0, 0, -1] })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: [], profile: "face-1", dir: [0, 0, -1], length: 10 })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], profile: "face-1", profileEdges: ["edge-1"], dir: [0, 0, -1], length: 10 })).toBeNull();
+  });
+
+  it("accepts drill's edge profile form and validates length like extrude", () => {
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], profileEdges: ["edge-1", "edge-2"], dir: [0, 0, -1], length: 10 }))
+      .toMatchObject({ op: "drill" });
+  });
+});

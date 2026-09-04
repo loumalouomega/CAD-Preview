@@ -257,6 +257,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
   patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
   patternCircular: '{targets: solidId[], axisPoint?: [x,y,z], axisDir?: [x,y,z], midaxisOf?: [faceId|edgeId, faceId|edgeId] (parallel cylinder axes or straight edges — XOR with axisPoint/axisDir), angleDeg: n, count: int>=2 (total instances, incl. original)}',
+  drill: '{targets: solidId[], profile: faceId | profileEdges: edgeId[] (exactly one), pick?: "outer"|"all"|region indices (0 = outer boundary, 1..N = inner loops in order — omitted = face as modeled, holes preserved), dir: [x,y,z], length: n (explicit only, no up-to-face variant)}',
 };
 
 /** All op kinds, derived from the panel catalog (which `opCatalog.test.ts`

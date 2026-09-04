@@ -89,8 +89,26 @@ export interface ThinSpec { thin?: number; thinOuter?: number; }
  * A CLOSED edge set behaves exactly like the equivalent face. An OPEN one
  * encloses no area, so it **requires** {@link ThinSpec.thin}: the wall is what
  * gives it a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
+ *
+ * `pick` optionally narrows WHICH enclosed regions of a multi-region profile
+ * are consumed (roadmap "pick + drill", closed): a face's wires enumerate to
+ * regions — region 0 is the outer boundary, regions 1..N are its inner loops
+ * in explorer order — and an edge profile exposes a single region. `"outer"`
+ * (the default) consumes the face as modeled, holes preserved; `"all"`
+ * consumes the outer boundary with every hole filled; an index list consumes
+ * exactly those regions (inner loops picked without 0 build as standalone
+ * island bodies, fused into one). A whole-op rejection for a malformed pick;
+ * an out-of-range index skips at replay like any unresolvable id.
  */
-export interface ProfileOperand { profile?: string; profileEdges?: string[]; }
+export interface ProfileOperand extends PickSpec { profile?: string; profileEdges?: string[]; }
+/**
+ * Region selector for a sweep-family profile operand (see
+ * {@link ProfileOperand}): `"outer"` (default — the face as modeled),
+ * `"all"` (outer boundary, holes filled), or region indices (`0` = outer
+ * boundary, `1..N` = inner loops in explorer order).
+ */
+export type RegionPick = "outer" | "all" | number[];
+export interface PickSpec { pick?: RegionPick; }
 /**
  * Extrude a selected planar face, or a wire of selected edges, along `dir` —
  * either by an explicit `length` or up to the terminator face `upToFace`
@@ -205,6 +223,16 @@ export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePo
 export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; }
 /** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
 export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
+/**
+ * Cut the picked regions of a profile (a `face-N`, or a closed `edge-N` wire)
+ * through the target solids — a region prism subtracted per region, fused
+ * into one tool when several are picked. `pick` narrows which enclosed
+ * regions are cut (see {@link ProfileOperand}); `dir`/`length` shape the
+ * prism exactly like {@link ExtrudeOp}'s explicit-length form (no `upToFace`
+ * variant — a through-cut covers the drill use case, and the terminator form
+ * stays a follow-up). B-rep only.
+ */
+export interface DrillOp extends PickSpec { op: "drill"; targets: string[]; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; }
 /** Build a new solid by sewing the selected faces into a closed shell. */
 export interface AddVolumeFromSurfacesOp { op: "addVolumeFromSurfaces"; faces: string[]; }
 /** Translate the targets along `axis` so their bbox `extent` (min/center/max) lands at the absolute coordinate `to`. A no-op for a target already there. */
@@ -228,8 +256,8 @@ export type EditOp = (
   | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
   | AddEdgeSlotOp
   | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp
-  | AlignOp | PatternLinearOp | PatternCircularOp
-) & {
+  | AlignOp | PatternLinearOp | PatternCircularOp | DrillOp
+ ) & {
   exprs?: ExprMap;
   /**
    * Optional per-operand-field stored queries (roadmap "Selector synthesis",
@@ -276,6 +304,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   addEdgeSlot: ["edge"],
   addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"],
   align: ["targets"], patternLinear: ["targets"], patternCircular: ["targets"],
+  drill: ["targets", "profile", "profileEdges"],
 };
 
 /**
@@ -332,7 +361,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
   "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot",
-  "patternLinear", "patternCircular",
+  "patternLinear", "patternCircular", "drill",
 ]);
 
 /** Ops only available for B-rep sources (meshes have no sketch/exact topology).
@@ -345,7 +374,7 @@ export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
-  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot",
+  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot", "drill",
 ]);
 
 function isFiniteNumber(v: unknown): v is number {
@@ -508,6 +537,24 @@ function asThinSpec(o: Record<string, unknown>): ThinSpec | null {
     out.thinOuter = o.thinOuter;
   }
   return out;
+}
+
+/**
+ * Validates the optional {@link PickSpec} region selector shared by the
+ * single-profile sweep-family ops and {@link DrillOp}, returning the field to
+ * attach (possibly empty) or `null` to reject the whole op — the same
+ * whole-op-rejection shape {@link asThinSpec} uses for a malformed thin spec.
+ * `"outer"`/`"all"` are literal; otherwise a non-empty list of region indices
+ * (`0` = outer boundary, `1..N` = inner loops in explorer order). Duplicates
+ * are deduped, not rejected — harmless, and the kernel would treat them as
+ * one region anyway.
+ */
+function asPick(o: Record<string, unknown>): PickSpec | null {
+  if (o.pick === undefined) return {};
+  if (o.pick === "outer" || o.pick === "all") return { pick: o.pick };
+  if (!Array.isArray(o.pick) || o.pick.length === 0) return null;
+  if (!o.pick.every((x) => Number.isInteger(x) && (x as number) >= 0)) return null;
+  return { pick: [...new Set(o.pick as number[])] };
 }
 
 /** Cap on `exprs` entries per op / expression length — a hand-edited sidecar can't balloon memory. */
@@ -696,40 +743,48 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const dir = asVec3(o.dir);
       const thin = asThinSpec(o);
       const profile = asProfileOperand(o);
+      const pick = asPick(o);
       // Terminator: exactly one of an explicit length or a face to extrude up
       // to — never both, never neither (the ProfileOperand XOR shape).
       const hasLength = o.length !== undefined;
       const hasUpToFace = o.upToFace !== undefined;
       if (hasLength === hasUpToFace) return null;
-      if (!(profile && dir && thin)) return null;
+      if (!(profile && dir && thin && pick)) return null;
       if (hasLength) {
         return isFiniteNumber(o.length)
-          ? { op: "extrude", ...profile, dir, length: o.length, ...thin }
+          ? { op: "extrude", ...profile, dir, length: o.length, ...thin, ...pick }
           : null;
       }
       const upToFace = asFaceId(o.upToFace);
-      return upToFace ? { op: "extrude", ...profile, dir, upToFace, ...thin } : null;
+      return upToFace ? { op: "extrude", ...profile, dir, upToFace, ...thin, ...pick } : null;
     }
     case "revolve": {
       const axisPoint = asVec3(o.axisPoint);
       const axisDir = asVec3(o.axisDir);
       const thin = asThinSpec(o);
       const profile = asProfileOperand(o);
-      return profile && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && thin
-        ? { op: "revolve", ...profile, axisPoint, axisDir, angleDeg: o.angleDeg, ...thin }
+      const pick = asPick(o);
+      return profile && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && thin && pick
+        ? { op: "revolve", ...profile, axisPoint, axisDir, angleDeg: o.angleDeg, ...thin, ...pick }
         : null;
     }
     case "sweep": {
       const thin = asThinSpec(o);
       const profile = asProfileOperand(o);
-      return profile && typeof o.path === "string" && thin
-        ? { op: "sweep", ...profile, path: o.path, ...thin }
+      const pick = asPick(o);
+      return profile && typeof o.path === "string" && thin && pick
+        ? { op: "sweep", ...profile, path: o.path, ...thin, ...pick }
         : null;
     }
     case "loft": {
       const hasFaces = o.profiles !== undefined;
       const hasEdgeSets = o.profileEdgeSets !== undefined;
       if (hasFaces === hasEdgeSets) return null; // neither form, or both at once
+      // No `pick`: a per-section region selector needs a parallel array the
+      // op model does not have — refuse, never silently ignore (loft sections
+      // resolve through the same shared path, so an ignored pick would be a
+      // lie about which regions were lofted).
+      if (o.pick !== undefined) return null;
       const thin = asThinSpec(o);
       if (!thin) return null;
       // Smoothing is a strict boolean when present — anything else (a truthy
@@ -845,9 +900,23 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const planeNormal = asNonZeroVec3(o.planeNormal);
       return planePoint && planeNormal ? { op: "section", targets, planePoint, planeNormal } : null;
     }
+    case "drill": {
+      const targets = asIdArray(o.targets);
+      const dir = asVec3(o.dir);
+      const profile = asProfileOperand(o);
+      const pick = asPick(o);
+      // Explicit length only (the extrude length-form shape, minus the
+      // terminator variant — a through-cut covers the drill use case).
+      if (!(targets && dir && profile && pick)) return null;
+      return isFiniteNumber(o.length)
+        ? { op: "drill", targets, ...profile, dir, length: o.length as number, ...pick }
+        : null;
+    }
     case "rib": {
       // An open spine has no inside/outside, so thinOuter is meaningless
       // there (the open-profile rule): absent, or exactly half the wall.
+      // No `pick` either — same per-section-addressing reason as loft above.
+      if (o.pick !== undefined) return null;
       const spineEdges = asEdgeIdArray(o.spineEdges);
       const dir = asVec3(o.dir);
       const upTo = asFaceId(o.upTo);
