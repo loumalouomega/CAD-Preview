@@ -184,9 +184,15 @@ type EditOp =
   //                       which is how an OPEN sketch is consumed. An open
   //                       wire encloses no area, so it REQUIRES `thin` and
   //                       refuses `thinOuter` (it has no inside or outside).
-  | { op: 'extrude'; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; thin?: number; thinOuter?: number }
-  | { op: 'revolve'; profile?: string; profileEdges?: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number }
-  | { op: 'sweep'; profile?: string; profileEdges?: string[]; path: string; thin?: number; thinOuter?: number }
+  // The single-profile three (not loft) also take an optional region pick:
+  //   pick?: 'outer' | 'all' | number[]   which enclosed regions of a
+  //                       multi-region profile to consume (0 = outer boundary,
+  //                       1..N = inner loops in order; omit = face as modeled).
+  //                       An explicit pick refuses `thin` (thin builds from the
+  //                       outer boundary alone).
+  | { op: 'extrude'; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
+  | { op: 'revolve'; profile?: string; profileEdges?: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
+  | { op: 'sweep'; profile?: string; profileEdges?: string[]; path: string; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
   | { op: 'loft'; profiles?: string[]; profileEdgeSets?: string[][]; thin?: number; thinOuter?: number }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
@@ -195,6 +201,7 @@ type EditOp =
   | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
   | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
   | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string] }
+  | { op: 'drill'; targets: string[]; profile?: string; profileEdges?: string[]; pick?: 'outer' | 'all' | number[]; dir: Vec3; length: number }  // region prism(s) cut from the targets; explicit length only
   | { op: 'addBox'; center: Vec3; size: Vec3 }
   | { op: 'addSphere'; center: Vec3; radius: number }
   | { op: 'addCylinder'; center: Vec3; axis: Vec3; radius: number; height: number }
@@ -230,7 +237,7 @@ type EditOp =
 
 An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single tolerance gate — malformed ops are dropped, never thrown. The list is persisted in the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md).
 
-**Construction geometry** (`guide?: boolean`, roadmap item 10): any 2D profile/curve creation op may mark its entity reference-only. Guide entities render dimmed, stay pickable/measurable, and are refused as operands by the profile-resolution ops (`extrude`/`revolve`/`sweep`/`loft`/`addSurfaceFromLines`/`addVolumeFromSurfaces`) — enforced host-side (a guide operand fails that op with a diagnostic) and mirrored in the webview. The `geometry` message's `guideIds` field carries the current guide entity ids.
+**Construction geometry** (`guide?: boolean`, roadmap item 10): any 2D profile/curve creation op may mark its entity reference-only. Guide entities render dimmed, stay pickable/measurable, and are refused as operands by the profile-resolution ops (`extrude`/`revolve`/`sweep`/`loft`/`drill`/`addSurfaceFromLines`/`addVolumeFromSurfaces`) — enforced host-side (a guide operand fails that op with a diagnostic) and mirrored in the webview. The `geometry` message's `guideIds` field carries the current guide entity ids.
 
 **Midplane/midaxis references**: `mirror`/`splitByPlane`/`section` accept `midplaneFaces: [faceId, faceId]` (two planar, parallel faces — the op acts on the plane halfway between them) and `patternCircular` accepts `midaxisOf: [faceId|edgeId, faceId|edgeId]` (two cylindrical faces or two parallel straight edges). Exactly one of the reference or the inline vectors must be present; unresolvable/non-parallel references fail that op gracefully with a diagnostic. B-rep sources only — the mesh engine refuses the reference fields (it has no analytic faces; pass inline vectors instead).
 
