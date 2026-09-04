@@ -4,6 +4,23 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.9.0] - 2026-09-04
+
+### Added
+
+- **Selector synthesis — persist a re-executable query instead of a positional entity id.** New `resolve_selector` and `synthesize_selector` MCP tools plus `targetQueries`/`targetQueryKinds` op annotations: a bucket query re-derives its producing op's recorded faces and re-matches them geometrically on every replay, a scene query filters/ranks the whole current model, and stale indices freeze instead of repointing (kind-tag guard) rather than silently resolving to the wrong entity. Parts carry the same mechanism (`Part.selector`, resolved on open and after every op-list change), and the Edits panel's extrude/revolve/shell/draft forms gained a **Pin query** row that synthesizes a query for the selected face through the same kernel path. Mesh sources replay on cached ids (no query resolution without exact topology), and queries are refused inside `repeat` bodies.
+- **Rib feature op.** `rib` builds a thin-walled rib from an open spine sketch: wall extruded along `dir` until it meets the planar terminator `upTo` (plus one wall-thickness of embed so the contact penetrates for fusing), fused into the surrounding solids with debris-tolerant operand splitting, and the wall↔body junction blended at `blendRadius` (`0` = fuse only). `thin` is required and symmetric (`thinOuter` must be absent or exactly half, since an open wire has no inside/outside).
+- **Extrude up-to-face terminator.** `extrude` accepts `upToFace` (a planar face) instead of `length`: the extrusion runs from the profile plane to the terminator plane along `dir`, derived with plain plane math (miss/parallel/non-planar skips gracefully). Thin-wall handling, start-cap identity, and bucket roles behave identically for both forms.
+- **Loft smoothing.** `loft` accepts an optional strict-boolean `smoothing` through the shared loft-wires choke point (plain, open-band, and outer/inner-thin paths alike) — the only `ThruSections` knob with a measured effect in this build (`-0.64%` on the progressively-twisted 4-section fixture; continuity/parametrization/max-degree settings are accepted by the kernel but change nothing, so they stay unexposed). Omitted/`false` replays exactly like before.
+- **Region pick + drill.** `extrude`/`revolve`/`sweep` take an optional `pick` narrowing which enclosed regions of a multi-region profile are consumed — region `0` is the outer boundary, `1..N` its inner loops in order: omitted (or `"outer"`) keeps the face as modeled with holes preserved, `"all"` (or any list containing `0`) fills every hole, and a list without `0` builds each picked inner loop as a standalone island body. Out-of-range indices skip with a diagnostic naming the loop count; an explicit `pick` refuses `thin`, and `loft`/`rib` reject `pick` at validation. The new `drill` op cuts the same picked regions through target solids — one prism per region down an explicit `dir` × `length`, subtracted from the targets. B-rep only, with a Regions row on the extrude/revolve/sweep forms and a Drill composer in the panel's Modify category.
+- **Models activity-bar view.** A CAD Preview icon in the lateral bar lists every CAD/mesh file in the open workspace folder(s) — same routing rules, depth cap, and `.git`/`node_modules` exclusions as the headless `list_workspace_models` tool, over `vscode.workspace.fs` so it also works on Remote/SSH. Click a file to open it in the 3D viewer; the title bar offers the same **Open…** dialog plus **Refresh**, and file create/delete refreshes the tree automatically. With no folder open, or no models found, the view shows an **Open CAD File…** button instead.
+- **Per-step generated screenshots for the tutorials.** The docs pipeline now tessellates each tutorial's cumulative op-list prefixes from `block.stp` (fused and finished bracket, patterned tools and finished flange, sketch/extruded/shelled enclosure, plus the finished bracket meshed at the FEA page's own size) and captures one shot per step — every tutorial step finally shows its own part instead of reusing the generic panel screenshots.
+
+### Changed
+
+- **`npm run docs:build` now also runs in CI** (one step after unit tests): the VitePress build is the only dead-link check over `doc/**`, which previously waited for the push-to-master docs workflow — a broken intra-doc link reached `master` before anything noticed. Deploy still lives in `docs.yml`.
+- **New doc-coverage gate in `npm test`.** Every live op kind must now be named somewhere in `doc/**` (exact backticked/quoted token or `"op"` value — bare prose doesn't count), no op-position snippet may claim a removed kind (the rename-catcher), and the committed `doc/op-coverage-allowlist.txt` must contain no rotted opt-out. Its first run found a real gap (`rib` was documented nowhere user-facing) rather than passing clean.
+
 ## [1.8.0] - 2026-09-03
 
 ### Added
@@ -313,6 +330,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.5.1...v1.7.0
 [1.5.1]: https://github.com/loumalouomega/CAD-Preview/compare/v1.4.1...v1.5.1

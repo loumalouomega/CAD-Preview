@@ -1,0 +1,17 @@
+% Op icon: drill — plate with a square window cut through it, arrow driving down.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, x=1mm,y=1mm]
+  % Fill the plate MINUS the window as one compound (even-odd) path — never a
+  % `\fill[white]` hole, which would read as a solid white patch against the
+  % button's theme-dependent background.
+  \fill[gray!15, even odd rule] (-10,-8) rectangle (10,8) (-4,-4) rectangle (4,4);
+  \draw[thick] (-10,-8) rectangle (10,8);
+  \draw[thick] (-4,-4) rectangle (4,4);
+  % Drive arrow: explicit filled triangle tip (a `>=Stealth` tip vanishes at
+  % 1em toolbar size — see icons/README.md), shaft stopping above the tip.
+  \draw[thick] (0,13) -- (0,8);
+  \filldraw[thick] (0,4.5) -- (-2,8) -- (2,8) -- cycle;
+\end{tikzpicture}
+\end{document}

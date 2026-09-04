@@ -49,6 +49,7 @@ import {
   type MeshOptions,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
+import { validateSelectorQuery } from "./selectorQuery";
 import { envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
@@ -62,6 +63,9 @@ import type {
   checkInterference,
   checkInterferenceAll,
   rebindPartsAcrossOps,
+  resolveBucketSelector,
+  synthesizeSelector,
+  resolvePartSelectors,
   EntityFacts,
   MeasureResult,
   ExactMeasureKind,
@@ -158,6 +162,9 @@ export interface Pipeline {
   checkInterference: typeof checkInterference;
   checkInterferenceAll: typeof checkInterferenceAll;
   rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
+  resolveBucketSelector: typeof resolveBucketSelector;
+  synthesizeSelector: typeof synthesizeSelector;
+  resolvePartSelectors: typeof resolvePartSelectors;
   renderSnapshot: typeof renderSnapshot;
   isRenderAvailable: typeof isRenderAvailable;
   searchStandardParts: typeof searchStandardParts;
@@ -200,15 +207,16 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   fillet: '{edges: edgeId[], radius: n>0}',
   chamfer: '{edges: edgeId[], distance: n>0, distance2?: n>0 (asymmetric, needs face), angleDeg?: 0<n<90 (distance-angle, needs face), face?: faceId}',
 
-  extrude: '{profile: faceId | profileEdges: edgeId[] (exactly one), dir: [x,y,z], length: n>0, thin?: n>0, thinOuter?: 0<=n<=thin}',
+  extrude: '{profile: faceId | profileEdges: edgeId[] (exactly one), dir: [x,y,z], length: n>0 | upToFace: faceId (exactly one of length/upToFace; planar terminator — extrusion runs to its plane, miss/parallel skips), thin?: n>0, thinOuter?: 0<=n<=thin}',
   revolve: '{profile: faceId | profileEdges: edgeId[] (exactly one), axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n, thin?: n>0, thinOuter?: 0<=n<=thin}',
   sweep: '{profile: faceId | profileEdges: edgeId[] (exactly one), path: edgeId, thin?: n>0, thinOuter?: 0<=n<=thin}',
-  loft: '{profiles: faceId[] (>=2) | profileEdgeSets: edgeId[][] (>=2, exactly one form), thin?: n>0, thinOuter?: 0<=n<=thin}',
+  loft: '{profiles: faceId[] (>=2) | profileEdgeSets: edgeId[][] (>=2, exactly one form), thin?: n>0, thinOuter?: 0<=n<=thin, smoothing?: boolean (surface smoothing across sections — the only loft quality knob with a measured effect; continuity/par-type/max-degree settings are accepted by the kernel but change nothing, so they are not exposed)}',
   explode: '{factor: n}',
   mate: '{faceA: faceId, faceB: faceId (both planar)}',
   shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1), join?: "arc"|"intersection"|"tangent" (default arc)}',
   draft: '{faces: faceId[], angleDeg: 0<n<90, planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N from planes sidecar; planePoint/planeNormal may ride alongside as cache) (neutral plane + pull direction; omitted = each face\'s own plane). NOTE: this WASM build\'s draft engine (BRepOffsetAPI_DraftAngle.Build) is kernel-broken — the op validates but reports applied:false with a diagnostic}',
   splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR with planePoint/planeNormal and midplaneFaces; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
+  rib: '{spineEdges: edgeId[] (open wire, assembled in any order), dir: [x,y,z], thin: n>0 (required; symmetric — thinOuter must be absent or exactly thin/2), upTo: faceId (planar terminator — wall runs to its plane plus one thin of embed, then fuses), blendRadius?: n>=0 (junction blend; default thin/4; 0 = fuse only)}',
   section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR)}',
   addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
   addSphere: '{center: [x,y,z], radius: n>0}',
@@ -249,6 +257,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
   patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
   patternCircular: '{targets: solidId[], axisPoint?: [x,y,z], axisDir?: [x,y,z], midaxisOf?: [faceId|edgeId, faceId|edgeId] (parallel cylinder axes or straight edges — XOR with axisPoint/axisDir), angleDeg: n, count: int>=2 (total instances, incl. original)}',
+  drill: '{targets: solidId[], profile: faceId | profileEdges: edgeId[] (exactly one), pick?: "outer"|"all"|region indices (0 = outer boundary, 1..N = inner loops in order — omitted = face as modeled, holes preserved), dir: [x,y,z], length: n (explicit only, no up-to-face variant)}',
 };
 
 /** All op kinds, derived from the panel catalog (which `opCatalog.test.ts`
@@ -376,13 +385,14 @@ export function describeCapabilities() {
     opNotes: [
       "Pass ops as raw JSON objects with an `op` kind field; they are validated by the same tolerant gate the extension uses (malformed ops are rejected with a reason, never crash).",
       "Any numeric field may carry a parametric expression via `exprs`, e.g. {op: \"addBox\", size: [20,10,5], exprs: {\"size[0]\": \"L\"}} — see set_variables.",
+      "Any id-bearing operand field may carry a stored selector via `targetQueries` (plus `targetQueryKinds` tags for bucket queries), e.g. {op: \"boolean\", kind: \"union\", a: [...], b: [...], targetQueries: {a: {version: 1, source: {kind: \"scene\", filter: {kind: \"planar\"}}}}}. Queries resolve against the CURRENT op list at every load (bucket = the producing op's recorded faces re-matched geometrically; scene = a whole-model filter/rank) and overwrite the field's cached ids for that replay; the sidecar is untouched. A scalar slot (profile/face/path/faceA/faceB/upToFace/upTo/edge) needs exactly one resolved id or the field freezes to its cache; every freeze surfaces as a load_model warning. Forward references (producing op not strictly before the consuming one) and queries inside repeat bodies are refused. Mesh sources never resolve queries — they replay on cached ids.",
       "brepOnly ops are rejected for mesh-format sources (STL/OBJ/PLY/glTF). topologyChanging ops reassign face-N/edge-N ids on replay.",
       "Angles are degrees. Vec3s are [x,y,z] arrays.",
       "extrude/revolve/sweep/loft accept an optional `thin` (total wall thickness) to build a thin-walled body instead of a filled one, plus `thinOuter` for how much of that wall sits outside the profile boundary (0 = all inward, the default; thinOuter === thin = all outward). The profile must not already have holes, and a thin feature does NOT consume its profile sketch, unlike a plain one.",
       "extrude/revolve/sweep/loft take their profile in either of two mutually exclusive forms: a `face-N` (`profile`/`profiles`), or a set of `edge-N` ids assembled into one wire (`profileEdges`/`profileEdgeSets`) — which is how an OPEN sketch (an `addPolyline` with `closed: false`) is consumed. The edges may be listed in any order; a disconnected set is skipped with a diagnostic. A closed edge set behaves exactly like the equivalent face. An OPEN one encloses no area and therefore REQUIRES `thin`: its wall is centred on the spine with semicircular ends, so `thinOuter` has no meaning there and is refused unless it is exactly thin/2. Every section of a loft must agree on closedness.",
     ],
     entityIdScheme:
-      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids.",
+      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids. resolve_selector re-resolves a recorded op-bucket (op index + role, e.g. an extrude's endCap) to its CURRENT face-N ids with a centre-distance oracle per match — a re-executable query instead of a stale positional id.",
     verdictConventions: [
       "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
       "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
@@ -433,6 +443,8 @@ export function describeCapabilities() {
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written; edits/parts/annotations/construction planes/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open.",
       "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
+      "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first three rungs of the Selector-synthesis ladder. An optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts; one leaf or an AND-list) plus rank ({by:'area',order:'max'|'min',n}) narrows the bucket without baking in coordinates (e.g. the largest endCap face) — or {version: 1, source: {kind: 'scene', filter?, rank?}} drops the bucket anchor entirely (at least one of filter/rank required), e.g. the largest planar face in the model, in a single replay. Each returned bucket id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance; the scene path returns no matches — the exact facts are the oracle); unresolved names reference ids with no confident match, an induced selection of zero is an honest empty (never a fallback), and bindable:false means the producing op was a pattern instance (use a scene query to match across all copies instead).",
+      "synthesize_selector (B-rep sources only) is resolve_selector's inverse: given a picked entityId plus its producing op/role, it induces the constant-free-first query naming exactly that entity (qualitative leaves before the exact normal, area literals last) and verifies it live (exact re-execution plus centreDistance ~ 0) before returning — query:null with a reason means nothing exact exists, never a guess.",
     ],
   };
 }
@@ -686,8 +698,10 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     sidecars,
     // A persisted op that silently skipped on a PREVIOUS session is reported
     // here the moment the model is loaded — the agent learns immediately
-    // rather than after wondering why nothing changed.
-    warnings: opOutcomeWarnings(result.opOutcomes),
+    // rather than after wondering why nothing changed. Query-freeze warnings
+    // ride the same channel (an operand query that froze replays on cached
+    // ids; the agent needs to know the query was not honored).
+    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? [])],
   };
 }
 
@@ -1139,6 +1153,142 @@ export async function checkInterferenceAllTool(
   }
 
   return { format: route.format, supported: true, pairs: namedPairs, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// resolve_selector
+
+/**
+ * Re-executable selectors (roadmap item 1, ladder rungs 1–3) — resolves
+ * `{version: 1, source: {kind: "bucket", op, role}}` ("the faces op N produced
+ * in role R") against the CURRENT op list, so a recorded `OpBucket`'s
+ * step-local ids are never trusted against a newer shape; an optional
+ * induced `filter`/`rank` narrows the set by exact current-shape facts (see
+ * `selectorPredicate.ts`) — or `{version: 1, source: {kind: "scene",
+ * filter?, rank?}}` with no bucket anchor at all, resolved in a single full
+ * replay (at least one of `filter`/`rank` required). Facts only: `ids` are
+ * the current-model `face-N` ids, `matches` carry the centre-distance/
+ * measure-delta oracle behind each bucket match (a resolved id is trustworthy
+ * only at ~0 distance, the same bar entity-rebinding verifies itself against
+ * in `npm run mcp:smoke`; the scene path returns no matches — the exact facts
+ * are the oracle), `unresolved` names reference ids with no confident match,
+ * and an induced selection of zero is an honest empty (never a fallback to
+ * the whole bucket). A bucket query whose producing op was a pattern instance
+ * returns `bindable: false` with a reason (ambiguous across instances — use a
+ * scene query to match across all copies instead); a skipped/wireframe op
+ * with no bucket resolves to an honest empty. B-rep sources only headless
+ * (needs exact replay geometry).
+ */
+export async function resolveSelectorTool(
+  ctx: ToolContext,
+  params: { path: string; selector: unknown }
+): Promise<{
+  format: CadFormat;
+  supported: boolean;
+  warnings: string[];
+  ids?: string[];
+  unresolved?: string[];
+  matches?: Array<{ oldId: string; newId: string; centreDistance: number; measureDeltaPct: number }>;
+  bindable?: boolean;
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: selector resolution needs exact B-rep replay geometry, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEditsResolved(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.resolveBucketSelector(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    ops,
+    params.selector
+  );
+  const warnings: string[] = [];
+  if (!result.bindable) {
+    warnings.push(result.reason ?? "Selector is not bindable at rung 1 (pattern-instance producer).");
+  } else if (result.unresolved.length > 0) {
+    warnings.push(`Unresolved reference id(s): ${result.unresolved.join(", ")}.`);
+  }
+  return {
+    format: route.format,
+    supported: true,
+    warnings,
+    ids: result.ids,
+    unresolved: result.unresolved,
+    matches: result.matches,
+    bindable: result.bindable,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// synthesize_selector
+
+/**
+ * Constant-free-first synthesis (roadmap item 1, induction) — turns a picked
+ * `entityId` produced by op `op` in bucket `role` into a `SelectorQuery`
+ * that re-executes to exactly that entity, verified live before returning
+ * (exact re-execution plus `centreDistance ~ 0` on every surviving match).
+ * Facts only: `query` is `null` with a `reason` when nothing names the entity
+ * exactly (never a guess); a pattern producer returns `bindable: false`.
+ * Read-only, never mutates the model. B-rep sources only headless.
+ */
+export async function synthesizeSelectorTool(
+  ctx: ToolContext,
+  params: { path: string; op: number; role: string; entityId: string }
+): Promise<{
+  format: CadFormat;
+  supported: boolean;
+  warnings: string[];
+  query?: import("./selectorQuery").SelectorQuery | null;
+  ids?: string[];
+  matches?: Array<{ oldId: string; newId: string; centreDistance: number; measureDeltaPct: number }>;
+  bindable?: boolean;
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: selector synthesis needs exact B-rep replay geometry, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEditsResolved(modelPath);
+  const bytes = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.synthesizeSelector(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    ops,
+    params.op,
+    params.role,
+    params.entityId
+  );
+  const warnings: string[] = [];
+  if (!result.bindable) {
+    warnings.push(result.reason ?? "Selector is not bindable (pattern-instance producer).");
+  } else if (!result.query) {
+    warnings.push(result.reason ?? "No exact query names this entity.");
+  }
+  return {
+    format: route.format,
+    supported: true,
+    warnings,
+    query: result.query,
+    ids: result.ids,
+    matches: result.matches,
+    bindable: result.bindable,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2183,23 +2333,38 @@ async function maybeRebindParts(
   droppedCount: number;
   annotationReboundCount: number;
   annotationDroppedCount: number;
+  selectorWarnings: string[];
 } | null> {
   if (route.strategy !== "occt" || oldOps.length === newOps.length) return null;
   const [parts, annotations] = await Promise.all([readParts(modelPath), readAnnotations(modelPath)]);
   if (parts.length === 0 && annotations.length === 0) return null;
   const bytes = await readModelBytes(modelPath);
+  // Stored selectors resolve first (authoritative); the heuristic rebind pass
+  // below runs on the result, same order as the interactive path.
+  const selected = await ctx.pipeline.resolvePartSelectors(
+    ctx.extensionPath,
+    bytes,
+    route.format as BRepFormat,
+    newOps,
+    parts
+  );
+  const resolvedParts = selected.parts;
+  if (selected.parts !== parts) await writeParts(modelPath, selected.parts);
   const result = await ctx.pipeline.rebindPartsAcrossOps(
     ctx.extensionPath,
     bytes,
     route.format as BRepFormat,
     oldOps,
     newOps,
-    parts,
+    resolvedParts,
     annotations
   );
   const partsChanged = result.parts !== parts;
   const annotationsChanged = result.annotations !== annotations;
-  if (!partsChanged && !annotationsChanged) return null; // nothing topology-changing, or nothing matched
+  // A frozen selector still warns even when nothing persisted — dropping the
+  // warnings here would make a silently-stale query, the failure this whole
+  // feature exists to prevent.
+  if (!partsChanged && !annotationsChanged && selected.warnings.length === 0) return null; // nothing topology-changing, or nothing matched
   if (partsChanged) await writeParts(modelPath, result.parts);
   if (annotationsChanged) await writeAnnotations(modelPath, result.annotations);
   return {
@@ -2207,6 +2372,7 @@ async function maybeRebindParts(
     droppedCount: result.stats.dropped,
     annotationReboundCount: result.annotationStats.rebound,
     annotationDroppedCount: result.annotationStats.dropped,
+    selectorWarnings: selected.warnings,
   };
 }
 
@@ -2221,6 +2387,7 @@ function rebindWarningText(
   if (rebind.annotationReboundCount > 0 || rebind.annotationDroppedCount > 0) {
     text += ` Also rebound ${rebind.annotationReboundCount} annotation anchor id(s); dropped ${rebind.annotationDroppedCount}.`;
   }
+  for (const warning of rebind.selectorWarnings) text += ` ${warning}`;
   return text;
 }
 
@@ -2833,6 +3000,15 @@ export async function setPart(params: {
   lines?: string[];
   points?: string[];
   meshSize?: number | null;
+  /**
+   * Optional re-executable selector (roadmap "Selector synthesis") stored
+   * beside the raw ids as annotation+cache: the host re-resolves it against
+   * the current op list and overwrites `surfaces` on an oracle-clean result.
+   * The producing-op-kind tag is derived server-side from the current op list
+   * (bucket) or recorded as `"scene"` — never caller-supplied, so it cannot
+   * be mismatched at write time. Pass `selector: null` to clear a stored one.
+   */
+  selector?: unknown;
 }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -2848,6 +3024,33 @@ export async function setPart(params: {
   }
 
   const existing: Part | undefined = parts[index];
+  // A stored selector is validated structurally here; the op-kind tag is
+  // derived from the CURRENT op list (bucket) so write-time mismatch is
+  // impossible by construction. A later op-list splice is caught at resolve
+  // time by comparing against this tag (fail-fast freeze, never a repoint).
+  let selector = existing?.selector;
+  let selectorOpKind = existing?.selectorOpKind;
+  if (params.selector !== undefined) {
+    if (params.selector === null) {
+      selector = undefined;
+      selectorOpKind = undefined;
+    } else {
+      const parsed = validateSelectorQuery(params.selector);
+      if (!parsed) throw new Error("Invalid selector query — expected a whole-bucket or scene SelectorQuery (see resolve_selector).");
+      if (parsed.source.kind === "bucket") {
+        const { ops } = await readEditsResolved(modelPath);
+        const opIndex = parsed.source.op;
+        if (opIndex >= ops.length) {
+          throw new Error(`Selector op ${opIndex} is out of range (op list has ${ops.length} ops).`);
+        }
+        selector = parsed;
+        selectorOpKind = ops[opIndex].op;
+      } else {
+        selector = parsed;
+        selectorOpKind = "scene";
+      }
+    }
+  }
   const part: Part = {
     name: params.name,
     color: params.color ?? existing?.color ?? PART_COLORS[parts.length % PART_COLORS.length],
@@ -2861,6 +3064,7 @@ export async function setPart(params: {
         : typeof params.meshSize === "number" && Number.isFinite(params.meshSize) && params.meshSize > 0
           ? params.meshSize
           : existing?.meshSize,
+    ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),
   };
   if (typeof params.meshSize === "number" && !(Number.isFinite(params.meshSize) && params.meshSize > 0)) {
     warnings.push("meshSize must be a positive number — ignored.");

@@ -48,6 +48,33 @@ describe("parsePartsJson", () => {
     expect(parts[1].surfaces).toEqual(["a", "b"]);
   });
 
+  it("parses a valid stored selector query with its op-kind tag", () => {
+    const selector = { version: 1, source: { kind: "bucket", op: 0, role: "body" } };
+    const text = JSON.stringify({
+      parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-0"], lines: [], points: [], selector, selectorOpKind: "addBox" }],
+    });
+    expect(parsePartsJson(text)[0]).toEqual({
+      name: "P", color: "#fff", volumes: [], surfaces: ["face-0"], lines: [], points: [],
+      selector, selectorOpKind: "addBox",
+    });
+  });
+
+  it("drops a malformed selector (or a dangling op-kind tag) while keeping the part on its raw ids", () => {
+    const cases = [
+      { selector: { version: 1, source: { kind: "bucket", op: 0, role: "nope" } }, selectorOpKind: "addBox" },
+      { selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } }, selectorOpKind: "" },
+      { selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } } }, // kind tag missing
+      { selectorOpKind: "addBox" }, // query missing
+    ];
+    for (const extra of cases) {
+      const text = JSON.stringify({ parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-0"], lines: [], points: [], ...extra }] });
+      const parsed = parsePartsJson(text)[0];
+      expect(parsed.surfaces).toEqual(["face-0"]);
+      expect(parsed.selector).toBeUndefined();
+      expect(parsed.selectorOpKind).toBeUndefined();
+    }
+  });
+
   it("parses a valid positive meshSize and coerces invalid values to undefined", () => {
     const base = { name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] };
     const cases: Array<[unknown, number | undefined]> = [
@@ -82,6 +109,15 @@ describe("serializePartsJson", () => {
   it("round-trips a part's meshSize", () => {
     const parts: Part[] = [{
       name: "P", color: "#123456", volumes: ["solid-0"], surfaces: [], lines: [], points: [], meshSize: 0.25,
+    }];
+    const text = serializePartsJson("model.step", parts);
+    expect(parsePartsJson(text)).toEqual(parts);
+  });
+
+  it("round-trips a part's stored selector query", () => {
+    const parts: Part[] = [{
+      name: "P", color: "#123456", volumes: [], surfaces: ["face-0"], lines: [], points: [],
+      selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } }, selectorOpKind: "addBox",
     }];
     const text = serializePartsJson("model.step", parts);
     expect(parsePartsJson(text)).toEqual(parts);

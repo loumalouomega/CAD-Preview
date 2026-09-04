@@ -45,6 +45,8 @@ Open any supported file — for example, from the Explorer or via `File > Open F
 
 You can also drag a file from the OS file explorer (or another editor tab) and drop it onto the 3D view to open it the same way. If the browser drop event doesn't expose a real filesystem path for the dropped item, CAD Preview falls back to showing the normal **Open…** dialog instead of silently failing.
 
+The **CAD Preview** icon in the Activity Bar opens the **Models** view: every CAD/mesh file in the open workspace folder(s), discovered with the same routing rules (and the same depth cap and `.git`/`node_modules` exclusions) as the headless `list_workspace_models` tool. Click a file to open it in the 3D viewer; the toolbar offers the same **Open…** dialog plus **Refresh**. With no folder open — or no models found — the view shows an **Open CAD File…** button instead.
+
 ### Supported Formats
 
 | Format      | Extensions      | Rendering Pipeline                         |
@@ -362,6 +364,8 @@ The **Edits** panel (below the Parts panel) applies non-destructive **edit opera
 
 Every parameter form previews **live**: while a form is open, the viewer shows what that op *would* produce as a translucent overlay, re-computed as you type (~250 ms debounce) and coloured by intent — green where material is added, red where it is removed, blue for wire/reference results (points, lines, sketch faces), neutral for transforms and fillet/chamfer. Switching forms or changing the selection cancels the preview; only **Apply** commits anything to the history.
 
+The **Extrude**, **Revolve**, **Shell**, and **Draft** forms also carry a **Pin query** row: pick exactly one face, choose the producing op and bucket role it came from (e.g. an extrude's end cap), and click **Synthesize** to name that face as a stored query. The query is attached when you click **Apply** (as long as the selection hasn't changed since) and survives later edits renumbering the model's faces — the same mechanism agents use headlessly, now available interactively. Edge/volume operands and multi-face picks can't be pinned yet; the row says so rather than offering a dead button.
+
 The panel is organised into two top-level tabs — **GEOMETRY** (create new entities) and **EDIT** (modify existing ones) — sharing one undo/redo/Clear header and one operation-history list. The GEOMETRY tab is further split into **2D** (points, lines, curves, sketch profiles) and **3D** (solid primitives, holes) subtabs. Each tab shows a grid of operation buttons (icon + name); clicking a button opens its parameter form below the grid, and clicking it again collapses the form. For mesh sources the whole **2D** subtab and every other B-rep-only button grey out.
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
@@ -413,11 +417,13 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | **Move / Rotate / Scale / Mirror** | Enter parameters, **Apply** to the selected volumes (all formats) |
 | **Unite / Subtract / Intersect** | Select operand-A volumes and click **Set A**, then select operand-B volumes and click **Apply** (all formats) |
 | **Fillet / Chamfer** | Select edges (**Line** mode), enter the radius / setback, **Apply** (B-rep only) |
-| **Extrude / Revolve / Sweep / Loft** | Select a profile face (**Surf** mode; a path edge too for Sweep, 2+ faces for Loft), set parameters, **Apply** — builds a new body (B-rep only) |
+| **Extrude / Revolve / Sweep / Loft** | Select a profile face (**Surf** mode; a path edge too for Sweep, 2+ faces for Loft), set parameters, **Apply** — builds a new body (B-rep only). Extrude/Revolve/Sweep also take **Regions** to narrow a multi-region profile (blank = face as modeled, `all`, or indices like `0,2`) |
 | **Shell** | Select the opening face(s) (**Surf** mode), enter a wall thickness (negative = walls grow inward, the usual hollow), **Apply** — hollows the solid(s) owning those faces (B-rep only) |
 | **Draft** | Select the face(s) to taper (**Surf** mode), enter an **Angle°** (0–90), and optionally a neutral-plane **Point** + **Normal** — leave both at 0 to taper each face about its own plane — then **Apply** (B-rep only). **Known kernel limitation**: the bundled OCCT WASM build's draft engine fails on real geometry (probed — see `CLAUDE.md`), so the op currently reports a "did not apply — kernel limitation" diagnostic in the history instead of changing the model; it will work without changes once the upstream build fixes it |
 | **Split** | Select volumes (**Vol** mode), define the plane, choose which side(s) to **Keep**, **Apply** (B-rep only) |
 | **Section** | Select volumes (**Vol** mode), define the plane, **Apply** — appends the planar cross-section as a sketch face, leaving the solids untouched (B-rep only) |
+| **Drill** | Select volumes (**Vol** mode) plus a profile face (**Surf** mode) or wire (**Line** mode), set **Dir**/**Length**, **Apply** — cuts the profile's regions through the volumes. **Regions** narrows a multi-region profile: blank (face as modeled), `all`, or indices like `0,2` (`0` = outer boundary) (B-rep only) |
+| **Rib** | Select an open spine sketch (**Line** mode), set a wall **Thickness** and an **Up-to** face, **Apply** — extrudes the wall to that face (plus one thickness of embed), fuses it into the surrounding solids, and blends the junction (B-rep only) |
 | **Explode** | Drag the slider (or type the factor) for a live preview — bodies spread radially from the model centre as you drag, snapping back at 0 — then **Apply** to commit it as an operation (all formats) |
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
 | **Align** | Select volumes (**Vol** mode); choose an **Axis** (X/Y/Z), an **Extent** (min/center/max of each volume's own bounding box), and a target coordinate **To**; **Apply** — moves each selected volume along that one axis so its own chosen extent lands exactly on the target. Every targeted volume aligns independently, even when the whole model is selected (all formats) |

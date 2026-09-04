@@ -21,9 +21,9 @@ export type PanelOpId =
   // EDIT — refine
   | "fillet" | "chamfer"
   // EDIT — features
-  | "extrude" | "revolve" | "sweep" | "loft"
+  | "extrude" | "revolve" | "sweep" | "loft" | "rib"
   // EDIT — modify
-  | "shell" | "draft" | "splitByPlane" | "section"
+  | "shell" | "draft" | "splitByPlane" | "section" | "drill"
   // EDIT — assembly
   | "explode" | "mate" | "align" | "patternLinear" | "patternCircular"
   // GEOMETRY 2D — wireframe
@@ -164,6 +164,7 @@ export const OP_CATALOG: {
         entry("revolve", "Revolve", ["revolve"]),
         entry("sweep", "Sweep", ["sweep"]),
         entry("loft", "Loft", ["loft"]),
+        entry("rib", "Rib", ["rib"]),
       ],
     },
     {
@@ -173,6 +174,7 @@ export const OP_CATALOG: {
         entry("draft", "Draft", ["draft"]),
         entry("splitByPlane", "Split", ["splitByPlane"]),
         entry("section", "Section", ["section"]),
+        entry("drill", "Drill", ["drill"]),
       ],
     },
     {
@@ -240,16 +242,23 @@ function describeOpBase(op: EditOp): string {
       if (op.angleDeg !== undefined) return `Chamfer ${op.edges.length} d=${op.distance} ${op.angleDeg}°`;
       return `Chamfer ${op.edges.length} d=${op.distance}`;
     }
-    case "extrude": return `Extrude ${profileLabel(op)} ×${op.length}${thinLabel(op)}`;
+    case "extrude": return (op as any).upToFace
+      ? `Extrude ${profileLabel(op)} → ${(op as any).upToFace as string}${thinLabel(op)}`
+      : `Extrude ${profileLabel(op)} ×${(op as any).length as number}${thinLabel(op)}`;
+    case "rib": {
+      const r = op as Extract<EditOp, { op: "rib" }>;
+      return `Rib ${r.spineEdges.length} → ${r.upTo}${thinLabel(op)}`;
+    }
     case "revolve": return `Revolve ${profileLabel(op)} ${op.angleDeg}°${thinLabel(op)}`;
     case "sweep": return `Sweep ${profileLabel(op)} → ${op.path}${thinLabel(op)}`;
-    case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${thinLabel(op)}`;
+    case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${(op as Extract<EditOp, { op: "loft" }>).smoothing ? " +smooth" : ""}${thinLabel(op)}`;
     case "explode": return `Explode ×${op.factor}`;
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
     case "shell": return `▣ Shell t=${op.thickness} (${op.openingFaces.length} openings)`;
     case "draft": return `⬔ Draft ${op.faces.length} ${op.angleDeg}°`;
     case "splitByPlane": return `⧄ Split ${op.targets.length} (${op.keep})`;
     case "section": return `⊟ Section ${op.targets.length}`;
+    case "drill": return `⦿ Drill ${op.targets.length} ${profileLabel(op)} ×${op.length}`;
     case "addBox": return `+ Box ${op.size.join("×")}`;
     case "addSphere": return `+ Sphere r=${op.radius}`;
     case "addCylinder": return `+ Cylinder r=${op.radius} h=${op.height}`;
@@ -316,6 +325,8 @@ export function referencedEntities(op: EditOp): string[] {
     case "addCounterboreHole":
     case "addCountersinkHole":
       return [...op.targets];
+    case "drill":
+      return [...op.targets, ...profileOperandIds(op)];
     case "mirror":
     case "splitByPlane":
     case "section": {
@@ -334,7 +345,10 @@ export function referencedEntities(op: EditOp): string[] {
       return [...op.edges];
     case "addVolumeFromSurfaces":
       return [...op.faces];
+    case "rib":
+      return [...op.spineEdges, op.upTo];
     case "extrude":
+      return [...profileOperandIds(op), ...((op as any).upToFace ? [(op as any).upToFace as string] : [])];
     case "revolve":
       return profileOperandIds(op);
     case "sweep":
@@ -398,3 +412,20 @@ export function buildEntityReferenceIndex(ops: EditOp[]): Map<string, number[]> 
   });
   return index;
 }
+
+/**
+ * Op buttons whose param form carries the "pin selection as query" row
+ * (roadmap "Selector synthesis" follow-up: the interactive half of
+ * op-operand persistence). Deliberately only the face-operand forms:
+ * `synthesizeSelector`'s universe is `faceFilterableFacts` — buckets record
+ * `face-N` ids and the predicate layer names faces — so an edge/volume pick
+ * could never induce (the kernel answers an honest null, but offering the
+ * row there would be a dead surface). Edge/volume predicates and joint
+ * multi-entity induction each unlock more forms with a one-line change here.
+ */
+export const QUERYABLE_PANEL_FORMS: ReadonlySet<PanelOpId> = new Set([
+  "extrude",
+  "revolve",
+  "shell",
+  "draft",
+]);

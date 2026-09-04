@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { OP_CATALOG, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex } from "./opCatalog";
+import { OP_CATALOG, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
-import { BREP_ONLY_OPS, type EditOp, type EditOpKind } from "../editOps";
+import { BREP_ONLY_OPS, QUERYABLE_OPERAND_FIELDS, type EditOp, type EditOpKind } from "../editOps";
 
 /** One representative well-formed op per kind, for describeOp coverage. */
 const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
@@ -22,6 +22,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   draft: { op: "draft", faces: ["face-0"], angleDeg: 10 },
   splitByPlane: { op: "splitByPlane", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1], keep: "both" },
   section: { op: "section", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1] },
+  rib: { op: "rib", spineEdges: ["edge-0", "edge-1"], dir: [0, 0, 1], thin: 2, upTo: "face-0" },
   addBox: { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] },
   addSphere: { op: "addSphere", center: [0, 0, 0], radius: 5 },
   addCylinder: { op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, height: 10 },
@@ -54,6 +55,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   align: { op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 },
   patternLinear: { op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 4 },
   patternCircular: { op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 6 },
+  drill: { op: "drill", targets: ["solid-0"], profile: "face-0", dir: [0, 0, -1], length: 10 },
 };
 
 describe("OP_CATALOG", () => {
@@ -94,6 +96,14 @@ describe("OP_CATALOG", () => {
       for (const e of cat.ops) {
         expect(e.brepOnly, `${e.id} in 2D tab`).toBe(true);
       }
+    }
+  });
+
+  it("keeps every pin-as-query form B-rep-only (mesh sources have no buckets to induce from)", () => {
+    const byId = new Map(allCatalogEntries().map((e) => [e.id, e]));
+    for (const id of QUERYABLE_PANEL_FORMS) {
+      expect(byId.has(id), `catalog entry for ${id}`).toBe(true);
+      expect(byId.get(id)?.brepOnly, `${id} brepOnly`).toBe(true);
     }
   });
 });
@@ -191,6 +201,46 @@ describe("referencedEntities", () => {
     const op: EditOp = { op: "fillet", edges: ["edge-1"], radius: 1 };
     referencedEntities(op).push("edge-999");
     expect(op.edges).toEqual(["edge-1"]);
+  });
+
+  it("covers every QUERYABLE_OPERAND_FIELDS entry (the op-model side of query storage)", () => {
+    // Lock the two enumerations together: a field the sanitizer accepts must
+    // be visible to hover tooltips, or a stored query names an entity the UI
+    // claims no op mentions. Plane references (planeId/midplaneFaces) are
+    // excluded from both surfaces by design — a plane is already a datum.
+    const sampleFor = (field: string): { value: unknown; ids: string[] } => {
+      switch (field) {
+        case "profiles": return { value: ["__Q0", "__Q1"], ids: ["__Q0", "__Q1"] };
+        case "profileEdgeSets": return { value: [["__Q0"]], ids: ["__Q0"] };
+        case "profile": case "face": case "path": case "edge":
+        case "upToFace": case "upTo": case "faceA": case "faceB":
+          return { value: "__Q0", ids: ["__Q0"] };
+        default: return { value: ["__Q0"], ids: ["__Q0"] };
+      }
+    };
+    // Mutually-exclusive operand forms: setting one requires clearing its
+    // sibling, or the op is invalid input (and referencedEntities rightfully
+    // assumes valid ops — e.g. spreading a deleted boolean side would throw).
+    const conflicts: Record<string, string[][]> = {
+      extrude: [["profile", "profileEdges"]],
+      revolve: [["profile", "profileEdges"]],
+      sweep: [["profile", "profileEdges"]],
+      loft: [["profiles", "profileEdgeSets"]],
+      drill: [["profile", "profileEdges"]],
+    };
+    for (const kind of Object.keys(QUERYABLE_OPERAND_FIELDS) as EditOpKind[]) {
+      for (const field of QUERYABLE_OPERAND_FIELDS[kind]) {
+        const op = { ...(REPRESENTATIVE_OPS[kind] as unknown as Record<string, unknown>) };
+        for (const group of conflicts[kind] ?? []) {
+          if (group.includes(field)) for (const sibling of group) if (sibling !== field) delete op[sibling];
+        }
+        const { value, ids } = sampleFor(field);
+        op[field] = value;
+        expect(referencedEntities(op as unknown as EditOp), `${kind}.${field} is read`).toEqual(
+          expect.arrayContaining(ids)
+        );
+      }
+    }
   });
 });
 

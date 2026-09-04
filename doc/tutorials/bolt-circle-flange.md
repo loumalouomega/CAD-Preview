@@ -60,6 +60,8 @@ subtracted yet.
 **Count is the total number of instances, including the original** — so `N = 8` gives you the one
 you made plus 7 copies, `solid-2` through `solid-9`.
 
+![The flange disc with all eight cutting-tool cylinders patterned around it.](/screenshots/tutorial-flange-tools.png)
+
 ::: warning Expressions apply on the next read, not mid-op
 A plain op's expressions stay **live** — they are stored as an annotation next to the last
 computed value, and re-evaluated when the model is read. So the pattern shows 8 tools once the
@@ -76,6 +78,8 @@ response that created it.
 
 One subtract, eight holes. The flange keeps 3 faces of its own plus one cylindrical wall per hole
 — 11 in total.
+
+![The finished flange after subtracting the whole bolt-hole ring at once.](/screenshots/tutorial-flange-done.png)
 
 ## Step 6 — Change your mind
 

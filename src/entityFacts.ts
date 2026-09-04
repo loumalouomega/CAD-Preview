@@ -12,7 +12,16 @@ import {
   faceSurfaceInfo,
   combineSolids,
 } from "./occtOperations";
-import { rebindEntities, remapPartEntityIds, type EntitySignature } from "./entityRebind";
+import { rebindEntities, remapPartEntityIds, type EntityRebindMatch, type EntitySignature } from "./entityRebind";
+import {
+  bucketReferenceIds,
+  isBindableSelector,
+  validateSelectorQuery,
+  type SelectorQuery,
+} from "./selectorQuery";
+import { applyFaceFilter, rankFaces, type FilterableFace } from "./selectorPredicate";
+import { induceSelector } from "./selectorInduce";
+import { ROLE_LABELS, type OpBucket } from "./opBuckets";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
@@ -1172,4 +1181,628 @@ export async function rebindPartsAcrossOps(
   }
 
   return { parts: currentParts, annotations: currentAnnotations, stats, annotationStats };
+}
+
+export interface BucketSelectorResult {
+  /** Current-model `face-N` ids the bucket query resolves to (may be empty —
+   * after the rung-2 induced layer narrows the set, or when nothing matched). */
+  ids: string[];
+  /** Reference (step-local) ids with no confident match in the current shape. */
+  unresolved: string[];
+  /** Geometric matches behind `ids` — centre distance + measure delta per pair,
+   * the same oracle shape `rebindPartsAcrossOps` already reports. A resolved id
+   * is trustworthy only with a ~0 `centreDistance`, exactly as the closed
+   * entity-rebinding work verifies itself in `npm run mcp:smoke`. Filtered to
+   * the surviving ids when the rung-2 induced layer narrows the set, so the
+   * oracle always describes exactly what `ids` holds. */
+  matches: EntityRebindMatch[];
+  /** `false` when rung 1 cannot name the pick (pattern-instance producer) —
+   * routed to a future scene-wide predicate rung, never a guessed instance. */
+  bindable: boolean;
+  reason?: string;
+}
+
+/**
+ * Bulk exact face facts for the rung-2 induced layer — one `collectFaces`
+ * pass plus a `faceSurfaceInfo` + adaptive-area read per requested id, inside
+ * the caller's own cleanup arrays (same discipline as every other reader in
+ * this file). Only the ids the bucket match already resolved are ever read,
+ * so this adds per-candidate adaptor reads to the two replays rung 1 already
+ * pays — never a new replay. An id that no longer indexes a live face is
+ * skipped (the match already reported it via `unresolved` when it never
+ * matched at all; a face lost between the match and this read degrades to
+ * absence, never a fabricated fact).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function filterableFactForFace(oc: any, face: any, id: string, cleanup: Array<{ delete(): void }>): FilterableFace {
+  const info = faceSurfaceInfo(oc, face, cleanup);
+  const props = new oc.GProp_GProps_1();
+  cleanup.push(props);
+  surfacePropertiesAdaptive(oc, face, props);
+  return {
+    id,
+    area: props.Mass(),
+    surfaceType: info.type,
+    normal: info.params?.kind === "plane" ? info.params.normal : null,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function faceFilterableFacts(
+  oc: any,
+  shape: any,
+  ids: string[],
+  cleanup: Array<{ delete(): void }>
+): FilterableFace[] {
+  const faces = collectFaces(oc, shape, cleanup);
+  const out: FilterableFace[] = [];
+  for (const id of ids) {
+    const m = /^face-(\d+)$/.exec(id);
+    if (!m) continue;
+    const face = faces[parseInt(m[1], 10)];
+    if (!face) continue;
+    out.push(filterableFactForFace(oc, face, id, cleanup));
+  }
+  return out;
+}
+
+/**
+ * Whole-model exact face facts for the rung-3 scene resolver — one
+ * `collectFaces` pass plus a `faceSurfaceInfo` + adaptive-area read per face,
+ * inside the caller's own cleanup arrays. The sibling of `faceFilterableFacts`
+ * above, which indexes only already-resolved ids; this one walks every face
+ * because a scene query has no bucket anchor to narrow by. Same cleanup-array
+ * discipline, no new OCCT API, no probe.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function allFaceFilterableFacts(oc: any, shape: any, cleanup: Array<{ delete(): void }>): FilterableFace[] {
+  return collectFaces(oc, shape, cleanup).map((face, i) => filterableFactForFace(oc, face, `face-${i}`, cleanup));
+}
+
+/**
+ * Re-executable selectors — roadmap item 1 ("Selector synthesis"), ladder
+ * rungs 1–3. The bucket source (`{kind: "bucket", op, role}` — "the faces op
+ * N produced in role R") resolves against the CURRENT `ops` list, so a
+ * recorded `OpBucket`'s step-local ids never need to be trusted against a
+ * newer shape; an optional rung-2 `filter`/`rank` narrows that set by exact
+ * current-shape facts ("op 3's `endCap` face with the largest area"). The
+ * scene source (`{kind: "scene", filter?, rank?}`) drops the anchor entirely
+ * ("the largest planar face in the model") and resolves in a single full
+ * replay.
+ *
+ * Bucket mechanism: replay the prefix `ops[0..op]` with an `opBuckets`
+ * collector to re-derive the reference ids (never trusting caller-supplied
+ * ids), fingerprint that prefix shape, replay the full list, and match the
+ * reference subset via `rebindEntities` at the shared `1e-3 * bboxDiagonal`
+ * tolerance — the same match `rebindPartsAcrossOps` uses, at zero new
+ * matching code. The returned `matches` ARE the oracle: each carries
+ * `centreDistance`/`measureDeltaPct`, so a caller verifies "the SAME entity"
+ * by comparing geometry, not by trusting the resolution. The scene path
+ * returns `matches: []` — with no reference set there is nothing to match
+ * against; the exact facts themselves are the oracle.
+ *
+ * Ordering is load-bearing: the induced layer filters on CURRENT-shape facts
+ * read AFTER the match (rank after resolve), never on prefix-shape facts —
+ * the cheaper filter-then-match order would let a dimension edit between the
+ * prefix and current states silently promote a face that only matched the old
+ * geometry. An induced selection of zero is an honest `ids: []` (the
+ * skip-producer precedent), never a fallback to the whole bucket.
+ *
+ * A producing op that gracefully skipped records no bucket (honest empty,
+ * never a fabricated match); a pattern-instance producer is refused via
+ * `bindable: false` (the roadmap's bindability gate — a name would be
+ * ambiguous across instances; a scene query dissolves this by returning
+ * matches across all copies). Malformed queries, bare scene queries, and
+ * out-of-range op indices throw (caller-input-shape misuse, failing fast
+ * like every other tool).
+ */
+export async function resolveBucketSelector(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  queryRaw: unknown
+): Promise<BucketSelectorResult> {
+  const query: SelectorQuery | null = validateSelectorQuery(queryRaw);
+  if (!query) {
+    throw new Error(
+      'Invalid selector query — expected {version: 1, source: ({kind: "bucket", op: <op index>, role: <role>} | {kind: "scene", filter?, rank?})}.'
+    );
+  }
+
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/bs.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  // Rung-3 scene resolver: no bucket anchor, so no prefix replay, no
+  // reference set, and no geometric match — a single full replay, then the
+  // induced layer over whole-model exact facts. The `matches` oracle is
+  // meaningless with no reference set (returned empty); the facts themselves
+  // are the oracle. `bindable` is always true here by construction — with no
+  // producing op there is no instance to be ambiguous across, which is what
+  // dissolves (not solves) the pattern-instance problem rung 1 refuses.
+  if (query.source.kind === "scene") {
+    const cleanup: Array<{ delete(): void }> = [];
+    try {
+      const shape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanup), ops, cleanup);
+      let survivors = allFaceFilterableFacts(oc, shape, cleanup);
+      const { filter, rank } = query.source;
+      if (filter !== undefined) survivors = applyFaceFilter(survivors, filter);
+      if (rank !== undefined) survivors = rankFaces(survivors, rank);
+      return { ids: survivors.map((f) => f.id), unresolved: [], matches: [], bindable: true };
+    } catch (err) {
+      throw wrapOcctFault(err);
+    } finally {
+      for (let i = cleanup.length - 1; i >= 0; i--) {
+        try {
+          cleanup[i].delete();
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        oc.FS.unlink(tmpName);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  const opIndex = query.source.kind === "bucket" ? query.source.op : -1;
+  if (query.source.kind === "bucket" && opIndex >= ops.length) {
+    throw new Error(`Selector query op ${opIndex} is out of range (op list has ${ops.length} ops).`);
+  }
+  if (!isBindableSelector(ops, query)) {
+    return {
+      ids: [],
+      unresolved: [],
+      matches: [],
+      bindable: false,
+      reason: `Producing op ${opIndex} (${ops[opIndex].op}) is a pattern instance — ambiguous across instances, resolvable via a scene-wide query instead.`,
+    };
+  }
+
+  const cleanupPrefix: Array<{ delete(): void }> = [];
+  const cleanupFull: Array<{ delete(): void }> = [];
+  try {
+    const prefixOps = ops.slice(0, opIndex + 1);
+    const prefixBuckets: OpBucket[] = [];
+    const prefixShape = applyEditsBRep(
+      oc,
+      readShape(oc, tmpName, format, cleanupPrefix),
+      prefixOps,
+      cleanupPrefix,
+      undefined,
+      undefined,
+      prefixBuckets
+    );
+    const prefixSigs = collectAllEntitySignatures(oc, prefixShape, cleanupPrefix).filter((s) => s.kind === "face");
+    const refIds = bucketReferenceIds(prefixBuckets, query);
+    if (refIds.length === 0) {
+      return { ids: [], unresolved: [], matches: [], bindable: true };
+    }
+    const refSet = new Set(refIds);
+    const refSigs = prefixSigs.filter((s) => refSet.has(s.id));
+
+    const fullShape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupFull), ops, cleanupFull);
+    const fullSigs = collectAllEntitySignatures(oc, fullShape, cleanupFull).filter((s) => s.kind === "face");
+
+    const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, fullShape, cleanupFull), 1e-6);
+    const matches = rebindEntities(refSigs, fullSigs, toleranceAbs);
+    const matchedOld = new Set(matches.map((m) => m.oldId));
+    const unresolved = refIds.filter((id) => !matchedOld.has(id));
+
+    // Rung-2 induced layer (resolve-then-filter — see the doc comment above
+    // for why the cheaper reverse order would be wrong). No layer present is
+    // the rung-1 path exactly: every matched id survives with its oracle.
+    const { filter, rank } = query.source;
+    if (filter === undefined && rank === undefined) {
+      return { ids: matches.map((m) => m.newId), unresolved, matches, bindable: true };
+    }
+    const facts = faceFilterableFacts(
+      oc,
+      fullShape,
+      matches.map((m) => m.newId),
+      cleanupFull
+    );
+    const byId = new Map(facts.map((f) => [f.id, f]));
+    // A resolved id with no readable fact (lost between match and read)
+    // degrades to absence — the same direction as every other graceful skip
+    // in this file, never a fabricated predicate evaluation.
+    let survivors = matches.filter((m) => byId.has(m.newId));
+    if (filter !== undefined) {
+      const kept = new Set(applyFaceFilter([...byId.values()], filter).map((f) => f.id));
+      survivors = survivors.filter((m) => kept.has(m.newId));
+    }
+    if (rank !== undefined) {
+      const ranked = rankFaces(
+        survivors.map((m) => byId.get(m.newId)).filter((f): f is FilterableFace => f !== undefined),
+        rank
+      );
+      const kept = new Set(ranked.map((f) => f.id));
+      survivors = survivors.filter((m) => kept.has(m.newId));
+    }
+    return {
+      ids: survivors.map((m) => m.newId),
+      unresolved,
+      matches: survivors,
+      bindable: true,
+    };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanupFull.length - 1; i >= 0; i--) {
+      try {
+        cleanupFull[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    for (let i = cleanupPrefix.length - 1; i >= 0; i--) {
+      try {
+        cleanupPrefix[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export interface SynthesizeResult {
+  /** The induced query — `null` when nothing executes to exactly the picked
+   * entity (never a guess; `reason` names why). Re-executable through
+   * `resolveBucketSelector` and stable across dimension edits that preserve
+   * the qualitative facts it was induced from. */
+  query: SelectorQuery | null;
+  /** Current-model ids the query resolves to (exactly `[entityId]` when
+   * `query` is non-null — enforced below, not assumed). */
+  ids: string[];
+  /** The geometric oracle behind `ids`, filtered to the survivors (same
+   * `centreDistance ~ 0` trust rule as `resolveBucketSelector`). */
+  matches: EntityRebindMatch[];
+  bindable: boolean;
+  reason?: string;
+}
+
+/**
+ * Constant-free-first synthesis — roadmap item 1 ("Selector synthesis"),
+ * induction. Turns a picked `entityId` produced by op `opIndex` in `role`
+ * into a `SelectorQuery` that re-executes to exactly that entity.
+ *
+ * Mechanism, in one prefix + one full replay (no second resolve call): the
+ * rung-1 front half (prefix replay with `opBuckets` collector → reference
+ * ids → full replay → `rebindEntities` match) establishes the CURRENT ids
+ * with the geometric oracle; `faceFilterableFacts` builds the search
+ * universe from the resolved ids; `induceSelector` searches it
+ * constant-free-first; the winner is accepted only if it re-executes to
+ * exactly `[entityId]` AND every surviving match has `centreDistance ~ 0`.
+ * That conjunction is the live-kernel half of the oracle rule: pure
+ * re-execution proves the layer selects the target within this call's facts,
+ * the match distances prove those facts are the same geometry (not a
+ * coincidental face), and the resolver reads the same deterministic OCCT
+ * values on any later call — so no separate re-resolve is needed to close
+ * the loop.
+ *
+ * Honest nulls (all `bindable: true`, all with `reason`): skipped/empty
+ * bucket, `entityId` outside the bucket's resolved set, inducer finds no
+ * exact query. Pattern producers refuse via `bindable: false` (same gate as
+ * `resolveBucketSelector`). Malformed op/role/id shapes throw (caller-input
+ * misuse, failing fast like every other tool).
+ */
+export async function synthesizeSelector(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  opIndex: number,
+  role: string,
+  entityId: string
+): Promise<SynthesizeResult> {
+  if (!Number.isInteger(opIndex) || opIndex < 0 || opIndex >= ops.length) {
+    throw new Error(`synthesize_selector op ${String(opIndex)} is out of range (op list has ${ops.length} ops).`);
+  }
+  if (typeof role !== "string" || !(role in ROLE_LABELS)) {
+    throw new Error(`synthesize_selector role ${JSON.stringify(role)} is not a known bucket role.`);
+  }
+  if (typeof entityId !== "string" || !/^(solid|face|edge|point)-\d+$/.test(entityId)) {
+    throw new Error(`synthesize_selector entityId ${JSON.stringify(entityId)} is not a positional entity id.`);
+  }
+
+  const bare = validateSelectorQuery({ version: 1, source: { kind: "bucket", op: opIndex, role } });
+  if (!bare || bare.source.kind !== "bucket") {
+    throw new Error(`synthesize_selector op ${opIndex} / role ${JSON.stringify(role)} is not a valid bucket query.`);
+  }
+  if (!isBindableSelector(ops, bare)) {
+    return {
+      query: null,
+      ids: [],
+      matches: [],
+      bindable: false,
+      reason: `Producing op ${opIndex} (${ops[opIndex].op}) is a pattern instance — ambiguous across instances, resolvable via a scene-wide query instead.`,
+    };
+  }
+
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/ss.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanupPrefix: Array<{ delete(): void }> = [];
+  const cleanupFull: Array<{ delete(): void }> = [];
+  try {
+    const prefixOps = ops.slice(0, opIndex + 1);
+    const prefixBuckets: OpBucket[] = [];
+    const prefixShape = applyEditsBRep(
+      oc,
+      readShape(oc, tmpName, format, cleanupPrefix),
+      prefixOps,
+      cleanupPrefix,
+      undefined,
+      undefined,
+      prefixBuckets
+    );
+    const prefixSigs = collectAllEntitySignatures(oc, prefixShape, cleanupPrefix).filter((s) => s.kind === "face");
+    const refIds = bucketReferenceIds(prefixBuckets, bare);
+    if (refIds.length === 0) {
+      return { query: null, ids: [], matches: [], bindable: true, reason: `Op ${opIndex} recorded no "${role}" bucket (skipped or faceless op).` };
+    }
+    const refSet = new Set(refIds);
+    const refSigs = prefixSigs.filter((s) => refSet.has(s.id));
+
+    const fullShape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupFull), ops, cleanupFull);
+    const fullSigs = collectAllEntitySignatures(oc, fullShape, cleanupFull).filter((s) => s.kind === "face");
+
+    const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, fullShape, cleanupFull), 1e-6);
+    const matches = rebindEntities(refSigs, fullSigs, toleranceAbs);
+    const byNewId = new Map(matches.map((m) => [m.newId, m]));
+    if (!byNewId.has(entityId)) {
+      return {
+        query: null,
+        ids: [],
+        matches: [],
+        bindable: true,
+        reason: `Entity ${entityId} is not among op ${opIndex}'s resolved "${role}" faces — nothing to name.`,
+      };
+    }
+    const universe = faceFilterableFacts(
+      oc,
+      fullShape,
+      matches.map((m) => m.newId),
+      cleanupFull
+    );
+    const query = induceSelector({ op: opIndex, role: bare.source.role, universe, targets: [entityId] });
+    if (!query) {
+      return { query: null, ids: [], matches: [], bindable: true, reason: `No exact query names ${entityId} within op ${opIndex}'s "${role}" faces.` };
+    }
+    // Accept only on exact re-execution with a clean oracle: the induced
+    // layer must select exactly the picked entity out of this call's own
+    // facts, and its match must be geometrically exact.
+    const { filter, rank } = query.source.kind === "bucket" ? query.source : { filter: undefined, rank: undefined };
+    let survivors = filter !== undefined ? applyFaceFilter(universe, filter) : [...universe];
+    if (rank !== undefined) survivors = rankFaces(survivors, rank);
+    const survivorIds = survivors.map((f) => f.id);
+    const oracle = byNewId.get(entityId);
+    if (survivorIds.length !== 1 || survivorIds[0] !== entityId || !oracle || oracle.centreDistance >= 1e-6) {
+      return { query: null, ids: [], matches: [], bindable: true, reason: `Induced query failed its own oracle check for ${entityId}.` };
+    }
+    return { query, ids: survivorIds, matches: [oracle], bindable: true };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanupFull.length - 1; i >= 0; i--) {
+      try {
+        cleanupFull[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    for (let i = cleanupPrefix.length - 1; i >= 0; i--) {
+      try {
+        cleanupPrefix[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export interface PartSelectorResolution {
+  /** Parts with `surfaces` overwritten by oracle-clean re-resolution (fresh
+   * objects); unselected parts keep their reference. Same reference as the
+   * input array when nothing changed, so callers cheaply skip the sidecar
+   * write — the `rebindPartsAcrossOps` contract. */
+  parts: Part[];
+  resolved: number;
+  /** Parts carrying a query that stayed on cache, with per-part reasons. */
+  frozen: number;
+  warnings: string[];
+}
+
+/**
+ * Part-level selector persistence — roadmap item 1 (final piece), Phase A.
+ * Re-resolves every part's stored `selector` against the CURRENT `ops` list
+ * and overwrites its `surfaces` cache on an oracle-clean result, so a stored
+ * pick tracks the model instead of its positional ids.
+ *
+ * Batching is load-bearing, not premature: ONE full replay + face
+ * fingerprints serves every part, plus ONE prefix replay per DISTINCT bucket
+ * op (parts sharing an op share its prefix) — never a prefix+full pair per
+ * part. Acceptance per part is strict: bucket path needs zero unresolved
+ * reference ids AND (with an induced layer) a non-empty surviving set whose
+ * every match is within tolerance; scene path needs a non-empty selection.
+ * Anything else freezes the cache with a warning (variables' delete
+ * convention) — overwriting with an empty set would wipe the part, and
+ * trusting a partial match would silently repoint it, the exact
+ * misleading-false-match mode the ladder's oracle exists to prevent.
+ *
+ * Stale-index guard: a bucket query's `op` is positional, and `remove`/undo
+ * shifts every later index. The stored `selectorOpKind` (the producing op's
+ * kind at synthesis time) must equal the CURRENT `ops[op].op` kind, or the
+ * part freezes with a warning instead of resolving against the wrong op.
+ * Pattern producers freeze the same way (`bindable: false` is a refusal to
+ * guess an instance, not a failure). Malformed stored queries freeze too —
+ * the part survives on its raw ids (tolerant-parse discipline).
+ */
+export async function resolvePartSelectors(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[],
+  parts: Part[]
+): Promise<PartSelectorResolution> {
+  const empty = { parts, resolved: 0, frozen: 0, warnings: [] as string[] };
+  const candidates = parts.filter((p) => p.selector !== undefined && p.selectorOpKind !== undefined);
+  if (candidates.length === 0) return empty;
+
+  const oc = await getOcct(extensionPath);
+  const tmpName = `/ps.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanupFull: Array<{ delete(): void }> = [];
+  // One prefix cleanup per distinct bucket op (shared across parts on it).
+  const prefixCleanups = new Map<number, Array<{ delete(): void }>>();
+  const cleanupOf = (key: number): Array<{ delete(): void }> => {
+    let c = prefixCleanups.get(key);
+    if (!c) {
+      c = [];
+      prefixCleanups.set(key, c);
+    }
+    return c;
+  };
+  try {
+    const fullShape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanupFull), ops, cleanupFull);
+    const fullFaceSigs = collectAllEntitySignatures(oc, fullShape, cleanupFull).filter((s) => s.kind === "face");
+    const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, fullShape, cleanupFull), 1e-6);
+    const allFacts = allFaceFilterableFacts(oc, fullShape, cleanupFull);
+
+    // Prefix replay per distinct bucket op, shared by every part on it.
+    interface PrefixData {
+      buckets: OpBucket[];
+      sigs: EntitySignature[];
+    }
+    const prefixes = new Map<number, PrefixData>();
+    const prefixOf = (opIndex: number): PrefixData => {
+      let data = prefixes.get(opIndex);
+      if (!data) {
+        const cleanup = cleanupOf(opIndex);
+        const buckets: OpBucket[] = [];
+        const shape = applyEditsBRep(
+          oc,
+          readShape(oc, tmpName, format, cleanup),
+          ops.slice(0, opIndex + 1),
+          cleanup,
+          undefined,
+          undefined,
+          buckets
+        );
+        data = { buckets, sigs: collectAllEntitySignatures(oc, shape, cleanup).filter((s) => s.kind === "face") };
+        prefixes.set(opIndex, data);
+      }
+      return data;
+    };
+
+    const warnings: string[] = [];
+    let resolved = 0;
+    let frozen = 0;
+    let changed = false;
+    const out = parts.map((part) => {
+      if (part.selector === undefined || part.selectorOpKind === undefined) return part;
+      const freeze = (reason: string): Part => {
+        frozen++;
+        warnings.push(`Part "${part.name}": kept cached surfaces (${reason}).`);
+        return part;
+      };
+      const query = validateSelectorQuery(part.selector);
+      if (!query) return freeze("stored selector is malformed");
+      if (query.source.kind === "scene") {
+        const { filter, rank } = query.source;
+        let survivors = filter !== undefined ? applyFaceFilter(allFacts, filter) : [...allFacts];
+        if (rank !== undefined) survivors = rankFaces(survivors, rank);
+        if (survivors.length === 0) return freeze("scene query currently selects nothing");
+        const ids = survivors.map((f) => f.id);
+        if (JSON.stringify(ids) === JSON.stringify(part.surfaces)) return part;
+        resolved++;
+        changed = true;
+        return { ...part, surfaces: ids };
+      }
+      // Bucket path.
+      const opIndex = query.source.op;
+      if (opIndex >= ops.length) return freeze(`stored op index ${opIndex} is out of range after an op-list change`);
+      if (ops[opIndex].op !== part.selectorOpKind) {
+        return freeze(`stored op ${opIndex} is now "${ops[opIndex].op}", not "${part.selectorOpKind}" — the list changed under it`);
+      }
+      if (!isBindableSelector(ops, query)) return freeze("producing op is a pattern instance");
+      const { buckets, sigs: prefixSigs } = prefixOf(opIndex);
+      const refIds = bucketReferenceIds(buckets, query);
+      if (refIds.length === 0) return freeze("producing op recorded no faces for this role");
+      const refSet = new Set(refIds);
+      const matches = rebindEntities(
+        prefixSigs.filter((s) => refSet.has(s.id)),
+        fullFaceSigs,
+        toleranceAbs
+      );
+      const matchedOld = new Set(matches.map((m) => m.oldId));
+      if (refIds.some((id) => !matchedOld.has(id))) return freeze("a reference face has no confident match");
+      const { filter, rank } = query.source;
+      let survivors = matches.map((m) => m.newId);
+      if (filter !== undefined || rank !== undefined) {
+        const facts = faceFilterableFacts(oc, fullShape, survivors, cleanupFull);
+        const byId = new Map(facts.map((f) => [f.id, f]));
+        survivors = survivors.filter((id) => byId.has(id));
+        if (filter !== undefined) {
+          const kept = new Set(applyFaceFilter([...byId.values()], filter).map((f) => f.id));
+          survivors = survivors.filter((id) => kept.has(id));
+        }
+        if (rank !== undefined) {
+          const ranked = rankFaces(
+            survivors.map((id) => byId.get(id)).filter((f): f is FilterableFace => f !== undefined),
+            rank
+          );
+          const keptIds = new Set(ranked.map((f) => f.id));
+          survivors = survivors.filter((id) => keptIds.has(id));
+        }
+        if (survivors.length === 0) return freeze("induced layer currently selects nothing");
+      }
+      if (JSON.stringify(survivors) === JSON.stringify(part.surfaces)) return part;
+      resolved++;
+      changed = true;
+      return { ...part, surfaces: survivors };
+    });
+
+    if (!changed) return { parts, resolved, frozen, warnings };
+    return { parts: out, resolved, frozen, warnings };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanupFull.length - 1; i >= 0; i--) {
+      try {
+        cleanupFull[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const cleanup of prefixCleanups.values()) {
+      for (let i = cleanup.length - 1; i >= 0; i--) {
+        try {
+          cleanup[i].delete();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
 }

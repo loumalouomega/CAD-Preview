@@ -15,6 +15,7 @@ import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 import type { MeshRegionFit } from "./fitMapping";
 import type { AnnotatedTolerance } from "./toleranceBand";
+import type { SelectorQuery } from "./selectorQuery";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -67,6 +68,19 @@ export interface Part {
   lines: string[];     // edge ids
   points: string[];    // point (vertex) ids
   meshSize?: number;   // optional Gmsh target element size for local refinement
+  /**
+   * Optional re-executable selector (roadmap "Selector synthesis") naming
+   * this part's surfaces without baking in positional ids. The `surfaces`
+   * array stays as the synchronous last-good cache (annotation+cache, the
+   * `exprs`/`planeId` precedent): every consumer keeps reading plain ids,
+   * only the host resolver reads `selector` and overwrites the cache on an
+   * oracle-clean re-resolution. `selectorOpKind` is the producing op's kind
+   * at synthesis time — a positional `op` index silently repoints after an
+   * op-list splice, so a kind mismatch freezes the cache with a warning
+   * instead of resolving against the wrong op.
+   */
+  selector?: SelectorQuery;
+  selectorOpKind?: string;
 }
 
 /** Which measurement is being taken — shared between the webview's
@@ -398,6 +412,15 @@ export type HostToWebview =
   | { type: "macroApplyOps"; ops: EditOp[] }
   | { type: "entityFactsResult"; requestId: string; facts: EntityFacts }
   | { type: "entityFactsError"; requestId: string; message: string }
+  /** One induced query per requested entity, for the Edits panel's "pin as
+   * query" row (roadmap "Selector synthesis" follow-up: the interactive half
+   * of op-operand persistence). The host loops `synthesizeSelector` once per
+   * id — one prefix+full replay each — and stamps `kind` from the producing
+   * op itself, so the tag is server-derived (the `set_part` precedent), never
+   * caller-supplied. A `null` query is an honest refusal (`reason` names why:
+   * not in the bucket, pattern producer, no exact query), never a guess. */
+  | { type: "selectorSynthesizeResult"; requestId: string; results: SelectorSynthesizeResultEntry[] }
+  | { type: "selectorSynthesizeError"; requestId: string; message: string }
   | { type: "measureExactResult"; requestId: string; result: ExactMeasureResult }
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
@@ -472,6 +495,16 @@ export interface LinkedCameraState {
   orthographic: boolean;
 }
 
+/** One entity's induction outcome within a `selectorSynthesizeResult`. */
+export interface SelectorSynthesizeResultEntry {
+  entityId: string;
+  query: SelectorQuery | null;
+  /** The producing op's kind at synthesis time (`ops[op].op`) — the stored
+   * `targetQueryKinds` tag for this field. `null` exactly when `query` is. */
+  kind: string | null;
+  reason?: string;
+}
+
 /** One contiguous run of triangles in `meshingResult.indices` belonging to a
  * single part (or, for `name === null`, the trailing ungrouped/default run). */
 export interface MeshElementGroup {
@@ -514,6 +547,13 @@ export type WebviewToHost =
   | { type: "macroSaveCurrent" }
   | { type: "macroDelete"; name: string }
   | { type: "entityFactsRequest"; requestId: string; entityId: string }
+  /** Pin the given entities as a stored operand query: the host induces one
+   * query per id against op `op`'s `role` bucket (see `selectorSynthesizeResult`).
+   * The webview sends the whole picked set in one round trip; the host answers
+   * per id. B-rep sources only — like `entityFactsRequest`, a mesh source has
+   * no bucket classification to induce from, so the host answers with
+   * `selectorSynthesizeError` instead. */
+  | { type: "selectorSynthesizeRequest"; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
   | { type: "importSvgRequest" }

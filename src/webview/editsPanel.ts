@@ -5,6 +5,7 @@ import type { OpBucket } from "../opBuckets";
 import { bucketSummary } from "../opBuckets";
 import { evalExpr } from "../paramExpr";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
+import { QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
@@ -35,8 +36,9 @@ export type FeatureDraft = (
   | { kind: "extrude"; dir: Vec3; length: number }
   | { kind: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { kind: "sweep" }
-  | { kind: "loft" }
-) & { exprs?: ExprMap; thin?: number; thinOuter?: number };
+  | { kind: "loft"; smoothing?: boolean }
+  | { kind: "rib"; dir: Vec3; blendRadius: number }
+) & { exprs?: ExprMap; thin?: number; thinOuter?: number; pickRaw?: string };
 
 /** A primitive-creation draft — self-contained (no selection needed), pushed
  * straight to an `EditOp` by the wiring. */
@@ -93,7 +95,8 @@ export type ModifyDraft = (
   | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }
   | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; planeId?: string; keep: "both" | "positive" | "negative" }
   | { kind: "section"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
-) & { exprs?: ExprMap };
+  | { kind: "drill"; dir: Vec3; length: number }
+) & { exprs?: ExprMap; pickRaw?: string };
 
 /** Align draft minus its `targets` (the wiring injects the selected volumes) —
  * a pure rigid move, like translate, so it works on every format. */
@@ -135,10 +138,24 @@ export interface EditsPanelCallbacks {
   onCaptureSweepPath: () => string | null;
   /** Forget the captured sweep path (back to "the one selected edge is the path"). */
   onClearSweepPath: () => void;
+  /** Capture the selected face as the rib terminator; returns its id, or null
+   * when nothing suitable is selected. The spine (edges) and the terminator
+   * (face) live in different pick modes, but capturing keeps the terminator
+   * stable across selection changes, like the sweep path. */
+  onCaptureRibTerminator: () => string | null;
+  /** Forget the captured rib terminator (a rib cannot apply without one). */
+  onClearRibTerminator: () => void;
   /** Capture the current selection as one more loft section; returns the new count. */
   onCaptureLoftSection: () => number;
   /** Forget every captured loft section (back to "the selected faces are the sections"). */
   onClearLoftSections: () => void;
+  /** Capture the selected face as the extrude terminator; returns its id, or
+   * null when nothing suitable is selected. Needed because the profile and
+   * the terminator are BOTH face picks — a flat Surf-mode selection cannot
+   * express which face terminates. */
+  onCaptureTerminator: () => string | null;
+  /** Forget the captured terminator (back to "Length extrudes by the typed amount"). */
+  onClearTerminator: () => void;
   /** Explode the assembly: spread bodies radially by `factor` (all formats). */
   onApplyExplode: (factor: number, exprs?: ExprMap) => void;
   /** Live-preview drag of the Explode slider — moves the already-displayed
@@ -192,6 +209,13 @@ export interface EditsPanelCallbacks {
    * the real selection's rendering. The ids are `face-N` strings; the wiring
    * maps them to `{entityType: "surface"}` entities. */
   onHighlightBucket: (ids: string[] | null) => void;
+  /** Induce a stored operand query for the currently-selected faces against
+   * the given producing op's `role` bucket (the "pin as query" row in
+   * `QUERYABLE_PANEL_FORMS` forms). The wiring reads the live selection,
+   * posts `selectorSynthesizeRequest`, and stages the result as pending for
+   * the open form — attached at Apply only while the selection still names
+   * the same faces. Takes raw bucket coordinates, never a draft. */
+  onSynthesizeQuery: (op: number, role: string) => void;
 }
 
 type TabId = "geometry" | "edit";
@@ -242,8 +266,12 @@ export class EditsPanel {
    * themselves live in the wiring). Survives form re-renders. */
   private booleanACount = 0;
   private sweepPath: string | null = null;
+
   private loftSectionCount = 0;
 
+  private terminator: string | null = null;
+
+  private ribTerminator: string | null = null;
   private readonly tabButtons = new Map<TabId, HTMLButtonElement>();
   private readonly subtabButtons = new Map<SubtabId, HTMLButtonElement>();
   private readonly tabContents = new Map<string, HTMLElement>(); // "geometry:2d" | "geometry:3d" | "edit"
@@ -334,6 +362,133 @@ export class EditsPanel {
     });
     row.appendChild(select);
     return row;
+  }
+
+  /**
+   * Buckets the open form's query row can induce from — refreshed from every
+   * `geometry` message (the wiring calls this with the fresh `opBuckets`),
+   * since each replay renumbers the faces a bucket names. Buckets with no
+   * roles offer nothing to pin against and are dropped here, not in the row.
+   */
+  private queryBuckets: OpBucket[] = [];
+  setQueryBuckets(buckets: OpBucket[]): void {
+    this.queryBuckets = buckets.filter((b) => Object.keys(b.roles ?? {}).length > 0);
+    this.refreshQueryRow();
+  }
+
+  /** Repopulates a query row's selects (the open form's, or a freshly-built
+   * one passed directly): buckets in arrival order, roles of the selected
+   * bucket, previous choices preserved when still present. */
+  private refreshQueryRow(row?: Element | null): void {
+    if (!this.activeOp || !QUERYABLE_PANEL_FORMS.has(this.activeOp)) return;
+    const target = row ?? this.paramsEl.querySelector(".compose-query-row");
+    if (!target) return;
+    const bucketSel = target.querySelector<HTMLSelectElement>("select[data-name=\"queryBucket\"]");
+    const roleSel = target.querySelector<HTMLSelectElement>("select[data-name=\"queryRole\"]");
+    if (!bucketSel || !roleSel) return;
+    const prevBucket = bucketSel.value;
+    bucketSel.innerHTML = "";
+    for (const b of this.queryBuckets) {
+      const opt = document.createElement("option");
+      opt.value = String(b.op);
+      opt.textContent = `op ${b.op} (${b.kind})`;
+      bucketSel.appendChild(opt);
+    }
+    if (this.queryBuckets.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "no produced faces yet";
+      bucketSel.appendChild(opt);
+    } else if ([...bucketSel.options].some((o) => o.value === prevBucket)) {
+      bucketSel.value = prevBucket;
+    }
+    this.refreshQueryRoles(target);
+  }
+
+  private refreshQueryRoles(row?: Element | null): void {
+    const target = row ?? this.paramsEl.querySelector(".compose-query-row");
+    const bucketSel = target?.querySelector<HTMLSelectElement>("select[data-name=\"queryBucket\"]");
+    const roleSel = target?.querySelector<HTMLSelectElement>("select[data-name=\"queryRole\"]");
+    if (!bucketSel || !roleSel) return;
+    const bucket = this.queryBuckets.find((b) => String(b.op) === bucketSel.value);
+    const prevRole = roleSel.value;
+    roleSel.innerHTML = "";
+    for (const role of Object.keys(bucket?.roles ?? {})) {
+      const opt = document.createElement("option");
+      opt.value = role;
+      opt.textContent = role;
+      roleSel.appendChild(opt);
+    }
+    if ([...roleSel.options].some((o) => o.value === prevRole)) roleSel.value = prevRole;
+  }
+
+  /**
+   * The "pin selection as query" row for face-operand forms (`extrude`,
+   * `revolve`, `shell`, `draft` — see `QUERYABLE_PANEL_FORMS`): a producing-
+   * bucket picker plus a Synthesize button. The panel owns only the bucket
+   * coordinates; the wiring reads the live selection, runs the host round
+   * trip, and stages the result — the row itself never sees entity ids, which
+   * is what keeps it from duplicating `buildOpForPanel`'s operand mapping.
+   */
+  private queryRow(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "compose-query-row";
+    const label = document.createElement("span");
+    label.className = "compose-label";
+    label.textContent = "Pin query";
+    label.title = "Name the selected face as a stored operand query against a produced-faces bucket, so the reference survives renumbering by later edits. Face operands only; select exactly one face.";
+    wrap.appendChild(label);
+    const bucketSel = document.createElement("select");
+    bucketSel.className = "compose-select";
+    bucketSel.dataset.name = "queryBucket";
+    bucketSel.title = "Producing op whose bucket names the selected face";
+    wrap.appendChild(bucketSel);
+    const roleSel = document.createElement("select");
+    roleSel.className = "compose-select";
+    roleSel.dataset.name = "queryRole";
+    roleSel.title = "Bucket role the selected face was produced under";
+    wrap.appendChild(roleSel);
+    bucketSel.addEventListener("change", () => this.refreshQueryRoles());
+    const btn = document.createElement("button");
+    btn.className = "compose-apply";
+    btn.textContent = "Synthesize";
+    btn.title = "Induce a query naming the selected face against this bucket (host round trip)";
+    btn.addEventListener("click", () => {
+      // An empty bucket picker (no produced faces yet) must refuse locally —
+      // `Number("")` is 0, which would post a doomed round trip for op 0.
+      if (bucketSel.value === "" || roleSel.value === "") return;
+      const op = Number(bucketSel.value);
+      if (!Number.isInteger(op)) return;
+      this.cb.onSynthesizeQuery(op, roleSel.value);
+    });
+    wrap.appendChild(btn);
+    const result = document.createElement("div");
+    result.className = "compose-query-result";
+    result.dataset.name = "queryResult";
+    wrap.appendChild(result);
+    this.refreshQueryRow(wrap);
+    return wrap;
+  }
+
+  /** Renders the synthesize outcome into the open form's query row: the staged
+   * query summary, or the kernel's honest refusal. Cleared whenever the form
+   * re-renders (a fresh row starts blank — the staged query itself lives in
+   * the wiring's pending state, not here). */
+  showQueryResult(text: string, isError = false): void {
+    const el = this.paramsEl.querySelector("[data-name=\"queryResult\"]");
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle("error", isError);
+  }
+
+  /** Disables the Synthesize button while a round trip is in flight, so a
+   * second click can't interleave two inductions for the same row. */
+  setQueryBusy(busy: boolean): void {
+    const row = this.paramsEl.querySelector(".compose-query-row");
+    const btn = row?.querySelector<HTMLButtonElement>("button");
+    if (!btn) return;
+    btn.disabled = busy;
+    btn.textContent = busy ? "Synthesizing…" : "Synthesize";
   }
 
   /**
@@ -693,6 +848,7 @@ export class EditsPanel {
   private renderParams(): void {
     const f = this.paramsEl;
     f.innerHTML = "";
+    this.pendingApplyRow = null;
     const id = this.activeOp;
     if (!id) return;
 
@@ -755,8 +911,12 @@ export class EditsPanel {
         f.appendChild(this.hint("Profile = selected face (Surf mode), or selected edges (Line mode)"));
         f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
         f.appendChild(this.numField("length", "Length", 10));
+        f.appendChild(this.terminatorRow());
         this.thinFields(f);
-        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        f.appendChild(this.pickField());
+        f.appendChild(this.hint("Regions = which enclosed areas of a multi-region profile to use: blank (face as modeled), all, or indices like 0,2 (0 = outer boundary)."));
+        f.appendChild(this.queryRow());
+        this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({ kind: "extrude", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readThin(), ...this.readPickRaw() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "revolve":
         f.appendChild(this.hint("Profile = selected face (Surf mode), or selected edges (Line mode)"));
@@ -764,22 +924,35 @@ export class EditsPanel {
         f.appendChild(this.vecField("axisDir", "Axis", [0, 0, 1]));
         f.appendChild(this.numField("angleDeg", "Angle°", 360));
         this.thinFields(f);
+        f.appendChild(this.pickField());
+        f.appendChild(this.queryRow());
         this.applyButtonDraft("Apply", "Build the feature from the selected face", (): FeatureDraft => ({
             kind: "revolve", axisPoint: this.readVec("axisPoint"),
-            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"), ...this.readThin(),
+            axisDir: this.readVec("axisDir"), angleDeg: this.readNum("angleDeg"), ...this.readThin(), ...this.readPickRaw(),
           }), (d) => this.cb.onApplyFeature(d));
         break;
       case "sweep":
         f.appendChild(this.hint("Profile = selected face · path = selected edge. For an edge profile, capture the path first."));
         f.appendChild(this.sweepPathRow());
         this.thinFields(f);
-        this.applyButtonDraft("Apply", "Build the feature from the selected profile + path", (): FeatureDraft => ({ kind: "sweep", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        f.appendChild(this.pickField());
+        this.applyButtonDraft("Apply", "Build the feature from the selected profile + path", (): FeatureDraft => ({ kind: "sweep", ...this.readThin(), ...this.readPickRaw() }), (d) => this.cb.onApplyFeature(d));
         break;
       case "loft":
         f.appendChild(this.hint("Profiles = 2+ selected faces, or capture one section at a time"));
         f.appendChild(this.loftSectionRow());
+        f.appendChild(this.boolField("smoothing", "Smooth", false));
         this.thinFields(f);
-        this.applyButtonDraft("Apply", "Build the feature from the loft sections", (): FeatureDraft => ({ kind: "loft", ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        this.applyButtonDraft("Apply", "Build the feature from the loft sections", (): FeatureDraft => ({ kind: "loft", ...(this.readBool("smoothing") ? { smoothing: true as const } : {}), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        break;
+      case "rib":
+        f.appendChild(this.hint("Spine = selected open wire (Line mode) · terminator = captured face"));
+        f.appendChild(this.vecField("dir", "Dir", [0, 0, 1]));
+        f.appendChild(this.numField("thin", "Wall", 2));
+        f.appendChild(this.numField("blendRadius", "Blend", 0));
+        f.appendChild(this.hint("Wall is required (a rib without thickness encloses nothing). Blend 0 = fuse only."));
+        f.appendChild(this.ribTerminatorRow());
+        this.applyButtonDraft("Apply", "Build the rib from the selected spine edges", (): FeatureDraft => ({ kind: "rib", dir: this.readVec("dir"), blendRadius: this.readNum("blendRadius"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
         break;
 
       // ── EDIT · modify ──
@@ -787,6 +960,7 @@ export class EditsPanel {
         f.appendChild(this.hint("Hollows the solids owning the selected faces; the faces become openings (Surf mode)"));
         f.appendChild(this.numField("thickness", "Thickness", -1));
         f.appendChild(this.hint("Negative = walls grow inward (hollow); positive = outward"));
+        f.appendChild(this.queryRow());
         this.applyButtonDraft("Apply", "Shell the solids owning the selected opening faces", (): ModifyDraft => ({ kind: "shell", thickness: this.readNum("thickness") }), (d) => this.cb.onApplyModify(d));
         break;
       case "draft":
@@ -796,6 +970,7 @@ export class EditsPanel {
         f.appendChild(this.planeSelectField());
         f.appendChild(this.vecField("planePoint", "Point", [0, 0, 0]));
         f.appendChild(this.vecField("planeNormal", "Normal", [0, 0, 0]));
+        f.appendChild(this.queryRow());
         this.applyButtonDraft("Apply", "Draft the selected faces", (): ModifyDraft => {
           const planeId = this.readPlaneId();
           if (planeId) {
@@ -841,6 +1016,16 @@ export class EditsPanel {
             if (planeId) (draft as any).planeId = planeId;
             return draft;
           }, (d) => this.cb.onApplyModify(d));
+        break;
+      case "drill":
+        f.appendChild(this.hint("Cuts the selected profile (Surf/Line mode) through the selected volumes (Vol mode)"));
+        f.appendChild(this.vecField("dir", "Dir", [0, 0, -1]));
+        f.appendChild(this.numField("length", "Length", 10));
+        f.appendChild(this.pickField());
+        f.appendChild(this.hint("Regions = which enclosed areas of a multi-region profile to cut: blank (face as modeled), all, or indices like 0,2 (0 = outer boundary)."));
+        this.applyButtonDraft("Apply", "Cut the profile regions through the selected volumes", (): ModifyDraft => ({
+            kind: "drill", dir: this.readVec("dir"), length: this.readNum("length"), ...this.readPickRaw(),
+          }), (d) => this.cb.onApplyModify(d));
         break;
 
       // ── EDIT · assembly ──
@@ -1182,6 +1367,13 @@ export class EditsPanel {
     // entity reference-only — rendered dimmed and excluded from feature
     // profile resolution (roadmap item 10).
     if (id && GUIDE_KINDS.has(id as never)) f.appendChild(this.boolField("guide", "Construction (guide)", false));
+    // The form's Apply row, registered by `applyButtonDraft` during the
+    // switch above — appended here, after every param row, so no form can
+    // silently render without its commit button (see its doc comment).
+    if (this.pendingApplyRow) {
+      f.appendChild(this.pendingApplyRow);
+      this.pendingApplyRow = null;
+    }
     // A freshly-opened form previews immediately from its default field
     // values — opening "Box" shows the default box before anything is typed.
     if (this.draftReader) this.cb.onPreviewDraftChanged();
@@ -1277,13 +1469,21 @@ export class EditsPanel {
   }
 
   /**
-   * Creates the form's Apply button AND registers its draft literal as the
-   * live-preview reader. The draft literal is the EXACT object the Apply
-   * click pushes — read fresh from the fields on every preview tick and on
-   * every Apply — which is what makes a preview structurally incapable of
-   * drifting from what Apply would commit.
+   * Creates the form's Apply button, appends it to the form (at the end of
+   * `renderParams`, so it always lands after every param row), AND registers
+   * its draft literal as the live-preview reader. The draft literal is the
+   * EXACT object the Apply click pushes — read fresh from the fields on every
+   * preview tick and on every Apply — which is what makes a preview
+   * structurally incapable of drifting from what Apply would commit.
+   *
+   * The button is appended centrally (not at each call site) because an
+   * earlier refactor dropped the `f.appendChild(...)` wrapper from every call
+   * site at once, silently leaving every form without an Apply button — a
+   * whole class of "dead surface" no test caught, since nothing ever asserted
+   * the button exists. Centralizing the append makes that unrepeatable: a
+   * form that registers a draft reader always renders its commit button.
    */
-  private applyButtonDraft<D>(label: string, title: string, read: () => D, apply: (d: D) => void): HTMLElement {
+  private applyButtonDraft<D>(label: string, title: string, read: () => D, apply: (d: D) => void): void {
     // Construction-geometry checkbox: guide-kind forms get one generic
     // `guide` field appended after their params (see `renderParams`), read
     // here at the single seam BOTH the Apply click and the live preview
@@ -1295,8 +1495,13 @@ export class EditsPanel {
       return draft as D;
     };
     this.draftReader = wrappedRead as () => unknown;
-    return this.applyButton(label, title, () => apply(wrappedRead()));
+    this.pendingApplyRow = this.applyButton(label, title, () => apply(wrappedRead()));
   }
+
+  /** The Apply row the current form registered (appended centrally at the end
+   * of `renderParams`). Reset on every render so a form without one (boolean,
+   * explode) can never inherit the previous form's button. */
+  private pendingApplyRow: HTMLElement | null = null;
 
   private applyButton(label: string, title: string, onClick: () => void): HTMLElement {
     const row = document.createElement("div");
@@ -1319,7 +1524,48 @@ export class EditsPanel {
   resetFeatureCaptures(): void {
     this.sweepPath = null;
     this.loftSectionCount = 0;
-    if (this.activeOp === "sweep" || this.activeOp === "loft") this.renderParams();
+    this.terminator = null;
+    this.ribTerminator = null;
+    if (this.activeOp === "sweep" || this.activeOp === "loft" || this.activeOp === "extrude" || this.activeOp === "rib") this.renderParams();
+  }
+
+  /**
+   * Extrude's optional terminator capture. The profile and the terminator are
+   * both Surf-mode face picks, so one flat selection cannot express which
+   * face terminates — capturing first disambiguates, exactly as `Set path`
+   * does for sweep. With nothing captured, Length extrudes by the typed
+   * amount, as before.
+   */
+  private terminatorRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.terminator ? `to: ${this.terminator}` : "to: —"; };
+    render();
+    const set = document.createElement("button");
+    set.className = "compose-apply";
+    set.textContent = "Set terminator";
+    set.title = "Capture the selected face as the up-to-face terminator, freeing the rest of the selection to be the profile";
+    set.addEventListener("click", () => {
+      this.terminator = this.cb.onCaptureTerminator();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget the captured terminator";
+    clear.addEventListener("click", () => {
+      this.cb.onClearTerminator();
+      this.terminator = null;
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(set);
+    row.appendChild(clear);
+    row.appendChild(status);
+    return row;
   }
 
   /**
@@ -1353,6 +1599,42 @@ export class EditsPanel {
     clear.addEventListener("click", () => {
       this.cb.onClearSweepPath();
       this.sweepPath = null;
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(set);
+    row.appendChild(clear);
+    row.appendChild(status);
+    return row;
+  }
+
+  /**
+   * Rib's required terminator capture — a rib cannot apply without one (there
+   * is no length to fall back on, unlike extrude's optional terminator).
+   */
+  private ribTerminatorRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.ribTerminator ? `to: ${this.ribTerminator}` : "to: —"; };
+    render();
+    const set = document.createElement("button");
+    set.className = "compose-apply";
+    set.textContent = "Set terminator";
+    set.title = "Capture the selected face as the rib terminator";
+    set.addEventListener("click", () => {
+      this.ribTerminator = this.cb.onCaptureRibTerminator();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget the captured terminator";
+    clear.addEventListener("click", () => {
+      this.cb.onClearRibTerminator();
+      this.ribTerminator = null;
       render();
       this.cb.onPreviewDraftChanged();
     });
@@ -1418,6 +1700,34 @@ export class EditsPanel {
     if (!Number.isFinite(thin) || thin <= 0) return {};
     const thinOuter = this.readNum("thinOuter");
     return Number.isFinite(thinOuter) && thinOuter > 0 ? { thin, thinOuter } : { thin };
+  }
+
+  /**
+   * Region-pick row for the single-profile feature forms (extrude/revolve/
+   * sweep) and drill: which enclosed regions of a multi-region profile to
+   * consume. Empty = the face as modeled; the raw string travels on the
+   * draft for `main.ts`'s `pickOf` to parse (one parse site, shared with
+   * the live preview path).
+   */
+  private pickField(): HTMLElement {
+    const row = document.createElement("label");
+    row.className = "compose-field";
+    const span = document.createElement("span");
+    span.className = "compose-label";
+    span.textContent = "Regions";
+    row.appendChild(span);
+    const input = this.numericInput();
+    input.dataset.name = "pick";
+    input.value = "";
+    input.placeholder = "outer";
+    row.appendChild(input);
+    return row;
+  }
+
+  private readPickRaw(): { pickRaw?: string } {
+    const inp = this.paramsEl.querySelector<HTMLInputElement>(`input[data-name="pick"]`);
+    const raw = inp ? inp.value.trim() : "";
+    return raw ? { pickRaw: raw } : {};
   }
 
   private hint(text: string): HTMLElement {

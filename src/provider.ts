@@ -15,6 +15,7 @@ import {
   type Annotation,
   type ConstructionPlane,
   type ViewState,
+  type SelectorSynthesizeResultEntry,
 } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
@@ -507,6 +508,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
         const bytes = await vscode.workspace.fs.readFile(document.uri);
+        // Stored selectors resolve FIRST (authoritative — a query that hits
+        // is exact by construction) and the heuristic rebind pass runs on the
+        // result, so a query-covered part never also gets geometrically
+        // remapped underneath its own resolution. Selector warnings surface
+        // on the status line; the parts message below carries the final ids.
+        const selected = await this.pipeline.resolvePartSelectors(
+          this.context.extensionPath,
+          bytes,
+          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+          newOps,
+          currentParts
+        );
+        if (selected.parts !== currentParts) currentParts = selected.parts;
+        for (const warning of selected.warnings) post({ type: "status", text: warning });
         const result = await this.pipeline.rebindPartsAcrossOps(
           this.context.extensionPath,
           bytes,
@@ -733,8 +748,32 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // trip for that route instead (it may need to auto-create Parts from
         // region data first) — calling both would double-post "parts".
         if (!route || route.strategy !== "meshio") {
-          void this.sendParts(document.uri, post).then((parts) => {
+          void this.sendParts(document.uri, post).then(async (parts) => {
             currentParts = parts;
+            // Heal a stale selector cache on open (a part whose query still
+            // hits keeps its stored ids; anything else freezes with a status
+            // line, same terms as the edit-driven path below). Gated inside
+            // resolvePartSelectors to docs carrying no selector at all.
+            if (route?.strategy === "occt" && currentParts.some((p) => p.selector !== undefined)) {
+              try {
+                const bytes = await vscode.workspace.fs.readFile(document.uri);
+                const selected = await this.pipeline.resolvePartSelectors(
+                  this.context.extensionPath,
+                  bytes,
+                  route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+                  currentEdits,
+                  currentParts
+                );
+                if (selected.parts !== currentParts) {
+                  currentParts = selected.parts;
+                  await writeParts(document.uri, currentParts);
+                  post({ type: "parts", parts: currentParts });
+                }
+                for (const warning of selected.warnings) post({ type: "status", text: warning });
+              } catch (err) {
+                post({ type: "error", message: `Could not resolve stored selectors: ${(err as Error).message}` });
+              }
+            }
           });
         }
         void readAnnotations(document.uri).then((annotations) => {
@@ -1086,6 +1125,42 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      if (msg.type === "selectorSynthesizeRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Pinning an operand as a query requires a B-rep source; mesh sources have no produced-face classification to induce from.");
+          }
+          if (msg.entityIds.length === 0 || msg.entityIds.length > 25) {
+            throw new Error(`Cannot synthesize queries for ${msg.entityIds.length} entities — pick between 1 and 25.`);
+          }
+          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const format = route.format as Extract<CadFormat, "step" | "iges" | "brep">;
+          const results: SelectorSynthesizeResultEntry[] = [];
+          for (const entityId of msg.entityIds) {
+            try {
+              const r = await this.pipeline.synthesizeSelector(
+                this.context.extensionPath,
+                bytes,
+                format,
+                currentEdits,
+                msg.op,
+                msg.role,
+                entityId
+              );
+              // The kind tag is stamped here from the producing op itself —
+              // server-derived (the `set_part` precedent), never caller-supplied.
+              results.push({ entityId, query: r.query, kind: r.query ? currentEdits[msg.op]?.op ?? null : null, reason: r.reason });
+            } catch (err) {
+              results.push({ entityId, query: null, kind: null, reason: (err as Error).message });
+            }
+          }
+          post({ type: "selectorSynthesizeResult", requestId: msg.requestId, results });
+        } catch (err) {
+          post({ type: "selectorSynthesizeError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
       if (msg.type === "standardPartsSearchRequest") {
         try {
           const result = await this.pipeline.searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });
@@ -1318,7 +1393,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       post({ type: "status", text: "Rendering…" });
       progress?.report({ message: "Rendering…" });
-      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds } = result;
+      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings } = result;
+      // A frozen operand query replays on its cached ids — the user must know
+      // the query was not honored rather than staring at unchanged geometry.
+      for (const w of queryWarnings ?? []) post({ type: "status", text: w });
       post({
         type: "geometry",
         autoFit,

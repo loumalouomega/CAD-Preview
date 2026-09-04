@@ -19,6 +19,7 @@
  */
 
 import { parseFieldPath, getNumericField, parseExprSyntax } from "./paramExpr";
+import { validateSelectorQuery, type SelectorQuery } from "./selectorQuery";
 
 export type Vec3 = [number, number, number];
 
@@ -88,10 +89,36 @@ export interface ThinSpec { thin?: number; thinOuter?: number; }
  * A CLOSED edge set behaves exactly like the equivalent face. An OPEN one
  * encloses no area, so it **requires** {@link ThinSpec.thin}: the wall is what
  * gives it a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
+ *
+ * `pick` optionally narrows WHICH enclosed regions of a multi-region profile
+ * are consumed (roadmap "pick + drill", closed): a face's wires enumerate to
+ * regions — region 0 is the outer boundary, regions 1..N are its inner loops
+ * in explorer order — and an edge profile exposes a single region. `"outer"`
+ * (the default) consumes the face as modeled, holes preserved; `"all"`
+ * consumes the outer boundary with every hole filled; an index list consumes
+ * exactly those regions (inner loops picked without 0 build as standalone
+ * island bodies, fused into one). A whole-op rejection for a malformed pick;
+ * an out-of-range index skips at replay like any unresolvable id.
  */
-export interface ProfileOperand { profile?: string; profileEdges?: string[]; }
-/** Extrude a selected planar face, or a wire of selected edges, along `dir` by `length`. */
-export interface ExtrudeOp extends ThinSpec, ProfileOperand { op: "extrude"; dir: Vec3; length: number; }
+export interface ProfileOperand extends PickSpec { profile?: string; profileEdges?: string[]; }
+/**
+ * Region selector for a sweep-family profile operand (see
+ * {@link ProfileOperand}): `"outer"` (default — the face as modeled),
+ * `"all"` (outer boundary, holes filled), or region indices (`0` = outer
+ * boundary, `1..N` = inner loops in explorer order).
+ */
+export type RegionPick = "outer" | "all" | number[];
+export interface PickSpec { pick?: RegionPick; }
+/**
+ * Extrude a selected planar face, or a wire of selected edges, along `dir` —
+ * either by an explicit `length` or up to the terminator face `upToFace`
+ * (exactly one of the two, mirroring {@link ProfileOperand}'s own XOR).
+ * `upToFace` terminates at the terminator's PLANE (planar faces only): the
+ * extrusion runs from the profile plane to the terminator plane along `dir`,
+ * so a miss (terminator behind the profile) or a parallel direction skips
+ * gracefully rather than building a wrong solid.
+ */
+export interface ExtrudeOp extends ThinSpec, ProfileOperand { op: "extrude"; dir: Vec3; length?: number; upToFace?: string; }
 /** Revolve a selected profile `angleDeg` about the axis (`axisPoint`, `axisDir`). */
 export interface RevolveOp extends ThinSpec, ProfileOperand { op: "revolve"; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; }
 /** Sweep a selected profile along a selected path edge. */
@@ -103,11 +130,35 @@ export interface SweepOp extends ThinSpec, ProfileOperand { op: "sweep"; path: s
  * a distinct field name because the arity differs. Every section must agree
  * on closedness; a mixed list is skipped with a diagnostic.
  */
-export interface LoftOp extends ThinSpec { op: "loft"; profiles?: string[]; profileEdgeSets?: string[][]; }
+export interface LoftOp extends ThinSpec {
+  op: "loft"; profiles?: string[]; profileEdgeSets?: string[][];
+  /**
+   * Surface smoothing across sections (`ThruSections.SetSmoothing`) — the
+   * only loft quality knob with a measured effect in this OCCT build
+   * (probed: -0.711% volume on a 4-section twisted fixture; continuity,
+   * parametrization, max-degree and criterium weights are accepted but
+   * change nothing, so they are deliberately not exposed). Omitted/false =
+   * today's behavior, byte-identical.
+   */
+  smoothing?: boolean;
+}
 /** Spread every solid radially from the model centre by `factor`. */
 export interface ExplodeOp { op: "explode"; factor: number; }
 /** Align face `faceA` onto face `faceB` (basic single-constraint mate). */
 export interface MateOp { op: "mate"; faceA: string; faceB: string; }
+/**
+ * Build a rib from an open spine sketch: a thin wall around the spine wire
+ * (`spineEdges`, assembled like an open `profileEdges` wire), extruded along
+ * `dir` until it meets the terminator face `upTo` (planar only — the same
+ * plane semantics as {@link ExtrudeOp}'s `upToFace`, plus one wall-thickness
+ * of embed so the wall robustly intersects for fusing), fused into the
+ * existing model (unlike every feature op's append), with the wall↔body
+ * junction blended at `blendRadius` (`0` or omitted = fuse only, no blend).
+ * `thin` is required (a rib without thickness encloses nothing) and symmetric
+ * (an open wire has no inside/outside, so `thinOuter` must be absent or
+ * exactly `thin / 2` — the open-profile rule).
+ */
+export interface RibOp { op: "rib"; spineEdges: string[]; dir: Vec3; thin: number; thinOuter?: number; upTo: string; blendRadius?: number; }
 /** Add a box centred at `center` with full extents `size`. A cube is a box with equal `size` components. */
 export interface AddBoxOp { op: "addBox"; center: Vec3; size: Vec3; }
 /** Add a sphere of `radius` centred at `center`. */
@@ -172,6 +223,16 @@ export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePo
 export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; }
 /** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
 export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
+/**
+ * Cut the picked regions of a profile (a `face-N`, or a closed `edge-N` wire)
+ * through the target solids — a region prism subtracted per region, fused
+ * into one tool when several are picked. `pick` narrows which enclosed
+ * regions are cut (see {@link ProfileOperand}); `dir`/`length` shape the
+ * prism exactly like {@link ExtrudeOp}'s explicit-length form (no `upToFace`
+ * variant — a through-cut covers the drill use case, and the terminator form
+ * stays a follow-up). B-rep only.
+ */
+export interface DrillOp extends PickSpec { op: "drill"; targets: string[]; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; }
 /** Build a new solid by sewing the selected faces into a closed shell. */
 export interface AddVolumeFromSurfacesOp { op: "addVolumeFromSurfaces"; faces: string[]; }
 /** Translate the targets along `axis` so their bbox `extent` (min/center/max) lands at the absolute coordinate `to`. A no-op for a target already there. */
@@ -186,7 +247,7 @@ export type EditOp = (
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
-  | ShellOp | DraftOp | SplitByPlaneOp | SectionOp
+  | ShellOp | DraftOp | SplitByPlaneOp | SectionOp | RibOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
   | AddWedgeOp | AddHoleOp | AddCounterboreHoleOp | AddCountersinkHoleOp
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
@@ -195,10 +256,72 @@ export type EditOp = (
   | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
   | AddEdgeSlotOp
   | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp
-  | AlignOp | PatternLinearOp | PatternCircularOp
-) & { exprs?: ExprMap };
+  | AlignOp | PatternLinearOp | PatternCircularOp | DrillOp
+ ) & {
+  exprs?: ExprMap;
+  /**
+   * Optional per-operand-field stored queries (roadmap "Selector synthesis",
+   * op-operand persistence) — e.g. `{ a: {...}, b: {...} }` on a boolean —
+   * resolved host-side against the current op list with the plain id arrays
+   * kept as the last-good cache (annotation+cache, the `exprs`/`planeId`
+   * precedent). `targetQueryKinds` carries one producing-op-kind tag per
+   * field (the Phase-A `selectorOpKind` guard, per field): a stored index
+   * that now addresses a different op kind freezes instead of repointing.
+   */
+  targetQueries?: Record<string, SelectorQuery>;
+  /**
+   * One producing-op-kind tag per BUCKET query field (scene queries carry no
+   * tag — they have no producer). The stale-index guard: a bucket query's
+   * stored `op` is positional, so the tag must equal the current op's kind
+   * at resolve time or the field freezes instead of repointing.
+   */
+  targetQueryKinds?: Record<string, string>;
+};
 
 export type EditOpKind = EditOp["op"];
+
+/**
+ * Operand fields addressable by a stored query, per op kind — the same field
+ * list `referencedEntities` (`src/webview/opCatalog.ts`) enumerates, kept as
+ * the single source of truth so the two cannot drift (that function can't be
+ * imported here: it lives in the webview tree — this table mirrors it
+ * deliberately, and `editOps.test.ts` locks the two together).
+ */
+export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
+  translate: ["targets"], rotate: ["targets"], scale: ["targets"], mirror: ["targets"],
+  boolean: ["a", "b"], fillet: ["edges"], chamfer: ["edges", "face"],
+  extrude: ["profile", "profileEdges", "upToFace"], revolve: ["profile", "profileEdges"],
+  sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets"],
+  explode: [], mate: ["faceA", "faceB"],
+  shell: ["openingFaces"], draft: ["faces"], splitByPlane: ["targets"], section: ["targets"],
+  rib: ["spineEdges", "upTo"],
+  addBox: [], addSphere: [], addCylinder: [], addCone: [], addTorus: [], addPrism: [],
+  addWedge: [], addHole: ["targets"], addCounterboreHole: ["targets"], addCountersinkHole: ["targets"],
+  addCircleProfile: [], addRectangleProfile: [], addPolygonProfile: [],
+  addEllipseProfile: [], addRoundedRectangleProfile: [], addSlotProfile: [], addTrapezoidProfile: [],
+  addPoint: [], addLine: [], addArc: [],
+  addPolyline: [], addThreePointArc: [], addSpline: [], addBezier: [], addEllipseArc: [], addHelix: [],
+  addEdgeSlot: ["edge"],
+  addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"],
+  align: ["targets"], patternLinear: ["targets"], patternCircular: ["targets"],
+  drill: ["targets", "profile", "profileEdges"],
+};
+
+/**
+ * Operand fields holding a SINGLE id (not an array) — a stored query on one
+ * of these resolves only to exactly one id, never "the first of many" (an
+ * implicit choice would be a silent decision). Array fields take the full
+ * resolved set.
+ */
+export const SCALAR_OPERAND_FIELDS: ReadonlySet<string> = new Set([
+  "profile", "face", "path", "edge", "faceA", "faceB", "upToFace", "upTo",
+]);
+
+/** True when any op in the list carries stored operand queries — the cheap
+ * gate every replay path checks so query-free documents pay nothing. */
+export function hasTargetQueries(ops: EditOp[]): boolean {
+  return ops.some((op) => op.targetQueries !== undefined);
+}
 
 /**
  * Per-op replay outcome, reported by BOTH engines (roadmap "A failed edit op
@@ -230,7 +353,7 @@ export type OutcomeFail = (diagnostic: string, hint?: string) => void;
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
-  "shell", "draft", "splitByPlane", "section",
+  "shell", "draft", "splitByPlane", "section", "rib",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
   "addWedge", "addHole", "addCounterboreHole", "addCountersinkHole",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
@@ -238,20 +361,20 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
   "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot",
-  "patternLinear", "patternCircular",
+  "patternLinear", "patternCircular", "drill",
 ]);
 
 /** Ops only available for B-rep sources (meshes have no sketch/exact topology).
  * The hole family is deliberately NOT here — the mesh engine cuts holes via CSG. */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
-  "shell", "draft", "splitByPlane", "section",
+  "shell", "draft", "splitByPlane", "section", "rib",
   "addWedge",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
-  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot",
+  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot", "drill",
 ]);
 
 function isFiniteNumber(v: unknown): v is number {
@@ -318,6 +441,13 @@ export const GUIDE_KINDS: ReadonlySet<EditOpKind> = new Set([
   "addCircleProfile","addRectangleProfile","addPolygonProfile","addEllipseProfile","addRoundedRectangleProfile","addSlotProfile","addTrapezoidProfile",
   "addPoint","addLine","addArc","addPolyline","addThreePointArc","addSpline","addBezier","addEllipseArc","addHelix",
 ]);
+
+/** A single `face-N` id — refused up front (like {@link asEdgeIdArray}, not
+ * the lenient {@link asIdArray}) so a smuggled id form is a validation
+ * rejection rather than a silently-wrong operand at replay. */
+function asFaceId(v: unknown): string | null {
+  return typeof v === "string" && /^face-\d+$/.test(v) ? v : null;
+}
 
 function asFaceIdPair(v: unknown): [string, string] | null {
   if (!Array.isArray(v) || v.length !== 2) return null;
@@ -409,6 +539,24 @@ function asThinSpec(o: Record<string, unknown>): ThinSpec | null {
   return out;
 }
 
+/**
+ * Validates the optional {@link PickSpec} region selector shared by the
+ * single-profile sweep-family ops and {@link DrillOp}, returning the field to
+ * attach (possibly empty) or `null` to reject the whole op — the same
+ * whole-op-rejection shape {@link asThinSpec} uses for a malformed thin spec.
+ * `"outer"`/`"all"` are literal; otherwise a non-empty list of region indices
+ * (`0` = outer boundary, `1..N` = inner loops in explorer order). Duplicates
+ * are deduped, not rejected — harmless, and the kernel would treat them as
+ * one region anyway.
+ */
+function asPick(o: Record<string, unknown>): PickSpec | null {
+  if (o.pick === undefined) return {};
+  if (o.pick === "outer" || o.pick === "all") return { pick: o.pick };
+  if (!Array.isArray(o.pick) || o.pick.length === 0) return null;
+  if (!o.pick.every((x) => Number.isInteger(x) && (x as number) >= 0)) return null;
+  return { pick: [...new Set(o.pick as number[])] };
+}
+
 /** Cap on `exprs` entries per op / expression length — a hand-edited sidecar can't balloon memory. */
 const MAX_EXPRS_PER_OP = 64;
 const MAX_EXPR_LENGTH = 256;
@@ -443,6 +591,51 @@ function sanitizeExprs(raw: unknown, clean: EditOp): ExprMap | null {
  * structural checks here so callers never have to re-validate. A valid `exprs`
  * annotation (see {@link sanitizeExprs}) is carried onto the clean op.
  */
+/**
+ * Sanitize a raw `targetQueries` annotation against the already-validated op:
+ * keep only entries whose key names a real operand field of THIS op kind
+ * (`QUERYABLE_OPERAND_FIELDS` — a query on a non-operand field is meaningless)
+ * and whose value passes `validateSelectorQuery`, each paired with a
+ * non-empty string kind tag (a dangling tag or tagless query is dropped, the
+ * Phase-A sidecar rule). Bad entries are dropped per-entry, never whole-op
+ * rejection — same tolerance-gate style as `sanitizeExprs`.
+ */
+function sanitizeTargetQueries(
+  rawOp: unknown,
+  clean: EditOp
+): { queries: Record<string, SelectorQuery>; kinds: Record<string, string> } | null {
+  if (!rawOp || typeof rawOp !== "object" || Array.isArray(rawOp)) return null;
+  const rawQueries = (rawOp as Record<string, unknown>).targetQueries;
+  if (!rawQueries || typeof rawQueries !== "object" || Array.isArray(rawQueries)) return null;
+  const fields = QUERYABLE_OPERAND_FIELDS[clean.op as EditOpKind] ?? [];
+  // NOTE: kind tags live on the RAW op beside `targetQueries`, not inside it
+  // — and never on `clean` (they are validated here, not in the per-kind
+  // core cases).
+  const rawKinds = (rawOp as Record<string, unknown>).targetQueryKinds;
+  const tags: Record<string, unknown> =
+    rawKinds && typeof rawKinds === "object" && !Array.isArray(rawKinds)
+      ? (rawKinds as Record<string, unknown>)
+      : {};
+  const queries: Record<string, SelectorQuery> = {};
+  const kinds: Record<string, string> = {};
+  for (const [key, value] of Object.entries(rawQueries as Record<string, unknown>)) {
+    if (!(fields as readonly string[]).includes(key)) continue;
+    const parsed = validateSelectorQuery(value);
+    if (!parsed) continue;
+    // Scene queries have no producing op, so there is no kind to tag with —
+    // the tag rule below applies to bucket queries only.
+    if (parsed.source.kind === "scene") {
+      queries[key] = parsed;
+      continue;
+    }
+    const tag = tags[key];
+    if (typeof tag !== "string" || tag.length === 0) continue;
+    queries[key] = parsed;
+    kinds[key] = tag;
+  }
+  return Object.keys(queries).length > 0 ? { queries, kinds } : null;
+}
+
 export function validateEditOp(raw: unknown): EditOp | null {
   const clean = validateEditOpCore(raw);
   if (!clean) return null;
@@ -454,6 +647,11 @@ export function validateEditOp(raw: unknown): EditOp | null {
   }
   const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
   if (exprs) clean.exprs = exprs;
+  const targetQueries = sanitizeTargetQueries(raw, clean);
+  if (targetQueries) {
+    clean.targetQueries = targetQueries.queries;
+    if (Object.keys(targetQueries.kinds).length > 0) clean.targetQueryKinds = targetQueries.kinds;
+  }
   return clean;
 }
 
@@ -545,38 +743,60 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const dir = asVec3(o.dir);
       const thin = asThinSpec(o);
       const profile = asProfileOperand(o);
-      return profile && dir && isFiniteNumber(o.length) && thin
-        ? { op: "extrude", ...profile, dir, length: o.length, ...thin }
-        : null;
+      const pick = asPick(o);
+      // Terminator: exactly one of an explicit length or a face to extrude up
+      // to — never both, never neither (the ProfileOperand XOR shape).
+      const hasLength = o.length !== undefined;
+      const hasUpToFace = o.upToFace !== undefined;
+      if (hasLength === hasUpToFace) return null;
+      if (!(profile && dir && thin && pick)) return null;
+      if (hasLength) {
+        return isFiniteNumber(o.length)
+          ? { op: "extrude", ...profile, dir, length: o.length, ...thin, ...pick }
+          : null;
+      }
+      const upToFace = asFaceId(o.upToFace);
+      return upToFace ? { op: "extrude", ...profile, dir, upToFace, ...thin, ...pick } : null;
     }
     case "revolve": {
       const axisPoint = asVec3(o.axisPoint);
       const axisDir = asVec3(o.axisDir);
       const thin = asThinSpec(o);
       const profile = asProfileOperand(o);
-      return profile && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && thin
-        ? { op: "revolve", ...profile, axisPoint, axisDir, angleDeg: o.angleDeg, ...thin }
+      const pick = asPick(o);
+      return profile && axisPoint && axisDir && isFiniteNumber(o.angleDeg) && thin && pick
+        ? { op: "revolve", ...profile, axisPoint, axisDir, angleDeg: o.angleDeg, ...thin, ...pick }
         : null;
     }
     case "sweep": {
       const thin = asThinSpec(o);
       const profile = asProfileOperand(o);
-      return profile && typeof o.path === "string" && thin
-        ? { op: "sweep", ...profile, path: o.path, ...thin }
+      const pick = asPick(o);
+      return profile && typeof o.path === "string" && thin && pick
+        ? { op: "sweep", ...profile, path: o.path, ...thin, ...pick }
         : null;
     }
     case "loft": {
       const hasFaces = o.profiles !== undefined;
       const hasEdgeSets = o.profileEdgeSets !== undefined;
       if (hasFaces === hasEdgeSets) return null; // neither form, or both at once
+      // No `pick`: a per-section region selector needs a parallel array the
+      // op model does not have — refuse, never silently ignore (loft sections
+      // resolve through the same shared path, so an ignored pick would be a
+      // lie about which regions were lofted).
+      if (o.pick !== undefined) return null;
       const thin = asThinSpec(o);
       if (!thin) return null;
+      // Smoothing is a strict boolean when present — anything else (a truthy
+      // string, a number) is a rejection, not a silent default.
+      if (o.smoothing !== undefined && typeof o.smoothing !== "boolean") return null;
+      const smoothing = o.smoothing === true ? { smoothing: true as const } : {};
       if (hasFaces) {
         const profiles = asIdArray(o.profiles, 2);
-        return profiles ? { op: "loft", profiles, ...thin } : null;
+        return profiles ? { op: "loft", profiles, ...thin, ...smoothing } : null;
       }
       const profileEdgeSets = asEdgeIdArrayList(o.profileEdgeSets, 2);
-      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin } : null;
+      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin, ...smoothing } : null;
     }
     case "explode": {
       return isFiniteNumber(o.factor) ? { op: "explode", factor: o.factor } : null;
@@ -679,6 +899,35 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const planePoint = asVec3(o.planePoint);
       const planeNormal = asNonZeroVec3(o.planeNormal);
       return planePoint && planeNormal ? { op: "section", targets, planePoint, planeNormal } : null;
+    }
+    case "drill": {
+      const targets = asIdArray(o.targets);
+      const dir = asVec3(o.dir);
+      const profile = asProfileOperand(o);
+      const pick = asPick(o);
+      // Explicit length only (the extrude length-form shape, minus the
+      // terminator variant — a through-cut covers the drill use case).
+      if (!(targets && dir && profile && pick)) return null;
+      return isFiniteNumber(o.length)
+        ? { op: "drill", targets, ...profile, dir, length: o.length as number, ...pick }
+        : null;
+    }
+    case "rib": {
+      // An open spine has no inside/outside, so thinOuter is meaningless
+      // there (the open-profile rule): absent, or exactly half the wall.
+      // No `pick` either — same per-section-addressing reason as loft above.
+      if (o.pick !== undefined) return null;
+      const spineEdges = asEdgeIdArray(o.spineEdges);
+      const dir = asVec3(o.dir);
+      const upTo = asFaceId(o.upTo);
+      if (!spineEdges || !dir || !upTo) return null;
+      if (!isFiniteNumber(o.thin) || o.thin <= 0) return null;
+      if (o.thinOuter !== undefined && o.thinOuter !== (o.thin as number) / 2) return null;
+      if (o.blendRadius !== undefined && (!isFiniteNumber(o.blendRadius) || (o.blendRadius as number) < 0)) return null;
+      const out: RibOp = { op: "rib", spineEdges, dir, thin: o.thin as number, upTo };
+      if (o.thinOuter !== undefined) out.thinOuter = o.thinOuter as number;
+      if (o.blendRadius !== undefined) out.blendRadius = o.blendRadius as number;
+      return out;
     }
     case "addBox": {
       const center = asVec3(o.center);

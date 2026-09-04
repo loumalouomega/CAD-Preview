@@ -20,6 +20,8 @@ import {
   checkToleranceTool,
   checkInterferenceTool,
   checkInterferenceAllTool,
+  resolveSelectorTool,
+  synthesizeSelectorTool,
   renderSnapshotTool,
   renderOpsPrefixTool,
   searchStandardPartsTool,
@@ -58,6 +60,7 @@ import type { MassProperties } from "./massProperties";
 import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult } from "./entityFacts";
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
+import type { Part } from "./protocol";
 import type { OpOutcome } from "./editOps";
 import type { ModelDiff } from "./modelDiff";
 import type { MeshHealthReport, PromoteMeshResult } from "./meshHeal";
@@ -387,6 +390,14 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       annotations,
       stats: { considered: 0, rebound: 0, dropped: 0 },
       annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+    })),
+    resolveBucketSelector: vi.fn(async () => ({ ids: [], unresolved: [], matches: [], bindable: true })),
+    synthesizeSelector: vi.fn(async () => ({ query: null, ids: [], matches: [], bindable: true, reason: "fake" })),
+    resolvePartSelectors: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, _ops: unknown[], parts: Part[]) => ({
+      parts, // identity pass-through by default — matches the real "no selectors / nothing changed" no-op contract
+      resolved: 0,
+      frozen: 0,
+      warnings: [],
     })),
     ...overrides,
   } as Pipeline;
@@ -1912,6 +1923,30 @@ describe("set_part", () => {
     const result = await setPart({ path: stpModel, name: "P", meshSize: -3 });
     expect(result.warnings[0]).toMatch(/positive/);
   });
+
+  it("stores a selector with a server-derived op-kind tag, and clears it with null", async () => {
+    const { writeEdits } = await import("./mcpSidecars");
+    await writeEdits(stpModel, [{ op: "addBox", center: [0, 0, 0], size: [5, 5, 5] }] as unknown as EditOp[], []);
+    await setPart({
+      path: stpModel,
+      name: "P",
+      surfaces: ["face-0"],
+      selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } },
+    });
+    const stored = (await readParts(stpModel))[0];
+    expect(stored.selector).toEqual({ version: 1, source: { kind: "bucket", op: 0, role: "body" } });
+    expect(stored.selectorOpKind).toBe("addBox"); // derived from the current op list, never caller-supplied
+    await setPart({ path: stpModel, name: "P", selector: null });
+    const cleared = (await readParts(stpModel))[0];
+    expect(cleared.selector).toBeUndefined();
+    expect(cleared.selectorOpKind).toBeUndefined();
+  });
+
+  it("rejects a malformed selector and an out-of-range bucket op", async () => {
+    await expect(setPart({ path: stpModel, name: "P", selector: { version: 1, source: { kind: "bucket", op: 0, role: "nope" } } })).rejects.toThrow(/Invalid selector/);
+    await expect(setPart({ path: stpModel, name: "P", selector: { version: 1, source: { kind: "bucket", op: 7, role: "body" } } })).rejects.toThrow(/out of range/);
+    expect(await readParts(stpModel)).toHaveLength(0); // nothing persisted on rejection
+  });
 });
 
 describe("set_plane", () => {
@@ -2643,6 +2678,157 @@ describe("check_interference_all", () => {
     await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
     await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
     await expect(checkInterferenceAllTool(c, { path: stpModel })).rejects.toThrow(/shape mismatch/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolve_selector
+
+describe("resolve_selector", () => {
+  const query = { version: 1, source: { kind: "bucket", op: 0, role: "body" } };
+
+  it("rejects mesh-format sources like every other B-rep-only entity tool", async () => {
+    const result = await resolveSelectorTool(ctx(), { path: stlModel, selector: query });
+    expect(result.supported).toBe(false);
+  });
+
+  it("passes the resolved ops + raw selector to the pipeline and surfaces ids/matches", async () => {
+    const pipeline = fakePipeline({
+      resolveBucketSelector: vi.fn(async () => ({
+        ids: ["face-11"],
+        unresolved: [],
+        matches: [{ oldId: "face-11", newId: "face-11", centreDistance: 0, measureDeltaPct: 0 }],
+        bindable: true,
+      })),
+    });
+    const c = ctx(pipeline);
+    const result = await resolveSelectorTool(c, { path: stpModel, selector: query });
+    expect(result.supported).toBe(true);
+    expect(result.ids).toEqual(["face-11"]);
+    expect(result.bindable).toBe(true);
+    expect(result.warnings).toEqual([]);
+    expect(pipeline.resolveBucketSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], query);
+  });
+
+  it("forwards an induced filter/rank to the pipeline and reports the narrowed set", async () => {
+    const selector = {
+      version: 1,
+      source: { kind: "bucket", op: 0, role: "side", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } },
+    };
+    const pipeline = fakePipeline({
+      resolveBucketSelector: vi.fn(async () => ({
+        ids: ["face-7"],
+        unresolved: [],
+        matches: [{ oldId: "face-7", newId: "face-7", centreDistance: 0, measureDeltaPct: 0 }],
+        bindable: true,
+      })),
+    });
+    const result = await resolveSelectorTool(ctx(pipeline), { path: stpModel, selector });
+    expect(result.ids).toEqual(["face-7"]);
+    expect(pipeline.resolveBucketSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], selector);
+  });
+
+  it("forwards a scene query to the pipeline (no bucket anchor needed)", async () => {
+    const selector = { version: 1, source: { kind: "scene", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } } };
+    const pipeline = fakePipeline({
+      resolveBucketSelector: vi.fn(async () => ({ ids: ["face-3"], unresolved: [], matches: [], bindable: true })),
+    });
+    const result = await resolveSelectorTool(ctx(pipeline), { path: stpModel, selector });
+    expect(result.supported).toBe(true);
+    expect(result.ids).toEqual(["face-3"]);
+    expect(result.warnings).toEqual([]);
+    expect(pipeline.resolveBucketSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], selector);
+  });
+
+  it("warns on unresolved ids and on bindable:false without throwing", async () => {
+    const unresolved = ctx(
+      fakePipeline({
+        resolveBucketSelector: vi.fn(async () => ({
+          ids: [],
+          unresolved: ["face-5"],
+          matches: [],
+          bindable: true,
+        })),
+      })
+    );
+    const r1 = await resolveSelectorTool(unresolved, { path: stpModel, selector: query });
+    expect(r1.warnings.join("\n")).toMatch(/Unresolved reference id\(s\): face-5/);
+
+    const unbindable = ctx(
+      fakePipeline({
+        resolveBucketSelector: vi.fn(async () => ({
+          ids: [],
+          unresolved: [],
+          matches: [],
+          bindable: false,
+          reason: "Producing op 1 (patternLinear) is a pattern instance — ambiguous across instances.",
+        })),
+      })
+    );
+    const r2 = await resolveSelectorTool(unbindable, { path: stpModel, selector: query });
+    expect(r2.supported).toBe(true);
+    expect(r2.ids).toEqual([]);
+    expect(r2.warnings.join("\n")).toMatch(/pattern instance/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// synthesize_selector
+
+describe("synthesize_selector", () => {
+  it("rejects mesh-format sources like every other B-rep-only entity tool", async () => {
+    const result = await synthesizeSelectorTool(ctx(), { path: stlModel, op: 0, role: "body", entityId: "face-0" });
+    expect(result.supported).toBe(false);
+  });
+
+  it("passes op/role/entityId to the pipeline and surfaces the verified query", async () => {
+    const query = { version: 1 as const, source: { kind: "bucket" as const, op: 0, role: "body" as const, filter: { kind: "planar" as const } } };
+    const pipeline = fakePipeline({
+      synthesizeSelector: vi.fn(async () => ({
+        query,
+        ids: ["face-0"],
+        matches: [{ oldId: "face-0", newId: "face-0", centreDistance: 0, measureDeltaPct: 0 }],
+        bindable: true,
+      })),
+    });
+    const result = await synthesizeSelectorTool(ctx(pipeline), { path: stpModel, op: 0, role: "body", entityId: "face-0" });
+    expect(result.supported).toBe(true);
+    expect(result.query).toEqual(query);
+    expect(result.ids).toEqual(["face-0"]);
+    expect(result.warnings).toEqual([]);
+    expect(pipeline.synthesizeSelector).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], 0, "body", "face-0");
+  });
+
+  it("warns on honest-null and on bindable:false without throwing", async () => {
+    const empty = ctx(
+      fakePipeline({
+        synthesizeSelector: vi.fn(async () => ({
+          query: null,
+          ids: [],
+          matches: [],
+          bindable: true,
+          reason: "No exact query names face-0 within op 0's \"body\" faces.",
+        })),
+      })
+    );
+    const r1 = await synthesizeSelectorTool(empty, { path: stpModel, op: 0, role: "body", entityId: "face-0" });
+    expect(r1.query).toBeNull();
+    expect(r1.warnings.join("\n")).toMatch(/No exact query/);
+
+    const unbindable = ctx(
+      fakePipeline({
+        synthesizeSelector: vi.fn(async () => ({
+          query: null,
+          ids: [],
+          matches: [],
+          bindable: false,
+          reason: "Producing op 1 (patternLinear) is a pattern instance.",
+        })),
+      })
+    );
+    const r2 = await synthesizeSelectorTool(unbindable, { path: stpModel, op: 1, role: "copies", entityId: "face-0" });
+    expect(r2.query).toBeNull();
+    expect(r2.warnings.join("\n")).toMatch(/pattern instance/);
   });
 });
 

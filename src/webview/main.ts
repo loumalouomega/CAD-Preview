@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
-import { buildEntityReferenceIndex } from "./opCatalog";
+import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { hoverContent, inspectorContent } from "./entityExplain";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
@@ -36,6 +36,8 @@ import { MeshHealthPanel } from "./meshHealthPanel";
 import { RegionFitPanel } from "./regionFitPanel";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
 import { validateEditOp, GUIDE_KINDS } from "../editOps";
+import type { SelectorQuery } from "../selectorQuery";
+import type { FacePredicate } from "../selectorPredicate";
 import { StandardPartsPanel } from "./standardPartsPanel";
 import type { StandardPart } from "../stepPartsService";
 import { computeMeshMassProperties } from "./meshMassProperties";
@@ -73,7 +75,7 @@ import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./m
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
-import type { OpOutcome } from "../editOps";
+import type { OpOutcome, RegionPick } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -530,6 +532,10 @@ let booleanA: string[] = [];
 type LoftSection = { kind: "face"; ids: string[] } | { kind: "edges"; ids: string[] };
 /** Sweep's captured path edge — see `EditsPanelCallbacks.onCaptureSweepPath`. */
 let sweepPath: string | null = null;
+/** Extrude's captured terminator face — see `EditsPanelCallbacks.onCaptureTerminator`. */
+let extrudeTerminator: string | null = null;
+/** Rib's captured terminator face — see `EditsPanelCallbacks.onCaptureRibTerminator`. */
+let ribTerminator: string | null = null;
 /** Loft's captured sections — see `EditsPanelCallbacks.onCaptureLoftSection`. */
 let loftSections: LoftSection[] = [];
 const selectedVolumes = (): string[] =>
@@ -698,8 +704,14 @@ function cancelGizmoPreview(): void {
 
 /** Called whenever the Edits panel's open form changes — attaches/detaches/
  * retargets the gizmo for translate/rotate/scale, or hides it for every
- * other form (including no form at all). */
+ * other form (including no form at all). Also re-shows a staged query
+ * summary when its form reopens (the row itself re-renders blank — the staged
+ * entry lives here, not in the panel). */
 function updateGizmoForForm(id: PanelOpId | null): void {
+  if (id) {
+    const staged = pendingOpQueries.filter((q) => q.form === id);
+    if (staged.length > 0) editsPanel.showQueryResult(staged.map((q) => q.summary).join("\n"));
+  }
   gizmoMode = gizmoModeForForm(id);
   if (!gizmoMode) {
     cancelGizmoPreview();
@@ -835,6 +847,22 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     return sweepPath;
   },
   onClearSweepPath: () => { sweepPath = null; scheduleOpPreview(); },
+  onCaptureTerminator: () => {
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    if (faces.length !== 1) { setStatus("Select exactly one face (Surf mode) to capture as the extrude terminator.", true); return extrudeTerminator; }
+    extrudeTerminator = faces[0];
+    scheduleOpPreview();
+    return extrudeTerminator;
+  },
+  onClearTerminator: () => { extrudeTerminator = null; scheduleOpPreview(); },
+  onCaptureRibTerminator: () => {
+    const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+    if (faces.length !== 1) { setStatus("Select exactly one face (Surf mode) to capture as the rib terminator.", true); return ribTerminator; }
+    ribTerminator = faces[0];
+    scheduleOpPreview();
+    return ribTerminator;
+  },
+  onClearRibTerminator: () => { ribTerminator = null; scheduleOpPreview(); },
   onCaptureLoftSection: () => {
     const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
     const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
@@ -856,13 +884,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     const resolved = buildOpForPanel(draft.kind, draft);
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this feature.", true); return; }
     cancelOpPreview();
-    editsModel.push(resolved.op);
+    pushResolvedOp(draft.kind, resolved);
     // The applied op renumbers entity ids, so any captured path/sections now
     // name the wrong geometry — drop them, as `onApplyBoolean` drops A.
     sweepPath = null;
     loftSections = [];
+    extrudeTerminator = null;
+    ribTerminator = null;
     editsPanel.resetFeatureCaptures();
-    setStatus("");
   },
   onApplyExplode: (factor, exprs) => {
     cancelExplodePreview(); // discard the live preview — the real op replay rebuilds everything
@@ -906,8 +935,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     const resolved = buildOpForPanel(draft.kind, draft);
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this modify op.", true); return; }
     cancelOpPreview();
-    editsModel.push(resolved.op);
-    setStatus("");
+    pushResolvedOp(draft.kind, resolved);
   },
   onApplyPrimitive: (draft) => {
     const resolved = buildOpForPanel(draft.kind, draft);
@@ -971,7 +999,25 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   },
   onFormChanged: updateGizmoForForm,
   onPreviewDraftChanged: () => scheduleOpPreview(),
-  onPreviewCancel: () => cancelOpPreview()
+  onPreviewCancel: () => cancelOpPreview(),
+  onSynthesizeQuery: (bucketOp, role) => {
+    const form = editsPanel.openOpId();
+    if (!form || !QUERYABLE_PANEL_FORMS.has(form)) return; // the row only exists on those forms; defensive
+    if (sourceKind !== "brep") {
+      setStatus("Pinning an operand as a query requires a B-rep source; mesh sources have no produced-face classification.", true);
+      return;
+    }
+    const src = querySourceForForm(form);
+    if ("error" in src) {
+      setStatus(src.error, true);
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random()}`;
+    selectorSynthesizeRequest = { id: requestId, form, field: src.field, ids: src.ids };
+    editsPanel.setQueryBusy(true);
+    editsPanel.showQueryResult("Synthesizing…");
+    post({ type: "selectorSynthesizeRequest", requestId, op: bucketOp, role, entityIds: src.ids });
+  },
 });
 
 // ── Meshing (GMSH FE-mesh generation) ────────────────────────────────────
@@ -1513,6 +1559,23 @@ function thinOf(d: Record<string, unknown>): { thin?: number; thinOuter?: number
   return typeof outer === "number" && outer > 0 ? { thin, thinOuter: outer } : { thin };
 }
 
+/**
+ * The region-pick field of a profile draft, parsed from the panel's raw
+ * string (blank = absent). An unparseable value is an error here — unlike
+ * `thinOf`'s silent drop — because there is no sensible default for a
+ * half-typed pick, and the op model would otherwise receive a silently
+ * different operand than the form shows.
+ */
+function pickOf(d: Record<string, unknown>): { pick?: RegionPick } | { pickError: string } {
+  const raw = d.pickRaw;
+  if (raw === undefined || raw === "") return {};
+  if (typeof raw !== "string") return { pickError: "Regions must be blank, all, or indices like 0,2." };
+  const t = raw.trim().toLowerCase();
+  if (t === "outer" || t === "all") return { pick: t };
+  if (/^\d+(,\d+)*$/.test(t)) return { pick: t.split(",").map(Number) };
+  return { pickError: `Regions must be blank, "outer", "all", or indices like "0,2" — got "${raw.trim()}".` };
+}
+
 /** Intent colour for a previewed op kind — green adds material, red removes
  * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
  * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
@@ -1530,6 +1593,7 @@ function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
     case "revolve":
     case "sweep":
     case "loft":
+    case "rib":
     case "patternLinear":
     case "patternCircular":
       return "add";
@@ -1538,6 +1602,7 @@ function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
     case "addHole":
     case "addCounterboreHole":
     case "addCountersinkHole":
+    case "drill":
     case "shell":
     case "splitByPlane":
       return "cut";
@@ -1568,6 +1633,144 @@ function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
 }
 
 /**
+ * Staged operand queries from the Edits panel's "pin as query" row
+ * (`QUERYABLE_PANEL_FORMS` forms only). One entry per (form, field): a later
+ * synthesize for the same field REPLACES the earlier one rather than stacking,
+ * so the row's single result line always describes exactly what Apply would
+ * attach. Entries survive form switches (re-shown when their form reopens)
+ * and die on a new geometry load (every id was renumbered), on successful
+ * attach, or never — there is no other consumer, so nothing else can orphan
+ * one. The selection-equality check at attach time is what keeps a staged
+ * query from ever naming faces the user has since deselected.
+ */
+interface PendingOpQuery {
+  form: PanelOpId;
+  field: string;
+  query: SelectorQuery;
+  kind: string;
+  entityIds: string[];
+  summary: string;
+}
+let pendingOpQueries: PendingOpQuery[] = [];
+
+/** In-flight synthesize request: the latch plus the form/field/ids context
+ * the reply needs to stage against. Single-flight (the panel disables its
+ * button while busy); a second click can't start until the first lands. */
+let selectorSynthesizeRequest: { id: string; form: PanelOpId; field: string; ids: string[] } | null = null;
+
+/**
+ * The operand field + current ids the open form's query row would pin, read
+ * from the live selection through the same mapping `buildOpForPanelCore`
+ * uses — so the row can never disagree with Apply about which field a pick
+ * lands in. Face operands only (`synthesizeSelector`'s universe is
+ * `faceFilterableFacts`; an edge pick induces nothing, so the row refuses it
+ * up front instead of paying a doomed host round trip). Exactly one face:
+ * joint multi-entity induction doesn't exist yet, and attaching a singleton
+ * query over a wider pick would silently narrow the operand.
+ */
+function querySourceForForm(id: PanelOpId): { field: string; ids: string[] } | { error: string } {
+  const selFaces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+  const selEdges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+  switch (id) {
+    case "extrude":
+    case "revolve": {
+      const profile = profileOperandFromSelection(selFaces, selEdges);
+      if ("error" in profile) return { error: `${profile.error} before pinning a query.` };
+      if ("profile" in profile.operand) return { field: "profile", ids: [profile.operand.profile] };
+      return { error: "Edge profiles can't be pinned — stored queries name faces only. Select a face profile (Surf mode)." };
+    }
+    case "shell":
+    case "draft": {
+      const field = id === "shell" ? "openingFaces" : "faces";
+      if (selFaces.length === 0) return { error: `Select a face (Surf mode) before pinning a query for ${field}.` };
+      if (selFaces.length > 1) return { error: `Select exactly one face to pin — joint multi-entity induction doesn't exist yet, and a singleton query over a wider pick would silently narrow the operand.` };
+      return { field, ids: selFaces };
+    }
+    default:
+      return { error: `The ${id} form has no pinnable operand.` };
+  }
+}
+
+/** Compact one-line rendering of an induced query for the panel row. */
+function describeFaceFilter(filter: FacePredicate | FacePredicate[]): string {
+  const leaves = Array.isArray(filter) ? filter : [filter];
+  return leaves.map((leaf) => {
+    switch (leaf.kind) {
+      case "planar": return "planar";
+      case "surfaceType": return leaf.type;
+      case "normal": return `normal [${leaf.dir.join(", ")}]`;
+      case "areaGte": return `area ≥ ${leaf.value}`;
+      case "areaLte": return `area ≤ ${leaf.value}`;
+    }
+  }).join(" + ");
+}
+
+function describeSelectorQuery(query: SelectorQuery): string {
+  const s = query.source;
+  if (s.kind === "scene") {
+    const bits: string[] = [];
+    if (s.filter) bits.push(describeFaceFilter(s.filter));
+    if (s.rank) bits.push(`${s.rank.order} area ×${s.rank.n}`);
+    return `scene-wide${bits.length > 0 ? ` (${bits.join(" + ")})` : ""}`;
+  }
+  let text = `op ${s.op} ${s.role}`;
+  if (s.filter) text += ` + ${describeFaceFilter(s.filter)}`;
+  if (s.rank) text += ` + ${s.rank.order} area ×${s.rank.n}`;
+  return text;
+}
+
+/**
+ * Attaches staged queries to a freshly-resolved op — the single choke point
+ * both Apply and the live preview flow through (called from `buildOpForPanel`,
+ * never directly). A staged entry attaches only when its form matches AND the
+ * field's CURRENT ids still equal the synthesized set; anything else is
+ * reported, never silently dropped or silently attached to moved-on ids.
+ * Consuming (removing attached entries) is the Apply shells' job via
+ * `pushResolvedOp` — preview must never consume what Apply hasn't committed.
+ */
+function attachPendingQueries(id: PanelOpId, op: EditOp): { attached: string[]; notes: string[] } {
+  const attached: string[] = [];
+  const notes: string[] = [];
+  for (const q of pendingOpQueries) {
+    if (q.form !== id) continue;
+    const src = querySourceForForm(id);
+    if ("error" in src || src.field !== q.field || src.ids.length !== q.entityIds.length || !src.ids.every((v) => q.entityIds.includes(v))) {
+      notes.push(`Saved query for '${q.field}' (${q.entityIds.join(", ")}) not attached — the selection changed since synthesis. Re-synthesize or reselect.`);
+      continue;
+    }
+    const target = op as unknown as Record<string, unknown>;
+    const queries = { ...((target.targetQueries as Record<string, unknown> | undefined) ?? {}) };
+    const kinds = { ...((target.targetQueryKinds as Record<string, unknown> | undefined) ?? {}) };
+    queries[q.field] = q.query;
+    kinds[q.field] = q.kind;
+    target.targetQueries = queries;
+    target.targetQueryKinds = kinds;
+    attached.push(q.field);
+  }
+  return { attached, notes };
+}
+
+/**
+ * The single op-stack commit every Apply shell uses instead of touching
+ * `editsModel` directly: pushes, consumes attached staged queries (only the
+ * ones this op actually carried — a second staged field for the same form
+ * stays live), and surfaces a dormant-query note instead of a blank "Saved".
+ */
+function pushResolvedOp(form: PanelOpId, resolved: { op?: EditOp; attachedQueryFields?: string[]; queryNote?: string }): void {
+  if (!resolved.op) return; // callers surface `error` first; defensive
+  editsModel.push(resolved.op);
+  if (resolved.attachedQueryFields && resolved.attachedQueryFields.length > 0) {
+    const carried = new Set(resolved.attachedQueryFields);
+    pendingOpQueries = pendingOpQueries.filter((q) => q.form !== form || !carried.has(q.field));
+  }
+  // A dormant-query note is a warning (the staged reference was NOT
+  // attached), never a silent blank status — same error styling the preview
+  // path uses for it.
+  if (resolved.queryNote) setStatus(resolved.queryNote, true);
+  else setStatus("");
+}
+
+/**
  * THE single draft→EditOp mapping, shared verbatim by every Apply button AND
  * by the live preview — the structural guarantee that a preview can never
  * disagree with what Apply would commit (same guards, same field reads, same
@@ -1575,15 +1778,25 @@ function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
  * resolve → surface the error → push. Returns `{error}` (never throws) when
  * an operand selection is missing/invalid or a client-side guard fails;
  * `validateEditOp` remains the authoritative gate downstream either way.
+ *
+ * `attachedQueryFields` names staged operand queries actually attached (their
+ * selection still matched); `queryNote` names staged ones skipped because the
+ * selection moved on since synthesis — surfaced by both Apply and preview so
+ * a dormant query is never silent.
  */
-function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op?: EditOp; error?: string } {
-  const res = buildOpForPanelCore(id, rawDraft);
+function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op?: EditOp; error?: string; attachedQueryFields?: string[]; queryNote?: string } {
+  const res: { op?: EditOp; error?: string; attachedQueryFields?: string[]; queryNote?: string } = buildOpForPanelCore(id, rawDraft);
   // Construction-geometry flag: the panel's generic `guide` checkbox rides
   // every guide-kind draft (see `editsPanel.applyButtonDraft`) — copied onto
   // the resolved op here so BOTH the Apply push and the live preview carry
   // it, exactly like `exprs` above.
   if (res.op && (rawDraft as Record<string, any>).guide === true && GUIDE_KINDS.has(res.op.op)) {
     (res.op as unknown as Record<string, unknown>).guide = true;
+  }
+  if (res.op) {
+    const queries = attachPendingQueries(id, res.op);
+    if (queries.attached.length > 0) res.attachedQueryFields = queries.attached;
+    if (queries.notes.length > 0) res.queryNote = queries.notes.join(" ");
   }
   return res;
 }
@@ -1646,12 +1859,21 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     case "extrude": {
       const profile = profileOperandFromSelection(selFaces, selEdges);
       if ("error" in profile) return { error: `${profile.error} to extrude.` };
-      return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, length: d.length, ...thinOf(d) }) };
+      const pick = pickOf(d);
+      if ("pickError" in pick) return { error: pick.pickError };
+      if (extrudeTerminator) {
+        if (!/^face-\d+$/.test(extrudeTerminator)) return { error: "Captured terminator is not a face id — clear and re-capture it." };
+        if (guideEntityIds.has(extrudeTerminator)) return { error: `${extrudeTerminator} is guide (construction) geometry — guides are excluded from extrude terminators.` };
+        return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, upToFace: extrudeTerminator, ...thinOf(d), ...pick }) };
+      }
+      return { op: withExprs({ op: "extrude", ...profile.operand, dir: d.dir, length: d.length, ...thinOf(d), ...pick }) };
     }
     case "revolve": {
       const profile = profileOperandFromSelection(selFaces, selEdges);
       if ("error" in profile) return { error: `${profile.error} to revolve.` };
-      return { op: withExprs({ op: "revolve", ...profile.operand, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, ...thinOf(d) }) };
+      const pick = pickOf(d);
+      if ("pickError" in pick) return { error: pick.pickError };
+      return { op: withExprs({ op: "revolve", ...profile.operand, axisPoint: d.axisPoint, axisDir: d.axisDir, angleDeg: d.angleDeg, ...thinOf(d), ...pick }) };
     }
     case "sweep": {
       // With a path captured, the rest of the selection is free to be an edge
@@ -1662,24 +1884,51 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       const profileEdges = selEdges.filter((e) => e !== path);
       const profile = profileOperandFromSelection(selFaces, sweepPath ? profileEdges : []);
       if ("error" in profile) return { error: `${profile.error} to sweep.` };
-      return { op: withExprs({ op: "sweep", ...profile.operand, path, ...thinOf(d) }) };
+      const pick = pickOf(d);
+      if ("pickError" in pick) return { error: pick.pickError };
+      return { op: withExprs({ op: "sweep", ...profile.operand, path, ...thinOf(d), ...pick }) };
+    }
+    case "rib": {
+      if (!ribTerminator) return { error: "Capture a terminator face (Set terminator) before building a rib — a rib has no length to fall back on." };
+      if (!/^face-\d+$/.test(ribTerminator)) return { error: "Captured terminator is not a face id — clear and re-capture it." };
+      if (guideEntityIds.has(ribTerminator)) return { error: `${ribTerminator} is guide (construction) geometry — guides are excluded from rib terminators.` };
+      if (selEdges.length === 0) return { error: "Select spine edges (Line mode) before building a rib." };
+      const ribGuide = selEdges.find((e) => guideEntityIds.has(e));
+      if (ribGuide) return { error: `${ribGuide} is guide (construction) geometry — guides are excluded from rib spines.` };
+      if (d.thin === undefined || !Number.isFinite(d.thin) || d.thin <= 0) return { error: "Set a Wall thickness greater than 0 — a rib without thickness encloses nothing." };
+      const thin = d.thin as number;
+      return {
+        op: withExprs({
+          op: "rib",
+          spineEdges: selEdges,
+          dir: d.dir,
+          thin,
+          ...(d.thinOuter !== undefined ? { thinOuter: d.thinOuter } : {}),
+          upTo: ribTerminator,
+          ...(Number.isFinite(d.blendRadius) ? { blendRadius: d.blendRadius } : {}),
+        }),
+      };
     }
     case "loft": {
+      // Smoothing is orthogonal to section sourcing — read once, applied to
+      // every loft shape below (captured sections, live selection, thin or
+      // plain alike), since it flows into the shared loftWires choke point.
+      const smoothing = d.smoothing === true ? { smoothing: true as const } : {};
       if (loftSections.length > 0) {
         if (loftSections.length < 2) return { error: "Capture at least 2 loft sections (Add section)." };
         const guide = loftSections.flatMap((s) => s.ids).find((id) => guideEntityIds.has(id));
         if (guide) return { error: `${guide} is guide (construction) geometry — guides are excluded from loft profiles.` };
         if (loftSections.every((s) => s.kind === "face")) {
-          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...thinOf(d) }) };
+          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...smoothing, ...thinOf(d) }) };
         }
         if (loftSections.every((s) => s.kind === "edges")) {
-          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...thinOf(d) }) };
+          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...smoothing, ...thinOf(d) }) };
         }
         return { error: "Loft sections must be all faces or all edge wires — clear and re-capture." };
       }
       if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft, or capture sections one at a time." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from loft profiles." };
-      return { op: withExprs({ op: "loft", profiles: selFaces, ...thinOf(d) }) };
+      return { op: withExprs({ op: "loft", profiles: selFaces, ...smoothing, ...thinOf(d) }) };
     }
 
     // ── assembly ──
@@ -1729,6 +1978,14 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       const op: any = { op: "section", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal };
       if (d.planeId) op.planeId = d.planeId;
       return { op: withExprs(op) };
+    }
+    case "drill": {
+      if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to drill through." };
+      const profile = profileOperandFromSelection(selFaces, selEdges);
+      if ("error" in profile) return { error: `${profile.error} to drill.` };
+      const pick = pickOf(d);
+      if ("pickError" in pick) return { error: pick.pickError };
+      return { op: withExprs({ op: "drill", targets: selVolumes, ...profile.operand, dir: d.dir, length: d.length, ...pick }) };
     }
 
     // ── holes ──
@@ -1893,6 +2150,7 @@ async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknow
     setStatus(resolved.error ?? "Cannot preview this op.", true);
     return;
   }
+  if (resolved.queryNote) setStatus(resolved.queryNote, true); // a staged query went dormant — say so, don't just preview picked-only
   const clean = validateEditOp(resolved.op);
   if (!clean) {
     viewer.setOpPreview(null);
@@ -3694,6 +3952,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         hideHoverTip();
         lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
         lastOpBuckets = msg.opBuckets ?? null; // fresh produced-face classification for the Edits history chips
+        editsPanel.setQueryBuckets(msg.opBuckets ?? []); // and for the pin-as-query row's bucket picker
+        pendingOpQueries = []; // every id was renumbered — staged queries name the old shape
+        selectorSynthesizeRequest = null;
+        editsPanel.setQueryBusy(false);
+        editsPanel.showQueryResult(""); // clear a staged-query line naming pre-reload faces
         guideEntityIds.clear();
         for (const id of msg.guideIds ?? []) guideEntityIds.add(id); // construction geometry: dimmed, refused as feature operands
         viewer.setGuideIds(msg.guideIds ?? []);
@@ -3968,6 +4231,38 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== entityFactsRequestId) break;
       // Keep the card, showing why — silently vanishing would read as a bug.
       renderInspectorCard(selection.list()[0]?.entityId ?? "", null, msg.message);
+      break;
+
+    case "selectorSynthesizeResult": {
+      const req = selectorSynthesizeRequest;
+      if (!req || msg.requestId !== req.id) break; // stale — a newer synthesize (or a geometry reload) superseded it; never consume its latch
+      selectorSynthesizeRequest = null;
+      editsPanel.setQueryBusy(false);
+      // One entry per (form, field): a later synthesize for the same field
+      // replaces the earlier one, so the row's single line always describes
+      // exactly what Apply would attach.
+      pendingOpQueries = pendingOpQueries.filter((q) => q.form !== req.form || q.field !== req.field);
+      const refused = msg.results.filter((r) => !r.query || !r.kind);
+      if (refused.length === 0 && msg.results.length > 0) {
+        const staged = msg.results.map((r) => ({ entityId: r.entityId, query: r.query!, kind: r.kind! }));
+        // All staged under the one requested field (the row pins exactly one
+        // face — the click-time guard guarantees a singleton set).
+        const summary = `Pinned ${staged.map((s) => s.entityId).join(", ")} as ${describeSelectorQuery(staged[0].query)} — attaches on Apply while the selection is unchanged.`;
+        pendingOpQueries.push({ form: req.form, field: req.field, query: staged[0].query, kind: staged[0].kind, entityIds: req.ids, summary });
+        editsPanel.showQueryResult(summary);
+      } else {
+        const reasons = refused.map((r) => `${r.entityId}: ${r.reason ?? "no exact query"}`).join("; ");
+        editsPanel.showQueryResult(msg.results.length === 0 ? "The host returned no inductions." : `No query staged — ${reasons}`, true);
+      }
+      scheduleOpPreview(); // re-resolve through the staged query, if any — preview and Apply share the attach path
+      break;
+    }
+
+    case "selectorSynthesizeError":
+      if (!selectorSynthesizeRequest || msg.requestId !== selectorSynthesizeRequest.id) break; // stale
+      selectorSynthesizeRequest = null;
+      editsPanel.setQueryBusy(false);
+      editsPanel.showQueryResult(msg.message, true);
       break;
 
     case "standardPartsSearchResult":

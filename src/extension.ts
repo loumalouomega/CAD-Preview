@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { CadPreviewProvider } from "./provider";
+import { registerModelsView } from "./modelsView";
 import { maybeShowWhatsNew } from "./whatsNew";
 import type { HostToWebview } from "./protocol";
 
@@ -20,6 +21,7 @@ export interface CadPreviewTestApi {
 
 export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | undefined {
   context.subscriptions.push(CadPreviewProvider.register(context));
+  registerModelsView(context, CadPreviewProvider.viewType);
   void maybeShowWhatsNew(context);
   return context.extensionMode === vscode.ExtensionMode.Test
     ? { onDidPostMessage: CadPreviewProvider.onDidPostMessage }

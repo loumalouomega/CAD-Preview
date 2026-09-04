@@ -1049,6 +1049,27 @@ input[type="range"]#vc-opacity.meshing-slider {
   color: var(--vscode-errorForeground, #f48771);
 }
 
+/* The "pin selection as query" row in face-operand Edits forms: bucket/role
+ * selects wrap onto their own line; the result line carries the staged query
+ * summary or the kernel's honest refusal (`.error` reuses the error color). */
+.compose-query-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.compose-query-result {
+  flex-basis: 100%;
+  font-size: 10px;
+  opacity: 0.8;
+  padding: 2px 0;
+}
+.compose-query-result.error {
+  color: var(--vscode-errorForeground, #f48771);
+  opacity: 1;
+}
+
 .part-btn {
   flex-shrink: 0;
   font: inherit;

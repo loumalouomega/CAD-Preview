@@ -1,0 +1,14 @@
+% Op icon: rib — horizontal base solid with a thin vertical wall fused on top.
+% NOTE: built without pdflatex (not installed in this environment); the
+% committed icons/svg-ops/rib.svg is hand-authored in pdftocairo -svg output
+% style so `node build-op-icons.mjs` processes it identically. Re-render from
+% this source with `make svg-ops/rib.svg` when a TeX install is available and
+% diff the result against the committed SVG.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick, fill=gray!25] (-10,-12) rectangle (10,-6);
+  \draw[thick, fill=gray!10] (-2,-6) rectangle (2,10);
+\end{tikzpicture}
+\end{document}

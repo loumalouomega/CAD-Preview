@@ -801,6 +801,198 @@ test("inspector card: selection requests facts, and the reply renders per classi
   );
 });
 
+/**
+ * O. Pin-as-query row (selector-synthesis interactive half).
+ *
+ * The kernel half (`synthesizeSelector`) is covered against live OCCT in
+ * `npm run mcp:smoke`; what needs checking here is the panel↔host wiring over
+ * the real bundle: the row renders with the buckets the `geometry` message
+ * carried, Synthesize posts a well-formed `selectorSynthesizeRequest`, the
+ * faked reply stages, and Apply attaches `targetQueries` to the pushed op.
+ * Buckets are injected by re-posting the harness's own captured geometry —
+ * the shared fixture's ops are rigid transforms that record no buckets, so
+ * without injection the picker would be legitimately empty.
+ */
+test("pin as query: synthesize stages a query and Apply attaches it", async (page) => {
+  await page.evaluate(() => {
+    window.__lastGeometry = null;
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "geometry") window.__lastGeometry = e.data;
+    });
+  });
+  await populate(page);
+  assert(
+    await page.evaluate(() => window.__lastGeometry !== null),
+    "captured the harness geometry payload for bucket injection"
+  );
+  await page.evaluate(() =>
+    window.postMessage(
+      {
+        ...window.__lastGeometry,
+        opBuckets: [{ op: 0, kind: "extrude", roles: { endCap: ["face-1"], side: ["face-2", "face-3"] } }],
+      },
+      "*"
+    )
+  );
+  await sleep(250);
+
+  // Open the Extrude form (DOM click — the EDIT tab need not be active).
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".op-btn")].find(
+      (b) => b.querySelector(".op-name")?.textContent === "Extrude"
+    );
+    btn?.click();
+  });
+  await sleep(200);
+  assert(
+    await page.evaluate(() => document.querySelector("#edits-params .compose-query-row") !== null),
+    "the Extrude form renders the pin-as-query row"
+  );
+  const bucketOptions = await page.evaluate(() =>
+    [...document.querySelectorAll('#edits-params select[data-name="queryBucket"] option')].map((o) => o.textContent)
+  );
+  assert(
+    bucketOptions.some((t) => /op 0.*extrude/.test(t ?? "")),
+    `the bucket picker lists the injected bucket (got ${JSON.stringify(bucketOptions)})`
+  );
+
+  // Pick exactly one face, then synthesize.
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+  await page.evaluate(() => {
+    document.querySelector("#edits-params .compose-query-row button")?.click();
+  });
+  await sleep(200);
+  const req = await page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "selectorSynthesizeRequest").at(-1) ?? null
+  );
+  assert(req !== null, "Synthesize posts a selectorSynthesizeRequest");
+  assert(
+    req !== null &&
+      typeof req.requestId === "string" &&
+      typeof req.op === "number" &&
+      typeof req.role === "string" &&
+      Array.isArray(req.entityIds) &&
+      req.entityIds.length === 1 &&
+      /^face-\d+$/.test(req.entityIds[0]),
+    `the request carries op/role and exactly one picked face id (got ${JSON.stringify(req)})`
+  );
+
+  // A stale reply must stage nothing.
+  await page.evaluate(() =>
+    window.postMessage({ type: "selectorSynthesizeResult", requestId: "stale-id", results: [] }, "*")
+  );
+  await sleep(150);
+  const staleText = await page.evaluate(
+    () => document.querySelector('#edits-params [data-name="queryResult"]')?.textContent ?? null
+  );
+  assert(
+    staleText !== null && !/Pinned/.test(staleText),
+    `a stale reply stages nothing (got ${JSON.stringify(staleText)})`
+  );
+
+  // The real reply stages; Apply attaches.
+  const query = { version: 1, source: { kind: "bucket", op: 0, role: "endCap" } };
+  await page.evaluate(
+    ({ id, q, eid }) =>
+      window.postMessage(
+        {
+          type: "selectorSynthesizeResult",
+          requestId: id,
+          results: [{ entityId: eid, query: q, kind: "extrude" }],
+        },
+        "*"
+      ),
+    { id: req.requestId, q: query, eid: req.entityIds[0] }
+  );
+  await sleep(200);
+  const stagedText = await page.evaluate(
+    () => document.querySelector('#edits-params [data-name="queryResult"]')?.textContent ?? null
+  );
+  assert(
+    stagedText !== null && new RegExp(`Pinned ${req.entityIds[0]}`).test(stagedText),
+    `the reply stages a summary naming the face (got ${JSON.stringify(stagedText)})`
+  );
+
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll("#edits-params .compose-apply")].find(
+      (b) => b.textContent === "Apply"
+    );
+    btn?.click();
+  });
+  await sleep(300);
+  const applyBtns = await page.evaluate(() =>
+    [...document.querySelectorAll("#edits-params .compose-apply")].map((b) => b.textContent)
+  );
+  assert(
+    applyBtns.includes("Apply"),
+    `the extrude form still offers its Apply button at click time (got ${JSON.stringify(applyBtns)})`
+  );
+  const pushed = await page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "editsChanged").at(-1) ?? null
+  );
+  const lastOp = pushed?.ops?.at(-1);
+  assert(
+    lastOp?.op === "extrude" &&
+      lastOp?.targetQueries?.profile !== undefined &&
+      lastOp?.targetQueryKinds?.profile === "extrude",
+    `Apply attaches targetQueries/targetQueryKinds to the pushed extrude (got ${JSON.stringify(lastOp?.targetQueries)})`
+  );
+});
+
+/**
+ * Drill composer + Regions row — the pick/drill item's panel surface. Guards
+ * the dead-surface class (a catalog button whose form never renders, or an
+ * Apply that crashes on an empty selection instead of refusing it).
+ */
+test("drill form renders with regions row; extrude form carries one too", async (page) => {
+  await populate(page);
+  const openForm = async (name) => {
+    await page.evaluate((n) => {
+      const btn = [...document.querySelectorAll(".op-btn")].find(
+        (b) => b.querySelector(".op-name")?.textContent === n
+      );
+      btn?.click();
+    }, name);
+    await sleep(200);
+  };
+  const paramNames = () =>
+    page.evaluate(() => [...document.querySelectorAll("#edits-params [data-name]")].map((el) => el.dataset.name));
+
+  await openForm("Drill");
+  const drillNames = await paramNames();
+  for (const f of ["dir", "length", "pick"]) {
+    assert(drillNames.includes(f), `the Drill form has a ${f} field (got ${JSON.stringify(drillNames)})`);
+  }
+  const drillApply = await page.evaluate(
+    () => [...document.querySelectorAll("#edits-params .compose-apply")].map((b) => b.textContent)
+  );
+  assert(drillApply.includes("Apply"), "the Drill form offers its Apply button");
+
+  // Apply with nothing selected must refuse gracefully — an explanatory
+  // status (not a silent no-op), no editsChanged, no crash (an uncaught
+  // throw would fail the run via pageerror).
+  await page.evaluate(() => {
+    [...document.querySelectorAll("#edits-params .compose-apply")]
+      .find((b) => b.textContent === "Apply")
+      ?.click();
+  });
+  await sleep(300);
+  const drillStatus = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(
+    /volumes.*Vol mode/i.test(drillStatus),
+    `drill Apply with no selection explains itself (got ${JSON.stringify(drillStatus)})`
+  );
+  const sentAfter = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").length);
+  assert(sentAfter === 0, "drill Apply with no selection posts no editsChanged");
+
+  await openForm("Extrude");
+  const extrudeNames = await paramNames();
+  assert(extrudeNames.includes("pick"), `the Extrude form carries the Regions row (got ${JSON.stringify(extrudeNames)})`);
+});
+
 /** Turns picking on in the given mode and closes the dropdown behind it. */
 async function enablePicking(page, mode) {
   await page.click("#select-menu");

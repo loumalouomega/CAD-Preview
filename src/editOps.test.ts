@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS } from "./editOps";
+import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS, QUERYABLE_OPERAND_FIELDS } from "./editOps";
 
 describe("validateEditOp", () => {
   it("accepts well-formed transform ops", () => {
@@ -166,7 +166,7 @@ describe("validateEditOp", () => {
   });
 
   it("modify ops are topology-changing, B-rep only", () => {
-    for (const kind of ["shell", "splitByPlane", "section"] as const) {
+    for (const kind of ["shell", "splitByPlane", "section", "rib"] as const) {
       expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
       expect(BREP_ONLY_OPS.has(kind)).toBe(true);
     }
@@ -486,6 +486,22 @@ describe("thin (sweep-family thin-walled features)", () => {
     expect(op && "thinOuter" in op).toBe(false);
   });
 
+  it("accepts loft smoothing as a strict boolean, normalizing false to absent", () => {
+    const loft = (extra: Record<string, unknown>) =>
+      validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], ...extra });
+    expect(loft({ smoothing: true })).toMatchObject({ op: "loft", smoothing: true });
+    // false normalizes to absent — the kernel treats both identically
+    // (`smoothing === true` gate), so no information is lost.
+    const off = loft({ smoothing: false });
+    expect(off).not.toBeNull();
+    expect(off && "smoothing" in off).toBe(false);
+    const bare = loft({});
+    expect(bare).not.toBeNull();
+    expect(bare && "smoothing" in bare).toBe(false);
+    expect(loft({ smoothing: 1 })).toBeNull();
+    expect(loft({ smoothing: "true" })).toBeNull();
+  });
+
   it("accepts thinOuter across its whole range, including fully outward", () => {
     expect(extrude({ thin: 2, thinOuter: 0 })).toMatchObject({ thin: 2, thinOuter: 0 });
     expect(extrude({ thin: 2, thinOuter: 1 })).toMatchObject({ thin: 2, thinOuter: 1 });
@@ -561,6 +577,122 @@ describe("profile operand (open/closed wire profiles)", () => {
   it("composes with thin and with exprs", () => {
     expect(extrude({ profileEdges: ["edge-2"], thin: 2, exprs: { thin: "wall" } }))
       .toMatchObject({ profileEdges: ["edge-2"], thin: 2, exprs: { thin: "wall" } });
+  });
+});
+
+describe("extrude up-to-face terminator", () => {
+  const base = { op: "extrude", profile: "face-1", dir: [0, 0, 1] } as const;
+  const extrude = (extra: Record<string, unknown>) => validateEditOp({ ...base, length: 5, ...extra });
+
+  it("accepts exactly one of length / upToFace", () => {
+    expect(extrude({})).toMatchObject({ op: "extrude", length: 5 });
+    expect(validateEditOp({ ...base, upToFace: "face-9" })).toMatchObject({ op: "extrude", upToFace: "face-9" });
+    expect(validateEditOp({ ...base, length: 5, upToFace: "face-9" })).toBeNull(); // both at once
+    expect(validateEditOp({ ...base })).toBeNull(); // neither
+  });
+
+  it("pattern-checks the terminator id (a smuggled form is a rejection, not a miss)", () => {
+    expect(validateEditOp({ ...base, upToFace: "edge-2" })).toBeNull();
+    expect(validateEditOp({ ...base, upToFace: "face-x" })).toBeNull();
+    expect(validateEditOp({ ...base, upToFace: 7 })).toBeNull();
+    expect(validateEditOp({ ...base, upToFace: "face-9", length: "5" as unknown as number })).toBeNull();
+  });
+
+  it("composes with thin on the terminator form", () => {
+    expect(validateEditOp({ ...base, upToFace: "face-9", thin: 2 })).toMatchObject({ upToFace: "face-9", thin: 2 });
+  });
+});
+
+describe("rib", () => {
+  const rib = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "rib", spineEdges: ["edge-0", "edge-1"], dir: [0, 0, 1], thin: 2, upTo: "face-3", ...extra });
+
+  it("accepts a well-formed rib (blend optional, defaulting downstream)", () => {
+    expect(rib({})).toMatchObject({ op: "rib", spineEdges: ["edge-0", "edge-1"], thin: 2, upTo: "face-3" });
+    expect(rib({ blendRadius: 0.5 })).toMatchObject({ blendRadius: 0.5 });
+    expect(rib({ blendRadius: 0 })).toMatchObject({ blendRadius: 0 });
+    expect(rib({ thinOuter: 1 })).toMatchObject({ thinOuter: 1 }); // exactly thin/2: symmetric
+  });
+
+  it("rejects a missing/meaningless spine, direction-less, thin-less, or terminator-less rib", () => {
+    expect(validateEditOp({ op: "rib", dir: [0, 0, 1], thin: 2, upTo: "face-3" })).toBeNull(); // no spineEdges key
+    expect(rib({ spineEdges: [] })).toBeNull();
+    expect(rib({ spineEdges: ["face-0"] })).toBeNull(); // face smuggled into the edge form
+    expect(rib({ spineEdges: ["edge-0", "face-1"] })).toBeNull();
+    expect(rib({ thin: 0 })).toBeNull();
+    expect(rib({ thin: -2 })).toBeNull();
+    expect(validateEditOp({ op: "rib", spineEdges: ["edge-0"], dir: [0, 0, 1], thin: 2 })).toBeNull(); // no upTo
+    expect(rib({ upTo: "edge-0" })).toBeNull();
+    expect(rib({ upTo: "face-x" })).toBeNull();
+  });
+
+  it("rejects asymmetric thinOuter and negative blendRadius", () => {
+    expect(rib({ thinOuter: 0.5 })).toBeNull(); // not exactly thin/2 — open wire has no outside
+    expect(rib({ thinOuter: 2 })).toBeNull();
+    expect(rib({ blendRadius: -1 })).toBeNull();
+    expect(rib({ blendRadius: "0.5" })).toBeNull();
+  });
+});
+
+describe("targetQueries (op-operand selector persistence)", () => {
+  const bucketQuery = { version: 1, source: { kind: "bucket", op: 0, role: "body" } };
+  const fillet = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "fillet", edges: ["edge-0"], radius: 1, ...extra });
+
+  it("carries a valid per-field query with its kind tag", () => {
+    expect(fillet({ targetQueries: { edges: bucketQuery }, targetQueryKinds: { edges: "addBox" } })).toMatchObject({
+      op: "fillet",
+      edges: ["edge-0"],
+      targetQueries: { edges: bucketQuery },
+      targetQueryKinds: { edges: "addBox" },
+    });
+  });
+
+  it("drops bad entries per-entry: unknown field, malformed query, dangling tag", () => {
+    // Unknown operand field for this kind.
+    expect(fillet({ targetQueries: { targets: bucketQuery }, targetQueryKinds: { targets: "addBox" } })?.targetQueries).toBeUndefined();
+    // Malformed query with a good tag.
+    expect(
+      fillet({ targetQueries: { edges: { version: 1, source: { kind: "bucket", op: 0, role: "nope" } } }, targetQueryKinds: { edges: "addBox" } })?.targetQueries
+    ).toBeUndefined();
+    // Good query, dangling/missing tag.
+    expect(fillet({ targetQueries: { edges: bucketQuery }, targetQueryKinds: { edges: "" } })?.targetQueries).toBeUndefined();
+    expect(fillet({ targetQueries: { edges: bucketQuery } })?.targetQueries).toBeUndefined();
+    // Non-object annotation forms.
+    expect(fillet({ targetQueries: null })?.targetQueries).toBeUndefined();
+    expect(fillet({ targetQueries: [] })?.targetQueries).toBeUndefined();
+  });
+
+  it("accepts a scene query with no kind tag (no producer to tag)", () => {
+    const op = validateEditOp({
+      op: "fillet", edges: ["edge-0"], radius: 1,
+      targetQueries: { edges: { version: 1, source: { kind: "scene", filter: { kind: "planar" } } } },
+    });
+    expect(op?.targetQueries).toEqual({ edges: { version: 1, source: { kind: "scene", filter: { kind: "planar" } } } });
+    expect(op?.targetQueryKinds).toBeUndefined();
+  });
+
+  it("keeps a partial entry when only one of several is bad", () => {
+    const op = validateEditOp({
+      op: "boolean", kind: "union", a: ["solid-0"], b: ["solid-1"],
+      targetQueries: { a: bucketQuery, b: { version: 1, source: { kind: "bucket", op: 0, role: "nope" } } },
+      targetQueryKinds: { a: "addBox", b: "addBox" },
+    });
+    expect(op?.targetQueries).toEqual({ a: bucketQuery });
+    expect(op?.targetQueryKinds).toEqual({ a: "addBox" });
+  });
+
+  it("QUERYABLE_OPERAND_FIELDS covers every id-bearing operand field (mirror of referencedEntities)", () => {
+    // referencedEntities is the webview-side enumeration; this table is the
+    // op-model side. Plane references (planeId/midplaneFaces) are deliberately
+    // excluded from both query surfaces — a plane is already a stable datum.
+    expect(QUERYABLE_OPERAND_FIELDS.fillet).toContain("edges");
+    expect(QUERYABLE_OPERAND_FIELDS.boolean).toEqual(["a", "b"]);
+    expect(QUERYABLE_OPERAND_FIELDS.extrude).toEqual(expect.arrayContaining(["profile", "profileEdges", "upToFace"]));
+    expect(QUERYABLE_OPERAND_FIELDS.loft).toEqual(expect.arrayContaining(["profiles", "profileEdgeSets"]));
+    expect(QUERYABLE_OPERAND_FIELDS.mate).toEqual(["faceA", "faceB"]);
+    expect(QUERYABLE_OPERAND_FIELDS.translate).toEqual(["targets"]);
+    expect(QUERYABLE_OPERAND_FIELDS.addBox).toEqual([]);
   });
 });
 
@@ -682,5 +814,63 @@ describe("align / patternLinear / patternCircular", () => {
   it("GUIDE_KINDS covers exactly the 16 profile/curve creation kinds", () => {
     expect(GUIDE_KINDS.size).toBe(16);
     for (const kind of GUIDE_KINDS) expect(BREP_ONLY_OPS.has(kind)).toBe(true);
+  });
+});
+
+describe("pick (region selector) + drill", () => {
+  const extrude = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "extrude", profile: "face-1", dir: [0, 0, 1], length: 5, ...extra });
+  const drill = (extra: Record<string, unknown>) =>
+    validateEditOp({ op: "drill", targets: ["solid-0"], profile: "face-1", dir: [0, 0, -1], length: 10, ...extra });
+
+  it("omits pick entirely when absent", () => {
+    const op = extrude({});
+    expect(op).not.toBeNull();
+    expect(op && "pick" in op).toBe(false);
+    expect(drill({})).toMatchObject({ op: "drill", targets: ["solid-0"] });
+  });
+
+  it("accepts outer/all/index lists on extrude, revolve, sweep, and drill", () => {
+    expect(extrude({ pick: "outer" })).toMatchObject({ pick: "outer" });
+    expect(extrude({ pick: "all" })).toMatchObject({ pick: "all" });
+    expect(extrude({ pick: [0] })).toMatchObject({ pick: [0] });
+    expect(extrude({ pick: [0, 2] })).toMatchObject({ pick: [0, 2] });
+    expect(validateEditOp({ op: "revolve", profile: "face-1", axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 90, pick: [1] }))
+      .toMatchObject({ pick: [1] });
+    expect(validateEditOp({ op: "sweep", profileEdges: ["edge-1", "edge-2"], path: "edge-0", pick: "all" }))
+      .toMatchObject({ pick: "all" });
+    expect(drill({ pick: [0, 1] })).toMatchObject({ pick: [0, 1] });
+  });
+
+  it("dedupes repeated indices rather than rejecting", () => {
+    expect(extrude({ pick: [0, 0, 1] })).toMatchObject({ pick: [0, 1] });
+  });
+
+  it("rejects malformed picks", () => {
+    expect(extrude({ pick: [] })).toBeNull();
+    expect(extrude({ pick: [-1] })).toBeNull();
+    expect(extrude({ pick: [1.5] })).toBeNull();
+    expect(extrude({ pick: ["0"] })).toBeNull();
+    expect(extrude({ pick: "inner" })).toBeNull();
+    expect(extrude({ pick: 0 })).toBeNull();
+  });
+
+  it("rejects pick on loft and rib (no per-section addressing)", () => {
+    expect(validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], pick: [0] })).toBeNull();
+    expect(validateEditOp({ op: "rib", spineEdges: ["edge-0"], dir: [0, 0, 1], thin: 2, upTo: "face-0", pick: "all" })).toBeNull();
+  });
+
+  it("rejects drill without targets/profile/dir/length", () => {
+    expect(validateEditOp({ op: "drill", profile: "face-1", dir: [0, 0, -1], length: 10 })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], dir: [0, 0, -1], length: 10 })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], profile: "face-1", length: 10 })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], profile: "face-1", dir: [0, 0, -1] })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: [], profile: "face-1", dir: [0, 0, -1], length: 10 })).toBeNull();
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], profile: "face-1", profileEdges: ["edge-1"], dir: [0, 0, -1], length: 10 })).toBeNull();
+  });
+
+  it("accepts drill's edge profile form and validates length like extrude", () => {
+    expect(validateEditOp({ op: "drill", targets: ["solid-0"], profileEdges: ["edge-1", "edge-2"], dir: [0, 0, -1], length: 10 }))
+      .toMatchObject({ op: "drill" });
   });
 });

@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 44, `tools/list exposes 44 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 46, `tools/list exposes 46 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -277,6 +277,317 @@ try {
     assert(buckets.length === 1 && buckets[0].op === 0 && buckets[0].kind === "addBox", `load_model/apply_edit_ops classify the addBox as one bucket (got ${JSON.stringify(buckets.map((b) => b.kind))})`);
     assert(Array.isArray(buckets[0].roles.body) && buckets[0].roles.body.length === 6, `the addBox bucket's body role covers exactly its 6 faces (got ${buckets[0].roles.body?.length})`);
     assert(buckets[0].roles.body.every((id) => /^face-\d+$/.test(id)), "bucket ids are face-N strings");
+  }
+
+  // resolve_selector (roadmap "Selector synthesis", rung 1) — the op-0 body
+  // bucket re-resolves against the current model: the same 6 ids with a ~0
+  // centre-distance oracle (the SAME faces, not coincidental ones), plus the
+  // honest degradations (mesh source → supported:false, out-of-range op throws).
+  {
+    const sel = await call("resolve_selector", {
+      path: model,
+      selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } },
+    });
+    assert(
+      sel.supported === true && sel.bindable === true && sel.ids.length === 6 && sel.unresolved.length === 0,
+      `resolve_selector re-resolves the op-0 body bucket to 6 ids (got ${JSON.stringify(sel.ids)})`
+    );
+    assert(
+      sel.ids.every((id) => /^face-\d+$/.test(id)) &&
+        sel.matches.every((m) => m.centreDistance < 1e-6 && m.measureDeltaPct < 1e-6),
+      "resolve_selector's oracle is ~0 distance/delta for every match (same geometry, verified not trusted)"
+    );
+  }
+
+  // resolve_selector rung 2 (induced filter + rank) — own fixture copy so the
+  // extra ops never disturb the main model's downstream assertions. A
+  // non-cube box has three distinct face-area pairs, so largestN(1) over its
+  // planar body faces names exactly one face; an impossible threshold names
+  // honestly none (never a fallback to the whole bucket).
+  {
+    const selModel = path.join(dir, "bull-for-selector-rung2.stp");
+    fs.copyFileSync(FIXTURE, selModel);
+    await call("apply_edit_ops", {
+      path: selModel,
+      ops: [{ op: "addBox", center: [200, 0, 0], size: [10, 20, 30] }],
+    });
+    const ranked = await call("resolve_selector", {
+      path: selModel,
+      selector: {
+        version: 1,
+        source: { kind: "bucket", op: 0, role: "body", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } },
+      },
+    });
+    assert(
+      ranked.supported === true && ranked.ids.length === 1 && ranked.matches.length === 1,
+      `resolve_selector rung 2 narrows the body to its single largest planar face (got ${JSON.stringify(ranked.ids)})`
+    );
+    assert(
+      ranked.matches[0].centreDistance < 1e-6 && ranked.matches[0].measureDeltaPct < 1e-6,
+      "the ranked survivor's oracle is still ~0 (resolve-then-filter on current-shape facts)"
+    );
+    const empty = await call("resolve_selector", {
+      path: selModel,
+      selector: { version: 1, source: { kind: "bucket", op: 0, role: "body", filter: { kind: "areaGte", value: 1e12 } } },
+    });
+    assert(empty.ids.length === 0 && empty.matches.length === 0, "an impossible induced predicate resolves to an honest empty, never the whole bucket");
+  }
+
+  // resolve_selector rung 3 (scene-wide predicate, no bucket anchor) — own
+  // block.stp copy (a 3×4×5 box: faces pair up as 12/15/20-area, all planar),
+  // so every count is analytically known: largest-1 names exactly one face
+  // (cross-checked via inspect, the established oracle bar), and a pattern
+  // copy doubles the planar count while staying bindable — the instance
+  // problem rung 1 refuses is dissolved, not solved.
+  {
+    const sceneModel = path.join(dir, "block-for-selector-rung3.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), sceneModel);
+    const scene = await call("resolve_selector", {
+      path: sceneModel,
+      selector: { version: 1, source: { kind: "scene", filter: { kind: "planar" }, rank: { by: "area", order: "max", n: 1 } } },
+    });
+    assert(
+      scene.supported === true && scene.bindable === true && scene.ids.length === 1 && scene.matches.length === 0,
+      `resolve_selector rung 3 names the single largest planar face (got ${JSON.stringify(scene.ids)})`
+    );
+    const facts = await call("inspect", { path: sceneModel, entityId: scene.ids[0] });
+    assert(Math.abs(facts.area - 20) < 1e-6, `the scene survivor really is a 20-area face (got ${facts.area})`);
+
+    const conj = await call("resolve_selector", {
+      path: sceneModel,
+      selector: { version: 1, source: { kind: "scene", filter: [{ kind: "planar" }, { kind: "areaGte", value: 15 }] } },
+    });
+    assert(conj.ids.length === 4, `scene conjunction planar+area>=15 names the 15/15/20/20 faces (got ${JSON.stringify(conj.ids)})`);
+
+    await call("apply_edit_ops", {
+      path: sceneModel,
+      ops: [{ op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 50, count: 2 }],
+    });
+    const across = await call("resolve_selector", {
+      path: sceneModel,
+      selector: { version: 1, source: { kind: "scene", filter: { kind: "planar" } } },
+    });
+    assert(
+      across.bindable === true && across.ids.length === 12,
+      `scene matches across pattern copies: 12 planar faces over 2 instances (got ${across.ids.length})`
+    );
+  }
+
+  // synthesize_selector (induction) — own block.stp copy: box + fillet, so op
+  // 1's band bucket holds exactly one cylindrical face among rebuilt planes.
+  // The synthesized query must name it with a qualitative leaf (never an area
+  // literal), re-execute to exactly that id at ~0 oracle distance, and still
+  // hit the same cylinder after an unrelated append (transferability — what
+  // makes the query better than the raw id).
+  {
+    const synthModel = path.join(dir, "block-for-synthesize.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), synthModel);
+    await call("apply_edit_ops", {
+      path: synthModel,
+      ops: [{ op: "addBox", center: [100, 0, 0], size: [10, 20, 30] }],
+    });
+    // block.stp has 12 edges (edge-0..11); the added box appends edge-12..23.
+    const filleted = await call("apply_edit_ops", {
+      path: synthModel,
+      ops: [{ op: "fillet", edges: ["edge-12"], radius: 1 }],
+    });
+    assert(filleted.applied === 1, `fillet applied for the synthesis fixture (got ${JSON.stringify(filleted.report)})`);
+    const synthLoaded = await call("load_model", { path: synthModel });
+    const bandIds = ((synthLoaded.opBuckets ?? []).find((b) => b.op === 1)?.roles?.band ?? []);
+    let target = null;
+    for (const id of bandIds) {
+      const facts = await call("inspect", { path: synthModel, entityId: id });
+      if (facts.surfaceType === "cylinder") target = id;
+    }
+    assert(target !== null, `the band bucket holds exactly one cylindrical face (band: ${JSON.stringify(bandIds)})`);
+
+    const synth = await call("synthesize_selector", { path: synthModel, op: 1, role: "band", entityId: target });
+    assert(synth.supported === true && synth.bindable === true && synth.query !== null, "synthesize_selector names the band cylinder");
+    assert(
+      JSON.stringify(synth.ids) === JSON.stringify([target]) && synth.matches[0].centreDistance < 1e-6,
+      `synthesized query re-executes to exactly [${target}] at ~0 oracle distance`
+    );
+    assert(
+      !/\d{2,}\.\d+/.test(JSON.stringify(synth.query)),
+      `synthesized query carries no baked coordinate (got ${JSON.stringify(synth.query.source)})`
+    );
+
+    await call("apply_edit_ops", {
+      path: synthModel,
+      ops: [{ op: "addBox", center: [-100, 0, 0], size: [5, 5, 5] }],
+    });
+    const revived = await call("resolve_selector", { path: synthModel, selector: synth.query });
+    assert(revived.ids.length === 1, `the query still resolves to one face after an unrelated append (got ${JSON.stringify(revived.ids)})`);
+    const revivedFacts = await call("inspect", { path: synthModel, entityId: revived.ids[0] });
+    assert(
+      revivedFacts.surfaceType === "cylinder" && revived.matches[0].centreDistance < 1e-6,
+      "the re-resolved face is still the band cylinder at ~0 oracle distance (transferability)"
+    );
+  }
+
+  // Selector persistence (Phase A) — same block.stp+box+fillet shape on its own
+  // copy: synthesize the band cylinder, persist via set_part, append an
+  // unrelated op (the part must re-resolve to the same cylinder through
+  // maybeRebindParts), then remove the MIDDLE op (stored op index now
+  // addresses a different kind — the cache must freeze with a warning, and
+  // the stored query itself must survive the splice).
+  {
+    const persistModel = path.join(dir, "block-for-selector-persist.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), persistModel);
+    await call("apply_edit_ops", {
+      path: persistModel,
+      ops: [{ op: "addBox", center: [100, 0, 0], size: [10, 20, 30] }],
+    });
+    await call("apply_edit_ops", {
+      path: persistModel,
+      ops: [{ op: "fillet", edges: ["edge-12"], radius: 1 }],
+    });
+    const persistLoaded = await call("load_model", { path: persistModel });
+    const persistBand = ((persistLoaded.opBuckets ?? []).find((b) => b.op === 1)?.roles?.band ?? []);
+    let persistTarget = null;
+    for (const id of persistBand) {
+      const facts = await call("inspect", { path: persistModel, entityId: id });
+      if (facts.surfaceType === "cylinder") persistTarget = id;
+    }
+    assert(persistTarget !== null, "the persist fixture's band bucket holds a cylindrical face");
+    const synthResult = await call("synthesize_selector", { path: persistModel, op: 1, role: "band", entityId: persistTarget });
+    assert(synthResult.query !== null, "synthesize_selector names the band cylinder for persistence");
+
+    await call("set_part", { path: persistModel, name: "Fillet", surfaces: [persistTarget], selector: synthResult.query });
+    const storedPart = (await call("get_state", { path: persistModel })).parts.find((p) => p.name === "Fillet");
+    assert(
+      storedPart?.selector !== undefined && storedPart?.selectorOpKind === "fillet",
+      "set_part persists the query with a server-derived op-kind tag (never caller-supplied)"
+    );
+
+    await call("apply_edit_ops", {
+      path: persistModel,
+      ops: [{ op: "addBox", center: [-100, 0, 0], size: [5, 5, 5] }],
+    });
+    const revivedPart = (await call("get_state", { path: persistModel })).parts.find((p) => p.name === "Fillet");
+    assert(revivedPart.surfaces.length === 1, `append re-resolved the part (got ${JSON.stringify(revivedPart.surfaces)})`);
+    const revivedPartFacts = await call("inspect", { path: persistModel, entityId: revivedPart.surfaces[0] });
+    assert(revivedPartFacts.surfaceType === "cylinder", "the re-resolved part surface is still the cylinder");
+
+    const removed = await call("remove_edit_op", { path: persistModel, index: 0 });
+    assert(
+      JSON.stringify(removed.warnings ?? []).match(/kept cached surfaces|Rebound|dropped/i) !== null,
+      "middle splice surfaces a rebind/selector warning rather than going quiet"
+    );
+    const splicedPart = (await call("get_state", { path: persistModel })).parts.find((p) => p.name === "Fillet");
+    assert(splicedPart.selector !== undefined, "the stored query itself survives the splice (only the cache may freeze)");
+  }
+
+  // Op-operand queries (Phase B) — block.stp + a 10x20x30 box at [200,0,0],
+  // then an extrude whose `profile` is a BUCKET QUERY (op 0's largest body
+  // face — one of the two 600-area x-normal faces), exercising: live
+  // resolution, re-resolution after an unrelated append, the forward-
+  // reference freeze on a middle splice, and the kind-tag mismatch freeze.
+  // The sidecar keeps queries + cached ids untouched throughout (replay-only
+  // resolution).
+  {
+    const oqModel = path.join(dir, "opquery.stp");
+    const resetOq = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), oqModel);
+      fs.rmSync(`${oqModel}.edits.json`, { force: true });
+    };
+    resetOq();
+    const oqQuery = { version: 1, source: { kind: "bucket", op: 0, role: "body", rank: { by: "area", order: "max", n: 1 } } };
+    const oqExtrude = {
+      op: "extrude", profile: "face-6", dir: [1, 0, 0], length: 5,
+      targetQueries: { profile: oqQuery }, targetQueryKinds: { profile: "addBox" },
+    };
+    const oqApplied = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: oqModel, ops: [{ op: "addBox", center: [200, 0, 0], size: [10, 20, 30] }, oqExtrude] },
+      resetOq
+    );
+    assert(oqApplied.applied === 2, `op-operand fixture applies (got ${JSON.stringify(oqApplied.report)})`);
+    // The extrusion resolves to a 600-area face extruded 5 along its own
+    // normal → exactly 3000 (an un-resolved cached "face-6" would be a seed
+    // face — 12..20 area — and could never give 3000).
+    const oqLoaded = await call("load_model", { path: oqModel });
+    assert(
+      oqLoaded.warnings.length === 0,
+      `op-operand resolution surfaces no warnings on the happy path (got ${JSON.stringify(oqLoaded.warnings)})`
+    );
+    const oqMass = await call("get_mass_properties", { path: oqModel, entityId: "solid-2" });
+    assert(
+      Math.abs(oqMass.volume - 3000) < 1e-6,
+      `the queried profile resolved to a 600-area face (extrusion volume ${oqMass.volume}, expect 3000)`
+    );
+
+    // 1. unrelated append: the query re-resolves to the SAME face.
+    await call("apply_edit_ops", { path: oqModel, ops: [{ op: "addBox", center: [-200, 0, 0], size: [10, 10, 10] }] });
+    const oqLoaded2 = await call("load_model", { path: oqModel });
+    assert(oqLoaded2.warnings.length === 0, `re-resolution after append stays clean (got ${JSON.stringify(oqLoaded2.warnings)})`);
+    const oqMass2 = await call("get_mass_properties", { path: oqModel, entityId: "solid-2" });
+    assert(Math.abs(oqMass2.volume - 3000) < 1e-6, `re-resolved extrusion is unchanged after the append (${oqMass2.volume})`);
+
+    // 2. the SIDECAR keeps queries + caches (replay-only resolution).
+    const oqSidecar = JSON.parse(fs.readFileSync(`${oqModel}.edits.json`, "utf8"));
+    const oqStored = oqSidecar.ops.find((o) => o.op === "extrude");
+    assert(
+      oqStored?.targetQueries?.profile !== undefined && oqStored.targetQueryKinds?.profile === "addBox",
+      "the sidecar keeps the stored query + kind tag untouched (resolution is replay-only)"
+    );
+
+    // 3. middle splice: the query's producing index now points at itself —
+    // a forward reference → freeze to cached ids, surfaced as a warning.
+    await call("remove_edit_op", { path: oqModel, index: 0 });
+    const oqLoaded3 = await call("load_model", { path: oqModel });
+    assert(
+      oqLoaded3.warnings.some((w) => /frozen to cached ids/.test(w) && /not before this op/.test(w)),
+      `a forward reference freezes with a named warning (got ${JSON.stringify(oqLoaded3.warnings)})`
+    );
+
+    // 4. kind-tag mismatch — a FRESH model for deterministic ordering:
+    // [cylinder, extrude(query op 0, tag "addBox")] — index 0 is an
+    // addCylinder, so the tag guard fires before geometry is consulted.
+    const oqModel2 = path.join(dir, "opquery2.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), oqModel2);
+    await call("apply_edit_ops", {
+      path: oqModel2,
+      ops: [
+        { op: "addCylinder", center: [-300, 0, 0], axis: [0, 0, 1], radius: 5, height: 10 },
+        oqExtrude,
+      ],
+    });
+    const oqLoaded4 = await call("load_model", { path: oqModel2 });
+    assert(
+      oqLoaded4.warnings.some((w) => /does not match the op now at index 0/.test(w)),
+      `a kind-tag mismatch freezes with a named warning (got ${JSON.stringify(oqLoaded4.warnings)})`
+    );
+  }
+
+  // Op-operand queries in repeat bodies are refused (indices are baked).
+  {
+    const oqScriptModel = path.join(dir, "opquery-repeat.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), oqScriptModel);
+    const oqScript = await call("run_parametric_script", {
+      path: oqScriptModel,
+      script: {
+        steps: [
+          {
+            repeat: {
+              times: 2,
+              indexVar: "i",
+              body: [
+                {
+                  op: "extrude", profile: "face-0", dir: [0, 0, 1], length: 5,
+                  targetQueries: { profile: { version: 1, source: { kind: "bucket", op: 0, role: "body" } } },
+                  targetQueryKinds: { profile: "addBox" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    assert(
+      oqScript.report?.some((r) => r.kind === "repeat" && (r.reasons ?? []).some((x) => /targetQueries cannot be used inside a repeat body/.test(x))),
+      `a query inside a repeat body is refused by name (got ${JSON.stringify(oqScript.report)})`
+    );
   }
 
   const sidecar = JSON.parse(fs.readFileSync(`${model}.edits.json`, "utf8"));
@@ -3860,6 +4171,224 @@ try {
     assert(Math.abs(plain.volume - 500) < 1e-6, `a non-thin extrude still fills the profile, exactly 500 (got ${plain.volume})`);
   }
 
+  // --- extrude up-to-face terminator (roadmap item 2) -------------------------
+  //
+  // block.stp is a 3x4x5 box (volume 60, faces pair up by area). A 20x20x2 box
+  // added on top contributes 800; its bottom face (area 400 at z=12.5) is the
+  // terminator for the block's own top face (area 12 at z=2.5), so the derived
+  // length is analytically 10 — twin-copy checked against inline length: 10.
+  {
+    const uptoModel = path.join(dir, "uptoface.stp");
+    const resetUpto = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), uptoModel);
+      fs.rmSync(`${uptoModel}.edits.json`, { force: true });
+    };
+    resetUpto();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: uptoModel, ops: [{ op: "addBox", center: [0, 0, 13.5], size: [20, 20, 2] }] },
+      resetUpto
+    );
+    const uptoLoaded = await call("load_model", { path: uptoModel });
+    let uptoProfile = null;
+    let uptoTerm = null;
+    for (const s of uptoLoaded.solids) {
+      for (const fid of s.faceIds) {
+        const f = await call("inspect", { path: uptoModel, entityId: fid });
+        if (Math.abs((f.area ?? 0) - 12) < 1e-6 && Math.abs(f.center[2] - 2.5) < 1e-6) uptoProfile = fid;
+        if (Math.abs((f.area ?? 0) - 400) < 1e-6 && Math.abs(f.center[2] - 12.5) < 1e-6) uptoTerm = fid;
+      }
+    }
+    assert(uptoProfile !== null && uptoTerm !== null, `profile (z=2.5) and terminator (z=12.5) faces found (got ${uptoProfile}, ${uptoTerm})`);
+
+    // 1. twin cross-check: up-to-face vs inline length 10 — byte-identical.
+    const uptoRes = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: uptoModel, ops: [{ op: "extrude", profile: uptoProfile, dir: [0, 0, 1], upToFace: uptoTerm }] },
+      resetUpto
+    );
+    assert(uptoRes.applied === 1, `up-to-face extrude applies (got ${JSON.stringify(uptoRes.report)})`);
+    const uptoMass = await call("get_mass_properties", { path: uptoModel });
+    resetUpto();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: uptoModel,
+        ops: [
+          { op: "addBox", center: [0, 0, 13.5], size: [20, 20, 2] },
+          { op: "extrude", profile: uptoProfile, dir: [0, 0, 1], length: 10 },
+        ],
+      },
+      resetUpto
+    );
+    const inlineMass = await call("get_mass_properties", { path: uptoModel });
+    assert(
+      Math.abs(uptoMass.volume - inlineMass.volume) < 1e-6,
+      `up-to-face volume ${uptoMass.volume} equals the inline-length twin ${inlineMass.volume}`
+    );
+    assert(Math.abs(uptoMass.volume - 980) < 1e-4, `total is block 60 + box 800 + 12x10 tube (got ${uptoMass.volume})`);
+
+    // 2. bucket roles survive derived lengths (startCap identity, endCap split).
+    const uptoBuckets = (await call("load_model", { path: uptoModel })).opBuckets ?? [];
+    const uptoBucket = uptoBuckets.find((b) => b.kind === "extrude" && b.op === 1);
+    assert(
+      uptoBucket?.roles?.startCap?.length === 1 && uptoBucket?.roles?.endCap?.length === 1 && (uptoBucket?.roles?.side?.length ?? 0) > 0,
+      `derived-length extrude keeps startCap/endCap/side roles (got ${JSON.stringify(uptoBucket?.roles)})`
+    );
+
+    // 3. miss (terminator coplanar with the profile — distance zero) skips
+    // with a diagnostic. The profile's own face is the deterministic
+    // zero-distance terminator: no face discovery needed, t is exactly 0.
+    const miss = await call("apply_edit_ops", {
+      path: uptoModel,
+      ops: [{ op: "extrude", profile: uptoProfile, dir: [0, 0, 1], upToFace: uptoProfile }],
+    });
+    assert(
+      miss.applied === 0 && miss.notApplied === 1 && miss.report.some((r) => /behind|miss/i.test(r.diagnostic ?? "")),
+      `a coplanar terminator skips with a miss diagnostic (got ${JSON.stringify(miss.report.map((r) => r.diagnostic))})`
+    );
+
+    // 4. parallel direction skips with a diagnostic.
+    const parallel = await call("apply_edit_ops", {
+      path: uptoModel,
+      ops: [{ op: "extrude", profile: uptoProfile, dir: [1, 0, 0], upToFace: uptoTerm }],
+    });
+    assert(
+      parallel.applied === 0 && parallel.notApplied === 1 && parallel.report.some((r) => /parallel/i.test(r.diagnostic ?? "")),
+      `a parallel direction skips with a diagnostic (got ${JSON.stringify(parallel.report.map((r) => r.diagnostic))})`
+    );
+  }
+
+  // --- rib() (roadmap item 2: open spine + up-to-face + fuse + blend) --------
+  //
+  // Same analytic discipline. Support box 20x20x10 (volume 4000) + cap box
+  // 20x20x2 (800) on block.stp (60); open 2-segment spine on z=10, wall 2
+  // (band 32+PI), extruded +Z to the cap bottom (z=16) with one-thin embed,
+  // fused, junction blended at the default thin/4 = 0.5. Visible wall is 6
+  // tall: 4000 + 800 + 60 + 6*(32+PI), plus concave-fillet fill on top.
+  {
+    const ribModel = path.join(dir, "rib.stp");
+    const resetRib = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), ribModel);
+      fs.rmSync(`${ribModel}.edits.json`, { force: true });
+    };
+    resetRib();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 5], size: [20, 20, 10] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 17], size: [20, 20, 2] }] },
+      resetRib
+    );
+    const ribLoaded = await call("load_model", { path: ribModel });
+    const ribEdgeBase = ribLoaded.edgeCount;
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: ribModel,
+        ops: [{ op: "addPolyline", points: [[10, 2, 10], [10, 10, 10], [10, 18, 10]], closed: false }],
+      },
+      resetRib
+    );
+    const ribSpine = [`edge-${ribEdgeBase}`, `edge-${ribEdgeBase + 1}`];
+    const ribLoaded2 = await call("load_model", { path: ribModel });
+    let ribTerm = null;
+    let ribBehind = null;
+    for (const s of ribLoaded2.solids) {
+      for (const fid of s.faceIds) {
+        const f = await call("inspect", { path: ribModel, entityId: fid });
+        if (Math.abs((f.area ?? 0) - 400) < 1e-6 && Math.abs(f.center[2] - 16) < 1e-6) ribTerm = fid;
+        if (Math.abs((f.area ?? 0) - 12) < 1e-6 && Math.abs(f.center[2] - (-2.5)) < 1e-6) ribBehind = fid;
+      }
+    }
+    assert(ribTerm !== null, "rib terminator (cap bottom, area 400 at z=16) found");
+    assert(ribBehind !== null, "behind-plane face (seed bottom, z=-2.5) found for the miss case");
+
+    // 1. full rib: fuse + blend. Base is exact; the blend adds concave fill.
+    const BAND = 2 * 16 + Math.PI;
+    const ribBase = 60 + 4000 + 800 + BAND * 6;
+    const ribbed = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "rib", spineEdges: ribSpine, dir: [0, 0, 1], thin: 2, upTo: ribTerm }] },
+      resetRib
+    );
+    assert(ribbed.applied === 1, `rib applies (got ${JSON.stringify(ribbed.report)})`);
+    const ribMass = await call("get_mass_properties", { path: ribModel });
+    assert(
+      ribMass.volume > ribBase - 0.1 && ribMass.volume < ribBase + 10,
+      `fused+blended rib is the analytic base ${ribBase.toFixed(2)} plus concave fill (got ${ribMass.volume})`
+    );
+
+    // 2. fuse-only twin (blendRadius 0) is exact to the base — and the blended
+    // twin exceeds it by exactly the fillet fill, proving the blend ran.
+    resetRib();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 5], size: [20, 20, 10] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 17], size: [20, 20, 2] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: ribModel,
+        ops: [{ op: "addPolyline", points: [[10, 2, 10], [10, 10, 10], [10, 18, 10]], closed: false }] },
+      resetRib
+    );
+    const ribbedFlat = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "rib", spineEdges: ribSpine, dir: [0, 0, 1], thin: 2, upTo: ribTerm, blendRadius: 0 }] },
+      resetRib
+    );
+    assert(ribbedFlat.applied === 1, `fuse-only rib applies (got ${JSON.stringify(ribbedFlat.report)})`);
+    const ribFlatMass = await call("get_mass_properties", { path: ribModel });
+    assert(Math.abs(ribFlatMass.volume - ribBase) < 0.1, `fuse-only rib is exactly the analytic base (got ${ribFlatMass.volume})`);
+    assert(ribMass.volume > ribFlatMass.volume, `blended rib exceeds fuse-only by the concave fill (${ribMass.volume} vs ${ribFlatMass.volume})`);
+
+    // 3. bucket roles: fused wall faces land under "side".
+    const ribBuckets = (await call("load_model", { path: ribModel })).opBuckets ?? [];
+    const ribBucket = ribBuckets.find((b) => b.kind === "rib");
+    assert((ribBucket?.roles?.side?.length ?? 0) > 0, `rib bucket carries side faces (got ${JSON.stringify(ribBucket?.roles)})`);
+
+    // 4. miss (terminator behind the spine) skips with a diagnostic — on a
+    // fresh setup history so the spine/terminator ids are known-valid (a fuse
+    // renumbers everything after it, so reusing post-rib ids here would test
+    // resolve-failure instead of the miss path).
+    resetRib();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 5], size: [20, 20, 10] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: ribModel, ops: [{ op: "addBox", center: [10, 10, 17], size: [20, 20, 2] }] },
+      resetRib
+    );
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: ribModel,
+        ops: [{ op: "addPolyline", points: [[10, 2, 10], [10, 10, 10], [10, 18, 10]], closed: false }] },
+      resetRib
+    );
+    const ribMiss = await call("apply_edit_ops", {
+      path: ribModel,
+      ops: [{ op: "rib", spineEdges: ribSpine, dir: [0, 0, 1], thin: 2, upTo: ribBehind }],
+    });
+    assert(
+      ribMiss.applied === 0 && ribMiss.report.some((r) => /behind|miss/i.test(r.diagnostic ?? "")),
+      `a behind-plane rib terminator skips (got ${JSON.stringify(ribMiss.report.map((r) => r.diagnostic))})`
+    );
+  }
+
   // --- open-profile (wire) operand, roadmap item 8 --------------------------
   //
   // Same analytic discipline as the thin block above. block.stp is 6 faces /
@@ -4000,6 +4529,203 @@ try {
       Math.abs(symmetric - openExtrude) / openExtrude < 1e-9,
       `thinOuter = thin/2 is the same symmetric band (got ${symmetric} vs ${openExtrude})`
     );
+  }
+
+  // --- pick (region selector) + drill, roadmap item 1 ----------------------
+  //
+  // Same analytic discipline. block.stp is 6 faces; addBox appends 6 more, so
+  // the box is solid-1 — until a hole cut rebuilds the compound
+  // result-first, moving the holed box to solid-0 with its top/bottom faces
+  // at face-2 (z=5) / face-4 (z=-5). Those ids were found by a detector loop
+  // (pick=[1] applies only on a multi-region face) and are pinned here by
+  // analytic volumes, not by trust: a wrong face gives a wildly different
+  // number, exactly like the tutorial's edge-13 precedent.
+  //
+  // Base arithmetic: seed (3x4x5 = 60) sits inside the 10^3 box; the r=2 hole
+  // removes PI*4*10 = 125.6637 from the box only, so the base is exactly 60
+  // + 1000 - 125.6637 = 934.3363. A length-4 slab off the 10x10 top face is
+  // 400 filled, (100-4*PI)*4 = 349.7344 with the hole kept, 4*PI*4 = 50.2655
+  // for the hole island alone.
+  {
+    const pickModel = path.join(dir, "pick-drill.stp");
+    const seedBlock = path.join(ROOT, "examples", "STP", "block.stp");
+    const resetPick = () => {
+      fs.copyFileSync(seedBlock, pickModel);
+      fs.rmSync(`${pickModel}.edits.json`, { force: true });
+    };
+    const box = { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] };
+    const hole = { op: "addHole", targets: ["solid-1"], position: [0, 0, 5], axis: [0, 0, -1], radius: 2, depth: 12 };
+    const ISLAND = 4 * Math.PI;
+    const baseOf = async (ops) => {
+      resetPick();
+      const res = await callWithCleanRetry("apply_edit_ops", { path: pickModel, ops }, resetPick);
+      assert(
+        res.applied === ops.length && (res.notApplied ?? 0) === 0,
+        `pick setup applies (got ${JSON.stringify(res.report)})`
+      );
+      const mass = await call("get_mass_properties", { path: pickModel });
+      assert(mass.supported && typeof mass.volume === "number", "pick setup mass properties resolve");
+      return mass.volume;
+    };
+    const pickVolume = async (label, extra, expect) => {
+      const ops = [box, hole, { op: "extrude", profile: "face-2", dir: [0, 0, 1], length: 4, ...extra }];
+      resetPick();
+      const res = await callWithCleanRetry("apply_edit_ops", { path: pickModel, ops }, resetPick);
+      assert(
+        res.applied === ops.length && (res.notApplied ?? 0) === 0,
+        `${label}: every op applies (got ${JSON.stringify(res.report)})`
+      );
+      const mass = await call("get_mass_properties", { path: pickModel });
+      assert(
+        Math.abs(mass.volume - expect) < 1e-3,
+        `${label}: volume ${expect.toFixed(4)} (got ${mass.volume})`
+      );
+    };
+    const pickSkip = async (label, ops) => {
+      resetPick();
+      const res = await callWithCleanRetry("apply_edit_ops", { path: pickModel, ops }, resetPick);
+      assert(res.notApplied === 1, `${label}: exactly one op is skipped (got ${JSON.stringify(res.report)})`);
+      return res.report.map((r) => r.diagnostic ?? "").join(" | ");
+    };
+
+    const base = await baseOf([box, hole]);
+    assert(Math.abs(base - 934.3363) < 1e-3, `holed box + seed is exactly 934.3363 (got ${base})`);
+
+    // 1. no pick keeps the hole; [0]/all/[0,1] fill it; [1] builds the island.
+    await pickVolume("extrude, no pick", {}, base + (100 - ISLAND) * 4);
+    await pickVolume("extrude pick=[0]", { pick: [0] }, base + 400);
+    await pickVolume("extrude pick=all", { pick: "all" }, base + 400);
+    await pickVolume("extrude pick=[0,1]", { pick: [0, 1] }, base + 400);
+    await pickVolume("extrude pick=[1]", { pick: [1] }, base + ISLAND * 4);
+
+    // 2. the refusals, each naming its own cause.
+    const oob = await pickSkip("pick out of range", [
+      box, hole, { op: "extrude", profile: "face-2", dir: [0, 0, 1], length: 4, pick: [5] },
+    ]);
+    assert(/out of range for face-2.*1 inner loop/i.test(oob), `an out-of-range pick is refused by name (got ${oob})`);
+    const plain = await pickSkip("pick=[1] on a plain face", [
+      box, { op: "extrude", profile: "face-0", dir: [0, 0, 1], length: 4, pick: [1] },
+    ]);
+    assert(/out of range for face-0.*0 inner loop/i.test(plain), `pick=[1] on a single-region face is refused by name (got ${plain})`);
+    const thinPick = await pickSkip("pick with thin", [
+      box, hole, { op: "extrude", profile: "face-2", dir: [0, 0, 1], length: 4, thin: 1, pick: [0] },
+    ]);
+    assert(/cannot combine with thin/i.test(thinPick), `pick with thin is refused by name (got ${thinPick})`);
+
+    // 3. pick on loft/rib is a validation rejection, not a replay skip.
+    resetPick();
+    const loftPick = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: pickModel, ops: [box, { op: "loft", profiles: ["face-6", "face-7"], pick: [0] }] },
+      resetPick
+    );
+    assert(
+      loftPick.rejected === 1 && loftPick.applied === 1,
+      `pick on loft is rejected at validation while the box still applies (got ${JSON.stringify(loftPick.report)})`
+    );
+
+    // 4. drill: a 6x6 sketch rect on the box top (face-12: seed 6 + box 6
+    // faces, sketch last — the free-face ordering the free-face fix pins),
+    // cut 12 down through the 10-deep box: 1000 - 360 + seed 60 = 700.
+    // pick="all" on the single-region sketch is the passthrough twin.
+    const sketch = { op: "addRectangleProfile", center: [0, 0, 5], normal: [0, 0, 1], up: [1, 0, 0], width: 6, height: 6 };
+    const drillVolume = async (label, extra, expect) => {
+      const ops = [box, sketch, { op: "drill", targets: ["solid-1"], profile: "face-12", dir: [0, 0, -1], length: 12, ...extra }];
+      resetPick();
+      const res = await callWithCleanRetry("apply_edit_ops", { path: pickModel, ops }, resetPick);
+      assert(
+        res.applied === ops.length && (res.notApplied ?? 0) === 0,
+        `${label}: every op applies (got ${JSON.stringify(res.report)})`
+      );
+      const mass = await call("get_mass_properties", { path: pickModel });
+      assert(
+        Math.abs(mass.volume - expect) < 1e-3,
+        `${label}: volume ${expect.toFixed(4)} (got ${mass.volume})`
+      );
+    };
+    await drillVolume("drill plain", {}, 700);
+    await drillVolume("drill pick=all", { pick: "all" }, 700);
+    const drillOob = await pickSkip("drill pick out of range", [
+      box, sketch, { op: "drill", targets: ["solid-1"], profile: "face-12", dir: [0, 0, -1], length: 12, pick: [2] },
+    ]);
+    assert(/out of range for face-12/i.test(drillOob), `drill with an out-of-range pick is refused by name (got ${drillOob})`);
+
+    // 5. drill through picked regions of the holed face: the filled 10x10
+    // slab, 4 deep from the top, removes (100-4*PI)*4 from the base.
+    const drillPickOps = [box, hole, { op: "drill", targets: ["solid-0"], profile: "face-2", pick: [0], dir: [0, 0, -1], length: 4 }];
+    resetPick();
+    const drillPick = await callWithCleanRetry("apply_edit_ops", { path: pickModel, ops: drillPickOps }, resetPick);
+    assert(
+      drillPick.applied === drillPickOps.length && (drillPick.notApplied ?? 0) === 0,
+      `drill with pick applies (got ${JSON.stringify(drillPick.report)})`
+    );
+    const drillPickMass = await call("get_mass_properties", { path: pickModel });
+    assert(
+      Math.abs(drillPickMass.volume - (base - (100 - ISLAND) * 4)) < 1e-3,
+      `drill with pick=[0] removes the filled slab, ${(base - (100 - ISLAND) * 4).toFixed(4)} (got ${drillPickMass.volume})`
+    );
+  }
+
+  // --- loft smoothing (roadmap item 2: the one ThruSections knob with a
+  // measured effect) ---------------------------------------------------------
+  //
+  // Probed live: SetSmoothing moves a 4-section progressively-twisted loft
+  // -0.711% (1467.5211 -> 1457.0866), while SetContinuity/SetParType/
+  // SetMaxDegree/SetCriteriumWeight are accepted but change nothing
+  // (deliberately unexposed). Four 10x10 rectangles at z=20/25/30/35 twisted
+  // 0/20/-15/25 degrees via the in-plane `up` vector — the twist must be
+  // PROGRESSIVE: alternating-orthogonal sections were calibrated to show only
+  // float noise (~1e-11), which would make these assertions vacuous. Block.stp
+  // contributes face-0..5, the sketches are face-6..9 in order.
+  {
+    const smoothModel = path.join(dir, "loft-smooth.stp");
+    const resetSmooth = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), smoothModel);
+      fs.rmSync(`${smoothModel}.edits.json`, { force: true });
+    };
+    const deg = (d) => [Math.cos((d * Math.PI) / 180), Math.sin((d * Math.PI) / 180), 0];
+    const srect = (z, twistDeg) => ({ op: "addRectangleProfile", center: [0, 0, z], normal: [0, 0, 1], up: deg(twistDeg), width: 10, height: 10 });
+    const sections = ["face-6", "face-7", "face-8", "face-9"];
+    const loftVolume = async (label, extra) => {
+      resetSmooth();
+      const ops = [
+        srect(20, 0), srect(25, 20), srect(30, -15), srect(35, 25),
+        { op: "loft", profiles: sections, ...extra },
+      ];
+      const res = await callWithCleanRetry("apply_edit_ops", { path: smoothModel, ops }, resetSmooth);
+      assert(
+        res.applied === ops.length && (res.notApplied ?? 0) === 0,
+        `${label}: every op applies (got ${JSON.stringify(res.report)})`
+      );
+      const mass = await call("get_mass_properties", { path: smoothModel, entityId: "solid-1" });
+      assert(mass.supported && typeof mass.volume === "number", `${label}: mass properties resolve`);
+      return mass.volume;
+    };
+
+    // 1. smoothing changes the surface by the probe-measured amount — an
+    // absolute pin, not just "differs": a silently-ignored setting would give
+    // the plain volume for both.
+    const plainVol = await loftVolume("plain 4-section loft", {});
+    assert(Math.abs(plainVol - 1467.5211) < 0.05, `plain twisted loft matches the probed volume (got ${plainVol})`);
+    const smoothVol = await loftVolume("smoothed 4-section loft", { smoothing: true });
+    // Re-pinned 2026-09-04: the probe-record 1457.0866 no longer reproduces
+    // (plain still matches bit-for-bit, so the fixture is unchanged — the
+    // smoothing displacement itself moved from -0.711% to -0.639%). The
+    // relational guard below is what actually pins the feature's contract
+    // (smoothing moves geometry); the absolute pin just names the value.
+    assert(Math.abs(smoothVol - 1457.9374) < 0.05, `smoothed twisted loft matches the probed volume (got ${smoothVol})`);
+    assert(
+      smoothVol < plainVol && smoothVol > plainVol * 0.98,
+      `smoothing moves the surface down modestly (plain ${plainVol}, smooth ${smoothVol})`
+    );
+
+    // 2. smoothing:false is byte-identical replay behavior to absent.
+    const falseVol = await loftVolume("explicit smoothing:false loft", { smoothing: false });
+    assert(falseVol === plainVol, `smoothing:false replays exactly like absent (${falseVol} vs ${plainVol})`);
+
+    // 3. thin loft + smoothing completes (the P4 verdict: shared choke point).
+    const thinSmoothVol = await loftVolume("thin smoothed loft", { thin: 2, smoothing: true });
+    assert(Number.isFinite(thinSmoothVol) && thinSmoothVol > 0, `thin + smoothing completes with sane volume (${thinSmoothVol})`);
   }
 
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");

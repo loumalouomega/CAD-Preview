@@ -31,6 +31,13 @@ jobs:
       - name: Test (unit)
         run: npm test
 
+      # The only dead-link check over doc/** lives in `npm run docs:build`
+      # (VitePress), which otherwise runs solely in docs.yml on push to
+      # master — a broken intra-doc link would reach master before anything
+      # notices. Cheap enough to run here on every push/PR.
+      - name: Docs build (dead-link check)
+        run: npm run docs:build
+
       # The webview and the VS Code host API used to have ZERO automated
       # coverage — every webview feature was verified by a manual F5 session or
       # not at all. These two steps are that gap's automated half; see

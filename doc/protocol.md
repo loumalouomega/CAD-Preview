@@ -66,13 +66,15 @@ interface Part {
   name: string
   color: string       // CSS hex, e.g. "#ff8800"
   volumes: string[]   // solid ids
-  surfaces: string[]  // face ids
+  surfaces: string[]  // face ids (last-good cache when selector is set)
   lines: string[]     // edge ids
   points: string[]    // point ids
+  selector?: SelectorQuery   // re-executable query naming surfaces; host re-resolves it (annotation+cache)
+  selectorOpKind?: string    // producing op's kind at synthesis time (stale-index guard)
 }
 ```
 
-A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats have no assignable lines or points). Parts are persisted in the JSON sidecar — see [File Formats](./file-formats.md).
+A `Part` is a user-defined named group (FEM sub-model-part). Entity ids are the stable topological ids above (`solid-*`, `face-*`, `edge-*`, `point-*`), or, for mesh formats, stable per-object ids (`node-*`) for volumes/surfaces (mesh formats have no assignable lines or points). Parts are persisted in the JSON sidecar — see [File Formats](./file-formats.md). When `selector` is set, the host re-resolves it against the current op list on open and after every op-list change and overwrites `surfaces` only on an oracle-clean result; otherwise the cache freezes with a warning (including when the stored op index now addresses a different op kind — checked via `selectorOpKind`).
 
 ### `Annotation`
 
@@ -182,9 +184,15 @@ type EditOp =
   //                       which is how an OPEN sketch is consumed. An open
   //                       wire encloses no area, so it REQUIRES `thin` and
   //                       refuses `thinOuter` (it has no inside or outside).
-  | { op: 'extrude'; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; thin?: number; thinOuter?: number }
-  | { op: 'revolve'; profile?: string; profileEdges?: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number }
-  | { op: 'sweep'; profile?: string; profileEdges?: string[]; path: string; thin?: number; thinOuter?: number }
+  // The single-profile three (not loft) also take an optional region pick:
+  //   pick?: 'outer' | 'all' | number[]   which enclosed regions of a
+  //                       multi-region profile to consume (0 = outer boundary,
+  //                       1..N = inner loops in order; omit = face as modeled).
+  //                       An explicit pick refuses `thin` (thin builds from the
+  //                       outer boundary alone).
+  | { op: 'extrude'; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
+  | { op: 'revolve'; profile?: string; profileEdges?: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
+  | { op: 'sweep'; profile?: string; profileEdges?: string[]; path: string; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
   | { op: 'loft'; profiles?: string[]; profileEdgeSets?: string[][]; thin?: number; thinOuter?: number }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
@@ -193,6 +201,7 @@ type EditOp =
   | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
   | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
   | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string] }
+  | { op: 'drill'; targets: string[]; profile?: string; profileEdges?: string[]; pick?: 'outer' | 'all' | number[]; dir: Vec3; length: number }  // region prism(s) cut from the targets; explicit length only
   | { op: 'addBox'; center: Vec3; size: Vec3 }
   | { op: 'addSphere'; center: Vec3; radius: number }
   | { op: 'addCylinder'; center: Vec3; axis: Vec3; radius: number; height: number }
@@ -228,11 +237,13 @@ type EditOp =
 
 An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are the same stable entity ids as parts. `validateEditOp` (`src/editOps.ts`) is the single tolerance gate — malformed ops are dropped, never thrown. The list is persisted in the `<model>.edits.json` sidecar — see [File Formats](./file-formats.md).
 
-**Construction geometry** (`guide?: boolean`, roadmap item 10): any 2D profile/curve creation op may mark its entity reference-only. Guide entities render dimmed, stay pickable/measurable, and are refused as operands by the profile-resolution ops (`extrude`/`revolve`/`sweep`/`loft`/`addSurfaceFromLines`/`addVolumeFromSurfaces`) — enforced host-side (a guide operand fails that op with a diagnostic) and mirrored in the webview. The `geometry` message's `guideIds` field carries the current guide entity ids.
+**Construction geometry** (`guide?: boolean`, roadmap item 10): any 2D profile/curve creation op may mark its entity reference-only. Guide entities render dimmed, stay pickable/measurable, and are refused as operands by the profile-resolution ops (`extrude`/`revolve`/`sweep`/`loft`/`drill`/`addSurfaceFromLines`/`addVolumeFromSurfaces`) — enforced host-side (a guide operand fails that op with a diagnostic) and mirrored in the webview. The `geometry` message's `guideIds` field carries the current guide entity ids.
 
 **Midplane/midaxis references**: `mirror`/`splitByPlane`/`section` accept `midplaneFaces: [faceId, faceId]` (two planar, parallel faces — the op acts on the plane halfway between them) and `patternCircular` accepts `midaxisOf: [faceId|edgeId, faceId|edgeId]` (two cylindrical faces or two parallel straight edges). Exactly one of the reference or the inline vectors must be present; unresolvable/non-parallel references fail that op gracefully with a diagnostic. B-rep sources only — the mesh engine refuses the reference fields (it has no analytic faces; pass inline vectors instead).
 
 Every op may additionally carry an optional **parametric annotation** `exprs?: Record<string, string>` mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression over the document's named variables (`ParamVariable`, below). The addressed numeric fields always hold the last-good evaluated numbers — a cache — so every consumer that ignores `exprs` still sees a fully-resolved op; only `resolveEditOps` (`src/editVariables.ts`) reads it. `validateEditOp` sanitizes `exprs` (bad paths / non-numeric slots / syntax errors dropped per entry).
+
+Every op may also carry **stored operand queries** — `targetQueries?: Record<field, SelectorQuery>` plus per-bucket `targetQueryKinds?: Record<field, string>` — naming id-bearing operand fields (`targets`, `a`/`b`, `edges`, `profile`, …; plane references excluded by design). The id arrays remain the last-good cache: resolution is **host-side and replay-only** (`src/opQueryResolve.ts`, fused into a sequential fold so op N resolves against `shape(ops[0..N-1])` with earlier queries already resolved) — a bucket query re-derives its producing op's recorded faces and re-matches them geometrically; a scene query filters/ranks the whole current model. Scalar slots (`profile`, `faceA`, …) need exactly one resolved id. Every freeze (forward reference, kind-tag mismatch, pattern producer, unresolved/empty resolution) keeps the cached ids and surfaces a named warning via `load_model`'s `warnings` / the viewer's status line; the sidecar keeps queries + caches untouched. Mesh sources never resolve queries — they replay on cached ids. Queries are refused inside `repeat` bodies (indices are baked).
 
 ```typescript
 interface ParamVariable {
@@ -386,6 +397,8 @@ type HostToWebview =
   | { type: 'macroApplyOps'; ops: EditOp[] }
   | { type: 'entityFactsResult'; requestId: string; facts: EntityFacts }
   | { type: 'entityFactsError'; requestId: string; message: string }
+  | { type: 'selectorSynthesizeResult'; requestId: string; results: SelectorSynthesizeResultEntry[] }
+  | { type: 'selectorSynthesizeError'; requestId: string; message: string }
   | { type: 'measureExactResult'; requestId: string; result: ExactMeasureResult }
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
@@ -697,6 +710,18 @@ Driven by **selection, not hover**: `getEntityFacts` has no shape cache, so ever
 { "type": "entityFactsError", "requestId": "1234-0.56", "message": "Geometry classification requires a B-rep source; a mesh has no analytic surface type." }
 ```
 
+### `selectorSynthesizeResult` / `selectorSynthesizeError`
+
+Sent in reply to `selectorSynthesizeRequest` — the Edits panel's **Pin query** row (Extrude/Revolve/Shell/Draft forms), the interactive half of op-operand query persistence. The host loops the existing `synthesizeSelector` pipeline function once per requested id — one prefix+full replay each, capped at 25 ids per request — and stamps each result's `kind` from the producing op itself, so the stored `targetQueryKinds` tag is server-derived, never caller-supplied. A `null` query is an honest refusal (`reason` names why: not among the bucket's resolved faces, pattern producer, no exact query), never a guess; a malformed id degrades to a per-id reason rather than failing the whole batch. Only the B-rep gate fails the request as a whole (`selectorSynthesizeError`), same as `entityFactsRequest`.
+
+```json
+{ "type": "selectorSynthesizeRequest", "requestId": "1234-0.56", "op": 2, "role": "endCap", "entityIds": ["face-6"] }
+```
+
+```json
+{ "type": "selectorSynthesizeResult", "requestId": "1234-0.56", "results": [{ "entityId": "face-6", "query": { "version": 1, "source": { "kind": "bucket", "op": 2, "role": "endCap" } }, "kind": "extrude" }] }
+```
+
 `curveType` is the edge-side counterpart of `surfaceType`, which had no analogue before this: `"line" | "circle" | "ellipse" | "hyperbola" | "parabola" | "bezier" | "bspline" | "other"`, set only for an edge. It uses the same `BRepAdaptor_Curve_2(edge).GetType()` call `measure_exact`'s `"radius"` kind already exercises against the live WASM, so it needed no new probing — and `inspect` gets it for free.
 
 ### `measureExactResult` / `measureExactError`
@@ -848,6 +873,7 @@ type WebviewToHost =
   | { type: 'macroSaveCurrent' }
   | { type: 'macroDelete'; name: string }
   | { type: 'entityFactsRequest'; requestId: string; entityId: string }
+  | { type: 'selectorSynthesizeRequest'; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }

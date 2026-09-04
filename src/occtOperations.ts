@@ -1,4 +1,4 @@
-import type { EditOp, Vec3, OpOutcome, OutcomeFail } from "./editOps";
+import type { EditOp, Vec3, OpOutcome, OutcomeFail, RegionPick } from "./editOps";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import type { OpBucket } from "./opBuckets";
 import { PRODUCED_ROLE } from "./opBuckets";
@@ -334,9 +334,11 @@ type Transformer = (s: any) => any;
  * same handle when the op is a no-op). Unimplemented ops are skipped so a sidecar
  * authored against a newer build never hard-fails an older one. A skip calls
  * `fail` with a reason (see {@link OpOutcome}) before returning.
+ * Exported for `opQueryResolve.ts`'s interleaved resolution fold — the one
+ * external consumer; the main replay path stays inside this file.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail, guideCollector?: GuideCollector): any {
+export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail, guideCollector?: GuideCollector): any {
   switch (op.op) {
     case "translate":
     case "rotate":
@@ -354,6 +356,7 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "revolve":
     case "sweep":
     case "loft":
+    case "rib":
       return featureModel(oc, shape, op, cleanup, fail, guideCollector);
     case "explode":
       return explodeSolids(oc, shape, op.factor, cleanup, fail);
@@ -379,6 +382,8 @@ function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): 
     case "addCounterboreHole":
     case "addCountersinkHole":
       return cutHole(oc, shape, op, cleanup, fail);
+    case "drill":
+      return drillCut(oc, shape, op, cleanup, fail);
     case "addCircleProfile":
     case "addRectangleProfile":
     case "addPolygonProfile":
@@ -835,6 +840,57 @@ function cutHole(oc: any, shape: any, op: Extract<EditOp, { op: "addHole" | "add
   return comp;
 }
 
+/**
+ * Cuts the picked regions of a profile through the target solids: one prism
+ * per picked region (fused into a single tool when several were picked),
+ * subtracted via the already-verified `BRepAlgoAPI_Cut_3`, with the result
+ * replacing the targets alongside the untargeted solids — the exact
+ * {@link cutHole} skeleton with a region-built tool. Unresolved targets /
+ * regions, a failed tool build, or `IsDone()` false all skip gracefully.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function drillCut(oc: any, shape: any, op: Extract<EditOp, { op: "drill" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const solids = collectSolids(oc, shape, cleanup);
+  const byId = new Map(solids.map((s) => [s.id, s.solid]));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const targets = op.targets.map((id) => byId.get(id)).filter((s): s is any => s != null);
+  if (targets.length === 0) {
+    fail?.(
+      `target ids (${op.targets.join(", ")}) did not resolve to solids`,
+      "re-check solid-N ids after topology-changing ops — load_model re-lists them"
+    );
+    return shape;
+  }
+
+  const faces = featureProfileFaces(oc, shape, op, cleanup, fail);
+  if (!faces) return shape;
+  const tool = prismsForFaces(oc, faces, op.dir, op.length, cleanup, fail);
+  if (!tool) return shape;
+
+  const a = combineSolids(oc, targets, cleanup);
+  const algo = new oc.BRepAlgoAPI_Cut_3(a, tool);
+  cleanup.push(algo);
+  if (!algo.IsDone()) {
+    fail?.("the drill subtraction did not complete (IsDone() false)", "the tool may lie entirely outside the target solids");
+    return shape;
+  }
+  const result = algo.Shape();
+  cleanup.push(result);
+
+  const used = new Set(op.targets);
+  const leftovers = solids.filter((s) => !used.has(s.id)).map((s) => s.solid);
+  if (leftovers.length === 0) return result;
+
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  builder.Add(comp, result);
+  for (const s of leftovers) builder.Add(comp, s);
+  return comp;
+}
+
 /** Builds the hole's tool solid (to subtract), or null on builder failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildHoleTool(oc: any, op: Extract<EditOp, { op: "addHole" | "addCounterboreHole" | "addCountersinkHole" }>, cleanup: Array<{ delete(): void }>): any {
@@ -1000,11 +1056,17 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
     // the kind of construction spine someone would otherwise try to extrude.
     // The sweep PATH edge is checked too; it used to be the one operand of
     // this family that a guide could still slip through.
-    const single = op.op === "extrude" || op.op === "revolve" || op.op === "sweep" ? (op as any).profile : undefined;
-    const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single] : [];
+    const single = op.op === "extrude" || op.op === "revolve" || op.op === "sweep" || op.op === "drill" ? (op as any).profile : undefined;
+    const terminator: string[] = op.op === "extrude" && typeof (op as any).upToFace === "string" ? [(op as any).upToFace as string] : [];
+    // Rib carries its own operand names (spineEdges/upTo, not profile) — a
+    // guide spine or guide terminator must refuse exactly like any other
+    // construction-geometry operand.
+    const ribFaces: string[] = op.op === "rib" && typeof (op as any).upTo === "string" ? [(op as any).upTo as string] : [];
+    const ribEdges: string[] = op.op === "rib" ? ((op as any).spineEdges ?? []) : [];
+    const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single, ...terminator] : [...terminator, ...ribFaces];
     const edgeIds: string[] = op.op === "loft"
       ? ((op as any).profileEdgeSets ?? []).flat()
-      : [...((op as any).profileEdges ?? []), ...(op.op === "sweep" ? [(op as any).path] : [])];
+      : [...((op as any).profileEdges ?? []), ...(op.op === "sweep" ? [(op as any).path] : []), ...ribEdges];
     if (faceIds.length > 0) {
       const faces = collectFaces(oc, shape, cleanup);
       for (const fid of faceIds) {
@@ -1020,6 +1082,10 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
       }
     }
   }
+  // Rib fuses instead of appending (the wall must become one solid with its
+  // support), so it returns the full new shape itself rather than a body for
+  // the compound path below.
+  if (op.op === "rib") return ribFused(oc, shape, op, cleanup, fail);
   const solid = buildFeatureSolid(oc, shape, op, cleanup, fail);
   if (!solid) {
     if (thinSpecOf(op)) {
@@ -1366,6 +1432,84 @@ function profileFaceFor(oc: any, section: ProfileSection, op: EditOp, cleanup: A
   return bandFaceFromWires(oc, wires.outer, wires.inner, cleanup);
 }
 
+/**
+ * The wires bounding `face`, in `TopExp_Explorer` order. Region 0 of a
+ * {@link PickSpec} is whichever of these `BRepTools.OuterWire` matches (by
+ * `IsSame`); regions 1..N are the rest in this order.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wiresOfFace(oc: any, face: any, cleanup: Array<{ delete(): void }>): any[] {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wires: any[] = [];
+  const exp = keep(new oc.TopExp_Explorer_2(face, oc.TopAbs_ShapeEnum.TopAbs_WIRE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+  for (; exp.More(); exp.Next()) wires.push(keep(oc.TopoDS.Wire_1(exp.Current())));
+  return wires;
+}
+
+/**
+ * The faces a plain (non-thin) feature builder should consume for one
+ * section under an explicit {@link PickSpec} — one face per picked region.
+ *
+ * Orientation is load-bearing and was probed live rather than assumed: an
+ * enumerated inner wire added as-is preserves hole-ness (a 20×20 face with
+ * a 10×10 hole rebuilds to exactly 300), while the same wire reversed adds
+ * an island (500). So a picked inner loop builds as its own forward face
+ * (an island disk, verified: each enumerated wire alone builds its enclosed
+ * area), and `TopoDS.Orientation` is never read — it is unbound in this
+ * build (`Orientation is not a function`), so no implementation may depend
+ * on it. `BRepTools.OuterWire` + `IsSame` is the outer match (verified:
+ * matches exactly one enumerated wire).
+ *
+ * - `"outer"`/absent → the section as modeled (holes preserved) — one face.
+ * - `"all"` or an index list containing 0 → the outer boundary alone
+ *   (holes filled) — one face.
+ * - an index list without 0 → one island face per picked inner loop.
+ * An out-of-range index, or any non-`[0]` pick on a single-region (edge)
+ * profile, skips with a diagnostic. Null means unusable; `fail` already told.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function regionFacesFor(oc: any, section: ProfileSection, pick: Exclude<RegionPick, "outer">, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any[] | null {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  if (!section.face) {
+    // Edge profiles expose a single region: anything naming more is a miss,
+    // not a resolve-time failure (same reasoning as `asMidaxisPair`).
+    const ok = pick === "all" || (Array.isArray(pick) && pick.length === 1 && pick[0] === 0);
+    if (!ok) { fail?.(`pick ${JSON.stringify(pick)} names regions an edge profile does not have`, "an edge wire is a single region — use a face profile to pick among holes"); return null; }
+    if (!section.closed) { fail?.(...openProfileNeedsThin(section)); return null; }
+    const face = faceFromWire(oc, section.wire, cleanup);
+    if (!face) fail?.(`the profile edges (${section.label}) did not bound a face`);
+    return face ? [face] : null;
+  }
+  const wires = wiresOfFace(oc, section.face, cleanup);
+  const outer = keep(oc.BRepTools.OuterWire(section.face));
+  const outerIdx = wires.findIndex((w) => (outer as any).IsSame(w));
+  const inners = wires.filter((_, i) => i !== outerIdx);
+  if (pick === "all" || (Array.isArray(pick) && pick.includes(0))) {
+    if (Array.isArray(pick) && pick.some((r) => r < 0 || r > inners.length)) {
+      fail?.(`pick ${JSON.stringify(pick)} is out of range for ${section.label} (${inners.length} inner loop(s))`, "re-inspect the profile face — region 0 is the outer boundary, 1..N its inner loops in order");
+      return null;
+    }
+    const filled = faceFromWire(oc, wires[outerIdx], cleanup);
+    if (!filled) fail?.(`the outer boundary of ${section.label} did not bound a face`);
+    return filled ? [filled] : null;
+  }
+  // Islands only: one forward face per picked inner loop.
+  const idx = pick as number[];
+  if (idx.some((r) => r < 1 || r > inners.length)) {
+    fail?.(`pick ${JSON.stringify(pick)} is out of range for ${section.label} (${inners.length} inner loop(s))`, "re-inspect the profile face — region 0 is the outer boundary, 1..N its inner loops in order");
+    return null;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const faces: any[] = [];
+  for (const r of idx) {
+    const island = faceFromWire(oc, inners[r - 1], cleanup);
+    if (!island) { fail?.(`inner loop ${r} of ${section.label} did not bound a face`); return null; }
+    faces.push(island);
+  }
+  return faces;
+}
+
 /** The `thinOuter` rule for an open profile — see {@link ThinSpec}. */
 function openThinOuterOk(op: EditOp, spec: { thin: number; thinOuter: number }): boolean {
   // `thinSpecOf` defaults an ABSENT `thinOuter` to 0, which is the common case
@@ -1405,6 +1549,446 @@ function featureProfileFace(oc: any, shape: any, op: EditOp & { profile?: string
   return section ? profileFaceFor(oc, section, op, cleanup, fail) : null;
 }
 
+/**
+ * The faces a single-profile feature builder (extrude/revolve/sweep) or
+ * {@link drillCut} should consume — one face per picked region.
+ *
+ * A thin build always uses the outer boundary alone (`thinProfileWires`
+ * takes the section wire, which IS the outer wire for a face profile), so
+ * an explicit `pick` alongside `thin` is refused rather than silently
+ * coinciding: the caller must drop one of them. A plain build with no
+ * explicit pick keeps the existing single-face path byte-for-byte
+ * (`profileFaceFor`), so pick-free replay is untouched.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function featureProfileFaces(oc: any, shape: any, op: EditOp & { profile?: string; profileEdges?: string[]; pick?: RegionPick }, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any[] | null {
+  const section = resolveProfileSection(oc, shape, op.profile, op.profileEdges, cleanup, fail);
+  if (!section) return null;
+  const pick = op.pick;
+  if (thinSpecOf(op)) {
+    if (pick !== undefined) { fail?.(`pick cannot combine with thin — thin walls build from the outer boundary alone`, "drop `pick` (the default already consumes the outer boundary) or drop `thin`"); return null; }
+    const face = profileFaceFor(oc, section, op, cleanup, fail);
+    return face ? [face] : null;
+  }
+  if (pick === undefined || pick === "outer") {
+    const face = profileFaceFor(oc, section, op, cleanup, fail);
+    return face ? [face] : null;
+  }
+  return regionFacesFor(oc, section, pick, cleanup, fail);
+}
+
+/**
+ * Prism bodies for `faces` along `dir`×`length` (the extrude builder shape:
+ * `BRepPrimAPI_MakePrism_1(face, vec, false, true)`), fused into one tool
+ * when several regions were picked. Null when any prism fails to build.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function prismsForFaces(oc: any, faces: any[], dir: Vec3, length: number, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const [dx, dy, dz] = dir;
+  const len = Math.hypot(dx, dy, dz) || 1;
+  const s = length / len; // dir scaled so |vec| == length
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bodies: any[] = [];
+  for (const face of faces) {
+    const vec = keep(new oc.gp_Vec_4(dx * s, dy * s, dz * s));
+    let body: any = null;
+    try {
+      body = keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape());
+    } catch {
+      fail?.("a picked region's prism failed to build", "the region face may be degenerate — try picking fewer regions");
+      return null;
+    }
+    if (!body || body.IsNull()) {
+      fail?.("a picked region's prism failed to build", "the region face may be degenerate — try picking fewer regions");
+      return null;
+    }
+    bodies.push(body);
+  }
+  if (bodies.length === 1) return bodies[0];
+  return combineSolids(oc, bodies, cleanup);
+}
+
+/**
+ * Derives an extrusion length from a terminator face (`upToFace`) — the
+ * distance from the profile plane to the terminator plane along `dir`, or
+ * `null` (with `fail` told exactly why) when there is no usable answer.
+ *
+ * This is deliberately plane math over the two faces' analytic planes
+ * (`faceSurfaceInfo`, verified), NOT a `BRepAlgoAPI_Section` call: probed
+ * live, `BRepAlgoAPI_Section` has no accessible constructor in this build
+ * (`BindingError`) and its 0-arg form exposes no shape setters (only
+ * `Build`/`IsDone`/`Shape`) — the fourth "green is necessary but not
+ * sufficient" instance in this codebase. An overshoot-prism +
+ * half-space-`Common` composition (the `splitSolidsByPlane` call shape) was
+ * probed as the fallback and verified exact (z=[10,25], volume 1500 on the
+ * analytic fixture), but a directly-built prism at the derived length is
+ * cheaper and equally exact, so that is what the caller builds — the
+ * fallback pattern stands validated for a future cut-variant, not used here.
+ *
+ * Semantics: up-to-face terminates at the terminator's PLANE (mainstream
+ * "up to surface" behavior for the footprint-covered case). A zero/negative
+ * distance (terminator behind or coplanar with the profile) is a MISS, and a
+ * direction perpendicular to the plane normal is PARALLEL — both skip
+ * gracefully rather than building a degenerate or unbounded solid, and a
+ * non-planar profile or terminator is refused (no plane to measure to).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extrudeLengthUpToFace(
+  oc: any,
+  shape: any,
+  profileFace: any,
+  op: Extract<EditOp, { op: "extrude" }>,
+  cleanup: Array<{ delete(): void }>,
+  fail?: OutcomeFail
+): number | null {
+  const upToFace = op.upToFace as string | undefined;
+  const term = upToFace === undefined ? undefined : collectFaces(oc, shape, cleanup)[faceIndex(upToFace)];
+  if (!term) {
+    fail?.(
+      `up-to-face ${upToFace} did not resolve to a face`,
+      "re-check face-N ids — load_model re-lists them after topology-changing ops"
+    );
+    return null;
+  }
+  const profInfo = faceSurfaceInfo(oc, profileFace, cleanup);
+  if (profInfo.type !== "plane" || !profInfo.params || profInfo.params.kind !== "plane") {
+    fail?.("up-to-face extrusion needs a planar profile face", "sketch a flat profile (Circle, Rectangle, Polygon) instead");
+    return null;
+  }
+  const termInfo = faceSurfaceInfo(oc, term, cleanup);
+  if (termInfo.type !== "plane" || !termInfo.params || termInfo.params.kind !== "plane") {
+    fail?.(
+      `up-to-face ${upToFace} is a ${termInfo.type} surface, not a plane`,
+      "only planar terminator faces are supported — curved faces are a queued follow-up"
+    );
+    return null;
+  }
+  const [dx, dy, dz] = op.dir;
+  const len = Math.hypot(dx, dy, dz);
+  if (!(len > 0)) {
+    fail?.("extrusion direction has zero length", "give a non-zero dir vector");
+    return null;
+  }
+  const n = termInfo.params.normal;
+  const denom = (dx * n[0] + dy * n[1] + dz * n[2]) / len;
+  if (Math.abs(denom) < 1e-9) {
+    fail?.(
+      `extrusion direction is parallel to ${upToFace}'s plane — it never meets the terminator`,
+      "rotate the direction out of the terminator plane, or pick a different terminator face"
+    );
+    return null;
+  }
+  const p0 = profInfo.params.origin;
+  const p1 = termInfo.params.origin;
+  // Sign-independent: when the normal points back toward the profile, both
+  // numerator and denominator are negative and the quotient stays positive.
+  const t = ((p1[0] - p0[0]) * n[0] + (p1[1] - p0[1]) * n[1] + (p1[2] - p0[2]) * n[2]) / denom;
+  if (!(t > 1e-9)) {
+    fail?.(
+      `terminator ${upToFace} lies behind (or on) the profile plane along the extrusion direction`,
+      "flip the extrusion direction, or pick a terminator face ahead of the profile"
+    );
+    return null;
+  }
+  return t;
+}
+
+/**
+ * The wall↔support junction edges of a freshly fused rib, for blending —
+ * edges lying in the support plane (within a diag-relative tolerance) AND
+ * laterally near the spine wire (within wall thickness plus drift
+ * compensation), deduplicated by `IsSame`. The plane test alone is not
+ * enough (the box top perimeter lies in the same plane — probed: 24
+ * candidates without the footprint rule, 16 with it). A bbox of the BAND
+ * face does NOT work as the footprint test (first attempt, caught live):
+ * the band sits at the spine plane while the wall extends far beyond it
+ * along `dir`, so every real junction edge fails a band-bbox check. Lateral
+ * distance to the spine is the correct footprint measure; the drift term
+ * (`t·tan tilt`) keeps it correct when `dir` is oblique to the band plane.
+ * Returned as `Edge_1` handles: `MakeFillet.Add_2` rejects the raw explorer
+ * wrapper (`BindingError`, probed — same cast `collectEdges`' callers
+ * already rely on).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ribJunctionEdges(
+  oc: any,
+  fused: any,
+  planePoint: Vec3,
+  planeNormal: Vec3,
+  spine: any,
+  dirUnit: Vec3,
+  thin: number,
+  cleanup: Array<{ delete(): void }>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any[] {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const diag = Math.max(bboxDiagonal(oc, fused, cleanup), 1e-9);
+  const planeTol = Math.max(diag * 1e-7, 1e-9);
+  // Spine polyline points (world): the footprint reference.
+  const spinePts: Vec3[] = [];
+  const vexp = keep(new oc.TopExp_Explorer_2(spine, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+  for (; vexp.More(); vexp.Next()) {
+    // Cast required: the raw explorer wrapper is a TopoDS_Shape, which
+    // BRep_Tool.Pnt rejects (same BindingError class as Add_2/Edge_1 above).
+    const pnt = keep(oc.BRep_Tool.Pnt(keep(oc.TopoDS.Vertex_1(vexp.Current()))));
+    spinePts.push([pnt.X(), pnt.Y(), pnt.Z()]);
+  }
+  // The projection above already corrects for oblique extrusion (lateral
+  // distance is measured ⊥ dir). The threshold is HALF the wall plus float
+  // slack: a junction edge lies on the wall surface, exactly thin/2 from the
+  // spine centerline (arcs less). A full-thin threshold admits the support
+  // solid's own boundary edges at the wall's far side (probed: two dd=2.0
+  // cap-perimeter edges joined the set) — each fillets fine alone, but the
+  // combination throws, so the tighter bound is load-bearing, not tidy.
+  const lateralTol = thin / 2 + Math.max(diag * 1e-7, 1e-9);
+  const [nx, ny, nz] = planeNormal;
+  // Lateral distance only: the wall extends along dirUnit, so the extrusion
+  // component must be projected OUT before measuring — a plain 3D distance
+  // to the spine (which sits one extrusion length away from the junction)
+  // would reject every real junction edge (caught live: identical
+  // blended/fuse-only volumes). Measured in the plane ⊥ dirUnit.
+  const helper: Vec3 = Math.abs(dirUnit[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const e1: Vec3 = [
+    dirUnit[1] * helper[2] - dirUnit[2] * helper[1],
+    dirUnit[2] * helper[0] - dirUnit[0] * helper[2],
+    dirUnit[0] * helper[1] - dirUnit[1] * helper[0],
+  ];
+  const e1Len = Math.hypot(e1[0], e1[1], e1[2]) || 1;
+  const e2: Vec3 = [
+    (dirUnit[1] * e1[2] - dirUnit[2] * e1[1]) / e1Len,
+    (dirUnit[2] * e1[0] - dirUnit[0] * e1[2]) / e1Len,
+    (dirUnit[0] * e1[1] - dirUnit[1] * e1[0]) / e1Len,
+  ];
+  const e1n: Vec3 = [e1[0] / e1Len, e1[1] / e1Len, e1[2] / e1Len];
+  const ref = spinePts[0];
+  const proj = (p: Vec3): [number, number] => [
+    (p[0] - ref[0]) * e1n[0] + (p[1] - ref[1]) * e1n[1] + (p[2] - ref[2]) * e1n[2],
+    (p[0] - ref[0]) * e2[0] + (p[1] - ref[1]) * e2[1] + (p[2] - ref[2]) * e2[2],
+  ];
+  const spine2d = spinePts.map(proj);
+  const distToSpine = (mid: Vec3): number => {
+    const [mx, my] = proj(mid);
+    let best = Infinity;
+    for (let i = 0; i + 1 < spine2d.length; i++) {
+      const ax = spine2d[i][0];
+      const ay = spine2d[i][1];
+      const abx = spine2d[i + 1][0] - ax;
+      const aby = spine2d[i + 1][1] - ay;
+      const denom = abx * abx + aby * aby;
+      const tt = denom > 0 ? Math.max(0, Math.min(1, ((mx - ax) * abx + (my - ay) * aby) / denom)) : 0;
+      const d = Math.hypot(mx - (ax + abx * tt), my - (ay + aby * tt));
+      if (d < best) best = d;
+    }
+    return best;
+  };
+  const found: Array<{ hash: number; edge: any }> = [];
+  for (const edge of collectEdges(oc, fused, cleanup)) {
+    const props = keep(new oc.GProp_GProps_1());
+    oc.BRepGProp.LinearProperties(edge, props, false, false);
+    const c = keep(props.CentreOfMass());
+    const mid: Vec3 = [c.X(), c.Y(), c.Z()];
+    const offPlane = Math.abs((mid[0] - planePoint[0]) * nx + (mid[1] - planePoint[1]) * ny + (mid[2] - planePoint[2]) * nz);
+    if (offPlane > planeTol) continue;
+    if (spinePts.length < 2 || distToSpine(mid) > lateralTol) continue;
+    const cast = keep(oc.TopoDS.Edge_1(edge));
+    const h = cast.HashCode(1 << 30);
+    if (found.some((f) => f.hash === h && f.edge.IsSame(cast))) continue;
+    found.push({ hash: h, edge: cast });
+  }
+  return found.map((f) => f.edge);
+}
+
+/**
+ * Builds a rib fused into the model — the full new shape (not a body for the
+ * append path: fusing IS the operation). Reuses the open-profile machinery
+ * (`resolveProfileSection` + `profileFaceFor`, including the thinOuter and
+ * over-thick rules) and the up-to-face plane derivation, then:
+ * extrude to terminator plane + one wall-thickness of embed (so the wall
+ * robustly intersects for fusing — the embedded part vanishes, probed exact)
+ * → `Fuse_3` (wall first, the probed order) → blend the junction at
+ * `blendRadius` (default `thin / 4`; `0` = fuse only).
+ *
+ * Every failure returns the unmodified `shape` with a specific diagnostic
+ * (the graceful-skip rule): unresolved spine/terminator, non-planar band or
+ * terminator, zero direction, parallel, miss, fuse `IsDone()` false or
+ * builder throw, and blend failure (which skips the whole op with a naming
+ * diagnostic — a fused-but-unblended wall is never silently substituted for
+ * the requested blend; set `blendRadius: 0` for fuse-only).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ribFused(
+  oc: any,
+  shape: any,
+  op: Extract<EditOp, { op: "rib" }>,
+  cleanup: Array<{ delete(): void }>,
+  fail?: OutcomeFail
+): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const section = resolveProfileSection(oc, shape, undefined, op.spineEdges, cleanup, fail);
+    if (!section) return shape;
+    const bandFace = profileFaceFor(oc, section, op, cleanup, fail);
+    if (!bandFace) return shape;
+    const term = collectFaces(oc, shape, cleanup)[faceIndex(op.upTo)];
+    if (!term) {
+      fail?.(
+        `rib terminator ${op.upTo} did not resolve to a face`,
+        "re-check face-N ids — load_model re-lists them after topology-changing ops"
+      );
+      return shape;
+    }
+    const termInfo = faceSurfaceInfo(oc, term, cleanup);
+    if (termInfo.type !== "plane" || !termInfo.params || termInfo.params.kind !== "plane") {
+      fail?.(
+        `rib terminator ${op.upTo} is a ${termInfo.type} surface, not a plane`,
+        "only planar terminator faces are supported — curved faces are a queued follow-up"
+      );
+      return shape;
+    }
+    const bandInfo = faceSurfaceInfo(oc, bandFace, cleanup);
+    if (bandInfo.type !== "plane" || !bandInfo.params || bandInfo.params.kind !== "plane") {
+      fail?.("the rib wall is not planar, so it has no plane to measure the extrusion from", "a non-planar spine cannot drive a rib");
+      return shape;
+    }
+    const [dx, dy, dz] = op.dir;
+    const len = Math.hypot(dx, dy, dz);
+    if (!(len > 0)) {
+      fail?.("rib direction has zero length", "give a non-zero dir vector");
+      return shape;
+    }
+    const n = termInfo.params.normal;
+    const denom = (dx * n[0] + dy * n[1] + dz * n[2]) / len;
+    if (Math.abs(denom) < 1e-9) {
+      fail?.(
+        `rib direction is parallel to ${op.upTo}'s plane — it never meets the terminator`,
+        "rotate the direction out of the terminator plane, or pick a different terminator face"
+      );
+      return shape;
+    }
+    const p0 = bandInfo.params.origin;
+    const p1 = termInfo.params.origin;
+    const t = ((p1[0] - p0[0]) * n[0] + (p1[1] - p0[1]) * n[1] + (p1[2] - p0[2]) * n[2]) / denom;
+    if (!(t > 1e-9)) {
+      fail?.(
+        `terminator ${op.upTo} lies behind (or on) the spine plane along the rib direction`,
+        "flip the rib direction, or pick a terminator face ahead of the spine"
+      );
+      return shape;
+    }
+    // The wall starts one thickness BELOW the spine plane (not on it): a
+    // coplanar touch between the wall's base cap and the support face makes
+    // the fuse fail (`IsDone()` false — probed live), while a penetrating
+    // overlap fuses exactly. The embedded part vanishes into the solid, so
+    // the visible wall still runs spine-plane → terminator plane.
+    const ux = dx / len;
+    const uy = dy / len;
+    const uz = dz / len;
+    const back = keep(new oc.gp_Trsf_1());
+    back.SetTranslation_1(keep(new oc.gp_Vec_4(-ux * op.thin, -uy * op.thin, -uz * op.thin)));
+    const sunkFace = rigid(oc, back, cleanup)(bandFace);
+    const total = t + 2 * op.thin;
+    const vec = keep(new oc.gp_Vec_4(ux * total, uy * total, uz * total));
+    const prism = keep(keep(new oc.BRepPrimAPI_MakePrism_1(sunkFace, vec, false, true)).Shape());
+    // Fuse against the solids only (see splitSolidsAndDebris); debris carries
+    // over untouched around the fused bodies, in original relative order.
+    const { solids: supportSolids, debris } = splitSolidsAndDebris(oc, shape, cleanup);
+    if (supportSolids.length === 0) {
+      fail?.("the rib has no solid to fuse with", "build the supporting body first — a rib floating in empty space is refused");
+      return shape;
+    }
+    let fused: any;
+    try {
+      const fuse = keep(new oc.BRepAlgoAPI_Fuse_3(prism, combineSolids(oc, supportSolids, cleanup)));
+      if (!fuse.IsDone()) {
+        fail?.("the rib wall would not fuse with the model (IsDone() false)", "the embedded wall portion may miss every solid — check the spine sits over one");
+        return shape;
+      }
+      const fusedBodies = keep(fuse.Shape());
+      if (debris.length === 0) {
+        fused = fusedBodies;
+      } else {
+        const rebuilt = keep(new oc.TopoDS_Compound());
+        const rb = keep(new oc.BRep_Builder());
+        rb.MakeCompound(rebuilt);
+        for (const s of collectSolids(oc, fusedBodies, cleanup)) rb.Add(rebuilt, s.solid);
+        for (const d of debris) rb.Add(rebuilt, d);
+        fused = rebuilt;
+      }
+    } catch {
+      fail?.("the rib fuse threw", "the embedded wall portion may miss every solid — check the spine sits over one");
+      return shape;
+    }
+    const blendRadius = op.blendRadius === undefined ? op.thin / 4 : op.blendRadius;
+    if (!(blendRadius > 0)) return fused;
+    const junction = ribJunctionEdges(oc, fused, termInfo.params.origin, n, section.wire, [ux, uy, uz], op.thin, cleanup);
+    if (junction.length === 0) return fused;
+    try {
+      const fil = keep(new oc.BRepFilletAPI_MakeFillet(fused, oc.ChFi3d_FilletShape.ChFi3d_Rational));
+      for (const e of junction) fil.Add_2(blendRadius, e);
+      const out = keep(fil.Shape());
+      if (!fil.IsDone()) {
+        fail?.(
+          `the rib junction blend failed at r=${blendRadius} (IsDone() false)`,
+          "set blendRadius: 0 for fuse-only, or try a smaller radius"
+        );
+        return shape;
+      }
+      return out;
+    } catch {
+      fail?.(
+        `the rib junction blend threw at r=${blendRadius}`,
+        "set blendRadius: 0 for fuse-only, or try a smaller radius — an over-large radius is the usual cause"
+      );
+      return shape;
+    }
+  } catch (err) {
+    fail?.(
+      `the rib builder threw (${err instanceof Error ? err.message : String(err)})`.slice(0, 160),
+      "this is a builder-internal failure, not an operand problem — re-check the spine and terminator ids"
+    );
+    return shape;
+  }
+}
+
+/**
+ * Splits a model shape into its solids vs everything else (free sketch faces,
+ * loose wireframe edges, standalone points). A rib fuses against the solids
+ * ONLY: loose debris in the fused operand makes `Fuse_3` return
+ * `IsDone() === false` (probed live — an identical prism+boxes fuses clean,
+ * but fails with two loose edges added to the compound — so this is load-
+ * bearing, not hygiene). Debris carries over untouched around the fused
+ * bodies, in original relative order. `HashCode`-bucket + `IsSame` is the
+ * established dedup technique (`enumerateEdges`, the free-face pass).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function splitSolidsAndDebris(oc: any, shape: any, cleanup: Array<{ delete(): void }>): { solids: any[]; debris: any[] } {
+  const solids = collectSolids(oc, shape, cleanup).map((s) => s.solid);
+  const owned = new Map<number, any[]>();
+  const own = (h: any): void => {
+    const k = h.HashCode(1 << 30);
+    let b = owned.get(k);
+    if (!b) { b = []; owned.set(k, b); }
+    b.push(h);
+  };
+  for (const s of solids) {
+    for (const f of collectFaces(oc, s, cleanup)) own(f);
+    for (const e of collectEdges(oc, s, cleanup)) own(e);
+    for (const v of collectVertices(oc, s, cleanup)) own(v);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const isOwned = (h: any): boolean => {
+    const b = owned.get(h.HashCode(1 << 30));
+    return b !== undefined && b.some((o) => o.IsSame(h));
+  };
+  const debris = [
+    ...collectFaces(oc, shape, cleanup).filter((f) => !isOwned(f)),
+    ...collectEdges(oc, shape, cleanup).filter((e) => !isOwned(e)),
+    ...collectVertices(oc, shape, cleanup).filter((v) => !isOwned(v)),
+  ];
+  return { solids, debris };
+}
+
 /** Builds the new solid for a feature op, or null on unresolved operands / failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
@@ -1412,20 +1996,40 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
   try {
     switch (op.op) {
       case "extrude": {
-        const face = featureProfileFace(oc, shape, op, cleanup, fail);
-        if (!face) return null;
-        const [dx, dy, dz] = op.dir;
-        const len = Math.hypot(dx, dy, dz) || 1;
-        const s = op.length / len; // dir scaled so |vec| == length
-        const vec = keep(new oc.gp_Vec_4(dx * s, dy * s, dz * s));
-        return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape()), cleanup);
+        const faces = featureProfileFaces(oc, shape, op, cleanup, fail);
+        if (!faces) return null;
+        // Terminator form derives the length from the up-to-face plane;
+        // explicit-length form uses it directly. Either way the SAME prism
+        // builder below runs, so thin-wall handling, Copy=false start-cap
+        // identity, and bucket roles behave identically for both forms. The
+        // plane math reads the first region face — every region of one
+        // profile shares its sketch plane.
+        let length = op.length;
+        if (op.upToFace !== undefined) {
+          const derived = extrudeLengthUpToFace(oc, shape, faces[0], op, cleanup, fail);
+          if (derived === null) return null;
+          length = derived;
+        }
+        if (length === undefined || !Number.isFinite(length)) {
+          fail?.("extrusion has neither a usable length nor a resolvable up-to-face terminator");
+          return null;
+        }
+        const tool = prismsForFaces(oc, faces, op.dir, length, cleanup, fail);
+        if (!tool) return null;
+        return finishThin(oc, op, tool, cleanup);
       }
       case "revolve": {
-        const face = featureProfileFace(oc, shape, op, cleanup, fail);
-        if (!face) return null;
+        const faces = featureProfileFaces(oc, shape, op, cleanup, fail);
+        if (!faces) return null;
         const ax = keep(new oc.gp_Ax1_2(keep(pnt(oc, op.axisPoint)), keep(dir(oc, op.axisDir))));
         const angle = (op.angleDeg * Math.PI) / 180;
-        return finishThin(oc, op, keep(keep(new oc.BRepPrimAPI_MakeRevol_1(face, ax, angle, false)).Shape()), cleanup);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bodies: any[] = [];
+        for (const face of faces) {
+          bodies.push(keep(keep(new oc.BRepPrimAPI_MakeRevol_1(face, ax, angle, false)).Shape()));
+        }
+        const tool = bodies.length === 1 ? bodies[0] : combineSolids(oc, bodies, cleanup);
+        return finishThin(oc, op, tool, cleanup);
       }
       case "sweep": {
         const edge = collectEdges(oc, shape, cleanup)[edgeIndex(op.path)];
@@ -1436,11 +2040,17 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
         // thin sweep needs no outer/inner-and-cut fallback. It sweeps an
         // open-profile band the same way (verified: 462.8318 for a 23.1416
         // band over length 20).
-        const face = featureProfileFace(oc, shape, op, cleanup, fail);
-        if (!face) return null;
+        const faces = featureProfileFaces(oc, shape, op, cleanup, fail);
+        if (!faces) return null;
         const wire = keep(new oc.BRepBuilderAPI_MakeWire_2(edge)).Wire();
         keep(wire);
-        return finishThin(oc, op, keep(keep(new oc.BRepOffsetAPI_MakePipe_1(wire, face)).Shape()), cleanup);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bodies: any[] = [];
+        for (const face of faces) {
+          bodies.push(keep(keep(new oc.BRepOffsetAPI_MakePipe_1(wire, face)).Shape()));
+        }
+        const tool = bodies.length === 1 ? bodies[0] : combineSolids(oc, bodies, cleanup);
+        return finishThin(oc, op, tool, cleanup);
       }
       case "loft": {
         // One section per profile, in either operand form. Unlike the other
@@ -1471,16 +2081,22 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
           return null;
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const loftWires = (ws: any[]): any => {
+        const loftWires = (ws: any[], smoothing?: boolean): any => {
           const ts = keep(new oc.BRepOffsetAPI_ThruSections(true, false, 1.0e-6));
           for (const w of ws) ts.AddWire(w);
+          // The only ThruSections knob with a measured effect in this build
+          // (probed: smoothing moves a 4-section twisted loft -0.711%;
+          // SetContinuity/SetParType/SetMaxDegree/SetCriteriumWeight are
+          // accepted but change nothing, so they are deliberately NOT
+          // exposed). Applies to every loft path below, thin included.
+          if (smoothing === true) ts.SetSmoothing(true);
           ts.Build();
           return ts.IsDone() ? keep(ts.Shape()) : null;
         };
         const spec = thinSpecOf(op);
         if (!spec) {
           if (open > 0) { fail?.(...openProfileNeedsThin(sections.find((s) => !s.closed)!)); return null; }
-          return loftWires(sections.map((s) => s.wire));
+          return loftWires(sections.map((s) => s.wire), (op as Extract<EditOp, { op: "loft" }>).smoothing);
         }
         if (open > 0) {
           // An open section's band is ONE closed boundary, so it lofts
@@ -1489,7 +2105,7 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
           if (!openThinOuterOk(op, spec)) { fail?.(...openProfileThinOuter()); return null; }
           const bands = sections.map((s) => openBandWire(oc, s.wire, spec.thin, cleanup));
           if (bands.some((b) => b === null)) { fail?.("could not build a wall around every open loft section"); return null; }
-          return finishThin(oc, op, loftWires(bands), cleanup);
+          return finishThin(oc, op, loftWires(bands, (op as Extract<EditOp, { op: "loft" }>).smoothing), cleanup);
         }
         const holed = sections.find((s) => s.holed);
         if (holed) { fail?.(`the loft profile ${holed.label} already has a hole`, "a thin wall is built from the outer boundary alone, which would silently discard it"); return null; }
@@ -1500,8 +2116,8 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
         // verified exact (outer 1000, inner 360, cut 640).
         const bands = sections.map((s) => thinProfileWires(oc, s.wire, spec.thin, spec.thinOuter, cleanup));
         if (bands.some((b) => b === null)) return null;
-        const outerSolid = loftWires(bands.map((b) => b!.outer));
-        const innerSolid = loftWires(bands.map((b) => b!.inner));
+        const outerSolid = loftWires(bands.map((b) => b!.outer), (op as Extract<EditOp, { op: "loft" }>).smoothing);
+        const innerSolid = loftWires(bands.map((b) => b!.inner), (op as Extract<EditOp, { op: "loft" }>).smoothing);
         if (!outerSolid || !innerSolid) return null;
         const cut = keep(new oc.BRepAlgoAPI_Cut_3(outerSolid, innerSolid));
         if (!cut.IsDone()) return null;

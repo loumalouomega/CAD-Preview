@@ -219,11 +219,12 @@ See `.github/workflows/ci.yml`. Two jobs:
 1. Checkout + Node 20 setup
 2. `npm ci` — clean install
 3. `npm run build` — bundle + type-check
-4. `npm test` — unit tests
-5. `npm run test:webview` — Playwright assertions over the real viewer bundle (under `xvfb-run`)
-6. `npm run test:integration` — the host-side suite in a real VS Code (under `xvfb-run`, retried on network flakes)
-7. `npm run package` — produce `.vsix`
-8. Upload `.vsix` as a workflow artifact
+4. `npm test` — unit tests (including the `doc/**` example-compile and op-coverage gates)
+5. `npm run docs:build` — VitePress build, which is also the only dead-link check over `doc/**`
+6. `npm run test:webview` — Playwright assertions over the real viewer bundle (under `xvfb-run`)
+7. `npm run test:integration` — the host-side suite in a real VS Code (under `xvfb-run`, retried on network flakes)
+8. `npm run package` — produce `.vsix`
+9. Upload `.vsix` as a workflow artifact
 
 **`release`** (only on `v*` tags):
 

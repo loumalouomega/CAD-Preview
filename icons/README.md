@@ -23,6 +23,8 @@ node build-op-icons.mjs   # re-run codegen alone, no LaTeX needed,
 
 `svg-ops/*.svg` previews are committed for exactly that last case. To change an icon: edit its `tikz/<id>.tex`, run `make ops-ts`, done — never hand-edit `src/webview/opIcons.ts` (regenerated wholesale, any manual edit is silently lost next time someone runs it). Adding a new op icon means also adding its id to `PanelOpId` in `opCatalog.ts` first — the generator's `Record` type turns a mismatch into a compile error rather than a silent gap.
 
+Three SVGs have no compilable `.tex` source: `draft.svg` and `edgeSlot.svg` (their `opIcons.ts` entries were hand-added without sources; the committed SVGs were reverse-recovered from those entries, byte-identical through the generator) and `rib.svg` (hand-authored in `pdftocairo -svg` output style; `tikz/rib.tex` holds the design for a future re-render — diff its output against the committed SVG when TeX is available). All three regenerate cleanly with plain `node build-op-icons.mjs`; only a `.tex` change needs pdflatex.
+
 **Because these icons live on a small (~30px) button with only a `--vscode-button-secondaryBackground` background behind them, not a fixed white page, a few of the original 46 sources needed real fixes, not just a pipeline swap** — the same "only fills get gray→currentColor, strokes never do" rule `tikz-ui/`'s README section below documents was violated in two ways that only mattered once real theming was wired in:
 
 - **Bare `\draw[gray]` strokes** (14 files: de-emphasized outlines, ghost/ reference lines) stayed literally mid-gray in every theme instead of tracking `currentColor`. Fixed the same way `tikz-ui/isolate.tex` already did: drop the stroke color, keep (or add) `dashed` for de-emphasis instead.
