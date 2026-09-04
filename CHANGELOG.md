@@ -8,6 +8,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Fixed
 
+- **`package-lock.json` no longer pins a nonexistent `ipaddr.js@1.9.2`.** The v1.9.2 version bump was applied as a blanket `1.9.1` → `1.9.2` text replacement, which also rewrote the only other place that literal appeared in the lockfile: the `ipaddr.js` entry and `proxy-addr`'s pinned dependency on it. That version has never been published (the registry goes 1.9.0 → 1.9.1 → 2.0.0), so `npm ci` failed with a 404 for every consumer and every CI job. The entry is back at `1.9.1` — the version its unchanged integrity hash always described; no dependency actually changed.
+
+There are no user-facing changes in this release.
+
+## [1.9.1] - 2026-09-04
+
+### Fixed
+
 - **Release job no longer loses the whole release to a Marketplace outage.** v1.9.0's `vsce publish` step failed on a transient HTTP 503 from `marketplace.visualstudio.com`, and because that step sat upstream of "Create GitHub Release", the tag was left with no release and no `.vsix` attached even though the build itself was fully green. The publish step now retries with backoff (matching the existing precedent for `update.code.visualstudio.com`), the PAT is passed via the `VSCE_PAT` environment variable instead of a `-p` flag so it never appears in the child process's argv, and the release step runs unconditionally on non-cancellation so a Marketplace hiccup can no longer cost the GitHub release.
 - **`package-lock.json`'s embedded root-package version brought back in sync** with `package.json` — it had silently lagged one release behind since the v1.9.0 bump.
 
@@ -339,7 +347,8 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
-[1.9.2]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.0...v1.9.2
+[1.9.2]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.1...v1.9.2
+[1.9.1]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.5.1...v1.7.0
