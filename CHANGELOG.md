@@ -4,6 +4,14 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.11.0] - 2026-09-05
+
+### Fixed
+
+- **Integration suite (`npm run test:integration`) no longer fails in CI.** Two independent harness defects, both fixed without touching product code: the test VS Code now launches with `--enable-unsafe-swiftshader`, because CI's GPU-less xvfb box left the webview's three.js renderer without WebGL2 — the webview module died before posting `ready`, so the blank-model `geometry` assertion failed with an empty log (`saw []`) rather than a real error; and the test window now opens with a workspace folder plus a fresh per-run user-data dir, because a window starting with no workspace at all never delivers `updateWorkspaceFolders` to the extension host (the call returns `true` yet no event ever fires), which flaked the Models-view case, while the previously reused profile accumulated dead workspace roots across runs.
+
+There are no user-facing changes in this release.
+
 ## [1.10.0] - 2026-09-04
 
 ### Added
@@ -360,6 +368,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.11.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.0...v1.9.1
