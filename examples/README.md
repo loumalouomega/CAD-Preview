@@ -10,6 +10,7 @@ Fixtures used for manual verification (see the "Verify a change" section of the 
 | [`PLY/`](PLY/) | PLY | `.ply` | Three.js `PLYLoader` (mesh) |
 | [`GLTF/`](GLTF/) | glTF | `.gltf` | Three.js `GLTFLoader` (mesh) |
 | [`MED/`](MED/) | MED | `.med` | meshio++ bridge (host-side, geometry + region/data-array-name visibility) |
+| [`OpenSCAD/`](OpenSCAD/) | OpenSCAD CSG | `.csg` | CSG parse → OCCT build → BRepMesh (B-rep, opaque base) |
 
 CAD Preview also supports IGES (`.iges`/`.igs`) and BREP (`.brep`) via the same OCCT pipeline as STEP, and glTF binary (`.glb`) via the same loader as `.gltf`, but no example fixtures are checked in for those extensions. See `doc/file-formats.md` for the full format reference.
 
@@ -20,6 +21,10 @@ Each mesh directory contains a single `cube.*` fixture — a minimal triangulate
 ## MED
 
 `two-material-tets.med` is a synthetic (not real-world) fixture: two tetrahedra sharing a face, written by meshio++'s own MED writer from a hand-built mesh with two named cell regions (`MaterialA`/`MaterialB`) and a `Temperature` point-data field — used to verify (`npm run mcp:smoke`) that `load_model`/the viewer's meshio++ import surfaces those real names via `readMeshioMetadata()`. See CLAUDE.md's "meshio++ integration" section.
+
+## OpenSCAD
+
+Hand-written `.csg` fixtures (no OpenSCAD binary is needed to produce them — the format is plain text). `bracket.csg` is the clean path: cubes, a `$fn=10` faceted cylinder (real prism), a `multmatrix` translate, and `union`/`difference` — loads with no warnings, 2 solids, analytic volume 5228.88 (pinned in `npm run mcp:smoke`). `mixed.csg` exercises the warning paths: `hull()` skipped whole and a `$fn=8` sphere imported analytic. See `doc/file-formats.md`'s "OpenSCAD CSG" section.
 
 ## STP
 

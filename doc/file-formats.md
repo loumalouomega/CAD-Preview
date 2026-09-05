@@ -9,6 +9,7 @@ CAD Preview supports two classes of 3D files: **B-rep** (boundary representation
 | STEP | `.step`, `.stp` | OCCT → BRepMesh | ✅ |
 | IGES | `.iges`, `.igs` | OCCT → BRepMesh | ✅ |
 | BREP | `.brep` | OCCT → BRepMesh | ✅ |
+| OpenSCAD CSG | `.csg` | CSG parse → OCCT build → BRepMesh | ✅ |
 | STL | `.stl` | Three.js STLLoader | — |
 | OBJ | `.obj` | Three.js OBJLoader | per-object |
 | PLY | `.ply` | Three.js PLYLoader | — |
@@ -66,6 +67,14 @@ IGES (Initial Graphics Exchange Specification) is an older format. The OCCT read
 ### BREP
 
 BREP is OpenCascade's native binary topology format. It reads fast and has no conversion artifacts. The `BRepTools::Read` function parses directly into a `TopoDS_Shape`.
+
+### OpenSCAD CSG
+
+OpenSCAD's `.csg` export is the fully evaluated model — loops unrolled, modules inlined, variables literalised, every transform an explicit node — so there is no language to implement. `src/csgImport.ts` (pure, headless-tested) parses the text into an AST; `src/csgModel.ts` builds it kernel-side with live handles into an **opaque base shape** (like a STEP import — user edits layer on top via the sidecar, the parsed structure is not itself an edit history).
+
+Built: `cube`, `sphere`, `cylinder`, `polyhedron` (sewn, closure-checked), `union`/`difference`/`intersection`, `group`, `color` (transparent), `multmatrix`/`translate`/`rotate`/`scale`/`mirror` (all through one `gp_GTrsf` path — shear included, no decomposition needed). Skipped with a `load_model` warning (whole subtree dropped): `hull`/`minkowski` (no OCCT equivalent), `text`/`import`/`surface` (external files/fonts), all 2D (`square`/`circle`/`polygon`, `linear_extrude`/`rotate_extrude`), and anything unknown.
+
+Two correctness rules worth knowing: OpenSCAD cylinders/spheres are **faceted prisms**, not analytic surfaces — `$fn`/`$fa`/`$fs` resolve per node and `useMaxFN` (default 16, FreeCAD's dial) decides real N-gon prism vs analytic import, with a warning stating the chord error whenever it approximates. And `.csg` prints at ~6 significant figures, a hard accuracy ceiling on anything reconstructed from it.
 
 ---
 

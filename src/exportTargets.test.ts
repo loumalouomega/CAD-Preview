@@ -35,6 +35,18 @@ describe("exportTargetsFor", () => {
     ]);
   });
 
+  it("offers all three B-rep formats plus all mesh formats for a CSG source (import-only — never itself)", () => {
+    expect(exportTargetsFor({ strategy: "occt", format: "csg" })).toEqual([
+      "step",
+      "iges",
+      "brep",
+      "stl",
+      "obj",
+      "ply",
+      "gltf",
+    ]);
+  });
+
   it("offers only the other mesh formats for a mesh source", () => {
     expect(exportTargetsFor({ strategy: "three", format: "stl" })).toEqual(["obj", "ply", "gltf"]);
     expect(exportTargetsFor({ strategy: "three", format: "obj" })).toEqual(["stl", "ply", "gltf"]);

@@ -407,6 +407,7 @@ export function describeCapabilities() {
       step: exportTargetsFor({ strategy: "occt", format: "step" }).filter(isBRepFormat),
       iges: exportTargetsFor({ strategy: "occt", format: "iges" }).filter(isBRepFormat),
       brep: exportTargetsFor({ strategy: "occt", format: "brep" }).filter(isBRepFormat),
+      csg: exportTargetsFor({ strategy: "occt", format: "csg" }).filter(isBRepFormat),
     },
     meshExportFormats: MESH_EXPORT_FORMATS.map((f) => ({ id: f.id, label: f.label, extension: f.extension })),
     meshOptions: {
@@ -700,8 +701,10 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     // here the moment the model is loaded — the agent learns immediately
     // rather than after wondering why nothing changed. Query-freeze warnings
     // ride the same channel (an operand query that froze replays on cached
-    // ids; the agent needs to know the query was not honored).
-    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? [])],
+    // ids; the agent needs to know the query was not honored). `.csg`
+    // parse/build warnings (skipped hull/minkowski/2D, faceting
+    // approximations) ride it too — same "never silent" rule.
+    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? []), ...(result.warnings ?? [])],
   };
 }
 

@@ -257,6 +257,58 @@ try {
   assert(loaded.bbox && loaded.bbox.diagonal > 0, "load_model reports a bounding box");
   const { bbox } = loaded;
 
+  // OpenSCAD .csg import (roadmap Tier 2 item 2, path (a)) — parsed by the
+  // pure `csgImport.ts`, built kernel-side into an opaque base shape (like a
+  // STEP import, not an op history). bracket.csg's volume is hand-derived
+  // analytic, confirmed against the live kernel rather than copied from it:
+  // plate 4000 + boss 1000 − 500 overlap − 10.25×decagon-area hole
+  // (10× plate thickness + 1× boss above the plate) + touching foot 1000.
+  {
+    const bracketCsg = path.join(dir, "bracket.csg");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "bracket.csg"), bracketCsg);
+    const bracket = await call("load_model", { path: bracketCsg });
+    assert(
+      bracket.format === "csg" && bracket.strategy === "occt" && bracket.solids.length === 2,
+      `load_model routes .csg through occt with 2 solids (got ${JSON.stringify({ format: bracket.format, strategy: bracket.strategy, solids: bracket.solids?.length })})`
+    );
+    const faces = bracket.solids.reduce((a, s) => a + s.faceIds.length, 0);
+    assert(faces === 30, `bracket.csg tessellates to 24 + 6 faces (got ${faces})`);
+    assert(
+      Array.isArray(bracket.warnings) && bracket.warnings.length === 0,
+      `clean .csg loads with no warnings (got ${JSON.stringify(bracket.warnings)})`
+    );
+    const bracketMass = await call("get_mass_properties", { path: bracketCsg });
+    assert(
+      bracketMass.supported === true && Math.abs(bracketMass.volume - 5228.88) / 5228.88 < 0.005,
+      `bracket.csg mass matches the hand-derived analytic volume 5228.88 ±0.5% (got ${bracketMass.volume})`
+    );
+    // export_brep bakes a .csg source like any B-rep one; the WRITTEN file is
+    // re-verified through a genuinely separate load_model + get_mass_properties
+    // pair (the promote_mesh_to_brep precedent), proving it is an ordinary
+    // B-rep document rather than "didn't throw".
+    const bracketStep = path.join(dir, "bracket-from-csg.step");
+    await call("export_brep", { path: bracketCsg, targetFormat: "step", outputPath: bracketStep });
+    assert(fs.existsSync(bracketStep) && fs.statSync(bracketStep).size > 0, "export_brep writes a non-empty STEP from a .csg source");
+    const reloadedStep = await call("load_model", { path: bracketStep });
+    assert(reloadedStep.solids.length === 2, "the exported STEP reloads with the same 2 solids");
+    const reMass = await call("get_mass_properties", { path: bracketStep });
+    assert(
+      Math.abs(reMass.volume - 5228.88) / 5228.88 < 0.005,
+      `the exported STEP keeps the analytic volume through the round trip (got ${reMass.volume})`
+    );
+    // mixed.csg exercises the warning paths: hull() skipped whole (its cube
+    // contributes NOTHING — 2 solids, not 3), $fn=8 sphere imported analytic
+    // with a chord-error warning. Both warnings must surface on load_model.
+    const mixedCsg = path.join(dir, "mixed.csg");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "mixed.csg"), mixedCsg);
+    const mixed = await call("load_model", { path: mixedCsg });
+    assert(mixed.solids.length === 2, `mixed.csg loads cube + sphere only, hull contributes nothing (got ${mixed.solids.length} solids)`);
+    assert(
+      mixed.warnings.some((w) => /hull\(\)/i.test(w)) && mixed.warnings.some((w) => /faceted|analytic/i.test(w)),
+      `mixed.csg surfaces the hull-skip and faceted-sphere warnings (got ${JSON.stringify(mixed.warnings)})`
+    );
+  }
+
   // Add a box beside the bull, sized/placed off the real bbox.
   const s = bbox.diagonal / 10;
   const applied = await call("apply_edit_ops", {

@@ -9,7 +9,7 @@ import { DEFAULT_VIEWS, type RenderImage } from "./renderService";
 import type { KernelClient } from "./kernelClient";
 
 const COMPARE_FILTER = {
-  "STEP / IGES / BREP / STL / OBJ / PLY / glTF": ["step", "stp", "iges", "igs", "brep", "stl", "obj", "ply", "gltf", "glb"],
+  "STEP / IGES / BREP / CSG / STL / OBJ / PLY / glTF": ["step", "stp", "iges", "igs", "brep", "csg", "stl", "obj", "ply", "gltf", "glb"],
 };
 
 async function pickCompareFile(title: string): Promise<vscode.Uri | undefined> {
@@ -32,7 +32,7 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
   const name = vscode.workspace.asRelativePath(uri);
   const meshFormat = route?.strategy === "three" && COMPARABLE_MESH_FORMATS.has(route.format) ? (route.format as MeshParseFormat) : null;
   if (!route || (route.strategy !== "occt" && !meshFormat)) {
-    return { source: undefined, warning: `${name}: unsupported format for Compare Models (STEP/IGES/BREP/STL/OBJ/PLY/glTF only).` };
+    return { source: undefined, warning: `${name}: unsupported format for Compare Models (STEP/IGES/BREP/CSG/STL/OBJ/PLY/glTF only).` };
   }
   const bytes = await vscode.workspace.fs.readFile(uri);
   if (route.strategy === "occt") {
@@ -66,7 +66,7 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
  * defaults to `defaultUri` — the currently-focused editor's file, if any —
  * skipping straight to picking B), diffs them via `modelDiffHost.ts`'s
  * `compareModels()`, and renders the result in a standalone webview panel
- * mirroring `whatsNew.ts`'s precedent. STEP/IGES/BREP (edits baked in) and
+ * mirroring `whatsNew.ts`'s precedent. STEP/IGES/BREP/CSG (edits baked in) and
  * STL/OBJ/PLY/glTF (raw file bytes — no host-side mesh edit engine to bake
  * edits with) are supported, in any combination; meshio-only formats are
  * rejected with a clear message rather than crashing, matching this

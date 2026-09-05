@@ -55,6 +55,9 @@
             "filenamePattern": "*.brep"
           },
           {
+            "filenamePattern": "*.csg"
+          },
+          {
             "filenamePattern": "*.vtk"
           },
           {

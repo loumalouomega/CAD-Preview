@@ -18,6 +18,7 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 | STEP        | `.step`, `.stp` | OpenCascade.js → `BRepMesh` tessellation   |
 | IGES        | `.iges`, `.igs` | OpenCascade.js → `BRepMesh` tessellation   |
 | BREP        | `.brep`         | OpenCascade.js → `BRepMesh` tessellation   |
+| OpenSCAD CSG | `.csg`         | CSG parse → OCCT build → `BRepMesh`        |
 | STL         | `.stl`          | Three.js `STLLoader`                       |
 | OBJ         | `.obj`          | Three.js `OBJLoader`                       |
 | PLY         | `.ply`          | Three.js `PLYLoader`                       |
@@ -63,7 +64,7 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 - **Mass properties**: volume, surface area, length, center of mass, and moments of inertia for the whole model or a single selected entity — computed via OpenCascade.js's `BRepGProp` for B-rep sources, or entirely client-side for mesh sources.
 - **Screenshot**: save the current 3D view as a PNG via a native Save dialog.
 - **Settings**: a handful of `cadPreview.*` VS Code settings (default background, mesh-size preset, grid/axes visibility, up-axis) for newly opened documents.
-- **Compare Models**: diff two files solid-by-solid — matched by bounding-box-centroid proximity and volume similarity, reporting added/removed/matched solids with each match's raw centre displacement and volume delta (never a hidden moved/unchanged guess). STEP/IGES/BREP, STL, OBJ, PLY, and glTF/GLB are supported, in any combination (only the meshio++ bridge formats aren't — they never expose a triangle array outside their own WASM module); display-only.
+- **Compare Models**: diff two files solid-by-solid — matched by bounding-box-centroid proximity and volume similarity, reporting added/removed/matched solids with each match's raw centre displacement and volume delta (never a hidden moved/unchanged guess). STEP/IGES/BREP/CSG, STL, OBJ, PLY, and glTF/GLB are supported, in any combination (only the meshio++ bridge formats aren't — they never expose a triangle array outside their own WASM module); display-only.
 
 ## Export
 
@@ -71,12 +72,12 @@ The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displaye
 
 | Source pipeline | Export targets |
 | --- | --- |
-| B-rep (STEP/IGES/BREP) | the other two B-rep formats (true OCCT writers) **+** STL/OBJ/PLY/glTF |
+| B-rep (STEP/IGES/BREP/CSG) | the other B-rep formats (true OCCT writers) **+** STL/OBJ/PLY/glTF |
 | Mesh (STL/OBJ/PLY/glTF) | the other mesh formats only |
 
 The source format itself is never offered. B-rep targets are written entirely in the extension host via OCCT; mesh targets are serialized in the webview from the already-tessellated Three.js model (there is no way to promote a triangle mesh back into a B-rep). glTF export always produces a single binary `.glb` file. See [File Formats → Export](https://loumalouomega.github.io/CAD-Preview/file-formats#export) for details.
 
-**File ▸ Export Silhouette SVG…** (and its **Export Silhouette DXF…** sibling) is a separate flow (a drawing, not a 3D model, so it never appears in the target list above): pick a view — **Current view**, or Front/Back/Top/Bottom/Left/Right/Iso — then an export unit, then a destination, and CAD-Preview writes a 2D **outline** of the model as a self-contained SVG (one `<path>`, no external references, 1 SVG user unit = 1 model unit with a physical size in mm, so it prints 1:1) or as a minimal DXF (`LWPOLYLINE`/`LINE` entities over the same outline). Both menu items share the flow; only the serializer and default extension differ. Works for STEP/IGES/BREP (edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits not baked in).
+**File ▸ Export Silhouette SVG…** (and its **Export Silhouette DXF…** sibling) is a separate flow (a drawing, not a 3D model, so it never appears in the target list above): pick a view — **Current view**, or Front/Back/Top/Bottom/Left/Right/Iso — then an export unit, then a destination, and CAD-Preview writes a 2D **outline** of the model as a self-contained SVG (one `<path>`, no external references, 1 SVG user unit = 1 model unit with a physical size in mm, so it prints 1:1) or as a minimal DXF (`LWPOLYLINE`/`LINE` entities over the same outline). Both menu items share the flow; only the serializer and default extension differ. Works for STEP/IGES/BREP/CSG (edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits not baked in).
 
 > It is an **outline, not a dimensioned 2D technical drawing — there is no hidden-line removal**. Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette. OpenCascade's hidden-line machinery is entirely unavailable in the bundled WASM build, so the outline is derived from triangle adjacency instead — which is also why it works for mesh files and not just B-rep. Accuracy depends on consistent triangle winding; a mixed-winding mesh draws spurious interior lines.
 

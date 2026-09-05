@@ -278,7 +278,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // the final dot-segment only, so GiD's compound `post.msh` is covered by
         // the plain `msh` entry — a separate "post.msh" entry would never match.
         "CAD / Mesh": [
-          "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep",
+          "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep", "csg",
           "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam",
           "msh", "msh2", "inp", "unv", "su2", "mesh",
         ],
@@ -1450,9 +1450,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * `progress &&` since it's `undefined` on a routine, no-notification edit
    * re-tessellation.
    */
-   private async handleBRep(
-    uri: vscode.Uri,
-    format: Extract<CadFormat, "step" | "iges" | "brep">,
+    private async handleBRep(
+     uri: vscode.Uri,
+     format: Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
     post: (msg: HostToWebview) => void,
     ops: EditOp[] = [],
     documentKey: string,
@@ -1485,10 +1485,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       post({ type: "status", text: "Rendering…" });
       progress?.report({ message: "Rendering…" });
-      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings } = result;
+      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings, warnings } = result;
       // A frozen operand query replays on its cached ids — the user must know
       // the query was not honored rather than staring at unchanged geometry.
+      // `.csg` parse/build warnings ride the same channel (a skipped hull()
+      // or a faceted-cylinder approximation must never be silent).
       for (const w of queryWarnings ?? []) post({ type: "status", text: w });
+      for (const w of warnings ?? []) post({ type: "status", text: w });
       post({
         type: "geometry",
         autoFit,

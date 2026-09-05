@@ -58,11 +58,11 @@ features:
 
   - icon: 💾
     title: Export to a Compatible Format
-    details: Convert the open model and save it via a native dialog. B-rep files (STEP/IGES/BREP) can export to each other (true OCCT writers) or to any mesh format; mesh files can export to other mesh formats.
+    details: Convert the open model and save it via a native dialog. B-rep files (STEP/IGES/BREP/CSG) can export to each other (true OCCT writers) or to any mesh format; mesh files can export to other mesh formats.
 
   - icon: 📐
     title: Silhouette SVG/DXF Export
-    details: Write a 2D outline of the model as a self-contained SVG or a minimal DXF — pick the current view or a standard one (Front/Back/Top/Bottom/Left/Right/Iso), pick a unit, save. Works for STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF, and prints 1:1 at 1 unit per model unit. An outline, not a dimensioned technical drawing — there is no hidden-line removal.
+    details: Write a 2D outline of the model as a self-contained SVG or a minimal DXF — pick the current view or a standard one (Front/Back/Top/Bottom/Left/Right/Iso), pick a unit, save. Works for STEP/IGES/BREP/CSG (edits baked in) and STL/OBJ/PLY/glTF, and prints 1:1 at 1 unit per model unit. An outline, not a dimensioned technical drawing — there is no hidden-line removal.
 
   - icon: 🧮
     title: FE Mesh Generation (Gmsh)
@@ -100,6 +100,7 @@ features:
 | STEP   | `.step`, `.stp` | OpenCascade.js → BRepMesh tessellation |
 | IGES   | `.iges`, `.igs` | OpenCascade.js → BRepMesh tessellation |
 | BREP   | `.brep`         | OpenCascade.js → BRepMesh tessellation |
+| OpenSCAD CSG | `.csg`     | CSG parse → OCCT build → BRepMesh       |
 | STL    | `.stl`          | Three.js `STLLoader`                   |
 | OBJ    | `.obj`          | Three.js `OBJLoader`                   |
 | PLY    | `.ply`          | Three.js `PLYLoader`                   |

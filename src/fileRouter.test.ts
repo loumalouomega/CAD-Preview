@@ -59,6 +59,11 @@ describe("routeFile", () => {
     expect(routeFile("m.off")).toBeUndefined();
   });
 
+  it("routes OpenSCAD .csg to the occt strategy (parsed + built kernel-side, opaque base)", () => {
+    expect(routeFile("model.csg")).toEqual({ strategy: "occt", format: "csg" });
+    expect(routeFile("/abs/path/MODEL.CSG")).toEqual({ strategy: "occt", format: "csg" });
+  });
+
   it("routes OpenFOAM case marker files to the meshio strategy", () => {
     expect(routeFile("case.foam")).toEqual({ strategy: "meshio", format: "openfoam" });
   });
