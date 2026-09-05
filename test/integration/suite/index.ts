@@ -301,10 +301,12 @@ test("Export Silhouette SVG… offers the view list and writes a parseable drawi
  * observable, so asserting on them would need a test-only seam in production
  * code. Before building one, this checks the cheaper precondition: does
  * `createFileSystemWatcher` with a `RelativePattern` on a temp dir deliver
- * events at all when the test host runs with **no workspace folder**? If it
- * does not, the whole sub-item is moot and no seam is worth adding.
+ * events at all when that dir is NOT covered by any open workspace folder?
+ * (The test host always opens with `runTest.ts`'s deliberately-empty launch
+ * root; the watched dir here is a different temp dir outside it.) If it does
+ * not, the whole sub-item is moot and no seam is worth adding.
  */
-test("file-system watchers deliver events with no workspace folder open", async () => {
+test("file-system watchers deliver events for files outside the open workspace", async () => {
   const dir = tempDir();
   const target = path.join(dir, "probe.json");
   let fired = 0;
@@ -418,6 +420,7 @@ test("New Blank Model creates a readable .brep and opens it", async () => {
   const sub = api?.onDidPostMessage?.((m) => { posted.push(m.type); });
 
   let openedByCommand = false;
+  let gotGeometry = false;
   await withModals([save(dest)], async () => {
     await vscode.commands.executeCommand("cad-preview.new");
     await waitForFile(dest);
@@ -431,7 +434,11 @@ test("New Blank Model creates a readable .brep and opens it", async () => {
       () => vscode.window.tabGroups.activeTabGroup.activeTab?.label === path.basename(dest),
       20000
     );
-    await sleep(4000); // the provider resolves the webview + loads geometry asynchronously
+    // Wait for the actual `geometry` post, not a fixed sleep: a fixed sleep
+    // turns a slow load into a flake and, worse, reports "no geometry"
+    // identically for "webview never became ready" and "kernel failed to
+    // tessellate" — two unrelated failures with unrelated fixes.
+    gotGeometry = await waitFor(() => posted.includes("geometry"), 60000);
   });
 
   assert(fs.existsSync(dest), `a file was created at the chosen path (${dest})`);
@@ -447,9 +454,15 @@ test("New Blank Model creates a readable .brep and opens it", async () => {
   assert(openedByCommand, "the command opened the created file in the CAD Preview custom editor");
 
   sub?.dispose();
+  // `posted` empty (not just missing `geometry`) means the webview never sent
+  // `ready` at all — in CI that was a dead WebGL context (the webview module
+  // dies in `new THREE.WebGLRenderer(...)` before posting `ready`), not a
+  // tessellation failure; see `runTest.ts`'s `--enable-unsafe-swiftshader`.
   assert(
-    posted.includes("geometry"),
-    `the empty document tessellated and posted geometry (saw ${JSON.stringify(posted.slice(-8))})`
+    gotGeometry,
+    posted.length === 0
+      ? `the empty document tessellated and posted geometry — saw NO posts at all (the webview never sent "ready"; suspect WebGL unavailable)`
+      : `the empty document tessellated and posted geometry (saw ${JSON.stringify(posted.slice(-8))})`
   );
   assert(
     !posted.includes("error"),
@@ -606,8 +619,19 @@ test("Models view lists workspace CAD files, skips the rest, and opens on click"
 
   const added = vscode.workspace.updateWorkspaceFolders(0, null, { uri: vscode.Uri.file(dir) });
   assert(added, "the temp folder joins the workspace for this case");
+  // Wait for THIS folder, not just "length > 0": the test host always opens
+  // with a (deliberately empty) launch root — see `runTest.ts` — so a bare
+  // length check would pass without this case's folder ever propagating.
+  // Generous timeout on purpose: CI's first attempt runs this after npm ci +
+  // build + Playwright install + the full webview suite on a cold runner, and
+  // failed twice there on a 10s timeout (both v1.10.0 runs' attempt #1;
+  // retries passed). A slow propagation is not a product defect worth failing
+  // the job over.
   assert(
-    await waitFor(() => (vscode.workspace.workspaceFolders ?? []).length > 0, 10000),
+    await waitFor(
+      () => (vscode.workspace.workspaceFolders ?? []).some((f) => f.uri.fsPath === dir),
+      30000
+    ),
     "the workspace change propagates before the tree is read"
   );
   const provider = new ModelsTreeDataProvider(VIEW_TYPE);
