@@ -89,6 +89,9 @@ export const PRODUCED_ROLE: Record<string, string> = {
   // support surface (the embedded part vanishes into the solid) — "side",
   // the same walls an extrude names, not a new role.
   rib: "side",
+  // A wrap's shell reads as one new body (standalone) or as merged faces
+  // (emboss/engrave) — "body", the same role every primitive names.
+  wrap: "body",
 };
 
 /** Human-readable role labels for the Edits-history chips (webview). */

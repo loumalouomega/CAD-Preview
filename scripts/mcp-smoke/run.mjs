@@ -4472,6 +4472,145 @@ try {
     );
   }
 
+  // --- wrap() (roadmap item 1: development + sew-two-offsets thickening) ---
+  //
+  // Same analytic discipline. block.stp (3x4x5, vol 60) contributes 6 faces,
+  // so a rectangle sketch is face-6. The shell volume is EXACTLY midArea x
+  // thickness (development is isometric): a 10x6 rect at thickness 2 gives
+  // exactly 120. Volumes are asserted PER SOLID (get_mass_properties with
+  // entityId) — whole-model volume with an open sketch face present is
+  // meaningless BRepGProp garbage (a box+rect reads 1514, not 1060), so
+  // unlike the rib block above, nothing here asserts a whole-model volume.
+  // Fixture geometry: sketch in the YZ plane at x=20 (width 10 runs along
+  // world Z, so z±5; height 6 runs along world Y, so y±3); axis vertical
+  // through (20,-15,0), R=10 — meridian +Y, angles ±0.3 rad, heights ±5,
+  // span < 2π. The shell sits around (20,-5,0): x∈[17,23], y∈[-6.4,-4],
+  // z∈[-5,5]. Emboss needs PROTRUSION by design (a fully interior shell
+  // fuses to just the box — union adds nothing): its box (z top at 0) lets
+  // exactly the upper half stick out, so 5600 + 60. Engrave needs
+  // containment (a void fully inside): its box (z±7) strictly contains,
+  // so 5600 − 120. Both boxes are tangent-free (a tangent box would
+  // coplanar-touch the boolean into garbage, the rib probe's own finding).
+  {
+    const wrapModel = path.join(dir, "wrap.stp");
+    const seedBlock = path.join(ROOT, "examples", "STP", "block.stp");
+    const resetWrap = () => {
+      fs.copyFileSync(seedBlock, wrapModel);
+      fs.rmSync(`${wrapModel}.edits.json`, { force: true });
+    };
+    const rect = { op: "addRectangleProfile", center: [20, 0, 0], normal: [1, 0, 0], up: [0, 0, 1], width: 10, height: 6 };
+    // NOTE: face ids follow collectFaces order — solid faces before free
+    // sketch faces. With ops [rect, wrap] the rect is face-6 (cylWrap's
+    // default); with ops [rect, box, wrap] the box's 6 faces come first and
+    // the rect is face-12 — passing face-6 there silently develops a box
+    // face instead (valid op, wrong geometry; caught live during authoring).
+    const cylWrap = (extra) => ({
+      op: "wrap", profile: "face-6", target: "cylinder",
+      axisPoint: [20, -15, 0], axisDir: [0, 0, 1], radius: 10, thickness: 2,
+      variant: "standalone", ...extra,
+    });
+
+    // 1. standalone: new solid-1, exactly 120.
+    resetWrap();
+    const standalone = await callWithCleanRetry(
+      "apply_edit_ops", { path: wrapModel, ops: [rect, cylWrap({})] }, resetWrap
+    );
+    assert(standalone.applied === 2, `standalone wrap applies (got ${JSON.stringify(standalone.report)})`);
+    const shellMass = await call("get_mass_properties", { path: wrapModel, entityId: "solid-1" });
+    assert(
+      shellMass.supported && Math.abs(shellMass.volume - 120) < 1e-6,
+      `standalone shell is exactly midArea x thickness = 120 (got ${shellMass.volume})`
+    );
+
+    // 2. cone (half-angle 15°): the unrolling isometry holds, still 120 —
+    // asserted at 0.01, not 1e-6: straight sketch lines map to CURVED uv
+    // paths on a cone, so the pcurve loop is adaptively subdivided to a
+    // stated 1e-5 tolerance (see wrapThickenedShell — tighter demonstrably
+    // hangs the run downstream). Residual measured +0.0013; cylinders stay
+    // bit-exact since their spans never split.
+    resetWrap();
+    const coneWrap = await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: wrapModel,
+        ops: [rect, { ...cylWrap({}), target: "cone", halfAngleDeg: 15, variant: "standalone" }],
+      },
+      resetWrap
+    );
+    assert(coneWrap.applied === 2, `cone wrap applies (got ${JSON.stringify(coneWrap.report)})`);
+    const coneMass = await call("get_mass_properties", { path: wrapModel, entityId: "solid-1" });
+    assert(
+      coneMass.supported && Math.abs(coneMass.volume - 120) < 0.01,
+      `cone shell is 120 within discretization tolerance (got ${coneMass.volume})`
+    );
+
+    // 3. emboss: fuse shell into the containing box → solid-0 is 5600+120.
+    // (Fused result rebuilds first, like ribFused — the untouched block
+    // becomes solid-1.)
+    resetWrap();
+    const embossed = await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: wrapModel,
+        ops: [rect, { op: "addBox", center: [20, -5, -7], size: [20, 20, 14] }, cylWrap({ profile: "face-12", variant: "emboss", targets: ["solid-1"] })],
+      },
+      resetWrap
+    );
+    assert(embossed.applied === 3, `emboss applies (got ${JSON.stringify(embossed.report)})`);
+    const embossMass = await call("get_mass_properties", { path: wrapModel, entityId: "solid-0" });
+    assert(
+      embossMass.supported && Math.abs(embossMass.volume - 5660) < 1e-3,
+      `embossed solid is exactly 5600 + protruding half 60 (got ${embossMass.volume})`
+    );
+
+    // 4. engrave: cut shell out of the box → solid-0 is 5600-120.
+    resetWrap();
+    const engraved = await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: wrapModel,
+        ops: [rect, { op: "addBox", center: [20, -5, 0], size: [20, 20, 14] }, cylWrap({ profile: "face-12", variant: "engrave", targets: ["solid-1"] })],
+      },
+      resetWrap
+    );
+    assert(engraved.applied === 3, `engrave applies (got ${JSON.stringify(engraved.report)})`);
+    const engraveMass = await call("get_mass_properties", { path: wrapModel, entityId: "solid-0" });
+    assert(
+      engraveMass.supported && Math.abs(engraveMass.volume - 5480) < 1e-3,
+      `engraved solid is exactly 5600 - 120 (got ${engraveMass.volume})`
+    );
+
+    // 5. bucket role: the shell's 6 faces land under "body".
+    const wrapBuckets = (await call("load_model", { path: wrapModel })).opBuckets ?? [];
+    const wrapBucket = wrapBuckets.find((b) => b.kind === "wrap");
+    assert(
+      (wrapBucket?.roles?.body?.length ?? 0) === 6,
+      `wrap bucket carries the 6 shell faces under body (got ${JSON.stringify(wrapBucket?.roles)})`
+    );
+
+    // 6. skips: an unresolvable profile fails gracefully (not a throw), and
+    // the variant/targets XOR is enforced at validation (standalone + targets
+    // is rejected, never applied).
+    resetWrap();
+    const badProfile = await call("apply_edit_ops", {
+      path: wrapModel,
+      ops: [rect, cylWrap({ profile: "face-99" })],
+    });
+    assert(
+      badProfile.applied === 1 && badProfile.notApplied === 1 &&
+        badProfile.report.some((r) => /did not resolve|renumber/i.test(r.diagnostic ?? "")),
+      `unresolvable wrap profile skips with a diagnostic (got ${JSON.stringify(badProfile.report.map((r) => r.diagnostic))})`
+    );
+    const xorRejected = await call("apply_edit_ops", {
+      path: wrapModel,
+      ops: [rect, cylWrap({ targets: ["solid-0"] })],
+    });
+    assert(
+      xorRejected.rejected === 1,
+      `standalone wrap with targets is rejected at validation (got ${JSON.stringify(xorRejected.report)})`
+    );
+  }
+
   // --- open-profile (wire) operand, roadmap item 8 --------------------------
   //
   // Same analytic discipline as the thin block above. block.stp is 6 faces /

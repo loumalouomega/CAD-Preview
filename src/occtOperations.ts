@@ -6,7 +6,7 @@ import { PRODUCED_ROLE } from "./opBuckets";
 // at runtime, so a value import here would close a genuine require() cycle in
 // the CJS bundle.
 import type { SurfaceType, SurfaceParams } from "./entityFacts";
-import { enumerateEdges, buildEdgeFaceAdjacency } from "./edgeEnumeration";
+import { enumerateEdges, buildEdgeFaceAdjacency, EDGE_DEFLECTION } from "./edgeEnumeration";
 import { volumePropertiesAdaptive } from "./brepGProp";
 
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
@@ -357,6 +357,7 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
     case "sweep":
     case "loft":
     case "rib":
+    case "wrap":
       return featureModel(oc, shape, op, cleanup, fail, guideCollector);
     case "explode":
       return explodeSolids(oc, shape, op.factor, cleanup, fail);
@@ -1060,10 +1061,11 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
     const terminator: string[] = op.op === "extrude" && typeof (op as any).upToFace === "string" ? [(op as any).upToFace as string] : [];
     // Rib carries its own operand names (spineEdges/upTo, not profile) — a
     // guide spine or guide terminator must refuse exactly like any other
-    // construction-geometry operand.
+    // construction-geometry operand. Wrap's profile is a plain face id.
     const ribFaces: string[] = op.op === "rib" && typeof (op as any).upTo === "string" ? [(op as any).upTo as string] : [];
     const ribEdges: string[] = op.op === "rib" ? ((op as any).spineEdges ?? []) : [];
-    const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single, ...terminator] : [...terminator, ...ribFaces];
+    const wrapFaces: string[] = op.op === "wrap" && typeof (op as any).profile === "string" ? [(op as any).profile as string] : [];
+    const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single, ...terminator] : [...terminator, ...ribFaces, ...wrapFaces];
     const edgeIds: string[] = op.op === "loft"
       ? ((op as any).profileEdgeSets ?? []).flat()
       : [...((op as any).profileEdges ?? []), ...(op.op === "sweep" ? [(op as any).path] : []), ...ribEdges];
@@ -1084,8 +1086,11 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
   }
   // Rib fuses instead of appending (the wall must become one solid with its
   // support), so it returns the full new shape itself rather than a body for
-  // the compound path below.
+  // the compound path below. Wrap likewise returns the full new shape
+  // (standalone appends, emboss fuses, engrave cuts — each rebuilds with
+  // leftovers + debris like ribFused, so none of them fit the append path).
   if (op.op === "rib") return ribFused(oc, shape, op, cleanup, fail);
+  if (op.op === "wrap") return wrapDevelop(oc, shape, op as Extract<EditOp, { op: "wrap" }>, cleanup, fail);
   const solid = buildFeatureSolid(oc, shape, op, cleanup, fail);
   if (!solid) {
     if (thinSpecOf(op)) {
@@ -1948,6 +1953,588 @@ function ribFused(
       "this is a builder-internal failure, not an operand problem — re-check the spine and terminator ids"
     );
     return shape;
+  }
+}
+
+/**
+ * Develop a flat sketch profile onto a cylinder or cone and thicken it into
+ * a closed shell, then combine it with the model per `variant` (roadmap
+ * item 1 `wrap()`, unblocked by the green sew-two-offsets probe — see
+ * `doc/roadmap.md`'s record, not re-derived here).
+ *
+ * Mapping (deterministic, stated — no hidden state): the sketch's 2D frame
+ * is `(xdir, ydir)` in its own plane, where `ydir` is the axis direction
+ * projected onto the sketch (`xdir = ydir × normal`), falling back — when
+ * the sketch is perpendicular to the axis — to `xdir` = the radial
+ * direction (`ydir = normal × xdir`); a sketch centred exactly on the axis
+ * has no meridian and is refused. The loop's bbox centre maps to its own
+ * angular position (meridian) and axial station, so translating the sketch
+ * moves the result predictably; radial distance is ignored (development is
+ * intrinsic). Local `(x, y)` maps to `(angle = x / r, slant = y)` — the
+ * true unrolling isometry on both cylinder (constant `r`) and cone
+ * (`r` at the point's own station; the cone's V parameter is slant
+ * distance, probed live). A loop spanning ≥ 2π of angle would self-overlap
+ * and is refused.
+ *
+ * Each stage degrades to a graceful skip with a diagnostic (never a throw,
+ * never a wrong solid): unresolved/non-planar/holed profile, apex
+ * crossing (`r ≤ 0`), over-wide loop, offset/skirt/sew failure, unresolved
+ * fuse/cut targets.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapDevelop(
+  oc: any,
+  shape: any,
+  op: Extract<EditOp, { op: "wrap" }>,
+  cleanup: Array<{ delete(): void }>,
+  fail?: OutcomeFail
+): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const face = collectFaces(oc, shape, cleanup)[faceIndex(op.profile)];
+    if (!face) {
+      fail?.(
+        `wrap profile ${op.profile} did not resolve to a face`,
+        "the id may have been renumbered by an earlier topology-changing op — re-inspect the model"
+      );
+      return shape;
+    }
+    if (wireCountOf(oc, face, cleanup) !== 1) {
+      fail?.(
+        `wrap profile ${op.profile} already has a hole`,
+        "a developed band is built from the outer boundary alone, which would silently discard it"
+      );
+      return shape;
+    }
+    const info = faceSurfaceInfo(oc, face, cleanup);
+    if (info.type !== "plane" || !info.params || info.params.kind !== "plane") {
+      fail?.(
+        `wrap profile ${op.profile} is a ${info.type} surface, not a plane`,
+        "only flat sketch faces can be developed — pick a sketch profile"
+      );
+      return shape;
+    }
+    const n = info.params.normal;
+    const [ax, ay, az] = op.axisDir;
+    const axisLen = Math.hypot(ax, ay, az);
+    if (!(axisLen > 0)) {
+      fail?.("wrap axis has zero length", "give a non-zero axisDir vector");
+      return shape;
+    }
+    const ux = ax / axisLen;
+    const uy = ay / axisLen;
+    const uz = az / axisLen;
+    // In-sketch frame: ydir = axis projected onto the sketch plane...
+    const dot = ux * n[0] + uy * n[1] + uz * n[2];
+    let px = ux - dot * n[0];
+    let py = uy - dot * n[1];
+    let pz = uz - dot * n[2];
+    let pl = Math.hypot(px, py, pz);
+    let xdir: Vec3;
+    let ydir: Vec3;
+    // Ordered boundary loop via per-edge discretization + greedy chaining
+    // (endpoints coincide exactly — UniformDeflection includes curve bounds
+    // on shared vertices — so a 1e-9 match is exact, not approximate).
+    const loop = wrapBoundaryLoop(oc, face, cleanup);
+    if (!loop || loop.length < 3) {
+      fail?.(
+        `wrap profile ${op.profile} has no usable boundary loop`,
+        "the face may be degenerate — pick a sketch profile with real extent"
+      );
+      return shape;
+    }
+    // Loop bbox centre: stable under resampling (unlike a point average,
+    // which edge-density would bias).
+    let mnx = Infinity;
+    let mny = Infinity;
+    let mnz = Infinity;
+    let mxx = -Infinity;
+    let mxy = -Infinity;
+    let mxz = -Infinity;
+    for (const p of loop) {
+      if (p[0] < mnx) mnx = p[0];
+      if (p[1] < mny) mny = p[1];
+      if (p[2] < mnz) mnz = p[2];
+      if (p[0] > mxx) mxx = p[0];
+      if (p[1] > mxy) mxy = p[1];
+      if (p[2] > mxz) mxz = p[2];
+    }
+    const O: Vec3 = [(mnx + mxx) / 2, (mny + mxy) / 2, (mnz + mxz) / 2];
+    if (pl > 1e-9) {
+      ydir = [px / pl, py / pl, pz / pl];
+      // xdir = ydir × n (right-handed: (ydir × n) × ydir = n).
+      xdir = [
+        ydir[1] * n[2] - ydir[2] * n[1],
+        ydir[2] * n[0] - ydir[0] * n[2],
+        ydir[0] * n[1] - ydir[1] * n[0],
+      ];
+    } else {
+      // Sketch perpendicular to the axis: radial direction lies in-plane.
+      const ox = O[0] - op.axisPoint[0];
+      const oy = O[1] - op.axisPoint[1];
+      const oz = O[2] - op.axisPoint[2];
+      const oq = ox * ux + oy * uy + oz * uz;
+      const rx = ox - oq * ux;
+      const ry = oy - oq * uy;
+      const rz = oz - oq * uz;
+      const rl = Math.hypot(rx, ry, rz);
+      if (!(rl > 1e-9)) {
+        fail?.(
+          `wrap profile ${op.profile} is centred exactly on the wrap axis`,
+          "offset the sketch so a meridian is defined — a centred profile has no angular position"
+        );
+        return shape;
+      }
+      xdir = [rx / rl, ry / rl, rz / rl];
+      // ydir = n × xdir (right-handed: xdir × (n × xdir) = n).
+      ydir = [
+        n[1] * xdir[2] - n[2] * xdir[1],
+        n[2] * xdir[0] - n[0] * xdir[2],
+        n[0] * xdir[1] - n[1] * xdir[0],
+      ];
+    }
+    // Meridian + station of the loop centre (preserved by development).
+    const ox = O[0] - op.axisPoint[0];
+    const oy = O[1] - op.axisPoint[1];
+    const oz = O[2] - op.axisPoint[2];
+    const q0 = ox * ux + oy * uy + oz * uz;
+    const cosA = op.target === "cone" ? Math.cos((op.halfAngleDeg as number) * Math.PI / 180) : 1;
+    const sinA = op.target === "cone" ? Math.sin((op.halfAngleDeg as number) * Math.PI / 180) : 0;
+    // Slant of the centre: axial station projected onto the slant direction.
+    const s0 = op.target === "cone" ? q0 / cosA : q0;
+    // Reference radial direction at the centre (for the angular origin).
+    const refR = op.target === "cone" ? op.radius + s0 * sinA : op.radius;
+    const refx = ox - q0 * ux;
+    const refy = oy - q0 * uy;
+    const refz = oz - q0 * uz;
+    const refl = Math.hypot(refx, refy, refz);
+    if (!(refl > 1e-9)) {
+      fail?.(
+        `wrap profile ${op.profile} is centred exactly on the wrap axis`,
+        "offset the sketch so a meridian is defined — a centred profile has no angular position"
+      );
+      return shape;
+    }
+    // Surface frame: Ax3(location=axisPoint, direction=axisDir) gets a
+    // default XDir we must not assume — read it back and offset our angles
+    // (u = theta + phi), since a u-offset of 2πk is the identity anyway.
+    const ax3 = keep(new oc.gp_Ax3_4(keep(pnt(oc, op.axisPoint)), keep(dir(oc, [ux, uy, uz]))));
+    const sX = keep(ax3.XDirection());
+    const sY = keep(ax3.YDirection());
+    const sxx = sX.X();
+    const sxy = sX.Y();
+    const sxz = sX.Z();
+    const syx = sY.X();
+    const syy = sY.Y();
+    const syz = sY.Z();
+    const phi = Math.atan2(refx * syx + refy * syy + refz * syz, refx * sxx + refy * sxy + refz * sxz);
+    const shell = wrapThickenedShell(oc, loop, O, xdir, ydir, phi, s0, refR, cosA, sinA, op, cleanup, fail);
+    if (!shell) return shape;
+
+    if (op.variant === "standalone") {
+      const comp = keep(new oc.TopoDS_Compound());
+      const builder = keep(new oc.BRep_Builder());
+      builder.MakeCompound(comp);
+      builder.Add(comp, shape);
+      builder.Add(comp, shell);
+      return comp;
+    }
+    // Emboss fuses, engrave cuts — against the solids only (debris in a
+    // fused operand fails IsDone, probed live — same load-bearing split as
+    // ribFused, debris carried over in original relative order).
+    const solids = collectSolids(oc, shape, cleanup);
+    const byId = new Map(solids.map((s) => [s.id, s.solid]));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const targets = (op.targets ?? []).map((id) => byId.get(id)).filter((s): s is any => s != null);
+    if (targets.length === 0) {
+      fail?.(
+        `wrap target ids (${(op.targets ?? []).join(", ")}) did not resolve to solids`,
+        "re-check solid-N ids — load_model re-lists them after topology-changing ops"
+      );
+      return shape;
+    }
+    const { solids: supportSolids, debris } = splitSolidsAndDebris(oc, shape, cleanup);
+    const wanted = new Set(op.targets ?? []);
+    const supportTargets = supportSolids.filter((_, i) => wanted.has(solids[i]?.id ?? ""));
+    if (supportTargets.length === 0) {
+      fail?.(
+        `wrap target ids (${(op.targets ?? []).join(", ")}) did not resolve to solids`,
+        "re-check solid-N ids — load_model re-lists them after topology-changing ops"
+      );
+      return shape;
+    }
+    try {
+      const combined = combineSolids(oc, supportTargets, cleanup);
+      const algo = op.variant === "emboss"
+        ? keep(new oc.BRepAlgoAPI_Fuse_3(shell, combined))
+        : keep(new oc.BRepAlgoAPI_Cut_3(combined, shell));
+      if (!algo.IsDone()) {
+        fail?.(
+          `the wrap ${op.variant} boolean did not complete (IsDone() false)`,
+          op.variant === "emboss"
+            ? "the shell may miss every target solid — check the wrap placement against them"
+            : "the shell may lie entirely outside the target solids"
+        );
+        return shape;
+      }
+      const result = keep(algo.Shape());
+      const used = new Set(op.targets ?? []);
+      const leftovers = solids.filter((s) => !used.has(s.id)).map((s) => s.solid);
+      if (leftovers.length === 0 && debris.length === 0) return result;
+      const rebuilt = keep(new oc.TopoDS_Compound());
+      const rb = keep(new oc.BRep_Builder());
+      rb.MakeCompound(rebuilt);
+      // ribFused puts the fused result first; keep that order.
+      rb.Add(rebuilt, result);
+      for (const s of leftovers) rb.Add(rebuilt, s);
+      for (const d of debris) rb.Add(rebuilt, d);
+      return rebuilt;
+    } catch {
+      fail?.(
+        `the wrap ${op.variant} boolean threw`,
+        "the shell may miss every target solid — check the wrap placement against them"
+      );
+      return shape;
+    }
+  } catch (err) {
+    fail?.(
+      `the wrap builder threw (${err instanceof Error ? err.message : String(err)})`.slice(0, 160),
+      "this is a builder-internal failure, not an operand problem — re-check the profile and target ids"
+    );
+    return shape;
+  }
+}
+
+/**
+ * Ordered closed boundary loop of a face via per-edge discretization +
+ * greedy chaining. `BRepAdaptor_Curve_2` + `GCPnts_UniformDeflection_2` at
+ * the shared `EDGE_DEFLECTION` (never varied — the enumerator-discipline
+ * rule in `edgeEnumeration.ts`); endpoints coincide exactly on shared
+ * vertices, so a 1e-9 match is exact, not approximate. Returns the loop
+ * WITHOUT repeating the first point at the end, or null when the edges
+ * don't chain into one closed loop.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapBoundaryLoop(oc: any, face: any, cleanup: Array<{ delete(): void }>): Vec3[] | null {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const wire = keep(oc.BRepTools.OuterWire(face));
+    const exp = keep(new oc.TopExp_Explorer_2(wire, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    const edgeHandles: any[] = [];
+    while (exp.More()) { edgeHandles.push(keep(oc.TopoDS.Edge_1(exp.Current()))); exp.Next(); }
+    if (edgeHandles.length === 0) return null;
+    const polylines: Vec3[][] = [];
+    for (const edge of edgeHandles) {
+      const curve = keep(new oc.BRepAdaptor_Curve_2(edge));
+      const disc = keep(new oc.GCPnts_UniformDeflection_2(curve, EDGE_DEFLECTION, false));
+      if (!disc.IsDone() || disc.NbPoints() < 2) return null;
+      polylines.push(polylineToVec3(disc));
+    }
+    // Greedy chain by endpoint coincidence.
+    const used = new Array<boolean>(polylines.length).fill(false);
+    const ordered: Vec3[] = [...polylines[0]];
+    used[0] = true;
+    const dist2 = (a: Vec3, b: Vec3): number => {
+      const dx = a[0] - b[0];
+      const dy = a[1] - b[1];
+      const dz = a[2] - b[2];
+      return dx * dx + dy * dy + dz * dz;
+    };
+    const TOL2 = 1e-18; // (1e-9)^2 — exact coincidence, not approximate
+    for (let k = 1; k < polylines.length; k++) {
+      const end = ordered[ordered.length - 1];
+      let found = -1;
+      let flip = false;
+      for (let i = 0; i < polylines.length; i++) {
+        if (used[i]) continue;
+        const p = polylines[i];
+        if (dist2(p[0], end) < TOL2) { found = i; flip = false; break; }
+        if (dist2(p[p.length - 1], end) < TOL2) { found = i; flip = true; break; }
+      }
+      if (found < 0) return null;
+      used[found] = true;
+      const p = flip ? [...polylines[found]].reverse() : polylines[found];
+      ordered.push(...p.slice(1));
+    }
+    // Must close back on the start.
+    if (dist2(ordered[ordered.length - 1], ordered[0]) >= TOL2) return null;
+    ordered.pop();
+    return ordered.length >= 3 ? ordered : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `Float32Array` xyz polyline → `Vec3[]` (the discretizer's flat layout). */
+function polylineToVec3(disc: { NbPoints(): number; Value(i: number): { X(): number; Y(): number; Z(): number; delete(): void } }): Vec3[] {
+  const out: Vec3[] = [];
+  for (let i = 1; i <= disc.NbPoints(); i++) {
+    const pt = disc.Value(i);
+    out.push([pt.X(), pt.Y(), pt.Z()]);
+    pt.delete();
+  }
+  return out;
+}
+
+/**
+ * Thickened closed shell around the developed profile: two one-sided
+ * `PerformByJoin` offsets (±thickness/2) pulled as single faces (never ask
+ * the offsetter for a solid — the red whole-solid finding), `OuterWire` ×
+ * 2 through `ThruSections` (which already returns a closed solid with
+ * shared topology, probed), plus a confirming fresh-instance sew
+ * (`NbFreeEdges() == 0` gate, tolerance ladder as built-in sweep) before
+ * `MakeSolid_3` + orient-positive. Returns the shell solid or null (with
+ * `fail` already carrying the specific reason).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapThickenedShell(
+  oc: any,
+  loop: Vec3[],
+  O: Vec3,
+  xdir: Vec3,
+  ydir: Vec3,
+  phi: number,
+  s0: number,
+  refR: number,
+  cosA: number,
+  sinA: number,
+  op: Extract<EditOp, { op: "wrap" }>,
+  cleanup: Array<{ delete(): void }>,
+  fail?: OutcomeFail
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const isCone = op.target === "cone";
+    const dot3 = (p: Vec3, d: Vec3, o: Vec3): number =>
+      (p[0] - o[0]) * d[0] + (p[1] - o[1]) * d[1] + (p[2] - o[2]) * d[2];
+    // uvOf maps a sketch-boundary 3D point to development (u, v) with u
+    // UNSHIFTED (the seam shift applies once, below). Null at non-positive
+    // radius — the cone-apex crossing.
+    const uvOf = (p: Vec3): [number, number] | null => {
+      const x = dot3(p, xdir, O);
+      const y = dot3(p, ydir, O);
+      const r = isCone ? op.radius + (s0 + y) * sinA : op.radius;
+      if (!(r > 1e-9)) return null;
+      return [x / r, s0 + y];
+    };
+    const apexFail = (): null => {
+      fail?.(
+        "the wrap profile crosses the cone apex (radius ≤ 0 there)",
+        "move the sketch or widen the cone angle so every point stays at positive radius"
+      );
+      return null;
+    };
+    // Coarse pass over the loop vertices: apex + span guards live here, on
+    // exact vertex positions (subdivision can only shrink spans).
+    const coarse: Array<[number, number]> = [];
+    for (const p of loop) {
+      const q = uvOf(p);
+      if (!q) return apexFail();
+      coarse.push(q);
+    }
+    let minA = Infinity;
+    let maxA = -Infinity;
+    for (const [u] of coarse) {
+      if (u < minA) minA = u;
+      if (u > maxA) maxA = u;
+    }
+    if (!(maxA - minA < 2 * Math.PI - 1e-9)) {
+      fail?.(
+        "the wrap profile spans a full turn or more around the target",
+        "a developed loop wider than the target circumference would self-overlap — use a narrower profile or a larger radius"
+      );
+      return null;
+    }
+    // Analytic development surface. Cylinder: (angle, axial height).
+    // Cone: (angle, slant) — the cone's V parameter IS slant distance
+    // (probed live: Value(0,10) sits at r=R+10·sin α, z=10·cos α).
+    const hSurf = op.target === "cone"
+      ? keep(new oc.Handle_Geom_Surface_2(
+        new oc.Geom_ConicalSurface_1(
+          keep(new oc.gp_Ax3_4(keep(pnt(oc, op.axisPoint)), keep(dir(oc, [op.axisDir[0], op.axisDir[1], op.axisDir[2]])))),
+          Math.atan2(sinA, cosA),
+          op.radius
+        )
+      ))
+      : keep(new oc.Handle_Geom_Surface_2(
+        new oc.Geom_CylindricalSurface_1(
+          keep(new oc.gp_Ax3_4(keep(pnt(oc, op.axisPoint)), keep(dir(oc, [op.axisDir[0], op.axisDir[1], op.axisDir[2]])))),
+          op.radius
+        )
+      ));
+    // pcurve loop on the development surface, u centred on (-π, π] so no
+    // segment crosses the periodic seam (a 2π shift is the identity, so
+    // this changes placement not at all).
+    const meanA = (minA + maxA) / 2;
+    const shift = Math.round((meanA + phi) / (2 * Math.PI)) * 2 * Math.PI;
+    const sh = (q: [number, number]): [number, number] => [phi + q[0] - shift, q[1]];
+    // Adaptive midpoint subdivision per span: a straight sketch line maps
+    // to a CURVED uv path on a cone (θ = x/r(y)), so straight uv chords
+    // would inflate the area (+0.4% measured on the cone fixture — caught
+    // by smoke, not review). Subdividing at 3D chord midpoints is exact
+    // for straight sketch edges (the midpoint lies on the boundary) and
+    // bounded by the base 0.1-deflection discretization for curved ones;
+    // endpoints are preserved, so loop chaining is unaffected.
+    //
+    // Tolerance is 1e-9 in (u, v) — NOT tightened further on purpose:
+    // ~2000 spans per long edge at 1e-9 demonstrably hangs the run
+    // (offsetter over thousands of near-collinear micro-edges), while
+    // 1e-7 needs ~170 and bounds the area error to ~1e-5. Same philosophy
+    // as the shared EDGE_DEFLECTION: a stated discretization tolerance,
+    // not silent exactness.
+    const SUB_TOL = 1e-6;
+    const SUB_DEPTH = 14;
+    let apexHit = false;
+    const subdivide = (
+      p0: Vec3, q0: [number, number], p1: Vec3, q1: [number, number],
+      depth: number, acc: Array<[number, number]>
+    ): void => {
+      const mx: Vec3 = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2, (p0[2] + p1[2]) / 2];
+      const mq = uvOf(mx);
+      if (!mq) { apexHit = true; return; }
+      const ms = sh(mq);
+      const du = ms[0] - (q0[0] + q1[0]) / 2;
+      const dv = ms[1] - (q0[1] + q1[1]) / 2;
+      if (du * du + dv * dv <= SUB_TOL * SUB_TOL || depth >= SUB_DEPTH) {
+        acc.push(q1);
+        return;
+      }
+      subdivide(p0, q0, mx, ms, depth + 1, acc);
+      if (!apexHit) subdivide(mx, ms, p1, q1, depth + 1, acc);
+    };
+    const refined: Array<[number, number]> = [];
+    for (let i = 0; i < coarse.length; i++) {
+      const a3 = loop[i];
+      const b3 = loop[(i + 1) % loop.length];
+      const qa = sh(coarse[i]);
+      const qb = sh(coarse[(i + 1) % coarse.length]);
+      if (i === 0) refined.push(qa);
+      subdivide(a3, qa, b3, qb, 0, refined);
+      if (apexHit) return apexFail();
+    }
+    // The last span's endpoint IS the first point (closed loop) — drop the
+    // duplicate or the wire builder sees a zero-length span.
+    if (refined.length > 1) {
+      const f = refined[0];
+      const l = refined[refined.length - 1];
+      const dx = l[0] - f[0];
+      const dy = l[1] - f[1];
+      if (dx * dx + dy * dy < 1e-18) refined.pop();
+    }
+    const uv = refined;
+    const wireMk = keep(new oc.BRepBuilderAPI_MakeWire_1());
+    for (let i = 0; i < uv.length; i++) {
+      const [u1, v1] = uv[i];
+      const [u2, v2] = uv[(i + 1) % uv.length];
+      const seg = keep(new oc.GCE2d_MakeSegment_1(keep(new oc.gp_Pnt2d_3(u1, v1)), keep(new oc.gp_Pnt2d_3(u2, v2))));
+      if (!seg.IsDone()) {
+        fail?.("the developed profile has a degenerate span", "the sketch boundary may contain a zero-length run");
+        return null;
+      }
+      const h2d = keep(new oc.Handle_Geom2d_Curve_2(keep(seg.Value()).get()));
+      const mkEdge = keep(new oc.BRepBuilderAPI_MakeEdge_30(h2d, hSurf));
+      if (!mkEdge.IsDone()) {
+        fail?.("a developed profile edge failed to build", "the sketch boundary may be self-intersecting");
+        return null;
+      }
+      const edge = keep(mkEdge.Edge());
+      if (edge.IsNull()) {
+        fail?.("a developed profile edge is null", "the sketch boundary may be self-intersecting");
+        return null;
+      }
+      oc.BRepLib.BuildCurves3d_2(edge);
+      wireMk.Add_1(edge);
+    }
+    if (!wireMk.IsDone()) {
+      fail?.("the developed profile wire did not close", "the sketch boundary may be self-intersecting");
+      return null;
+    }
+    const devFace = keep(new oc.BRepBuilderAPI_MakeFace_21(hSurf, keep(wireMk.Wire()), true).Face());
+    if (!devFace || devFace.IsNull()) {
+      fail?.("the developed face failed to build", "the sketch boundary may be self-intersecting on the target surface");
+      return null;
+    }
+    // Two one-sided offsets, single faces pulled via explorer (csgModel
+    // style — PerformByJoin wraps its face in a shell).
+    const offFaces: any[] = [];
+    for (const d of [op.thickness / 2, -(op.thickness / 2)]) {
+      const mk = keep(new oc.BRepOffsetAPI_MakeOffsetShape_1());
+      mk.PerformByJoin(
+        devFace, d, 1e-6,
+        oc.BRepOffset_Mode.BRepOffset_Skin.value, false, false,
+        oc.GeomAbs_JoinType.GeomAbs_Arc.value, false
+      );
+      if (!mk.IsDone()) {
+        fail?.(
+          `the wrap thickening offset (d=${d}) did not complete`,
+          "the wall may be thicker than the profile's narrowest half-width — reduce thickness"
+        );
+        return null;
+      }
+      const exp = keep(new oc.TopExp_Explorer_2(keep(mk.Shape()), oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+      let found: any = null;
+      let n = 0;
+      while (exp.More()) { n++; found = exp.Current(); exp.Next(); }
+      if (n !== 1 || !found) {
+        fail?.(
+          `the wrap thickening offset (d=${d}) produced ${n} faces, not one`,
+          "the wall may be thicker than the profile's narrowest half-width — reduce thickness"
+        );
+        return null;
+      }
+      offFaces.push(keep(oc.TopoDS.Face_1(found)));
+    }
+    const wires = offFaces.map((f) => keep(oc.BRepTools.OuterWire(f)));
+    const ts = keep(new oc.BRepOffsetAPI_ThruSections(true, false, 1.0e-6));
+    ts.AddWire(wires[0]);
+    ts.AddWire(wires[1]);
+    ts.Build();
+    if (!ts.IsDone()) {
+      fail?.("the wrap wall skirt failed to build", "the developed loop may be degenerate on the target surface");
+      return null;
+    }
+    const closed = keep(ts.Shape());
+    if (closed.IsNull() || closed.ShapeType().value !== oc.TopAbs_ShapeEnum.TopAbs_SOLID.value) {
+      fail?.("the wrap wall did not close into a solid", "the developed loop may be degenerate on the target surface");
+      return null;
+    }
+    // Confirming sew (fresh instance, ladder as built-in sweep): the probe
+    // showed ThruSections already shares topology, so this is a safety net,
+    // not the closer — but a nonzero free-edge count here means a genuinely
+    // open wall, which must never ship silently.
+    const fexp = keep(new oc.TopExp_Explorer_2(closed, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    const parts: any[] = [];
+    while (fexp.More()) { parts.push(keep(oc.TopoDS.Face_1(fexp.Current()))); fexp.Next(); }
+    let sewed: any = null;
+    for (const tol of [1e-6, 1e-5, 1e-4, 1e-3, 1e-2]) {
+      const sew = keep(new oc.BRepBuilderAPI_Sewing(tol, true, true, true, false));
+      for (const f of parts) sew.Add(f);
+      sew.Perform(keep(new oc.Handle_Message_ProgressIndicator_1()));
+      if (sew.NbFreeEdges() === 0) { sewed = keep(sew.SewedShape()); break; }
+    }
+    if (!sewed) {
+      fail?.("the wrap wall did not sew closed (free edges at every tolerance)", "the developed loop may be degenerate on the target surface");
+      return null;
+    }
+    const shexp = keep(new oc.TopExp_Explorer_2(sewed, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    if (!shexp.More()) {
+      fail?.("the wrap wall produced no shell", "the developed loop may be degenerate on the target surface");
+      return null;
+    }
+    const solid = keep(new oc.BRepBuilderAPI_MakeSolid_3(keep(oc.TopoDS.Shell_1(shexp.Current()))).Solid());
+    const oriented = orientPositiveVolume(oc, solid, cleanup);
+    if (!oriented) {
+      fail?.("the wrap wall collapsed to zero volume", "the wall may be thicker than the profile's narrowest half-width — reduce thickness");
+      return null;
+    }
+    return oriented;
+  } catch (err) {
+    fail?.(
+      `the wrap builder threw (${err instanceof Error ? err.message : String(err)})`.slice(0, 160),
+      "this is a builder-internal failure, not an operand problem — re-check the profile and target ids"
+    );
+    return null;
   }
 }
 

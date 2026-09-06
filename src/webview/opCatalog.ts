@@ -21,7 +21,7 @@ export type PanelOpId =
   // EDIT — refine
   | "fillet" | "chamfer"
   // EDIT — features
-  | "extrude" | "revolve" | "sweep" | "loft" | "rib"
+  | "extrude" | "revolve" | "sweep" | "loft" | "rib" | "wrap"
   // EDIT — modify
   | "shell" | "draft" | "splitByPlane" | "section" | "drill"
   // EDIT — assembly
@@ -165,6 +165,7 @@ export const OP_CATALOG: {
         entry("sweep", "Sweep", ["sweep"]),
         entry("loft", "Loft", ["loft"]),
         entry("rib", "Rib", ["rib"]),
+        entry("wrap", "Wrap", ["wrap"]),
       ],
     },
     {
@@ -248,6 +249,10 @@ function describeOpBase(op: EditOp): string {
     case "rib": {
       const r = op as Extract<EditOp, { op: "rib" }>;
       return `Rib ${r.spineEdges.length} → ${r.upTo}${thinLabel(op)}`;
+    }
+    case "wrap": {
+      const w = op as Extract<EditOp, { op: "wrap" }>;
+      return `Wrap ${w.profile} → ${w.target} r=${w.radius} t=${w.thickness} (${w.variant})`;
     }
     case "revolve": return `Revolve ${profileLabel(op)} ${op.angleDeg}°${thinLabel(op)}`;
     case "sweep": return `Sweep ${profileLabel(op)} → ${op.path}${thinLabel(op)}`;
@@ -347,6 +352,8 @@ export function referencedEntities(op: EditOp): string[] {
       return [...op.faces];
     case "rib":
       return [...op.spineEdges, op.upTo];
+    case "wrap":
+      return op.targets ? [op.profile, ...op.targets] : [op.profile];
     case "extrude":
       return [...profileOperandIds(op), ...((op as any).upToFace ? [(op as any).upToFace as string] : [])];
     case "revolve":

@@ -38,6 +38,11 @@ export type FeatureDraft = (
   | { kind: "sweep" }
   | { kind: "loft"; smoothing?: boolean }
   | { kind: "rib"; dir: Vec3; blendRadius: number }
+  | {
+      kind: "wrap"; target: "cylinder" | "cone"; axisPoint: Vec3; axisDir: Vec3;
+      radius: number; halfAngleDeg: number; thickness: number;
+      variant: "emboss" | "engrave" | "standalone";
+    }
 ) & { exprs?: ExprMap; thin?: number; thinOuter?: number; pickRaw?: string };
 
 /** A primitive-creation draft — self-contained (no selection needed), pushed
@@ -953,6 +958,27 @@ export class EditsPanel {
         f.appendChild(this.hint("Wall is required (a rib without thickness encloses nothing). Blend 0 = fuse only."));
         f.appendChild(this.ribTerminatorRow());
         this.applyButtonDraft("Apply", "Build the rib from the selected spine edges", (): FeatureDraft => ({ kind: "rib", dir: this.readVec("dir"), blendRadius: this.readNum("blendRadius"), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
+        break;
+      case "wrap":
+        f.appendChild(this.hint("Develops the selected flat sketch face (Surf mode) onto a cylinder/cone, then thickens it"));
+        f.appendChild(this.enumField("target", "Target", [["cylinder", "Cylinder"], ["cone", "Cone"]], "cylinder"));
+        f.appendChild(this.vecField("axisPoint", "Axis pt", [0, 0, 0]));
+        f.appendChild(this.vecField("axisDir", "Axis dir", [0, 0, 1]));
+        f.appendChild(this.numField("radius", "Radius", 10));
+        f.appendChild(this.numField("halfAngleDeg", "Half-angle°", 0));
+        f.appendChild(this.numField("thickness", "Thick", 2));
+        f.appendChild(this.enumField("variant", "Combine", [["standalone", "Standalone"], ["emboss", "Emboss (fuse)"], ["engrave", "Engrave (cut)"]], "standalone"));
+        f.appendChild(this.hint("Half-angle is cone-only (0 = unset). Emboss/Engrave act on the selected volumes (Vol mode)."));
+        this.applyButtonDraft("Apply", "Develop the sketch onto the target and thicken it", (): FeatureDraft => ({
+          kind: "wrap",
+          target: this.readEnum("target", "cylinder") as "cylinder" | "cone",
+          axisPoint: this.readVec("axisPoint"),
+          axisDir: this.readVec("axisDir"),
+          radius: this.readNum("radius"),
+          halfAngleDeg: this.readNum("halfAngleDeg"),
+          thickness: this.readNum("thickness"),
+          variant: this.readEnum("variant", "standalone") as "emboss" | "engrave" | "standalone",
+        }), (d) => this.cb.onApplyFeature(d));
         break;
 
       // ── EDIT · modify ──
