@@ -18,6 +18,8 @@ import { patchStepUnitDeclaration } from "./stepUnitPatch";
 import { TESSELLATION_PRESETS, type TessellationParams } from "./tessellationQuality";
 import { hasTargetQueries } from "./editOps";
 import { resolveOpOperandQueries } from "./opQueryResolve";
+import { parseCsg } from "./csgImport";
+import { buildCsgShape } from "./csgModel";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ocPromise: Promise<any> | null = null;
@@ -128,6 +130,11 @@ export interface BRepResult {
    * the op list carries `targetQueries` and something froze. Absent for mesh
    * sources (their replay is client-side and never resolves queries). */
   queryWarnings?: string[];
+  /** `.csg` parse/build warnings (skipped hull/minkowski/2D constructs,
+   * faceting approximations — see `csgImport.ts`). Present only for
+   * `format === "csg"` with something to report; every other source omits
+   * it, so existing consumers see no shape change. */
+  warnings?: string[];
 }
 
 /**
@@ -147,7 +154,7 @@ export interface BRepCacheEntry {
    * by identity (`===`), never touched otherwise. */
   ocInstance: unknown;
   bytes: Uint8Array;
-  format: Extract<CadFormat, "step" | "iges" | "brep">;
+  format: Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   baseShape: any;
   baseCleanup: Array<{ delete(): void }>;
@@ -172,6 +179,10 @@ export interface BRepCacheEntry {
   guideCollector: GuideCollector;
   guideIds: string[];
   opBuckets: OpBucket[];
+  /** `.csg` parse/build warnings for the BASE shape (see
+   * {@link BRepResult.warnings}) — carried so the append-reuse path still
+   * reports them without rebuilding. Empty for every other format. */
+  warnings: string[];
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -256,7 +267,7 @@ export function disposeBRepCache(cache: BRepCacheEntry): void {
 export async function loadBRepCached(
   extensionPath: string,
   bytes: Uint8Array,
-  format: Extract<CadFormat, "step" | "iges" | "brep">,
+  format: Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
   ops: EditOp[],
   previous: BRepCacheEntry | undefined,
   quality: TessellationParams = TESSELLATION_PRESETS.standard
@@ -274,16 +285,19 @@ export async function loadBRepCached(
   let baseShape: unknown;
   let baseCleanup: Array<{ delete(): void }>;
   let assemblyTreeCache: XcafAssemblyInfo | null;
+  let baseWarnings: string[];
   if (baseReusable && previous) {
     baseShape = previous.baseShape;
     baseCleanup = previous.baseCleanup;
     assemblyTreeCache = previous.assemblyTreeCache;
+    baseWarnings = previous.warnings;
   } else {
     baseCleanup = [];
+    baseWarnings = [];
     const tmpName = `/in.${format}`;
     oc.FS.writeFile(tmpName, bytes);
     try {
-      baseShape = readShape(oc, tmpName, format, baseCleanup);
+      baseShape = readShape(oc, tmpName, format, baseCleanup, baseWarnings);
       // Independent second parse, only for STEP — see xcafTree.ts's doc
       // comment for why this can't reuse `baseShape`/the plain reader's
       // shape. Best-effort: any failure degrades to `null` (flat tree),
@@ -362,8 +376,10 @@ export async function loadBRepCached(
     // The cache stores the FOLDED list (resolved ops for query documents) —
     // the append check above compares against it, so a query document's next
     // call (whose sidecar ops still carry queries) correctly misses.
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds };
-    return { result: { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings }, cache };
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, warnings: baseWarnings };
+    const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
+    if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
+    return { result, cache };
   } catch (err) {
     throw wrapOcctFault(err);
   }
@@ -378,7 +394,7 @@ export async function loadBRepCached(
 export async function loadBRep(
   extensionPath: string,
   bytes: Uint8Array,
-  format: Extract<CadFormat, "step" | "iges" | "brep">,
+  format: Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
   ops: EditOp[] = [],
   quality: TessellationParams = TESSELLATION_PRESETS.standard
 ): Promise<BRepResult> {
@@ -389,7 +405,8 @@ export async function loadBRep(
 
   const cleanup: Array<{ delete(): void }> = [];
   try {
-    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const baseWarnings: string[] = [];
+    const baseShape = readShape(oc, tmpName, format, cleanup, baseWarnings);
     const assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
     const opOutcomes: OpOutcome[] = [];
     const opBuckets: OpBucket[] = [];
@@ -411,7 +428,9 @@ export async function loadBRep(
     const guideTmp: Array<{ delete(): void }> = [];
     const guideIds = collectGuideIds(oc, shape, guideCollector, guideTmp);
     for (let i = guideTmp.length - 1; i >= 0; i--) try { guideTmp[i].delete(); } catch { /* ignore */ }
-    return { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
+    const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
+    if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
+    return result;
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {
@@ -487,8 +506,26 @@ function attachFaceCounts(groups: SolidGroup[], node: TreeNode): TreeNode {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ delete(): void }>): any {
+export function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ delete(): void }>, csgWarnings?: string[]): any {
   const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
+
+  // OpenSCAD `.csg` (roadmap Tier 2 item 2, path (a), closed): the MEMFS
+  // file holds TEXT, not B-rep bytes — decode, parse purely, and build the
+  // base shape directly (opaque base, like a STEP import — see csgModel.ts).
+  // This one branch covers every `readShape` caller (load, export, mass
+  // properties, entity facts, diff, silhouette) with no per-caller change.
+  if (format === "csg") {
+    const bytes: Uint8Array = oc.FS.readFile(filePath);
+    let text: string;
+    try {
+      text = Buffer.from(bytes).toString("utf8");
+    } catch {
+      throw new Error("CSG ReadFile failed (not decodable text)");
+    }
+    const parsed = parseCsg(text);
+    const warnings = csgWarnings ?? [];
+    return buildCsgShape(oc, parsed.roots, parsed.warnings, parsed.useMaxFN, cleanup, warnings);
+  }
 
   if (format === "step") {
     const reader = new oc.STEPControl_Reader_1();
@@ -540,7 +577,7 @@ export function readShape(oc: any, filePath: string, format: string, cleanup: Ar
   throw new Error(`Unknown B-rep format: ${format}`);
 }
 
-type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
+type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
 /**
  * Re-parses `bytes` as `sourceFormat`, applies the edit op-list, and writes the

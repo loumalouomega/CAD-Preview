@@ -75,7 +75,15 @@ const extensionConfig = {
   // avoiding the same eager-worker-pool risk gmsh-wasm's and meshio++'s
   // threaded variants have — but staying external is required regardless,
   // purely for the ESM/CJS reason.
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright"],
+  // "node-hid" (src/spaceMouse.ts, roadmap Tier 2 item 2) is the fifth
+  // external, on extensionConfig ONLY: a native NAPI addon (.node
+  // prebuilds) that cannot bundle — esbuild would inline its JS loader
+  // while leaving the .node binary behind, producing a bundle that
+  // crashes on require. It is loaded via a lazy require() inside
+  // connectSpaceMouse() (never top-level), so the extension activates
+  // and runs fine where it is absent or unloadable. The MCP/kernel
+  // bundles never import the HID path and need no entry.
+  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright", "node-hid"],
   plugins: [wasmPathPlugin],
   banner: {
     js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,

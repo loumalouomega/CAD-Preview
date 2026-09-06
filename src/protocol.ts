@@ -438,6 +438,20 @@ export type HostToWebview =
   | { type: "meshHealError"; requestId: string; message: string }
   | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }
   | { type: "fitRegionError"; requestId: string; message: string }
+  /**
+   * SpaceMouse 6DOF motion event (roadmap Tier 2 item 2) — raw device units
+   * (signed 16-bit per axis, full deflection ≈ ±350), NOT camera deltas.
+   * The webview deadzones + normalizes via `motionToVelocity` and applies
+   * per-second speeds itself, so all tuning lives in one place and the host
+   * stays a thin pipe. `buttons` is the opaque report-3 bitmask (bit 0 =
+   * Fit, bit 1 = Reset by convention — model-dependent, flagged). No
+   * requestId: motion is a continuous stream, not a request/response pair.
+   */
+  | {
+      type: "spacemouse";
+      motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number };
+      buttons?: number;
+    }
   /** Live operation preview result — the same encoded payload `"geometry"`
    * carries, but for the speculative ops+draft replay. The webview builds a
    * detached group from it (never `viewer.setModel`) and tints it by intent;

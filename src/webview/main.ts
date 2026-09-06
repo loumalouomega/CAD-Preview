@@ -22,6 +22,7 @@ import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
 import { EditsPanel, type TransformDraft, type FeatureDraft, type ModifyDraft, type PrimitiveDraft, type HoleDraft, type ProfileDraft, type WireframeDraft, type AlignDraft, type PatternDraft } from "./editsPanel";
 import { OpPreviewScheduler } from "./opPreviewScheduler";
+import { applySpaceMouseInput } from "./spaceMouseDispatch";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
@@ -3789,6 +3790,10 @@ try {
 // `ready` handler in `provider.ts` but via independent async reads).
 let pendingViewState: ViewState | null | undefined;
 let hasAppliedInitialView = false;
+// SpaceMouse 6DOF stream state (roadmap Tier 2 item 2): last event time for
+// dt-scaled deltas, last button mask for rising-edge Fit/Reset.
+let lastSpaceMouseAt = 0;
+let lastSpaceMouseButtons = 0;
 
 /** Applies a full `ViewState` to the viewer + Appearance/Clip controls — the
  * one place that does so, shared by the initial restoration below and by a
@@ -4172,6 +4177,19 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         post({ type: "screenshotError", requestId: msg.requestId, message: (err as Error).message });
       }
       break;
+
+    case "spacemouse": {
+      // 6DOF motion event (roadmap Tier 2 item 2): deadzone + normalize +
+      // apply via the standard rotateView/panView/zoomView entry points, so
+      // view-state autosave and render-on-demand invalidation compose for
+      // free (both ride controls.update() → "change"). Acts on the focused
+      // pane under split view, like every other no-argument camera API.
+      const now = performance.now();
+      const dtMs = lastSpaceMouseAt === 0 ? 16 : now - lastSpaceMouseAt;
+      lastSpaceMouseAt = now;
+      lastSpaceMouseButtons = applySpaceMouseInput(viewer, msg.motion, msg.buttons, lastSpaceMouseButtons, dtMs);
+      break;
+    }
 
     case "renderViewRequest":
       // Every renderViewRequest this feature ever sends targets a

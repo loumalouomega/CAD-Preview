@@ -408,6 +408,7 @@ type HostToWebview =
   | { type: 'meshHealError'; requestId: string; message: string }
   | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
   | { type: 'fitRegionError'; requestId: string; message: string }
+  | { type: 'spacemouse'; motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }; buttons?: number }
   | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
   | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
@@ -671,6 +672,14 @@ Sent in reply to `screenshotButtonClicked` or the `cad-preview.screenshot` comma
 
 ```json
 { "type": "screenshotRequest", "requestId": "1234-0.56" }
+```
+
+### `spacemouse`
+
+SpaceMouse 6DOF motion event (roadmap Tier 2 item 2), pushed by the host at HID report rate — raw device units (signed 16-bit per axis, full deflection ≈ ±350), never camera deltas. The webview deadzones + normalizes (`motionToVelocity`) and applies per-second speeds scaled by clamped inter-event dt, so feel is independent of report rate and tuning lives in one place. Applied through the standard `rotateView`/`panView`/`zoomView` entry points, so view-state autosave and render-on-demand invalidation compose for free. No `requestId`: motion is a continuous stream, not a request/response pair. `buttons` is the opaque report-3 bitmask (bit 0 = Fit, bit 1 = Reset by convention — model-dependent).
+
+```json
+{ "type": "spacemouse", "motion": { "tx": 120, "ty": 0, "tz": -40, "rx": 0, "ry": 60, "rz": 0 } }
 ```
 
 ### `massPropertiesResult` / `massPropertiesError`

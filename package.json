@@ -55,6 +55,12 @@
             "filenamePattern": "*.brep"
           },
           {
+            "filenamePattern": "*.csg"
+          },
+          {
+            "filenamePattern": "*.scad"
+          },
+          {
             "filenamePattern": "*.vtk"
           },
           {
@@ -132,11 +138,13 @@
     "commands": [
       {
         "command": "cad-preview.open",
-        "title": "CAD Preview: Open File…"
+        "title": "CAD Preview: Open File…",
+        "icon": "$(folder-opened)"
       },
       {
         "command": "cad-preview.new",
-        "title": "CAD Preview: New Blank Model…"
+        "title": "CAD Preview: New Blank Model…",
+        "icon": "$(new-file)"
       },
       {
         "command": "cad-preview.refreshModels",
@@ -191,6 +199,14 @@
       {
         "command": "cad-preview.compareModels",
         "title": "CAD Preview: Compare Models…"
+      },
+      {
+        "command": "cad-preview.spaceMouseConnect",
+        "title": "CAD Preview: Connect SpaceMouse"
+      },
+      {
+        "command": "cad-preview.spaceMouseDisconnect",
+        "title": "CAD Preview: Disconnect SpaceMouse"
       }
     ],
     "keybindings": [
@@ -290,6 +306,11 @@
           "command": "cad-preview.refreshModels",
           "when": "view == cad-preview.models",
           "group": "navigation@2"
+        },
+        {
+          "command": "cad-preview.new",
+          "when": "view == cad-preview.models",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -322,6 +343,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show the ground grid and axes helper when a model is opened."
+        },
+        "cadPreview.openscadBinary": {
+          "type": "string",
+          "default": "openscad",
+          "description": "OpenSCAD binary used to convert .scad sources to .csg on open (resolved via PATH when bare). Wins over the OPENSCAD_BINARY environment variable, which is the headless (MCP server) escape hatch. Unused when no .scad file is opened."
         },
         "cadPreview.tessellationQuality": {
           "type": "string",
@@ -374,6 +400,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "fflate": "^0.8.3",
     "float-tetwild-wasm": "^0.2.0",
+    "node-hid": "^3.4.0",
     "opencascade.js": "^1.1.1",
     "three": "^0.185.1",
     "three-bvh-csg": "^0.0.18",
@@ -405,6 +432,7 @@
     "@vscode/vsce-sign@2.0.9": true,
     "esbuild@0.20.2": true,
     "esbuild@0.21.5": true,
-    "keytar@7.9.0": true
+    "keytar@7.9.0": true,
+    "node-hid@3.4.0": true
   }
 }

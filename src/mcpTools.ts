@@ -49,6 +49,7 @@ import {
   type MeshOptions,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
+import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
 import { validateSelectorQuery } from "./selectorQuery";
 import { envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./meshExportFormats";
@@ -143,7 +144,7 @@ import { parseEditsJson } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 
-type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
+type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
 /** The WASM-backed pipeline functions, injected so tests can fake them. */
 export interface Pipeline {
@@ -407,6 +408,8 @@ export function describeCapabilities() {
       step: exportTargetsFor({ strategy: "occt", format: "step" }).filter(isBRepFormat),
       iges: exportTargetsFor({ strategy: "occt", format: "iges" }).filter(isBRepFormat),
       brep: exportTargetsFor({ strategy: "occt", format: "brep" }).filter(isBRepFormat),
+      csg: exportTargetsFor({ strategy: "occt", format: "csg" }).filter(isBRepFormat),
+      scad: exportTargetsFor({ strategy: "occt", format: "scad" }).filter(isBRepFormat),
     },
     meshExportFormats: MESH_EXPORT_FORMATS.map((f) => ({ id: f.id, label: f.label, extension: f.extension })),
     meshOptions: {
@@ -437,7 +440,8 @@ export function describeCapabilities() {
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
       "list_workspace_models is pure on-disk discovery over the same routing rules load_model uses — depth-capped walk, .git/node_modules never scanned, caps reported via truncated/warnings rather than a quietly-partial list. This server holds no open-document/session state anywhere, so there is nothing else to discover.",
       "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of. For a drawing WITH hidden-line removal — interior feature edges, occluded runs dashed — use export_technical_drawing, which gets there on the same triangle adjacency rather than through the unavailable kernel API.",
-      "B-rep sources (.step/.stp/.iges/.igs/.brep): full pipeline — load, edit, mesh, export.",
+      "B-rep sources (.step/.stp/.iges/.igs/.brep/.csg): full pipeline — load, edit, mesh, export. `.scad` converts to `.csg` first via a user-installed openscad binary (see below); without one every .scad tool returns supported:false.",
+      ".scad sources: identical to .csg once converted — which needs the openscad binary (cadPreview.openscadBinary setting, OPENSCAD_BINARY env override, else PATH). Absent binary → supported:false with an install hint on every .scad call, never a throw. Conversion runs `openscad -o <tmp>/model.csg <real path>` with cwd = the source directory (relative use/include/import keep working), capped at a 2-minute kill; openscad's own stderr chatter surfaces as warnings.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups, same as .stl. Still not exportable headless as a SOURCE DOCUMENT (export_brep/export_mesh always target a B-rep or a generated FE mesh, never these formats' own native representation) — edit ops can still be written to the sidecar for the extension to replay.",
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
@@ -460,7 +464,7 @@ function requireRoute(modelPath: string): FileRoute {
   const route = routeFile(modelPath);
   if (!route) {
     throw new Error(
-      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam, msh/msh2, inp, unv, su2, mesh, post.msh)`
+      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, csg, scad, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam, msh/msh2, inp, unv, su2, mesh, post.msh)`
     );
   }
   return route;
@@ -468,6 +472,35 @@ function requireRoute(modelPath: string): FileRoute {
 
 async function readModelBytes(modelPath: string): Promise<Uint8Array> {
   return new Uint8Array(await fs.readFile(modelPath));
+}
+
+/**
+ * `.scad`-aware source reader for every occt-gated tool (roadmap Tier 2
+ * item 2, path (b), closed): `resolveEffectiveSource` over the tool's
+ * already-required route, so `.scad` converts to `.csg` bytes via the
+ * user-installed openscad binary before any pipeline call and downstream
+ * only ever sees step/iges/brep/csg. Returns `{ok: false}` (never throws)
+ * when the binary is missing — each tool maps it to its own
+ * `{supported: false}` shape; every other failure is already a clear thrown
+ * Error from scadService.ts.
+ */
+async function readOcctSource(
+  modelPath: string,
+  route: FileRoute,
+  warnings: string[]
+): Promise<{ ok: true; bytes: Uint8Array; format: CadFormat } | { ok: false; reason: string }> {
+  try {
+    const src = await resolveEffectiveSource({
+      modelPath,
+      format: route.format,
+      readBytes: () => readModelBytes(modelPath),
+      warnings,
+    });
+    return { ok: true, bytes: src.bytes, format: src.format };
+  } catch (err) {
+    if (err instanceof ScadUnavailableError) return { ok: false, reason: err.reason };
+    throw err;
+  }
 }
 
 /**
@@ -689,8 +722,24 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
 
   const sidecars = await sidecarSummary(modelPath);
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
-  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, ops);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return {
+      format: route.format,
+      strategy: route.strategy,
+      tree: null,
+      solids: null,
+      edgeCount: null,
+      edgeIds: null,
+      pointCount: null,
+      bbox: null,
+      sidecars,
+      warnings: [...warnings, src.reason],
+    };
+  }
+  const { bytes, format } = src;
+  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, format as BRepFormat, ops);
   return {
     format: route.format,
     strategy: route.strategy,
@@ -700,8 +749,10 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     // here the moment the model is loaded — the agent learns immediately
     // rather than after wondering why nothing changed. Query-freeze warnings
     // ride the same channel (an operand query that froze replays on cached
-    // ids; the agent needs to know the query was not honored).
-    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? [])],
+    // ids; the agent needs to know the query was not honored). `.csg`
+    // parse/build warnings (skipped hull/minkowski/2D, faceting
+    // approximations) ride it too — same "never silent" rule.
+    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? []), ...(result.warnings ?? []), ...warnings],
   };
 }
 
@@ -728,11 +779,21 @@ export async function getMassProperties(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return {
+      format: route.format,
+      entityId: entityId ?? "whole-model",
+      supported: false,
+      warnings: [...warnings, src.reason],
+    };
+  }
+  const { bytes, format } = src;
   const properties = await ctx.pipeline.computeMassProperties(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     ops,
     entityId
   );
@@ -741,7 +802,7 @@ export async function getMassProperties(
     entityId: entityId ?? "whole-model",
     supported: true,
     ...properties,
-    warnings: [],
+    warnings,
   };
 }
 
@@ -785,9 +846,14 @@ export async function generateBomTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
-  const result = await ctx.pipeline.computeBom(ctx.extensionPath, bytes, route.format as BRepFormat, ops, parts);
-  return { format: route.format, supported: true, rows: result.rows, bom: bomTsv(result.rows), warnings: result.warnings };
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
+  const result = await ctx.pipeline.computeBom(ctx.extensionPath, bytes, format as BRepFormat, ops, parts);
+  return { format: route.format, supported: true, rows: result.rows, bom: bomTsv(result.rows), warnings: [...warnings, ...result.warnings] };
 }
 
 // ---------------------------------------------------------------------------
@@ -818,9 +884,14 @@ export async function inspectEntity(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
-  const facts = await ctx.pipeline.getEntityFacts(ctx.extensionPath, bytes, route.format as BRepFormat, ops, params.entityId);
-  return { format: route.format, supported: true, ...facts, warnings: [] };
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
+  const facts = await ctx.pipeline.getEntityFacts(ctx.extensionPath, bytes, format as BRepFormat, ops, params.entityId);
+  return { format: route.format, supported: true, ...facts, warnings };
 }
 
 /**
@@ -844,17 +915,22 @@ export async function measureTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const result = await ctx.pipeline.measureEntities(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     ops,
     params.from,
     params.to,
     params.axis
   );
-  return { format: route.format, supported: true, ...result, warnings: [] };
+  return { format: route.format, supported: true, ...result, warnings };
 }
 
 /**
@@ -885,17 +961,22 @@ export async function measureExactTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const result = await ctx.pipeline.measureExact(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     ops,
     params.kind,
     params.entityIdA,
     params.entityIdB
   );
-  return { format: route.format, supported: true, ...result, warnings: [] };
+  return { format: route.format, supported: true, ...result, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,8 +1125,12 @@ export async function checkInterferenceTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
-  const result = await ctx.pipeline.checkInterference(ctx.extensionPath, bytes, route.format as BRepFormat, ops, idsA, idsB);
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
+  const result = await ctx.pipeline.checkInterference(ctx.extensionPath, bytes, format as BRepFormat, ops, idsA, idsB);
   if (result.unresolvedA.length > 0) warnings.push(`Operand A: unresolved id(s) ${result.unresolvedA.join(", ")}.`);
   if (result.unresolvedB.length > 0) warnings.push(`Operand B: unresolved id(s) ${result.unresolvedB.join(", ")}.`);
 
@@ -1125,11 +1210,15 @@ export async function checkInterferenceAllTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, pairs: [], warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const result = await ctx.pipeline.checkInterferenceAll(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     ops,
     selected.map((p) => p.volumes)
   );
@@ -1203,15 +1292,19 @@ export async function resolveSelectorTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const result = await ctx.pipeline.resolveBucketSelector(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     ops,
     params.selector
   );
-  const warnings: string[] = [];
   if (!result.bindable) {
     warnings.push(result.reason ?? "Selector is not bindable at rung 1 (pattern-instance producer).");
   } else if (result.unresolved.length > 0) {
@@ -1264,17 +1357,21 @@ export async function synthesizeSelectorTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const result = await ctx.pipeline.synthesizeSelector(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     ops,
     params.op,
     params.role,
     params.entityId
   );
-  const warnings: string[] = [];
   if (!result.bindable) {
     warnings.push(result.reason ?? "Selector is not bindable (pattern-instance producer).");
   } else if (!result.query) {
@@ -1332,9 +1429,14 @@ export async function renderSnapshotTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { supported: false, images: [], warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const resolved = await resolveSnapshotView(modelPath, params.view);
-  const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, route.format as BRepFormat, ops, {
+  const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, ops, {
     focus: params.focus,
     hide: params.hide,
     wireframe: params.displayMode === "wireframe" ? true : undefined,
@@ -1347,7 +1449,7 @@ export async function renderSnapshotTool(
   return {
     supported: result.supported,
     images: result.images ?? [],
-    warnings: [...resolved.warnings, ...(result.reason ? [result.reason] : [])],
+    warnings: [...warnings, ...resolved.warnings, ...(result.reason ? [result.reason] : [])],
   };
 }
 
@@ -1497,8 +1599,17 @@ export async function renderOpsPrefixTool(
   const prefixOps = current.ops.slice(0, idx + 1);
   const warnings: string[] = [];
 
-  const bytes = await readModelBytes(modelPath);
-  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, prefixOps);
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return {
+      format: route.format,
+      strategy: route.strategy,
+      supported: false,
+      warnings: [...warnings, src.reason],
+    };
+  }
+  const { bytes, format } = src;
+  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, format as BRepFormat, prefixOps);
   // A truncated replay can legitimately skip ops whose operands came from
   // later ops — surface that exactly like load_model does.
   warnings.push(...opOutcomeWarnings(result.opOutcomes));
@@ -1514,7 +1625,7 @@ export async function renderOpsPrefixTool(
     if (!avail.available) {
       warnings.push(`render requested but renderer unavailable — ${avail.reason ?? "unknown reason"}.`);
     } else {
-      const snap = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, route.format as BRepFormat, prefixOps, {});
+      const snap = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, prefixOps, {});
       if (snap.supported && snap.images) images = snap.images;
       else warnings.push(`render requested but snapshot failed — ${snap.reason ?? "unknown reason"}.`);
     }
@@ -1598,7 +1709,7 @@ export async function compareModelsTool(
       warnings: [
         // Built from MESHIO_FORMATS, not a hardcoded list — the format set has
         // already drifted once (openfoam joined at @meshioplusplus/wasm 10.x).
-        `compare_models only supports STEP/IGES/BREP/STL/OBJ/PLY/glTF sources headlessly — meshio-only formats (${MESHIO_FORMATS.join("/")}) have no host-side geometry to independently derive solid centroids/volumes from without a webview.`,
+        `compare_models only supports STEP/IGES/BREP/CSG/STL/OBJ/PLY/glTF sources headlessly — meshio-only formats (${MESHIO_FORMATS.join("/")}) have no host-side geometry to independently derive solid centroids/volumes from without a webview.`,
       ],
     };
   }
@@ -1606,8 +1717,10 @@ export async function compareModelsTool(
   const warnings: string[] = [];
   const resolveSource = async (modelPath: string, route: typeof routeA): Promise<CompareSource> => {
     if (route.strategy === "occt") {
-      const [{ ops }, bytes] = await Promise.all([readEditsResolved(modelPath), readModelBytes(modelPath)]);
-      return { kind: "brep", bytes, format: route.format as BRepFormat, ops };
+      const { ops } = await readEditsResolved(modelPath);
+      const src = await readOcctSource(modelPath, route, warnings);
+      if (!src.ok) throw new ScadUnavailableError(src.reason);
+      return { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
     }
     const [{ ops }, bytes] = await Promise.all([readEditsResolved(modelPath), readModelBytes(modelPath)]);
     if (ops.length > 0) {
@@ -1621,7 +1734,16 @@ export async function compareModelsTool(
     return { kind: route.format as "stl" | "obj" | "ply", bytes };
   };
 
-  const [sourceA, sourceB] = await Promise.all([resolveSource(params.pathA, routeA), resolveSource(params.pathB, routeB)]);
+  let sourceA: CompareSource;
+  let sourceB: CompareSource;
+  try {
+    [sourceA, sourceB] = await Promise.all([resolveSource(params.pathA, routeA), resolveSource(params.pathB, routeB)]);
+  } catch (err) {
+    if (err instanceof ScadUnavailableError) {
+      return { formatA: routeA.format, formatB: routeB.format, supported: false, warnings: [...warnings, err.reason] };
+    }
+    throw err;
+  }
   const diff = await ctx.pipeline.compareModels(ctx.extensionPath, sourceA, sourceB);
 
   if (!params.includeSnapshots) {
@@ -1870,15 +1992,20 @@ export async function recognizePrimitivesTool(
     };
   }
 
-  const bytes = await readModelBytes(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const { ops } = await readEditsResolved(modelPath);
   const report = await ctx.pipeline.recognizePrimitives(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     ops
   );
-  return { format: route.format, supported: true, warnings: [], ...report };
+  return { format: route.format, supported: true, warnings, ...report };
 }
 
 // ---------------------------------------------------------------------------
@@ -1917,15 +2044,20 @@ export async function decomposeToPrimitivesTool(
     };
   }
 
-  const bytes = await readModelBytes(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const { ops: currentOps, variables: currentVariables } = await readEditsResolved(modelPath);
-  const report = await ctx.pipeline.recognizePrimitives(ctx.extensionPath, bytes, route.format as BRepFormat, currentOps);
+  const report = await ctx.pipeline.recognizePrimitives(ctx.extensionPath, bytes, format as BRepFormat, currentOps);
 
   const emission = emitPrimitiveOps(report, {
     existingVariableNames: currentVariables.map((v) => v.name),
   });
 
-  const warnings: string[] = [...emission.warnings];
+  warnings.push(...emission.warnings);
   const script = emission.ops.length > 0 ? { variables: emission.variables, steps: emission.ops.map((op) => ({ op })) } : { variables: [], steps: [] as Array<{ op: unknown }> };
 
   let written: string | undefined;
@@ -2327,7 +2459,8 @@ async function maybeRebindParts(
   modelPath: string,
   route: FileRoute,
   oldOps: EditOp[],
-  newOps: EditOp[]
+  newOps: EditOp[],
+  warnings: string[]
 ): Promise<{
   reboundCount: number;
   droppedCount: number;
@@ -2338,13 +2471,21 @@ async function maybeRebindParts(
   if (route.strategy !== "occt" || oldOps.length === newOps.length) return null;
   const [parts, annotations] = await Promise.all([readParts(modelPath), readAnnotations(modelPath)]);
   if (parts.length === 0 && annotations.length === 0) return null;
-  const bytes = await readModelBytes(modelPath);
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    // No openscad binary: nothing replays, so nothing rebinds — but say so
+    // (the caller already notes the skipped replay; this notes the skipped
+    // rebind) rather than silently leaving stale part ids unmentioned.
+    warnings.push(`Part/annotation rebind skipped — ${src.reason}`);
+    return null;
+  }
+  const { bytes, format } = src;
   // Stored selectors resolve first (authoritative); the heuristic rebind pass
   // below runs on the result, same order as the interactive path.
   const selected = await ctx.pipeline.resolvePartSelectors(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     newOps,
     parts
   );
@@ -2353,7 +2494,7 @@ async function maybeRebindParts(
   const result = await ctx.pipeline.rebindPartsAcrossOps(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     oldOps,
     newOps,
     resolvedParts,
@@ -2440,38 +2581,45 @@ export async function applyEditOps(
   let notApplied = 0;
   if (!params.dryRun && accepted.length > 0 && route.strategy === "occt") {
     // Re-tessellate so the agent sees the post-replay entity inventory —
-    // topology-changing ops renumber face-N/edge-N ids.
-    const bytes = await readModelBytes(modelPath);
-    const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, resolvedNewOps);
-    model = entitySummary(result);
-    // "Accepted" meant it passed validation — the replay outcome is what
-    // actually happened. Merge each not-applied op's diagnostic/hint into its
-    // report entry (outcomes are indexed over `newOps`; the newly-accepted
-    // ops start at `current.ops.length`).
-    let acceptedSeen = 0;
-    for (const entry of report) {
-      if (!entry.accepted) continue;
-      const outcome = result.opOutcomes[current.ops.length + acceptedSeen];
-      acceptedSeen++;
-      if (!outcome) continue;
-      entry.applied = outcome.applied;
-      if (outcome.diagnostic) entry.diagnostic = outcome.diagnostic;
-      if (outcome.hint) entry.hint = outcome.hint;
+    // topology-changing ops renumber face-N/edge-N ids. Without an openscad
+    // binary a .scad source skips the replay (ops still persist, mesh-style)
+    // rather than failing the whole call.
+    const src = await readOcctSource(modelPath, route, warnings);
+    if (!src.ok) {
+      warnings.push(src.reason);
+    } else {
+      const { bytes, format } = src;
+      const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, format as BRepFormat, resolvedNewOps);
+      model = entitySummary(result);
+      // "Accepted" meant it passed validation — the replay outcome is what
+      // actually happened. Merge each not-applied op's diagnostic/hint into its
+      // report entry (outcomes are indexed over `newOps`; the newly-accepted
+      // ops start at `current.ops.length`).
+      let acceptedSeen = 0;
+      for (const entry of report) {
+        if (!entry.accepted) continue;
+        const outcome = result.opOutcomes[current.ops.length + acceptedSeen];
+        acceptedSeen++;
+        if (!outcome) continue;
+        entry.applied = outcome.applied;
+        if (outcome.diagnostic) entry.diagnostic = outcome.diagnostic;
+        if (outcome.hint) entry.hint = outcome.hint;
+      }
+      // Count only THIS call's accepted ops that skipped — the replay's outcome
+      // list also covers previously-persisted ops, and a PERSISTED op that skips
+      // on every replay (e.g. a refused guide-profile extrude) must not
+      // decrement the current call's applied count. (Real defect caught by the
+      // item-10 smoke block: applied was accepted − totalStackSkips, reporting 0
+      // for a call whose single op genuinely applied.) The newly-accepted ops
+      // sit at current.ops.length.. in the outcome list. opOutcomeWarnings
+      // below still covers the whole stack — surfacing persisted-but-skipped
+      // ops is its documented job.
+      notApplied = result.opOutcomes.slice(current.ops.length).filter((o) => !o.applied).length;
+      warnings.push(...opOutcomeWarnings(result.opOutcomes));
     }
-    // Count only THIS call's accepted ops that skipped — the replay's outcome
-    // list also covers previously-persisted ops, and a PERSISTED op that skips
-    // on every replay (e.g. a refused guide-profile extrude) must not
-    // decrement the current call's applied count. (Real defect caught by the
-    // item-10 smoke block: applied was accepted − totalStackSkips, reporting 0
-    // for a call whose single op genuinely applied.) The newly-accepted ops
-    // sit at current.ops.length.. in the outcome list. opOutcomeWarnings
-    // below still covers the whole stack — surfacing persisted-but-skipped
-    // ops is its documented job.
-    notApplied = result.opOutcomes.slice(current.ops.length).filter((o) => !o.applied).length;
-    warnings.push(...opOutcomeWarnings(result.opOutcomes));
   }
 
-  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps);
+  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps, warnings);
   if (rebind) {
     warnings.push(rebindWarningText(rebind, "after topology-changing op(s)"));
   }
@@ -2571,18 +2719,24 @@ async function compileAndApplyScript(
   let model = null;
   let notApplied = 0;
   if (!params.dryRun && accepted.length > 0 && route.strategy === "occt") {
-    const bytes = await readModelBytes(modelPath);
-    const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, route.format as BRepFormat, newOps);
-    model = entitySummary(result);
-    // Same this-call-only notApplied rule as apply_edit_ops above — the
-    // accepted ops sit at current.ops.length.. in the outcome list, and a
-    // previously-persisted op that skips on every replay must not decrement
-    // this call's applied count.
-    notApplied = result.opOutcomes.slice(current.ops.length).filter((o) => !o.applied).length;
-    warnings.push(...opOutcomeWarnings(result.opOutcomes));
+    // Same scad-unavailable skip as apply_edit_ops above — ops still persist.
+    const src = await readOcctSource(modelPath, route, warnings);
+    if (!src.ok) {
+      warnings.push(src.reason);
+    } else {
+      const { bytes, format } = src;
+      const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, format as BRepFormat, newOps);
+      model = entitySummary(result);
+      // Same this-call-only notApplied rule as apply_edit_ops above — the
+      // accepted ops sit at current.ops.length.. in the outcome list, and a
+      // previously-persisted op that skips on every replay must not decrement
+      // this call's applied count.
+      notApplied = result.opOutcomes.slice(current.ops.length).filter((o) => !o.applied).length;
+      warnings.push(...opOutcomeWarnings(result.opOutcomes));
+    }
   }
 
-  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps);
+  const rebind = params.dryRun ? null : await maybeRebindParts(ctx, modelPath, route, current.ops, newOps, warnings);
   if (rebind) {
     warnings.push(rebindWarningText(rebind, "after topology-changing op(s)"));
   }
@@ -2629,7 +2783,7 @@ export async function removeEditOp(ctx: ToolContext, params: { path: string; ind
   await writeEdits(modelPath, newOps, current.variables);
 
   const warnings: string[] = [];
-  const rebind = await maybeRebindParts(ctx, modelPath, route, oldOps, newOps);
+  const rebind = await maybeRebindParts(ctx, modelPath, route, oldOps, newOps, warnings);
   if (rebind) {
     warnings.push(rebindWarningText(rebind, "after removing a topology-changing op"));
   } else if (TOPOLOGY_CHANGING_OPS.has(removed.op)) {
@@ -2683,14 +2837,18 @@ export async function screenshotShapeTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { supported: false, images: [], warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const resolved = await resolveSnapshotView(modelPath, params.view);
   warnings.push(...resolved.warnings);
   if (params.context === true) {
     warnings.push("context: true keeps the whole model visible — the entity may be occluded by geometry in front of it.");
   }
 
-  const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, route.format as BRepFormat, ops, {
+  const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, ops, {
     focus: params.context === true ? undefined : [params.entityId],
     wireframe: params.displayMode === "wireframe" ? true : undefined,
     // One view by default: four angles on a single face is mostly redundant.
@@ -2745,11 +2903,15 @@ export async function hitTestTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const bytes = await readModelBytes(modelPath);
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { supported: false, hits: [], warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
   const result = await ctx.pipeline.hitTest(
     ctx.extensionPath,
     bytes,
-    route.format as BRepFormat,
+    format as BRepFormat,
     ops,
     params.rays,
     { mode: params.mode, focus: params.focus, hide: params.hide, tolerance: params.tolerance }
@@ -3239,11 +3401,14 @@ async function resolveMeshInputHeadless(
   const factor = unitScaleFactor(unit);
   if (route.strategy === "occt") {
     const { ops } = await readEditsResolved(modelPath);
-    const sourceBytes = await readModelBytes(modelPath);
+    const src = await readOcctSource(modelPath, route, warnings);
+    if (!src.ok) {
+      throw new Error(`Cannot mesh ${path.basename(modelPath)} — ${src.reason}`);
+    }
     const stepBytes = await ctx.pipeline.exportBRep(
       ctx.extensionPath,
-      sourceBytes,
-      route.format as BRepFormat,
+      src.bytes,
+      src.format as BRepFormat,
       "step",
       ops,
       unit,
@@ -3591,12 +3756,15 @@ export async function exportBRepTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const sourceBytes = await readModelBytes(modelPath);
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    throw new Error(`Cannot export ${path.basename(modelPath)} — ${src.reason}`);
+  }
   const parts = await readParts(modelPath);
   const bytes = await ctx.pipeline.exportBRep(
     ctx.extensionPath,
-    sourceBytes,
-    route.format as BRepFormat,
+    src.bytes,
+    src.format as BRepFormat,
     target,
     ops,
     unit,
@@ -3731,12 +3899,16 @@ export async function exportSvgSilhouetteTool(
     text: a.text,
     ...(a.tolerance ? { tolerance: a.tolerance } : {}),
   }));
-
   const bytes = await readModelBytes(modelPath);
   const { ops } = await readEditsResolved(modelPath);
+
   let source: CompareSource;
   if (route.strategy === "occt") {
-    source = { kind: "brep", bytes, format: route.format as BRepFormat, ops };
+    const src = await readOcctSource(modelPath, route, warnings);
+    if (!src.ok) {
+      throw new Error(`Cannot draw ${path.basename(modelPath)} — ${src.reason}`);
+    }
+    source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
   } else {
     if (ops.length > 0) {
       warnings.push(

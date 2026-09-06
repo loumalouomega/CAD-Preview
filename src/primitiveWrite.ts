@@ -5,7 +5,7 @@ import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import type { EditOp, OpOutcome } from "./editOps";
 import type { CadFormat } from "./fileRouter";
 
-type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
+type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
 /**
  * Replays `ops` over an EMPTY `TopoDS_Compound` and writes the result as a

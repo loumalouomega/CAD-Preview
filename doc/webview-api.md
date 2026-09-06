@@ -11,6 +11,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/collapsiblePanels.ts` | The sidebar-section registry, its `.view.json` sanitizer, and the chevron wiring (partly unit-tested) |
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
 | `src/webview/cameraControls.ts` | Pure camera math utilities (unit-testable) |
+| `src/webview/spaceMouseDispatch.ts` | Pure SpaceMouse event → camera-call dispatch (deadzone is upstream in `motionToVelocity`; dt-scaled per-second speeds; Fit/Reset on button rising edges; zero calls at rest so the render loop stays asleep — unit-tested) |
 | `src/webview/viewerPanes.ts` | Pure split-view pane-layout math: pane rects, pointer→pane mapping, pane-relative NDC, GL-viewport conversion (unit-tested) |
 | `src/webview/gizmoTransform.ts` | Pure per-target delta math (translate/rotate-about-pivot/scale-about-pivot, axis-angle decomposition, grid/point snapping) for the Transform Gizmo (unit-tested) |
 | `src/webview/orientationCube.ts` | Orientation gizmo (no own renderer) |
