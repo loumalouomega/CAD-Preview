@@ -4,6 +4,12 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.13.0] - 2026-09-06
+
+### Added
+
+- **Wrap sketch onto cylinder/cone (`wrap` edit op).** Develops a flat sketch face onto an analytic cylinder or cone target (true surface development — length-preserving, not projection), then thickens it symmetrically along the surface normal. Three variants: **Standalone** appends the wrapped shell as a new solid, **Emboss** fuses it into the target volumes, **Engrave** cuts it out. Available in the Edits panel's feature composer, through `apply_edit_ops` / `run_parametric_script` for agents, and recorded in the op history with per-op replay outcomes and classification buckets like every other topology-changing op (B-rep only).
+
 ## [1.12.0] - 2026-09-06
 
 ### Added
@@ -374,6 +380,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.2...v1.10.0
