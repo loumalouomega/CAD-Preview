@@ -4,6 +4,12 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.12.0] - 2026-09-06
+
+### Added
+
+- **New Blank Model button in the Models view toolbar.** The Models view title bar now offers **Open…**, **Refresh**, and **New Blank Model…** — starting an empty session no longer requires an empty workspace (the welcome-view link), the Command Palette, or the webview File menu. Both `cad-preview.open` and `cad-preview.new` also gained explicit toolbar icons (`$(folder-opened)` / `$(new-file)`), since title-bar buttons without icons don't render inline. The creation flow itself is unchanged (save-first `.brep`, refuses to overwrite).
+
 ## [1.11.0] - 2026-09-05
 
 ### Fixed
@@ -368,6 +374,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.12.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.1...v1.9.2
