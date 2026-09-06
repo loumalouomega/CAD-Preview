@@ -50,6 +50,19 @@ node_modules/**
 !node_modules/float-tetwild-wasm/dist/libtbb.so
 !node_modules/float-tetwild-wasm/dist/libtbb.so.12
 !node_modules/float-tetwild-wasm/dist/libtbb.so.12.16
+# node-hid (src/spaceMouse.ts, roadmap Tier 2 item 2) is the same real-files
+# pattern: a native NAPI addon whose .node binary cannot bundle, loaded via
+# a lazy require() so the extension runs fine where it is absent. Only the
+# package manifest, the CJS loader, and the four big-platform prebuilds
+# ship (~1MB total) — every other prebuild dir is dead weight, and other
+# platforms get a clear "unsupported platform" message instead of a crash.
+!node_modules/node-hid/package.json
+!node_modules/node-hid/nodehid.js
+!node_modules/node-hid/nodehid.d.ts
+!node_modules/node-hid/prebuilds/HID_hidraw-linux-x64/node-napi-v4.node
+!node_modules/node-hid/prebuilds/HID-darwin-arm64/node-napi-v4.node
+!node_modules/node-hid/prebuilds/HID-darwin-x64/node-napi-v4.node
+!node_modules/node-hid/prebuilds/HID-win32-x64/node-napi-v4.node
 examples/**
 doc/**
 icons/**

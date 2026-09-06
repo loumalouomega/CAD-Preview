@@ -20,6 +20,7 @@ import {
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
 import { resolveEffectiveSource } from "./scadService";
+import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
 import { isMeshioFieldFailure, describeMeshioFieldFailure } from "./meshioService";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
@@ -266,6 +267,29 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
+      // SpaceMouse 6DOF input (roadmap Tier 2 item 2) — deliberately NOT
+      // `withSession`: the device is global, not per-tab; motion events
+      // route to whichever session is focused at event time (or drop when
+      // none is). Connect is explicit opt-in only — never auto-started from
+      // `activate()`, mirroring the lazy-WASM rule.
+      vscode.commands.registerCommand("cad-preview.spaceMouseConnect", () =>
+        void (async () => {
+          try {
+            const { name, note } = await connectSpaceMouse((motion, buttons) => {
+              this.activeSession?.post({ type: "spacemouse", motion, buttons });
+            });
+            void vscode.window.showInformationMessage(
+              `SpaceMouse connected: ${name}${note ? ` — ${note}` : ""}`
+            );
+          } catch (err) {
+            void vscode.window.showErrorMessage(`SpaceMouse: ${(err as Error).message}`);
+          }
+        })()
+      ),
+      vscode.commands.registerCommand("cad-preview.spaceMouseDisconnect", () => {
+        disconnectSpaceMouse();
+        void vscode.window.showInformationMessage("SpaceMouse disconnected.");
+      }),
     ];
   }
 

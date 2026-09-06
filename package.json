@@ -197,6 +197,14 @@
       {
         "command": "cad-preview.compareModels",
         "title": "CAD Preview: Compare Models…"
+      },
+      {
+        "command": "cad-preview.spaceMouseConnect",
+        "title": "CAD Preview: Connect SpaceMouse"
+      },
+      {
+        "command": "cad-preview.spaceMouseDisconnect",
+        "title": "CAD Preview: Disconnect SpaceMouse"
       }
     ],
     "keybindings": [
@@ -385,6 +393,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "fflate": "^0.8.3",
     "float-tetwild-wasm": "^0.2.0",
+    "node-hid": "^3.4.0",
     "opencascade.js": "^1.1.1",
     "three": "^0.185.1",
     "three-bvh-csg": "^0.0.18",
@@ -416,6 +425,7 @@
     "@vscode/vsce-sign@2.0.9": true,
     "esbuild@0.20.2": true,
     "esbuild@0.21.5": true,
-    "keytar@7.9.0": true
+    "keytar@7.9.0": true,
+    "node-hid@3.4.0": true
   }
 }

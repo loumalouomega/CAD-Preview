@@ -65,6 +65,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/viewStateStore.ts` | Read/write the `<model>.view.json` sidecar (vscode fs) |
 | `src/viewStateSidecar.ts` | Pure parse/serialize for the view-state sidecar (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
+| `src/spaceMouse.ts` | Host-side SpaceMouse 6DOF reader (roadmap Tier 2 item 2): lazy `require("node-hid")`, usage-page-ranked discovery, report streaming with 3s reconnect, forwards raw motion to the active session (extension host only) |
+| `src/spaceMouseRank.ts` | Pure HID discovery ranking — multi-axis usage outranks vendor, mouse/keyboard decoys rejected, vendor-only matches UNPROVEN (vscode/DOM/HID-free, unit-tested) |
+| `src/hidDescriptor.ts` | Pure HID report-descriptor walker answering "declares multi-axis?" (vscode/DOM/HID-free, unit-tested) |
 | `src/toolbarIcons.ts` | **Generated** — monochrome, `currentColor`-based toolbar/panel icons (vscode-free) |
 | `src/nonce.ts` | Shared CSP script-nonce generator, used by every webview HTML builder |
 | `src/changelogParser.ts` | Pure `CHANGELOG.md` parser + markdown→HTML renderer for the What's New panel (vscode-free, unit-tested) |

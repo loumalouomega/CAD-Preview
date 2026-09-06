@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { CadPreviewProvider } from "./provider";
 import { registerModelsView } from "./modelsView";
 import { maybeShowWhatsNew } from "./whatsNew";
+import { disconnectSpaceMouse } from "./spaceMouse";
 import type { HostToWebview } from "./protocol";
 
 /**
@@ -29,5 +30,8 @@ export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | 
 }
 
 export function deactivate(): void {
-  /* nothing to clean up: per-editor resources are disposed with their webview panels */
+  // Per-editor resources are disposed with their webview panels; the one
+  // global is the SpaceMouse reader (roadmap Tier 2 item 2) — release the
+  // device and stop its reconnect timer so the host exits cleanly.
+  disconnectSpaceMouse();
 }

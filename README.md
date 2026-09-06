@@ -157,6 +157,8 @@ The MCP server bundle additionally includes [`@modelcontextprotocol/sdk`](https:
 
 [`float-tetwild-wasm`](https://github.com/loumalouomega/fTetWild) (the optional, alternative volume-mesh engine for dirty triangle meshes — see [Features](#features) below) is **MPL-2.0**-licensed, including the compiled `.wasm` binaries as shipped in its npm package. MPL-2.0 is a weak, file-level copyleft license that is explicitly compatible with GPL relicensing (MPL-2.0 §3.3) — the "Incompatible With Secondary Licenses" notice that would block that is not attached to this codebase's source, confirmed by checking its actual license file. Bundling it does not change CAD-Preview's overall license (already GPL-2.0-or-later because of gmsh-wasm) and, unlike some alternatives considered for this same feature (see `doc/roadmap.md`'s "Non-goals" for the MMG/OpenSCAD comparisons), does not force a one-way upgrade to GPL-3.0-or-later — fTetWild's own dependency set (geogram, libigl, Eigen, spdlog, fmt) is BSD-3/MPL-2.0/MIT throughout, with no CGAL or GMP in the compiled binary.
 
+[`node-hid`](https://github.com/node-hid/node-hid) (SpaceMouse 6DOF input — only the extension-host bundle, loaded lazily) is **MIT OR X11**-licensed, including the per-platform `.node` prebuilds as shipped in its npm package — GPL-compatible, so bundling the linux-x64 / darwin-arm64 / darwin-x64 / win32-x64 prebuilds is fine. Only those four prebuilds ship (other platforms get a clear message, not a crash); the package is never imported by the MCP/kernel bundles.
+
 ### Attribution
 
 - **Gmsh** — C. Geuzaine and J.-F. Remacle. <https://gmsh.info>
