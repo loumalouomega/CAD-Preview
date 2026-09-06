@@ -309,6 +309,37 @@ try {
     );
   }
 
+  // OpenSCAD .scad via user-installed binary (roadmap Tier 2 item 2, path
+  // (b)) — minimal.scad mirrors bracket.csg's shape vocabulary, so a
+  // binary-present run cross-checks structure AND analytic volume against
+  // the .csg oracle. No binary exists in CI or this dev environment, so the
+  // DEFAULT branch asserts the graceful path instead (null inventory +
+  // install hint, never a throw) — the render_snapshot/Chromium-absent
+  // tolerance idiom. To exercise the analytic path, run with OPENSCAD_BINARY
+  // pointing at a real binary (the unit-test stub is for plumbing, not
+  // fidelity — its canned single cube would fail the 2-solid assertion with
+  // an obvious diff).
+  {
+    const minimalScad = path.join(dir, "minimal.scad");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "minimal.scad"), minimalScad);
+    const scadLoaded = await call("load_model", { path: minimalScad });
+    if (scadLoaded.solids && scadLoaded.solids.length === 2) {
+      const faces = scadLoaded.solids.reduce((a, s) => a + s.faceIds.length, 0);
+      assert(faces === 30, `minimal.scad converts to the 24 + 6 face bracket (got ${faces})`);
+      const scadMass = await call("get_mass_properties", { path: minimalScad });
+      assert(
+        scadMass.supported === true && Math.abs(scadMass.volume - 5228.88) / 5228.88 < 0.005,
+        `minimal.scad mass matches the analytic volume 5228.88 ±0.5% (got ${scadMass.volume})`
+      );
+    } else {
+      assert(
+        scadLoaded.solids === null && scadLoaded.warnings.join(" ").match(/openscad/i),
+        `no-binary .scad degrades to null inventory + install hint (got ${JSON.stringify(scadLoaded.warnings)})`
+      );
+      console.log("(skipping .scad analytic asserts — no openscad binary; set OPENSCAD_BINARY to exercise)");
+    }
+  }
+
   // Add a box beside the bull, sized/placed off the real bbox.
   const s = bbox.diagonal / 10;
   const applied = await call("apply_edit_ops", {
@@ -1943,7 +1974,7 @@ try {
   fs.writeFileSync(vtkForCompare, "# vtk DataFile Version 3.0\ncompare\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 0 float\n");
   const vtkRejected = await call("compare_models", { pathA: model, pathB: vtkForCompare });
   assert(
-    vtkRejected.supported === false && /STEP\/IGES\/BREP\/STL\/OBJ\/PLY\/glTF/i.test(vtkRejected.warnings?.[0] ?? ""),
+    vtkRejected.supported === false && /STEP\/IGES\/BREP\/CSG\/STL\/OBJ\/PLY\/glTF/i.test(vtkRejected.warnings?.[0] ?? ""),
     `compare_models rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkRejected)})`
   );
 

@@ -11,7 +11,7 @@
 export type RenderStrategy = "occt" | "three" | "meshio";
 
 export type CadFormat =
-  | "step" | "iges" | "brep" | "csg" | "stl" | "obj" | "ply" | "gltf"
+  | "step" | "iges" | "brep" | "csg" | "scad" | "stl" | "obj" | "ply" | "gltf"
   | "vtk" | "vtu" | "med" | "cgns" | "exodus" | "xdmf" | "mdpa"
   | "openfoam"
   | "gmsh" | "abaqus" | "unv" | "su2" | "medit"
@@ -113,6 +113,12 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   // kernel-side by `csgModel.ts` into an opaque base shape (like a STEP
   // import, not an op history). OCCT strategy, never a meshio format.
   csg: { strategy: "occt", format: "csg" },
+  // OpenSCAD `.scad` (roadmap Tier 2 item 2, path (b), closed): evaluated by
+  // a user-installed `openscad` binary into `.csg` text (`src/scadService.ts`,
+  // host-side so relative use/include/import resolve), then the shipped
+  // `.csg` pipeline takes over — downstream only ever sees format "csg".
+  // OCCT strategy: nothing may treat it as mesh.
+  scad: { strategy: "occt", format: "scad" },
   stl: { strategy: "three", format: "stl" },
   obj: { strategy: "three", format: "obj" },
   ply: { strategy: "three", format: "ply" },

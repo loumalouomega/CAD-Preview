@@ -10,6 +10,7 @@ CAD Preview supports two classes of 3D files: **B-rep** (boundary representation
 | IGES | `.iges`, `.igs` | OCCT → BRepMesh | ✅ |
 | BREP | `.brep` | OCCT → BRepMesh | ✅ |
 | OpenSCAD CSG | `.csg` | CSG parse → OCCT build → BRepMesh | ✅ |
+| OpenSCAD Source | `.scad` | openscad binary → `.csg` → same as above | ✅ |
 | STL | `.stl` | Three.js STLLoader | — |
 | OBJ | `.obj` | Three.js OBJLoader | per-object |
 | PLY | `.ply` | Three.js PLYLoader | — |
@@ -75,6 +76,14 @@ OpenSCAD's `.csg` export is the fully evaluated model — loops unrolled, module
 Built: `cube`, `sphere`, `cylinder`, `polyhedron` (sewn, closure-checked), `union`/`difference`/`intersection`, `group`, `color` (transparent), `multmatrix`/`translate`/`rotate`/`scale`/`mirror` (all through one `gp_GTrsf` path — shear included, no decomposition needed). Skipped with a `load_model` warning (whole subtree dropped): `hull`/`minkowski` (no OCCT equivalent), `text`/`import`/`surface` (external files/fonts), all 2D (`square`/`circle`/`polygon`, `linear_extrude`/`rotate_extrude`), and anything unknown.
 
 Two correctness rules worth knowing: OpenSCAD cylinders/spheres are **faceted prisms**, not analytic surfaces — `$fn`/`$fa`/`$fs` resolve per node and `useMaxFN` (default 16, FreeCAD's dial) decides real N-gon prism vs analytic import, with a warning stating the chord error whenever it approximates. And `.csg` prints at ~6 significant figures, a hard accuracy ceiling on anything reconstructed from it.
+
+### OpenSCAD Source
+
+A `.scad` file is evaluated by a user-installed `openscad` binary into `.csg` text (`src/scadService.ts`, host-side), then takes the exact path above — downstream only ever sees `.csg` bytes. Three things this implies, each deliberate:
+
+1. **The binary is a prerequisite, not a fallback.** Without one, every `.scad` entry point degrades to `{supported: false}` (headless) or an install-hint error (interactive) — never a throw for a missing capability, never a silent skip. Configure it via the `cadPreview.openscadBinary` setting, else the `OPENSCAD_BINARY` environment variable (the headless escape hatch), else `openscad` on `PATH`.
+2. **Conversion runs with `cwd` = the source directory on the real path** (never a temp copy), so relative `use`/`include`/`import` resolve exactly as a manual `openscad -o model.csg model.scad` invocation would. The output goes to a temp dir that is always removed afterwards, success or failure.
+3. **Conversion is capped at a 2-minute kill** (`SCAD_CONVERT_TIMEOUT_MS`): a `.scad` file is effectively evaluated code and can hang (runaway recursion, gigantic `import`), so the timeout is the sandbox backstop, not just UX. openscad's own stderr chatter surfaces as (capped) warnings; a non-zero exit surfaces its stderr tail as the error.
 
 ---
 

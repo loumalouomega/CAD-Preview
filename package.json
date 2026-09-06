@@ -58,6 +58,9 @@
             "filenamePattern": "*.csg"
           },
           {
+            "filenamePattern": "*.scad"
+          },
+          {
             "filenamePattern": "*.vtk"
           },
           {
@@ -325,6 +328,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show the ground grid and axes helper when a model is opened."
+        },
+        "cadPreview.openscadBinary": {
+          "type": "string",
+          "default": "openscad",
+          "description": "OpenSCAD binary used to convert .scad sources to .csg on open (resolved via PATH when bare). Wins over the OPENSCAD_BINARY environment variable, which is the headless (MCP server) escape hatch. Unused when no .scad file is opened."
         },
         "cadPreview.tessellationQuality": {
           "type": "string",

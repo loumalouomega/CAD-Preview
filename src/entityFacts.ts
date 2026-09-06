@@ -28,7 +28,7 @@ import type { CadFormat } from "./fileRouter";
 import type { EditOp, Vec3 } from "./editOps";
 import type { Annotation, Part } from "./protocol";
 
-export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
+export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
 /**
  * Human-readable surface classification for a `face-N`, mapped from

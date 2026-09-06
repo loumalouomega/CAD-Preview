@@ -11,6 +11,7 @@ Fixtures used for manual verification (see the "Verify a change" section of the 
 | [`GLTF/`](GLTF/) | glTF | `.gltf` | Three.js `GLTFLoader` (mesh) |
 | [`MED/`](MED/) | MED | `.med` | meshio++ bridge (host-side, geometry + region/data-array-name visibility) |
 | [`OpenSCAD/`](OpenSCAD/) | OpenSCAD CSG | `.csg` | CSG parse → OCCT build → BRepMesh (B-rep, opaque base) |
+| [`OpenSCAD/`](OpenSCAD/) | OpenSCAD Source | `.scad` | openscad binary → `.csg` → same as above |
 
 CAD Preview also supports IGES (`.iges`/`.igs`) and BREP (`.brep`) via the same OCCT pipeline as STEP, and glTF binary (`.glb`) via the same loader as `.gltf`, but no example fixtures are checked in for those extensions. See `doc/file-formats.md` for the full format reference.
 
@@ -24,7 +25,7 @@ Each mesh directory contains a single `cube.*` fixture — a minimal triangulate
 
 ## OpenSCAD
 
-Hand-written `.csg` fixtures (no OpenSCAD binary is needed to produce them — the format is plain text). `bracket.csg` is the clean path: cubes, a `$fn=10` faceted cylinder (real prism), a `multmatrix` translate, and `union`/`difference` — loads with no warnings, 2 solids, analytic volume 5228.88 (pinned in `npm run mcp:smoke`). `mixed.csg` exercises the warning paths: `hull()` skipped whole and a `$fn=8` sphere imported analytic. See `doc/file-formats.md`'s "OpenSCAD CSG" section.
+Hand-written `.csg` fixtures (no OpenSCAD binary is needed to produce them — the format is plain text). `bracket.csg` is the clean path: cubes, a `$fn=10` faceted cylinder (real prism), a `multmatrix` translate, and `union`/`difference` — loads with no warnings, 2 solids, analytic volume 5228.88 (pinned in `npm run mcp:smoke`). `mixed.csg` exercises the warning paths: `hull()` skipped whole and a `$fn=8` sphere imported analytic. `minimal.scad` mirrors `bracket.csg`'s shape vocabulary for the binary path — with openscad installed it converts to the equivalent evaluated tree (2 solids, same analytic volume, asserted in smoke when `OPENSCAD_BINARY` is set); without one, smoke asserts the graceful null-inventory + install-hint degradation instead. See `doc/file-formats.md`'s "OpenSCAD CSG" and "OpenSCAD Source" sections.
 
 ## STP
 

@@ -95,6 +95,7 @@ let objModel: string;
 let plyModel: string;
 let gltfModel: string;
 let vtkModel: string;
+let scadModel: string;
 
 /** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
 const UNIT_CUBE_OBJ = `
@@ -416,6 +417,7 @@ beforeEach(async () => {
   plyModel = path.join(dir, "model.ply");
   gltfModel = path.join(dir, "model.gltf");
   vtkModel = path.join(dir, "model.vtk");
+  scadModel = path.join(dir, "model.scad");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
@@ -427,6 +429,7 @@ beforeEach(async () => {
   // meshio-only source — the remaining "no host-side geometry" rejection path,
   // which glTF used to cover before it gained a parser.
   await fs.writeFile(vtkModel, "# vtk DataFile Version 3.0\n", "utf8");
+  await fs.writeFile(scadModel, "cube(size = [10, 10, 10], center = true);\n", "utf8");
 });
 
 afterEach(async () => {
@@ -488,6 +491,43 @@ describe("load_model", () => {
     const result = await loadModel(c, { path: stlModel });
     expect(c.pipeline.loadBRep).not.toHaveBeenCalled();
     expect(result.warnings[0]).toMatch(/mesh-format/i);
+  });
+
+  it("returns null inventory + install hint (never throws) for .scad without an openscad binary", async () => {
+    const saved = process.env.OPENSCAD_BINARY;
+    process.env.OPENSCAD_BINARY = "definitely-not-a-real-binary-xyz";
+    try {
+      const c = ctx();
+      const result = await loadModel(c, { path: scadModel });
+      expect(c.pipeline.loadBRep).not.toHaveBeenCalled();
+      expect(result.solids).toBeNull();
+      expect(result.warnings.join(" ")).toMatch(/openscad/i);
+    } finally {
+      if (saved === undefined) delete process.env.OPENSCAD_BINARY;
+      else process.env.OPENSCAD_BINARY = saved;
+    }
+  });
+
+  it("converts .scad to .csg bytes via the binary and loads as csg", async () => {
+    const saved = process.env.OPENSCAD_BINARY;
+    process.env.OPENSCAD_BINARY = path.join(__dirname, "test-fixtures", "openscad-stub.sh");
+    try {
+      const c = ctx();
+      const result = await loadModel(c, { path: scadModel });
+      // Downstream only ever sees converted .csg: the stub's canned cube.
+      expect(c.pipeline.loadBRep).toHaveBeenCalledWith(
+        dir,
+        new Uint8Array(Buffer.from("// stub-generated .csg\ncube(size = [10, 10, 10], center = true);\n", "utf8")),
+        "csg",
+        []
+      );
+      // The source file is still reported truthfully; conversion chatter rides warnings.
+      expect(result.format).toBe("scad");
+      expect(result.warnings.join(" ")).toMatch(/openscad: /);
+    } finally {
+      if (saved === undefined) delete process.env.OPENSCAD_BINARY;
+      else process.env.OPENSCAD_BINARY = saved;
+    }
   });
 
   it("rejects unsupported extensions", async () => {
@@ -1107,7 +1147,7 @@ describe("compare_models", () => {
     expect(c.pipeline.compareModels).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
     expect(result.diff).toBeUndefined();
-    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/STL\/OBJ\/PLY\/glTF/i);
+    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/CSG\/STL\/OBJ\/PLY\/glTF/i);
   });
 
   it("rejects unsupported extensions on either path", async () => {
@@ -2551,7 +2591,7 @@ describe("list_workspace_models", () => {
 
     const result = await listWorkspaceModels({ root: dir });
     expect(result.truncated).toBe(false);
-    const expected = ["model.gltf", "model.obj", "model.ply", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
+    const expected = ["model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
     expect(result.models.map((m) => path.relative(dir, m.path))).toEqual(expected);
     expect(result.models.some((m) => m.path.includes("ignored"))).toBe(false);
     expect(result.models.some((m) => m.path.endsWith("notes.txt"))).toBe(false);

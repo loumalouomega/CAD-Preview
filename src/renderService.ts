@@ -32,7 +32,7 @@ import type { HostToWebview, EntityType } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 
-export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
+export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
 export interface RenderView {
   label: string;
