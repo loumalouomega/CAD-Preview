@@ -132,11 +132,13 @@
     "commands": [
       {
         "command": "cad-preview.open",
-        "title": "CAD Preview: Open File…"
+        "title": "CAD Preview: Open File…",
+        "icon": "$(folder-opened)"
       },
       {
         "command": "cad-preview.new",
-        "title": "CAD Preview: New Blank Model…"
+        "title": "CAD Preview: New Blank Model…",
+        "icon": "$(new-file)"
       },
       {
         "command": "cad-preview.refreshModels",
@@ -290,6 +292,11 @@
           "command": "cad-preview.refreshModels",
           "when": "view == cad-preview.models",
           "group": "navigation@2"
+        },
+        {
+          "command": "cad-preview.new",
+          "when": "view == cad-preview.models",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
