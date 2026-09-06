@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
-import { routeFile, COMPARABLE_MESH_FORMATS, type MeshParseFormat } from "./fileRouter";
+import { routeFile, COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers } from "./gltfParser";
+import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
 import { readEdits } from "./editsStore";
 import type { CompareSource } from "./modelDiffHost";
 import type { ModelDiff, SolidSignature } from "./modelDiff";
@@ -9,7 +10,7 @@ import { DEFAULT_VIEWS, type RenderImage } from "./renderService";
 import type { KernelClient } from "./kernelClient";
 
 const COMPARE_FILTER = {
-  "STEP / IGES / BREP / STL / OBJ / PLY / glTF": ["step", "stp", "iges", "igs", "brep", "stl", "obj", "ply", "gltf", "glb"],
+  "STEP / IGES / BREP / CSG / SCAD / STL / OBJ / PLY / glTF": ["step", "stp", "iges", "igs", "brep", "csg", "scad", "stl", "obj", "ply", "gltf", "glb"],
 };
 
 async function pickCompareFile(title: string): Promise<vscode.Uri | undefined> {
@@ -26,19 +27,44 @@ async function pickCompareFile(title: string): Promise<vscode.Uri | undefined> {
  * when the file's format isn't compare-able at all (only the meshio-only
  * formats now: they never expose a triangle array to JS, so there is no
  * host-side geometry to independently derive centroids/volumes from without a
- * webview; STEP/IGES/BREP/STL/OBJ/PLY/glTF are all supported). */
+ * webview; STEP/IGES/BREP/CSG/SCAD/STL/OBJ/PLY/glTF are all supported — SCAD
+ * converts via the user-installed openscad binary first, and a missing
+ * binary degrades to the same `{source: undefined}` shape with the install
+ * hint as its warning). */
 async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareSource; warning?: string } | { source: undefined; warning: string }> {
   const route = routeFile(uri.fsPath);
   const name = vscode.workspace.asRelativePath(uri);
   const meshFormat = route?.strategy === "three" && COMPARABLE_MESH_FORMATS.has(route.format) ? (route.format as MeshParseFormat) : null;
   if (!route || (route.strategy !== "occt" && !meshFormat)) {
-    return { source: undefined, warning: `${name}: unsupported format for Compare Models (STEP/IGES/BREP/STL/OBJ/PLY/glTF only).` };
+    return { source: undefined, warning: `${name}: unsupported format for Compare Models (STEP/IGES/BREP/CSG/SCAD/STL/OBJ/PLY/glTF only).` };
   }
-  const bytes = await vscode.workspace.fs.readFile(uri);
+  const rawBytes = await vscode.workspace.fs.readFile(uri);
   if (route.strategy === "occt") {
     const { ops } = await readEdits(uri);
-    return { source: { kind: "brep", bytes, format: route.format as BRepFormat, ops } };
+    const warnings: string[] = [];
+    let bytes: Uint8Array;
+    let format: CadFormat;
+    try {
+      const binary = vscode.workspace.getConfiguration("cadPreview").get<string>("openscadBinary") ?? undefined;
+      const src = await resolveEffectiveSource({
+        modelPath: uri.fsPath,
+        format: route.format,
+        readBytes: async () => rawBytes,
+        warnings,
+        binary,
+      });
+      bytes = src.bytes;
+      format = src.format;
+    } catch (err) {
+      if (err instanceof ScadUnavailableError) return { source: undefined, warning: `${name}: ${err.reason}` };
+      throw err;
+    }
+    return {
+      source: { kind: "brep", bytes, format: format as BRepFormat, ops },
+      warning: warnings.length > 0 ? warnings.join(" ") : undefined,
+    };
   }
+  const bytes = rawBytes;
   const { ops } = await readEdits(uri);
   const warning =
     ops.length > 0
@@ -66,7 +92,7 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
  * defaults to `defaultUri` — the currently-focused editor's file, if any —
  * skipping straight to picking B), diffs them via `modelDiffHost.ts`'s
  * `compareModels()`, and renders the result in a standalone webview panel
- * mirroring `whatsNew.ts`'s precedent. STEP/IGES/BREP (edits baked in) and
+ * mirroring `whatsNew.ts`'s precedent. STEP/IGES/BREP/CSG (edits baked in) and
  * STL/OBJ/PLY/glTF (raw file bytes — no host-side mesh edit engine to bake
  * edits with) are supported, in any combination; meshio-only formats are
  * rejected with a clear message rather than crashing, matching this

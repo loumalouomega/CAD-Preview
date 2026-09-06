@@ -1,0 +1,19 @@
+// bracket.csg — clean OpenSCAD CSG fixture: a 20×20×10 base plate with a
+// centered 10×10×10 boss, a through hole, and a translated foot. Every node
+// maps exactly (cubes, one $fn=10 faceted cylinder → real prism, multmatrix
+// translate, group/union/difference). Expect NO warnings on import.
+//
+// Volumes (analytic): plate 4000 + boss 1000 + foot 1000 − hole (prism:
+// 10/2·9·sin(36°)·10 = 264.13) = 5735.87
+group() {
+  difference() {
+    union() {
+      cube(size = [20, 20, 10], center = true);
+      cube(size = [10, 10, 10], center = false);
+    }
+    cylinder($fn = 10, r = 3, h = 12, center = true);
+  }
+  multmatrix([[1, 0, 0, 15], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) {
+    cube(size = [10, 10, 10], center = true);
+  }
+}

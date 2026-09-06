@@ -19,6 +19,8 @@ import {
 } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
+import { resolveEffectiveSource } from "./scadService";
+import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
 import { isMeshioFieldFailure, describeMeshioFieldFailure } from "./meshioService";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
@@ -265,6 +267,29 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
+      // SpaceMouse 6DOF input (roadmap Tier 2 item 2) — deliberately NOT
+      // `withSession`: the device is global, not per-tab; motion events
+      // route to whichever session is focused at event time (or drop when
+      // none is). Connect is explicit opt-in only — never auto-started from
+      // `activate()`, mirroring the lazy-WASM rule.
+      vscode.commands.registerCommand("cad-preview.spaceMouseConnect", () =>
+        void (async () => {
+          try {
+            const { name, note } = await connectSpaceMouse((motion, buttons) => {
+              this.activeSession?.post({ type: "spacemouse", motion, buttons });
+            });
+            void vscode.window.showInformationMessage(
+              `SpaceMouse connected: ${name}${note ? ` — ${note}` : ""}`
+            );
+          } catch (err) {
+            void vscode.window.showErrorMessage(`SpaceMouse: ${(err as Error).message}`);
+          }
+        })()
+      ),
+      vscode.commands.registerCommand("cad-preview.spaceMouseDisconnect", () => {
+        disconnectSpaceMouse();
+        void vscode.window.showInformationMessage("SpaceMouse disconnected.");
+      }),
     ];
   }
 
@@ -278,7 +303,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // the final dot-segment only, so GiD's compound `post.msh` is covered by
         // the plain `msh` entry — a separate "post.msh" entry would never match.
         "CAD / Mesh": [
-          "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep",
+          "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep", "csg", "scad",
           "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam",
           "msh", "msh2", "inp", "unv", "su2", "mesh",
         ],
@@ -517,7 +542,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           currentParts = parts;
         });
       } else {
-        const format = route.format as Extract<CadFormat, "step" | "iges" | "brep">;
+        const format = route.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg" | "scad">;
         const generation = ++brepLoadGeneration.current;
         const autoFit = !showProgress;
         const resolvedEdits = resolvePlaneRefs(currentEdits, currentPlanes).ops;
@@ -592,7 +617,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (currentParts.length === 0 && currentAnnotations.length === 0) return;
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       try {
-        const bytes = await vscode.workspace.fs.readFile(document.uri);
+        const scadWarnings: string[] = [];
+        const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+        for (const w of scadWarnings) post({ type: "status", text: w });
+        const bytes = src.bytes;
+        const format = src.format;
         // Stored selectors resolve FIRST (authoritative — a query that hits
         // is exact by construction) and the heuristic rebind pass runs on the
         // result, so a query-covered part never also gets geometrically
@@ -601,7 +630,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const selected = await this.pipeline.resolvePartSelectors(
           this.context.extensionPath,
           bytes,
-          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+          format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
           newOps,
           currentParts
         );
@@ -610,7 +639,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const result = await this.pipeline.rebindPartsAcrossOps(
           this.context.extensionPath,
           bytes,
-          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+          format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
           previousOps,
           newOps,
           currentParts,
@@ -841,11 +870,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // resolvePartSelectors to docs carrying no selector at all.
             if (route?.strategy === "occt" && currentParts.some((p) => p.selector !== undefined)) {
               try {
-                const bytes = await vscode.workspace.fs.readFile(document.uri);
+                const scadWarnings: string[] = [];
+                const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+                for (const w of scadWarnings) post({ type: "status", text: w });
+                const bytes = src.bytes;
+                const format = src.format;
                 const selected = await this.pipeline.resolvePartSelectors(
                   this.context.extensionPath,
                   bytes,
-                  route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+                  format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
                   currentEdits,
                   currentParts
                 );
@@ -1102,11 +1135,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           if (!route || route.strategy !== "occt") {
             throw new Error("Mass properties are computed for B-rep sources on the host; mesh sources compute this client-side.");
           }
-          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const bytes = src.bytes;
+          const format = src.format;
           const properties = await this.pipeline.computeMassProperties(
             this.context.extensionPath,
             bytes,
-            route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+            format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
             currentEdits,
             msg.entityId
           );
@@ -1202,11 +1239,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           if (!route || route.strategy !== "occt") {
             throw new Error("Geometry classification requires a B-rep source; a mesh has no analytic surface type.");
           }
-          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const bytes = src.bytes;
+          const format = src.format;
           const facts = await this.pipeline.getEntityFacts(
             this.context.extensionPath,
             bytes,
-            route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+            format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
             currentEdits,
             msg.entityId
           );
@@ -1225,15 +1266,18 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           if (msg.entityIds.length === 0 || msg.entityIds.length > 25) {
             throw new Error(`Cannot synthesize queries for ${msg.entityIds.length} entities — pick between 1 and 25.`);
           }
-          const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const format = route.format as Extract<CadFormat, "step" | "iges" | "brep">;
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const bytes = src.bytes;
+          const format = src.format;
           const results: SelectorSynthesizeResultEntry[] = [];
           for (const entityId of msg.entityIds) {
             try {
               const r = await this.pipeline.synthesizeSelector(
                 this.context.extensionPath,
                 bytes,
-                format,
+                format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
                 currentEdits,
                 msg.op,
                 msg.role,
@@ -1344,11 +1388,15 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           if (!route || route.strategy !== "occt") {
             throw new Error("Exact measurement requires a B-rep source; mesh sources have no host-side geometry to re-derive it from.");
           }
-          const bytes = await vscode.workspace.fs.readFile(document.uri);
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const bytes = src.bytes;
+          const format = src.format;
           const result = await this.pipeline.measureExact(
             this.context.extensionPath,
             bytes,
-            route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+            format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
             currentEdits,
             msg.kind,
             msg.entityIdA,
@@ -1450,9 +1498,34 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * `progress &&` since it's `undefined` on a routine, no-notification edit
    * re-tessellation.
    */
-   private async handleBRep(
-    uri: vscode.Uri,
-    format: Extract<CadFormat, "step" | "iges" | "brep">,
+    /**
+     * `.scad`-aware source reader for every occt path below (roadmap Tier 2
+     * item 2, path (b), closed): reads bytes and converts `.scad` to `.csg`
+     * via the user-installed openscad binary (`cadPreview.openscadBinary`
+     * setting, `OPENSCAD_BINARY` env fallback), so downstream only ever sees
+     * step/iges/brep/csg. Conversion chatter accumulates into `warnings`
+     * (each caller status-posts them); a missing binary throws
+     * ScadUnavailableError, which every caller's EXISTING catch already
+     * posts — its message IS the install hint, so no per-site mapping.
+     */
+    private async readOcctSource(
+      uri: vscode.Uri,
+      format: CadFormat,
+      warnings: string[]
+    ): Promise<{ bytes: Uint8Array; format: CadFormat }> {
+      const binary = vscode.workspace.getConfiguration("cadPreview").get<string>("openscadBinary") ?? undefined;
+      return resolveEffectiveSource({
+        modelPath: uri.fsPath,
+        format,
+        readBytes: async () => vscode.workspace.fs.readFile(uri),
+        warnings,
+        binary,
+      });
+    }
+
+    private async handleBRep(
+     uri: vscode.Uri,
+     format: Extract<CadFormat, "step" | "iges" | "brep" | "csg" | "scad">,
     post: (msg: HostToWebview) => void,
     ops: EditOp[] = [],
     documentKey: string,
@@ -1464,7 +1537,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       progress?.report({ message: `Loading ${format.toUpperCase()} kernel…` });
-      const bytes = await vscode.workspace.fs.readFile(uri);
+      // `.scad` converts to `.csg` bytes first (user-installed openscad
+      // binary) — everything below only ever sees step/iges/brep/csg.
+      // A missing binary throws ScadUnavailableError, which the catch below
+      // posts as the error message (it IS the install hint).
+      const scadWarnings: string[] = [];
+      const src = await this.readOcctSource(uri, format, scadWarnings);
+      const bytes = src.bytes;
+      const effectiveFormat = src.format;
       post({ type: "status", text: `Tessellating ${format.toUpperCase()}…` });
       progress?.report({ message: `Tessellating ${format.toUpperCase()}…` });
       // Re-read fresh on every call (cheap) rather than cached at document-open
@@ -1478,17 +1558,21 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         documentKey,
         this.context.extensionPath,
         bytes,
-        format,
+        effectiveFormat as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
         ops,
         tessellationParamsFor(quality)
       );
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       post({ type: "status", text: "Rendering…" });
       progress?.report({ message: "Rendering…" });
-      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings } = result;
+      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings, warnings } = result;
       // A frozen operand query replays on its cached ids — the user must know
       // the query was not honored rather than staring at unchanged geometry.
+      // `.csg` parse/build warnings ride the same channel (a skipped hull()
+      // or a faceted-cylinder approximation must never be silent).
       for (const w of queryWarnings ?? []) post({ type: "status", text: w });
+      for (const w of warnings ?? []) post({ type: "status", text: w });
+      for (const w of scadWarnings) post({ type: "status", text: w });
       post({
         type: "geometry",
         autoFit,
@@ -1513,8 +1597,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           pointId: p.pointId,
         })),
       });
-      const text = format === "step" || format === "iges" ? Buffer.from(bytes).toString("latin1") : undefined;
-      const sourceUnit = format === "step" ? detectStepLengthUnit(text!) : format === "iges" ? detectIgesLengthUnit(text!) : undefined;
+      const text = effectiveFormat === "step" || effectiveFormat === "iges" ? Buffer.from(bytes).toString("latin1") : undefined;
+      const sourceUnit = effectiveFormat === "step" ? detectStepLengthUnit(text!) : effectiveFormat === "iges" ? detectIgesLengthUnit(text!) : undefined;
       post({ type: "tree", root: tree, sourceUnit });
     } catch (err) {
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
@@ -1572,7 +1656,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const planesForPreview = await readPlanes(uri).catch(() => [] as ConstructionPlane[]);
       const resolvedDraft = resolvePlaneRefs([clean], planesForPreview).ops[0] ?? clean;
       const resolvedOps = resolvePlaneRefs(ops, planesForPreview).ops;
-      const bytes = await vscode.workspace.fs.readFile(uri);
+      const scadWarnings: string[] = [];
+      const src = await this.readOcctSource(uri, route.format, scadWarnings);
+      for (const w of scadWarnings) post({ type: "status", text: w });
+      const bytes = src.bytes;
+      const format = src.format;
       const quality = normalizeTessellationQuality(
         vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
       );
@@ -1580,7 +1668,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         `${documentKey}::oppreview`,
         this.context.extensionPath,
         bytes,
-        route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+        format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
         [...resolvedOps, resolvedDraft],
         tessellationParamsFor(quality)
       );
@@ -1792,7 +1880,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     unit: DisplayUnit = "mm"
   ): Promise<MeshGenerationInput | undefined> {
     if (route && route.strategy === "occt") {
-      const sourceBytes = await vscode.workspace.fs.readFile(uri);
+      // Conversion chatter is deliberately dropped here (not status-posted):
+      // the document's own load path already surfaced the identical warnings
+      // on open and re-surfaces them on every edit reload — repeating them on
+      // every meshing call would be pure spam for a condition that hasn't
+      // changed. A missing binary still throws and surfaces via the caller's
+      // catch, same as every other load failure.
+      const src = await this.readOcctSource(uri, route.format, []);
+      const sourceBytes = src.bytes;
       // labelStepUnit: false — Gmsh's own STEP importer reinterprets a
       // correctly-labeled header and would undo this scale entirely (verified
       // against the live WASM); this intermediate file is meshing input only,
@@ -1802,7 +1897,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       const stepBytes = await this.pipeline.exportBRep(
         this.context.extensionPath,
         sourceBytes,
-        route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+        src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
         "step",
         ops,
         unit,
@@ -1877,11 +1972,14 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
     await this.promptSaveAndWrite(uri, EXPORT_EXTENSION[targetFormat], EXPORT_LABEL[targetFormat], async (_saveUri) => {
       if (BREP_FORMATS.has(targetFormat)) {
-        const sourceBytes = await vscode.workspace.fs.readFile(uri);
+        const scadWarnings: string[] = [];
+        const src = await this.readOcctSource(uri, route.format, scadWarnings);
+        for (const w of scadWarnings) post({ type: "status", text: w });
+        const sourceBytes = src.bytes;
         return this.pipeline.exportBRep(
           this.context.extensionPath,
           sourceBytes,
-          route.format as Extract<CadFormat, "step" | "iges" | "brep">,
+          src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
           targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
           ops,
           unit,
@@ -2054,7 +2152,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
   ): Promise<void> {
     if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
       const label = format.toUpperCase();
-      post({ type: "error", message: `Silhouette ${label} export requires a STEP/IGES/BREP or STL/OBJ/PLY/glTF source.` });
+      post({ type: "error", message: `Silhouette ${label} export requires a STEP/IGES/BREP/CSG/SCAD or STL/OBJ/PLY/glTF source.` });
       return;
     }
 
@@ -2084,10 +2182,13 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       ext,
       filterLabel,
       async () => {
-        const bytes = await vscode.workspace.fs.readFile(uri);
+        const scadWarnings: string[] = [];
+        const src = await this.readOcctSource(uri, route.format, scadWarnings);
+        for (const w of scadWarnings) post({ type: "status", text: w });
+        const bytes = src.bytes;
         const source: CompareSource =
           route.strategy === "occt"
-            ? { kind: "brep", bytes, format: route.format as Extract<CadFormat, "step" | "iges" | "brep">, ops }
+            ? { kind: "brep", bytes, format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">, ops }
             : route.format === "gltf"
               ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes) }
               : { kind: route.format as "stl" | "obj" | "ply", bytes };

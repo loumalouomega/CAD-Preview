@@ -46,6 +46,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/planesSidecar.ts` | Pure parse/serialize for the planes sidecar (vscode-free, unit-tested) |
 | `src/editOps.ts` | The `EditOp` union + `validateEditOp` tolerance gate + the `OpOutcome`/`OutcomeFail` per-op replay-outcome types shared by both edit engines (vscode-free) |
 | `src/svgImport.ts` | Pure SVG `<path d>` parser (regex extraction + a hand-written command interpreter covering M/L/H/V/C/S/Q/T/A/Z) into flattened polyline subpaths, feeding `addPolyline` ops — shared between the extension and webview bundles like `editOps.ts`/`protocol.ts` (vscode/DOM-free, unit-tested) |
+| `src/csgImport.ts` | Pure OpenSCAD `.csg` parser (tokenizer + recursive-descent statements into a `CsgNode` AST, with a dedicated pre-scan recovering polyhedron `faces=[[..]]` boundaries that nested-vector flattening would lose) plus the `$fn`/`$fa`/`$fs` segment-count rule — the parse half of `.csg` import, shared kernel-side only (vscode/DOM/OCCT-free, unit-tested) |
+| `src/csgModel.ts` | Kernel-side `.csg` geometry builder: walks `csgImport.ts`'s AST with live OCCT handles into one opaque base compound (like a STEP import, not an op history) — verified primitives/booleans, one uniform `gp_GTrsf` path for every transform node, sewn + closure-checked polyhedra (runs in the kernel worker) |
+| `src/scadService.ts` | Host-side `.scad` → `.csg` conversion via a user-installed `openscad` binary (`execFile` argv, never a shell; `cwd` = source dir; temp output always removed; 120s kill) plus the `resolveEffectiveSource` choke every call site uses — downstream only ever sees `csg` (node builtins only, vscode/WASM-free, stub-binary-tested) |
 | `src/dxfImport.ts` | Pure DXF model-space `ENTITIES` parser (group-code/value line-pair scan; `LINE`/`LWPOLYLINE`+bulge/`POLYLINE`/`CIRCLE`/`ARC`/`SPLINE`) feeding the existing `addLine`/`addPolyline`/`addCircleProfile`/`addArc`/`addSpline` ops — same pure/shared-bundle convention as `svgImport.ts`, Y-up native, flat at z=0 (vscode/DOM-free, unit-tested) |
 | `src/dxfSilhouette.ts` | Pure DXF writer for silhouette export over the SAME segment list `svgSilhouette.ts` serializes (imports its `viewBasis`; chained runs → `LWPOLYLINE`s, singletons → `LINE`s), selected by `exportSvgSilhouetteRequest`'s format pick |
 | `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
@@ -62,6 +65,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/viewStateStore.ts` | Read/write the `<model>.view.json` sidecar (vscode fs) |
 | `src/viewStateSidecar.ts` | Pure parse/serialize for the view-state sidecar (vscode-free, unit-tested) |
 | `src/protocol.ts` | Shared message types and buffer encoding |
+| `src/spaceMouse.ts` | Host-side SpaceMouse 6DOF reader (roadmap Tier 2 item 2): lazy `require("node-hid")`, usage-page-ranked discovery, report streaming with 3s reconnect, forwards raw motion to the active session (extension host only) |
+| `src/spaceMouseRank.ts` | Pure HID discovery ranking — multi-axis usage outranks vendor, mouse/keyboard decoys rejected, vendor-only matches UNPROVEN (vscode/DOM/HID-free, unit-tested) |
+| `src/hidDescriptor.ts` | Pure HID report-descriptor walker answering "declares multi-axis?" (vscode/DOM/HID-free, unit-tested) |
 | `src/toolbarIcons.ts` | **Generated** — monochrome, `currentColor`-based toolbar/panel icons (vscode-free) |
 | `src/nonce.ts` | Shared CSP script-nonce generator, used by every webview HTML builder |
 | `src/changelogParser.ts` | Pure `CHANGELOG.md` parser + markdown→HTML renderer for the What's New panel (vscode-free, unit-tested) |
@@ -454,6 +460,46 @@ function correlateAssemblyTree(info: XcafAssemblyInfo, currentSolids: XcafLeafSi
 **`readXcafAssembly`** does an entirely independent `STEPCAFControl_Reader` parse of `filePath` (which must still be on MEMFS — callers own writing/unlinking it, same convention as `readShape`'s `tmpName`). Walks the document's `ShapesLabel` via `TDF_ChildIterator`, recursing through assembly-type component/reference labels (resolved via `XCAFDoc_ShapeTool.GetReferredShape`) down to simple-shape leaves, accumulating each level's own `TopLoc_Location` (`.Multiplied()`) to pass DOWN to children — but applying only that ANCESTOR-accumulated location (not the leaf's own, which `GetShape_2` already baked in) via `.Moved()` when computing a leaf's final world-space fingerprint, since `.Moved()` COMPOSES with a shape's existing location rather than replacing it (the exact bug this item's verification caught and fixed — see CLAUDE.md). Returns a `TreeNode` tree with SYNTHETIC leaf ids (`xcaf-leaf-N`) plus a parallel `XcafLeafSignature[]` (bbox centre + volume per leaf, in the same synthetic-id space) — never the real `solid-N` ids, which this function has no way to know (that's `TopExp_Explorer` order over the UNRELATED plain-reader shape). Returns `null` on ANY failure (no XCAF structure, a parse error, an unbound API) — always a best-effort enhancement, never required.
 
 **`correlateAssemblyTree`** is pure (no OCCT calls) — matches `info.sigs` against the REAL, current `solid-N` fingerprints via `src/entityRebind.ts`'s existing `rebindEntities` (reused as-is, `kind: "solid"` on both sides), then relabels every tree leaf from its synthetic id to the matched real id. Requires a **clean 1:1 bijection** (every synthetic leaf matched, every real solid claimed, nothing left over) or returns `null` — a topology-changing edit since `readXcafAssembly` was cached changes the real solid count/positions in ways this function has no way to reconcile, and a partially-correlated tree would be worse than the flat fallback. Cheap enough to re-run on every `loadBRep`/`loadBRepCached` call even though `readXcafAssembly` itself is cached (see `occtService.ts`'s `BRepCacheEntry.assemblyTreeCache` above).
+
+---
+
+## `src/csgImport.ts` and `src/csgModel.ts`
+
+OpenSCAD `.csg` import (roadmap Tier 2 item 2, path (a), closed) — see CLAUDE.md's own section for the full write-up, including the mid-session pivot from op-lowering to an opaque base and the probe trail. Split into a pure parser half and a kernel-side builder half, mirroring `entityFacts.ts`/`entityRebind.ts`'s own split.
+
+```typescript
+// csgImport.ts (pure — no vscode/DOM/OCCT, headless-tested in csgImport.test.ts)
+interface CsgNode { name: string; modifier: string | null; params: Record<string, CsgValue>; children: CsgNode[]; faces?: number[][] }
+type CsgValue = number | boolean | string | number[] | null
+interface CsgParseResult { roots: CsgNode[]; warnings: string[]; useMaxFN: number }
+function parseCsg(text: string, options?: CsgParseOptions): CsgParseResult
+function resolveSegments(r: number, fn?: number, fa?: number, fs?: number): number
+
+// csgModel.ts (kernel-side — takes a live `oc`, every handle into `cleanup`)
+function buildCsgShape(oc: any, roots: CsgNode[], parserWarnings: string[], useMaxFN: number, cleanup: Cleanup, warnings: string[]): Shape
+```
+
+- **`parseCsg`** tokenizes (identifiers, numbers, strings, punctuation; `//` and `/* */` comments; `%`/`#`/`!`/`*` debug-modifier prefixes) and recursive-descents into `CsgNode`s — named (`name = value`) and positional (`#0`, `#1`) params, `{...}` child blocks, `;` terminals. Nested vectors flatten (fine for points/vectors); polyhedron `faces=[[..],[..]]` boundaries are recovered separately by `extractPolyhedronFaces` (a dedicated regex over the raw text, keyed by `polyhedron(` occurrence order) because flattening loses them. Refuses empty input and inputs over 10MB with a warning and no roots.
+- **`resolveSegments`** reimplements OpenSCAD's own `$fn` rule (`$fn > 0` wins, else `max(5, ceil(360/fa), ceil(2πr/fs))` with `$fa=12`/`$fs=2` defaults).
+- **`buildCsgShape`** walks the AST with live handles and returns one compound (possibly empty — the blank-model empty-shape guard downstream handles that). Primitives use the exact verified suffixes `occtOperations.ts` uses (`MakeBox_3` two corners, `MakeSphere_5`, `MakeCylinder_3`, `MakeCone_3`); faceted cylinders (`n <= useMaxFN`) build an N-gon prism in-loop (the `addPrism` recipe, first vertex at +X like OpenSCAD); polyhedra fan-triangulate, sew at `1e-6`, gate on `NbFreeEdges() == 0`, and flip-if-negative (the `orientPositiveVolume` rule); booleans use the `_3` ctors + `IsDone()` gate over compounded operands (the `booleanSolids` skeleton). EVERY transform node (`multmatrix`/`translate`/`rotate`/`scale`/`mirror`) goes through one path — `gp_GTrsf_1` + `BRepBuilderAPI_GTransform_2` — so shear needs no decomposition and float-noisy axes need no snap. Skipped constructs (`hull`/`minkowski`/`text()`/2D/extrude-wrappers/unknown) drop the whole subtree with a warning; `*` disables, `!` warns transparent, `%`/`#`/`color`/`render`/`group` are transparent.
+- **Reached through one choke point**: `occtService.ts`'s `readShape()` takes an untyped `format: string`, so a single `"csg"` branch (MEMFS bytes → UTF-8 → `parseCsg` → `buildCsgShape`, warnings into an optional out-param) serves `loadBRep`/`loadBRepCached`/`exportBRep`/mass properties/entity facts/diff/silhouette with zero per-caller changes. `BRepResult`/`BRepCacheEntry` carry additive `warnings` so the append-reuse path still reports without rebuilding.
+
+## `src/scadService.ts`
+
+OpenSCAD `.scad` import (roadmap Tier 2 item 2, path (b), closed) — see CLAUDE.md's own section. Host-side by constraint: `.scad` `use`/`include`/`import` resolve relative to the source file, but the kernel worker only ever receives marshalled bytes, so converting there would silently break every multi-file model. Converts on the real path and hands the shipped `.csg` pipeline converted bytes.
+
+```typescript
+// scadService.ts (host-side — node:child_process/fs/os/path only, vscode/WASM-free, stub-binary-tested)
+class ScadUnavailableError extends Error  // missing binary ONLY — callers map to {supported:false}
+function resolveOpenscadBinary(explicit?: string): string  // setting → OPENSCAD_BINARY env → "openscad"; "" counts as unset
+function isOpenscadAvailable(binary?: string): Promise<{ available: boolean; reason?: string }>
+function convertScadToCsg(sourcePath: string, opts?: { binary?: string; timeoutMs?: number }): Promise<{ csgBytes: Uint8Array; warnings: string[] }>
+function resolveEffectiveSource(opts: { modelPath: string; format: CadFormat; readBytes: () => Promise<Uint8Array>; warnings: string[]; binary?: string; timeoutMs?: number }): Promise<{ bytes: Uint8Array; format: CadFormat }>
+```
+
+- **`convertScadToCsg`** runs `openscad -o <tmp>/model.csg <real path>` (`-o` extension selects the CSG exporter — per FreeCAD's documented architecture, unverified against a live binary here) with `cwd = dirname(sourcePath)` on the real file (never a temp copy — copying would break relative references with no error to catch it). Output goes to an `mkdtemp` dir always `rm`'d in a `finally`, success or failure. Non-zero exit throws with the stderr tail; timeout (`SCAD_CONVERT_TIMEOUT_MS` = 120s, the sandbox backstop for evaluated-code hangs) kills the child and says so; empty/missing output is a failure, never an empty model. Success-with-stderr becomes capped `openscad: …` warnings.
+- **Two failure rules, mirroring `renderService.ts`**: absent binary (including TOCTOU at convert time) → `ScadUnavailableError`, mapped to `{supported: false}` + install hint at every entry point — except tools with no `supported` field (`generate_mesh`/`export_mesh`/`export_brep`/silhouette), which throw the hint as a clear error instead. Present-but-failing binary → thrown plain `Error`.
+- **Wiring is one helper per side**: `resolveEffectiveSource()` (non-scad passes through byte-identical) backs `readOcctSource()` in `mcpTools.ts` (each occt tool maps `{ok:false}` to its own `supported:false` shape; mutation-path tools persist sidecars even when the replay preview is skipped) and `provider.ts`'s private `readOcctSource()` (existing catches post the message — it IS the hint) plus `modelComparePanel.ts`'s `resolveCompareSource`. Meshing/export request paths that cannot degrade throw the hint instead. One incidental fix: the File ▸ Open dialog never listed `.csg` — it now lists both.
 
 ---
 

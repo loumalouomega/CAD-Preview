@@ -2,7 +2,6 @@ import type { CadFormat, FileRoute } from "./fileRouter";
 
 const BREP_FORMATS: CadFormat[] = ["step", "iges", "brep"];
 const MESH_FORMATS: CadFormat[] = ["stl", "obj", "ply", "gltf"];
-
 /**
  * The formats a loaded document can be exported to, excluding its own format.
  *
@@ -57,6 +56,12 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   step: "step",
   iges: "iges",
   brep: "brep",
+  // OpenSCAD CSG — import-only (like the meshio formats below): a .csg doc
+  // exports TO step/iges/brep via exportTargetsFor, never back to .csg.
+  csg: "csg",
+  // OpenSCAD source — import-only, same as .csg above (a .scad doc converts
+  // to .csg on open and exports from there, never back to .scad).
+  scad: "scad",
   stl: "stl",
   obj: "obj",
   ply: "ply",
@@ -92,6 +97,9 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   step: "STEP",
   iges: "IGES",
   brep: "BREP",
+  // Never offered by exportTargetsFor (see EXPORT_EXTENSION's comment) — present only for Record exhaustiveness.
+  csg: "OpenSCAD CSG",
+  scad: "OpenSCAD Source",
   stl: "STL",
   obj: "OBJ",
   ply: "PLY",

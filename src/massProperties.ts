@@ -6,7 +6,7 @@ import type { EditOp } from "./editOps";
 import type { Part } from "./protocol";
 import type { BomRow } from "./bomExport";
 
-export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep">;
+export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
 export interface MomentsOfInertia {
   ixx: number;
