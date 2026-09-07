@@ -1,4 +1,4 @@
-# Op-coverage allowlist — roadmap Tier 3 item 4, Phase 2.
+# Op-coverage allowlist — the doc-coverage gate (see CLAUDE.md's "Narrative tutorials + executable doc examples" section).
 #
 # One op kind per line. Each entry excuses a LIVE kind from the gate's
 # "missing" check, and MUST carry its reason as a `#` comment on the line(s)

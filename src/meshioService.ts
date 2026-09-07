@@ -462,13 +462,10 @@ export interface MeshioMetadataSummary {
  * arrays. **Deliberately informational only, not (yet) wired into the import
  * pipeline**: `convertToStlBoundary()` above still funnels every meshio-only
  * import through a plain STL boundary conversion with none of this attached
- * — see CLAUDE.md's "meshio++ integration" section for why turning this into
- * auto-created Parts is real, larger future work (the mechanism —
- * `extractSurface(mesh, true)`'s `cell_data["surface:parent_cell"]`
- * provenance array, correlated against each `kind: "cell"` region's
- * `entries` — was verified feasible against a synthetic hand-built mesh, but
- * needs real diverse-format fixtures to validate a full triangle-to-region
- * correlation before it would be safe to ship). Never throws: a malformed or
+ * — see CLAUDE.md's "meshio++ integration" section for the design. Region
+ * names now auto-create real Parts on import (`convertToStlBoundaryWithRegions`
+ * + `meshioRegionParts.ts`, correlated through `extractSurface(mesh, true)`'s
+ * `cell_data["surface:parent_cell"]` provenance array). Never throws: a malformed or
  * genuinely unreadable file degrades to every field empty, since this is
  * pure supplementary information and must never block or fail an import
  * `convertToStlBoundary` might otherwise handle fine.
