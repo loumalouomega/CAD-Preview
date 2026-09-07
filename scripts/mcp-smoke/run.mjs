@@ -2024,6 +2024,21 @@ try {
     `a QUAD-boundary mesh now auto-creates one Part per region — the gate this phase closed (got ${JSON.stringify(hexPartNames)})`
   );
 
+  // Tier 0 defect: an all-HEX volume with NO regions imported as an empty
+  // model, silently — `convertSurface` emits `solid endsolid` (zero facets,
+  // no throw) for a quad-only boundary, and the shared
+  // `convertToStlBoundary` path returned it verbatim. It now falls back to
+  // readMesh → extractSurface → simplexify → hand-built STL.
+  const singleHexMed = path.join(dir, "single-hex.med");
+  fs.copyFileSync(path.join(ROOT, "examples", "MED", "single-hex.med"), singleHexMed);
+  const singleHexLoaded = await call("load_model", { path: singleHexMed });
+  assert(singleHexLoaded.strategy === "meshio", "the region-free hex fixture loads through meshio");
+  const singleHexMeshed = await call("generate_mesh", { path: singleHexMed, options: { sizeMax: 0.5 } });
+  assert(
+    singleHexMeshed.nodeCount > 0 && singleHexMeshed.elementCount > 0,
+    `generate_mesh on a region-free all-hex source produces a real mesh, not an empty model (got ${singleHexMeshed.nodeCount} nodes, ${singleHexMeshed.elementCount} elements)`
+  );
+
   // (b) transform_mesh — one declarative tool for the whole op family.
   const decimated = path.join(dir, "decimated.med");
   const transformed = await call("transform_mesh", {

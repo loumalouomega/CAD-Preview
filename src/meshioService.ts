@@ -48,6 +48,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
+import { parseStl } from "./stlParser";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MeshioApi = any;
@@ -211,11 +212,15 @@ function unstageMeshioSource(m: MeshioApi, paths: readonly string[], extra: read
  * design that lets a meshio-imported document inherit the entire existing
  * mesh (Three.js) pipeline for free: facet splitting, parts, every
  * mesh-legal edit op, export, mass properties, measurement. Uses
- * `convertSurface` (not `readMesh` → build STL by hand), which stays inside
- * meshio++'s C++ core and auto-extracts the boundary skin of a volume mesh —
- * confirmed against the live WASM on a hand-built tetrahedron: `convert`ing
- * to MED/CGNS/Exodus/XDMF and then `convertSurface`-ing each back to STL all
- * produced the same correct 4-facet boundary (one per tet face). Trades away
+ * `convertSurface`, which stays inside meshio++'s C++ core and auto-extracts
+ * the boundary skin of a volume mesh — confirmed against the live WASM on a
+ * hand-built tetrahedron: `convert`ing to MED/CGNS/Exodus/XDMF and then
+ * `convertSurface`-ing each back to STL all produced the same correct
+ * 4-facet boundary (one per tet face). When `convertSurface` yields zero
+ * facets — a quad-only boundary (the common case for hex meshes), where it
+ * silently emits `solid endsolid` — this falls back to `readMesh` →
+ * `extractSurface` → `convertCells(…, "simplexify")` → hand-built STL, the
+ * same shape `convertFoamCaseToStlBoundary` uses. Trades away
  * format-native richness (regions, point/cell scalar data, multi-material
  * grouping) for a small, low-risk v1 — an explicit scope decision, not an
  * oversight; see CLAUDE.md's "meshio++ integration" section.
@@ -236,7 +241,27 @@ export async function convertToStlBoundary(
   const outPath = "/out.stl";
   try {
     m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
-    return m.FS.readFile(outPath);
+    const bytes: Uint8Array = m.FS.readFile(outPath);
+    if (parseStl(bytes).length > 0) return bytes;
+    // `convertSurface` linearizes higher-ORDER cells but does NOT split
+    // multi-node boundary FACES — a quad-only boundary (the common case for
+    // hex meshes) yields `solid endsolid`, zero facets, no throw. Fall back
+    // to readMesh + extractSurface + simplexify + hand-built STL, the same
+    // shape `convertFoamCaseToStlBoundary` uses for exactly this reason.
+    // Failures here fall to the outer catch's single `wrapMeshioFault`.
+    let boundary = m.extractSurface(m.readMesh(primaryPath, meshioFormat), false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let blocks = boundary.cells as any[];
+    if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
+      boundary = m.convertCells(boundary, "simplexify", true);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      blocks = boundary.cells as any[];
+    }
+    const stl = boundaryTrianglesToAsciiStl(boundary.points, boundary.dim, blocks, "meshio import");
+    if (stl) return stl;
+    throw new Error(
+      "meshio import error: the mesh produced an empty boundary — no faces to display."
+    );
   } catch (err) {
     throw wrapMeshioFault(err);
   } finally {
@@ -1074,7 +1099,8 @@ export async function convertFoamCaseToStlBoundary(markerPath: string): Promise<
 function boundaryTrianglesToAsciiStl(
   points: Float64Array,
   dim: number,
-  cells: unknown[]
+  cells: unknown[],
+  label = "OpenFOAM case error"
 ): Uint8Array | null {
   const lines: string[] = ["solid meshio"];
   let count = 0;
@@ -1102,7 +1128,7 @@ function boundaryTrianglesToAsciiStl(
   for (const block of cells) {
     const b = block as { type?: string; data?: Int32Array; nodesPerCell?: number; rowOffsets?: Int32Array };
     const data = b.data;
-    if (!data) throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}" (no connectivity).`);
+    if (!data) throw new Error(`${label}: unexpected boundary block "${b.type}" (no connectivity).`);
     if (b.rowOffsets) {
       // Ragged polygon block (CSR): fan-triangulate each variable-length row.
       const rows = b.rowOffsets.length - 1;
@@ -1116,7 +1142,7 @@ function boundaryTrianglesToAsciiStl(
       const n = b.nodesPerCell;
       const cellCount = data.length / n;
       if (n < 3 || !Number.isInteger(cellCount)) {
-        throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}" (${n} nodes/cell).`);
+        throw new Error(`${label}: unexpected boundary block "${b.type}" (${n} nodes/cell).`);
       }
       for (let c = 0; c < cellCount; c++) {
         for (let i = 1; i + 1 < n; i++) {
@@ -1124,7 +1150,7 @@ function boundaryTrianglesToAsciiStl(
         }
       }
     } else {
-      throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}".`);
+      throw new Error(`${label}: unexpected boundary block "${b.type}".`);
     }
   }
   lines.push("endsolid meshio");
