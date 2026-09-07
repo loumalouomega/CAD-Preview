@@ -10,5 +10,6 @@
 # removed from the op model or gains a real mention in `doc/**`.
 #
 # Currently empty: every live op kind is named somewhere in `doc/**`
-# (`rib` is covered by `doc/roadmap.md` until that item closes, plus by the
-# user-facing table in `doc/getting-started.md`).
+# (`rib` by the backtick list in `doc/mcp-server.md`, plus by the user-facing
+# table in `doc/getting-started.md`; `wrap` by `doc/extension-host-api.md`'s
+# feature-modeling write-up).
