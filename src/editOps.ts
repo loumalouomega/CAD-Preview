@@ -133,6 +133,16 @@ export interface SweepOp extends ThinSpec, ProfileOperand { op: "sweep"; path: s
 export interface LoftOp extends ThinSpec {
   op: "loft"; profiles?: string[]; profileEdgeSets?: string[][];
   /**
+   * Guide rail steering the loft (Phase 1: exactly one rail wire, closed
+   * sections only, exactly 2 sections, no `thin`). The rail's lateral
+   * deviation from its own endpoint chord offsets each resampled
+   * intermediate section rigidly, so the surface passes through the rail —
+   * a resampling fallback, not the kernel's (unreachable in this build)
+   * `MakePipeShell` rail wiring. Never consumed: rail edges stay in the
+   * model like sweep's `path`.
+   */
+  guides?: string[];
+  /**
    * Surface smoothing across sections (`ThruSections.SetSmoothing`) — the
    * only loft quality knob with a measured effect in this OCCT build
    * (probed: -0.711% volume on a 4-section twisted fixture; continuity,
@@ -159,6 +169,29 @@ export interface MateOp { op: "mate"; faceA: string; faceB: string; }
  * exactly `thin / 2` — the open-profile rule).
  */
 export interface RibOp { op: "rib"; spineEdges: string[]; dir: Vec3; thin: number; thinOuter?: number; upTo: string; blendRadius?: number; }
+/**
+ * Develop a flat sketch profile onto a cylinder or cone (length-preserving,
+ * not projection), thicken it to a closed shell via two one-sided offsets
+ * + a `ThruSections` skirt (the sew-two-offsets construction — never ask
+ * the offsetter for a solid, per the red whole-solid finding), then combine
+ * it with the model. `profile` is a single flat sketch `face-N` (face-only:
+ * an open wire has no interior to develop, so unlike extrude there is no
+ * `profileEdges` form; holed profiles are refused like thin features).
+ * The development surface is analytic: `axisPoint`/`axisDir` define the
+ * axis, `radius` is the cylinder radius (or cone radius at the `axisPoint`
+ * station), `halfAngleDeg` the cone half-angle in (0, 90) exclusive.
+ * `thickness` is the total wall, symmetric about the developed mid-surface.
+ * `variant` selects the combination: `"standalone"` appends the shell as a
+ * new body (no `targets`); `"emboss"` fuses it into `targets`;
+ * `"engrave"` cuts it out of `targets`.
+ */
+export interface WrapOp {
+  op: "wrap"; profile: string;
+  target: "cylinder" | "cone"; axisPoint: Vec3; axisDir: Vec3;
+  radius: number; halfAngleDeg?: number;
+  thickness: number; variant: "emboss" | "engrave" | "standalone";
+  targets?: string[];
+}
 /** Add a box centred at `center` with full extents `size`. A cube is a box with equal `size` components. */
 export interface AddBoxOp { op: "addBox"; center: Vec3; size: Vec3; }
 /** Add a sphere of `radius` centred at `center`. */
@@ -247,7 +280,7 @@ export type EditOp = (
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
-  | ShellOp | DraftOp | SplitByPlaneOp | SectionOp | RibOp
+  | ShellOp | DraftOp | SplitByPlaneOp | SectionOp | RibOp | WrapOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
   | AddWedgeOp | AddHoleOp | AddCounterboreHoleOp | AddCountersinkHoleOp
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
@@ -291,10 +324,11 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   translate: ["targets"], rotate: ["targets"], scale: ["targets"], mirror: ["targets"],
   boolean: ["a", "b"], fillet: ["edges"], chamfer: ["edges", "face"],
   extrude: ["profile", "profileEdges", "upToFace"], revolve: ["profile", "profileEdges"],
-  sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets"],
+  sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets", "guides"],
   explode: [], mate: ["faceA", "faceB"],
   shell: ["openingFaces"], draft: ["faces"], splitByPlane: ["targets"], section: ["targets"],
   rib: ["spineEdges", "upTo"],
+  wrap: ["profile", "targets"],
   addBox: [], addSphere: [], addCylinder: [], addCone: [], addTorus: [], addPrism: [],
   addWedge: [], addHole: ["targets"], addCounterboreHole: ["targets"], addCountersinkHole: ["targets"],
   addCircleProfile: [], addRectangleProfile: [], addPolygonProfile: [],
@@ -353,7 +387,7 @@ export type OutcomeFail = (diagnostic: string, hint?: string) => void;
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
-  "shell", "draft", "splitByPlane", "section", "rib",
+  "shell", "draft", "splitByPlane", "section", "rib", "wrap",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
   "addWedge", "addHole", "addCounterboreHole", "addCountersinkHole",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
@@ -368,7 +402,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
  * The hole family is deliberately NOT here — the mesh engine cuts holes via CSG. */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
-  "shell", "draft", "splitByPlane", "section", "rib",
+  "shell", "draft", "splitByPlane", "section", "rib", "wrap",
   "addWedge",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
@@ -791,12 +825,28 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       // string, a number) is a rejection, not a silent default.
       if (o.smoothing !== undefined && typeof o.smoothing !== "boolean") return null;
       const smoothing = o.smoothing === true ? { smoothing: true as const } : {};
+      // Guides (Phase 1): one rail wire as an edge-id set, exactly 2
+      // sections, closed sections only (checked at replay — validation
+      // cannot know closedness), no `thin` (the outer/inner-cut path has no
+      // rail form yet). A `face-N` smuggled in here would be a silently-wrong
+      // operand, so the id SHAPE is refused up front like `profileEdges`.
+      let guides: { guides: string[] } | Record<string, never> = {};
+      if (o.guides !== undefined) {
+        const g = asEdgeIdArray(o.guides);
+        if (!g) return null;
+        if (o.thin !== undefined) return null;
+        const sectionCount = hasFaces
+          ? (Array.isArray(o.profiles) ? o.profiles.length : -1)
+          : (Array.isArray(o.profileEdgeSets) ? o.profileEdgeSets.length : -1);
+        if (sectionCount !== 2) return null;
+        guides = { guides: g };
+      }
       if (hasFaces) {
         const profiles = asIdArray(o.profiles, 2);
-        return profiles ? { op: "loft", profiles, ...thin, ...smoothing } : null;
+        return profiles ? { op: "loft", profiles, ...thin, ...smoothing, ...guides } : null;
       }
       const profileEdgeSets = asEdgeIdArrayList(o.profileEdgeSets, 2);
-      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin, ...smoothing } : null;
+      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin, ...smoothing, ...guides } : null;
     }
     case "explode": {
       return isFiniteNumber(o.factor) ? { op: "explode", factor: o.factor } : null;
@@ -927,6 +977,43 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const out: RibOp = { op: "rib", spineEdges, dir, thin: o.thin as number, upTo };
       if (o.thinOuter !== undefined) out.thinOuter = o.thinOuter as number;
       if (o.blendRadius !== undefined) out.blendRadius = o.blendRadius as number;
+      return out;
+    }
+    case "wrap": {
+      // Face-only profile (an open wire has no interior to develop — unlike
+      // extrude there is no profileEdges form); holed profiles refused like
+      // thin features (a band-from-outer-boundary would silently drop holes).
+      const profile = asFaceId(o.profile);
+      if (!profile) return null;
+      if (o.target !== "cylinder" && o.target !== "cone") return null;
+      const axisPoint = asVec3(o.axisPoint);
+      const axisDir = asNonZeroVec3(o.axisDir);
+      if (!axisPoint || !axisDir) return null;
+      if (!isPositive(o.radius)) return null;
+      // halfAngle names the cone: required in (0, 90) exclusive for cones,
+      // refused outright for cylinders (a smuggled cone parameter on a
+      // cylinder would silently change nothing — reject, don't ignore).
+      if (o.target === "cone") {
+        if (!isFiniteNumber(o.halfAngleDeg) || (o.halfAngleDeg as number) <= 0 || (o.halfAngleDeg as number) >= 90) return null;
+      } else if (o.halfAngleDeg !== undefined) {
+        return null;
+      }
+      if (!isPositive(o.thickness)) return null;
+      if (o.variant !== "emboss" && o.variant !== "engrave" && o.variant !== "standalone") return null;
+      // Variant/targets XOR (the extrude length/upToFace precedent):
+      // standalone appends and takes no targets; emboss/engrave need ≥1.
+      const targets = o.targets === undefined ? undefined : asIdArray(o.targets);
+      if (o.variant === "standalone") {
+        if (o.targets !== undefined) return null;
+      } else if (!targets) {
+        return null;
+      }
+      const out: WrapOp = {
+        op: "wrap", profile, target: o.target, axisPoint, axisDir,
+        radius: o.radius as number, thickness: o.thickness as number, variant: o.variant,
+      };
+      if (o.target === "cone") out.halfAngleDeg = o.halfAngleDeg as number;
+      if (targets) out.targets = targets;
       return out;
     }
     case "addBox": {

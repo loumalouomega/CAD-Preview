@@ -21,7 +21,7 @@ export type PanelOpId =
   // EDIT — refine
   | "fillet" | "chamfer"
   // EDIT — features
-  | "extrude" | "revolve" | "sweep" | "loft" | "rib"
+  | "extrude" | "revolve" | "sweep" | "loft" | "rib" | "wrap"
   // EDIT — modify
   | "shell" | "draft" | "splitByPlane" | "section" | "drill"
   // EDIT — assembly
@@ -165,6 +165,7 @@ export const OP_CATALOG: {
         entry("sweep", "Sweep", ["sweep"]),
         entry("loft", "Loft", ["loft"]),
         entry("rib", "Rib", ["rib"]),
+        entry("wrap", "Wrap", ["wrap"]),
       ],
     },
     {
@@ -249,9 +250,13 @@ function describeOpBase(op: EditOp): string {
       const r = op as Extract<EditOp, { op: "rib" }>;
       return `Rib ${r.spineEdges.length} → ${r.upTo}${thinLabel(op)}`;
     }
+    case "wrap": {
+      const w = op as Extract<EditOp, { op: "wrap" }>;
+      return `Wrap ${w.profile} → ${w.target} r=${w.radius} t=${w.thickness} (${w.variant})`;
+    }
     case "revolve": return `Revolve ${profileLabel(op)} ${op.angleDeg}°${thinLabel(op)}`;
     case "sweep": return `Sweep ${profileLabel(op)} → ${op.path}${thinLabel(op)}`;
-    case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${(op as Extract<EditOp, { op: "loft" }>).smoothing ? " +smooth" : ""}${thinLabel(op)}`;
+    case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${(op as Extract<EditOp, { op: "loft" }>).smoothing ? " +smooth" : ""}${(op as Extract<EditOp, { op: "loft" }>).guides ? " +rail" : ""}${thinLabel(op)}`;
     case "explode": return `Explode ×${op.factor}`;
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
     case "shell": return `▣ Shell t=${op.thickness} (${op.openingFaces.length} openings)`;
@@ -347,14 +352,19 @@ export function referencedEntities(op: EditOp): string[] {
       return [...op.faces];
     case "rib":
       return [...op.spineEdges, op.upTo];
+    case "wrap":
+      return op.targets ? [op.profile, ...op.targets] : [op.profile];
     case "extrude":
       return [...profileOperandIds(op), ...((op as any).upToFace ? [(op as any).upToFace as string] : [])];
     case "revolve":
       return profileOperandIds(op);
     case "sweep":
       return [...profileOperandIds(op), op.path];
-    case "loft":
-      return op.profiles ? [...op.profiles] : (op.profileEdgeSets ?? []).flat();
+    case "loft": {
+      const refs = op.profiles ? [...op.profiles] : (op.profileEdgeSets ?? []).flat();
+      const g = (op as Extract<EditOp, { op: "loft" }>).guides;
+      return g ? [...refs, ...g] : refs;
+    }
     case "mate":
       return [op.faceA, op.faceB];
     case "shell":

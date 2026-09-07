@@ -540,6 +540,8 @@ let extrudeTerminator: string | null = null;
 let ribTerminator: string | null = null;
 /** Loft's captured sections — see `EditsPanelCallbacks.onCaptureLoftSection`. */
 let loftSections: LoftSection[] = [];
+/** Loft's captured guide rail (edge ids) — see `EditsPanelCallbacks.onCaptureLoftRail`. */
+let loftRail: string[] = [];
 const selectedVolumes = (): string[] =>
   selection.list().filter((e) => e.entityType === "volume").map((e) => e.entityId);
 
@@ -875,6 +877,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     return loftSections.length;
   },
   onClearLoftSections: () => { loftSections = []; scheduleOpPreview(); },
+  onCaptureLoftRail: () => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length === 0) { setStatus("Select one or more rail edges (Line mode) to capture as the loft rail.", true); return loftRail; }
+    loftRail = edges;
+    scheduleOpPreview();
+    return loftRail;
+  },
+  onClearLoftRail: () => { loftRail = []; scheduleOpPreview(); },
   onApplyFillet: (kind, amount, exprs) => {
     const resolved = buildOpForPanel(kind, { amount, exprs: exprs?.amount ? { amount: exprs.amount } : undefined });
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply.", true); return; }
@@ -891,6 +901,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     // name the wrong geometry — drop them, as `onApplyBoolean` drops A.
     sweepPath = null;
     loftSections = [];
+    loftRail = [];
     extrudeTerminator = null;
     ribTerminator = null;
     editsPanel.resetFeatureCaptures();
@@ -1580,9 +1591,13 @@ function pickOf(d: Record<string, unknown>): { pick?: RegionPick } | { pickError
 
 /** Intent colour for a previewed op kind — green adds material, red removes
  * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
- * neutral (per-band fillet colouring explicitly deferred per the roadmap). */
-function tintForPanelOp(id: PanelOpId): "add" | "cut" | "ref" | undefined {
+ * neutral (per-band fillet colouring explicitly deferred per the roadmap).
+ * `wrap` tints per VARIANT (the first such case): emboss adds, engrave cuts,
+ * standalone stays neutral. */
+function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "standalone" | null): "add" | "cut" | "ref" | undefined {
   switch (id) {
+    case "wrap":
+      return wrapVariant === "emboss" ? "add" : wrapVariant === "engrave" ? "cut" : undefined;
     case "booleanUnion":
     case "addBox":
     case "addSphere":
@@ -1911,26 +1926,60 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
         }),
       };
     }
+    case "wrap": {
+      if (selFaces.length === 0) return { error: "Select the flat sketch face to develop (Surf mode)." };
+      const profile = selFaces[0];
+      if (guideEntityIds.has(profile)) return { error: `${profile} is guide (construction) geometry — guides are excluded from wrap profiles.` };
+      const target = d.target === "cone" ? "cone" : "cylinder";
+      if (!d.axisDir.some((v: number) => v !== 0)) return { error: "Axis must be non-zero." };
+      if (!(d.radius > 0)) return { error: "Radius must be positive." };
+      if (!(d.thickness > 0)) return { error: "Thickness must be positive." };
+      const wrap: any = {
+        op: "wrap", profile, target,
+        axisPoint: d.axisPoint, axisDir: d.axisDir, radius: d.radius, thickness: d.thickness,
+        variant: d.variant,
+      };
+      if (target === "cone") {
+        if (!(d.halfAngleDeg > 0) || d.halfAngleDeg >= 90) return { error: "Half-angle must be between 0° and 90° (cone only)." };
+        wrap.halfAngleDeg = d.halfAngleDeg;
+      } else if (d.halfAngleDeg !== 0) {
+        return { error: "Half-angle applies to cones only — switch Target to cone, or reset it to 0." };
+      }
+      if (d.variant !== "standalone") {
+        if (d.variant !== "emboss" && d.variant !== "engrave") return { error: "Combine must be standalone, emboss, or engrave." };
+        if (selVolumes.length === 0) return { error: "Select target volumes (Vol mode) to emboss into / engrave out of — or pick Standalone." };
+        wrap.targets = selVolumes;
+      }
+      return { op: withExprs(wrap) };
+    }
     case "loft": {
       // Smoothing is orthogonal to section sourcing — read once, applied to
       // every loft shape below (captured sections, live selection, thin or
       // plain alike), since it flows into the shared loftWires choke point.
       const smoothing = d.smoothing === true ? { smoothing: true as const } : {};
+      // A captured rail steers whichever section source applies — same single
+      // choke point so preview ≡ Apply.
+      const rail: { guides?: string[]; error?: string } = {};
+      if (loftRail.length > 0) {
+        const g = loftRail.find((id) => guideEntityIds.has(id));
+        if (g) return { error: `${g} is guide (construction) geometry — guides are excluded from loft rails.` };
+        rail.guides = [...loftRail];
+      }
       if (loftSections.length > 0) {
         if (loftSections.length < 2) return { error: "Capture at least 2 loft sections (Add section)." };
         const guide = loftSections.flatMap((s) => s.ids).find((id) => guideEntityIds.has(id));
         if (guide) return { error: `${guide} is guide (construction) geometry — guides are excluded from loft profiles.` };
         if (loftSections.every((s) => s.kind === "face")) {
-          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...smoothing, ...thinOf(d) }) };
+          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...smoothing, ...thinOf(d), ...rail }) };
         }
         if (loftSections.every((s) => s.kind === "edges")) {
-          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...smoothing, ...thinOf(d) }) };
+          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...smoothing, ...thinOf(d), ...rail }) };
         }
         return { error: "Loft sections must be all faces or all edge wires — clear and re-capture." };
       }
       if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft, or capture sections one at a time." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from loft profiles." };
-      return { op: withExprs({ op: "loft", profiles: selFaces, ...smoothing, ...thinOf(d) }) };
+      return { op: withExprs({ op: "loft", profiles: selFaces, ...smoothing, ...thinOf(d), ...rail }) };
     }
 
     // ── assembly ──
@@ -2139,7 +2188,13 @@ function scheduleOpPreview(): void {
 function cancelOpPreview(): void {
   opPreviewScheduler.cancel();
   viewer.setOpPreview(null);
+  lastWrapPreviewVariant = null;
 }
+
+// Stashed wrap variant for preview tinting (see runOpPreview): the result
+// handler only sees the open form id, not its draft, so the schedule-time
+// variant is remembered here and cleared with every cancel.
+let lastWrapPreviewVariant: "emboss" | "engrave" | "standalone" | null = null;
 
 /** The scheduler's runner: resolve → validate → replay speculatively. Mesh
  * sources stay entirely client-side (applyEditsMesh over a fresh pristine
@@ -2159,7 +2214,14 @@ async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknow
     setStatus("The drafted operation is invalid and cannot be previewed.", true);
     return;
   }
-  const tint = tintForPanelOp(entry.id);
+  // Wrap tints per variant (emboss/engrave/standalone), but the result
+  // handler below only sees the open form id — stash the variant here so
+  // both paths tint identically (preview ≡ Apply).
+  if (entry.id === "wrap") {
+    const v = (entry.draft as Record<string, unknown>).variant;
+    lastWrapPreviewVariant = v === "emboss" || v === "engrave" || v === "standalone" ? v : null;
+  }
+  const tint = tintForPanelOp(entry.id, entry.id === "wrap" ? lastWrapPreviewVariant : undefined);
   if (sourceKind === "mesh") {
     if (!pristineMesh) return;
     const clone = pristineMesh.clone(true);
@@ -2188,7 +2250,7 @@ function handleOpPreviewResult(msg: Extract<HostToWebview, { type: "opPreviewRes
     setStatus(`Preview skipped: ${draftOutcome.diagnostic ?? "the operation produced no change"}${draftOutcome.hint ? ` — ${draftOutcome.hint}` : ""}`, true);
     return;
   }
-  viewer.setOpPreview(buildGroupFromEncoded(msg.meshes, msg.edges, msg.points), tintForPanelOp(editsPanel.openOpId() as PanelOpId));
+  viewer.setOpPreview(buildGroupFromEncoded(msg.meshes, msg.edges, msg.points), tintForPanelOp(editsPanel.openOpId() as PanelOpId, lastWrapPreviewVariant));
 }
 
 // The pristine, tagged-but-unedited loaded object for mesh formats. Mesh edits

@@ -137,7 +137,7 @@ Full documentation is available at **https://loumalouomega.github.io/CAD-Preview
 
 Source lives in the [`doc/`](doc/) folder, built with [VitePress](https://vitepress.dev/) and deployed automatically to GitHub Pages on every push to `master`. See [`.github/workflows/docs.yml`](.github/workflows/docs.yml).
 
-Planned and candidate features are tracked in the [Roadmap](doc/roadmap.md).
+Non-goals and known constraints are recorded in the [Roadmap](doc/roadmap.md).
 
 ## CI
 

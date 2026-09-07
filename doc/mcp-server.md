@@ -68,7 +68,7 @@ The same capability catalog `describe_capabilities` returns is also available as
 
 Both surfaces call the same `describeCapabilities()` source — there is no second hand-maintained copy to drift.
 
-A distributable agent skill lives at `skills/CAD-Preview/SKILL.md` (triggered on tool availability `mcp__cad-preview__*`). It mirrors the instructions plus workflow guidance — plan in generic CAD vocabulary before mapping to ops, a snapshot-cost calculus, sub-agents-read-they-never-build, and volume-as-regression-check. See `doc/roadmap.md` item 4 for the full rationale.
+A distributable agent skill lives at `skills/CAD-Preview/SKILL.md` (triggered on tool availability `mcp__cad-preview__*`). It mirrors the instructions plus workflow guidance — plan in generic CAD vocabulary before mapping to ops, a snapshot-cost calculus, sub-agents-read-they-never-build, and volume-as-regression-check. The skill file itself carries the full rationale.
 
 ## Tools
 
@@ -162,8 +162,17 @@ What it draws, and what it does not:
   drawing. Mesh sources have no face identity, so they fall back to a dihedral threshold (`35°` by
   default, chosen to clear a coarse STL cylinder's own facet angle) — and if that degenerates into a
   wireframe, the result says so in `warnings` rather than quietly handing you one.
-- **No dimensions and no multi-view sheet.** Treat it as a review/illustration artifact and use
-  `measure`/`measure_exact` for any number you need to be sure of.
+- **Dimensions, but only ones a human pinned.** Every pinned measurement in
+  `<model>.annotations.json` is projected through the export's own view basis and drawn as a real
+  dimension glyph — extension lines, arrowheads, and the value label with its tolerance band if it
+  has one — in SVG, and on DXF's own `DIMENSIONS` layer so it can be toggled separately from the
+  outline. The response reports `dimensionCount`, and warns when pins exist but none of them could be
+  projected into the requested view. What is missing is *authoring*: pins are created interactively
+  from the webview's Measure tool, and there is no MCP tool that writes that sidecar — so headless,
+  this draws whatever a human already pinned, and nothing if they pinned nothing.
+- **No multi-view sheet.** One view per call, no title block. Treat the result as a
+  review/illustration artifact and use `measure`/`measure_exact` for any number you need to be sure
+  of.
 
 ### Closing the pixel → entity loop
 

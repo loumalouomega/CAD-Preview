@@ -166,7 +166,7 @@ describe("validateEditOp", () => {
   });
 
   it("modify ops are topology-changing, B-rep only", () => {
-    for (const kind of ["shell", "splitByPlane", "section", "rib"] as const) {
+    for (const kind of ["shell", "splitByPlane", "section", "rib", "wrap"] as const) {
       expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
       expect(BREP_ONLY_OPS.has(kind)).toBe(true);
     }
@@ -486,6 +486,25 @@ describe("thin (sweep-family thin-walled features)", () => {
     expect(op && "thinOuter" in op).toBe(false);
   });
 
+  it("accepts loft guides as one rail wire, refusing thin/3-section/malformed", () => {
+    const loft = (extra: Record<string, unknown>) =>
+      validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], ...extra });
+    expect(loft({ guides: ["edge-0", "edge-1"] })).toMatchObject({ op: "loft", guides: ["edge-0", "edge-1"] });
+    // Omitted guides leave no trace — plain lofts replay exactly as before.
+    const bare = loft({});
+    expect(bare).not.toBeNull();
+    expect(bare && "guides" in bare).toBe(false);
+    // Malformed rail shapes reject the whole op, never a silent unsteered loft.
+    expect(loft({ guides: [] })).toBeNull();
+    expect(loft({ guides: "edge-0" })).toBeNull();
+    expect(loft({ guides: ["face-0"] })).toBeNull();
+    // Deferred interactions reject up front: thin, and 3+ sections.
+    expect(loft({ guides: ["edge-0"], thin: 2 })).toBeNull();
+    expect(validateEditOp({ op: "loft", profiles: ["face-1", "face-2", "face-3"], guides: ["edge-0"] })).toBeNull();
+    expect(validateEditOp({ op: "loft", profileEdgeSets: [["edge-0"], ["edge-1"]], guides: ["edge-2"] }))
+      .toMatchObject({ op: "loft", guides: ["edge-2"] });
+  });
+
   it("accepts loft smoothing as a strict boolean, normalizing false to absent", () => {
     const loft = (extra: Record<string, unknown>) =>
       validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], ...extra });
@@ -631,6 +650,56 @@ describe("rib", () => {
     expect(rib({ thinOuter: 2 })).toBeNull();
     expect(rib({ blendRadius: -1 })).toBeNull();
     expect(rib({ blendRadius: "0.5" })).toBeNull();
+  });
+});
+
+describe("wrap", () => {
+  const wrap = (extra: Record<string, unknown>) =>
+    validateEditOp({
+      op: "wrap", profile: "face-0", target: "cylinder",
+      axisPoint: [0, 0, 0], axisDir: [0, 0, 1], radius: 10, thickness: 2,
+      variant: "standalone", ...extra,
+    });
+
+  it("accepts a well-formed standalone wrap (no targets)", () => {
+    expect(wrap({})).toEqual({
+      op: "wrap", profile: "face-0", target: "cylinder",
+      axisPoint: [0, 0, 0], axisDir: [0, 0, 1], radius: 10, thickness: 2,
+      variant: "standalone",
+    });
+  });
+
+  it("accepts emboss/engrave with targets and cone with half-angle", () => {
+    expect(wrap({ variant: "emboss", targets: ["solid-0"] })).toMatchObject({ variant: "emboss", targets: ["solid-0"] });
+    expect(wrap({ variant: "engrave", targets: ["solid-0", "solid-1"] })).toMatchObject({ targets: ["solid-0", "solid-1"] });
+    expect(wrap({ target: "cone", halfAngleDeg: 15 })).toMatchObject({ target: "cone", halfAngleDeg: 15 });
+  });
+
+  it("rejects malformed profiles, axes, radii, and thickness", () => {
+    expect(wrap({ profile: "edge-0" })).toBeNull(); // edge smuggled into the face form
+    expect(wrap({ profile: "face-x" })).toBeNull();
+    expect(validateEditOp({ op: "wrap", target: "cylinder", axisPoint: [0, 0, 0], axisDir: [0, 0, 1], radius: 10, thickness: 2, variant: "standalone" })).toBeNull(); // no profile key
+    expect(wrap({ axisDir: [0, 0, 0] })).toBeNull();
+    expect(wrap({ radius: 0 })).toBeNull();
+    expect(wrap({ radius: -3 })).toBeNull();
+    expect(wrap({ thickness: 0 })).toBeNull();
+    expect(wrap({ target: "sphere" })).toBeNull();
+  });
+
+  it("enforces the halfAngle cone-only rule both directions", () => {
+    expect(wrap({ halfAngleDeg: 15 })).toBeNull(); // cylinder carrying a cone parameter
+    expect(wrap({ target: "cone" })).toBeNull(); // cone without half-angle
+    expect(wrap({ target: "cone", halfAngleDeg: 0 })).toBeNull();
+    expect(wrap({ target: "cone", halfAngleDeg: 90 })).toBeNull();
+    expect(wrap({ target: "cone", halfAngleDeg: -5 })).toBeNull();
+  });
+
+  it("enforces the variant/targets XOR", () => {
+    expect(wrap({ targets: ["solid-0"] })).toBeNull(); // standalone with targets
+    expect(wrap({ variant: "emboss" })).toBeNull(); // emboss without targets
+    expect(wrap({ variant: "engrave" })).toBeNull();
+    expect(wrap({ variant: "emboss", targets: [] })).toBeNull();
+    expect(wrap({ variant: "cut" })).toBeNull();
   });
 });
 

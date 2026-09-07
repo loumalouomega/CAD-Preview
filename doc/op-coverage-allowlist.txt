@@ -1,4 +1,4 @@
-# Op-coverage allowlist — roadmap Tier 3 item 4, Phase 2.
+# Op-coverage allowlist — the doc-coverage gate (see CLAUDE.md's "Narrative tutorials + executable doc examples" section).
 #
 # One op kind per line. Each entry excuses a LIVE kind from the gate's
 # "missing" check, and MUST carry its reason as a `#` comment on the line(s)
@@ -10,5 +10,6 @@
 # removed from the op model or gains a real mention in `doc/**`.
 #
 # Currently empty: every live op kind is named somewhere in `doc/**`
-# (`rib` is covered by `doc/roadmap.md` until that item closes, plus by the
-# user-facing table in `doc/getting-started.md`).
+# (`rib` by the backtick list in `doc/mcp-server.md`, plus by the user-facing
+# table in `doc/getting-started.md`; `wrap` by `doc/extension-host-api.md`'s
+# feature-modeling write-up).

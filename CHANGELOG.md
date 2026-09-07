@@ -4,6 +4,13 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [1.13.0] - 2026-09-06
+
+### Added
+
+- **Wrap sketch onto cylinder/cone (`wrap` edit op).** Develops a flat sketch face onto an analytic cylinder or cone target (true surface development — length-preserving, not projection), then thickens it symmetrically along the surface normal. Three variants: **Standalone** appends the wrapped shell as a new solid, **Emboss** fuses it into the target volumes, **Engrave** cuts it out. Available in the Edits panel's feature composer, through `apply_edit_ops` / `run_parametric_script` for agents, and recorded in the op history with per-op replay outcomes and classification buckets like every other topology-changing op (B-rep only).
+- **Loft guide rails (`guides` on the `loft` op).** A loft between two closed sections can now be steered by a guide-rail wire — captured in the Edits panel with **Set rail** on one or more Line-mode edges, or passed as `guides: edgeId[]` through `apply_edit_ops` / `run_parametric_script`. The rail's lateral deviation from its own endpoint chord offsets resampled intermediate sections, which are then lofted through the same `ThruSections` builder as an unsteered loft. This is deliberately **not** the kernel's own rail wiring — `BRepOffsetAPI_MakePipeShell`'s guide API is unreachable in the bundled OCCT WASM build — so it is named as a resampling fallback everywhere it appears (the op docs, the panel row, the history label's `+rail` suffix) rather than presented as a kernel feature. Scoped to exactly two closed sections and no wall thinning; the rail's edges are never consumed and stay in the model, like a sweep's path. B-rep only.
+
 ## [1.12.0] - 2026-09-06
 
 ### Added
@@ -374,6 +381,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[1.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.9.2...v1.10.0
