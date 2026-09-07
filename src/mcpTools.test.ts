@@ -385,7 +385,9 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
     readMeshioDataInfo: vi.fn(async () => []),
+    readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
+    decimateStlBoundary: vi.fn(async (bytes: Uint8Array) => ({ bytes, fromTriangles: 99904, toTriangles: 996 })),
     rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts, annotations = []) => ({
       parts, // identity pass-through by default — matches the real "nothing to rebind" no-op contract
       annotations,
@@ -543,6 +545,26 @@ describe("load_model", () => {
 
     const objResult = await loadModel(c, { path: objModel });
     expect(objResult.warnings[0]).not.toMatch(/meshable via generate_mesh/i);
+  });
+
+  it("surfaces a recognised provenance block as an enveloped warning, and stays silent without one", async () => {
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const withBlock = fakePipeline({
+      readMeshioProvenance: vi.fn(async () => ({
+        recognised: true,
+        lines: ["Written by meshio++ v10.20.2", "Converted from bull.stp (step)", "Note [meshing-engine]: gmsh"],
+      })),
+    });
+    const result = await loadModel(ctx(withBlock), { path: vtkModel });
+    const entry = result.warnings.find((w) => w.startsWith("Provenance block:"));
+    expect(entry).toMatch(/Provenance block:.*meshing-engine.*informational only/);
+    // Document-derived lines are envelope-wrapped like every other
+    // document-derived string (untrustedText.ts convention).
+    expect(entry).toMatch(/⟦.*⟧/);
+
+    const withoutBlock = await loadModel(ctx(), { path: vtkModel });
+    expect(withoutBlock.warnings.some((w) => w.startsWith("Provenance block:"))).toBe(false);
   });
 
   it("surfaces discovered meshio++ regions/data array names as an informational warning", async () => {
@@ -1256,6 +1278,35 @@ describe("check_mesh_health", () => {
     await expect(fs.access(`${stlModel}.edits.json`)).rejects.toThrow();
     await expect(fs.access(`${stlModel}.parts.json`)).rejects.toThrow();
   });
+
+  it("autoDecimate: retries over a decimated mesh when the ceiling refuses", async () => {
+    const ceiling = new Error("Mesh has 99904 triangles, above the 50000-triangle ceiling for the per-triangle sewing pipeline.");
+    const pipeline = fakePipeline({
+      checkMeshHealth: vi.fn().mockRejectedValueOnce(ceiling).mockResolvedValue(FAKE_MESH_HEALTH_REPORT),
+    });
+    const c = ctx(pipeline);
+    const result = await checkMeshHealthTool(c, { path: stlModel, autoDecimate: true });
+    expect(pipeline.decimateStlBoundary).toHaveBeenCalledOnce();
+    // Second call runs against the decimated STL bytes as "stl".
+    expect(vi.mocked(pipeline.checkMeshHealth).mock.calls[1]).toEqual([dir, expect.any(Uint8Array), "stl"]);
+    expect(result.supported).toBe(true);
+    expect(result.decimated).toEqual({ fromTriangles: 99904, toTriangles: 996, ratio: expect.any(Number) });
+    expect(result.warnings.join(" ")).toMatch(/auto-decimated mesh.*99904 → 996/);
+  });
+
+  it("autoDecimate: a non-ceiling error rethrows even with the flag set", async () => {
+    const corrupt = new Error("not an STL file at all");
+    const pipeline = fakePipeline({ checkMeshHealth: vi.fn().mockRejectedValue(corrupt) });
+    await expect(checkMeshHealthTool(ctx(pipeline), { path: stlModel, autoDecimate: true })).rejects.toThrow(/not an STL file/);
+    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+  });
+
+  it("without autoDecimate, a ceiling refusal propagates unchanged", async () => {
+    const ceiling = new Error("Mesh has 99904 triangles, above the 50000-triangle ceiling for the per-triangle sewing pipeline.");
+    const pipeline = fakePipeline({ checkMeshHealth: vi.fn().mockRejectedValue(ceiling) });
+    await expect(checkMeshHealthTool(ctx(pipeline), { path: stlModel })).rejects.toThrow(/triangle ceiling/);
+    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+  });
 });
 
 describe("promote_mesh_to_brep", () => {
@@ -1353,6 +1404,30 @@ describe("promote_mesh_to_brep", () => {
     const c = ctx();
     await expect(promoteMeshToBrepTool(c, { path: stlModel, outputPath: stlModel })).rejects.toThrow();
     expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+  });
+
+  it("autoDecimate: promotes from a decimated mesh when the ceiling refuses, and says so", async () => {
+    const ceiling = new Error("Mesh has 99904 triangles, above the 50000-triangle ceiling for the per-triangle sewing pipeline.");
+    const pipeline = fakePipeline({
+      promoteMeshToBrep: vi.fn().mockRejectedValueOnce(ceiling).mockResolvedValue(FAKE_PROMOTE_RESULT),
+    });
+    const c = ctx(pipeline);
+    const outputPath = path.join(dir, "decimated.step");
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath, autoDecimate: true });
+    expect(pipeline.decimateStlBoundary).toHaveBeenCalledOnce();
+    expect(vi.mocked(pipeline.promoteMeshToBrep).mock.calls[1].slice(2, 4)).toEqual(["stl", "step"]);
+    expect(result.decimated).toEqual({ fromTriangles: 99904, toTriangles: 996, ratio: expect.any(Number) });
+    expect(result.warnings.join(" ")).toMatch(/promoted from an auto-decimated mesh.*99904 → 996/);
+    expect(await fs.readFile(outputPath, "utf8")).toContain("PROMOTED");
+  });
+
+  it("autoDecimate: a non-ceiling error rethrows without decimating", async () => {
+    const bad = new Error("sewing failed catastrophically");
+    const pipeline = fakePipeline({ promoteMeshToBrep: vi.fn().mockRejectedValue(bad) });
+    await expect(
+      promoteMeshToBrepTool(ctx(pipeline), { path: stlModel, outputPath: path.join(dir, "x.step"), autoDecimate: true })
+    ).rejects.toThrow(/catastrophically/);
+    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
   });
 });
 
@@ -2228,6 +2303,10 @@ describe("export_mesh", () => {
         extension: "med",
         companionExtension: undefined,
         source: { name: path.basename(stpModel), format: "step" },
+        notes: expect.arrayContaining([
+          { category: "meshing-engine", detail: "gmsh" },
+          expect.objectContaining({ category: "edits-baked" }),
+        ]),
       },
     ]);
     expect(c.pipeline.exportMeshFormat).not.toHaveBeenCalled();

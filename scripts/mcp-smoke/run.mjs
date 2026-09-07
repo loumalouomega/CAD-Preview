@@ -2221,6 +2221,48 @@ try {
     `check_mesh_health rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkHealthRejected)})`
   );
 
+  // Tier 1 "Auto-decimate under MAX_HEALABLE_TRIANGLES" —
+  // examples/STL/large-sphere-100k.stl is a real 99904-triangle mesh, over
+  // the 50000-triangle ceiling the per-triangle sewing pipeline refuses.
+  const bigSphereStl = path.join(dir, "large-sphere-100k.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "large-sphere-100k.stl"), bigSphereStl);
+  const overCeiling = await callTolerant("check_mesh_health", { path: bigSphereStl });
+  assert(
+    overCeiling.error && /triangle ceiling/.test(overCeiling.error),
+    `check_mesh_health refuses an over-ceiling mesh with the actionable error (got: ${overCeiling.error})`
+  );
+  const decHealth = await call("check_mesh_health", { path: bigSphereStl, autoDecimate: true });
+  assert(
+    decHealth.decimated && decHealth.decimated.fromTriangles === 99904 &&
+      Math.abs(decHealth.decimated.toTriangles - 1000) / 1000 < 0.1,
+    `check_mesh_health{autoDecimate} reports the resampling actually applied (got: ${JSON.stringify(decHealth.decimated)})`
+  );
+  assert(
+    decHealth.components[0].requiredTolerance === 1e-6,
+    `the decimated sphere still closes at the tightest rung (got: ${JSON.stringify(decHealth.components[0])})`
+  );
+  assert(
+    decHealth.warnings.some((w) => /auto-decimated mesh.*99904 → 1000/.test(w)),
+    "the report warns it describes the decimated mesh, never silently"
+  );
+  // Decimation introduces non-manifold/sliver artifacts that break the
+  // per-triangle solidify (verified live: closes at 1e-6 yet heals to
+  // volume exactly 0) — the report must show the degenerate heal honestly,
+  // and promote must refuse to write it rather than emit a wrong solid. If
+  // a future meshio++ decimates cleanly, these fail: revisit, don't delete.
+  const decComponent = decHealth.components[0];
+  assert(
+    decComponent.nonManifoldEdgeCount > 0 && decComponent.healedVolume === 0 && decComponent.volumeDeltaPct === -100,
+    `the degenerate heal is reported as facts, not a fabricated volume (got: ${JSON.stringify(decComponent)})`
+  );
+  const decPromotedStep = path.join(dir, "dec-promoted.step");
+  const decPromoted = await callTolerant("promote_mesh_to_brep", { path: bigSphereStl, outputPath: decPromotedStep, autoDecimate: true });
+  assert(
+    decPromoted.error && /degenerate/.test(decPromoted.error),
+    `promote_mesh_to_brep{autoDecimate} refuses a degenerately-healed mesh instead of writing a wrong solid (got: ${decPromoted.error})`
+  );
+  assert(!fs.existsSync(decPromotedStep), "no output file is written for the refused promotion");
+
   // promote_mesh_to_brep (roadmap "Mesh -> B-rep promotion", Phase 2 — a
   // one-shot EXPORT to a NEW file, never an in-place reclassification).
   // A clean cube.stl promotes to STEP/IGES/BREP, and — critically — the
@@ -3032,6 +3074,29 @@ try {
       assert(
         !fs.readFileSync(out, "latin1").includes("Written by meshio++"),
         `${id} embeds no provenance block — the documented coverage gap, pinned so a future meshio++ release that closes it is noticed`
+      );
+    }
+
+    // Tier 1 "meshio++ provenance, read and write" — the conversion chain
+    // lands as Note lines where the container has a header slot, and
+    // load_model reads the block back.
+    {
+      const out = path.join(dir, "prov-notes.vtu");
+      await call("export_mesh", { path: vtkModel, format: "vtu", outputPath: out, options: { sizeMax: 0.5 } });
+      const text = fs.readFileSync(out, "latin1");
+      assert(
+        text.includes("Note [meshing-engine]") && text.includes("Note [mesh-size]") && text.includes("sizeMax=0.5"),
+        "a meshio-routed export records the conversion chain as Note lines (engine, sizes)"
+      );
+      assert(
+        text.includes("Note [edits-baked]"),
+        "the export records whether edits were baked"
+      );
+      const reloaded = await call("load_model", { path: out });
+      const provWarning = reloaded.warnings.find((w) => w.startsWith("Provenance block:"));
+      assert(
+        provWarning && /meshing-engine/.test(provWarning) && /informational only/.test(provWarning),
+        `load_model surfaces the provenance block as an informational warning (got: ${JSON.stringify(reloaded.warnings)})`
       );
     }
   }

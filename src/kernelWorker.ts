@@ -39,6 +39,8 @@ import {
   exportViaMeshio,
   readMeshioMetadata,
   readMeshioDataInfo,
+  readMeshioProvenance,
+  decimateStlBoundary,
   runMeshioOps,
   readMeshioFieldValues,
 } from "./meshioService";
@@ -133,6 +135,8 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   exportViaMeshio: exportViaMeshio as Handler,
   readMeshioMetadata: readMeshioMetadata as Handler,
   readMeshioDataInfo: readMeshioDataInfo as Handler,
+  readMeshioProvenance: readMeshioProvenance as Handler,
+  decimateStlBoundary: decimateStlBoundary as Handler,
   runMeshioOps: runMeshioOps as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,

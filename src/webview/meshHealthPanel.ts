@@ -22,6 +22,8 @@ export interface ComponentHealthDisplay {
 export interface MeshHealthDisplay {
   componentCount: number;
   components: ComponentHealthDisplay[];
+  /** Present only when the report was computed over an auto-decimated mesh. */
+  decimated?: { fromTriangles: number; toTriangles: number; ratio: number };
 }
 
 export interface MeshHealthPanelCallbacks {
@@ -68,15 +70,22 @@ export class MeshHealthPanel {
   private readonly body: HTMLElement;
   private readonly promoteButton: HTMLButtonElement | null;
   private readonly repairButton: HTMLButtonElement | null;
+  private readonly decimateCheckbox: HTMLInputElement | null;
 
   constructor(panel: HTMLElement, cb: MeshHealthPanelCallbacks) {
     this.panel = panel;
     this.body = panel.querySelector("#mesh-health-body")!;
     this.promoteButton = panel.querySelector("#mesh-health-promote");
     this.repairButton = panel.querySelector("#mesh-health-repair");
+    this.decimateCheckbox = panel.querySelector("#mesh-health-decimate");
     panel.querySelector("#mesh-health-check")?.addEventListener("click", () => cb.onCheck());
     this.promoteButton?.addEventListener("click", () => cb.onPromote());
     this.repairButton?.addEventListener("click", () => cb.onRepair());
+  }
+
+  /** Session-only opt-in (default off): decimate an oversized mesh before checking. */
+  get autoDecimate(): boolean {
+    return this.decimateCheckbox?.checked ?? false;
   }
 
   /** Shows or hides the whole panel — only a native STL/OBJ/PLY source has a
@@ -104,6 +113,13 @@ export class MeshHealthPanel {
     this.body.innerHTML = "";
     if (this.promoteButton) this.promoteButton.disabled = !report.components.some((c) => c.requiredTolerance != null);
     if (this.repairButton) this.repairButton.disabled = !report.components.some((c) => c.requiredTolerance == null);
+    if (report.decimated) {
+      const note = document.createElement("div");
+      note.className = "mesh-health-message";
+      note.textContent =
+        `Computed over an auto-decimated mesh (${report.decimated.fromTriangles} → ${report.decimated.toTriangles} triangles) — not the raw file.`;
+      this.body.appendChild(note);
+    }
     if (report.components.length === 0) {
       this.renderMessage("No triangles found.");
       return;

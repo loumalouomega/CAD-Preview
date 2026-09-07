@@ -750,7 +750,7 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 
 ### `meshHealResult` / `meshHealError`
 
-Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF.
+Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF. The request carries the panel's session-only `autoDecimate` flag; when set and the ceiling refuses, the host decimates first (meshio++ quadric edge-collapse, target ~1000 triangles) and the report carries a `decimated: {fromTriangles, toTriangles, ratio}` field plus the resampling stated in the panel — never silently.
 
 ```json
 { "type": "meshHealResult", "requestId": "1234-0.56", "report": { "componentCount": 1, "components": [{ "index": 0, "triangleCount": 12, "freeEdgeCount": 0, "nonManifoldEdgeCount": 0, "degenerateFaceCount": 0, "rawArea": 600, "rawVolume": 1000, "requiredTolerance": 0.000001, "healedArea": 600, "healedVolume": 1000, "areaDeltaPct": 0, "volumeDeltaPct": 0 }] } }
@@ -887,7 +887,7 @@ type WebviewToHost =
   | { type: 'entityFactsRequest'; requestId: string; entityId: string }
   | { type: 'selectorSynthesizeRequest'; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
-  | { type: 'meshHealRequest'; requestId: string }
+  | { type: 'meshHealRequest'; requestId: string; autoDecimate?: boolean }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }

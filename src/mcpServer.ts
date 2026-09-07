@@ -570,10 +570,13 @@ server.registerTool(
   "check_mesh_health",
   {
     description:
-      "Mesh -> B-rep promotion, diagnostic-first (Phase 1: read-only report, no promotion). For an STL/OBJ/PLY/glTF source, reports per connected component: free/non-manifold edge counts, degenerate face count, the BRepBuilderAPI_Sewing tolerance-ladder rung actually required to close the shape into a solid (null if it never closed even at the loosest rung), and the resulting healed area/volume delta vs. the raw mesh. Never mutates or persists anything, and there is still no path from a triangle mesh into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS unchanged) — a null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail. B-rep sources return supported:false (nothing to heal); meshio-only formats return supported:false (no host-side triangle-soup parser). Refuses a mesh above 50000 triangles with an actionable error (it builds one OCCT face per triangle) -- most likely to bite on glTF, a rendering format whose files are routinely far larger than hand-authored STL/OBJ/PLY.",
-    inputSchema: { path: modelPath },
+      "Mesh -> B-rep promotion, diagnostic-first (Phase 1: read-only report, no promotion). For an STL/OBJ/PLY/glTF source, reports per connected component: free/non-manifold edge counts, degenerate face count, the BRepBuilderAPI_Sewing tolerance-ladder rung actually required to close the shape into a solid (null if it never closed even at the loosest rung), and the resulting healed area/volume delta vs. the raw mesh. Never mutates or persists anything, and there is still no path from a triangle mesh into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS unchanged) — a null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail. B-rep sources return supported:false (nothing to heal); meshio-only formats return supported:false (no host-side triangle-soup parser). Refuses a mesh above 50000 triangles with an actionable error (it builds one OCCT face per triangle) -- most likely to bite on glTF, a rendering format whose files are routinely far larger than hand-authored STL/OBJ/PLY. Pass autoDecimate:true to compute the report over a meshio++-decimated mesh instead (target ~1000 triangles; the response reports the ratio actually applied and warns that it describes the decimated mesh, never silently).",
+    inputSchema: {
+      path: modelPath,
+      autoDecimate: z.boolean().optional().describe("When true and the mesh exceeds the 50000-triangle ceiling, decimate first (meshio++ quadric edge-collapse) and report over the decimated mesh, with the applied ratio stated in the response"),
+    },
   },
-  wrap((args: { path: string }) => checkMeshHealthTool(ctx, args))
+  wrap((args: { path: string; autoDecimate?: boolean }) => checkMeshHealthTool(ctx, args))
 );
 
 server.registerTool(
@@ -644,15 +647,16 @@ server.registerTool(
   "promote_mesh_to_brep",
   {
     description:
-      "Mesh -> B-rep promotion, Phase 2: sews a healed STL/OBJ/PLY/glTF mesh into a brand-new STEP/IGES/BREP file at outputPath (default targetFormat 'step') via the same writer pipeline export_brep uses. This is a ONE-SHOT EXPORT, not an in-place reclassification -- the original mesh source is left completely untouched; the written file is an ordinary, fully-editable B-rep document from the moment it exists (fillet/chamfer/measure_exact/get_mass_properties/further export_brep all just work on it -- open it with load_model to confirm). A component that never closes (even at the loosest sewing tolerance) is skipped and reported in skippedComponents/warnings, never silently dropped or forced into an invalid solid; if NO component closes, the call fails -- run check_mesh_health first to see why. Never requires a prior check_mesh_health call (fully standalone), but running one first is recommended. Optional unit (mm/cm/m/in/ft, default mm) applies the same real geometric scale export_brep's unit param does. B-rep sources return an error (nothing to promote); meshio-only formats return an error (no host-side triangle-soup parser).",
+      "Mesh -> B-rep promotion, Phase 2: sews a healed STL/OBJ/PLY/glTF mesh into a brand-new STEP/IGES/BREP file at outputPath (default targetFormat 'step') via the same writer pipeline export_brep uses. This is a ONE-SHOT EXPORT, not an in-place reclassification -- the original mesh source is left completely untouched; the written file is an ordinary, fully-editable B-rep document from the moment it exists (fillet/chamfer/measure_exact/get_mass_properties/further export_brep all just work on it -- open it with load_model to confirm). A component that never closes (even at the loosest sewing tolerance) is skipped and reported in skippedComponents/warnings, never silently dropped or forced into an invalid solid; if NO component closes, the call fails -- run check_mesh_health first to see why. Never requires a prior check_mesh_health call (fully standalone), but running one first is recommended. Optional unit (mm/cm/m/in/ft, default mm) applies the same real geometric scale export_brep's unit param does. Meshes above 50000 triangles are refused unless autoDecimate:true is passed (same decimated-mesh semantics as check_mesh_health -- the written file derives from the decimated mesh, stated in the response). B-rep sources return an error (nothing to promote); meshio-only formats return an error (no host-side triangle-soup parser).",
     inputSchema: {
       path: modelPath,
       outputPath: z.string().describe("Absolute path to write the new B-rep file to (must not be the source path)"),
       targetFormat: z.enum(["step", "iges", "brep"]).optional().describe("Output format (default: step)"),
       unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
+      autoDecimate: z.boolean().optional().describe("When true and the mesh exceeds the 50000-triangle ceiling, promote from a meshio++-decimated mesh instead (target ~1000 triangles; the written file derives from the decimated mesh, stated in the response)"),
     },
   },
-  wrap((args: { path: string; outputPath: string; targetFormat?: string; unit?: string }) => promoteMeshToBrepTool(ctx, args))
+  wrap((args: { path: string; outputPath: string; targetFormat?: string; unit?: string; autoDecimate?: boolean }) => promoteMeshToBrepTool(ctx, args))
 );
 
 server.registerTool(

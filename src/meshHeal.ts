@@ -119,6 +119,14 @@ export interface ComponentHealthReport {
 export interface MeshHealthReport {
   componentCount: number;
   components: ComponentHealthReport[];
+  /**
+   * Present only when the report was computed over an auto-decimated mesh
+   * (the `autoDecimate` opt-in): the resampling actually applied, so a
+   * caller can see the report describes a decimated mesh, not the raw file.
+   * Counts are triangle counts before/after; `ratio` is the fraction of
+   * faces asked to keep.
+   */
+  decimated?: { fromTriangles: number; toTriangles: number; ratio: number };
 }
 
 /**
@@ -137,6 +145,11 @@ export interface MeshHealthReport {
  * present but far less likely to be hit.
  */
 export const MAX_HEALABLE_TRIANGLES = 50_000;
+// (The `autoDecimate` opt-in's target, predicate, and STL funnel live in
+// `meshioService.ts` — `AUTO_DECIMATE_TARGET_TRIANGLES`/
+// `isHealableSizeError`/`stlBytesForHeal` — because both of its consumers
+// (`mcpTools.ts`, `provider.ts`) must import them as values, and this file's
+// own module graph pulls in OCCT, which `provider.ts` must never bundle.)
 
 /**
  * Parses any of the four dirty-mesh formats into a welded `{positions,
@@ -157,7 +170,7 @@ function assertHealableSize(indices: Uint32Array): void {
   const triangleCount = Math.floor(indices.length / 3);
   if (triangleCount > MAX_HEALABLE_TRIANGLES) {
     throw new Error(
-      `Mesh has ${triangleCount} triangles, above the ${MAX_HEALABLE_TRIANGLES}-triangle ceiling for the per-triangle sewing pipeline (it builds one OCCT face per triangle). Decimate the mesh before healing or promoting it.`
+      `Mesh has ${triangleCount} triangles, above the ${MAX_HEALABLE_TRIANGLES}-triangle ceiling for the per-triangle sewing pipeline (it builds one OCCT face per triangle). Decimate the mesh before healing or promoting it (check_mesh_health/promote_mesh_to_brep accept autoDecimate:true to do this automatically).`
     );
   }
 }
@@ -411,10 +424,29 @@ export async function promoteMeshToBrep(
 
       const sewn = sewComponent(oc, faces, cleanup);
       const solid = sewn ? buildSolidFromSewedShape(oc, sewn.shape, cleanup) : null;
+      const closedTolerance = sewn ? sewn.tolerance : null;
       if (!solid) {
         skippedComponents.push(index);
         warnings.push(
           `Component ${index} (${triangles.length} triangles) did not close into a valid solid even at the loosest sewing tolerance (${SEWING_TOLERANCE_LADDER[SEWING_TOLERANCE_LADDER.length - 1]}) and was skipped — run check_mesh_health first to see why.`
+        );
+        return;
+      }
+      // Degenerate-solid guard: a closed shell can still solidify to a
+      // non-positive volume (decimation artifacts — non-manifold edges,
+      // slivers — break the shell the sewer reports as closed; verified
+      // live: a decimated sphere closes at 1e-6 yet solidifies to volume
+      // exactly 0). Promoting that would write a confidently-wrong file —
+      // the misleading-false-result mode this codebase rejects features
+      // over — so it is skipped with a named warning, like an unclosed
+      // component, rather than promoted as a real solid.
+      const volumeProps = new oc.GProp_GProps_1();
+      cleanup.push(volumeProps);
+      volumePropertiesAdaptive(oc, solid, volumeProps);
+      if (!(volumeProps.Mass() > 0)) {
+        skippedComponents.push(index);
+        warnings.push(
+          `Component ${index} (${triangles.length} triangles) closed at tolerance ${closedTolerance} but solidified to a degenerate (non-positive-volume) solid — likely resampling/sewing artifacts — and was skipped rather than promoted as a wrong solid.`
         );
         return;
       }
@@ -423,7 +455,12 @@ export async function promoteMeshToBrep(
     });
 
     if (promotedSolids.length === 0) {
-      throw new Error("No component of this mesh could be closed into a valid solid — run check_mesh_health first to see why.");
+      const degenerate = skippedComponents.length > 0 && warnings.some((w) => w.includes("degenerate"));
+      throw new Error(
+        degenerate
+          ? "Every closed component solidified to a degenerate (non-positive-volume) solid — resampling/sewing artifacts, not promotable geometry. Run check_mesh_health to see the healed volumes."
+          : "No component of this mesh could be closed into a valid solid — run check_mesh_health first to see why."
+      );
     }
 
     let shape = combineSolids(oc, promotedSolids, cleanup);

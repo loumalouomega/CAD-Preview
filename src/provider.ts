@@ -5,6 +5,7 @@ import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellat
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import { buildMeshProvenanceNotes } from "./meshProvenanceNotes";
 import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
 import {
@@ -21,7 +22,7 @@ import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
 import { resolveEffectiveSource } from "./scadService";
 import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
-import { isMeshioFieldFailure, describeMeshioFieldFailure } from "./meshioService";
+import { isMeshioFieldFailure, describeMeshioFieldFailure, isHealableSizeError, AUTO_DECIMATE_TARGET_TRIANGLES, stlBytesForHeal } from "./meshioService";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
@@ -1437,13 +1438,36 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             throw new Error("Mesh healability check requires an STL/OBJ/PLY/glTF source.");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const report = await this.pipeline.checkMeshHealth(
-            this.context.extensionPath,
-            bytes,
-            route.format as MeshParseFormat,
-            await resolveGltfBuffersFor(document.uri, route.format, bytes)
-          );
-          post({ type: "meshHealResult", requestId: msg.requestId, report });
+          const sourceFormat = route.format as MeshParseFormat;
+          const external = await resolveGltfBuffersFor(document.uri, route.format, bytes);
+          try {
+            const report = await this.pipeline.checkMeshHealth(
+              this.context.extensionPath,
+              bytes,
+              sourceFormat,
+              external
+            );
+            post({ type: "meshHealResult", requestId: msg.requestId, report });
+          } catch (err) {
+            // Same `autoDecimate` opt-in as check_mesh_health's MCP tool:
+            // only a size refusal is decimation-shaped; anything else
+            // (corrupt file, unparseable content) rethrows untouched. The
+            // funnel + predicate live in `meshioService.ts` (pure, no OCCT)
+            // rather than `meshHeal.ts` — see `AUTO_DECIMATE_TARGET_TRIANGLES`.
+            if (!msg.autoDecimate || !isHealableSizeError(err)) throw err;
+            const forHeal = stlBytesForHeal(bytes, sourceFormat, external);
+            const ratio = Math.min(1, AUTO_DECIMATE_TARGET_TRIANGLES / forHeal.fromTriangles);
+            const decimated = await this.pipeline.decimateStlBoundary(forHeal.stlBytes, ratio);
+            const report = await this.pipeline.checkMeshHealth(this.context.extensionPath, decimated.bytes, "stl");
+            post({
+              type: "meshHealResult",
+              requestId: msg.requestId,
+              report: {
+                ...report,
+                decimated: { fromTriangles: decimated.fromTriangles, toTriangles: decimated.toTriangles, ratio },
+              },
+            });
+          }
         } catch (err) {
           post({ type: "meshHealError", requestId: msg.requestId, message: (err as Error).message });
         }
@@ -1733,7 +1757,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
       const bytes = isFoam ? undefined : await vscode.workspace.fs.readFile(uri);
       const companions = isFoam ? undefined : await resolveMeshioCompanionsFor(uri, basename, format, bytes!);
-      const [boundary, metadata, existingParts] = await Promise.all([
+      const [boundary, metadata, provenance, existingParts] = await Promise.all([
         // OpenFOAM is the one format that is NOT a single file — a `.foam`
         // marker's real mesh lives in sibling files under
         // `<parent>/constant/polyMesh/`, staged into meshio++'s MEMFS by
@@ -1745,6 +1769,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           ? this.pipeline.convertFoamCaseToStlBoundary(uri.fsPath).then((stlBytes) => ({ stlBytes, regions: undefined }))
           : this.pipeline.convertToStlBoundaryWithRegions(bytes!, format, basename, companions!),
         isFoam ? EMPTY_MESHIO_METADATA : this.pipeline.readMeshioMetadata(bytes!, format, basename, companions!),
+        // Provenance block, if the file carries one — never throws, so a
+        // file without one simply yields nothing here. Geometry-only by
+        // construction for OpenFOAM (see above), so it is skipped there
+        // rather than staged for a guaranteed-empty answer.
+        isFoam ? null : this.pipeline.readMeshioProvenance(bytes!, format, basename, companions!),
         readParts(uri),
       ]);
       let parts = existingParts;
@@ -1783,6 +1812,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           ? { regionNames: boundary.regions.regionNames, triangleRegionIndex: encodeBuffer(boundary.regions.triangleRegion) }
           : undefined,
       });
+      if (provenance) {
+        post({ type: "status", text: `Provenance: ${provenance.lines.join(" | ")}` });
+      }
       post({ type: "parts", parts });
       return parts;
     } catch (err) {
@@ -2333,6 +2365,17 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             // route — an unknown origin is better left unrecorded than
             // recorded as a guess.
             source: route ? { name: sourceName, format: route.format } : undefined,
+            notes: buildMeshProvenanceNotes({
+              engineUsed: meshed.engineUsed,
+              dimension: options.dimension,
+              sizeMin: options.sizeMin,
+              sizeMax: options.sizeMax,
+              elementShape: options.elementShape,
+              elementOrder: options.elementOrder,
+              unit,
+              inputKind: input.kind,
+              editOpCount: ops.length,
+            }),
           });
           await this.promptSaveAndWrite(
             uri,

@@ -49,14 +49,6 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
    **Doc debt, named up front so it is not discovered late.** The read-only claim is stated in `README.md`, `doc/index.md`, `doc/getting-started.md` (including its Limitations list), `doc/file-formats.md` (once per sidecar section), `doc/extension-host-api.md`, `doc/protocol.md`, `doc/mcp-server.md`, and in `mcpServer.ts`'s own `instructions` block plus roughly ten tool descriptions. `npm run mcp:smoke` asserts the source stays byte-identical, so that assertion is re-scoped rather than deleted — it remains exactly right for every tool that is not the new one.
 
-### Tier 1 — Verified-but-unspent inventory
-
-*Admission: the live-WASM probe is already done and recorded, and there is currently no caller at all. These are the cheapest real capabilities in the file — the expensive, risky half was already paid for by an earlier item.*
-
-2. **meshio++ provenance, read and write** (**S**). `provenanceNote` and `readProvenance` have no caller (only `withProvenance`/`provenanceSetSource`/`provenanceSetTarget` are used). Two features fall out: recording the actual conversion chain — mesh options, engine used, whether edits were baked — into every meshio-routed export, which is the "how was this FE mesh made" audit trail an FEM user wants; and reading it back on import so `load_model` can say whether a mesh was authored here. The honesty framing is pre-written: the format-coverage split is already measured and pinned in `mcp:smoke` (embeds for `vtu`/`avsucd`/`mphtxt`/`netgen`/`flac3d`/`flux`/`gid`, no-op for MED/CGNS/XDMF/`hmf`/`wkt`).
-
-3. **Auto-decimate under `MAX_HEALABLE_TRIANGLES`** (**S**). `check_mesh_health`/`promote_mesh_to_brep` refuse a mesh above 50 000 triangles (`src/meshHeal.ts`) with an actionable "decimate first" message — and `transform_mesh`'s `decimate` is already measured as a sound answer: 99 904 → 24 976 triangles in 228 ms with the boundary-edge count preserved **exactly** (460 → 460, so it does not damage watertightness). `CLAUDE.md` records wiring it into the ceiling as an explicit follow-up. Ship it as an opt-in that reports the ratio actually applied, never a silent resample.
-
 ### Tier 2 — Headless ↔ interactive symmetry
 
 *Admission: one half of a capability ships and the other does not, while the computational half is already pure and reusable. This codebase names the convention itself ("headless and interactive capabilities stay in sync"), and the Standard Parts panel closed one of these already.*

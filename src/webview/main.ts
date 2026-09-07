@@ -1271,7 +1271,7 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
     const requestId = `${Date.now()}-${Math.random()}`;
     meshHealRequestId = requestId;
     meshHealthPanel.renderMessage("Checking…");
-    post({ type: "meshHealRequest", requestId });
+    post({ type: "meshHealRequest", requestId, autoDecimate: meshHealthPanel.autoDecimate });
   },
   onPromote: () => {
     if (!meshHealthEligibleFormat) return;

@@ -618,7 +618,7 @@ export type WebviewToHost =
   | { type: "renderViewResult"; requestId: string; data: string }
   | { type: "renderViewError"; requestId: string; message: string }
   | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
-  | { type: "meshHealRequest"; requestId: string }
+  | { type: "meshHealRequest"; requestId: string; autoDecimate?: boolean }
   | { type: "fitRegionRequest"; requestId: string; point: [number, number, number] }
   | { type: "setCamerasLinked"; enabled: boolean };
 

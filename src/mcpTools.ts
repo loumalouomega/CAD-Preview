@@ -83,8 +83,9 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo, runMeshioOps } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo, readMeshioProvenance, decimateStlBoundary, runMeshioOps } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import { buildMeshProvenanceNotes } from "./meshProvenanceNotes";
 import { evaluateToleranceBand } from "./toleranceBand";
 import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
@@ -96,6 +97,8 @@ import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM }
 import { emitPrimitiveOps } from "./primitiveEmit";
 import type { buildPrimitivesFile } from "./primitiveWrite";
 import { parseToWeldedMesh } from "./meshHeal";
+import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
+import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal } from "./meshioService";
 import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette } from "./svgSilhouetteHost";
 import { normalizeTessellationQuality } from "./tessellationQuality";
@@ -177,6 +180,8 @@ export interface Pipeline {
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
   readMeshioDataInfo: typeof readMeshioDataInfo;
+  readMeshioProvenance: typeof readMeshioProvenance;
+  decimateStlBoundary: typeof decimateStlBoundary;
   runMeshioOps: typeof runMeshioOps;
   checkMeshHealth: typeof checkMeshHealth;
   recognizePrimitives: typeof recognizePrimitives;
@@ -435,7 +440,7 @@ export function describeCapabilities() {
       "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
       "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
       "decompose_to_primitives (B-rep sources only) recognizes each solid as a box/sphere/cylinder/cone/torus when its face inventory matches exactly and emits a creation op per recognized solid with each dimension bound to a named variable via exprs — the first programmatic producer of expression strings — plus a parametric script document; optionally writes a new B-rep file (export model, like promote_mesh_to_brep) and/or saves the script to the macro library. Unrecognized solids are reported in perSolid with a reason, never a guess. This is a one-shot emit/export, not an in-place replacement — the source file is never modified.",
-      "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Decimate first if you hit it.",
+      "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Pass autoDecimate:true to run over a meshio++-decimated mesh instead (target ~1000 triangles; the response reports the ratio actually applied and warns that it describes the decimated mesh, never silently) — but note the sewing cost scales steeply past ~1k triangles, which is why the target is ~2% of the ceiling rather than just under it; and a decimated mesh can heal degenerately (decimation artifacts break the solidify — the report's own healedVolume/volumeDeltaPct/nonManifoldEdgeCount reveal it, and promote refuses to write such a solid rather than emitting a wrong file).",
       "repair_mesh (STL/OBJ/PLY/glTF sources only) writes a NEW watertight STL file at outputPath by tetrahedralizing the mesh with fTetWild and taking the resulting volume mesh's own boundary — watertight/manifold by construction regardless of how broken the input was, since fTetWild survives holes/self-intersections/non-manifold edges Gmsh's own classifySurfaces path rejects. A one-shot export (the source is untouched); the natural next step is re-running check_mesh_health/promote_mesh_to_brep on the repaired output. Unlike those two, it has no triangle-count ceiling (a different cost profile than the per-triangle OCCT sewing pipeline) — a very large/slow mesh may instead hit this server's own per-call timeout.",
       "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). On documents with many Parts, pass an explicit parts subset.",
       "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
@@ -679,9 +684,13 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
       if (ambiguityCaveat) warnings.push(ambiguityCaveat);
       const bytes = await readModelBytes(modelPath);
       const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
-      const [meta, createdCount] = await Promise.all([
+      const [meta, createdCount, provenance] = await Promise.all([
         ctx.pipeline.readMeshioMetadata(bytes, route.format, path.basename(modelPath), companions),
         maybeAutoCreateMeshioParts(ctx, modelPath, bytes, route.format),
+        // Provenance block, if the file carries one — never throws, so a
+        // file without a block (foreign-authored, or a container with no
+        // header slot for one) simply yields no entry here.
+        ctx.pipeline.readMeshioProvenance(bytes, route.format, path.basename(modelPath), companions),
       ]);
       const dataNames = [...meta.pointDataNames, ...meta.cellDataNames, ...meta.fieldDataNames];
       if (meta.regions.length > 0 || dataNames.length > 0) {
@@ -705,6 +714,12 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
       }
       if (createdCount > 0) {
         warnings.push(`Auto-created ${createdCount} Part(s) from the source file's cell region(s) — see get_state.`);
+      }
+      if (provenance) {
+        // The block's lines name whoever authored the file (possibly this
+        // tool itself via export_mesh) — quoted as untrusted document text,
+        // the same envelope every other document-derived string gets.
+        warnings.push(`Provenance block: ${envelope(provenance.lines.join(" | "), "provenance")} (informational only).`);
       }
     }
     const sidecars = await sidecarSummary(modelPath); // after the auto-create above, so `parts` reflects it
@@ -1861,7 +1876,7 @@ export async function transformMeshTool(
 
 export async function checkMeshHealthTool(
   ctx: ToolContext,
-  params: { path: string }
+  params: { path: string; autoDecimate?: boolean }
 ): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeshHealthReport>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -1884,8 +1899,42 @@ export async function checkMeshHealthTool(
   const bytes = await readModelBytes(modelPath);
   const format = route.format as MeshParseFormat;
   const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
-  const report = await ctx.pipeline.checkMeshHealth(ctx.extensionPath, bytes, format, external);
-  return { format: route.format, supported: true, warnings: [], ...report };
+  try {
+    const report = await ctx.pipeline.checkMeshHealth(ctx.extensionPath, bytes, format, external);
+    return { format: route.format, supported: true, warnings: [], ...report };
+  } catch (err) {
+    if (!params.autoDecimate || !isHealableSizeError(err)) throw err;
+    const decimated = await decimateForHeal(ctx, bytes, format, external);
+    const report = await ctx.pipeline.checkMeshHealth(ctx.extensionPath, decimated.stlBytes, "stl");
+    return {
+      format: route.format,
+      supported: true,
+      warnings: [
+        `Mesh exceeded the ${MAX_HEALABLE_TRIANGLES}-triangle ceiling, so this report was computed over an auto-decimated mesh (${decimated.fromTriangles} → ${decimated.toTriangles} triangles, ratio ${decimated.ratio.toPrecision(3)}) — not the raw file.`,
+      ],
+      ...report,
+      decimated: { fromTriangles: decimated.fromTriangles, toTriangles: decimated.toTriangles, ratio: decimated.ratio },
+    };
+  }
+}
+
+/**
+ * Funnels any of the four healable mesh formats into STL bytes plus a
+ * triangle count, for the `autoDecimate` opt-in — `stlBytesForHeal`
+ * (`meshioService.ts`, pure JS, no WASM: STL passes through, the rest go
+ * through the same parse+weld+serialize the repair path uses). The actual
+ * resampling happens in `decimateStlBoundary` (meshio++).
+ */
+async function decimateForHeal(
+  ctx: ToolContext,
+  bytes: Uint8Array,
+  format: MeshParseFormat,
+  external: GltfExternalBuffers | undefined
+): Promise<{ stlBytes: Uint8Array; fromTriangles: number; toTriangles: number; ratio: number }> {
+  const { stlBytes, fromTriangles } = stlBytesForHeal(bytes, format, external);
+  const ratio = Math.min(1, AUTO_DECIMATE_TARGET_TRIANGLES / fromTriangles);
+  const result = await ctx.pipeline.decimateStlBoundary(stlBytes, ratio);
+  return { stlBytes: result.bytes, fromTriangles: result.fromTriangles, toTriangles: result.toTriangles, ratio };
 }
 
 // ---------------------------------------------------------------------------
@@ -2152,8 +2201,8 @@ export async function decomposeToPrimitivesTool(
  */
 export async function promoteMeshToBrepTool(
   ctx: ToolContext,
-  params: { path: string; outputPath: string; targetFormat?: string; unit?: string }
-): Promise<{ written: string; bytes: number; promotedComponents: number[]; skippedComponents: number[]; warnings: string[] }> {
+  params: { path: string; outputPath: string; targetFormat?: string; unit?: string; autoDecimate?: boolean }
+): Promise<{ written: string; bytes: number; promotedComponents: number[]; skippedComponents: number[]; warnings: string[]; decimated?: { fromTriangles: number; toTriangles: number; ratio: number } }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
@@ -2190,16 +2239,36 @@ export async function promoteMeshToBrepTool(
   const bytes = await readModelBytes(modelPath);
   const sourceFormat = route.format as MeshParseFormat;
   const external = sourceFormat === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
-  const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external);
-  await fs.writeFile(outputPath, result.bytes);
+  try {
+    const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external);
+    await fs.writeFile(outputPath, result.bytes);
 
-  return {
-    written: outputPath,
-    bytes: result.bytes.byteLength,
-    promotedComponents: result.promotedComponents,
-    skippedComponents: result.skippedComponents,
-    warnings: [...warnings, ...result.warnings],
-  };
+    return {
+      written: outputPath,
+      bytes: result.bytes.byteLength,
+      promotedComponents: result.promotedComponents,
+      skippedComponents: result.skippedComponents,
+      warnings: [...warnings, ...result.warnings],
+    };
+  } catch (err) {
+    if (!params.autoDecimate || !isHealableSizeError(err)) throw err;
+    const decimated = await decimateForHeal(ctx, bytes, sourceFormat, external);
+    const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, decimated.stlBytes, "stl", targetFormat, unit);
+    await fs.writeFile(outputPath, result.bytes);
+
+    return {
+      written: outputPath,
+      bytes: result.bytes.byteLength,
+      promotedComponents: result.promotedComponents,
+      skippedComponents: result.skippedComponents,
+      warnings: [
+        ...warnings,
+        `Mesh exceeded the ${MAX_HEALABLE_TRIANGLES}-triangle ceiling, so this file was promoted from an auto-decimated mesh (${decimated.fromTriangles} → ${decimated.toTriangles} triangles, ratio ${decimated.ratio.toPrecision(3)}) — not the raw file.`,
+        ...result.warnings,
+      ],
+      decimated: { fromTriangles: decimated.fromTriangles, toTriangles: decimated.toTriangles, ratio: decimated.ratio },
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3676,10 +3745,22 @@ export async function exportMeshTool(
     // takes generateMesh()'s own MSH 4.1 mshText directly (meshio++ 9.7.0+
     // reads 4.1 natively — see its doc comment).
     const meshed = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
+    const { ops: editOpsForProvenance } = await readEditsResolved(modelPath);
     const { bytes, companion } = await ctx.pipeline.exportViaMeshio(meshed.mshText, format.id, {
       extension: format.extension,
       companionExtension: format.companion?.extension,
       source: { name: path.basename(modelPath), format: route.format },
+      notes: buildMeshProvenanceNotes({
+        engineUsed: meshed.engineUsed,
+        dimension: options.dimension,
+        sizeMin: options.sizeMin,
+        sizeMax: options.sizeMax,
+        elementShape: options.elementShape,
+        elementOrder: options.elementOrder,
+        unit,
+        inputKind: input.kind,
+        editOpCount: editOpsForProvenance.length,
+      }),
     });
     if (!companion) {
       await fs.writeFile(outputPath, bytes);

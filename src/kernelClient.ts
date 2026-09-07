@@ -205,6 +205,8 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     exportViaMeshio: (...args) => callKernel("exportViaMeshio", args) as ReturnType<Pipeline["exportViaMeshio"]>,
     readMeshioMetadata: (...args) => callKernel("readMeshioMetadata", args) as ReturnType<Pipeline["readMeshioMetadata"]>,
     readMeshioDataInfo: (...args) => callKernel("readMeshioDataInfo", args) as ReturnType<Pipeline["readMeshioDataInfo"]>,
+    readMeshioProvenance: (...args) => callKernel("readMeshioProvenance", args) as ReturnType<Pipeline["readMeshioProvenance"]>,
+    decimateStlBoundary: (...args) => callKernel("decimateStlBoundary", args) as ReturnType<Pipeline["decimateStlBoundary"]>,
     runMeshioOps: (...args) => callKernel("runMeshioOps", args) as ReturnType<Pipeline["runMeshioOps"]>,
     loadBRepCachedForDocument: (...args) => callKernel("loadBRepCachedForDocument", args) as Promise<BRepResult>,
     disposeBRepCacheForDocument: (...args) => callKernel("disposeBRepCacheForDocument", args) as Promise<void>,
