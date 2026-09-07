@@ -133,6 +133,16 @@ export interface SweepOp extends ThinSpec, ProfileOperand { op: "sweep"; path: s
 export interface LoftOp extends ThinSpec {
   op: "loft"; profiles?: string[]; profileEdgeSets?: string[][];
   /**
+   * Guide rail steering the loft (Phase 1: exactly one rail wire, closed
+   * sections only, exactly 2 sections, no `thin`). The rail's lateral
+   * deviation from its own endpoint chord offsets each resampled
+   * intermediate section rigidly, so the surface passes through the rail —
+   * a resampling fallback, not the kernel's (unreachable in this build)
+   * `MakePipeShell` rail wiring. Never consumed: rail edges stay in the
+   * model like sweep's `path`.
+   */
+  guides?: string[];
+  /**
    * Surface smoothing across sections (`ThruSections.SetSmoothing`) — the
    * only loft quality knob with a measured effect in this OCCT build
    * (probed: -0.711% volume on a 4-section twisted fixture; continuity,
@@ -314,7 +324,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   translate: ["targets"], rotate: ["targets"], scale: ["targets"], mirror: ["targets"],
   boolean: ["a", "b"], fillet: ["edges"], chamfer: ["edges", "face"],
   extrude: ["profile", "profileEdges", "upToFace"], revolve: ["profile", "profileEdges"],
-  sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets"],
+  sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets", "guides"],
   explode: [], mate: ["faceA", "faceB"],
   shell: ["openingFaces"], draft: ["faces"], splitByPlane: ["targets"], section: ["targets"],
   rib: ["spineEdges", "upTo"],
@@ -815,12 +825,28 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       // string, a number) is a rejection, not a silent default.
       if (o.smoothing !== undefined && typeof o.smoothing !== "boolean") return null;
       const smoothing = o.smoothing === true ? { smoothing: true as const } : {};
+      // Guides (Phase 1): one rail wire as an edge-id set, exactly 2
+      // sections, closed sections only (checked at replay — validation
+      // cannot know closedness), no `thin` (the outer/inner-cut path has no
+      // rail form yet). A `face-N` smuggled in here would be a silently-wrong
+      // operand, so the id SHAPE is refused up front like `profileEdges`.
+      let guides: { guides: string[] } | Record<string, never> = {};
+      if (o.guides !== undefined) {
+        const g = asEdgeIdArray(o.guides);
+        if (!g) return null;
+        if (o.thin !== undefined) return null;
+        const sectionCount = hasFaces
+          ? (Array.isArray(o.profiles) ? o.profiles.length : -1)
+          : (Array.isArray(o.profileEdgeSets) ? o.profileEdgeSets.length : -1);
+        if (sectionCount !== 2) return null;
+        guides = { guides: g };
+      }
       if (hasFaces) {
         const profiles = asIdArray(o.profiles, 2);
-        return profiles ? { op: "loft", profiles, ...thin, ...smoothing } : null;
+        return profiles ? { op: "loft", profiles, ...thin, ...smoothing, ...guides } : null;
       }
       const profileEdgeSets = asEdgeIdArrayList(o.profileEdgeSets, 2);
-      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin, ...smoothing } : null;
+      return profileEdgeSets ? { op: "loft", profileEdgeSets, ...thin, ...smoothing, ...guides } : null;
     }
     case "explode": {
       return isFiniteNumber(o.factor) ? { op: "explode", factor: o.factor } : null;

@@ -1067,7 +1067,7 @@ function featureModel(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete()
     const wrapFaces: string[] = op.op === "wrap" && typeof (op as any).profile === "string" ? [(op as any).profile as string] : [];
     const faceIds: string[] = op.op === "loft" ? ((op as any).profiles ?? []) : single !== undefined ? [single, ...terminator] : [...terminator, ...ribFaces, ...wrapFaces];
     const edgeIds: string[] = op.op === "loft"
-      ? ((op as any).profileEdgeSets ?? []).flat()
+      ? [...((op as any).profileEdgeSets ?? []).flat(), ...((op as any).guides ?? [])]
       : [...((op as any).profileEdges ?? []), ...(op.op === "sweep" ? [(op as any).path] : []), ...ribEdges];
     if (faceIds.length > 0) {
       const faces = collectFaces(oc, shape, cleanup);
@@ -2219,6 +2219,25 @@ function wrapBoundaryLoop(oc: any, face: any, cleanup: Array<{ delete(): void }>
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     const wire = keep(oc.BRepTools.OuterWire(face));
+    return chainWirePoints(oc, wire, cleanup, true);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ordered point loop of a wire via per-edge discretization + greedy chaining
+ * by endpoint coincidence (the same discipline as the open-profile operand's
+ * closedness check). `closed=true` requires the chain to close back on its
+ * start and yield ≥3 points (an open chain returns null); `closed=false`
+ * accepts an open chain with ≥2 points (a closed loop also reads fine, first
+ * point repeated at the end is dropped). Null when edges don't connect or an
+ * edge discretizes short. `wrapBoundaryLoop` is the face-form caller; the
+ * loft rail fallback chains both the rail (open) and the sections (closed).
+ */
+function chainWirePoints(oc: any, wire: any, cleanup: Array<{ delete(): void }>, closed: boolean): Vec3[] | null {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
     const exp = keep(new oc.TopExp_Explorer_2(wire, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
     const edgeHandles: any[] = [];
     while (exp.More()) { edgeHandles.push(keep(oc.TopoDS.Edge_1(exp.Current()))); exp.Next(); }
@@ -2256,10 +2275,14 @@ function wrapBoundaryLoop(oc: any, face: any, cleanup: Array<{ delete(): void }>
       const p = flip ? [...polylines[found]].reverse() : polylines[found];
       ordered.push(...p.slice(1));
     }
-    // Must close back on the start.
-    if (dist2(ordered[ordered.length - 1], ordered[0]) >= TOL2) return null;
-    ordered.pop();
-    return ordered.length >= 3 ? ordered : null;
+    if (closed) {
+      // Must close back on the start.
+      if (dist2(ordered[ordered.length - 1], ordered[0]) >= TOL2) return null;
+      ordered.pop();
+      return ordered.length >= 3 ? ordered : null;
+    }
+    if (dist2(ordered[ordered.length - 1], ordered[0]) < TOL2) ordered.pop();
+    return ordered.length >= 2 ? ordered : null;
   } catch {
     return null;
   }
@@ -2274,6 +2297,148 @@ function polylineToVec3(disc: { NbPoints(): number; Value(i: number): { X(): num
     pt.delete();
   }
   return out;
+}
+
+/** Closed loop uniformly resampled to exactly `m` points by arc length (pure). */
+function resampleLoop(pts: Vec3[], m: number): Vec3[] {
+  const n = pts.length;
+  const cum: number[] = [0];
+  for (let i = 1; i <= n; i++) {
+    const a = pts[i - 1], b = pts[i % n];
+    cum.push(cum[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]));
+  }
+  const total = cum[n];
+  const at = (s: number): Vec3 => {
+    const target = s * total;
+    let i = 1;
+    while (i < n && cum[i] < target) i++;
+    const f = (target - cum[i - 1]) / Math.max(1e-12, cum[i] - cum[i - 1]);
+    const a = pts[i - 1], b = pts[i % n];
+    return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
+  };
+  const out: Vec3[] = [];
+  for (let k = 0; k < m; k++) out.push(at(k / m));
+  return out;
+}
+
+/** Centroid of a point loop (pure). */
+function loopCentroid(pts: Vec3[]): Vec3 {
+  let x = 0, y = 0, z = 0;
+  for (const p of pts) { x += p[0]; y += p[1]; z += p[2]; }
+  return [x / pts.length, y / pts.length, z / pts.length];
+}
+
+/** Unit loop normal via Newell's method, or `[0,0,0]` for a degenerate loop (pure). */
+function newellNormal(pts: Vec3[]): Vec3 {
+  let x = 0, y = 0, z = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    x += (a[1] - b[1]) * (a[2] + b[2]);
+    y += (a[2] - b[2]) * (a[0] + b[0]);
+    z += (a[0] - b[0]) * (a[1] + b[1]);
+  }
+  const len = Math.hypot(x, y, z);
+  return len > 1e-12 ? [x / len, y / len, z / len] : [0, 0, 0];
+}
+
+/**
+ * Guide-rail fallback for loft (Phase 1): resample the rail into
+ * intermediate sections through plain `ThruSections` — a different feature
+ * from the kernel's (unreachable in this build) `MakePipeShell` rail wiring,
+ * never a silent substitution. The rail's lateral deviation from its own
+ * endpoint chord rigidly offsets each pointwise-lerped intermediate section,
+ * so the surface passes through the rail while the end sections stay exact
+ * (the caller's ORIGINAL wires are returned at both ends, never resampled
+ * copies). Intermediates are M-sided polygons; section correspondence is by
+ * arc-length resampling with a rail-anchored start and Newell-winding match.
+ * Returns the full wire list or null (`fail` already carries the reason).
+ */
+const GUIDE_STATIONS = 6;
+const GUIDE_RESAMPLE_MIN = 128;
+const GUIDE_RESAMPLE_MAX = 512;
+function resampledGuideWires(
+  oc: any,
+  secA: any,
+  secB: any,
+  railWire: any,
+  cleanup: Array<{ delete(): void }>,
+  fail?: OutcomeFail,
+): any[] | null {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const rail = chainWirePoints(oc, railWire, cleanup, false);
+    if (!rail || rail.length < 2) { fail?.("the loft rail edges do not connect into a single wire", "pick rail edges that meet end-to-end — a disconnected set steers nothing"); return null; }
+    const loopA = chainWirePoints(oc, secA.wire, cleanup, true);
+    const loopB = chainWirePoints(oc, secB.wire, cleanup, true);
+    if (!loopA || !loopB) { fail?.("could not walk a loft section boundary for the rail fallback", "the rail fallback needs closed section loops — re-inspect the section ids"); return null; }
+    const m = Math.min(GUIDE_RESAMPLE_MAX, Math.max(GUIDE_RESAMPLE_MIN, loopA.length, loopB.length));
+    const dist2 = (a: Vec3, b: Vec3): number => {
+      const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+      return dx * dx + dy * dy + dz * dz;
+    };
+    const railStart = rail[0];
+    const rot = (pts: Vec3[], anchor: Vec3): Vec3[] => {
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const d = dist2(pts[i], anchor);
+        if (d < bd) { bd = d; best = i; }
+      }
+      return pts.slice(best).concat(pts.slice(0, best));
+    };
+    let ra = rot(resampleLoop(loopA, m), railStart);
+    let rb = resampleLoop(loopB, m);
+    const na = newellNormal(ra), nb = newellNormal(rb);
+    if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < 0) rb = [...rb].reverse();
+    const ca = loopCentroid(ra), cb = loopCentroid(rb);
+    rb = rot(rb, [ra[0][0] + (cb[0] - ca[0]), ra[0][1] + (cb[1] - ca[1]), ra[0][2] + (cb[2] - ca[2])]);
+    // Rail arc-length stations against the endpoint-chord baseline.
+    const railEnd = rail[rail.length - 1];
+    const cum: number[] = [0];
+    for (let i = 1; i < rail.length; i++) {
+      const a = rail[i - 1], b = rail[i];
+      cum.push(cum[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]));
+    }
+    const railTotal = cum[cum.length - 1];
+    if (!(railTotal > 1e-12)) { fail?.("the loft rail has no length", "a zero-length rail steers nothing — pick rail edges that span the sections"); return null; }
+    const railAt = (t: number): Vec3 => {
+      const target = t * railTotal;
+      let i = 1;
+      while (i < cum.length - 1 && cum[i] < target) i++;
+      const f = (target - cum[i - 1]) / Math.max(1e-12, cum[i] - cum[i - 1]);
+      const a = rail[i - 1], b = rail[i];
+      return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
+    };
+    const wires: any[] = [secA.wire];
+    for (let k = 1; k <= GUIDE_STATIONS; k++) {
+      const t = k / (GUIDE_STATIONS + 1);
+      const rp = railAt(t);
+      const dx = rp[0] - (railStart[0] + t * (railEnd[0] - railStart[0]));
+      const dy = rp[1] - (railStart[1] + t * (railEnd[1] - railStart[1]));
+      const dz = rp[2] - (railStart[2] + t * (railEnd[2] - railStart[2]));
+      const loop: Vec3[] = [];
+      for (let i = 0; i < m; i++) {
+        loop.push([
+          ra[i][0] + t * (rb[i][0] - ra[i][0]) + dx,
+          ra[i][1] + t * (rb[i][1] - ra[i][1]) + dy,
+          ra[i][2] + t * (rb[i][2] - ra[i][2]) + dz,
+        ]);
+      }
+      const mk = keep(new oc.BRepBuilderAPI_MakeWire_1());
+      let built = 0;
+      for (let i = 0; i < m; i++) {
+        const a = loop[i], b = loop[(i + 1) % m];
+        if (dist2(a, b) < 1e-18) continue;
+        mk.Add_1(keep(new oc.BRepBuilderAPI_MakeEdge_3(keep(new oc.gp_Pnt_3(a[0], a[1], a[2])), keep(new oc.gp_Pnt_3(b[0], b[1], b[2]))).Edge()));
+        built++;
+      }
+      if (built < 3 || !mk.IsDone()) { fail?.("could not build an intermediate rail section", "the resampled section loop degenerated — the rail may double back on itself"); return null; }
+      wires.push(keep(mk.Wire()));
+    }
+    wires.push(secB.wire);
+    return wires;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2680,6 +2845,26 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
           ts.Build();
           return ts.IsDone() ? keep(ts.Shape()) : null;
         };
+        // Guide-rail fallback (Phase 1): exactly 2 closed sections (enforced
+        // at validation), resampled intermediates through plain ThruSections.
+        const loftGuides = (op as Extract<EditOp, { op: "loft" }>).guides;
+        if (loftGuides && loftGuides.length > 0) {
+          if (open > 0) { fail?.("loft guides need closed profile sections", "the rail fallback resamples section loops — an open wire has no loop to resample"); return null; }
+          if (sections.length !== 2) { fail?.("loft guides need exactly 2 profile sections", "guides across 3+ sections are deferred — split the loft into guided pairs"); return null; }
+          const all = collectEdges(oc, shape, cleanup);
+          const picked: any[] = [];
+          for (const id of loftGuides) {
+            const e = all[edgeIndex(id)];
+            if (!e) { fail?.(`loft rail ${id} did not resolve to an edge`, "the id may have been renumbered by an earlier topology-changing op — re-inspect the model"); return null; }
+            picked.push(e);
+          }
+          const mkRail = keep(new oc.BRepBuilderAPI_MakeWire_1());
+          for (const e of picked) mkRail.Add_1(e);
+          if (!mkRail.IsDone()) { fail?.(`the loft rail edges (${loftGuides.join(", ")}) do not connect into a single wire`, "pick rail edges that meet end-to-end — a disconnected set steers nothing"); return null; }
+          const guided = resampledGuideWires(oc, sections[0], sections[1], keep(mkRail.Wire()), cleanup, fail);
+          if (!guided) return null;
+          return loftWires(guided, (op as Extract<EditOp, { op: "loft" }>).smoothing);
+        }
         const spec = thinSpecOf(op);
         if (!spec) {
           if (open > 0) { fail?.(...openProfileNeedsThin(sections.find((s) => !s.closed)!)); return null; }

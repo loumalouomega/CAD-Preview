@@ -540,6 +540,8 @@ let extrudeTerminator: string | null = null;
 let ribTerminator: string | null = null;
 /** Loft's captured sections — see `EditsPanelCallbacks.onCaptureLoftSection`. */
 let loftSections: LoftSection[] = [];
+/** Loft's captured guide rail (edge ids) — see `EditsPanelCallbacks.onCaptureLoftRail`. */
+let loftRail: string[] = [];
 const selectedVolumes = (): string[] =>
   selection.list().filter((e) => e.entityType === "volume").map((e) => e.entityId);
 
@@ -875,6 +877,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     return loftSections.length;
   },
   onClearLoftSections: () => { loftSections = []; scheduleOpPreview(); },
+  onCaptureLoftRail: () => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length === 0) { setStatus("Select one or more rail edges (Line mode) to capture as the loft rail.", true); return loftRail; }
+    loftRail = edges;
+    scheduleOpPreview();
+    return loftRail;
+  },
+  onClearLoftRail: () => { loftRail = []; scheduleOpPreview(); },
   onApplyFillet: (kind, amount, exprs) => {
     const resolved = buildOpForPanel(kind, { amount, exprs: exprs?.amount ? { amount: exprs.amount } : undefined });
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply.", true); return; }
@@ -891,6 +901,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     // name the wrong geometry — drop them, as `onApplyBoolean` drops A.
     sweepPath = null;
     loftSections = [];
+    loftRail = [];
     extrudeTerminator = null;
     ribTerminator = null;
     editsPanel.resetFeatureCaptures();
@@ -1946,21 +1957,29 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       // every loft shape below (captured sections, live selection, thin or
       // plain alike), since it flows into the shared loftWires choke point.
       const smoothing = d.smoothing === true ? { smoothing: true as const } : {};
+      // A captured rail steers whichever section source applies — same single
+      // choke point so preview ≡ Apply.
+      const rail: { guides?: string[]; error?: string } = {};
+      if (loftRail.length > 0) {
+        const g = loftRail.find((id) => guideEntityIds.has(id));
+        if (g) return { error: `${g} is guide (construction) geometry — guides are excluded from loft rails.` };
+        rail.guides = [...loftRail];
+      }
       if (loftSections.length > 0) {
         if (loftSections.length < 2) return { error: "Capture at least 2 loft sections (Add section)." };
         const guide = loftSections.flatMap((s) => s.ids).find((id) => guideEntityIds.has(id));
         if (guide) return { error: `${guide} is guide (construction) geometry — guides are excluded from loft profiles.` };
         if (loftSections.every((s) => s.kind === "face")) {
-          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...smoothing, ...thinOf(d) }) };
+          return { op: withExprs({ op: "loft", profiles: loftSections.map((s) => s.ids[0]), ...smoothing, ...thinOf(d), ...rail }) };
         }
         if (loftSections.every((s) => s.kind === "edges")) {
-          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...smoothing, ...thinOf(d) }) };
+          return { op: withExprs({ op: "loft", profileEdgeSets: loftSections.map((s) => s.ids), ...smoothing, ...thinOf(d), ...rail }) };
         }
         return { error: "Loft sections must be all faces or all edge wires — clear and re-capture." };
       }
       if (selFaces.length < 2) return { error: "Select 2+ profile faces (Surf mode) to loft, or capture sections one at a time." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from loft profiles." };
-      return { op: withExprs({ op: "loft", profiles: selFaces, ...smoothing, ...thinOf(d) }) };
+      return { op: withExprs({ op: "loft", profiles: selFaces, ...smoothing, ...thinOf(d), ...rail }) };
     }
 
     // ── assembly ──

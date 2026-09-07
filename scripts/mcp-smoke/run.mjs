@@ -4611,6 +4611,103 @@ try {
     );
   }
 
+  // --- loft guide rail (roadmap item 1: resampled-intermediate fallback) ---
+  //
+  // The kernel's MakePipeShell rail wiring is unreachable in this build
+  // (SetMode_4 returns false; the rail-coincidence test reads noise — see the
+  // red probe record), so guides resample the rail into intermediate sections
+  // through plain ThruSections instead. Same analytic discipline as the wrap
+  // block: two circle profiles (r=10 at z=0, r=6 at z=20 — faces face-6/7 on
+  // block.stp) plus a 2-segment polyline rail through (10,0,0)/(25,0,10)/
+  // (6,0,20) (edges edge-14/15 after block's own 12 + the 2 circle edges).
+  // Guided ≈4139.06 vs plain ≈4105.01 (both probed live — see CLAUDE.md): the
+  // DELTA is the steering proof, not the absolute value — a resolver that
+  // quietly ignored the rail would reproduce the plain volume exactly.
+  // Corner-kink caveat: stations straddle the polyline corner (no station
+  // sits exactly on it), so the surface rounds the kink — dist-to-corner
+  // ≈1.09, not ~0 (the smooth-arc probe reads 0.046). Nothing here asserts
+  // coincidence, only steered-vs-plain separation plus the refusal matrix.
+  {
+    const railModel = path.join(dir, "loft-rail.stp");
+    const resetRail = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), railModel);
+      fs.rmSync(`${railModel}.edits.json`, { force: true });
+    };
+    const circ = (z, r) => ({ op: "addCircleProfile", center: [0, 0, z], normal: [0, 0, 1], radius: r });
+    const rail = { op: "addPolyline", points: [[10, 0, 0], [25, 0, 10], [6, 0, 20]], closed: false };
+    const sections = ["face-6", "face-7"];
+    const railIds = ["edge-14", "edge-15"];
+    const loftVolume = async (label, extra) => {
+      resetRail();
+      const ops = [circ(0, 10), circ(20, 6), rail, { op: "loft", profiles: sections, ...extra }];
+      const res = await callWithCleanRetry("apply_edit_ops", { path: railModel, ops }, resetRail);
+      assert(
+        res.applied === ops.length && (res.notApplied ?? 0) === 0,
+        `${label}: every op applies (got ${JSON.stringify(res.report)})`
+      );
+      const mass = await call("get_mass_properties", { path: railModel, entityId: "solid-1" });
+      assert(mass.supported && typeof mass.volume === "number", `${label}: mass properties resolve`);
+      return mass.volume;
+    };
+
+    // 1. guided matches the probed volume and separates from the plain
+    // control by the probed steering delta.
+    const guidedVol = await loftVolume("guided loft", { guides: railIds });
+    assert(Math.abs(guidedVol - 4139.06) < 1.0, `guided loft matches the probed volume (got ${guidedVol})`);
+    const plainVol = await loftVolume("plain loft", {});
+    assert(Math.abs(plainVol - 4105.01) < 1.0, `plain loft matches the probed control volume (got ${plainVol})`);
+    assert(
+      guidedVol - plainVol > 10,
+      `the rail steers the surface (guided ${guidedVol} vs plain ${plainVol})`
+    );
+
+    // 2. deferred interactions reject at validation — never an applied
+    // op, never a silent unsteered loft.
+    for (const [label, bad] of [
+      ["guides with thin", { guides: railIds, thin: 2 }],
+      ["guides with 3 sections", { guides: railIds }],
+      ["non-edge rail id", { guides: ["face-0"] }],
+    ]) {
+      resetRail();
+      const ops =
+        label === "guides with 3 sections"
+          ? [circ(0, 10), circ(10, 8), circ(20, 6), rail, { op: "loft", profiles: ["face-6", "face-7", "face-8"], guides: railIds }]
+          : [circ(0, 10), circ(20, 6), rail, { op: "loft", profiles: sections, ...bad }];
+      const res = await call("apply_edit_ops", { path: railModel, ops });
+      assert(res.rejected === 1, `${label} is rejected at validation (got ${JSON.stringify(res.report)})`);
+    }
+
+    // 3. open sections + guides skip at replay with a named diagnostic (a
+    // separate polyline per section: edge-12, edge-13; rail edges 14/15).
+    {
+      resetRail();
+      const wire = (y) => ({ op: "addPolyline", points: [[-5, y, 0], [5, y, 0]], closed: false });
+      const res = await call("apply_edit_ops", {
+        path: railModel,
+        ops: [wire(-3), wire(3), rail, { op: "loft", profileEdgeSets: [["edge-12"], ["edge-13"]], guides: railIds }],
+      });
+      assert(
+        res.applied === 3 && res.notApplied === 1 &&
+          res.report.some((r) => /closed/i.test(r.diagnostic ?? "")),
+        `open sections with guides skip with a diagnostic (got ${JSON.stringify(res.report.map((r) => r.diagnostic))})`
+      );
+    }
+
+    // 4. an unresolvable rail id skips with a diagnostic, like any operand.
+    {
+      resetRail();
+      const res = await call("apply_edit_ops", {
+        path: railModel,
+        ops: [circ(0, 10), circ(20, 6), rail, { op: "loft", profiles: sections, guides: ["edge-99"] }],
+      });
+      assert(
+        res.applied === 3 && res.notApplied === 1 &&
+          res.report.some((r) => /did not resolve|renumber/i.test(r.diagnostic ?? "")),
+        `unresolvable rail edge skips with a diagnostic (got ${JSON.stringify(res.report.map((r) => r.diagnostic))})`
+      );
+    }
+  }
+
   // --- open-profile (wire) operand, roadmap item 8 --------------------------
   //
   // Same analytic discipline as the thin block above. block.stp is 6 faces /

@@ -256,7 +256,7 @@ function describeOpBase(op: EditOp): string {
     }
     case "revolve": return `Revolve ${profileLabel(op)} ${op.angleDeg}°${thinLabel(op)}`;
     case "sweep": return `Sweep ${profileLabel(op)} → ${op.path}${thinLabel(op)}`;
-    case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${(op as Extract<EditOp, { op: "loft" }>).smoothing ? " +smooth" : ""}${thinLabel(op)}`;
+    case "loft": return `Loft ${(op.profiles ?? op.profileEdgeSets ?? []).length} profiles${(op as Extract<EditOp, { op: "loft" }>).smoothing ? " +smooth" : ""}${(op as Extract<EditOp, { op: "loft" }>).guides ? " +rail" : ""}${thinLabel(op)}`;
     case "explode": return `Explode ×${op.factor}`;
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
     case "shell": return `▣ Shell t=${op.thickness} (${op.openingFaces.length} openings)`;
@@ -360,8 +360,11 @@ export function referencedEntities(op: EditOp): string[] {
       return profileOperandIds(op);
     case "sweep":
       return [...profileOperandIds(op), op.path];
-    case "loft":
-      return op.profiles ? [...op.profiles] : (op.profileEdgeSets ?? []).flat();
+    case "loft": {
+      const refs = op.profiles ? [...op.profiles] : (op.profileEdgeSets ?? []).flat();
+      const g = (op as Extract<EditOp, { op: "loft" }>).guides;
+      return g ? [...refs, ...g] : refs;
+    }
     case "mate":
       return [op.faceA, op.faceB];
     case "shell":

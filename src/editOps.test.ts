@@ -486,6 +486,25 @@ describe("thin (sweep-family thin-walled features)", () => {
     expect(op && "thinOuter" in op).toBe(false);
   });
 
+  it("accepts loft guides as one rail wire, refusing thin/3-section/malformed", () => {
+    const loft = (extra: Record<string, unknown>) =>
+      validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], ...extra });
+    expect(loft({ guides: ["edge-0", "edge-1"] })).toMatchObject({ op: "loft", guides: ["edge-0", "edge-1"] });
+    // Omitted guides leave no trace — plain lofts replay exactly as before.
+    const bare = loft({});
+    expect(bare).not.toBeNull();
+    expect(bare && "guides" in bare).toBe(false);
+    // Malformed rail shapes reject the whole op, never a silent unsteered loft.
+    expect(loft({ guides: [] })).toBeNull();
+    expect(loft({ guides: "edge-0" })).toBeNull();
+    expect(loft({ guides: ["face-0"] })).toBeNull();
+    // Deferred interactions reject up front: thin, and 3+ sections.
+    expect(loft({ guides: ["edge-0"], thin: 2 })).toBeNull();
+    expect(validateEditOp({ op: "loft", profiles: ["face-1", "face-2", "face-3"], guides: ["edge-0"] })).toBeNull();
+    expect(validateEditOp({ op: "loft", profileEdgeSets: [["edge-0"], ["edge-1"]], guides: ["edge-2"] }))
+      .toMatchObject({ op: "loft", guides: ["edge-2"] });
+  });
+
   it("accepts loft smoothing as a strict boolean, normalizing false to absent", () => {
     const loft = (extra: Record<string, unknown>) =>
       validateEditOp({ op: "loft", profiles: ["face-1", "face-2"], ...extra });

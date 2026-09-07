@@ -154,6 +154,12 @@ export interface EditsPanelCallbacks {
   onCaptureLoftSection: () => number;
   /** Forget every captured loft section (back to "the selected faces are the sections"). */
   onClearLoftSections: () => void;
+  /** Capture the selected edges as the loft guide rail (replaces any previous
+   * rail); returns the captured ids. Needed because rail edges and wire-profile
+   * section edges are BOTH Line-mode picks. */
+  onCaptureLoftRail: () => string[];
+  /** Forget the captured loft rail (back to an unsteered loft). */
+  onClearLoftRail: () => void;
   /** Capture the selected face as the extrude terminator; returns its id, or
    * null when nothing suitable is selected. Needed because the profile and
    * the terminator are BOTH face picks — a flat Surf-mode selection cannot
@@ -273,6 +279,8 @@ export class EditsPanel {
   private sweepPath: string | null = null;
 
   private loftSectionCount = 0;
+
+  private loftRail: string[] = [];
 
   private terminator: string | null = null;
 
@@ -946,6 +954,7 @@ export class EditsPanel {
       case "loft":
         f.appendChild(this.hint("Profiles = 2+ selected faces, or capture one section at a time"));
         f.appendChild(this.loftSectionRow());
+        f.appendChild(this.loftRailRow());
         f.appendChild(this.boolField("smoothing", "Smooth", false));
         this.thinFields(f);
         this.applyButtonDraft("Apply", "Build the feature from the loft sections", (): FeatureDraft => ({ kind: "loft", ...(this.readBool("smoothing") ? { smoothing: true as const } : {}), ...this.readThin() }), (d) => this.cb.onApplyFeature(d));
@@ -1550,6 +1559,7 @@ export class EditsPanel {
   resetFeatureCaptures(): void {
     this.sweepPath = null;
     this.loftSectionCount = 0;
+    this.loftRail = [];
     this.terminator = null;
     this.ribTerminator = null;
     if (this.activeOp === "sweep" || this.activeOp === "loft" || this.activeOp === "extrude" || this.activeOp === "rib") this.renderParams();
@@ -1703,6 +1713,44 @@ export class EditsPanel {
       this.cb.onPreviewDraftChanged();
     });
     row.appendChild(add);
+    row.appendChild(clear);
+    row.appendChild(status);
+    return row;
+  }
+
+  /**
+   * Loft's optional guide-rail capture — rail edges and wire-profile section
+   * edges are both Line-mode picks, so one flat selection cannot express
+   * which edges steer. Capturing replaces any previous rail. With nothing
+   * captured, the loft is unsteered, as before.
+   */
+  private loftRailRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row";
+    const status = document.createElement("span");
+    status.className = "compose-bool-a";
+    const render = () => { status.textContent = this.loftRail.length > 0 ? `rail: ${this.loftRail.join("+")}` : "rail: —"; };
+    render();
+    const set = document.createElement("button");
+    set.className = "compose-apply";
+    set.textContent = "Set rail";
+    set.title = "Capture the selected edges as the loft guide rail";
+    set.addEventListener("click", () => {
+      this.loftRail = this.cb.onCaptureLoftRail();
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    const clear = document.createElement("button");
+    clear.className = "compose-apply";
+    clear.textContent = "Clear";
+    clear.title = "Forget the captured rail";
+    clear.addEventListener("click", () => {
+      this.cb.onClearLoftRail();
+      this.loftRail = [];
+      render();
+      this.cb.onPreviewDraftChanged();
+    });
+    row.appendChild(set);
     row.appendChild(clear);
     row.appendChild(status);
     return row;
