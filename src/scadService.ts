@@ -30,14 +30,18 @@
  * backstop, not just UX — on timeout the child is killed and a clear error
  * is thrown.
  *
- * Live-binary caveat, stated plainly: NO `openscad` binary exists in this
- * environment, so the `-o out.csg in.scad` invocation shape and the
- * `--version` probe contract below follow FreeCAD's documented architecture
- * (cited in the roadmap item) but are UNVERIFIED against a real binary here.
- * Tests drive a stub-binary script through the real `execFile` plumbing
- * (arg shape, cwd, timeout-kill, error mapping all genuinely exercised);
- * fidelity of the flags themselves needs one manual run where openscad is
- * installed before release.
+ * Live-binary verification (2026-09-07, OpenSCAD 2021.01): `openscad -o
+ * <tmp>/model.csg <abs path>` with `cwd` = the source directory converts
+ * `examples/OpenSCAD/minimal.scad` (exit 0, empty stderr) to the `bracket.csg`
+ * vocabulary — openscad normalizes the hole to
+ * `cylinder($fn = 10, $fa = 12, $fs = 2, h = 12, r1 = 3, r2 = 3, ...)`
+ * (handled by `csgModel.ts`'s r1/r2 branch) — and the MCP pipeline reports
+ * 2 solids / 30 faces / volume 5228.884 vs the 5228.88 analytic oracle.
+ * That same run caught a real defect the stubs could never see: argv carried
+ * the raw (possibly relative) caller path while `cwd` was already the source
+ * dir, so a relative call resolved to `<dir>/<relpath>` and openscad failed
+ * with "Can't open input file" — the input is now `path.resolve`d before
+ * spawning (regression-tested). `--version` probes exit 0 on the real binary.
  */
 
 import { execFile as execFileCb } from "node:child_process";
@@ -151,11 +155,18 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
   // The output name MUST end in `.csg` — openscad selects its exporter from
   // the `-o` extension.
   const outPath = path.join(tmpDir, "model.csg");
+  // The input MUST be absolute: `cwd` below is the source directory (so
+  // relative `use`/`include`/`import` resolve as a manual invocation would),
+  // and a relative argv path would then resolve against that dir instead of
+  // the caller's cwd — i.e. `<dir>/examples/OpenSCAD/minimal.scad` instead of
+  // the real file (caught by a live-binary run; the stub never checks input
+  // existence, so no unit test could see it).
+  const absSource = path.resolve(sourcePath);
   try {
     let stderr = "";
     try {
-      const res = await execFileAsync(binary, ["-o", outPath, sourcePath], {
-        cwd: path.dirname(path.resolve(sourcePath)),
+      const res = await execFileAsync(binary, ["-o", outPath, absSource], {
+        cwd: path.dirname(absSource),
         timeout: timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
       });

@@ -18,12 +18,6 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
 ## Open items
 
-### Tier 0 — Defect-shaped findings
-
-*Admission: something currently produces a wrong or silently-empty result. Always top priority regardless of effort, because the cost of leaving it is paid by users who cannot tell it happened.*
-
-1. **`scadService.ts`'s `openscad` invocation has never been run against a real binary** (**S**, verification debt). The module's own header says so: no `openscad` exists in this environment or in CI, so the `-o out.csg in.scad` argument shape and the `--version` probe contract are asserted from FreeCAD's documented architecture, not observed. The committed stub binaries prove the plumbing (argv shape, `cwd`, temp-dir cleanup, failure mapping) but not flag fidelity. One manual conversion where `openscad` is installed, diffing the resulting volume against the `.csg` oracle, closes it.
-
 ### Tier 1 — Verified-but-unspent inventory
 
 *Admission: the live-WASM probe is already done and recorded, and there is currently no caller at all. These are the cheapest real capabilities in the file — the expensive, risky half was already paid for by an earlier item.*
@@ -135,4 +129,4 @@ Three groups, three different revival rules. Each says what would change our min
 
   **What survived the reframing:** the same shapes as *macros* (Tier 3 item 13). `addHelix` + `sweep` + `repeat` loops + degree trig already express a spring and a thread profile with no new kernel code — the gap is that `scriptLibrary.ts` ships no scripts and has no default library path. That is data and a path resolver, not geometry, and step.parts will not hand you a spring at *your* wire diameter anyway.
 
-- **Bundling `openscad-wasm`** — rejected (was path (c) of the closed OpenSCAD item). Technically attractive but a GPL-3.0-or-later one-way door: CGAL is GPLv3+/LGPLv3+ with no GPLv2 option and Manifold is Apache-2.0 (FSF-held GPLv2-incompatible), and it costs ~8–14 MB plus ~8 MB more for `text()`. The shipped alternative — shelling out to a user-installed binary (mere aggregation, not linking) — covers `.scad` with zero bundled megabytes and no license propagation. Revisit only if the external binary stops being a viable dependency. The loose end that path leaves — the `openscad` invocation never having run against a real binary — is tracked in Tier 0.
+- **Bundling `openscad-wasm`** — rejected (was path (c) of the closed OpenSCAD item). Technically attractive but a GPL-3.0-or-later one-way door: CGAL is GPLv3+/LGPLv3+ with no GPLv2 option and Manifold is Apache-2.0 (FSF-held GPLv2-incompatible), and it costs ~8–14 MB plus ~8 MB more for `text()`. The shipped alternative — shelling out to a user-installed binary (mere aggregation, not linking) — covers `.scad` with zero bundled megabytes and no license propagation. Revisit only if the external binary stops being a viable dependency. That path's loose end — the `openscad` invocation never having run against a real binary — was closed by a live-binary run (OpenSCAD 2021.01, verified in `src/scadService.ts`'s header), which also caught and fixed a real relative-path argv defect.

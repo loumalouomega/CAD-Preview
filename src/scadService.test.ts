@@ -1,13 +1,15 @@
 /**
  * Tests for src/scadService.ts.
  *
- * No `openscad` binary exists in this environment (or in CI), so every
- * binary interaction runs through committed stub scripts
+ * Binary interaction runs through committed stub scripts
  * (`src/test-fixtures/openscad-*.sh`, POSIX-only — CI is Linux-only per the
  * xvfb note in CLAUDE.md). The stubs go through the REAL `execFile`
  * plumbing (arg shape, cwd, timeout-kill, exit-code mapping all genuinely
- * exercised); only the flags' fidelity to a real openscad is untested here
- * (stated in scadService.ts — needs one manual run where openscad exists).
+ * exercised). Flag fidelity was verified against a real OpenSCAD 2021.01
+ * binary on 2026-09-07 (see scadService.ts header); the stubs stay
+ * plumbing-only by design — they never check input existence, so the
+ * relative-path argv regression test below asserts the argv shape, while the
+ * live run is what proved the original failure.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
@@ -110,6 +112,27 @@ describe("convertScadToCsg", () => {
     // The REAL path is passed (never a temp copy) so relative
     // use/include/import resolve exactly as a manual invocation would.
     expect(rec.cwd).toBe(dir);
+  });
+
+  it("passes an absolute input path even when given a relative one", async () => {
+    // Live-binary finding: argv carried the raw (possibly relative) path
+    // while cwd was already the source dir, so a relative call resolved to
+    // `<dir>/<relpath>` and openscad failed with "Can't open input file".
+    // The stub never checks input existence, so only the argv shape is
+    // assertable here — the live run is what proved the failure.
+    const dir = makeModelDir();
+    const rel = path.relative(process.cwd(), path.join(dir, "model.scad"));
+    const record = path.join(dir, "record-rel.json");
+    process.env.STUB_RECORD = record;
+    try {
+      await convertScadToCsg(rel, { binary: STUB });
+    } finally {
+      delete process.env.STUB_RECORD;
+    }
+    const rec = JSON.parse(fs.readFileSync(record, "utf8")) as { argv: string[]; cwd: string };
+    expect(path.isAbsolute(rec.argv[2])).toBe(true);
+    expect(rec.argv[2]).toBe(path.resolve(rel));
+    expect(rec.cwd).toBe(path.dirname(path.resolve(rel)));
   });
 
   it("maps a failing binary to a clear error carrying the stderr tail", async () => {

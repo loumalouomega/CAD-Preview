@@ -309,16 +309,16 @@ try {
     );
   }
 
-  // OpenSCAD .scad via user-installed binary (roadmap Tier 2 item 2, path
-  // (b)) — minimal.scad mirrors bracket.csg's shape vocabulary, so a
-  // binary-present run cross-checks structure AND analytic volume against
-  // the .csg oracle. No binary exists in CI or this dev environment, so the
-  // DEFAULT branch asserts the graceful path instead (null inventory +
-  // install hint, never a throw) — the render_snapshot/Chromium-absent
-  // tolerance idiom. To exercise the analytic path, run with OPENSCAD_BINARY
-  // pointing at a real binary (the unit-test stub is for plumbing, not
-  // fidelity — its canned single cube would fail the 2-solid assertion with
-  // an obvious diff).
+  // OpenSCAD .scad via user-installed binary (path (b)) — minimal.scad
+  // mirrors bracket.csg's shape vocabulary, so a binary-present run
+  // cross-checks structure AND analytic volume against the .csg oracle. No
+  // binary exists in CI, so the DEFAULT branch asserts the graceful path
+  // instead (null inventory + install hint, never a throw) — the
+  // render_snapshot/Chromium-absent tolerance idiom. To exercise the analytic
+  // path, run with OPENSCAD_BINARY pointing at a real binary (verified
+  // against OpenSCAD 2021.01 on 2026-09-07 — see src/scadService.ts; the
+  // unit-test stub is for plumbing, not fidelity — its canned single cube
+  // would fail the 2-solid assertion with an obvious diff).
   {
     const minimalScad = path.join(dir, "minimal.scad");
     fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "minimal.scad"), minimalScad);
