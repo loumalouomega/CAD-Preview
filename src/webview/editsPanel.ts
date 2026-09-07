@@ -92,12 +92,13 @@ export type WireframeDraft = (
   | { kind: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
 ) & { exprs?: ExprMap; guide?: boolean };
 
-/** A modify-op draft minus its selection operands: shell's `openingFaces` come
- * from the selected surfaces, split/section `targets` from the selected
- * volumes (the wiring injects both). B-rep only. */
+/** A modify-op draft minus its selection operands: shell's `openingFaces` and
+ * defeature's `faces` come from the selected surfaces, split/section
+ * `targets` from the selected volumes (the wiring injects both). B-rep only. */
 export type ModifyDraft = (
   | { kind: "shell"; thickness: number }
   | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }
+  | { kind: "defeature" }
   | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; planeId?: string; keep: "both" | "positive" | "negative" }
   | { kind: "section"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
   | { kind: "drill"; dir: Vec3; length: number }
@@ -1018,6 +1019,10 @@ export class EditsPanel {
           if (!isZero(planePoint) && !isZero(planeNormal)) { (draft as any).planePoint = planePoint; (draft as any).planeNormal = planeNormal; }
           return draft;
         }, (d) => this.cb.onApplyModify(d));
+        break;
+      case "defeature":
+        f.appendChild(this.hint("Removes the selected faces (Surf mode) as recognized features — fillets, chamfers — healing the solid behind them"));
+        this.applyButtonDraft("Apply", "Defeature the selected faces", (): ModifyDraft => ({ kind: "defeature" }), (d) => this.cb.onApplyModify(d));
         break;
       case "splitByPlane":
         f.appendChild(this.hint("Splits the selected volumes (Vol mode) by the plane"));

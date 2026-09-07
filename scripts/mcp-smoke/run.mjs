@@ -561,6 +561,63 @@ try {
     assert(splicedPart.selector !== undefined, "the stored query itself survives the splice (only the cache may freeze)");
   }
 
+  // defeature — block.stp + a 10x20x30 box at [200,0,0], fillet one of the
+  // added box's edges, then remove the band cylinder: the solid must heal to
+  // its exact pre-fillet volume (6060 = 60 + 6000), the neighbor box op still
+  // applies, and an unresolvable face id skips with a diagnostic — never a
+  // silent no-op. A skipped defeature records no bucket.
+  {
+    const defModel = path.join(dir, "block-for-defeature.stp");
+    const resetDef = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), defModel);
+      fs.rmSync(`${defModel}.edits.json`, { force: true });
+    };
+    resetDef();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: defModel, ops: [{ op: "addBox", center: [200, 0, 0], size: [10, 20, 30] }] },
+      resetDef
+    );
+    const defFilleted = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: defModel, ops: [{ op: "fillet", edges: ["edge-12"], radius: 1 }] },
+      resetDef
+    );
+    assert(defFilleted.applied === 1, `fillet applied for the defeature fixture (got ${JSON.stringify(defFilleted.report)})`);
+    const defLoaded = await call("load_model", { path: defModel });
+    const defBand = ((defLoaded.opBuckets ?? []).find((b) => b.op === 1)?.roles?.band ?? []);
+    let defTarget = null;
+    for (const id of defBand) {
+      const facts = await call("inspect", { path: defModel, entityId: id });
+      if (facts.surfaceType === "cylinder") defTarget = id;
+    }
+    assert(defTarget !== null, `the band bucket holds the fillet cylinder (band: ${JSON.stringify(defBand)})`);
+    const defRemoved = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: defModel, ops: [{ op: "defeature", faces: [defTarget] }] },
+      resetDef
+    );
+    assert(defRemoved.applied === 1, `defeature applied (got ${JSON.stringify(defRemoved.report)})`);
+    const defMass = await call("get_mass_properties", { path: defModel });
+    assert(
+      Math.abs(defMass.volume - 6060) / 6060 < 1e-6,
+      `defeature healed the solid to its exact pre-fillet volume 6060 (got ${defMass.volume})`
+    );
+    const defBuckets = await call("load_model", { path: defModel });
+    const defBucket = (defBuckets.opBuckets ?? []).find((b) => b.op === 2);
+    assert(
+      defBucket !== undefined && Object.keys(defBucket.roles).every((r) => r === "produced"),
+      `defeature records only the generic produced role (got ${JSON.stringify(defBucket?.roles)})`
+    );
+    const defBad = await call("apply_edit_ops", {
+      path: defModel, ops: [{ op: "defeature", faces: ["face-9999"] }],
+    });
+    assert(
+      defBad.applied === 0 && (defBad.report[0]?.diagnostic ?? "").match(/face/i) !== null,
+      `an unresolvable defeature face skips with a diagnostic (got ${JSON.stringify(defBad.report)})`
+    );
+  }
+
   // Op-operand queries (Phase B) — block.stp + a 10x20x30 box at [200,0,0],
   // then an extrude whose `profile` is a BUCKET QUERY (op 0's largest body
   // face — one of the two 600-area x-normal faces), exercising: live

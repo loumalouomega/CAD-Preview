@@ -138,6 +138,8 @@ describe("validateEditOp", () => {
     expect(validateEditOp({
       op: "section", targets: ["solid-0"], planePoint: [0, 0, 5], planeNormal: [0, 0, 1],
     })).not.toBeNull();
+    expect(validateEditOp({ op: "defeature", faces: ["face-2"] }))
+      .toEqual({ op: "defeature", faces: ["face-2"] });
   });
 
   it("rejects malformed modify ops", () => {
@@ -163,10 +165,13 @@ describe("validateEditOp", () => {
     expect(validateEditOp({
       op: "mirror", targets: ["solid-0"], planePoint: [0, 0, 5], planeNormal: [0, 0, 0],
     })).toBeNull();
+    // defeature: empty/missing face list
+    expect(validateEditOp({ op: "defeature", faces: [] })).toBeNull();
+    expect(validateEditOp({ op: "defeature" })).toBeNull();
   });
 
   it("modify ops are topology-changing, B-rep only", () => {
-    for (const kind of ["shell", "splitByPlane", "section", "rib", "wrap"] as const) {
+    for (const kind of ["shell", "defeature", "splitByPlane", "section", "rib", "wrap"] as const) {
       expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
       expect(BREP_ONLY_OPS.has(kind)).toBe(true);
     }

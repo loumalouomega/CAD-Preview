@@ -82,6 +82,7 @@ export const PRODUCED_ROLE: Record<string, string> = {
   addSlotProfile: "body",
   addTrapezoidProfile: "body",
   boolean: "produced",
+  defeature: "produced",
   revolve: "produced",
   sweep: "produced",
   loft: "produced",

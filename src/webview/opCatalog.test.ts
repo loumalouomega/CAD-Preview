@@ -20,6 +20,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   mate: { op: "mate", faceA: "face-0", faceB: "face-1" },
   shell: { op: "shell", thickness: -1, openingFaces: ["face-0"] },
   draft: { op: "draft", faces: ["face-0"], angleDeg: 10 },
+  defeature: { op: "defeature", faces: ["face-0"] },
   splitByPlane: { op: "splitByPlane", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1], keep: "both" },
   section: { op: "section", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1] },
   rib: { op: "rib", spineEdges: ["edge-0", "edge-1"], dir: [0, 0, 1], thin: 2, upTo: "face-0" },
@@ -170,6 +171,8 @@ describe("referencedEntities", () => {
       .toEqual(["face-1", "face-2"]);
     expect(referencedEntities({ op: "shell", thickness: -1, openingFaces: ["face-9"] }))
       .toEqual(["face-9"]);
+    expect(referencedEntities({ op: "defeature", faces: ["face-4"] }))
+      .toEqual(["face-4"]);
   });
 
   it("reads the scalar-string operands, including sweep's second one", () => {

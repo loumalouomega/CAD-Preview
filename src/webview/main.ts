@@ -1621,6 +1621,7 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "addCountersinkHole":
     case "drill":
     case "shell":
+    case "defeature":
     case "splitByPlane":
       return "cut";
     case "addCircleProfile":
@@ -2015,6 +2016,10 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (d.planeId) { draft.planeId = d.planeId; draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
       else if (d.planePoint && d.planeNormal) { draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
       return { op: withExprs(draft) };
+    }
+    case "defeature": {
+      if (selFaces.length === 0) return { error: "Select the face(s) to defeature (Surf mode)." };
+      return { op: withExprs({ op: "defeature", faces: selFaces }) };
     }
     case "splitByPlane": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to split." };
