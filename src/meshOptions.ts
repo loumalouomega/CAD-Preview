@@ -65,6 +65,19 @@ export interface MeshOptions {
    * existing size slider/presets keep working under either engine with no
    * new sizing UI. */
   ftetwildEpsRel: number;
+  /** fTetWild: force the output boundary manifold. Only meaningful when
+   * `engine === "ftetwild"`. */
+  ftetwildManifoldSurface: boolean;
+  /** fTetWild: coarsen the output after optimization (fewer, larger tets).
+   * Only meaningful when `engine === "ftetwild"`. */
+  ftetwildCoarsen: boolean;
+  /** fTetWild: skip interior/exterior filtering and return the raw
+   * tetrahedralization (convex-hull fill, not the part interior). Only
+   * meaningful when `engine === "ftetwild"` — and almost never what a
+   * meshing or repair caller wants; exposed strictly opt-in for inspection.
+   * `numThreads` is deliberately NOT exposed: this repo always loads the
+   * serial build, where it has no effect. */
+  ftetwildDisableFiltering: boolean;
 }
 
 /**
@@ -88,6 +101,9 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   stlAngle: 40,
   engine: "gmsh",
   ftetwildEpsRel: 1e-3, // fTetWild's own default
+  ftetwildManifoldSurface: false,
+  ftetwildCoarsen: false,
+  ftetwildDisableFiltering: false,
 };
 
 /**
@@ -175,6 +191,13 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
       ? o.ftetwildEpsRel
       : DEFAULT_MESH_OPTIONS.ftetwildEpsRel;
 
+  const ftetwildManifoldSurface =
+    typeof o.ftetwildManifoldSurface === "boolean" ? o.ftetwildManifoldSurface : DEFAULT_MESH_OPTIONS.ftetwildManifoldSurface;
+  const ftetwildCoarsen =
+    typeof o.ftetwildCoarsen === "boolean" ? o.ftetwildCoarsen : DEFAULT_MESH_OPTIONS.ftetwildCoarsen;
+  const ftetwildDisableFiltering =
+    typeof o.ftetwildDisableFiltering === "boolean" ? o.ftetwildDisableFiltering : DEFAULT_MESH_OPTIONS.ftetwildDisableFiltering;
+
   return {
     dimension,
     sizeMin,
@@ -187,6 +210,9 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     stlAngle,
     engine,
     ftetwildEpsRel,
+    ftetwildManifoldSurface,
+    ftetwildCoarsen,
+    ftetwildDisableFiltering,
   };
 }
 

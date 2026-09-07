@@ -28,6 +28,9 @@ describe("validateMeshOptions", () => {
       stlAngle: 30,
       engine: "ftetwild" as const,
       ftetwildEpsRel: 2e-3,
+      ftetwildManifoldSurface: true,
+      ftetwildCoarsen: false,
+      ftetwildDisableFiltering: false,
     };
     expect(validateMeshOptions(opts)).toEqual(opts);
   });
@@ -246,7 +249,19 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       stlAngle: 40,
       engine: "gmsh",
       ftetwildEpsRel: 1e-3,
+      ftetwildManifoldSurface: false,
+      ftetwildCoarsen: false,
+      ftetwildDisableFiltering: false,
     });
+  });
+
+  it("defaults the fTetWild flags unless real booleans", () => {
+    expect(validateMeshOptions({ ftetwildManifoldSurface: true })?.ftetwildManifoldSurface).toBe(true);
+    expect(validateMeshOptions({ ftetwildCoarsen: true })?.ftetwildCoarsen).toBe(true);
+    expect(validateMeshOptions({ ftetwildDisableFiltering: true })?.ftetwildDisableFiltering).toBe(true);
+    expect(validateMeshOptions({ ftetwildManifoldSurface: "yes" })?.ftetwildManifoldSurface).toBe(false);
+    expect(validateMeshOptions({ ftetwildCoarsen: 1 })?.ftetwildCoarsen).toBe(false);
+    expect(validateMeshOptions({})?.ftetwildDisableFiltering).toBe(false);
   });
 
   it("defaults sizeMax to the unbounded sentinel the webview seeds over", () => {

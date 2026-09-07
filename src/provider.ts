@@ -2108,7 +2108,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           this.context.extensionPath,
           sourceBytes,
           meshFormat,
-          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes)
+          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes),
+          await readMeshOptions(uri)
         );
         return result.stlBytes;
       },

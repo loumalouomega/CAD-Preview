@@ -4113,6 +4113,21 @@ try {
   await call("export_mesh", { path: cleanCubeStl, format: "med", outputPath: ftwMedOut, options: { engine: "ftetwild" } });
   assert(fs.statSync(ftwMedOut).size > 0, "export_mesh med (via meshio++) succeeds under engine:\"ftetwild\"");
 
+  // 6b. The threaded-through fTetWild flags (roadmap "Wire fTetWild's four
+  // unspent parameters", closed): manifoldSurface keeps a real mesh real,
+  // coarsen measurably reduces element count on the same input, and the
+  // flags ride the standard options path (no new tool params needed).
+  const ftwManifold = await call("generate_mesh", { path: cleanCubeStl, options: { engine: "ftetwild", ftetwildManifoldSurface: true } });
+  assert(
+    ftwManifold.nodeCount > 0 && ftwManifold.elementCount > 0 && ftwManifold.engineUsed === "ftetwild",
+    `generate_mesh(engine:"ftetwild", manifoldSurface:true) still meshes (got ${ftwManifold.nodeCount} nodes, ${ftwManifold.elementCount} elements)`
+  );
+  const ftwCoarse = await call("generate_mesh", { path: cleanCubeStl, options: { engine: "ftetwild", ftetwildCoarsen: true } });
+  assert(
+    ftwCoarse.elementCount > 0 && ftwCoarse.elementCount < ftwOnClean.elementCount,
+    `generate_mesh(engine:"ftetwild", coarsen:true) yields fewer elements than without (${ftwCoarse.elementCount} vs ${ftwOnClean.elementCount})`
+  );
+
   // 7. .geo_unrolled has nothing to represent for an fTetWild-meshed
   // document (no Gmsh geometry-import step ever ran) — a clean, actionable
   // rejection, not a silent Gmsh-geometry fallback that would misrepresent

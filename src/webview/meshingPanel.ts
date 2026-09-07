@@ -116,6 +116,9 @@ export class MeshingPanel {
   private readonly optimizeCheckbox: HTMLInputElement;
   private readonly stlAngleInput: HTMLInputElement;
   private readonly ftetwildEpsRelInput: HTMLInputElement;
+  private readonly ftetwildManifoldSurfaceCheckbox: HTMLInputElement;
+  private readonly ftetwildCoarsenCheckbox: HTMLInputElement;
+  private readonly ftetwildDisableFilteringCheckbox: HTMLInputElement;
 
   /** Model bounding box, pushed by the wiring after each model load. */
   private extents: ModelExtents | null = null;
@@ -373,6 +376,25 @@ export class MeshingPanel {
       cb.onOptionsChange({ ftetwildEpsRel: raw > 0 ? raw : DEFAULT_MESH_OPTIONS.ftetwildEpsRel });
     });
 
+    this.ftetwildManifoldSurfaceCheckbox = this.checkboxField(form, "fTetWild manifold surface",
+      "Force the tetrahedralization's boundary manifold — the repair path's own contract. Only used by engine: fTetWild.");
+    this.ftetwildManifoldSurfaceCheckbox.addEventListener("change", () => {
+      cb.onOptionsChange({ ftetwildManifoldSurface: this.ftetwildManifoldSurfaceCheckbox.checked });
+    });
+
+    this.ftetwildCoarsenCheckbox = this.checkboxField(form, "fTetWild coarsen",
+      "Coarsen the output after optimization (fewer, larger tets). Only used by engine: fTetWild.");
+    this.ftetwildCoarsenCheckbox.addEventListener("change", () => {
+      cb.onOptionsChange({ ftetwildCoarsen: this.ftetwildCoarsenCheckbox.checked });
+    });
+
+    this.ftetwildDisableFilteringCheckbox = this.checkboxField(form, "fTetWild no interior filter",
+      "Skip interior/exterior filtering and return the raw tetrahedralization — a convex-hull fill, NOT the part " +
+      "interior. Inspection only; never what meshing or repair wants. Only used by engine: fTetWild.");
+    this.ftetwildDisableFilteringCheckbox.addEventListener("change", () => {
+      cb.onOptionsChange({ ftetwildDisableFiltering: this.ftetwildDisableFilteringCheckbox.checked });
+    });
+
     const resetBtn = document.createElement("button");
     resetBtn.type = "button";
     resetBtn.className = "meshing-reset";
@@ -413,6 +435,9 @@ export class MeshingPanel {
     this.optimizeCheckbox.checked = options.optimize;
     this.stlAngleInput.value = String(options.stlAngle);
     this.ftetwildEpsRelInput.value = String(options.ftetwildEpsRel);
+    this.ftetwildManifoldSurfaceCheckbox.checked = options.ftetwildManifoldSurface;
+    this.ftetwildCoarsenCheckbox.checked = options.ftetwildCoarsen;
+    this.ftetwildDisableFilteringCheckbox.checked = options.ftetwildDisableFiltering;
 
     // fTetWild ignores sizeMin/algorithm2D/algorithm3D/elementOrder/
     // elementShape/stlAngle entirely (see gmshService.ts's populateMeshedModel
@@ -428,6 +453,9 @@ export class MeshingPanel {
     this.elementShapeSelect.disabled = ftetwild;
     this.stlAngleInput.disabled = ftetwild;
     this.ftetwildEpsRelInput.disabled = !ftetwild;
+    this.ftetwildManifoldSurfaceCheckbox.disabled = !ftetwild;
+    this.ftetwildCoarsenCheckbox.disabled = !ftetwild;
+    this.ftetwildDisableFilteringCheckbox.disabled = !ftetwild;
 
     this.syncSlider();
 
@@ -681,6 +709,22 @@ export class MeshingPanel {
     input.min = "0";
     input.className = "meshing-num";
     input.value = String(def);
+    row.appendChild(input);
+    parent.appendChild(row);
+    return input;
+  }
+
+  private checkboxField(parent: HTMLElement, label: string, title: string): HTMLInputElement {
+    const row = document.createElement("label");
+    row.className = "meshing-field meshing-checkbox";
+    const span = document.createElement("span");
+    span.className = "meshing-label";
+    span.textContent = label;
+    row.appendChild(span);
+
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.title = title;
     row.appendChild(input);
     parent.appendChild(row);
     return input;

@@ -380,6 +380,9 @@ async function populateMeshedModel(
   const { vertices, tets } = await tetrahedralize(welded, {
     epsRel: options.ftetwildEpsRel,
     idealEdgeLengthRel,
+    manifoldSurface: options.ftetwildManifoldSurface,
+    coarsen: options.ftetwildCoarsen,
+    disableFiltering: options.ftetwildDisableFiltering,
   });
   const mshText = tetsToMsh41(vertices, tets);
 
@@ -492,14 +495,18 @@ export async function repairMesh(
   extensionPath: string,
   bytes: Uint8Array,
   format: MeshParseFormat,
-  external?: GltfExternalBuffers
+  external?: GltfExternalBuffers,
+  options?: MeshOptions
 ): Promise<RepairMeshResult> {
   const welded = parseToWeldedMesh(bytes, format, external);
   const stlBytes = weldedMeshToStlBytes(welded);
+  // Repair follows the caller's stored mesh options (envelope, ideal edge
+  // length via sizeMax, and the fTetWild flags) — `engine`/`dimension` stay
+  // forced: repair IS an fTetWild 3D tetrahedralize-then-extract-boundary.
   const result = await generateMesh(
     extensionPath,
     { kind: "stl", stlBytes },
-    { ...DEFAULT_MESH_OPTIONS, engine: "ftetwild", dimension: 3 },
+    { ...DEFAULT_MESH_OPTIONS, ...options, engine: "ftetwild", dimension: 3 },
     []
   );
   const repairedStlBytes = weldedMeshToStlBytes({ positions: result.positions, indices: result.indices });
