@@ -1981,6 +1981,56 @@ describe("remove_edit_op", () => {
   });
 });
 
+describe("Tier 0 save-in-place watermark (bakedThrough)", () => {
+  const box = { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] };
+  const moved = { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] };
+
+  it("apply_edit_ops preserves the watermark and replays only the tail", async () => {
+    await writeEdits(stpModel, [box, moved] as unknown as EditOp[], [], 1);
+    const c = ctx();
+    const result = await applyEditOps(c, { path: stpModel, ops: [{ op: "explode", factor: 1.5 }] });
+    // Replay = unbaked tail [moved] + the new op — never the baked prefix.
+    expect(c.pipeline.loadBRep).toHaveBeenCalledWith(
+      dir,
+      expect.anything(),
+      "step",
+      [moved, { op: "explode", factor: 1.5 }]
+    );
+    // Persisted sidecar keeps the FULL list with the watermark intact.
+    const persisted = await readEdits(stpModel);
+    expect(persisted.ops).toHaveLength(3);
+    expect(persisted.bakedThrough).toBe(1);
+    expect(result.stackLength).toBe(3);
+  });
+
+  it("remove_edit_op refuses an index inside the baked prefix", async () => {
+    await writeEdits(stpModel, [box, moved] as unknown as EditOp[], [], 2);
+    const c = ctx();
+    await expect(removeEditOp(c, { path: stpModel, index: 0 })).rejects.toThrow(/baked prefix/);
+    await expect(removeEditOp(c, { path: stpModel, index: 1 })).rejects.toThrow(/baked prefix/);
+    // The sidecar is untouched by a refused removal.
+    expect((await readEdits(stpModel)).ops).toHaveLength(2);
+  });
+
+  it("render_ops_prefix replays watermark-relative but indexes the full history", async () => {
+    await writeEdits(stpModel, [box, moved] as unknown as EditOp[], [], 1);
+    const c = ctx();
+    const result = await renderOpsPrefixTool(c, { path: stpModel, throughIndex: 1 });
+    // throughIndex addresses the full history; only ops[1..1] replay.
+    expect(c.pipeline.loadBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", [moved]);
+    expect(result.throughIndex).toBe(1);
+    expect(result.totalOpCount).toBe(2);
+    expect(result.prefixOpCount).toBe(1);
+  });
+
+  it("get_state exposes the full history plus the watermark", async () => {
+    await writeEdits(stpModel, [box, moved] as unknown as EditOp[], [], 1);
+    const state = await getState({ path: stpModel });
+    expect(state.edits).toHaveLength(2);
+    expect(state.bakedThrough).toBe(1);
+  });
+});
+
 describe("set_variables", () => {
   it("evaluates top-down and re-resolves op expression caches", async () => {
     const c = ctx();

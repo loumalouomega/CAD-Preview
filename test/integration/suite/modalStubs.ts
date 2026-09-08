@@ -32,7 +32,7 @@ import * as vscode from "vscode";
 
 /** One scripted answer to a modal prompt. */
 export type ModalAnswer =
-  /** Choose the offered quick-pick item whose label equals (or contains) this. */
+  /** Choose the offered quick-pick item (or message-box button) whose label equals (or contains) this. */
   | { kind: "pick"; label: string }
   /** Answer a save dialog with this filesystem path. */
   | { kind: "save"; path: string }
@@ -51,6 +51,7 @@ export interface ModalRecord {
   quickPicks: Array<{ placeHolder?: string; labels: string[] }>;
   saveDialogs: Array<{ defaultPath?: string; filters?: Record<string, string[]> }>;
   openDialogs: Array<{ openLabel?: string; filters?: Record<string, string[]> }>;
+  warnings: Array<{ message: string; buttons: string[] }>;
   errors: string[];
   /** Answers still unconsumed when `restore()` ran — a test that over-scripted. */
   leftover: number;
@@ -71,13 +72,14 @@ const labelOf = (item: unknown): string =>
  */
 export function installModalStubs(answers: ModalAnswer[]): ModalSession {
   const queue = [...answers];
-  const record: ModalRecord = { quickPicks: [], saveDialogs: [], openDialogs: [], errors: [], leftover: 0 };
+  const record: ModalRecord = { quickPicks: [], saveDialogs: [], openDialogs: [], warnings: [], errors: [], leftover: 0 };
 
   const win = vscode.window as unknown as Record<string, unknown>;
   const original = {
     showQuickPick: win.showQuickPick,
     showSaveDialog: win.showSaveDialog,
     showOpenDialog: win.showOpenDialog,
+    showWarningMessage: win.showWarningMessage,
     showErrorMessage: win.showErrorMessage,
   };
 
@@ -130,6 +132,23 @@ export function installModalStubs(answers: ModalAnswer[]): ModalSession {
   win.showErrorMessage = async (message: string) => {
     record.errors.push(message);
     return undefined;
+  };
+
+  // Queued like a quick-pick: the in-place-save confirmation is a modal
+  // warning with action buttons, answered by button label the same way a
+  // quick-pick answer selects by item label.
+  win.showWarningMessage = async (message: string, _options?: unknown, ...items: unknown[]) => {
+    const buttons = items.map(labelOf);
+    record.warnings.push({ message, buttons });
+    const answer = next("pick", "warning message");
+    if (answer.kind === "cancel") return undefined;
+    const hit = items.find((i) => labelOf(i) === answer.label) ?? items.find((i) => labelOf(i).includes(answer.label));
+    if (!hit) {
+      throw new Error(
+        `Modal stub: no warning button labelled "${answer.label}" was offered. Offered: ${JSON.stringify(buttons)}`
+      );
+    }
+    return hit;
   };
 
   return {

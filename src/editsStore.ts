@@ -15,14 +15,14 @@ export async function readEdits(modelUri: vscode.Uri): Promise<ParsedEdits> {
     const bytes = await vscode.workspace.fs.readFile(editsSidecarUri(modelUri));
     return parseEditsJson(Buffer.from(bytes).toString("utf8"));
   } catch {
-    return { ops: [], variables: [] };
+    return { ops: [], variables: [], bakedThrough: 0 };
   }
 }
 
 /** Writes the edits sidecar beside the model. The model file itself is never touched. */
-export async function writeEdits(modelUri: vscode.Uri, ops: EditOp[], variables: ParamVariable[]): Promise<void> {
+export async function writeEdits(modelUri: vscode.Uri, ops: EditOp[], variables: ParamVariable[], bakedThrough = 0): Promise<void> {
   assertNotDirty(editsSidecarUri(modelUri));
   const sourceName = modelUri.path.slice(modelUri.path.lastIndexOf("/") + 1);
-  const text = serializeEditsJson(sourceName, ops, variables);
+  const text = serializeEditsJson(sourceName, ops, variables, bakedThrough);
   await vscode.workspace.fs.writeFile(editsSidecarUri(modelUri), Buffer.from(text, "utf8"));
 }

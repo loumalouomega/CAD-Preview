@@ -10,13 +10,13 @@ describe("parseEditsJson", () => {
       { op: "boolean", kind: "subtract", a: ["solid-0"], b: ["solid-1"] },
     ];
     const text = JSON.stringify({ version: 1, source: "bull.stp", ops });
-    expect(parseEditsJson(text)).toEqual({ ops, variables: [] });
+    expect(parseEditsJson(text)).toEqual({ ops, variables: [], bakedThrough: 0 });
   });
 
   it("returns empty lists for invalid JSON or missing ops array", () => {
-    expect(parseEditsJson("not json")).toEqual({ ops: [], variables: [] });
-    expect(parseEditsJson("{}")).toEqual({ ops: [], variables: [] });
-    expect(parseEditsJson(JSON.stringify({ ops: "nope" }))).toEqual({ ops: [], variables: [] });
+    expect(parseEditsJson("not json")).toEqual({ ops: [], variables: [], bakedThrough: 0 });
+    expect(parseEditsJson("{}")).toEqual({ ops: [], variables: [], bakedThrough: 0 });
+    expect(parseEditsJson(JSON.stringify({ ops: "nope" }))).toEqual({ ops: [], variables: [], bakedThrough: 0 });
   });
 
   it("drops malformed ops but keeps the valid ones in order", () => {
@@ -122,5 +122,30 @@ describe("serializeEditsJson", () => {
     const text = serializeEditsJson("model.step", [{ op: "explode", factor: 1.5 }]);
     expect("variables" in JSON.parse(text)).toBe(false);
     expect(text).toBe(serializeEditsJson("model.step", [{ op: "explode", factor: 1.5 }], []));
+  });
+
+  it("omits bakedThrough when 0 (pre-watermark output unchanged)", () => {
+    const text = serializeEditsJson("model.step", [{ op: "explode", factor: 1.5 }]);
+    expect("bakedThrough" in JSON.parse(text)).toBe(false);
+    expect(parseEditsJson(text).bakedThrough).toBe(0);
+  });
+
+  it("round-trips a nonzero bakedThrough watermark", () => {
+    const ops: EditOp[] = [
+      { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },
+      { op: "translate", targets: ["solid-0"], vec: [0, 1, 0] },
+    ];
+    const text = serializeEditsJson("model.step", ops, [], 2);
+    expect(JSON.parse(text).bakedThrough).toBe(2);
+    const parsed = parseEditsJson(text);
+    expect(parsed.bakedThrough).toBe(2);
+    expect(parsed.ops).toEqual(ops);
+  });
+
+  it("clamps an out-of-range watermark instead of throwing", () => {
+    const ops: EditOp[] = [{ op: "explode", factor: 1.5 }];
+    expect(parseEditsJson(JSON.stringify({ version: 1, source: "m", ops, bakedThrough: 99 })).bakedThrough).toBe(1);
+    expect(parseEditsJson(JSON.stringify({ version: 1, source: "m", ops, bakedThrough: -3 })).bakedThrough).toBe(0);
+    expect(parseEditsJson(JSON.stringify({ version: 1, source: "m", ops, bakedThrough: "x" })).bakedThrough).toBe(0);
   });
 });

@@ -2848,6 +2848,58 @@ try {
     "an export with no parts assigned stays on the plain writer (no XCAF document-management entities)"
   );
 
+  // Tier 0 Phase 1 — the `bakedThrough` watermark end to end through the real
+  // kernel: export a file with an edit baked in (exactly what save-in-place
+  // writes), attach the sidecar WITH the watermark (exactly what save-in-place
+  // persists), and confirm the reopened document replays only the tail — no
+  // double-apply, same geometry, watermark visible in get_state. Uses BREP as
+  // the baked format (no unit header to interfere, full-precision round trip).
+  const watermarkModel = path.join(dir, "bull-for-watermark-test.stp");
+  fs.copyFileSync(FIXTURE, watermarkModel);
+  await call("apply_edit_ops", {
+    path: watermarkModel,
+    ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }],
+  });
+  const watermarkBefore = await call("load_model", { path: watermarkModel });
+  assert(watermarkBefore.solids.length === 2, `edited model has 2 solids before baking (got ${watermarkBefore.solids.length})`);
+  const watermarkVolume = (await call("get_mass_properties", { path: watermarkModel })).volume;
+  const watermarkBaked = path.join(dir, "watermark-baked.brep");
+  await call("export_brep", { path: watermarkModel, targetFormat: "brep", outputPath: watermarkBaked });
+  // Simulate the save-in-place sidecar write: same op list, watermark set.
+  const watermarkSidecar = JSON.parse(fs.readFileSync(`${watermarkModel}.edits.json`, "utf8"));
+  watermarkSidecar.bakedThrough = watermarkSidecar.ops.length;
+  fs.writeFileSync(`${watermarkBaked}.edits.json`, JSON.stringify(watermarkSidecar, null, 2));
+  const watermarkReloaded = await call("load_model", { path: watermarkBaked });
+  assert(
+    watermarkReloaded.solids.length === 2,
+    `reopening the baked file replays the tail only — still 2 solids, not a double-applied 3 (got ${watermarkReloaded.solids.length})`
+  );
+  assert(
+    !watermarkReloaded.warnings.some((w) => /did NOT apply/.test(w)),
+    "reopening the baked file reports no skipped persisted ops"
+  );
+  const watermarkReloadedVolume = (await call("get_mass_properties", { path: watermarkBaked })).volume;
+  assert(
+    Math.abs(watermarkReloadedVolume / watermarkVolume - 1) < 1e-6,
+    `baked file's volume matches the pre-bake edited model (BREP round-trips at full precision): ${watermarkReloadedVolume.toFixed(6)} vs ${watermarkVolume.toFixed(6)}`
+  );
+  const watermarkState = await call("get_state", { path: watermarkBaked });
+  assert(watermarkState.bakedThrough === 1 && watermarkState.edits.length === 1, `get_state exposes the full history plus the watermark (got bakedThrough=${watermarkState.bakedThrough}, edits=${watermarkState.edits.length})`);
+  // A further edit appends past the watermark and replays cleanly.
+  const watermarkAppend = await call("apply_edit_ops", {
+    path: watermarkBaked,
+    ops: [{ op: "translate", targets: ["solid-1"], vec: [1, 0, 0] }],
+  });
+  assert(watermarkAppend.applied === 1 && watermarkAppend.stackLength === 2, `appending past the watermark applies (got applied=${watermarkAppend.applied}, stack=${watermarkAppend.stackLength})`);
+  const watermarkAfterAppend = JSON.parse(fs.readFileSync(`${watermarkBaked}.edits.json`, "utf8"));
+  assert(watermarkAfterAppend.bakedThrough === 1 && watermarkAfterAppend.ops.length === 2, "appending preserves the watermark and the full list");
+  // Removing a baked op is refused, not silently mis-replayed.
+  const watermarkRemove = await callTolerant("remove_edit_op", { path: watermarkBaked, index: 0 });
+  assert(
+    watermarkRemove.error !== undefined && /baked prefix/.test(watermarkRemove.error),
+    "remove_edit_op refuses an index inside the baked prefix with a clear error"
+  );
+
   // Regression guard: does the meshing-input STEP path (export_mesh/
   // generate_mesh's internal re-export, NOT export_brep above) stay scale-
   // correct now that STEP header-patching exists? Verified against the live

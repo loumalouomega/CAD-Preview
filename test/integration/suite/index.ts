@@ -241,9 +241,55 @@ test("Export… offers the real export targets and writes the chosen one", async
   const offered = record.quickPicks[0]?.labels ?? [];
   assert(offered.length > 0, `the export command opened a format quick-pick (offered ${JSON.stringify(offered)})`);
   assert(offered.includes("STL") && offered.includes("BREP"), "the format quick-pick offers the real target set");
-  assert(!offered.includes("STEP"), "the format quick-pick does NOT offer the source's own format");
+  // Tier 0 Phase 1: a B-rep source offers its OWN format first — a confirmed
+  // save-in-place, not an export. Mesh sources keep the exclusion.
+  assert(offered[0] === "STEP", `the source's own B-rep format leads the quick-pick (save in place), offered ${JSON.stringify(offered)}`);
   assert(record.quickPicks.length >= 2, "a second quick-pick asked for the export unit");
   assert(fs.existsSync(out) && fs.statSync(out).size > 0, "the chosen format is written to the chosen path");
+  await closeAll();
+});
+
+test("Save in place bakes ops into the source with .bak + watermark", async () => {
+  // Tier 0 Phase 1: picking the source's own B-rep format writes back to the
+  // open document instead of exporting. Pre-write a one-op sidecar so there
+  // is something to bake (the webview cannot push ops in this harness).
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    })
+  );
+  const before = fs.readFileSync(staged);
+  assert(await openDocument(staged), "the STEP fixture opens with a sidecar op");
+  const record = await withModals([pick("STEP"), pick("Save in place")], async () => {
+    await vscode.commands.executeCommand("cad-preview.export");
+    const settled = await waitFor(() => {
+      try {
+        return JSON.parse(fs.readFileSync(`${staged}.edits.json`, "utf8")).bakedThrough === 1;
+      } catch {
+        return false;
+      }
+    });
+    assert(settled, "the sidecar watermark lands after the save");
+  });
+  // No save dialog and no unit pick for a save-in-place — the destination IS
+  // the source, at the file's own declared unit.
+  assert(record.saveDialogs.length === 0, "save-in-place shows no save dialog");
+  assert(record.quickPicks.length === 1, "save-in-place shows no unit quick-pick");
+  assert(
+    record.warnings.length === 1 && /re-emitted/.test(record.warnings[0]?.message ?? ""),
+    "the modal confirmation names the data-loss contract"
+  );
+  assert(!fs.readFileSync(staged).equals(before), "the source file itself is rewritten");
+  assert(fs.existsSync(`${staged}.bak`) && fs.readFileSync(`${staged}.bak`).equals(before), "a one-deep .bak holds the pre-save bytes");
+  const sidecar = JSON.parse(fs.readFileSync(`${staged}.edits.json`, "utf8"));
+  assert(
+    sidecar.bakedThrough === 1 && sidecar.ops.length === 1,
+    `the sidecar keeps the full list with the watermark (got bakedThrough=${sidecar.bakedThrough}, ops=${sidecar.ops?.length})`
+  );
   await closeAll();
 });
 

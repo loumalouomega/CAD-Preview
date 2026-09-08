@@ -31,7 +31,7 @@ import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readPlanes, writePlanes, planesSidecarUri } from "./planesStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
-import type { EditOp } from "./editOps";
+import type { EditOp, EditOpKind } from "./editOps";
 import { validateEditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { resolvePlaneRefs } from "./planeRefs";
@@ -48,9 +48,9 @@ import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson } from "./planesSidecar";
-import { parseEditsJson } from "./editsSidecar";
+import { parseEditsJson, replayTail } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
-import { DISPLAY_UNITS, UNIT_LABELS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
+import { DISPLAY_UNITS, UNIT_LABELS, displayUnitFromUnitName, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import { scaleStlBytes } from "./stlParser";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
@@ -340,8 +340,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
    * accept an empty compound: BREP is OCCT's own native serialization, it
    * carries no unit header to declare for geometry that isn't there yet, and
    * it skips `handleBRep`'s STEP/IGES `latin1` unit-detection path entirely.
-   * Consequence, since `exportTargetsFor` excludes a document's own format:
-   * Export… offers STEP/IGES + every mesh target, but not BREP.
+    * Consequence, now that `exportTargetsFor` offers a B-rep source its own
+    * format for save-in-place: Export… offers BREP (save in place) first,
+    * then STEP/IGES + every mesh target.
    *
    * Host-only and session-free, like `openFileDialog`/`loadPreprocessDialog`
    * — it must work with no CAD tab focused at all.
@@ -465,6 +466,18 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     // persisted and echoed back. The source CAD file is never modified.
     let currentEdits: EditOp[] = [];
     let currentVariables: ParamVariable[] = [];
+    // Tier 0 save-in-place watermark: the file on disk already contains
+    // `currentEdits[0..currentBakedThrough]`, so every kernel replay consumes
+    // only the tail (`replayTail`). 0 on pre-watermark documents. Adopted from
+    // the sidecar on `ready`, set to `currentEdits.length` by an in-place
+    // save, persisted on every edits write.
+    let currentBakedThrough = 0;
+    // Set around our own in-place source write so the source-file watcher
+    // below skips exactly one self-event instead of "reloading" what we just
+    // saved. One-shot: consumed by the next watcher firing.
+    let expectOwnSourceSave = false;
+    // One-deep `<model>.bak` per session, written on the first in-place save.
+    let madeSourceBackupThisSession = false;
     // Latest parts / mesh options received from the webview, retained so the
     // File-menu "Save" can flush all three sidecars immediately. The webview
     // re-sends these on every change, so these copies are always current.
@@ -500,7 +513,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           writeParts(document.uri, currentParts),
           writeAnnotations(document.uri, currentAnnotations),
           writePlanes(document.uri, currentPlanes),
-          writeEdits(document.uri, currentEdits, currentVariables),
+          writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough),
           ...(currentMeshOptions
             ? [writeMeshOptions(document.uri, currentMeshOptions), writeGeoScript(document.uri, currentMeshOptions)]
             : []),
@@ -509,6 +522,100 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         post({ type: "status", text: "Saved" });
       } catch (err) {
         post({ type: "error", message: `Save failed: ${(err as Error).message}` });
+      }
+    };
+
+    /**
+     * Tier 0 Phase 1 — same-format save-in-place (STEP→STEP, IGES→IGES,
+     * BREP→BREP). The confirmed write back to the open document: the geometry
+     * writer that already runs on every export (`exportBRep` → `writeShape`),
+     * pointed at the file it came from. Runs INSTEAD of the export flow when
+     * the user picks the source's own format (see `handleExport`); there is
+     * deliberately no editor-API change in this phase (no dirty state, no
+     * revert — Phase 2 work).
+     *
+     * Safety, in order: (1) explicit modal confirmation naming what a
+     * re-emitted STEP/IGES/BREP does NOT preserve; (2) write to a temp
+     * sibling + atomic-ish rename, so a crash mid-write cannot truncate the
+     * original; (3) a one-deep `<model>.bak` on the first save of the
+     * session; (4) the `bakedThrough` watermark set to the full list length
+     * and flushed immediately (clearing the pending debounce first, so a
+     * stale-watermark write cannot land after it); (5) the source watcher
+     * skips exactly one self-event via `expectOwnSourceSave`.
+     *
+     * Op-list semantics (the one thing this phase cannot skip): the file
+     * becomes `base ∘ ops[0..n]` and the sidecar KEEPS the full list with the
+     * baked prefix marked — replay starts after the watermark (see
+     * `loadModel`'s tail slice). Baking renumbers entity ids, and the
+     * two-shape save-time rebind needs kernel support Phase 1 does not add,
+     * so a document carrying Parts/annotations says so loudly in the status
+     * line instead of claiming its highlights are verified.
+     */
+    const performSaveInPlace = async (targetFormat: CadFormat): Promise<void> => {
+      if (!route || route.strategy !== "occt") return;
+      const fileName = document.uri.path.slice(document.uri.path.lastIndexOf("/") + 1);
+      if (targetFormat !== route.format || (route.format !== "step" && route.format !== "iges" && route.format !== "brep")) {
+        post({ type: "error", message: `Saving ${fileName} in place is only supported STEP→STEP, IGES→IGES and BREP→BREP in this version.` });
+        return;
+      }
+      if (currentEdits.length < currentBakedThrough) {
+        post({ type: "error", message: "The op list changed below the save point — close and reopen the file to work from the saved state." });
+        return;
+      }
+      const tail = replayTail(currentEdits, currentBakedThrough);
+      try {
+        const scadWarnings: string[] = [];
+        const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+        for (const w of scadWarnings) post({ type: "status", text: w });
+        // Save at the file's own declared unit (a parameter, not new work —
+        // the display selector already detects it): an INCH-declared STEP
+        // stays INCH-declared, geometrically identical on reopen.
+        const saveUnit = this.detectSourceDisplayUnit(src.bytes, route.format);
+        const confirm = await vscode.window.showWarningMessage(
+          `Save ${tail.length} edit op(s) into ${fileName} itself? The file is re-emitted, not patched: entity numbering and authoring metadata are not preserved, and per-part colour is not carried over. Assembly structure and part names survive. This cannot be undone past the save point.`,
+          { modal: true },
+          "Save in place",
+          "Cancel"
+        );
+        if (confirm !== "Save in place") return;
+        const baked = await this.pipeline.exportBRep(
+          this.context.extensionPath,
+          src.bytes,
+          src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+          targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
+          tail,
+          saveUnit,
+          true,
+          currentParts
+        );
+        if (!madeSourceBackupThisSession) {
+          await vscode.workspace.fs.copy(document.uri, document.uri.with({ path: `${document.uri.path}.bak` }), { overwrite: true });
+          madeSourceBackupThisSession = true;
+        }
+        const baseName = fileName.replace(/\.[^.]+$/, "");
+        const tmpUri = vscode.Uri.joinPath(document.uri, "..", `${baseName}.save-tmp.${EXPORT_EXTENSION[targetFormat as CadFormat]}`);
+        try {
+          await vscode.workspace.fs.writeFile(tmpUri, baked);
+          expectOwnSourceSave = true;
+          await vscode.workspace.fs.rename(tmpUri, document.uri, { overwrite: true });
+        } catch (err) {
+          expectOwnSourceSave = false;
+          await vscode.workspace.fs.delete(tmpUri).then(undefined, () => undefined);
+          throw err;
+        }
+        if (editsSaveTimer) clearTimeout(editsSaveTimer);
+        currentBakedThrough = currentEdits.length;
+        await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+        if (currentParts.length > 0 || currentAnnotations.length > 0) {
+          post({
+            type: "status",
+            text: "Part/annotation highlights were assigned against the pre-save geometry — verify them; re-assign anything that looks shifted.",
+          });
+        }
+        post({ type: "status", text: `Saved in place to ${fileName} (${tail.length} op(s) baked)` });
+        loadModel(true);
+      } catch (err) {
+        post({ type: "error", message: `Save in place failed: ${(err as Error).message}` });
       }
     };
 
@@ -546,7 +653,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const format = route.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg" | "scad">;
         const generation = ++brepLoadGeneration.current;
         const autoFit = !showProgress;
-        const resolvedEdits = resolvePlaneRefs(currentEdits, currentPlanes).ops;
+        // Tier 0: replay only the unbaked tail — the baked prefix already
+        // lives in the file on disk.
+        const resolvedEdits = resolvePlaneRefs(replayTail(currentEdits, currentBakedThrough), currentPlanes).ops;
         if (showProgress) {
           void vscode.window.withProgress(
             {
@@ -577,11 +686,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
                 // just this one — an accepted trade-off of one shared child.
                 this.pipeline.cancelCurrent();
               });
-              await this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, progress);
+              await this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, progress, currentBakedThrough, currentEdits.slice(0, currentBakedThrough).map((o) => o.op));
             }
           );
         } else {
-          void this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit);
+          void this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, undefined, currentBakedThrough, currentEdits.slice(0, currentBakedThrough).map((o) => o.op));
         }
       }
     };
@@ -617,6 +726,11 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       if (!route || route.strategy !== "occt") return;
       if (currentParts.length === 0 && currentAnnotations.length === 0) return;
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
+      // Tier 0: both lists replay against the current (possibly baked) bytes,
+      // so both are tailed identically — the diff stays meaningful.
+      const previousTail = replayTail(previousOps, currentBakedThrough);
+      const newTail = replayTail(newOps, currentBakedThrough);
+      if (JSON.stringify(previousTail) === JSON.stringify(newTail)) return;
       try {
         const scadWarnings: string[] = [];
         const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
@@ -632,7 +746,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           this.context.extensionPath,
           bytes,
           format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-          newOps,
+          newTail,
           currentParts
         );
         if (selected.parts !== currentParts) currentParts = selected.parts;
@@ -641,8 +755,8 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           this.context.extensionPath,
           bytes,
           format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-          previousOps,
-          newOps,
+          previousTail,
+          newTail,
           currentParts,
           currentAnnotations
         );
@@ -677,13 +791,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
      * debounced writes ALSO fire these watchers, but by the time a write
      * lands on disk the in-memory `current*` state already equals what was
      * written, so the comparison below finds no difference and no-ops — this
-     * is what makes the design safe against feedback loops with no "was this
-     * my own write" flag/timestamp bookkeeping (and, transitively, safe
-     * against `handleMeshio`'s and `rebindPartsOnChange`'s own occasional
-     * `.parts.json` writes triggering a redundant-but-harmless reaction here
-     * too). The CAD source file is the one exception: this extension NEVER
-     * writes it (the read-only invariant), so any change to it is
-     * unconditionally external — no comparison needed, just reload.
+      * is what makes the design safe against feedback loops with no "was this
+      * my own write" flag/timestamp bookkeeping (and, transitively, safe
+      * against `handleMeshio`'s and `rebindPartsOnChange`'s own occasional
+      * `.parts.json` writes triggering a redundant-but-harmless reaction here
+      * too). The CAD source file used to be the one exception (unconditional
+      * reload — "this extension NEVER writes it"). Since Tier 0 Phase 1
+      * (same-format save-in-place) that is no longer true: our own save sets
+      * `expectOwnSourceSave`, consumed once by the watcher above. A genuine
+      * external change still reloads unconditionally — no content comparison,
+      * just reload.
      *
      * A short debounce per watched file (not the longer autosave one) avoids
      * reacting to a file mid-write by another process; `readEdits`/
@@ -708,6 +825,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
     watchForExternalChange(document.uri, () => {
       if (!route) return;
+      // Tier 0: our own in-place save fires this watcher too — skip exactly
+      // one event rather than "reloading" what we just wrote.
+      if (expectOwnSourceSave) {
+        expectOwnSourceSave = false;
+        return;
+      }
       post({ type: "status", text: "File changed on disk — reloading…" });
       loadModel(true);
     });
@@ -722,6 +845,10 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const previousOps = currentEdits;
         currentEdits = resolvedOps;
         currentVariables = parsed.variables;
+        // Tier 0: an external writer (only this extension's own save-in-place
+        // sets it today) may have moved the watermark — adopt it so the tail
+        // slice below stays aligned with the file on disk.
+        currentBakedThrough = parsed.bakedThrough;
         if (route && route.strategy === "occt") {
           loadModel();
           void rebindPartsOnChange(previousOps, currentEdits);
@@ -807,7 +934,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     const session: EditorSession = {
       uri: document.uri,
       export: () => {
-        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts);
+        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts, currentBakedThrough, (f) => performSaveInPlace(f));
       },
       save: flushSidecars,
       savePreprocess: () => {
@@ -817,16 +944,16 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         void this.handleScreenshot(document.uri, post, pending);
       },
       exportSvg: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, false, currentBakedThrough);
       },
       exportMesh: () => {
-        void this.handleExportMesh(document.uri, route, currentEdits, currentMeshOptions, post);
+        void this.handleExportMesh(document.uri, route, currentEdits, currentMeshOptions, post, currentBakedThrough);
       },
       exportDxf: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, false, currentBakedThrough);
       },
       exportDrawing: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true, currentBakedThrough);
       },
       post,
     };
@@ -855,6 +982,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const { ops: resolvedEdits } = resolvePlaneRefs(parsed.ops, planesInitial);
         currentEdits = resolvedEdits;
         currentVariables = parsed.variables;
+        currentBakedThrough = parsed.bakedThrough;
         currentPlanes = planesInitial;
         loadModel(true);
         post({ type: "edits", ops: currentEdits, variables: currentVariables });
@@ -880,7 +1008,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
                   this.context.extensionPath,
                   bytes,
                   format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-                  currentEdits,
+                  replayTail(currentEdits, currentBakedThrough),
                   currentParts
                 );
                 if (selected.parts !== currentParts) {
@@ -963,7 +1091,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // Debounced sidecar autosave (separate timer/file from parts).
         if (editsSaveTimer) clearTimeout(editsSaveTimer);
         editsSaveTimer = setTimeout(() => {
-          void writeEdits(document.uri, currentEdits, currentVariables).then(
+          void writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough).then(
             undefined,
             (err) => post({ type: "error", message: `Could not save edits: ${(err as Error).message}` })
           );
@@ -971,6 +1099,22 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         // B-rep edits are applied in the host, so re-tessellate immediately. Mesh
         // edits are applied in the webview itself, which already updated the view.
         if (route && route.strategy === "occt") {
+          // Tier 0: undo/remove crossing the save point cannot be honored —
+          // the baked prefix lives in the file itself now. Past the point the
+          // view simply shows the saved state (tail replay is empty there);
+          // a change WITHIN the baked prefix would misalign the tail, so say
+          // so loudly rather than rendering a confidently-wrong model. Full
+          // refusal (undo-past-save) is Phase 2 editor-contract work.
+          if (
+            currentBakedThrough > 0 &&
+            JSON.stringify(previousOps.slice(0, currentBakedThrough)) !==
+              JSON.stringify(currentEdits.slice(0, Math.min(currentBakedThrough, currentEdits.length)))
+          ) {
+            post({
+              type: "error",
+              message: `That edit touches ops already saved into ${document.uri.path.slice(document.uri.path.lastIndexOf("/") + 1)} itself — close and reopen the file to work from the saved state.`,
+            });
+          }
           loadModel();
           void rebindPartsOnChange(previousOps, currentEdits);
         }
@@ -1025,7 +1169,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
 
       if (msg.type === "meshingGenerate") {
         try {
-          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl);
+          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
           if (!input) {
             post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
             return;
@@ -1057,7 +1201,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "meshingExport") {
-        await this.runMeshExport(document.uri, route, currentEdits, msg.target, msg.options, msg.stl, msg.unit ?? "mm", post);
+        await this.runMeshExport(document.uri, route, currentEdits, msg.target, msg.options, msg.stl, msg.unit ?? "mm", post, currentBakedThrough);
         return;
       }
 
@@ -1084,7 +1228,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "exportRequest") {
-        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts);
+        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts, currentBakedThrough, (f) => performSaveInPlace(f));
         return;
       }
 
@@ -1145,7 +1289,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            currentEdits,
+            replayTail(currentEdits, currentBakedThrough),
             msg.entityId
           );
           post({ type: "massPropertiesResult", requestId: msg.requestId, properties });
@@ -1249,7 +1393,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            currentEdits,
+            replayTail(currentEdits, currentBakedThrough),
             msg.entityId
           );
           post({ type: "entityFactsResult", requestId: msg.requestId, facts });
@@ -1273,20 +1417,28 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           const bytes = src.bytes;
           const format = src.format;
           const results: SelectorSynthesizeResultEntry[] = [];
+          // Tier 0: the webview addresses buckets by FULL-history row (the
+          // geometry post rebases kernel indices for display); the kernel
+          // replays the tail, so translate back to replay-list-relative here.
+          const tailEdits = replayTail(currentEdits, currentBakedThrough);
+          const replayOp = msg.op - currentBakedThrough;
           for (const entityId of msg.entityIds) {
             try {
+              if (!Number.isInteger(replayOp) || replayOp < 0 || replayOp >= tailEdits.length) {
+                throw new Error(`Bucket op ${msg.op} is inside the baked prefix — it cannot be re-synthesized without rewriting the source file.`);
+              }
               const r = await this.pipeline.synthesizeSelector(
                 this.context.extensionPath,
                 bytes,
                 format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-                currentEdits,
-                msg.op,
+                tailEdits,
+                replayOp,
                 msg.role,
                 entityId
               );
               // The kind tag is stamped here from the producing op itself —
               // server-derived (the `set_part` precedent), never caller-supplied.
-              results.push({ entityId, query: r.query, kind: r.query ? currentEdits[msg.op]?.op ?? null : null, reason: r.reason });
+              results.push({ entityId, query: r.query, kind: r.query ? tailEdits[replayOp]?.op ?? null : null, reason: r.reason });
             } catch (err) {
               results.push({ entityId, query: null, kind: null, reason: (err as Error).message });
             }
@@ -1353,7 +1505,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "exportSvgRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, false, currentBakedThrough);
         return;
       }
 
@@ -1375,12 +1527,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "exportDxfRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, false, currentBakedThrough);
         return;
       }
 
       if (msg.type === "exportDrawingRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true, currentBakedThrough);
         return;
       }
 
@@ -1398,7 +1550,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            currentEdits,
+            replayTail(currentEdits, currentBakedThrough),
             msg.kind,
             msg.entityIdA,
             msg.entityIdB
@@ -1411,7 +1563,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
 
       if (msg.type === "opPreviewRequest") {
-        void this.handleOpPreview(document.uri, route, post, currentEdits, documentKey, msg.requestId, msg.op);
+        void this.handleOpPreview(document.uri, route, post, replayTail(currentEdits, currentBakedThrough), documentKey, msg.requestId, msg.op);
         return;
       }
 
@@ -1556,7 +1708,17 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     generation: number,
     genHolder: { current: number },
     autoFit = true,
-    progress?: vscode.Progress<{ message?: string }>
+    progress?: vscode.Progress<{ message?: string }>,
+    /**
+     * Tier 0: how many leading ops of the document's FULL history are already
+     * baked into the file. `ops` above is the replay tail, so the kernel's
+     * `opOutcomes`/`opBuckets` indices are tail-relative — rebased below onto
+     * full-history rows so the Edits panel's ⚠ marks and `+N` chips land on
+     * the right rows. 0 on pre-watermark documents (identity rebase).
+     * `bakedKinds` carries those leading ops' kinds for the padding outcomes.
+     */
+    bakedThrough = 0,
+    bakedKinds: EditOpKind[] = []
   ): Promise<void> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
@@ -1597,12 +1759,22 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       for (const w of queryWarnings ?? []) post({ type: "status", text: w });
       for (const w of warnings ?? []) post({ type: "status", text: w });
       for (const w of scadWarnings) post({ type: "status", text: w });
+      // Tier 0 rebase (see `bakedThrough` param): tail-relative kernel indices
+      // back onto full-history rows. Baked rows applied by definition (they
+      // are in the file), so they pad as applied — never as skipped.
+      const rebasedOutcomes: typeof opOutcomes = bakedThrough > 0
+        ? [
+            ...bakedKinds.slice(0, bakedThrough).map((kind, index) => ({ index, kind, applied: true as const })),
+            ...opOutcomes.map((o) => ({ ...o, index: o.index + bakedThrough })),
+          ]
+        : opOutcomes;
+      const rebasedBuckets = bakedThrough > 0 ? opBuckets.map((b) => ({ ...b, op: b.op + bakedThrough })) : opBuckets;
       post({
         type: "geometry",
         autoFit,
-        opOutcomes,
+        opOutcomes: rebasedOutcomes,
         guideIds,
-        opBuckets,
+        opBuckets: rebasedBuckets,
         meshes: groups.flatMap((g) =>
           g.faces.map((f) => ({
             positions: encodeBuffer(f.buffers.positions),
@@ -1909,7 +2081,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     route: FileRoute | undefined,
     ops: EditOp[],
     stl: string | undefined,
-    unit: DisplayUnit = "mm"
+    unit: DisplayUnit = "mm",
+    /** Tier 0: leading baked-op count — the meshing STEP re-export replays the tail. */
+    bakedThrough = 0
   ): Promise<MeshGenerationInput | undefined> {
     if (route && route.strategy === "occt") {
       // Conversion chatter is deliberately dropped here (not status-posted):
@@ -1931,7 +2105,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         sourceBytes,
         src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
         "step",
-        ops,
+        replayTail(ops, bakedThrough),
         unit,
         false
       );
@@ -1982,9 +2156,24 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     post: (msg: HostToWebview) => void,
     pending: Map<string, PendingExport>,
     ops: EditOp[] = [],
-    parts: Part[] = []
+    parts: Part[] = [],
+    /**
+     * Tier 0 Phase 1: how many leading ops of `ops` are already baked into
+     * the file. The B-rep `getBytes` below replays the tail only.
+     */
+    bakedThrough = 0,
+    /**
+     * Tier 0 Phase 1: same-format B-rep pick handler. When present and the
+     * user picks the source's own B-rep format, this runs INSTEAD of the
+     * export flow (save-in-place needs session state — watermark, watcher
+     * guard, backup flag — that lives in the caller's closure, not here).
+     */
+    onSaveInPlace?: (targetFormat: CadFormat) => Promise<void>
   ): Promise<void> {
-    const targets = exportTargetsFor(route);
+    // Tier 0 Phase 1: a B-rep source may target its OWN format (STEP-from-STEP
+    // save-in-place). Mesh sources keep the exclusion — mesh in-place is
+    // Phase 3 work.
+    const targets = exportTargetsFor(route, route.strategy === "occt");
     if (targets.length === 0) return;
 
     const picked = await vscode.window.showQuickPick(
@@ -1998,6 +2187,20 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     if (!picked) return;
 
     const targetFormat = picked.format;
+    // Tier 0 Phase 1: same-format B-rep pick is a save-in-place, not an
+    // export — a confirmed write back to the open document (temp sibling +
+    // rename, one-deep .bak, bakedThrough watermark). Cross-format picks and
+    // every mesh target keep the export flow below. Without a session
+    // callback (no open document owns this call) it cannot run — refuse
+    // rather than silently exporting over the source.
+    if (BREP_FORMATS.has(targetFormat) && targetFormat === route.format) {
+      if (onSaveInPlace) {
+        await onSaveInPlace(targetFormat);
+      } else {
+        post({ type: "error", message: "Saving in place needs an open document session." });
+      }
+      return;
+    }
     // Every B-rep/mesh target this codebase can export to can now honestly
     // represent a converted unit — see UNIT_CONVERTIBLE_FORMATS' doc comment.
     const unit = UNIT_CONVERTIBLE_FORMATS.has(targetFormat) ? await this.pickExportUnit() : "mm";
@@ -2013,7 +2216,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
           sourceBytes,
           src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
           targetFormat as Extract<CadFormat, "step" | "iges" | "brep">,
-          ops,
+          replayTail(ops, bakedThrough),
           unit,
           true,
           parts
@@ -2049,6 +2252,23 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       { placeHolder: "Export unit…" }
     );
     return picked?.unit ?? "mm";
+  }
+
+  /**
+   * Tier 0 Phase 1: the file's own declared unit as a `DisplayUnit`
+   * (`"mm"` when the format carries no unit metadata or declares an
+   * unrecognized one) — the same `detectStepLengthUnit`/
+   * `detectIgesLengthUnit` text scan `handleBRep` already uses for the
+   * display selector. Saving in place at the detected unit keeps the
+   * declaration stable across the save (geometrically identical either way,
+   * since a correctly-labelled header round-trips to the same real-world
+   * size — but the file visibly changing INCH→mm would be a surprise).
+   */
+  private detectSourceDisplayUnit(bytes: Uint8Array, format: CadFormat): DisplayUnit {
+    if (format !== "step" && format !== "iges") return "mm";
+    const text = Buffer.from(bytes).toString("latin1");
+    const declared = format === "step" ? detectStepLengthUnit(text) : detectIgesLengthUnit(text);
+    return displayUnitFromUnitName(declared) ?? "mm";
   }
 
   /**
@@ -2181,7 +2401,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     /** Produce a technical DRAWING (hidden-line removal) rather than an
      * outline. Shares this whole view/unit/save flow deliberately — the only
      * difference is what the pipeline draws. */
-    hiddenLines = false
+    hiddenLines = false,
+    /** Tier 0: leading baked-op count — the brep `CompareSource` replays the tail. */
+    bakedThrough = 0
   ): Promise<void> {
     if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
       const label = format.toUpperCase();
@@ -2221,7 +2443,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         const bytes = src.bytes;
         const source: CompareSource =
           route.strategy === "occt"
-            ? { kind: "brep", bytes, format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">, ops }
+            ? { kind: "brep", bytes, format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">, ops: replayTail(ops, bakedThrough) }
             : route.format === "gltf"
               ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes) }
               : { kind: route.format as "stl" | "obj" | "ply", bytes };
@@ -2288,10 +2510,12 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     meshOptions: MeshOptions,
     stl: string | undefined,
     unit: DisplayUnit,
-    post: (msg: HostToWebview) => void
+    post: (msg: HostToWebview) => void,
+    /** Tier 0: leading baked-op count — the meshing STEP re-export replays the tail. */
+    bakedThrough = 0
   ): Promise<void> {
       try {
-        const input = await this.resolveMeshInput(uri, route, ops, stl, unit);
+        const input = await this.resolveMeshInput(uri, route, ops, stl, unit, bakedThrough);
         if (!input) {
           post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
           return;
@@ -2441,7 +2665,9 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     route: FileRoute | undefined,
     ops: EditOp[],
     meshOptions: MeshOptions | undefined,
-    post: (msg: HostToWebview) => void
+    post: (msg: HostToWebview) => void,
+    /** Tier 0: leading baked-op count — the meshing STEP re-export replays the tail. */
+    bakedThrough = 0
   ): Promise<void> {
     if (!route || route.strategy !== "occt") {
       post({
@@ -2460,7 +2686,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
     // `meshingChanged`), but a document whose panel was never touched may not
     // have one yet — fall back to the sidecar, same source the panel reads.
     const options = meshOptions ?? (await readMeshOptions(uri));
-    await this.runMeshExport(uri, route, ops, picked.id as MeshExportFormatId, options, undefined, unit, post);
+    await this.runMeshExport(uri, route, ops, picked.id as MeshExportFormatId, options, undefined, unit, post, bakedThrough);
   }
 
   /**
@@ -2609,7 +2835,7 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
       }
       if (contents.edits !== undefined) {
         const parsed = parseEditsJson(contents.edits);
-        await writeEdits(destUri, parsed.ops, parsed.variables);
+        await writeEdits(destUri, parsed.ops, parsed.variables, parsed.bakedThrough);
       }
       if (contents.meshOptions !== undefined) {
         const options = parseMeshJson(contents.meshOptions);
