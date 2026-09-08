@@ -159,6 +159,7 @@ test("panels: every documented panel id exists and is populated", async (page) =
     "parts-panel", "parts-body",
     "edits-panel", "variables-section",
     "meshing-panel", "standard-parts-panel",
+    "clash-panel", "clash-body",
   ];
   const missing = await page.evaluate((list) => list.filter((id) => !document.getElementById(id)), ids);
   assert(missing.length === 0, `all ${ids.length} panel ids present (missing: ${JSON.stringify(missing)})`);
@@ -1100,6 +1101,7 @@ test("collapse: every sidebar section has a working chevron", async (page) => {
   await populate(page);
   const panels = [
     "tree-panel", "parts-panel", "edits-panel", "meshing-panel", "mass-panel",
+    "clash-panel",
     "mesh-health-panel", "region-fit-panel", "macros-panel", "standard-parts-panel",
   ];
   const missing = await page.evaluate(
@@ -1233,6 +1235,121 @@ test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", 
   assert(shown.hiddenAttr, "the host marked #mesh-health-panel hidden for a B-rep source");
   assert(shown.meshHealth === 0, `#mesh-health-panel renders nothing (got ${shown.meshHealth}px)`);
   assert(shown.regionFit === 0, `#region-fit-panel renders nothing (got ${shown.regionFit}px)`);
+});
+
+// ── Clash panel (roadmap Tier 2 "Clash panel") ────────────────────────────
+//
+// The kernel side (`checkInterference`/`checkInterferenceAll`) is covered
+// against live OCCT in `npm run mcp:smoke`, so what needs checking here is the
+// panel: eligibility gating, the request it posts, and the rendering decision.
+// Host replies are faked by posting `clashCheckResult`/`clashCheckAllResult`
+// directly (the inspector-card precedent above).
+
+test("clash: B-rep source shows the section with Part dropdowns populated", async (page) => {
+  await populate(page); // bull.stp — B-rep, so the section is eligible
+  const state = await page.evaluate(() => ({
+    shown: document.getElementById("clash-panel")?.offsetParent !== null,
+    a: Array.from(document.getElementById("clash-a").options).map((o) => o.value),
+    b: Array.from(document.getElementById("clash-b").options).map((o) => o.value),
+  }));
+  assert(state.shown, "the Clash section is genuinely rendered for a B-rep source");
+  // The fixture pre-creates "Body" (volumes), "Contact faces" (surfaces) and
+  // "Feature edges" (lines) — dropdowns list all three by name.
+  assert(eq(state.a, ["Body", "Contact faces", "Feature edges"]), `operand A lists the fixture Parts (got ${JSON.stringify(state.a)})`);
+  assert(eq(state.b, ["Body", "Contact faces", "Feature edges"]), `operand B lists the fixture Parts (got ${JSON.stringify(state.b)})`);
+});
+
+test("clash: Check posts clashCheckRequest; the reply renders; a stale reply is ignored", async (page) => {
+  await populate(page);
+  await page.selectOption("#clash-a", "Body");
+  await page.selectOption("#clash-b", "Contact faces");
+  await page.click("#clash-check");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest").at(-1) ?? null
+  );
+  assert(req !== null, "clicking Check posts a clashCheckRequest");
+  assert(
+    req !== null && req.partA === "Body" && req.partB === "Contact faces" && typeof req.requestId === "string",
+    `the request names both Parts with a requestId (got ${JSON.stringify(req)})`
+  );
+
+  await page.evaluate((id) =>
+    window.postMessage(
+      { type: "clashCheckResult", requestId: id, result: { hasOverlap: true, overlapVolume: 12.5, unresolvedA: [], unresolvedB: [] } },
+      "*"
+    ),
+    req.requestId
+  );
+  await sleep(200);
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(text.includes("Body") && text.includes("Contact faces"), `the row names both Parts (got ${JSON.stringify(text)})`);
+  assert(text.includes("12.5"), `the row shows the overlap volume (got ${JSON.stringify(text)})`);
+
+  // A superseded reply (e.g. from a Check since replaced) must not repaint.
+  await page.evaluate((id) =>
+    window.postMessage(
+      { type: "clashCheckResult", requestId: id, result: { hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] } },
+      "*"
+    ),
+    "stale-id"
+  );
+  await sleep(200);
+  const after = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(after === text, "a stale-requestId reply is ignored");
+});
+
+test("clash: Check-all posts one request and renders named pairs with the screened badge", async (page) => {
+  await populate(page);
+  await page.click("#clash-check-all");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null
+  );
+  assert(req !== null && typeof req?.requestId === "string", "clicking Check all posts a clashCheckAllRequest");
+  await page.evaluate((id) =>
+    window.postMessage(
+      {
+        type: "clashCheckAllResult",
+        requestId: id,
+        pairs: [
+          { partA: "Body", partB: "Bracket", a: ["solid-0"], b: ["solid-1"], hasOverlap: true, overlapVolume: 3, unresolvedA: [], unresolvedB: [] },
+          { partA: "Body", partB: "Far", a: ["solid-0"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, screenedByBbox: true, unresolvedA: [], unresolvedB: [] },
+        ],
+        warnings: [],
+      },
+      "*"
+    ),
+    req.requestId
+  );
+  await sleep(200);
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(text.includes("Bracket") && text.includes("overlap"), `the overlapping pair renders (got ${JSON.stringify(text)})`);
+  assert(text.includes("AABB-screened"), `the pre-filtered pair carries its badge (got ${JSON.stringify(text)})`);
+});
+
+test("clash: the same Part twice is refused without a host round trip", async (page) => {
+  await populate(page);
+  const before = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest").length);
+  await page.selectOption("#clash-a", "Body");
+  await page.selectOption("#clash-b", "Body");
+  await page.click("#clash-check");
+  await sleep(200);
+  const after = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest").length);
+  assert(after === before, "no clashCheckRequest is posted for A === B");
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(/different/i.test(text), `a guidance message explains why (got ${JSON.stringify(text)})`);
+});
+
+test("clash: the hidden attribute genuinely hides the section", async (page) => {
+  // Regression shape of the mesh-health `[hidden]` defect: the attribute was
+  // set while an author `display` rule beat it, so the "hidden" panel still
+  // rendered. Assert RENDERED height, not the attribute.
+  await populate(page);
+  const height = await page.evaluate(() => {
+    const el = document.getElementById("clash-panel");
+    el.hidden = true;
+    return el.getBoundingClientRect().height;
+  });
+  assert(height === 0, `#clash-panel[hidden] renders nothing (got ${height}px)`);
 });
 
 // ── New Blank Model ───────────────────────────────────────────────────────

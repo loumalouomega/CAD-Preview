@@ -31,6 +31,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/dimensionGlyph.ts` | Pure dimension-glyph math — arrowheads, witness/extension lines, value formatting (shared with the SVG/DXF export path) |
 | `src/webview/annotationsModel.ts` | Persisted, topology-anchored annotations (pinned measurements) data model, DOM-free (unit-tested) |
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
+| `src/webview/clashPanel.ts` | Clash panel DOM — Part-vs-Part and check-all interference readout (roadmap Tier 2 "Clash panel") |
 | `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
 | `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
@@ -139,7 +140,7 @@ Returns `true` if the root has more than one child (or any grandchild). The tree
 Collapses any sidebar section down to just its header, so the interface can be reduced to the panels actually in use. State persists per document in `<model>.view.json` (`ViewState.collapsedPanels`).
 
 ```typescript
-const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the nine sections, in #side order
+const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the ten sections, in #side order
 
 function sanitizeCollapsedPanels(ids: unknown): string[]
 function setupCollapsiblePanels(onChange: () => void): CollapsiblePanelsHandle | null
@@ -1239,6 +1240,35 @@ class MassPropertiesPanel {
 `main.ts`'s `onRefresh` reads the current `SelectionSet`: 0 entries → whole model (`entityId: null`), exactly 1 → that entity, 2+ → `renderMessage`s a "select exactly one, or none" guidance line without sending any request. For a B-rep source it posts `massPropertiesRequest` and awaits `massPropertiesResult`/ `massPropertiesError` (guarded by a `massPropertiesRequestId` so a stale reply from a superseded refresh is ignored); for a mesh source it calls `computeAndRenderMeshMassProperties()` (below) with **no host round trip at all**. `momentsOfInertia` only shows its diagonal terms (`ixx`/`iyy`/`izz`) — the off-diagonal products of inertia are near-zero for most axis-aligned bodies and not worth the panel's space; mesh sources never populate this field (client-side inertia isn't computed, out of scope for the first cut) — and, per `units.ts` below, moments of inertia are also the one field `render()` never rescales regardless of `unitLabel`.
 
 Both call sites go through `main.ts`'s `renderMassProperties(raw)` wrapper, never `massPropertiesPanel.render()` directly: it caches `raw` (always millimetres) in a module-level `lastRawMassProperties`, then calls `massPropertiesPanel.render(convertLengthBasedProperties(raw, currentDisplayUnit), currentDisplayUnit)`. Caching the *raw* value (not the already-converted one) is what lets `setDisplayUnit()` (below) live-rescale an already-displayed result when the user changes the unit selector, without re-requesting anything from the host or recomputing the mesh-source case.
+
+---
+
+## `src/webview/clashPanel.ts`
+
+The Clash panel — the interactive counterpart of the MCP-only `check_interference` / `check_interference_all` tools (roadmap Tier 2 "Clash panel"). A small DOM class following `MassPropertiesPanel`'s readout convention: two Part `<select>`s plus **Check**, and a header **Check all** over every Part with volumes.
+
+```typescript
+interface ClashPairDisplay {
+  partA: string; partB: string
+  hasOverlap: boolean
+  overlapVolume: number | null  // already in the display unit; null renders as "—"
+  screenedByBbox?: boolean
+  unresolvedA: string[]; unresolvedB: string[]
+}
+
+class ClashPanel {
+  constructor(panel: HTMLElement, cb: { onCheck: (partA: string, partB: string) => void; onCheckAll: () => void })
+  setEligible(eligible: boolean): void   // B-rep only — hides the section otherwise
+  renderParts(names: string[]): void     // repopulates both dropdowns, preserving selections
+  setBusy(busy: boolean): void
+  renderMessage(text: string, isError?: boolean): void
+  clear(): void
+  renderPair(pair: ClashPairDisplay, unitLabel?: string): void
+  renderAll(pairs: ClashPairDisplay[], unitLabel?: string): void
+}
+```
+
+`main.ts` drives it with two `requestId` latches (`clashCheckRequestId` / `clashCheckAllRequestId`, same stale-response-guard idiom as `massPropertiesRequestId`) plus a remembered `clashLastPair` (the pair result carries geometry only, so the requested names are remembered to label the row). Raw mm volumes cache in `lastClashResults` so `setDisplayUnit()` re-renders via the existing `convertVolume()` without a new host round trip (the `lastRawMassProperties` precedent); everything clears on model rebuild (re-tessellation may renumber the ids results name). The section hides itself for non-B-rep sources (`setEligible`), with the `#clash-panel[hidden]` CSS override the `[hidden]` hazard demands. Rows reuse the `mass-row`/`mass-message` styles: `A × B` → `overlap <volume>` or `no overlap`, with an `AABB-screened` / unresolved-id note line where applicable.
 
 ---
 

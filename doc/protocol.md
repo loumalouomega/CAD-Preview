@@ -396,6 +396,10 @@ type HostToWebview =
   | { type: 'importDxfError'; message: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
+  | { type: 'clashCheckResult'; requestId: string; result: InterferenceResult }
+  | { type: 'clashCheckError'; requestId: string; message: string }
+  | { type: 'clashCheckAllResult'; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[] }
+  | { type: 'clashCheckAllError'; requestId: string; message: string }
   | { type: 'macros'; macros: MacroSummary[] }
   | { type: 'macroApplyOps'; ops: EditOp[] }
   | { type: 'entityFactsResult'; requestId: string; facts: EntityFacts }
@@ -694,6 +698,14 @@ Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh source
 { "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
 ```
 
+### `clashCheckResult` / `clashCheckError` / `clashCheckAllResult` / `clashCheckAllError`
+
+Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep sources only** (a mesh has no exact B-rep boolean geometry to intersect; the Clash section hides itself for mesh sources and never sends either request). Carries `InterferenceResult` / named `InterferencePairResult`s verbatim from the existing `checkInterference` / `checkInterferenceAll` pipeline functions — the Clash panel is a new protocol pair over existing kernel surface, not new geometry work; the same functions back the `check_interference` / `check_interference_all` MCP tools. `clashCheckAllRequest` takes no operands (every Part with volumes); each returned pair is named `partA`/`partB` in the kernel's `i<j` enumeration order.
+
+```json
+{ "type": "clashCheckRequest", "requestId": "1234-0.56", "partA": "Housing", "partB": "Shaft" }
+```
+
 ### `macros` / `macroApplyOps`
 
 The saved-macro library for the document's folder (`cad-preview-macros.json` — the same file the MCP tools take as `libraryPath`). `macros` is sent unprompted on `ready` and after every save/delete, so the panel never has to ask for it.
@@ -881,6 +893,8 @@ type WebviewToHost =
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
+  | { type: 'clashCheckRequest'; requestId: string; partA: string; partB: string }
+  | { type: 'clashCheckAllRequest'; requestId: string }
   | { type: 'macroRun'; name: string; parameters: Record<string, string> }
   | { type: 'macroSaveCurrent' }
   | { type: 'macroDelete'; name: string }
@@ -1106,6 +1120,10 @@ Sent when the Mass Properties panel's **Compute** button is clicked, for a B-rep
 ```json
 { "type": "massPropertiesRequest", "requestId": "1234-0.56", "entityId": "solid-0" }
 ```
+
+### `clashCheckRequest` / `clashCheckAllRequest`
+
+Sent when the Clash panel's **Check** / **Check all** button is clicked, for a B-rep source only (mesh sources never send these — the section is hidden). `clashCheckRequest` names two Parts (`partA`/`partB` — the panel refuses identical picks with a guidance message instead of sending); `clashCheckAllRequest` names none (every Part with volumes).
 
 ### `measureExactRequest`
 

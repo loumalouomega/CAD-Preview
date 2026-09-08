@@ -106,11 +106,11 @@ Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one afte
 
 ### Collapsing Sidebar Sections
 
-Every sidebar section — Components, Parts, Edits, FE Mesh, Mass Properties, Mesh Health, Region fit, Macros, Standard Parts — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
+Every sidebar section — Components, Parts, Edits, FE Mesh, Mass Properties, Clash, Mesh Health, Region fit, Macros, Standard Parts — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Mesh Health and Region fit are shown only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this.
+Sections that don't apply to the current file (Clash is shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this.
 
 ### Camera Interaction
 
@@ -539,6 +539,15 @@ The **Mass Properties** panel (below the FE Mesh panel) computes volume, surface
 2. The panel shows whichever fields apply: a volume/solid gets **Volume**, **Area**, **Center of mass**, and **Ixx/Iyy/Izz**; a single face gets **Area** only; a single edge gets **Length** only.
 
 For STEP/IGES/BREP files this runs in the extension host via OpenCascade.js's `BRepGProp`; for STL/OBJ/PLY/glTF files it's computed entirely in the webview from the displayed triangle mesh (no moments of inertia for mesh sources in this first cut). Volume/Area/Length/Center of mass are labeled and shown in whatever unit the view-controls **Units** dropdown is set to (see [Units](#units) above) — switching it live-rescales an already-computed result with no need to click **Compute** again; **Ixx/Iyy/Izz** are always shown raw, unaffected by that setting.
+
+### Clash
+
+The **Clash** panel (below Mass Properties, B-rep sources only) checks Parts against each other for real volumetric overlap via exact B-rep booleans — the interactive counterpart of the `check_interference` / `check_interference_all` MCP tools.
+
+1. Pick two Parts in the dropdowns and click **Check** for a pairwise result, or click **Check all** to test every Part with assigned solids against every other in one call.
+2. Each result row reads `A × B` → `overlap <volume>` or `no overlap`. Pairs the AABB pre-filter decided without a boolean carry an `AABB-screened` note; genuinely touching Parts (shared face, zero volume) correctly report no overlap. Volumes follow the **Units** dropdown like Mass Properties, live-rescaled on change.
+
+Results are session-only and clear on every model rebuild, since re-tessellation may renumber the ids they name.
 
 ### Exporting a Model
 

@@ -1299,6 +1299,127 @@ export class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<C
         return;
       }
 
+      /**
+       * Clash panel (roadmap Tier 2 "Clash panel"): Part-vs-Part interference
+       * over the existing `checkInterference` kernel function — the same
+       * request/response shape as `massPropertiesRequest` above, over existing
+       * kernel surface. Part-name resolution lives here (the pipeline function
+       * itself stays Part-ignorant — the same split `checkInterferenceTool`
+       * in `mcpTools.ts` establishes headless). B-rep sources only: a mesh
+       * has no exact B-rep boolean geometry for `BRepAlgoAPI_Common_3`.
+       */
+      if (msg.type === "clashCheckRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Clash detection needs a B-rep source; mesh sources have no exact boolean geometry to intersect.");
+          }
+          // Mirror `checkInterferenceTool`'s `resolveOperand`: volumes only
+          // (interference is a solid-only concept); unknown/empty degrades to
+          // a warning, never a throw.
+          const warnings: string[] = [];
+          const resolveOperand = async (label: "A" | "B", partName: string): Promise<string[]> => {
+            const parts = await readParts(document.uri);
+            const part = parts.find((p) => p.name === partName);
+            if (!part) {
+              warnings.push(`Part "${partName}" (operand ${label}) not found.`);
+              return [];
+            }
+            if (part.volumes.length === 0) {
+              warnings.push(`Part "${partName}" (operand ${label}) has no assigned solids (volumes).`);
+            }
+            return part.volumes;
+          };
+          const [idsA, idsB] = await Promise.all([
+            resolveOperand("A", msg.partA),
+            resolveOperand("B", msg.partB),
+          ]);
+          if (idsA.length === 0 || idsB.length === 0) {
+            for (const w of warnings) post({ type: "status", text: w });
+            post({ type: "clashCheckResult", requestId: msg.requestId, result: { hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] } });
+            return;
+          }
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const bytes = src.bytes;
+          const format = src.format;
+          const result = await this.pipeline.checkInterference(
+            this.context.extensionPath,
+            bytes,
+            format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+            replayTail(currentEdits, currentBakedThrough),
+            idsA,
+            idsB
+          );
+          for (const w of warnings) post({ type: "status", text: w });
+          if (result.unresolvedA.length > 0) post({ type: "status", text: `Operand A: unresolved id(s) ${result.unresolvedA.join(", ")}.` });
+          if (result.unresolvedB.length > 0) post({ type: "status", text: `Operand B: unresolved id(s) ${result.unresolvedB.join(", ")}.` });
+          post({ type: "clashCheckResult", requestId: msg.requestId, result });
+        } catch (err) {
+          post({ type: "clashCheckError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      /**
+       * Clash panel, all-pairs variant over `checkInterferenceAll` (one
+       * parse/replay total, AABB-pre-filtered — mirror
+       * `checkInterferenceAllTool`'s selection: every Part with volumes).
+       * The `pairs.length !== C(n,2)` contract guard the tool layer owns
+       * headless applies here too — a future pipeline change fails loudly
+       * instead of mislabelling rows.
+       */
+      if (msg.type === "clashCheckAllRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Clash detection needs a B-rep source; mesh sources have no exact boolean geometry to intersect.");
+          }
+          const parts = await readParts(document.uri);
+          const usable = parts.filter((p) => p.volumes.length > 0);
+          if (usable.length < 2) {
+            throw new Error(
+              usable.length === 0
+                ? "No Parts with assigned solids — assign solids to at least two Parts first."
+                : "Only one Part has assigned solids — at least two are needed to check for clashes."
+            );
+          }
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const bytes = src.bytes;
+          const format = src.format;
+          const result = await this.pipeline.checkInterferenceAll(
+            this.context.extensionPath,
+            bytes,
+            format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+            replayTail(currentEdits, currentBakedThrough),
+            usable.map((p) => p.volumes)
+          );
+          const expected = (usable.length * (usable.length - 1)) / 2;
+          if (result.pairs.length !== expected) {
+            throw new Error(`Interference pipeline returned ${result.pairs.length} pair(s) for ${usable.length} part(s) — expected ${expected}.`);
+          }
+          for (const w of result.warnings) post({ type: "status", text: w });
+          // Name pairs in the kernel's `i<j` enumeration order (the same
+          // naming loop `checkInterferenceAllTool` owns headless).
+          const named: Array<(typeof result.pairs)[number] & { partA: string; partB: string }> = [];
+          for (let x = 0, n = 0; x < usable.length; x++) {
+            for (let y = x + 1; y < usable.length; y++, n++) {
+              named.push({ ...result.pairs[n], partA: usable[x].name, partB: usable[y].name });
+            }
+          }
+          post({
+            type: "clashCheckAllResult",
+            requestId: msg.requestId,
+            pairs: named,
+            warnings: result.warnings,
+          });
+        } catch (err) {
+          post({ type: "clashCheckAllError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
       if (msg.type === "macroRun") {
         try {
           const libraryPath = macroLibraryPath(document.uri);

@@ -109,6 +109,22 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="mass-body"></div>
       </div>
+      <div id="clash-panel" hidden>
+        <div id="clash-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <span id="clash-title">Clash</span>
+          <button id="clash-check-all" title="Check every Part against every other in one call">Check all</button>
+        </div>
+        <div id="clash-body">
+          <div id="clash-form">
+            <select id="clash-a" title="First part"></select>
+            <span id="clash-vs">vs</span>
+            <select id="clash-b" title="Second part"></select>
+            <button id="clash-check" title="Check the two selected Parts for overlap">Check</button>
+          </div>
+          <div id="clash-results"></div>
+        </div>
+      </div>
       <div id="mesh-health-panel" hidden>
         <div id="mesh-health-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>

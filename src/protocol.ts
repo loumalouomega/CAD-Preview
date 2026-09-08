@@ -7,7 +7,7 @@ import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
-import type { EntityFacts, ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
+import type { EntityFacts, ExactMeasureKind, ExactMeasureResult, InterferenceResult, InterferencePairResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipPlaneState } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
@@ -409,6 +409,18 @@ export type HostToWebview =
   | { type: "importDxfError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
+  /** Clash panel (roadmap Tier 2 "Clash panel"): Part-vs-Part interference
+   * over the existing `checkInterference` kernel function — a new protocol
+   * pair over existing kernel surface, not new geometry work (the same shape
+   * `entityFactsRequest` used when it shipped). B-rep sources only: a mesh
+   * has no exact B-rep boolean geometry, so the host answers with
+   * `clashCheckError` otherwise. */
+  | { type: "clashCheckResult"; requestId: string; result: InterferenceResult }
+  | { type: "clashCheckError"; requestId: string; message: string }
+  /** All-pairs variant over `checkInterferenceAll` (one parse/replay total,
+   * AABB-pre-filtered): `parts` omitted means every Part with volumes. */
+  | { type: "clashCheckAllResult"; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[] }
+  | { type: "clashCheckAllError"; requestId: string; message: string }
   /** Analytic classification of one entity, for the inspector card. Carries
    * `EntityFacts` verbatim from the existing `getEntityFacts` pipeline
    * function — the card is a new protocol pair over existing kernel surface,
@@ -568,6 +580,11 @@ export type WebviewToHost =
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
+  /** Clash panel: check one Part against another (volumes only — same
+   * Part-name resolution the `check_interference` MCP tool applies). */
+  | { type: "clashCheckRequest"; requestId: string; partA: string; partB: string }
+  /** Clash panel: check every Part against every other in one call. */
+  | { type: "clashCheckAllRequest"; requestId: string }
   /** Inspector card: classify the entity the user just selected. */
   /** Run a saved macro, appending its compiled ops to the edit history. */
   | { type: "macroRun"; name: string; parameters: Record<string, string> }

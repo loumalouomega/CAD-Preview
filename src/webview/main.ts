@@ -33,6 +33,7 @@ import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } fr
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
+import { ClashPanel, type ClashPairDisplay } from "./clashPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
 import { RegionFitPanel } from "./regionFitPanel";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
@@ -69,7 +70,7 @@ import {
 } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
-import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
+import { convertLength, convertLengthBasedProperties, convertVolume, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { setupCollapsiblePanels, type CollapsiblePanelsHandle } from "./collapsiblePanels";
@@ -140,6 +141,7 @@ const partsModel = new PartsModel(() => {
   refreshColors(); // also re-applies visibility state, see refreshColors()
   partsPanel.render(partsModel.list());
   meshingPanel.renderParts(partsModel.list());
+  clashPanel.renderParts(partsModel.list().map((p) => p.name));
 });
 
 const partsPanel = new PartsPanel(
@@ -1219,6 +1221,7 @@ function setDisplayUnit(unit: DisplayUnit): void {
       convertLengthBasedProperties(lastRawMassProperties, unit) as MassPropertiesDisplay,
       unit
     );
+  renderClashResults();
 }
 
 /** Caches the raw (mm) result and renders it converted to `currentDisplayUnit`. */
@@ -1248,6 +1251,77 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
     massPropertiesRequestId = requestId;
     massPropertiesPanel.renderMessage("Computing…");
     post({ type: "massPropertiesRequest", requestId, entityId: target ? target.entityId : null });
+  },
+});
+
+// ── Clash panel (roadmap Tier 2 "Clash panel") ────────────────────────────
+// B-rep sources only (no exact boolean geometry exists for a mesh) — the
+// section hides itself otherwise, like `meshHealthPanel`. Raw mm results are
+// cached so a display-unit change re-renders without a new host round trip
+// (the `lastRawMassProperties` precedent); everything clears on rebuild
+// (re-tessellation may renumber the ids the results name).
+let clashCheckRequestId: string | null = null;
+let clashCheckAllRequestId: string | null = null;
+/** Operand names of the in-flight pairwise check — the result carries only
+ * geometry, so these are remembered to label the rendered row. */
+let clashLastPair: { partA: string; partB: string } | null = null;
+let lastClashResults:
+  | { kind: "pair"; pair: Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null } }
+  | { kind: "all"; pairs: Array<Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null }> }
+  | null = null;
+
+function renderClashResults(): void {
+  if (!lastClashResults) return;
+  const convert = (mm3: number | null) => (mm3 == null ? null : convertVolume(mm3, currentDisplayUnit));
+  if (lastClashResults.kind === "pair") {
+    const { overlapVolumeMm3, ...rest } = lastClashResults.pair;
+    clashPanel.renderPair({ ...rest, overlapVolume: convert(overlapVolumeMm3) }, currentDisplayUnit);
+  } else {
+    clashPanel.renderAll(
+      lastClashResults.pairs.map(({ overlapVolumeMm3, ...rest }) => ({ ...rest, overlapVolume: convert(overlapVolumeMm3) })),
+      currentDisplayUnit
+    );
+  }
+}
+
+function clearClashResults(): void {
+  lastClashResults = null;
+  clashCheckRequestId = null;
+  clashCheckAllRequestId = null;
+  clashLastPair = null;
+  clashPanel.setBusy(false);
+  clashPanel.clear();
+}
+
+const clashPanel = new ClashPanel(document.getElementById("clash-panel")!, {
+  onCheck: (partA, partB) => {
+    if (sourceKind !== "brep") {
+      clashPanel.renderMessage("Clash detection needs a B-rep source.", true);
+      return;
+    }
+    if (partA === partB) {
+      clashPanel.renderMessage("Pick two different Parts.", true);
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random()}`;
+    clashCheckRequestId = requestId;
+    clashLastPair = { partA, partB };
+    lastClashResults = null;
+    clashPanel.setBusy(true);
+    clashPanel.renderMessage("Checking…");
+    post({ type: "clashCheckRequest", requestId, partA, partB });
+  },
+  onCheckAll: () => {
+    if (sourceKind !== "brep") {
+      clashPanel.renderMessage("Clash detection needs a B-rep source.", true);
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random()}`;
+    clashCheckAllRequestId = requestId;
+    lastClashResults = null;
+    clashPanel.setBusy(true);
+    clashPanel.renderMessage("Checking all Parts…");
+    post({ type: "clashCheckAllRequest", requestId });
   },
 });
 
@@ -4046,6 +4120,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         for (const id of msg.guideIds ?? []) guideEntityIds.add(id); // construction geometry: dimmed, refused as feature operands
         viewer.setGuideIds(msg.guideIds ?? []);
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
+        clashPanel.setEligible(true); // exact booleans exist only for B-rep
+        clearClashResults(); // re-tessellation may renumber the ids results name
         viewer.setFitSeedPickHandler(null);
         lastRegionFit = null;
         regionFitRequestId = null;
@@ -4080,6 +4156,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       refreshColors(); // also re-applies visibility state, see refreshColors()
       partsPanel.render(partsModel.list());
       meshingPanel.renderParts(partsModel.list());
+      clashPanel.renderParts(partsModel.list().map((p) => p.name));
       showSidebar();
       break;
 
@@ -4114,6 +4191,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "loadUrl":
       setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
+      clashPanel.setEligible(false); // no exact boolean geometry for a mesh
+      clearClashResults();
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
       regionFitRequestId = null;
@@ -4126,6 +4205,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // check_mesh_health's MCP tool would reject that source's real path
       // the same way, so the panel stays ineligible here too.
       setMeshHealthEligibility(null);
+      clashPanel.setEligible(false); // meshio boundary has no B-rep booleans
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
       regionFitRequestId = null;
@@ -4295,6 +4375,57 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "massPropertiesError":
       if (msg.requestId !== massPropertiesRequestId) break;
       massPropertiesPanel.renderMessage(msg.message, true);
+      break;
+
+    case "clashCheckResult":
+      if (msg.requestId !== clashCheckRequestId) break; // stale — a newer check superseded it
+      clashCheckRequestId = null;
+      clashPanel.setBusy(false);
+      lastClashResults = {
+        kind: "pair",
+        pair: {
+          partA: clashLastPair?.partA ?? "",
+          partB: clashLastPair?.partB ?? "",
+          hasOverlap: msg.result.hasOverlap,
+          overlapVolumeMm3: msg.result.hasOverlap ? msg.result.overlapVolume : null,
+          unresolvedA: msg.result.unresolvedA,
+          unresolvedB: msg.result.unresolvedB,
+        },
+      };
+      renderClashResults();
+      break;
+
+    case "clashCheckError":
+      if (msg.requestId !== clashCheckRequestId) break;
+      clashCheckRequestId = null;
+      clashPanel.setBusy(false);
+      clashPanel.renderMessage(msg.message, true);
+      break;
+
+    case "clashCheckAllResult":
+      if (msg.requestId !== clashCheckAllRequestId) break;
+      clashCheckAllRequestId = null;
+      clashPanel.setBusy(false);
+      lastClashResults = {
+        kind: "all",
+        pairs: msg.pairs.map((p) => ({
+          partA: p.partA,
+          partB: p.partB,
+          hasOverlap: p.hasOverlap,
+          overlapVolumeMm3: p.hasOverlap ? p.overlapVolume : null,
+          screenedByBbox: p.screenedByBbox,
+          unresolvedA: p.unresolvedA,
+          unresolvedB: p.unresolvedB,
+        })),
+      };
+      renderClashResults();
+      break;
+
+    case "clashCheckAllError":
+      if (msg.requestId !== clashCheckAllRequestId) break;
+      clashCheckAllRequestId = null;
+      clashPanel.setBusy(false);
+      clashPanel.renderMessage(msg.message, true);
       break;
 
     case "macros":
