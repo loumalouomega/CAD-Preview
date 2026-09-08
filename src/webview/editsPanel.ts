@@ -603,10 +603,10 @@ export class EditsPanel {
    * valid against the model state at their own op's step — later ops may
    * have renumbered them — so the chip tooltip says so.
    */
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null): void {
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null, bakedThrough = 0): void {
     this.undoBtn.disabled = !canUndo;
     this.redoBtn.disabled = !canRedo;
-    this.clearBtn.disabled = ops.length === 0 && (redoOps?.length ?? 0) === 0;
+    this.clearBtn.disabled = ops.length <= bakedThrough && (redoOps?.length ?? 0) === 0;
 
     const outcomeOf = new Map((opOutcomes ?? []).map((o) => [o.index, o]));
     const bucketOf = new Map((opBuckets ?? []).map((b) => [b.op, b]));
@@ -629,14 +629,20 @@ export class EditsPanel {
     const row = (
       op: EditOp,
       i: number,
-      opts: { pending: boolean; outcome?: OpOutcome; bucket?: OpBucket }
+      opts: { pending: boolean; outcome?: OpOutcome; bucket?: OpBucket; baked?: boolean }
     ): void => {
       const li = document.createElement("li");
       li.className = opts.pending ? "edit-row edit-row-pending" : "edit-row";
       // Any row click scrubs the timeline to that point. Applied rows roll
       // back past themselves; pending rows re-apply through them. Clicking
-      // the LAST applied row is a natural no-op inside jumpTo.
+      // the LAST applied row is a natural no-op inside jumpTo. Baked rows
+      // (Tier 0 Phase 2 — saved into the file itself) refuse the jump with
+      // guidance instead of unbaking.
       li.title = opts.pending ? "Click to re-apply through this step" : "";
+      if (opts.baked) {
+        li.classList.add("edit-row-baked");
+        li.title = "Saved into the file itself — cannot be undone or removed (File ▸ Revert File drops back to the save).";
+      }
       li.addEventListener("click", () => this.cb.onJumpTo(i));
       const outcome = opts.outcome;
       if (outcome && !outcome.applied) {
@@ -651,15 +657,25 @@ export class EditsPanel {
       label.textContent = describeOp(op);
       li.appendChild(idx);
       li.appendChild(label);
+      if (opts.baked) {
+        const lock = document.createElement("span");
+        lock.className = "edit-baked-mark";
+        lock.textContent = "🔒";
+        li.appendChild(lock);
+      }
       if (!opts.pending) {
-        const del = document.createElement("button");
-        del.className = "edit-remove";
-        del.innerHTML = TOOLBAR_ICONS.close;
-        del.title = "Remove this edit";
-        del.addEventListener("click", (e) => {
-          e.stopPropagation(); // removing must not also jump to this row's position
-          this.cb.onRemoveOp(i);
-        });
+        // No ✕ on baked rows — removal is refused, so offering it would lie.
+        if (!opts.baked) {
+          const del = document.createElement("button");
+          del.className = "edit-remove";
+          del.innerHTML = TOOLBAR_ICONS.close;
+          del.title = "Remove this edit";
+          del.addEventListener("click", (e) => {
+            e.stopPropagation(); // removing must not also jump to this row's position
+            this.cb.onRemoveOp(i);
+          });
+          li.appendChild(del);
+        }
         // A skipped op's warning marker sits between the label and the remove
         // button so it can't be mistaken for a row-level action.
         if (outcome && !outcome.applied) {
@@ -693,7 +709,6 @@ export class EditsPanel {
           });
           li.appendChild(chip);
         }
-        li.appendChild(del);
       } else {
         const redoMark = document.createElement("span");
         redoMark.className = "edit-pending-mark";
@@ -702,7 +717,7 @@ export class EditsPanel {
       }
       ol.appendChild(li);
     };
-    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i) }));
+    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i), baked: i < bakedThrough }));
     (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
   }

@@ -374,7 +374,7 @@ type HostToWebview =
     }
   | { type: 'parts';    parts: Part[] }
   | { type: 'annotations'; annotations: Annotation[] }
-  | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
+  | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[]; bakedThrough?: number }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
   | { type: 'editError'; message: string }
@@ -562,7 +562,7 @@ Also sent **unprompted, mid-session** whenever a topology-changing edit triggers
 
 ### `edits`
 
-Sent after geometry, once the host has read the edits sidecar (`<model>.edits.json`). Carries the saved, ordered edit op-list plus the named parametric variables (both empty arrays when no sidecar exists). The webview hydrates `EditsModel` + `VariablesModel` and renders the Edits panel. For B-rep the geometry already arrives with these ops applied (the host folds them in before tessellating); for mesh formats the webview replays them locally.
+Sent after geometry, once the host has read the edits sidecar (`<model>.edits.json`). Carries the saved, ordered edit op-list plus the named parametric variables (both empty arrays when no sidecar exists), plus the `bakedThrough` watermark (leading ops already saved into the source file itself — rows at or below it render locked and refuse undo/remove/jump). The webview hydrates `EditsModel` + `VariablesModel` and renders the Edits panel. For B-rep the geometry already arrives with these ops applied (the host folds them in before tessellating); for mesh formats the webview replays them locally.
 
 An op may carry an optional `exprs` annotation (field path → expression string, e.g. `{ "length": "L*2" }`); its numeric fields always hold the last-good evaluated numbers, so consumers that ignore `exprs` still see a fully-resolved op. See [File Formats](./file-formats.md#edits-sidecar-modeleditsjson).
 
@@ -1031,7 +1031,7 @@ Sent when a file is dropped onto the viewer canvas AND the browser `File` object
 
 ### `saveSidecars`
 
-Sent when the user picks **File ▸ Save** in the top menu bar. The CAD file is read-only and never written; this forces an immediate flush of the `<model>.parts.json` / `<model>.annotations.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`) sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status` message (`"Saved"`) on success or `error` on failure. The same action backs the `cad-preview.save` command (Ctrl+S).
+Sent when the user picks **File ▸ Save** in the top menu bar. This forces an immediate flush of the `<model>.parts.json` / `<model>.annotations.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`) sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status` message (`"Saved"`) on success or `error` on failure — sidecars only, never the CAD source itself. The same action backs the `cad-preview.save` command (palette only, unbound — Ctrl+S is the platform save, which bakes the op tail via `saveCustomDocument`).
 
 ```json
 { "type": "saveSidecars" }

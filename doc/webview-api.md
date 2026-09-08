@@ -38,7 +38,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
 | `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts` |
-| `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
+| `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer + save-point gates), DOM-free (unit-tested) |
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
 | `src/webview/opCatalog.ts` | Op catalog: GEOMETRY/EDIT tab structure + `describeOp`, DOM-free (unit-tested) |
@@ -1009,20 +1009,23 @@ The in-webview **op-stack** for the replayable edit list. Pure data (no DOM), mi
 ```typescript
 class EditsModel {
   constructor(onChange: () => void)
-  load(ops: EditOp[]): void   // hydrate from sidecar — does NOT fire onChange
+  load(ops: EditOp[], bakedThrough?: number): void   // hydrate from sidecar — does NOT fire onChange
   list(): EditOp[]            // deep copies, in order
   redoList(): EditOp[]        // the redo buffer in CHRONOLOGICAL order (deep copies) — the order pending ops re-apply
-  push(op: EditOp): void      // append; clears the redo buffer
-  undo(): void                // pop last → redo buffer
-  redo(): void                // re-apply most recently undone
-  clear(): void               // empty both stacks
-  remove(index: number): void // splice out a single op from anywhere in the list; clears the redo buffer
-  jumpTo(index: number): void // op-history scrubbing: move the stack boundary straight to timeline position `index` in ONE splice, firing one onChange (a no-change jump fires none)
+  push(op: EditOp): boolean   // append; clears the redo buffer (always legal — tail only)
+  undo(): boolean             // pop last → redo buffer (refused at/inside the save point)
+  redo(): boolean             // re-apply most recently undone (always legal)
+  clear(): boolean            // empty both stacks (refused past a save point)
+  remove(index: number): boolean // splice out a single op from anywhere in the list; clears the redo buffer (refused inside the save point)
+  jumpTo(index: number): boolean // op-history scrubbing: move the stack boundary straight to timeline position `index` in ONE splice, firing one onChange (a no-change jump fires none; a jump to at/inside the save point is refused)
   get size(): number
-  get canUndo(): boolean
+  get canUndo(): boolean      // ops.length > savePoint, not > 0
   get canRedo(): boolean
+  get savePoint(): number     // leading ops already saved into the source file
 }
 ```
+
+Tier 0 Phase 2 — the save point: `bakedThrough` leading ops live in the source file itself, so `undo`/`remove`/`jumpTo`/`clear` refuse targets at or inside it (`false`, no `onChange` — `main.ts` shows the save-point guidance); `push`/`redo` only touch the unbaked tail and stay always-legal. Baked rows render locked (`edit-row-baked` + 🔒, no ✕) via `render(…, bakedThrough)`.
 
 `jumpTo` addresses the full chronological timeline — applied ops at `0..size-1`, then `redoList()`'s pending ops after them. Clicking timeline position k makes the state "after op k applied": an applied row rolls back past itself; a pending row re-applies through itself. Redo-buffer ORDER is preserved across any jump (demoted ops are prepended reversed so ↷ reapplies them in original order; promoted ops come off the buffer's end in exactly `redo()`'s order) — both orderings are pinned by worked-example tests in `editsModel.test.ts`. Known perf caveat: `loadBRepCached` only reuses its cached replay for a pure append of `previous.ops`, so a backward jump pays a full `applyEditsBRep` replay from the still-cached base shape — fine for click-to-jump; do not build a continuous-drag scrubber on top without revisiting that.
 

@@ -394,6 +394,12 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       stats: { considered: 0, rebound: 0, dropped: 0 },
       annotationStats: { considered: 0, rebound: 0, dropped: 0 },
     })),
+    rebindPartsAcrossSave: vi.fn(async (_ext, _oldBytes, _oldFormat, _oldOps, _newBytes, _newFormat, _newOps, parts, annotations = []) => ({
+      parts, // identity pass-through by default, same contract as above
+      annotations,
+      stats: { considered: 0, rebound: 0, dropped: 0 },
+      annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+    })),
     resolveBucketSelector: vi.fn(async () => ({ ids: [], unresolved: [], matches: [], bindable: true })),
     synthesizeSelector: vi.fn(async () => ({ query: null, ids: [], matches: [], bindable: true, reason: "fake" })),
     resolvePartSelectors: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, _ops: unknown[], parts: Part[]) => ({

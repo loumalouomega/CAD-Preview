@@ -1183,6 +1183,114 @@ export async function rebindPartsAcrossOps(
   return { parts: currentParts, annotations: currentAnnotations, stats, annotationStats };
 }
 
+/**
+ * Save-time entity-id rebind for Tier 0 Phase 2 (same-format save-in-place).
+ * Same geometric matcher as {@link rebindPartsAcrossOps} — but the two shapes
+ * live in DIFFERENT files: `oldBytes`+`oldOps` (the pre-save document) vs
+ * `newBytes`+`newOps` (the baked file + unbaked tail, usually an empty tail).
+ * The single-byte function cannot express this (it replays both op lists
+ * against one MEMFS file), so this variant stages two files and matches
+ * across them.
+ *
+ * Deliberately direct-match only (no prefix stepping): with different bases
+ * the common op prefix no longer shares geometry, so the incremental
+ * strategies would compare unrelated intermediate states. The matching core
+ * below is duplicated from `rebindPartsAcrossOps`'s `diffAndRemap`, not
+ * shared — the two must stay in lockstep (same `collectAllEntitySignatures`
+ * + tolerance-fraction + `remapPartEntityIds` + reference-identity
+ * no-op contract).
+ */
+export async function rebindPartsAcrossSave(
+  extensionPath: string,
+  oldBytes: Uint8Array,
+  oldFormat: BRepFormat,
+  oldOps: EditOp[],
+  newBytes: Uint8Array,
+  newFormat: BRepFormat,
+  newOps: EditOp[],
+  parts: Part[],
+  annotations: Annotation[] = []
+): Promise<{ parts: Part[]; annotations: Annotation[]; stats: RebindStats; annotationStats: RebindStats }> {
+  const EMPTY_STATS: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
+  if (parts.length === 0 && annotations.length === 0) {
+    return { parts, annotations, stats: EMPTY_STATS, annotationStats: EMPTY_STATS };
+  }
+
+  const oc = await getOcct(extensionPath);
+  // Short MEMFS paths: this OCCT WASM build has an undocumented ~11-char
+  // path-length cliff (see `exportBRep`'s doc comment) — `/rb-old.step`
+  // (12 chars) fails STEP read with code 2, so use 8-char names.
+  const oldTmpName = `/a.${oldFormat}`;
+  const newTmpName = `/b.${newFormat}`;
+  oc.FS.writeFile(oldTmpName, oldBytes);
+  oc.FS.writeFile(newTmpName, newBytes);
+
+  let currentParts = parts;
+  let currentAnnotations = annotations;
+  const stats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
+  const annotationStats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
+
+  try {
+    const cleanupFrom: Array<{ delete(): void }> = [];
+    const cleanupTo: Array<{ delete(): void }> = [];
+    try {
+      const shapeFrom = applyEditsBRep(oc, readShape(oc, oldTmpName, oldFormat, cleanupFrom), oldOps, cleanupFrom);
+      const oldSigs = collectAllEntitySignatures(oc, shapeFrom, cleanupFrom);
+
+      const shapeTo = applyEditsBRep(oc, readShape(oc, newTmpName, newFormat, cleanupTo), newOps, cleanupTo);
+      const newSigs = collectAllEntitySignatures(oc, shapeTo, cleanupTo);
+
+      const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, shapeTo, cleanupTo), 1e-6);
+      const idMap = new Map(rebindEntities(oldSigs, newSigs, toleranceAbs).map((m) => [m.oldId, m.newId]));
+
+      // Same reference-identity no-op contract as `diffAndRemap`: skip an
+      // empty list entirely so a no-op never flips to "changed".
+      if (currentParts.length > 0) {
+        const result = remapPartEntityIds(currentParts, idMap);
+        currentParts = result.parts;
+        stats.rebound += result.reboundCount;
+        stats.dropped += result.droppedCount;
+      }
+      stats.considered++;
+
+      if (currentAnnotations.length > 0) {
+        const annResult = remapPartEntityIds(currentAnnotations, idMap);
+        currentAnnotations = annResult.parts;
+        annotationStats.rebound += annResult.reboundCount;
+        annotationStats.dropped += annResult.droppedCount;
+      }
+      annotationStats.considered++;
+    } finally {
+      for (let i = cleanupTo.length - 1; i >= 0; i--) {
+        try {
+          cleanupTo[i].delete();
+        } catch {
+          /* ignore */
+        }
+      }
+      for (let i = cleanupFrom.length - 1; i >= 0; i--) {
+        try {
+          cleanupFrom[i].delete();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (const name of [oldTmpName, newTmpName]) {
+      try {
+        oc.FS.unlink(name);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return { parts: currentParts, annotations: currentAnnotations, stats, annotationStats };
+}
+
 export interface BucketSelectorResult {
   /** Current-model `face-N` ids the bucket query resolves to (may be empty —
    * after the rung-2 induced layer narrows the set, or when nothing matched). */

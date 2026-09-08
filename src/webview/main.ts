@@ -491,7 +491,7 @@ function renderEditsUi(): void {
   // 2 item 1). They are NOT resolved here: they aren't applied yet, and the
   // resolve-on-read contract re-evaluates them at every future consumption
   // point anyway.
-  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets);
+  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets, editsModel.savePoint);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
 }
 
@@ -529,6 +529,11 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
   onSetExpr: (index, expr) => variablesModel.setExpr(index, expr),
   onRemove: (index) => variablesModel.remove(index),
 });
+
+/** Guidance shown when an edit targets ops at or inside the save point (Tier 0
+ * Phase 2 — those ops live in the source file itself, not the sidecar). */
+const SAVE_POINT_REFUSAL =
+  "That op is already saved into the file itself — it cannot be undone or removed. Use File ▸ Revert File to drop back to the save.";
 
 /** Captured boolean operand A (volume ids); operand B is the live selection. */
 let booleanA: string[] = [];
@@ -803,13 +808,24 @@ viewer.setGizmoHandlers(
 );
 
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
-  onUndo: () => editsModel.undo(),
+  // Tier 0 Phase 2 — mutations at or inside the save point are refused by the
+  // model (the ops live in the file itself); surface the guidance here. The
+  // empty-stack no-ops stay silent, exactly as before.
+  onUndo: () => {
+    if (!editsModel.undo() && editsModel.size > 0) setStatus(SAVE_POINT_REFUSAL, true);
+  },
   onRedo: () => editsModel.redo(),
-  onClear: () => editsModel.clear(),
-  onRemoveOp: (index) => editsModel.remove(index),
+  onClear: () => {
+    if (!editsModel.clear() && editsModel.size > 0) setStatus(SAVE_POINT_REFUSAL, true);
+  },
+  onRemoveOp: (index) => {
+    if (!editsModel.remove(index) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
+  },
   // One splice + one onChange/editsChanged/re-tessellate round trip per
   // click — never a looped undo()/redo() sequence (op-history scrubbing).
-  onJumpTo: (index) => editsModel.jumpTo(index),
+  onJumpTo: (index) => {
+    if (!editsModel.jumpTo(index) && index + 1 < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
+  },
   // Transient highlight of a history-row bucket chip's faces (roadmap
   // "Selector synthesis" Phase 1) — goes through `renderSelection` directly,
   // never into the SelectionSet, so moving on restores the real selection by
@@ -4180,9 +4196,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "edits":
       // Hydrate the op-stack + variables from the sidecar (does not echo back
-      // as a write — both `load`s deliberately skip onChange).
+      // as a write — both `load`s deliberately skip onChange). The watermark
+      // travels with it so the timeline knows which rows are saved into the
+      // file itself (Tier 0 Phase 2 — undo/remove/jump refuse to cross it).
       variablesModel.load(msg.variables);
-      editsModel.load(msg.ops);
+      editsModel.load(msg.ops, msg.bakedThrough ?? 0);
       renderEditsUi();
       // B-rep arrives already-tessellated with these ops; mesh replays locally.
       if (pristineMesh) rebuildMeshModel();

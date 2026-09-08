@@ -218,3 +218,65 @@ describe("EditsModel", () => {
     expect(m.list().map((o) => (o as { vec: number[] }).vec[0])).toEqual([1, 9]);
   });
 });
+
+describe("EditsModel save point (Tier 0 Phase 2)", () => {
+  const loaded = (watermark: number) => {
+    const m = new EditsModel(() => {});
+    m.load([T(1), T(2), T(3)], watermark);
+    return m;
+  };
+
+  it("load adopts and clamps the watermark", () => {
+    expect(loaded(2).savePoint).toBe(2);
+    expect(loaded(0).savePoint).toBe(0);
+    expect(loaded(99).savePoint).toBe(3); // clamped to the list, never beyond it
+    expect(loaded(-4).savePoint).toBe(0);
+  });
+
+  it("undo refuses at the save point without firing onChange", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2), T(3)], 2);
+    expect(m.canUndo).toBe(true);
+    expect(m.undo()).toBe(true);
+    expect(m.list()).toHaveLength(2);
+    expect(m.canUndo).toBe(false);
+    onChange.mockClear();
+    expect(m.undo()).toBe(false); // would pop a baked op
+    expect(onChange).not.toHaveBeenCalled();
+    expect(m.list()).toHaveLength(2);
+  });
+
+  it("remove refuses a baked index but allows tail indices", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2), T(3)], 2);
+    expect(m.remove(0)).toBe(false);
+    expect(m.remove(1)).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(m.remove(2)).toBe(true);
+    expect(m.list().map((o) => (o as { vec: number[] }).vec[0])).toEqual([1, 2]);
+  });
+
+  it("jumpTo refuses targets inside the save point", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2), T(3)], 2);
+    expect(m.jumpTo(0)).toBe(false); // target 1 < watermark 2
+    expect(m.jumpTo(1)).toBe(true); // target 2 == watermark: unbaked tail dropped, saved state shown
+    expect(m.list().map((o) => (o as { vec: number[] }).vec[0])).toEqual([1, 2]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("clear refuses past a save point, and push/redo stay legal", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2)], 2);
+    expect(m.clear()).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(m.push(T(9))).toBe(true);
+    expect(m.undo()).toBe(true); // pops the pushed tail op
+    expect(m.redo()).toBe(true);
+    expect(m.list().map((o) => (o as { vec: number[] }).vec[0])).toEqual([1, 2, 9]);
+  });
+});

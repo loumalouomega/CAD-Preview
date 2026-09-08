@@ -342,7 +342,7 @@ export type HostToWebview =
    * Applied silently by `PlanesModel.load()` (no `onChange` echo), the same
    * contract `"parts"`/`"annotations"` rely on to avoid a write loop. */
   | { type: "planes"; planes: ConstructionPlane[] }
-  | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: "edits"; ops: EditOp[]; variables: ParamVariable[]; bakedThrough?: number }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
   | { type: "editError"; message: string }

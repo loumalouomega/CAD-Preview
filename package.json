@@ -217,12 +217,6 @@
         "when": "activeCustomEditorId == 'cad-preview.mesh'"
       },
       {
-        "command": "cad-preview.save",
-        "key": "ctrl+s",
-        "mac": "cmd+s",
-        "when": "activeCustomEditorId == 'cad-preview.mesh'"
-      },
-      {
         "command": "cad-preview.saveAs",
         "key": "ctrl+shift+s",
         "mac": "cmd+shift+s",

@@ -1352,6 +1352,67 @@ test("clash: the hidden attribute genuinely hides the section", async (page) => 
   assert(height === 0, `#clash-panel[hidden] renders nothing (got ${height}px)`);
 });
 
+// ── Tier 0 Phase 2: save-point-locked history ─────────────────────────────
+//
+// Baked rows (ops already saved into the source file) render locked and
+// refuse timeline interaction; the unit-testable gates live in
+// `editsModel.test.ts` — what needs the real bundle here is the rendering
+// (locked class, lock marker, no ✕) and that a refused jump posts nothing.
+
+const SAVE_POINT_OPS = [
+  { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },
+  { op: "translate", targets: ["solid-0"], vec: [0, 1, 0] },
+];
+
+test("save point: baked rows render locked with no remove button", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 1 });
+  await sleep(300);
+  const rows = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("#edits-panel .edit-row")).map((li) => ({
+      baked: li.classList.contains("edit-row-baked"),
+      lock: li.querySelector(".edit-baked-mark")?.textContent ?? null,
+      remove: li.querySelector(".edit-remove") !== null,
+    }))
+  );
+  assert(rows.length === 2, `two history rows render (got ${rows.length})`);
+  assert(rows[0].baked && rows[0].lock === "🔒" && !rows[0].remove, `the baked row is locked with no ✕ (got ${JSON.stringify(rows[0])})`);
+  assert(!rows[1].baked && rows[1].remove, `the tail row is a normal removable row (got ${JSON.stringify(rows[1])})`);
+});
+
+test("save point: clicking a baked row drops only to the save, never below it", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 1 });
+  await sleep(300);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#edits-panel .edit-row:first-child");
+  await sleep(300);
+  // Timeline position 0 with watermark 1 means "the saved state": the unbaked
+  // tail op is demoted (exactly one editsChanged, one op left) — legal, since
+  // no baked op is unapplied.
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged"));
+  assert(sent.length === 1 && sent[0].ops.length === 1, `clicking a baked row drops just the tail (got ${sent.length} post(s))`);
+
+  // Fully baked stack: the same click would unbake — refused with guidance.
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 2 });
+  await sleep(300);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#edits-panel .edit-row:first-child");
+  await sleep(300);
+  const sent2 = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").length);
+  assert(sent2 === 0, "clicking into a fully-baked stack posts no editsChanged");
+  const guidance = await page.evaluate(() => (document.getElementById("status")?.textContent ?? ""));
+  assert(/already saved into the file/i.test(guidance), `guidance names the save point (got ${JSON.stringify(guidance)})`);
+});
+
+test("save point: undo is disabled when only baked ops remain", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS.slice(0, 1), variables: [], bakedThrough: 1 });
+  await sleep(300);
+  const disabled = await page.evaluate(() => document.getElementById("edits-undo")?.disabled ?? null);
+  assert(disabled === true, "the Undo button disables when the stack is at the save point");
+});
+
 // ── New Blank Model ───────────────────────────────────────────────────────
 
 test("new blank: the File menu item posts newBlank", async (page) => {

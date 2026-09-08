@@ -71,6 +71,7 @@ import type {
   checkInterference,
   checkInterferenceAll,
   rebindPartsAcrossOps,
+  rebindPartsAcrossSave,
   resolveBucketSelector,
   synthesizeSelector,
   resolvePartSelectors,
@@ -173,6 +174,7 @@ export interface Pipeline {
   checkInterference: typeof checkInterference;
   checkInterferenceAll: typeof checkInterferenceAll;
   rebindPartsAcrossOps: typeof rebindPartsAcrossOps;
+  rebindPartsAcrossSave: typeof rebindPartsAcrossSave;
   resolveBucketSelector: typeof resolveBucketSelector;
   synthesizeSelector: typeof synthesizeSelector;
   resolvePartSelectors: typeof resolvePartSelectors;

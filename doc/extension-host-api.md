@@ -507,20 +507,35 @@ function resolveEffectiveSource(opts: { modelPath: string; format: CadFormat; re
 
 ### `CadPreviewProvider`
 
-Implements `vscode.CustomReadonlyEditorProvider<CadDocument>`.
+Implements `vscode.CustomEditorProvider<CadDocument>` (Tier 0 Phase 2 — editable, not read-only).
 
 ```typescript
-class CadPreviewProvider implements vscode.CustomReadonlyEditorProvider<CadDocument> {
+class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocument> {
   static readonly viewType = 'cad-preview.mesh'
   static register(context: vscode.ExtensionContext): vscode.Disposable
   openCustomDocument(uri: vscode.Uri, ...): Promise<CadDocument>
   resolveCustomEditor(document: CadDocument, webviewPanel: vscode.WebviewPanel, ...): Promise<void>
+  readonly onDidChangeCustomDocument: vscode.Event<vscode.CustomDocumentContentChangeEvent<CadDocument>>
+  saveCustomDocument(document: CadDocument, ...): Promise<void>
+  saveCustomDocumentAs(document: CadDocument, destination: vscode.Uri, ...): Promise<void>
+  revertCustomDocument(document: CadDocument, ...): Promise<void>
+  backupCustomDocument(document: CadDocument, ...): Promise<vscode.CustomDocumentBackup>
 }
 ```
 
+Dirty means exactly one thing: the op list has an unbaked tail on a B-rep source that can bake it (`currentEdits.length > currentBakedThrough` on step/iges/brep). Fired from the `editsChanged` handler via a provider-level `EventEmitter` (`CustomDocumentContentChangeEvent` only — never `EditEvent`, since the webview owns undo and the API forbids mixing kinds). VS Code clears dirty when `saveCustomDocument`/`revertCustomDocument` completes.
+
 **`register(context)`** — Registers the provider with VS Code. Called once from `activate()`. Returns a `Disposable` pushed onto `context.subscriptions`.
 
-**`openCustomDocument(uri)`** — Creates a lightweight `CadDocument` wrapper around the URI. The document is read-only (no `backup`, no `revert`).
+**`openCustomDocument(uri)`** — Creates a lightweight `CadDocument` wrapper around the URI. Honors `openContext.backupId` (hot-exit restore — fails open on a corrupt snapshot). All mutable state lives in the per-document `resolveCustomEditor` closure, reached by the save/revert routines via the `documentSavers` map.
+
+**`saveCustomDocument(document)`** (Tier 0 Phase 2) — Ctrl+S / Save All / auto-save entry point. Flushes the sidecars (part of the save, not the whole of it), then bakes any unbaked tail for a B-rep source that can bake it — via the shared `bakeTailToSource("first")` the Export-menu save-in-place also uses (confirmed only until the session's first bake; afterwards the dirty dot + explicit keypress is the confirmation). VS Code clears dirty on completion. Mesh/meshio/CAD-text sources flush sidecars only.
+
+**`saveCustomDocumentAs(document, destination)`** — same-format copy, not a bake: source bytes + present sidecars to `destination` (watermark verbatim). No format conversion (that's Export).
+
+**`revertCustomDocument(document)`** (`File: Revert File`) — drops the op list to the watermark, re-reads the sidecars from disk, re-hydrates the webview and re-tessellates.
+
+**`backupCustomDocument(document, context)`** — hot-exit snapshot (`src/customBackup.ts`): source + present sidecars under `context.destination`; the backup id is the destination path. Debounced separately from autosave, never with auto-save on.
 
 **`resolveCustomEditor(document, webviewPanel)`** — The main handler called whenever a supported file is opened:
 
