@@ -21,6 +21,9 @@ describe("parseMeshJson", () => {
       stlAngle: 25,
       engine: "ftetwild",
       ftetwildEpsRel: 5e-4,
+      ftetwildManifoldSurface: true,
+      ftetwildCoarsen: false,
+      ftetwildDisableFiltering: false,
     };
     const text = JSON.stringify({ version: 1, source: "bull.stp", options });
     expect(parseMeshJson(text)).toEqual(options);
@@ -76,6 +79,9 @@ describe("generateGeoScript", () => {
       stlAngle: 40,
       engine: "gmsh",
       ftetwildEpsRel: 1e-3,
+      ftetwildManifoldSurface: false,
+      ftetwildCoarsen: false,
+      ftetwildDisableFiltering: false,
     };
     const script = generateGeoScript("bull.stp", options);
 

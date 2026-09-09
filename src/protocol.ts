@@ -7,13 +7,15 @@ import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
-import type { EntityFacts, ExactMeasureKind, ExactMeasureResult } from "./entityFacts";
+import type { EntityFacts, ExactMeasureKind, ExactMeasureResult, InterferenceResult, InterferencePairResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipPlaneState } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 import type { MeshRegionFit } from "./fitMapping";
+import type { MeshioOpSpec } from "./meshioOps";
+import type { BomRow } from "./bomExport";
 import type { AnnotatedTolerance } from "./toleranceBand";
 import type { SelectorQuery } from "./selectorQuery";
 
@@ -342,7 +344,7 @@ export type HostToWebview =
    * Applied silently by `PlanesModel.load()` (no `onChange` echo), the same
    * contract `"parts"`/`"annotations"` rely on to avoid a write loop. */
   | { type: "planes"; planes: ConstructionPlane[] }
-  | { type: "edits"; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: "edits"; ops: EditOp[]; variables: ParamVariable[]; bakedThrough?: number }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
   | { type: "editError"; message: string }
@@ -409,6 +411,26 @@ export type HostToWebview =
   | { type: "importDxfError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
+  /** Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button"): one
+   * row per Part over a single host parse/replay (`computeBom`, the same
+   * function `generate_bom` drives headless) — the webview renders
+   * `bomTsv(rows)` itself and copies it to the clipboard. B-rep sources only;
+   * a mesh source has no per-part rows to compute, so the host answers with
+   * `bomError` otherwise. */
+  | { type: "bomResult"; requestId: string; rows: BomRow[]; warnings: string[] }
+  | { type: "bomError"; requestId: string; message: string }
+  /** Clash panel (roadmap Tier 2 "Clash panel"): Part-vs-Part interference
+   * over the existing `checkInterference` kernel function — a new protocol
+   * pair over existing kernel surface, not new geometry work (the same shape
+   * `entityFactsRequest` used when it shipped). B-rep sources only: a mesh
+   * has no exact B-rep boolean geometry, so the host answers with
+   * `clashCheckError` otherwise. */
+  | { type: "clashCheckResult"; requestId: string; result: InterferenceResult }
+  | { type: "clashCheckError"; requestId: string; message: string }
+  /** All-pairs variant over `checkInterferenceAll` (one parse/replay total,
+   * AABB-pre-filtered): `parts` omitted means every Part with volumes. */
+  | { type: "clashCheckAllResult"; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[] }
+  | { type: "clashCheckAllError"; requestId: string; message: string }
   /** Analytic classification of one entity, for the inspector card. Carries
    * `EntityFacts` verbatim from the existing `getEntityFacts` pipeline
    * function — the card is a new protocol pair over existing kernel surface,
@@ -436,6 +458,12 @@ export type HostToWebview =
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
   | { type: "meshHealError"; requestId: string; message: string }
+  /** Mesh-ops panel (roadmap Tier 2 "Mesh-operations panel"): one declarative
+   * meshio++ operation applied to the current meshio++-imported source and
+   * written to a new file via the shared save flow. Mirrors
+   * `meshHealRequest`'s requestId + stale-response-guard idiom. */
+  | { type: "meshioOpsResult"; requestId: string; steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] }
+  | { type: "meshioOpsError"; requestId: string; message: string }
   | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }
   | { type: "fitRegionError"; requestId: string; message: string }
   /**
@@ -568,6 +596,15 @@ export type WebviewToHost =
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
+  /** Parts-section "Copy BOM" button: no params beyond `requestId` — the host
+   * reads the sidecar Parts and replays the current (tail) ops itself, so the
+   * TSV always reflects the live model rather than a stale client snapshot. */
+  | { type: "bomRequest"; requestId: string }
+  /** Clash panel: check one Part against another (volumes only — same
+   * Part-name resolution the `check_interference` MCP tool applies). */
+  | { type: "clashCheckRequest"; requestId: string; partA: string; partB: string }
+  /** Clash panel: check every Part against every other in one call. */
+  | { type: "clashCheckAllRequest"; requestId: string }
   /** Inspector card: classify the entity the user just selected. */
   /** Run a saved macro, appending its compiled ops to the edit history. */
   | { type: "macroRun"; name: string; parameters: Record<string, string> }
@@ -618,7 +655,13 @@ export type WebviewToHost =
   | { type: "renderViewResult"; requestId: string; data: string }
   | { type: "renderViewError"; requestId: string; message: string }
   | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
-  | { type: "meshHealRequest"; requestId: string }
+  | { type: "meshHealRequest"; requestId: string; autoDecimate?: boolean }
+  /** Run one validated meshio++ operation (see `src/meshioOps.ts`) against the
+   * currently-open meshio++ source. The host owns the save dialog + write
+   * (`promptSaveAndWrite`, same shape as Repair), so success/failure also
+   * surface through the generic `status`/`error` messages — this pair only
+   * carries the per-step report back to the panel. */
+  | { type: "meshioOpsRequest"; requestId: string; ops: MeshioOpSpec[] }
   | { type: "fitRegionRequest"; requestId: string; point: [number, number, number] }
   | { type: "setCamerasLinked"; enabled: boolean };
 

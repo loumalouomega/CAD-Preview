@@ -103,7 +103,7 @@ interface Annotation {
 }
 ```
 
-A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchored annotations", closed) — a "pinned" result from the interactive Measure tool that survives closing the file, unlike the tool's own session-only overlay. Structurally shaped like `Part` (same four `EntityType`-keyed id buckets) so it can be rebound across topology-changing edits with the identical machinery `Part` already uses — see `src/entityRebind.ts`'s `remapPartEntityIds`. `text`/`anchorPoint`/`linePoints` are a frozen snapshot of the result at pin time, never recomputed on redisplay; only "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Persisted in `<model>.annotations.json` — see [File Formats](./file-formats.md).
+A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchored annotations", closed) — a "pinned" result from the interactive Measure tool (or headlessly via the MCP `pin_annotation` tool) that survives closing the file, unlike the tool's own session-only overlay. Structurally shaped like `Part` (same four `EntityType`-keyed id buckets) so it can be rebound across topology-changing edits with the identical machinery `Part` already uses — see `src/entityRebind.ts`'s `remapPartEntityIds`. `text`/`anchorPoint`/`linePoints` are a frozen snapshot of the result at pin time, never recomputed on redisplay; only "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Persisted in `<model>.annotations.json` — see [File Formats](./file-formats.md).
 
 The optional `tolerance` field (roadmap "Tolerance-band fact checks on exact measurements") records a nominal-plus-band intent captured from the Measure panel's inline fields at pin time. `measured` is the raw numeric value frozen alongside the band, so the webview can re-derive the in/out-of-band label colour on every redisplay without parsing the formatted `text` back into a number. Facts only: nothing stores a pass/fail verdict — `src/toleranceBand.ts`'s shared `evaluateToleranceBand` computes it at render time (the same pure module the MCP `check_tolerance` tool uses, so headless and interactive math cannot drift). A malformed band is dropped tolerantly by the sidecar parser (band only — the annotation survives). A toleranced pin renders as `"<text> [nominal ±tol]"`, with an out-of-band pin's label frame and Saved-list row coloured by the derived tone; its dimension glyph in SVG/DXF silhouette exports carries the same decorated label.
 
@@ -374,7 +374,7 @@ type HostToWebview =
     }
   | { type: 'parts';    parts: Part[] }
   | { type: 'annotations'; annotations: Annotation[] }
-  | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[] }
+  | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[]; bakedThrough?: number }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
   | { type: 'editError'; message: string }
@@ -396,6 +396,10 @@ type HostToWebview =
   | { type: 'importDxfError'; message: string }
   | { type: 'massPropertiesResult'; requestId: string; properties: MassProperties }
   | { type: 'massPropertiesError'; requestId: string; message: string }
+  | { type: 'clashCheckResult'; requestId: string; result: InterferenceResult }
+  | { type: 'clashCheckError'; requestId: string; message: string }
+  | { type: 'clashCheckAllResult'; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[] }
+  | { type: 'clashCheckAllError'; requestId: string; message: string }
   | { type: 'macros'; macros: MacroSummary[] }
   | { type: 'macroApplyOps'; ops: EditOp[] }
   | { type: 'entityFactsResult'; requestId: string; facts: EntityFacts }
@@ -406,6 +410,8 @@ type HostToWebview =
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'bomResult'; requestId: string; rows: BomRow[]; warnings: string[] }
+  | { type: 'bomError'; requestId: string; message: string }
   | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
   | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'spacemouse'; motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }; buttons?: number }
@@ -423,7 +429,7 @@ type HostToWebview =
 
 Sent after B-rep tessellation. Contains every face as an encoded mesh, every unique edge as a polyline, and every vertex as a point. The webview calls `buildGroupFromEncoded(msg.meshes, msg.edges, msg.points)` (one `THREE.Mesh` per face, one `THREE.Line` per edge, one `THREE.Sprite` per point, parented under per-solid groups / a top-level `"points"` group) and then `viewer.setModel(group)`.
 
-The optional `opOutcomes` array (roadmap "A failed edit op is indistinguishable from one that did nothing", closed) carries one entry per replayed op — `{index, kind, applied, diagnostic?, hint?}` in list order. An op that gracefully skipped during the host's B-rep replay (unresolved operands after id drift, a builder throw, `IsDone() === false`) reports `applied: false` with a human-readable `diagnostic` and an actionable `hint`, which the webview renders as a ⚠ marker on that op's row in the Edits history instead of silently showing an unchanged model. Absent for mesh sources — their replay is client-side (`rebuildMeshModel()` → `applyEditsMesh(root, ops, outcomes)`), which reports outcomes directly without a protocol round trip.
+The optional `opOutcomes` array (roadmap "A failed edit op is indistinguishable from one that did nothing", closed) carries one entry per replayed op — `{index, kind, applied, diagnostic?, hint?}` in list order. An op that gracefully skipped during the host's B-rep replay (unresolved operands after id drift, a builder throw, `IsDone() === false`) reports `applied: false` with a human-readable `diagnostic` and an actionable `hint`, which the webview renders as a ⚠ marker on that op's row in the Edits history instead of silently showing an unchanged model. After a same-format save-in-place (Tier 0 Phase 1), indices address the FULL history: baked rows pad as applied (they are in the file) and tail outcomes rebase onto their rows. Absent for mesh sources — their replay is client-side (`rebuildMeshModel()` → `applyEditsMesh(root, ops, outcomes)`), which reports outcomes directly without a protocol round trip.
 
 The optional `autoFit` flag (roadmap "Render on demand, not every frame") controls whether `Viewer.setModel()` may skip its auto-reframe: `false` forces a full reframe (a genuine file load / file swap), absent or `true` is containment-eligible (an edit-driven rebuild — `Viewer` skips framing when the new bounds already fit inside the last padded fit sphere so the camera stops twitching on every small edit).
 
@@ -558,7 +564,7 @@ Also sent **unprompted, mid-session** whenever a topology-changing edit triggers
 
 ### `edits`
 
-Sent after geometry, once the host has read the edits sidecar (`<model>.edits.json`). Carries the saved, ordered edit op-list plus the named parametric variables (both empty arrays when no sidecar exists). The webview hydrates `EditsModel` + `VariablesModel` and renders the Edits panel. For B-rep the geometry already arrives with these ops applied (the host folds them in before tessellating); for mesh formats the webview replays them locally.
+Sent after geometry, once the host has read the edits sidecar (`<model>.edits.json`). Carries the saved, ordered edit op-list plus the named parametric variables (both empty arrays when no sidecar exists), plus the `bakedThrough` watermark (leading ops already saved into the source file itself — rows at or below it render locked and refuse undo/remove/jump). The webview hydrates `EditsModel` + `VariablesModel` and renders the Edits panel. For B-rep the geometry already arrives with these ops applied (the host folds them in before tessellating); for mesh formats the webview replays them locally.
 
 An op may carry an optional `exprs` annotation (field path → expression string, e.g. `{ "length": "L*2" }`); its numeric fields always hold the last-good evaluated numbers, so consumers that ignore `exprs` still see a fully-resolved op. See [File Formats](./file-formats.md#edits-sidecar-modeleditsjson).
 
@@ -694,6 +700,26 @@ Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh source
 { "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
 ```
 
+### `bomResult` / `bomError`
+
+Sent in reply to `bomRequest` (webview → host, below) — roadmap Tier 2 "BOM Copy button". `rows` is one `BomRow` per Part over a single host parse/replay (`computeBom`, the same function the `generate_bom` MCP tool drives headless); `warnings` carries per-row degradations (unresolved ids) and scad-conversion chatter. **B-rep sources only**, same gate as `massPropertiesResult` — a mesh source has no per-part rows to compute. The webview renders `bomTsv(rows)` itself (`src/bomExport.ts`, zero-import pure) and copies it to the clipboard; an empty parts sidecar returns zero rows with a warning rather than an error (the button stays disabled in that case, so this is a backstop).
+
+```json
+{ "type": "bomResult", "requestId": "1234-0.56", "rows": [{ "name": "Bracket", "color": "#ff8800", "solidCount": 1, "surfaceCount": 0, "lineCount": 0, "pointCount": 0, "volume": 1000, "area": 600, "unresolvedIds": [] }], "warnings": [] }
+```
+
+```json
+{ "type": "bomError", "requestId": "1234-0.56", "message": "BOM rows are computed for B-rep sources on the host; mesh sources have no per-part rows to compute." }
+```
+
+### `clashCheckResult` / `clashCheckError` / `clashCheckAllResult` / `clashCheckAllError`
+
+Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep sources only** (a mesh has no exact B-rep boolean geometry to intersect; the Clash section hides itself for mesh sources and never sends either request). Carries `InterferenceResult` / named `InterferencePairResult`s verbatim from the existing `checkInterference` / `checkInterferenceAll` pipeline functions — the Clash panel is a new protocol pair over existing kernel surface, not new geometry work; the same functions back the `check_interference` / `check_interference_all` MCP tools. `clashCheckAllRequest` takes no operands (every Part with volumes); each returned pair is named `partA`/`partB` in the kernel's `i<j` enumeration order.
+
+```json
+{ "type": "clashCheckRequest", "requestId": "1234-0.56", "partA": "Housing", "partB": "Shaft" }
+```
+
 ### `macros` / `macroApplyOps`
 
 The saved-macro library for the document's folder (`cad-preview-macros.json` — the same file the MCP tools take as `libraryPath`). `macros` is sent unprompted on `ready` and after every save/delete, so the panel never has to ask for it.
@@ -750,7 +776,7 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 
 ### `meshHealResult` / `meshHealError`
 
-Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF.
+Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF. The request carries the panel's session-only `autoDecimate` flag; when set and the ceiling refuses, the host decimates first (meshio++ quadric edge-collapse, target ~1000 triangles) and the report carries a `decimated: {fromTriangles, toTriangles, ratio}` field plus the resampling stated in the panel — never silently.
 
 ```json
 { "type": "meshHealResult", "requestId": "1234-0.56", "report": { "componentCount": 1, "components": [{ "index": 0, "triangleCount": 12, "freeEdgeCount": 0, "nonManifoldEdgeCount": 0, "degenerateFaceCount": 0, "rawArea": 600, "rawVolume": 1000, "requiredTolerance": 0.000001, "healedArea": 600, "healedVolume": 1000, "areaDeltaPct": 0, "volumeDeltaPct": 0 }] } }
@@ -758,6 +784,18 @@ Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh �
 
 ```json
 { "type": "meshHealError", "requestId": "1234-0.56", "message": "Mesh healability check requires an STL/OBJ/PLY source." }
+```
+
+### `meshioOpsResult` / `meshioOpsError`
+
+Sent in reply to `meshioOpsRequest` (webview → host, below) — roadmap Tier 2 "Mesh-operations panel for meshio sources". `steps`/`warnings` are `runMeshioOps`'s own per-step report verbatim (one entry per requested op, including the ones that did nothing — a step that cannot run is reported with `applied: false` and its reason, never silent). **meshio++-imported sources only** (every `loadMeshBytes` source except OpenFOAM, whose case-staged reader has no `readMesh` path); the FE Mesh panel's Mesh-ops section hides itself otherwise, so the host gate is a backstop, not the primary UX. The result file itself is written through the shared save flow (`promptSaveAndWrite`, same shape as Repair) — success/failure of the write surface through the generic `status`/`error` messages; this pair only carries the report back to the panel.
+
+```json
+{ "type": "meshioOpsResult", "requestId": "1234-0.56", "steps": [{ "op": "<op id>", "applied": true, "detail": "welded 4, dropped 0 degenerate / 0 duplicate" }], "warnings": [] }
+```
+
+```json
+{ "type": "meshioOpsError", "requestId": "1234-0.56", "message": "Mesh operations require a meshio++-imported source (VTK/MED/CGNS/Exodus/XDMF/MDPA/Gmsh/Abaqus/UNV/SU2/Medit/GiD)." }
 ```
 
 ### `opPreviewResult` / `opPreviewError`
@@ -881,13 +919,16 @@ type WebviewToHost =
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
+  | { type: 'clashCheckRequest'; requestId: string; partA: string; partB: string }
+  | { type: 'clashCheckAllRequest'; requestId: string }
   | { type: 'macroRun'; name: string; parameters: Record<string, string> }
   | { type: 'macroSaveCurrent' }
   | { type: 'macroDelete'; name: string }
   | { type: 'entityFactsRequest'; requestId: string; entityId: string }
   | { type: 'selectorSynthesizeRequest'; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
-  | { type: 'meshHealRequest'; requestId: string }
+  | { type: 'meshHealRequest'; requestId: string; autoDecimate?: boolean }
+  | { type: 'bomRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
@@ -1017,7 +1058,7 @@ Sent when a file is dropped onto the viewer canvas AND the browser `File` object
 
 ### `saveSidecars`
 
-Sent when the user picks **File ▸ Save** in the top menu bar. The CAD file is read-only and never written; this forces an immediate flush of the `<model>.parts.json` / `<model>.annotations.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`) sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status` message (`"Saved"`) on success or `error` on failure. The same action backs the `cad-preview.save` command (Ctrl+S).
+Sent when the user picks **File ▸ Save** in the top menu bar. This forces an immediate flush of the `<model>.parts.json` / `<model>.annotations.json` / `<model>.edits.json` / `<model>.mesh.json` (+ `.geo`) sidecars, bypassing the ~500 ms autosave debounce, and replies with a `status` message (`"Saved"`) on success or `error` on failure — sidecars only, never the CAD source itself. The same action backs the `cad-preview.save` command (palette only, unbound — Ctrl+S is the platform save, which bakes the op tail via `saveCustomDocument`).
 
 ```json
 { "type": "saveSidecars" }
@@ -1107,6 +1148,18 @@ Sent when the Mass Properties panel's **Compute** button is clicked, for a B-rep
 { "type": "massPropertiesRequest", "requestId": "1234-0.56", "entityId": "solid-0" }
 ```
 
+### `bomRequest`
+
+Sent when the Parts section's **Copy BOM** button is clicked — only enabled for a B-rep source with ≥1 part (mesh sources and empty part lists keep the button disabled with an explanatory tooltip, mirroring `generate_bom`'s own MCP-tool gate; see `bomResult`/`bomError` above). No parameters beyond `requestId` — the host reads the sidecar Parts and replays the current (tail) ops itself.
+
+```json
+{ "type": "bomRequest", "requestId": "1234-0.56" }
+```
+
+### `clashCheckRequest` / `clashCheckAllRequest`
+
+Sent when the Clash panel's **Check** / **Check all** button is clicked, for a B-rep source only (mesh sources never send these — the section is hidden). `clashCheckRequest` names two Parts (`partA`/`partB` — the panel refuses identical picks with a guidance message instead of sending); `clashCheckAllRequest` names none (every Part with volumes).
+
 ### `measureExactRequest`
 
 Sent when the Measure panel's **⟳ Exact** button is clicked, for a B-rep source only (mesh sources never send this — the button never appears; see `measureExactResult` above). `kind` mirrors the current measurement tool (`"distance"`/`"edgeLength"`/`"radius"` — never `"angle"`, which has no button at all); `entityIdA`/`entityIdB` are the completed measurement's picked entity ids (`entityIdB` only for `kind: "distance"`).
@@ -1129,6 +1182,14 @@ Sent whenever a field in the open Edits-panel op form changes (and once when the
 
 ```json
 { "type": "meshHealRequest", "requestId": "1234-0.56" }
+```
+
+### `meshioOpsRequest`
+
+Sent when the FE Mesh panel's Mesh-ops **Run op…** button is clicked — only reachable for a meshio++-imported source (the section hides itself for B-rep and native-mesh documents, mirroring `transform_mesh`'s own MCP-tool gate; OpenFOAM case markers are additionally refused host-side). `ops` is a one-element array of `MeshioOpSpec` (`src/meshioOps.ts`: `{op, ratio?, iterations?, levels?, method?, mode?, targetGroupSize?}` — one operation per Run, not the multi-op lists `transform_mesh` accepts). The host validates each entry, runs `runMeshioOps` against the currently-open document's own bytes (+ companions), and writes the result to a NEW file via the shared save flow — the source is never modified. Replies with `meshioOpsResult`/`meshioOpsError`, correlated via `requestId` like every other request/response pair in this file.
+
+```json
+{ "type": "meshioOpsRequest", "requestId": "1234-0.56", "ops": [{ "op": "<one of clean|decimate|smooth|subdivide|refine|agglomerate|convertCells>" }] }
 ```
 
 ### `fitRegionRequest`

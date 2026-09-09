@@ -7,6 +7,7 @@ import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
+import { bomTsv } from "../bomExport";
 import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay } from "./geometryBuilder";
 import { viridisCssGradientStops } from "./colorMap";
@@ -33,6 +34,7 @@ import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } fr
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
+import { ClashPanel, type ClashPairDisplay } from "./clashPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
 import { RegionFitPanel } from "./regionFitPanel";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
@@ -69,7 +71,7 @@ import {
 } from "./clipping";
 import { MeasurementState, type MeasureTool, type MeasurementPick } from "./measurementState";
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
-import { convertLength, convertLengthBasedProperties, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
+import { convertLength, convertLengthBasedProperties, convertVolume, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { setupCollapsiblePanels, type CollapsiblePanelsHandle } from "./collapsiblePanels";
@@ -140,6 +142,8 @@ const partsModel = new PartsModel(() => {
   refreshColors(); // also re-applies visibility state, see refreshColors()
   partsPanel.render(partsModel.list());
   meshingPanel.renderParts(partsModel.list());
+  clashPanel.renderParts(partsModel.list().map((p) => p.name));
+  refreshBomButton();
 });
 
 const partsPanel = new PartsPanel(
@@ -170,6 +174,12 @@ const partsPanel = new PartsPanel(
       visibilityState.toggleIsolatedPart(index);
       applyVisibilityState();
       partsPanel.render(partsModel.list());
+    },
+    onCopyBom: () => {
+      const requestId = `${Date.now()}-${Math.random()}`;
+      bomRequestId = requestId;
+      setStatus("Copying BOM…");
+      post({ type: "bomRequest", requestId });
     },
   },
   visibilityState
@@ -489,7 +499,7 @@ function renderEditsUi(): void {
   // 2 item 1). They are NOT resolved here: they aren't applied yet, and the
   // resolve-on-read contract re-evaluates them at every future consumption
   // point anyway.
-  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets);
+  editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets, editsModel.savePoint);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
 }
 
@@ -527,6 +537,11 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
   onSetExpr: (index, expr) => variablesModel.setExpr(index, expr),
   onRemove: (index) => variablesModel.remove(index),
 });
+
+/** Guidance shown when an edit targets ops at or inside the save point (Tier 0
+ * Phase 2 — those ops live in the source file itself, not the sidecar). */
+const SAVE_POINT_REFUSAL =
+  "That op is already saved into the file itself — it cannot be undone or removed. Use File ▸ Revert File to drop back to the save.";
 
 /** Captured boolean operand A (volume ids); operand B is the live selection. */
 let booleanA: string[] = [];
@@ -801,13 +816,24 @@ viewer.setGizmoHandlers(
 );
 
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
-  onUndo: () => editsModel.undo(),
+  // Tier 0 Phase 2 — mutations at or inside the save point are refused by the
+  // model (the ops live in the file itself); surface the guidance here. The
+  // empty-stack no-ops stay silent, exactly as before.
+  onUndo: () => {
+    if (!editsModel.undo() && editsModel.size > 0) setStatus(SAVE_POINT_REFUSAL, true);
+  },
   onRedo: () => editsModel.redo(),
-  onClear: () => editsModel.clear(),
-  onRemoveOp: (index) => editsModel.remove(index),
+  onClear: () => {
+    if (!editsModel.clear() && editsModel.size > 0) setStatus(SAVE_POINT_REFUSAL, true);
+  },
+  onRemoveOp: (index) => {
+    if (!editsModel.remove(index) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
+  },
   // One splice + one onChange/editsChanged/re-tessellate round trip per
   // click — never a looped undo()/redo() sequence (op-history scrubbing).
-  onJumpTo: (index) => editsModel.jumpTo(index),
+  onJumpTo: (index) => {
+    if (!editsModel.jumpTo(index) && index + 1 < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
+  },
   // Transient highlight of a history-row bucket chip's faces (roadmap
   // "Selector synthesis" Phase 1) — goes through `renderSelection` directly,
   // never into the SelectionSet, so moving on restores the real selection by
@@ -1065,6 +1091,11 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onExport: async (format, unit) => {
     post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource(), unit });
   },
+  onMeshOps: (ops) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    meshioOpsRequestId = requestId;
+    post({ type: "meshioOpsRequest", requestId, ops });
+  },
   onClear: () => {
     viewer.setMeshOverlay(null);
     viewer.setWorstElementsOverlay(null);
@@ -1085,6 +1116,14 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
 // dependency) — see `computeAndRenderMeshMassProperties` below.
 let sourceKind: "brep" | "mesh" | null = null;
 let massPropertiesRequestId: string | null = null;
+
+// ── Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button") ────
+// One TSV row per Part over a single host parse/replay (`computeBom`, the same
+// function `generate_bom` drives headlessly) — requested with a stale-guarded
+// `bomRequestId` like every other request/response round trip here, rendered
+// locally via `bomTsv` (zero-import pure, so the webview bundle stays
+// WASM-free), and copied with the async clipboard API.
+let bomRequestId: string | null = null;
 
 // ── Standard parts (step.parts search/insert) ────────────────────────────
 // Search requestId is stale-guarded like every other request/response round
@@ -1219,6 +1258,7 @@ function setDisplayUnit(unit: DisplayUnit): void {
       convertLengthBasedProperties(lastRawMassProperties, unit) as MassPropertiesDisplay,
       unit
     );
+  renderClashResults();
 }
 
 /** Caches the raw (mm) result and renders it converted to `currentDisplayUnit`. */
@@ -1251,6 +1291,77 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
   },
 });
 
+// ── Clash panel (roadmap Tier 2 "Clash panel") ────────────────────────────
+// B-rep sources only (no exact boolean geometry exists for a mesh) — the
+// section hides itself otherwise, like `meshHealthPanel`. Raw mm results are
+// cached so a display-unit change re-renders without a new host round trip
+// (the `lastRawMassProperties` precedent); everything clears on rebuild
+// (re-tessellation may renumber the ids the results name).
+let clashCheckRequestId: string | null = null;
+let clashCheckAllRequestId: string | null = null;
+/** Operand names of the in-flight pairwise check — the result carries only
+ * geometry, so these are remembered to label the rendered row. */
+let clashLastPair: { partA: string; partB: string } | null = null;
+let lastClashResults:
+  | { kind: "pair"; pair: Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null } }
+  | { kind: "all"; pairs: Array<Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null }> }
+  | null = null;
+
+function renderClashResults(): void {
+  if (!lastClashResults) return;
+  const convert = (mm3: number | null) => (mm3 == null ? null : convertVolume(mm3, currentDisplayUnit));
+  if (lastClashResults.kind === "pair") {
+    const { overlapVolumeMm3, ...rest } = lastClashResults.pair;
+    clashPanel.renderPair({ ...rest, overlapVolume: convert(overlapVolumeMm3) }, currentDisplayUnit);
+  } else {
+    clashPanel.renderAll(
+      lastClashResults.pairs.map(({ overlapVolumeMm3, ...rest }) => ({ ...rest, overlapVolume: convert(overlapVolumeMm3) })),
+      currentDisplayUnit
+    );
+  }
+}
+
+function clearClashResults(): void {
+  lastClashResults = null;
+  clashCheckRequestId = null;
+  clashCheckAllRequestId = null;
+  clashLastPair = null;
+  clashPanel.setBusy(false);
+  clashPanel.clear();
+}
+
+const clashPanel = new ClashPanel(document.getElementById("clash-panel")!, {
+  onCheck: (partA, partB) => {
+    if (sourceKind !== "brep") {
+      clashPanel.renderMessage("Clash detection needs a B-rep source.", true);
+      return;
+    }
+    if (partA === partB) {
+      clashPanel.renderMessage("Pick two different Parts.", true);
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random()}`;
+    clashCheckRequestId = requestId;
+    clashLastPair = { partA, partB };
+    lastClashResults = null;
+    clashPanel.setBusy(true);
+    clashPanel.renderMessage("Checking…");
+    post({ type: "clashCheckRequest", requestId, partA, partB });
+  },
+  onCheckAll: () => {
+    if (sourceKind !== "brep") {
+      clashPanel.renderMessage("Clash detection needs a B-rep source.", true);
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random()}`;
+    clashCheckAllRequestId = requestId;
+    lastClashResults = null;
+    clashPanel.setBusy(true);
+    clashPanel.renderMessage("Checking all Parts…");
+    post({ type: "clashCheckAllRequest", requestId });
+  },
+});
+
 // ── Mesh Health (roadmap "Mesh -> B-rep promotion", both phases closed) ────
 // Eligible only for a NATIVE stl/obj/ply/gltf file on disk — the same
 // COMPARABLE_MESH_FORMATS gate check_mesh_health/promote_mesh_to_brep's MCP
@@ -1258,6 +1369,9 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
 // triangulated but not itself one of those FILES) stays ineligible.
 let meshHealthEligibleFormat: MeshParseFormat | null = null;
 let meshHealRequestId: string | null = null;
+// Mesh-ops panel (roadmap Tier 2): requestId latch + meshio eligibility live
+// beside the Mesh Health latch — same stale-response-guard idiom.
+let meshioOpsRequestId: string | null = null;
 
 const macrosPanel = new MacrosPanel(document.getElementById("macros-panel")!, {
   onRun: (name, parameters) => post({ type: "macroRun", name, parameters }),
@@ -1271,7 +1385,7 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
     const requestId = `${Date.now()}-${Math.random()}`;
     meshHealRequestId = requestId;
     meshHealthPanel.renderMessage("Checking…");
-    post({ type: "meshHealRequest", requestId });
+    post({ type: "meshHealRequest", requestId, autoDecimate: meshHealthPanel.autoDecimate });
   },
   onPromote: () => {
     if (!meshHealthEligibleFormat) return;
@@ -1287,6 +1401,22 @@ function setMeshHealthEligibility(format: MeshParseFormat | null): void {
   meshHealthEligibleFormat = format;
   meshHealthPanel.setEligible(format !== null);
   regionFitPanel.setEligible(format !== null);
+}
+
+/**
+ * Enables the Parts-section "Copy BOM" button only for a B-rep source with
+ * ≥1 part — the host computes rows via OCCT, so a mesh source has nothing to
+ * copy, and zero parts would copy a header-only TSV. Called on every model
+ * load (sourceKind may have changed) and every parts change (count may have).
+ */
+function refreshBomButton(): void {
+  if (sourceKind === "brep" && partsModel.size > 0) {
+    partsPanel.setBomEnabled(true, "Copy the bill of materials (one row per part) as tab-separated text");
+  } else if (sourceKind !== "brep") {
+    partsPanel.setBomEnabled(false, "BOM rows need a B-rep source (mesh sources have no per-part rows)");
+  } else {
+    partsPanel.setBomEnabled(false, "Define a part first — an empty document would copy a header-only TSV");
+  }
 }
 
 let regionFitRequestId: string | null = null;
@@ -1621,6 +1751,7 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "addCountersinkHole":
     case "drill":
     case "shell":
+    case "defeature":
     case "splitByPlane":
       return "cut";
     case "addCircleProfile":
@@ -2015,6 +2146,10 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (d.planeId) { draft.planeId = d.planeId; draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
       else if (d.planePoint && d.planeNormal) { draft.planePoint = d.planePoint as Vec3; draft.planeNormal = d.planeNormal as Vec3; }
       return { op: withExprs(draft) };
+    }
+    case "defeature": {
+      if (selFaces.length === 0) return { error: "Select the face(s) to defeature (Surf mode)." };
+      return { op: withExprs({ op: "defeature", faces: selFaces }) };
     }
     case "splitByPlane": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to split." };
@@ -4041,6 +4176,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         for (const id of msg.guideIds ?? []) guideEntityIds.add(id); // construction geometry: dimmed, refused as feature operands
         viewer.setGuideIds(msg.guideIds ?? []);
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
+        meshingPanel.setMeshioOpsAvailable(false); // B-rep has exact geometry — no meshio mesh model
+        clashPanel.setEligible(true); // exact booleans exist only for B-rep
+        clearClashResults(); // re-tessellation may renumber the ids results name
+        bomRequestId = null; // a new model supersedes any in-flight BOM request
         viewer.setFitSeedPickHandler(null);
         lastRegionFit = null;
         regionFitRequestId = null;
@@ -4053,6 +4192,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         sourceKind = "brep";
         refreshExactButton();
         refreshPinButton();
+        refreshBomButton(); // re-evaluate now sourceKind is settled; parts hydration refreshes again if needed
         meshingPanel.setSourceKind("brep");
         meshingPanel.setModelExtents(viewer.getModelExtents());
         syncMeshSizeSeed();
@@ -4075,6 +4215,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       refreshColors(); // also re-applies visibility state, see refreshColors()
       partsPanel.render(partsModel.list());
       meshingPanel.renderParts(partsModel.list());
+      clashPanel.renderParts(partsModel.list().map((p) => p.name));
+      refreshBomButton(); // part count may have changed (hydration, auto-create, external edit)
       showSidebar();
       break;
 
@@ -4098,9 +4240,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "edits":
       // Hydrate the op-stack + variables from the sidecar (does not echo back
-      // as a write — both `load`s deliberately skip onChange).
+      // as a write — both `load`s deliberately skip onChange). The watermark
+      // travels with it so the timeline knows which rows are saved into the
+      // file itself (Tier 0 Phase 2 — undo/remove/jump refuse to cross it).
       variablesModel.load(msg.variables);
-      editsModel.load(msg.ops);
+      editsModel.load(msg.ops, msg.bakedThrough ?? 0);
       renderEditsUi();
       // B-rep arrives already-tessellated with these ops; mesh replays locally.
       if (pristineMesh) rebuildMeshModel();
@@ -4109,6 +4253,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "loadUrl":
       setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
+      meshingPanel.setMeshioOpsAvailable(false); // native mesh has no meshio++ mesh model
+      clashPanel.setEligible(false); // no exact boolean geometry for a mesh
+      clearClashResults();
+      bomRequestId = null; // a new model supersedes any in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
       regionFitRequestId = null;
@@ -4121,6 +4269,12 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // check_mesh_health's MCP tool would reject that source's real path
       // the same way, so the panel stays ineligible here too.
       setMeshHealthEligibility(null);
+      // Mesh-ops needs a meshio++ mesh model — every loadMeshBytes source has
+      // one except OpenFOAM (geometry-only case staging, no readMesh path).
+      meshingPanel.setMeshioOpsAvailable(msg.sourceFormat !== "openfoam");
+      meshioOpsRequestId = null; // a new document supersedes any in-flight op
+      bomRequestId = null; // same for an in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
+      clashPanel.setEligible(false); // meshio boundary has no B-rep booleans
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
       regionFitRequestId = null;
@@ -4292,6 +4446,97 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       massPropertiesPanel.renderMessage(msg.message, true);
       break;
 
+    case "bomResult": {
+      if (msg.requestId !== bomRequestId) break; // stale — a newer click/load superseded it
+      bomRequestId = null;
+      for (const w of msg.warnings) setStatus(w);
+      const tsv = bomTsv(msg.rows);
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(tsv);
+        copied = true;
+      } catch {
+        // Fallback for contexts where the async clipboard API is denied (some
+        // webview/embed contexts): the deprecated execCommand path via a
+        // temporary selected textarea.
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = tsv;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          copied = document.execCommand("copy");
+          ta.remove();
+        } catch {
+          copied = false;
+        }
+      }
+      if (copied) {
+        setStatus(`BOM copied (${msg.rows.length} row${msg.rows.length === 1 ? "" : "s"}).`);
+      } else {
+        setStatus("Copy BOM failed: the clipboard write was denied.", true);
+      }
+      break;
+    }
+
+    case "bomError":
+      if (msg.requestId !== bomRequestId) break;
+      bomRequestId = null;
+      setStatus(msg.message, true);
+      break;
+
+    case "clashCheckResult":
+      if (msg.requestId !== clashCheckRequestId) break; // stale — a newer check superseded it
+      clashCheckRequestId = null;
+      clashPanel.setBusy(false);
+      lastClashResults = {
+        kind: "pair",
+        pair: {
+          partA: clashLastPair?.partA ?? "",
+          partB: clashLastPair?.partB ?? "",
+          hasOverlap: msg.result.hasOverlap,
+          overlapVolumeMm3: msg.result.hasOverlap ? msg.result.overlapVolume : null,
+          unresolvedA: msg.result.unresolvedA,
+          unresolvedB: msg.result.unresolvedB,
+        },
+      };
+      renderClashResults();
+      break;
+
+    case "clashCheckError":
+      if (msg.requestId !== clashCheckRequestId) break;
+      clashCheckRequestId = null;
+      clashPanel.setBusy(false);
+      clashPanel.renderMessage(msg.message, true);
+      break;
+
+    case "clashCheckAllResult":
+      if (msg.requestId !== clashCheckAllRequestId) break;
+      clashCheckAllRequestId = null;
+      clashPanel.setBusy(false);
+      lastClashResults = {
+        kind: "all",
+        pairs: msg.pairs.map((p) => ({
+          partA: p.partA,
+          partB: p.partB,
+          hasOverlap: p.hasOverlap,
+          overlapVolumeMm3: p.hasOverlap ? p.overlapVolume : null,
+          screenedByBbox: p.screenedByBbox,
+          unresolvedA: p.unresolvedA,
+          unresolvedB: p.unresolvedB,
+        })),
+      };
+      renderClashResults();
+      break;
+
+    case "clashCheckAllError":
+      if (msg.requestId !== clashCheckAllRequestId) break;
+      clashCheckAllRequestId = null;
+      clashPanel.setBusy(false);
+      clashPanel.renderMessage(msg.message, true);
+      break;
+
     case "macros":
       macrosPanel.render(msg.macros);
       break;
@@ -4423,6 +4668,18 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "meshHealError":
       if (msg.requestId !== meshHealRequestId) break;
       meshHealthPanel.renderMessage(msg.message, true);
+      break;
+
+    case "meshioOpsResult":
+      if (msg.requestId !== meshioOpsRequestId) break; // stale — a newer run/load superseded it
+      meshioOpsRequestId = null;
+      meshingPanel.renderMeshOpsResult(msg.steps, msg.warnings);
+      break;
+
+    case "meshioOpsError":
+      if (msg.requestId !== meshioOpsRequestId) break;
+      meshioOpsRequestId = null;
+      meshingPanel.renderMeshOpsStatus(msg.message, true);
       break;
 
     case "fitRegionResult":
@@ -4581,6 +4838,7 @@ async function loadMeshObjectFromUrl(
     lastMeasurement = null; // stale entity ids — refer to the just-replaced model; also hides #measure-exact-btn (mesh sources can't use it)
     refreshExactButton();
     refreshPinButton();
+    refreshBomButton(); // mesh source: Copy BOM stays disabled with reason
     meshingPanel.setSourceKind("mesh");
     meshingPanel.setModelExtents(viewer.getModelExtents());
     syncMeshSizeSeed();

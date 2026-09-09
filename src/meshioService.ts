@@ -48,6 +48,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
+import { parseStl } from "./stlParser";
+import { parseObj } from "./objParser";
+import { parsePly } from "./plyParser";
+import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
+import { weldTriangleSoup, weldedMeshToStlBytes } from "./meshComponents";
+import type { MeshParseFormat } from "./fileRouter";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MeshioApi = any;
@@ -211,11 +217,15 @@ function unstageMeshioSource(m: MeshioApi, paths: readonly string[], extra: read
  * design that lets a meshio-imported document inherit the entire existing
  * mesh (Three.js) pipeline for free: facet splitting, parts, every
  * mesh-legal edit op, export, mass properties, measurement. Uses
- * `convertSurface` (not `readMesh` → build STL by hand), which stays inside
- * meshio++'s C++ core and auto-extracts the boundary skin of a volume mesh —
- * confirmed against the live WASM on a hand-built tetrahedron: `convert`ing
- * to MED/CGNS/Exodus/XDMF and then `convertSurface`-ing each back to STL all
- * produced the same correct 4-facet boundary (one per tet face). Trades away
+ * `convertSurface`, which stays inside meshio++'s C++ core and auto-extracts
+ * the boundary skin of a volume mesh — confirmed against the live WASM on a
+ * hand-built tetrahedron: `convert`ing to MED/CGNS/Exodus/XDMF and then
+ * `convertSurface`-ing each back to STL all produced the same correct
+ * 4-facet boundary (one per tet face). When `convertSurface` yields zero
+ * facets — a quad-only boundary (the common case for hex meshes), where it
+ * silently emits `solid endsolid` — this falls back to `readMesh` →
+ * `extractSurface` → `convertCells(…, "simplexify")` → hand-built STL, the
+ * same shape `convertFoamCaseToStlBoundary` uses. Trades away
  * format-native richness (regions, point/cell scalar data, multi-material
  * grouping) for a small, low-risk v1 — an explicit scope decision, not an
  * oversight; see CLAUDE.md's "meshio++ integration" section.
@@ -236,7 +246,27 @@ export async function convertToStlBoundary(
   const outPath = "/out.stl";
   try {
     m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
-    return m.FS.readFile(outPath);
+    const bytes: Uint8Array = m.FS.readFile(outPath);
+    if (parseStl(bytes).length > 0) return bytes;
+    // `convertSurface` linearizes higher-ORDER cells but does NOT split
+    // multi-node boundary FACES — a quad-only boundary (the common case for
+    // hex meshes) yields `solid endsolid`, zero facets, no throw. Fall back
+    // to readMesh + extractSurface + simplexify + hand-built STL, the same
+    // shape `convertFoamCaseToStlBoundary` uses for exactly this reason.
+    // Failures here fall to the outer catch's single `wrapMeshioFault`.
+    let boundary = m.extractSurface(m.readMesh(primaryPath, meshioFormat), false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let blocks = boundary.cells as any[];
+    if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
+      boundary = m.convertCells(boundary, "simplexify", true);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      blocks = boundary.cells as any[];
+    }
+    const stl = boundaryTrianglesToAsciiStl(boundary.points, boundary.dim, blocks, "meshio import");
+    if (stl) return stl;
+    throw new Error(
+      "meshio import error: the mesh produced an empty boundary — no faces to display."
+    );
   } catch (err) {
     throw wrapMeshioFault(err);
   } finally {
@@ -262,6 +292,49 @@ export async function convertToStlBoundary(
  * three possible causes because the failure carried no discriminator. With
  * `numComponents` known up front, the entry is disabled with a stated reason.
  */
+export interface MeshioProvenance {
+  /** meshio++'s verdict: true when the file carries a provenance block it recognises. */
+  recognised: boolean;
+  /** The block's own lines (credit, source/target, notes, timestamp) — empty when unrecognised. */
+  lines: string[];
+}
+
+/**
+ * Reads a meshio source's provenance block, if it has one. **Never throws**
+ * — the same supplementary-information contract as `readMeshioMetadata`/
+ * `readMeshioDataInfo`: an unreadable file, or a format whose container has
+ * no header slot for a block (MED/CGNS/XDMF/hmf/wkt — the measured no-op
+ * half of the coverage split), yields `null` and the caller falls back to a
+ * "no provenance" message. A block this codebase itself wrote (via
+ * `exportViaMeshio`'s `source`+`notes`) comes back `recognised: true` with
+ * its credit/source/target/note lines.
+ */
+export async function readMeshioProvenance(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<MeshioProvenance | null> {
+  let m: MeshioApi;
+  try {
+    m = await getMeshio();
+  } catch {
+    return null;
+  }
+  let allPaths: string[] = [];
+  try {
+    const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+    allPaths = staged.allPaths;
+    const result = m.readProvenance(staged.primaryPath) as { lines: string[]; recognised: boolean };
+    if (!result || result.recognised !== true) return null;
+    return { recognised: true, lines: (result.lines ?? []).map(String) };
+  } catch (err) {
+    resetMeshioIfAbort(err);
+    return null;
+  } finally {
+    unstageMeshioSource(m, allPaths);
+  }
+}
 export interface MeshioDataArrayInfo {
   name: string;
   location: "point" | "cell";
@@ -439,8 +512,111 @@ export async function runMeshioOps(
   }
 }
 
-export interface MeshioRegionSummary {
-  name: string;
+/**
+ * Decimates an STL triangle soup to `ratio` (fraction of faces to KEEP, in
+ * (0, 1]) via meshio++'s quadric edge-collapse — the `autoDecimate` answer
+ * to `meshHeal.ts`'s `MAX_HEALABLE_TRIANGLES` ceiling (Tier 1 item
+ * "Auto-decimate under MAX_HEALABLE_TRIANGLES"). Takes STL bytes specifically
+ * (not a meshio format): the tool layer funnels OBJ/PLY/glTF through
+ * `weldedMeshToStlBytes` first, so this function sees one uniform shape and
+ * meshio++ only ever parses the format it was built around. Returns the
+ * decimated STL bytes plus before/after triangle counts so the caller can
+ * report the resampling actually applied — never silent.
+ */
+export interface DecimateStlResult {
+  bytes: Uint8Array;
+  fromTriangles: number;
+  toTriangles: number;
+}
+
+export async function decimateStlBoundary(stlBytes: Uint8Array, ratio: number): Promise<DecimateStlResult> {
+  if (!(ratio > 0 && ratio <= 1)) {
+    throw new Error(`decimate ratio must be in (0, 1] (got ${ratio})`);
+  }
+  const m = await getMeshio();
+  const inPath = "/dec-in.stl";
+  const outPath = "/dec-out.stl";
+  m.FS.writeFile(inPath, Buffer.from(stlBytes));
+  try {
+    const mesh = m.readMesh(inPath, "stl");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const blocks = (mesh.cells ?? []) as Array<{ type: string; data: ArrayLike<number> }>;
+    const countTriangles = (cells: Array<{ type: string; data: ArrayLike<number> }>): number =>
+      cells.reduce((n, b) => n + (b.type === "triangle" ? Math.floor(b.data.length / 3) : 0), 0);
+    const fromTriangles = countTriangles(blocks);
+    if (fromTriangles === 0) {
+      throw new Error("decimate: meshio++ read no triangle cells from the STL input — refusing to resample an empty mesh.");
+    }
+    const r = m.decimate(mesh, ratio);
+    m.writeMesh(outPath, r.mesh);
+    const bytes = m.FS.readFile(outPath);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const toTriangles = countTriangles((r.mesh.cells ?? []) as Array<{ type: string; data: ArrayLike<number> }>);
+    return { bytes, fromTriangles, toTriangles };
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    try { m.FS.unlink(inPath); } catch { /* ignore */ }
+    try { m.FS.unlink(outPath); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Decimation target for the `autoDecimate` opt-in (`check_mesh_health`/
+ * `promote_mesh_to_brep`, Tier 1 item "Auto-decimate under
+ * MAX_HEALABLE_TRIANGLES") — deliberately ~2% of the ceiling, not just under
+ * it. Measured against the live pipeline: the per-triangle sewing cost
+ * scales steeply (one OCCT face per triangle plus a `Sewing.Perform` over
+ * all of them) — 1k triangles checks in ~16s, while 5k already hangs past
+ * the kernel worker's 300s watchdog, so a target merely under the ceiling
+ * would still be unusable. A 100:1 resampling is coarse, but the opt-in
+ * reports the ratio actually applied and warns that the result describes
+ * the decimated mesh — a coarse-but-honest answer beats a refusal.
+ * Lives here (not in `meshHeal.ts`, where the ceiling itself lives) because
+ * BOTH consumers — `mcpTools.ts` and `provider.ts` — must import it as a
+ * value, and `meshHeal.ts`'s own module graph pulls in OCCT (bundled, not
+ * external: importing it from `provider.ts` would drag the whole kernel
+ * into the extension-host bundle the worker architecture exists to avoid).
+ * `meshHeal.ts` documents the pairing from its side.
+ */
+export const AUTO_DECIMATE_TARGET_TRIANGLES = 1_000;
+
+/**
+ * Whether an error is `meshHeal.ts`'s over-ceiling refusal (as opposed to a
+ * corrupt file, an unparseable format, …). The `autoDecimate` call sites use
+ * this to decide whether decimation applies at all — decimation is only a
+ * sound answer to size, never to malformation. Pure string match on the
+ * message `assertHealableSize` throws; `mcpTools.test.ts` pins the pairing
+ * (a ceiling error decimates, any other error rethrows).
+ */
+export function isHealableSizeError(err: unknown): boolean {
+  return err instanceof Error && /triangle ceiling/.test(err.message);
+}
+
+/**
+ * Funnels any of the four healable mesh formats into STL bytes plus a
+ * triangle count, for the `autoDecimate` opt-in — STL passes through
+ * untouched (no pointless re-serialization); OBJ/PLY/glTF go through the
+ * same pure parse+weld+serialize the repair path already uses. Pure JS, no
+ * WASM: the actual resampling happens in `decimateStlBoundary` (meshio++).
+ */
+export function stlBytesForHeal(
+  bytes: Uint8Array,
+  format: MeshParseFormat,
+  external?: GltfExternalBuffers
+): { stlBytes: Uint8Array; fromTriangles: number } {
+  if (format === "stl") {
+    const mesh = weldTriangleSoup(parseStl(bytes));
+    return { stlBytes: bytes, fromTriangles: Math.floor(mesh.indices.length / 3) };
+  }
+  // Same dispatch as `meshHeal.ts`'s `parseToWeldedMesh` (duplicated, not
+  // shared: that function lives in the OCCT-touching module this file must
+  // not import — see `AUTO_DECIMATE_TARGET_TRIANGLES` above).
+  const mesh = format === "obj" ? parseObj(bytes) : format === "ply" ? parsePly(bytes) : parseGltf(bytes, external);
+  return { stlBytes: weldedMeshToStlBytes(mesh), fromTriangles: Math.floor(mesh.indices.length / 3) };
+}
+
+export interface MeshioRegionSummary {  name: string;
   /** `"point"` | `"cell"` | `"side"` — see `@meshioplusplus/wasm`'s `Region.kind`. */
   kind: string;
   numEntries: number;
@@ -1074,7 +1250,8 @@ export async function convertFoamCaseToStlBoundary(markerPath: string): Promise<
 function boundaryTrianglesToAsciiStl(
   points: Float64Array,
   dim: number,
-  cells: unknown[]
+  cells: unknown[],
+  label = "OpenFOAM case error"
 ): Uint8Array | null {
   const lines: string[] = ["solid meshio"];
   let count = 0;
@@ -1102,7 +1279,7 @@ function boundaryTrianglesToAsciiStl(
   for (const block of cells) {
     const b = block as { type?: string; data?: Int32Array; nodesPerCell?: number; rowOffsets?: Int32Array };
     const data = b.data;
-    if (!data) throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}" (no connectivity).`);
+    if (!data) throw new Error(`${label}: unexpected boundary block "${b.type}" (no connectivity).`);
     if (b.rowOffsets) {
       // Ragged polygon block (CSR): fan-triangulate each variable-length row.
       const rows = b.rowOffsets.length - 1;
@@ -1116,7 +1293,7 @@ function boundaryTrianglesToAsciiStl(
       const n = b.nodesPerCell;
       const cellCount = data.length / n;
       if (n < 3 || !Number.isInteger(cellCount)) {
-        throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}" (${n} nodes/cell).`);
+        throw new Error(`${label}: unexpected boundary block "${b.type}" (${n} nodes/cell).`);
       }
       for (let c = 0; c < cellCount; c++) {
         for (let i = 1; i + 1 < n; i++) {
@@ -1124,7 +1301,7 @@ function boundaryTrianglesToAsciiStl(
         }
       }
     } else {
-      throw new Error(`OpenFOAM case error: unexpected boundary block "${b.type}".`);
+      throw new Error(`${label}: unexpected boundary block "${b.type}".`);
     }
   }
   lines.push("endsolid meshio");
@@ -1200,13 +1377,15 @@ function boundaryTrianglesToAsciiStl(
  * one-line credit; with one it also records where the mesh came from, what was
  * written, and any conversion assumptions raised along the way. **This is a
  * no-op for MED/CGNS/XDMF** — verified by inspecting raw output bytes, not just
- * `readProvenance`: those three (and `hmf`/`wkt`) embed nothing at all, because
- * their containers have no header slot meshio++ renders a provenance block
- * into. It genuinely lands for `vtu`/`avsucd`/`mphtxt`/`netgen`/`flac3d`/`flux`
- * and the new `gid`. Passing `source` is therefore harmless everywhere and
- * useful for most of the registry — but the coverage split must not be
- * described as universal.
- */
+  * `readProvenance`: those three (and `hmf`/`wkt`) embed nothing at all, because
+  * their containers have no header slot meshio++ renders a provenance block
+  * into. It genuinely lands for `vtu`/`avsucd`/`mphtxt`/`netgen`/`flac3d`/`flux`
+  * and the new `gid`. Passing `source` is therefore harmless everywhere and
+  * useful for most of the registry — but the coverage split must not be
+  * described as universal. `options.notes` (built by
+  * `src/meshProvenanceNotes.ts`) rides the same scope as extra `Note:`
+  * lines, where the block exists at all.
+  */
 
 export interface MeshioExportOptions {
   /** MEMFS write extension, from the registry entry. Defaults to `outMeshioFormat`. */
@@ -1215,6 +1394,14 @@ export interface MeshioExportOptions {
   companionExtension?: string;
   /** Origin recorded in the written file's provenance block, where the format has one. */
   source?: { name: string; format: string };
+  /**
+   * Conversion-chain notes (`src/meshProvenanceNotes.ts`'s
+   * `buildMeshProvenanceNotes`), each recorded as a `Note [category]:
+   * detail` line inside the same scope — the "how was this FE mesh made"
+   * audit trail. Omitted rather than fabricated when the caller has nothing
+   * factual to record.
+   */
+  notes?: Array<{ category: string; detail: string }>;
 }
 
 export async function exportViaMeshio(
@@ -1231,11 +1418,14 @@ export async function exportViaMeshio(
   m.FS.writeFile(inPath, Buffer.from(gmshMshText, "utf8"));
   try {
     const convert = () => m.convert(inPath, outPath, { inFormat: "gmsh", outFormat: outMeshioFormat });
-    if (options.source) {
-      const { name, format } = options.source;
+    // The scope opens for a source, for notes, or both — notes without a
+    // source (a document with no route) still record the conversion chain.
+    if (options.source || (options.notes && options.notes.length > 0)) {
+      const { name, format } = options.source ?? { name: "unknown", format: "unknown" };
       m.withProvenance(1, () => {
         m.provenanceSetSource(name, format);
         m.provenanceSetTarget(outMeshioFormat);
+        for (const note of options.notes ?? []) m.provenanceNote(note.category, note.detail);
         convert();
       });
     } else {

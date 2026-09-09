@@ -3,6 +3,7 @@ import { routeFile, COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseForma
 import { resolveExternalBuffers } from "./gltfParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
 import { readEdits } from "./editsStore";
+import { replayTail } from "./editsSidecar";
 import type { CompareSource } from "./modelDiffHost";
 import type { ModelDiff, SolidSignature } from "./modelDiff";
 import type { BRepFormat } from "./massProperties";
@@ -40,7 +41,7 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
   }
   const rawBytes = await vscode.workspace.fs.readFile(uri);
   if (route.strategy === "occt") {
-    const { ops } = await readEdits(uri);
+    const parsed = await readEdits(uri);
     const warnings: string[] = [];
     let bytes: Uint8Array;
     let format: CadFormat;
@@ -60,7 +61,8 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
       throw err;
     }
     return {
-      source: { kind: "brep", bytes, format: format as BRepFormat, ops },
+      // Tier 0: the baked prefix already lives in the file — compare the tail.
+      source: { kind: "brep", bytes, format: format as BRepFormat, ops: replayTail(parsed.ops, parsed.bakedThrough) },
       warning: warnings.length > 0 ? warnings.join(" ") : undefined,
     };
   }

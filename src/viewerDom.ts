@@ -57,6 +57,7 @@ export function viewerBodyHtml(): string {
           <div id="parts-header-actions">
             <button id="parts-isolate" title="Isolate the selected part (show only it)">${icon("isolate")} Isolate</button>
             <button id="parts-new" title="New part">${icon("add")} New</button>
+            <button id="parts-copy-bom" title="Copy the bill of materials (one row per part) as tab-separated text">Copy BOM</button>
           </div>
         </div>
         <div id="parts-body"></div>
@@ -109,11 +110,28 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="mass-body"></div>
       </div>
+      <div id="clash-panel" hidden>
+        <div id="clash-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <span id="clash-title">Clash</span>
+          <button id="clash-check-all" title="Check every Part against every other in one call">Check all</button>
+        </div>
+        <div id="clash-body">
+          <div id="clash-form">
+            <select id="clash-a" title="First part"></select>
+            <span id="clash-vs">vs</span>
+            <select id="clash-b" title="Second part"></select>
+            <button id="clash-check" title="Check the two selected Parts for overlap">Check</button>
+          </div>
+          <div id="clash-results"></div>
+        </div>
+      </div>
       <div id="mesh-health-panel" hidden>
         <div id="mesh-health-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
           <span id="mesh-health-title">Mesh Health</span>
           <div id="mesh-health-actions">
+            <label id="mesh-health-decimate-label" title="If the mesh exceeds the 50000-triangle ceiling, decimate it first (meshio++ quadric edge-collapse, target ~1000 triangles) and check the decimated mesh — the report says so, never silently"><input type="checkbox" id="mesh-health-decimate"> Auto-decimate</label>
             <button id="mesh-health-check" title="Read-only diagnostic: checks whether this mesh could be closed into a valid B-rep solid, and at what tolerance/cost — does not promote or change anything">${icon("generate")} Check Healability</button>
             <button id="mesh-health-promote" title="Sew this mesh into a solid and save it as a brand-new STEP/IGES/BREP file — the original mesh file is left untouched" disabled>${icon("export")} Promote to B-rep…</button>
             <button id="mesh-health-repair" title="Tetrahedralize this mesh with fTetWild and save its watertight boundary as a brand-new STL file — for a component that would not close above; the original mesh file is left untouched" disabled>Repair (robust)…</button>

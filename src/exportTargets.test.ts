@@ -53,6 +53,23 @@ describe("exportTargetsFor", () => {
     expect(exportTargetsFor({ strategy: "three", format: "ply" })).toEqual(["stl", "obj", "gltf"]);
     expect(exportTargetsFor({ strategy: "three", format: "gltf" })).toEqual(["stl", "obj", "ply"]);
   });
+
+  it("offers the source's own B-rep format first when allowSameFormat is set (Tier 0 Phase 1)", () => {
+    expect(exportTargetsFor({ strategy: "occt", format: "step" }, true)).toEqual([
+      "step",
+      "iges",
+      "brep",
+      "stl",
+      "obj",
+      "ply",
+      "gltf",
+    ]);
+    expect(exportTargetsFor({ strategy: "occt", format: "brep" }, true)[0]).toBe("brep");
+  });
+
+  it("keeps the mesh exclusion even with allowSameFormat (mesh in-place is Phase 3)", () => {
+    expect(exportTargetsFor({ strategy: "three", format: "stl" }, true)).toEqual(["obj", "ply", "gltf"]);
+  });
 });
 
 describe("UNIT_CONVERTIBLE_FORMATS", () => {

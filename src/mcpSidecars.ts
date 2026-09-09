@@ -60,13 +60,13 @@ export async function readEdits(modelPath: string): Promise<ParsedEdits> {
     const text = await fs.readFile(editsSidecarPath(modelPath), "utf8");
     return parseEditsJson(text);
   } catch {
-    return { ops: [], variables: [] };
+    return { ops: [], variables: [], bakedThrough: 0 };
   }
 }
 
 /** Writes the edits sidecar beside the model. The model file itself is never touched. */
-export async function writeEdits(modelPath: string, ops: EditOp[], variables: ParamVariable[]): Promise<void> {
-  const text = serializeEditsJson(path.basename(modelPath), ops, variables);
+export async function writeEdits(modelPath: string, ops: EditOp[], variables: ParamVariable[], bakedThrough = 0): Promise<void> {
+  const text = serializeEditsJson(path.basename(modelPath), ops, variables, bakedThrough);
   await fs.writeFile(editsSidecarPath(modelPath), text, "utf8");
 }
 

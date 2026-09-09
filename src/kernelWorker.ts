@@ -28,7 +28,7 @@ console.debug = console.error.bind(console);
 import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, type BRepCacheEntry, type BRepResult } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled, repairMesh } from "./gmshService";
 import { computeMassProperties, computeBom } from "./massProperties";
-import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps, resolveBucketSelector, synthesizeSelector, resolvePartSelectors } from "./entityFacts";
+import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps, rebindPartsAcrossSave, resolveBucketSelector, synthesizeSelector, resolvePartSelectors } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
 import { compareModels } from "./modelDiffHost";
@@ -39,6 +39,8 @@ import {
   exportViaMeshio,
   readMeshioMetadata,
   readMeshioDataInfo,
+  readMeshioProvenance,
+  decimateStlBoundary,
   runMeshioOps,
   readMeshioFieldValues,
 } from "./meshioService";
@@ -119,6 +121,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   checkInterference: checkInterference as Handler,
   checkInterferenceAll: checkInterferenceAll as Handler,
   rebindPartsAcrossOps: rebindPartsAcrossOps as Handler,
+  rebindPartsAcrossSave: rebindPartsAcrossSave as Handler,
   resolveBucketSelector: resolveBucketSelector as Handler,
   synthesizeSelector: synthesizeSelector as Handler,
   resolvePartSelectors: resolvePartSelectors as Handler,
@@ -133,6 +136,8 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   exportViaMeshio: exportViaMeshio as Handler,
   readMeshioMetadata: readMeshioMetadata as Handler,
   readMeshioDataInfo: readMeshioDataInfo as Handler,
+  readMeshioProvenance: readMeshioProvenance as Handler,
+  decimateStlBoundary: decimateStlBoundary as Handler,
   runMeshioOps: runMeshioOps as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,

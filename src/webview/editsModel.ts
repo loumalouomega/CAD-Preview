@@ -11,17 +11,31 @@ import type { EditOp } from "../editOps";
  * `editsChanged`, persist the sidecar, and request a re-apply. {@link load}
  * replaces the list WITHOUT firing — it is the initial load from disk and
  * must not echo straight back as a write.
+ *
+ * Tier 0 Phase 2 — the save point: `bakedThrough` leading ops live in the
+ * source file itself, so no mutation may cross it (the "you cannot undo past
+ * a save" contract every editor already has). Mutations return `true` when
+ * they changed state (and fired `onChange`), `false` when refused or a
+ * no-op — callers show the save-point guidance on a refusal. `push`/`redo`
+ * only ever touch the unbaked tail, so they stay always-legal.
  */
 export class EditsModel {
   private ops: EditOp[] = [];
   private redoBuffer: EditOp[] = [];
+  private bakedThrough = 0;
 
   constructor(private readonly onChange: () => void) {}
 
   /** Replaces the op-list from a freshly-loaded sidecar (does not fire onChange). */
-  load(ops: EditOp[]): void {
+  load(ops: EditOp[], bakedThrough = 0): void {
     this.ops = ops.map(clone);
     this.redoBuffer = [];
+    this.bakedThrough = Math.min(Math.max(Math.floor(bakedThrough) || 0, 0), this.ops.length);
+  }
+
+  /** Leading ops already saved into the source file (refused as undo/remove/jump targets). */
+  get savePoint(): number {
+    return this.bakedThrough;
   }
 
   /** The applied ops, in order. */
@@ -45,42 +59,48 @@ export class EditsModel {
   }
 
   get canUndo(): boolean {
-    return this.ops.length > 0;
+    return this.ops.length > this.bakedThrough;
   }
 
   get canRedo(): boolean {
     return this.redoBuffer.length > 0;
   }
 
-  /** Appends a new op; clears the redo buffer (a new branch). */
-  push(op: EditOp): void {
+  /** Appends a new op; clears the redo buffer (a new branch). Always legal. */
+  push(op: EditOp): boolean {
     this.ops.push(clone(op));
     this.redoBuffer = [];
     this.onChange();
+    return true;
   }
 
-  /** Pops the last op onto the redo buffer. */
-  undo(): void {
+  /** Pops the last op onto the redo buffer. Refused at/inside the save point. */
+  undo(): boolean {
+    if (this.ops.length <= this.bakedThrough) return false;
     const op = this.ops.pop();
-    if (!op) return;
+    if (!op) return false;
     this.redoBuffer.push(op);
     this.onChange();
+    return true;
   }
 
-  /** Re-applies the most recently undone op. */
-  redo(): void {
+  /** Re-applies the most recently undone op. Always legal (tail only). */
+  redo(): boolean {
     const op = this.redoBuffer.pop();
-    if (!op) return;
+    if (!op) return false;
     this.ops.push(op);
     this.onChange();
+    return true;
   }
 
-  /** Removes every op (the redo buffer too). */
-  clear(): void {
-    if (this.ops.length === 0 && this.redoBuffer.length === 0) return;
+  /** Removes every op (the redo buffer too). Refused past a save point. */
+  clear(): boolean {
+    if (this.ops.length === 0 && this.redoBuffer.length === 0) return false;
+    if (this.bakedThrough > 0) return false;
     this.ops = [];
     this.redoBuffer = [];
     this.onChange();
+    return true;
   }
 
   /**
@@ -90,12 +110,14 @@ export class EditsModel {
    * rather than leaving it to replay against a list it was never undone from.
    * Topology-changing ops after the removed one may reassign ids on reload —
    * same accepted "entity-id drift" risk as undo/redo already carries.
+   * Refused inside the save point (and for out-of-range indices, as before).
    */
-  remove(index: number): void {
-    if (index < 0 || index >= this.ops.length) return;
+  remove(index: number): boolean {
+    if (index < this.bakedThrough || index < 0 || index >= this.ops.length) return false;
     this.ops.splice(index, 1);
     this.redoBuffer = [];
     this.onChange();
+    return true;
   }
 
   /**
@@ -117,14 +139,16 @@ export class EditsModel {
    * the buffer's END reversed re-applies them in exactly the order repeated
    * {@link redo} calls would have. A jump that changes nothing (the last
    * applied row) is a no-op with no `onChange`, matching every other
-   * mutation's no-op discipline.
+   * mutation's no-op discipline. A jump to at or inside the save point is
+   * refused (`false`) — unbaking is revert's job, not the timeline's.
    */
-  jumpTo(index: number): void {
+  jumpTo(index: number): boolean {
     const n = this.ops.length;
     const r = this.redoBuffer.length;
-    if (index < 0 || index >= n + r) return;
+    if (index < 0 || index >= n + r) return false;
     const target = index + 1; // applied count after jumping to timeline position `index`
-    if (target === n) return;
+    if (target === n) return false;
+    if (target < this.bakedThrough) return false;
     if (target < n) {
       const demoted = this.ops.splice(target);
       this.redoBuffer = [...demoted.reverse(), ...this.redoBuffer];
@@ -133,6 +157,7 @@ export class EditsModel {
       this.ops.push(...restored);
     }
     this.onChange();
+    return true;
   }
 }
 

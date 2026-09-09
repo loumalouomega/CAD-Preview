@@ -92,12 +92,13 @@ export type WireframeDraft = (
   | { kind: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
 ) & { exprs?: ExprMap; guide?: boolean };
 
-/** A modify-op draft minus its selection operands: shell's `openingFaces` come
- * from the selected surfaces, split/section `targets` from the selected
- * volumes (the wiring injects both). B-rep only. */
+/** A modify-op draft minus its selection operands: shell's `openingFaces` and
+ * defeature's `faces` come from the selected surfaces, split/section
+ * `targets` from the selected volumes (the wiring injects both). B-rep only. */
 export type ModifyDraft = (
   | { kind: "shell"; thickness: number }
   | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }
+  | { kind: "defeature" }
   | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; planeId?: string; keep: "both" | "positive" | "negative" }
   | { kind: "section"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
   | { kind: "drill"; dir: Vec3; length: number }
@@ -602,10 +603,10 @@ export class EditsPanel {
    * valid against the model state at their own op's step — later ops may
    * have renumbered them — so the chip tooltip says so.
    */
-  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null): void {
+  render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null, bakedThrough = 0): void {
     this.undoBtn.disabled = !canUndo;
     this.redoBtn.disabled = !canRedo;
-    this.clearBtn.disabled = ops.length === 0 && (redoOps?.length ?? 0) === 0;
+    this.clearBtn.disabled = ops.length <= bakedThrough && (redoOps?.length ?? 0) === 0;
 
     const outcomeOf = new Map((opOutcomes ?? []).map((o) => [o.index, o]));
     const bucketOf = new Map((opBuckets ?? []).map((b) => [b.op, b]));
@@ -628,14 +629,20 @@ export class EditsPanel {
     const row = (
       op: EditOp,
       i: number,
-      opts: { pending: boolean; outcome?: OpOutcome; bucket?: OpBucket }
+      opts: { pending: boolean; outcome?: OpOutcome; bucket?: OpBucket; baked?: boolean }
     ): void => {
       const li = document.createElement("li");
       li.className = opts.pending ? "edit-row edit-row-pending" : "edit-row";
       // Any row click scrubs the timeline to that point. Applied rows roll
       // back past themselves; pending rows re-apply through them. Clicking
-      // the LAST applied row is a natural no-op inside jumpTo.
+      // the LAST applied row is a natural no-op inside jumpTo. Baked rows
+      // (Tier 0 Phase 2 — saved into the file itself) refuse the jump with
+      // guidance instead of unbaking.
       li.title = opts.pending ? "Click to re-apply through this step" : "";
+      if (opts.baked) {
+        li.classList.add("edit-row-baked");
+        li.title = "Saved into the file itself — cannot be undone or removed (File ▸ Revert File drops back to the save).";
+      }
       li.addEventListener("click", () => this.cb.onJumpTo(i));
       const outcome = opts.outcome;
       if (outcome && !outcome.applied) {
@@ -650,15 +657,25 @@ export class EditsPanel {
       label.textContent = describeOp(op);
       li.appendChild(idx);
       li.appendChild(label);
+      if (opts.baked) {
+        const lock = document.createElement("span");
+        lock.className = "edit-baked-mark";
+        lock.textContent = "🔒";
+        li.appendChild(lock);
+      }
       if (!opts.pending) {
-        const del = document.createElement("button");
-        del.className = "edit-remove";
-        del.innerHTML = TOOLBAR_ICONS.close;
-        del.title = "Remove this edit";
-        del.addEventListener("click", (e) => {
-          e.stopPropagation(); // removing must not also jump to this row's position
-          this.cb.onRemoveOp(i);
-        });
+        // No ✕ on baked rows — removal is refused, so offering it would lie.
+        if (!opts.baked) {
+          const del = document.createElement("button");
+          del.className = "edit-remove";
+          del.innerHTML = TOOLBAR_ICONS.close;
+          del.title = "Remove this edit";
+          del.addEventListener("click", (e) => {
+            e.stopPropagation(); // removing must not also jump to this row's position
+            this.cb.onRemoveOp(i);
+          });
+          li.appendChild(del);
+        }
         // A skipped op's warning marker sits between the label and the remove
         // button so it can't be mistaken for a row-level action.
         if (outcome && !outcome.applied) {
@@ -692,7 +709,6 @@ export class EditsPanel {
           });
           li.appendChild(chip);
         }
-        li.appendChild(del);
       } else {
         const redoMark = document.createElement("span");
         redoMark.className = "edit-pending-mark";
@@ -701,7 +717,7 @@ export class EditsPanel {
       }
       ol.appendChild(li);
     };
-    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i) }));
+    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i), baked: i < bakedThrough }));
     (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
   }
@@ -1018,6 +1034,10 @@ export class EditsPanel {
           if (!isZero(planePoint) && !isZero(planeNormal)) { (draft as any).planePoint = planePoint; (draft as any).planeNormal = planeNormal; }
           return draft;
         }, (d) => this.cb.onApplyModify(d));
+        break;
+      case "defeature":
+        f.appendChild(this.hint("Removes the selected faces (Surf mode) as recognized features — fillets, chamfers — healing the solid behind them"));
+        this.applyButtonDraft("Apply", "Defeature the selected faces", (): ModifyDraft => ({ kind: "defeature" }), (d) => this.cb.onApplyModify(d));
         break;
       case "splitByPlane":
         f.appendChild(this.hint("Splits the selected volumes (Vol mode) by the plane"));

@@ -159,6 +159,7 @@ test("panels: every documented panel id exists and is populated", async (page) =
     "parts-panel", "parts-body",
     "edits-panel", "variables-section",
     "meshing-panel", "standard-parts-panel",
+    "clash-panel", "clash-body",
   ];
   const missing = await page.evaluate((list) => list.filter((id) => !document.getElementById(id)), ids);
   assert(missing.length === 0, `all ${ids.length} panel ids present (missing: ${JSON.stringify(missing)})`);
@@ -377,6 +378,177 @@ test("mesh export: every target serializes real geometry from the live scene", a
     const { ok, detail } = check(buf);
     assert(ok, `${format}: the payload contains real geometry (${detail})`);
   }
+});
+
+/**
+ * H2. Mesh-ops section — the interactive half of Tier 2 symmetry item 4.
+ *
+ * `transform_mesh` was MCP-only with zero webview callers; the FE Mesh panel
+ * grew a Mesh-ops section driving the same `runMeshioOps` pipeline entry via
+ * `meshioOpsRequest`/`meshioOpsResult`. This covers the webview half the host
+ * harness cannot: section visibility per source kind, a well-formed request,
+ * and the stale-response guard. The host half (save dialog → write) is
+ * F5-only, like every other `provider.ts` save flow.
+ */
+test("mesh ops: section tracks source kind and posts a guarded request", async (page) => {
+  await populate(page);
+
+  const hiddenOf = () =>
+    page.evaluate(() => document.getElementById("meshing-meshops")?.hidden ?? null);
+  assert((await hiddenOf()) === true, "mesh ops section is hidden for a B-rep source");
+
+  // A meshio++-imported document arrives as STL bytes + its real format name.
+  const tet = [
+    "solid tet",
+    "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+    "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 0 0 1", "vertex 1 0 0", "endloop", "endfacet",
+    "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 1 0", "vertex 0 0 1", "endloop", "endfacet",
+    "facet normal 0.577 0.577 0.577", "outer loop", "vertex 1 0 0", "vertex 0 0 1", "vertex 0 1 0", "endloop", "endfacet",
+    "endsolid tet",
+  ].join("\n");
+  const dataBase64 = Buffer.from(tet, "utf8").toString("base64");
+  await post(page, { type: "loadMeshBytes", sourceFormat: "vtu", dataBase64 });
+  await sleep(800);
+  assert((await hiddenOf()) === false, "mesh ops section is shown for a meshio++ source");
+
+  await page.click("#meshing-ops-run");
+  const req = await page
+    .waitForFunction(
+      () => window.__sent?.findLast((m) => m.type === "meshioOpsRequest") ?? null,
+      null,
+      { timeout: 10000 }
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(
+    req && Array.isArray(req.ops) && req.ops.length === 1 && req.ops[0].op === "clean",
+    `Run posts one validated op (got ${JSON.stringify(req?.ops)})`
+  );
+
+  // A stale reply (superseded requestId) must not touch the status line.
+  await post(page, { type: "meshioOpsResult", requestId: "stale-id", steps: [], warnings: [] });
+  await sleep(150);
+  const kept = await page.evaluate(() => document.getElementById("meshing-ops-status")?.textContent);
+  assert(kept === "Running…", `a stale reply is ignored (status still "Running…", got ${JSON.stringify(kept)})`);
+
+  await post(page, {
+    type: "meshioOpsResult",
+    requestId: req.requestId,
+    steps: [{ op: "clean", applied: true, detail: "welded 4, dropped 0 degenerate / 0 duplicate" }],
+    warnings: [],
+  });
+  await sleep(150);
+  const shown = await page.evaluate(() => document.getElementById("meshing-ops-status")?.textContent);
+  assert(
+    (shown ?? "").includes("welded 4"),
+    `the real reply renders the kernel's step detail (got ${JSON.stringify(shown)})`
+  );
+
+  // A new B-rep load hides the section again (no stale UI for the next file).
+  await populate(page);
+  assert((await hiddenOf()) === true, "mesh ops section hides again on a B-rep load");
+});
+
+/**
+ * H3. BOM Copy button — the interactive half of Tier 2 symmetry item 4.
+ *
+ * `generate_bom` was MCP-only with nothing in the webview importing `bomTsv`;
+ * the Parts header grew a Copy BOM button driving the same `computeBom`
+ * pipeline entry via `bomRequest`/`bomResult`. This covers the webview half
+ * the host harness cannot: button presence/eligibility, a well-formed request,
+ * the stale-response guard, and the copy + status confirmation. The host half
+ * (rows computed over a real parse/replay) is F5-only, like every other
+ * `provider.ts` save/compute flow. Status text — not a clipboard read-back —
+ * is the copy assertion: headless Chromium grants no `clipboard-read`
+ * permission, but a denied/failed `writeText` would surface the error status
+ * instead of the confirmation, so the confirmation proves the write resolved.
+ */
+test("bom: Copy BOM posts a guarded request and copies the TSV", async (page) => {
+  await populate(page);
+
+  const btn = await page.evaluate(() => {
+    const el = document.getElementById("parts-copy-bom");
+    return el ? { present: true, disabled: el.disabled } : { present: false, disabled: null };
+  });
+  assert(btn.present, "Copy BOM button is present in the Parts header");
+  assert(btn.disabled === false, "Copy BOM is enabled for a B-rep source with parts (3-part fixture)");
+
+  await page.click("#parts-copy-bom");
+  const req = await page
+    .waitForFunction(
+      () => window.__sent?.findLast((m) => m.type === "bomRequest") ?? null,
+      null,
+      { timeout: 10000 }
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(
+    req && typeof req.requestId === "string" && Object.keys(req).length === 2,
+    `click posts a well-formed bomRequest (got ${JSON.stringify(req)})`
+  );
+
+  // A stale reply (superseded requestId) must copy nothing.
+  await post(page, { type: "bomResult", requestId: "stale-id", rows: [], warnings: [] });
+  await sleep(150);
+  const noCopy = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(!/BOM copied/.test(noCopy), `a stale reply copies nothing (status: ${JSON.stringify(noCopy)})`);
+
+  const rows = [
+    { name: "Bracket", color: "#ff8800", solidCount: 1, surfaceCount: 0, lineCount: 0, pointCount: 0, volume: 1000, area: 600, unresolvedIds: [] },
+    { name: "Plate", color: "#38c172", solidCount: 2, surfaceCount: 0, lineCount: 0, pointCount: 0, volume: null, area: null, unresolvedIds: ["solid-9"] },
+  ];
+  await post(page, { type: "bomResult", requestId: req.requestId, rows, warnings: ["Part \"Plate\" has 1 unresolved id."] });
+  await sleep(250);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(status === "BOM copied (2 rows).", `the real reply copies and confirms the row count (status: ${JSON.stringify(status)})`);
+
+  // Warnings travel as status lines first — the copy confirmation lands last.
+  await page.click("#parts-copy-bom");
+  const req2 = await page
+    .waitForFunction(
+      () => window.__sent?.filter((m) => m.type === "bomRequest").length === 2 ?? null,
+      null,
+      { timeout: 10000 }
+    )
+    .catch(() => null);
+  assert(req2 !== null, "a second click posts a second request (no latch wedging)");
+
+  // An error reply surfaces as an error status, never a copy confirmation.
+  await post(page, { type: "bomError", requestId: "stale-id", message: "boom" });
+  await sleep(150);
+  const stillCopy = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(!/boom/.test(stillCopy), `a stale error reply changes nothing (status: ${JSON.stringify(stillCopy)})`);
+
+  // Empty parts disable the button with a reason (no header-only copy).
+  await post(page, { type: "parts", parts: [] });
+  await sleep(150);
+  const emptyState = await page.evaluate(() => {
+    const el = document.getElementById("parts-copy-bom");
+    return el ? { disabled: el.disabled, title: el.title } : null;
+  });
+  assert(emptyState?.disabled === true, "Copy BOM disables with zero parts");
+  assert(
+    (emptyState?.title ?? "").length > 0,
+    `the disabled button explains why (title: ${JSON.stringify(emptyState?.title)})`
+  );
+
+  // A mesh source disables it too — rows need a B-rep parse/replay.
+  const tet = [
+    "solid tet",
+    "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+    "endsolid tet",
+  ].join("\n");
+  await post(page, { type: "loadMeshBytes", sourceFormat: "stl", dataBase64: Buffer.from(tet, "utf8").toString("base64") });
+  await sleep(800);
+  const meshState = await page.evaluate(() => {
+    const el = document.getElementById("parts-copy-bom");
+    return el ? { disabled: el.disabled, title: el.title } : null;
+  });
+  assert(meshState?.disabled === true, "Copy BOM disables on a mesh source");
+  assert(
+    /B-rep/.test(meshState?.title ?? ""),
+    `the mesh-source tooltip names the B-rep requirement (title: ${JSON.stringify(meshState?.title)})`
+  );
 });
 
 /**
@@ -1100,6 +1272,7 @@ test("collapse: every sidebar section has a working chevron", async (page) => {
   await populate(page);
   const panels = [
     "tree-panel", "parts-panel", "edits-panel", "meshing-panel", "mass-panel",
+    "clash-panel",
     "mesh-health-panel", "region-fit-panel", "macros-panel", "standard-parts-panel",
   ];
   const missing = await page.evaluate(
@@ -1233,6 +1406,182 @@ test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", 
   assert(shown.hiddenAttr, "the host marked #mesh-health-panel hidden for a B-rep source");
   assert(shown.meshHealth === 0, `#mesh-health-panel renders nothing (got ${shown.meshHealth}px)`);
   assert(shown.regionFit === 0, `#region-fit-panel renders nothing (got ${shown.regionFit}px)`);
+});
+
+// ── Clash panel (roadmap Tier 2 "Clash panel") ────────────────────────────
+//
+// The kernel side (`checkInterference`/`checkInterferenceAll`) is covered
+// against live OCCT in `npm run mcp:smoke`, so what needs checking here is the
+// panel: eligibility gating, the request it posts, and the rendering decision.
+// Host replies are faked by posting `clashCheckResult`/`clashCheckAllResult`
+// directly (the inspector-card precedent above).
+
+test("clash: B-rep source shows the section with Part dropdowns populated", async (page) => {
+  await populate(page); // bull.stp — B-rep, so the section is eligible
+  const state = await page.evaluate(() => ({
+    shown: document.getElementById("clash-panel")?.offsetParent !== null,
+    a: Array.from(document.getElementById("clash-a").options).map((o) => o.value),
+    b: Array.from(document.getElementById("clash-b").options).map((o) => o.value),
+  }));
+  assert(state.shown, "the Clash section is genuinely rendered for a B-rep source");
+  // The fixture pre-creates "Body" (volumes), "Contact faces" (surfaces) and
+  // "Feature edges" (lines) — dropdowns list all three by name.
+  assert(eq(state.a, ["Body", "Contact faces", "Feature edges"]), `operand A lists the fixture Parts (got ${JSON.stringify(state.a)})`);
+  assert(eq(state.b, ["Body", "Contact faces", "Feature edges"]), `operand B lists the fixture Parts (got ${JSON.stringify(state.b)})`);
+});
+
+test("clash: Check posts clashCheckRequest; the reply renders; a stale reply is ignored", async (page) => {
+  await populate(page);
+  await page.selectOption("#clash-a", "Body");
+  await page.selectOption("#clash-b", "Contact faces");
+  await page.click("#clash-check");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest").at(-1) ?? null
+  );
+  assert(req !== null, "clicking Check posts a clashCheckRequest");
+  assert(
+    req !== null && req.partA === "Body" && req.partB === "Contact faces" && typeof req.requestId === "string",
+    `the request names both Parts with a requestId (got ${JSON.stringify(req)})`
+  );
+
+  await page.evaluate((id) =>
+    window.postMessage(
+      { type: "clashCheckResult", requestId: id, result: { hasOverlap: true, overlapVolume: 12.5, unresolvedA: [], unresolvedB: [] } },
+      "*"
+    ),
+    req.requestId
+  );
+  await sleep(200);
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(text.includes("Body") && text.includes("Contact faces"), `the row names both Parts (got ${JSON.stringify(text)})`);
+  assert(text.includes("12.5"), `the row shows the overlap volume (got ${JSON.stringify(text)})`);
+
+  // A superseded reply (e.g. from a Check since replaced) must not repaint.
+  await page.evaluate((id) =>
+    window.postMessage(
+      { type: "clashCheckResult", requestId: id, result: { hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] } },
+      "*"
+    ),
+    "stale-id"
+  );
+  await sleep(200);
+  const after = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(after === text, "a stale-requestId reply is ignored");
+});
+
+test("clash: Check-all posts one request and renders named pairs with the screened badge", async (page) => {
+  await populate(page);
+  await page.click("#clash-check-all");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null
+  );
+  assert(req !== null && typeof req?.requestId === "string", "clicking Check all posts a clashCheckAllRequest");
+  await page.evaluate((id) =>
+    window.postMessage(
+      {
+        type: "clashCheckAllResult",
+        requestId: id,
+        pairs: [
+          { partA: "Body", partB: "Bracket", a: ["solid-0"], b: ["solid-1"], hasOverlap: true, overlapVolume: 3, unresolvedA: [], unresolvedB: [] },
+          { partA: "Body", partB: "Far", a: ["solid-0"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, screenedByBbox: true, unresolvedA: [], unresolvedB: [] },
+        ],
+        warnings: [],
+      },
+      "*"
+    ),
+    req.requestId
+  );
+  await sleep(200);
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(text.includes("Bracket") && text.includes("overlap"), `the overlapping pair renders (got ${JSON.stringify(text)})`);
+  assert(text.includes("AABB-screened"), `the pre-filtered pair carries its badge (got ${JSON.stringify(text)})`);
+});
+
+test("clash: the same Part twice is refused without a host round trip", async (page) => {
+  await populate(page);
+  const before = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest").length);
+  await page.selectOption("#clash-a", "Body");
+  await page.selectOption("#clash-b", "Body");
+  await page.click("#clash-check");
+  await sleep(200);
+  const after = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest").length);
+  assert(after === before, "no clashCheckRequest is posted for A === B");
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(/different/i.test(text), `a guidance message explains why (got ${JSON.stringify(text)})`);
+});
+
+test("clash: the hidden attribute genuinely hides the section", async (page) => {
+  // Regression shape of the mesh-health `[hidden]` defect: the attribute was
+  // set while an author `display` rule beat it, so the "hidden" panel still
+  // rendered. Assert RENDERED height, not the attribute.
+  await populate(page);
+  const height = await page.evaluate(() => {
+    const el = document.getElementById("clash-panel");
+    el.hidden = true;
+    return el.getBoundingClientRect().height;
+  });
+  assert(height === 0, `#clash-panel[hidden] renders nothing (got ${height}px)`);
+});
+
+// ── Tier 0 Phase 2: save-point-locked history ─────────────────────────────
+//
+// Baked rows (ops already saved into the source file) render locked and
+// refuse timeline interaction; the unit-testable gates live in
+// `editsModel.test.ts` — what needs the real bundle here is the rendering
+// (locked class, lock marker, no ✕) and that a refused jump posts nothing.
+
+const SAVE_POINT_OPS = [
+  { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },
+  { op: "translate", targets: ["solid-0"], vec: [0, 1, 0] },
+];
+
+test("save point: baked rows render locked with no remove button", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 1 });
+  await sleep(300);
+  const rows = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("#edits-panel .edit-row")).map((li) => ({
+      baked: li.classList.contains("edit-row-baked"),
+      lock: li.querySelector(".edit-baked-mark")?.textContent ?? null,
+      remove: li.querySelector(".edit-remove") !== null,
+    }))
+  );
+  assert(rows.length === 2, `two history rows render (got ${rows.length})`);
+  assert(rows[0].baked && rows[0].lock === "🔒" && !rows[0].remove, `the baked row is locked with no ✕ (got ${JSON.stringify(rows[0])})`);
+  assert(!rows[1].baked && rows[1].remove, `the tail row is a normal removable row (got ${JSON.stringify(rows[1])})`);
+});
+
+test("save point: clicking a baked row drops only to the save, never below it", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 1 });
+  await sleep(300);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#edits-panel .edit-row:first-child");
+  await sleep(300);
+  // Timeline position 0 with watermark 1 means "the saved state": the unbaked
+  // tail op is demoted (exactly one editsChanged, one op left) — legal, since
+  // no baked op is unapplied.
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged"));
+  assert(sent.length === 1 && sent[0].ops.length === 1, `clicking a baked row drops just the tail (got ${sent.length} post(s))`);
+
+  // Fully baked stack: the same click would unbake — refused with guidance.
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 2 });
+  await sleep(300);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#edits-panel .edit-row:first-child");
+  await sleep(300);
+  const sent2 = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").length);
+  assert(sent2 === 0, "clicking into a fully-baked stack posts no editsChanged");
+  const guidance = await page.evaluate(() => (document.getElementById("status")?.textContent ?? ""));
+  assert(/already saved into the file/i.test(guidance), `guidance names the save point (got ${JSON.stringify(guidance)})`);
+});
+
+test("save point: undo is disabled when only baked ops remain", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS.slice(0, 1), variables: [], bakedThrough: 1 });
+  await sleep(300);
+  const disabled = await page.evaluate(() => document.getElementById("edits-undo")?.disabled ?? null);
+  assert(disabled === true, "the Undo button disables when the stack is at the save point");
 });
 
 // ── New Blank Model ───────────────────────────────────────────────────────

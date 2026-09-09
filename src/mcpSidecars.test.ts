@@ -47,12 +47,12 @@ describe("path derivation", () => {
 
 describe("edits store", () => {
   it("returns empty lists when the sidecar is missing", async () => {
-    expect(await readEdits(model)).toEqual({ ops: [], variables: [] });
+    expect(await readEdits(model)).toEqual({ ops: [], variables: [], bakedThrough: 0 });
   });
 
   it("returns empty lists when the sidecar is corrupt", async () => {
     await fs.writeFile(editsSidecarPath(model), "{not json", "utf8");
-    expect(await readEdits(model)).toEqual({ ops: [], variables: [] });
+    expect(await readEdits(model)).toEqual({ ops: [], variables: [], bakedThrough: 0 });
   });
 
   it("round-trips ops + variables byte-compatibly with parseEditsJson", async () => {

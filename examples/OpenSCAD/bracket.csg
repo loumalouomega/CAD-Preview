@@ -3,8 +3,9 @@
 // maps exactly (cubes, one $fn=10 faceted cylinder → real prism, multmatrix
 // translate, group/union/difference). Expect NO warnings on import.
 //
-// Volumes (analytic): plate 4000 + boss 1000 + foot 1000 − hole (prism:
-// 10/2·9·sin(36°)·10 = 264.13) = 5735.87
+// Volumes (analytic): plate 4000 + boss 1000 − 500 overlap + foot 1000 −
+// hole (10.25× decagon area 10/2·9·sin(36°) = 271.12) = 5228.88 — verified
+// against the live kernel (5228.8840) and the `minimal.scad` openscad run.
 group() {
   difference() {
     union() {

@@ -14,6 +14,7 @@ import {
   checkMeshHealthTool,
   promoteMeshToBrepTool,
   repairMeshTool,
+  inspectMeshioFieldsTool,
   inspectEntity,
   measureTool,
   measureExactTool,
@@ -45,6 +46,7 @@ import {
   setPart,
   setPlane,
   setMeshOptions,
+  pinAnnotation,
   type Pipeline,
   type ToolContext,
 } from "./mcpTools";
@@ -385,9 +387,17 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
     readMeshioDataInfo: vi.fn(async () => []),
+    readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
+    decimateStlBoundary: vi.fn(async (bytes: Uint8Array) => ({ bytes, fromTriangles: 99904, toTriangles: 996 })),
     rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts, annotations = []) => ({
       parts, // identity pass-through by default — matches the real "nothing to rebind" no-op contract
+      annotations,
+      stats: { considered: 0, rebound: 0, dropped: 0 },
+      annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+    })),
+    rebindPartsAcrossSave: vi.fn(async (_ext, _oldBytes, _oldFormat, _oldOps, _newBytes, _newFormat, _newOps, parts, annotations = []) => ({
+      parts, // identity pass-through by default, same contract as above
       annotations,
       stats: { considered: 0, rebound: 0, dropped: 0 },
       annotationStats: { considered: 0, rebound: 0, dropped: 0 },
@@ -543,6 +553,26 @@ describe("load_model", () => {
 
     const objResult = await loadModel(c, { path: objModel });
     expect(objResult.warnings[0]).not.toMatch(/meshable via generate_mesh/i);
+  });
+
+  it("surfaces a recognised provenance block as an enveloped warning, and stays silent without one", async () => {
+    const vtkModel = path.join(dir, "model.vtk");
+    await fs.writeFile(vtkModel, "not real vtk content", "utf8");
+    const withBlock = fakePipeline({
+      readMeshioProvenance: vi.fn(async () => ({
+        recognised: true,
+        lines: ["Written by meshio++ v10.20.2", "Converted from bull.stp (step)", "Note [meshing-engine]: gmsh"],
+      })),
+    });
+    const result = await loadModel(ctx(withBlock), { path: vtkModel });
+    const entry = result.warnings.find((w) => w.startsWith("Provenance block:"));
+    expect(entry).toMatch(/Provenance block:.*meshing-engine.*informational only/);
+    // Document-derived lines are envelope-wrapped like every other
+    // document-derived string (untrustedText.ts convention).
+    expect(entry).toMatch(/⟦.*⟧/);
+
+    const withoutBlock = await loadModel(ctx(), { path: vtkModel });
+    expect(withoutBlock.warnings.some((w) => w.startsWith("Provenance block:"))).toBe(false);
   });
 
   it("surfaces discovered meshio++ regions/data array names as an informational warning", async () => {
@@ -1256,6 +1286,35 @@ describe("check_mesh_health", () => {
     await expect(fs.access(`${stlModel}.edits.json`)).rejects.toThrow();
     await expect(fs.access(`${stlModel}.parts.json`)).rejects.toThrow();
   });
+
+  it("autoDecimate: retries over a decimated mesh when the ceiling refuses", async () => {
+    const ceiling = new Error("Mesh has 99904 triangles, above the 50000-triangle ceiling for the per-triangle sewing pipeline.");
+    const pipeline = fakePipeline({
+      checkMeshHealth: vi.fn().mockRejectedValueOnce(ceiling).mockResolvedValue(FAKE_MESH_HEALTH_REPORT),
+    });
+    const c = ctx(pipeline);
+    const result = await checkMeshHealthTool(c, { path: stlModel, autoDecimate: true });
+    expect(pipeline.decimateStlBoundary).toHaveBeenCalledOnce();
+    // Second call runs against the decimated STL bytes as "stl".
+    expect(vi.mocked(pipeline.checkMeshHealth).mock.calls[1]).toEqual([dir, expect.any(Uint8Array), "stl"]);
+    expect(result.supported).toBe(true);
+    expect(result.decimated).toEqual({ fromTriangles: 99904, toTriangles: 996, ratio: expect.any(Number) });
+    expect(result.warnings.join(" ")).toMatch(/auto-decimated mesh.*99904 → 996/);
+  });
+
+  it("autoDecimate: a non-ceiling error rethrows even with the flag set", async () => {
+    const corrupt = new Error("not an STL file at all");
+    const pipeline = fakePipeline({ checkMeshHealth: vi.fn().mockRejectedValue(corrupt) });
+    await expect(checkMeshHealthTool(ctx(pipeline), { path: stlModel, autoDecimate: true })).rejects.toThrow(/not an STL file/);
+    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+  });
+
+  it("without autoDecimate, a ceiling refusal propagates unchanged", async () => {
+    const ceiling = new Error("Mesh has 99904 triangles, above the 50000-triangle ceiling for the per-triangle sewing pipeline.");
+    const pipeline = fakePipeline({ checkMeshHealth: vi.fn().mockRejectedValue(ceiling) });
+    await expect(checkMeshHealthTool(ctx(pipeline), { path: stlModel })).rejects.toThrow(/triangle ceiling/);
+    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+  });
 });
 
 describe("promote_mesh_to_brep", () => {
@@ -1354,6 +1413,30 @@ describe("promote_mesh_to_brep", () => {
     await expect(promoteMeshToBrepTool(c, { path: stlModel, outputPath: stlModel })).rejects.toThrow();
     expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
   });
+
+  it("autoDecimate: promotes from a decimated mesh when the ceiling refuses, and says so", async () => {
+    const ceiling = new Error("Mesh has 99904 triangles, above the 50000-triangle ceiling for the per-triangle sewing pipeline.");
+    const pipeline = fakePipeline({
+      promoteMeshToBrep: vi.fn().mockRejectedValueOnce(ceiling).mockResolvedValue(FAKE_PROMOTE_RESULT),
+    });
+    const c = ctx(pipeline);
+    const outputPath = path.join(dir, "decimated.step");
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath, autoDecimate: true });
+    expect(pipeline.decimateStlBoundary).toHaveBeenCalledOnce();
+    expect(vi.mocked(pipeline.promoteMeshToBrep).mock.calls[1].slice(2, 4)).toEqual(["stl", "step"]);
+    expect(result.decimated).toEqual({ fromTriangles: 99904, toTriangles: 996, ratio: expect.any(Number) });
+    expect(result.warnings.join(" ")).toMatch(/promoted from an auto-decimated mesh.*99904 → 996/);
+    expect(await fs.readFile(outputPath, "utf8")).toContain("PROMOTED");
+  });
+
+  it("autoDecimate: a non-ceiling error rethrows without decimating", async () => {
+    const bad = new Error("sewing failed catastrophically");
+    const pipeline = fakePipeline({ promoteMeshToBrep: vi.fn().mockRejectedValue(bad) });
+    await expect(
+      promoteMeshToBrepTool(ctx(pipeline), { path: stlModel, outputPath: path.join(dir, "x.step"), autoDecimate: true })
+    ).rejects.toThrow(/catastrophically/);
+    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+  });
 });
 
 describe("repair_mesh", () => {
@@ -1361,7 +1444,7 @@ describe("repair_mesh", () => {
     const c = ctx();
     const outputPath = path.join(dir, "repaired.stl");
     const result = await repairMeshTool(c, { path: stlModel, outputPath });
-    expect(c.pipeline.repairMesh).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", undefined);
+    expect(c.pipeline.repairMesh).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", undefined, DEFAULT_MESH_OPTIONS);
     expect(result).toMatchObject({
       written: outputPath,
       nodeCount: FAKE_REPAIR_RESULT.nodeCount,
@@ -1374,16 +1457,16 @@ describe("repair_mesh", () => {
   it("repairs OBJ/PLY sources too", async () => {
     const c = ctx();
     await repairMeshTool(c, { path: objModel, outputPath: path.join(dir, "repaired-obj.stl") });
-    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", undefined);
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", undefined, DEFAULT_MESH_OPTIONS);
 
     await repairMeshTool(c, { path: plyModel, outputPath: path.join(dir, "repaired-ply.stl") });
-    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", undefined);
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", undefined, DEFAULT_MESH_OPTIONS);
   });
 
   it("repairs a glTF source, passing its resolved external buffers", async () => {
     const c = ctx();
     await repairMeshTool(c, { path: gltfModel, outputPath: path.join(dir, "repaired-gltf.stl") });
-    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "gltf", {});
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "gltf", {}, DEFAULT_MESH_OPTIONS);
   });
 
   it("throws for a B-rep source (nothing to repair), without touching WASM", async () => {
@@ -1414,6 +1497,89 @@ describe("repair_mesh", () => {
     const c = ctx();
     await expect(repairMeshTool(c, { path: stlModel, outputPath: stlModel })).rejects.toThrow();
     expect(c.pipeline.repairMesh).not.toHaveBeenCalled();
+  });
+});
+
+describe("inspect_meshio_fields", () => {
+  const FAKE_ARRAYS = [
+    { name: "Temperature", location: "point" as const, numComponents: 1, min: 20, max: 100, numNan: 0, consistent: true },
+    { name: "cell_tags", location: "cell" as const, numComponents: 1, min: 1, max: 2, numNan: 0, consistent: true },
+  ];
+
+  async function medModel(name = "model.med"): Promise<string> {
+    const p = path.join(dir, name);
+    await fs.writeFile(p, "MED placeholder — bytes never reach the fake pipeline", "utf8");
+    return p;
+  }
+
+  it("returns the pipeline's per-array facts verbatim for a meshio source", async () => {
+    const c = ctx(fakePipeline({
+      readMeshioDataInfo: vi.fn(async () => FAKE_ARRAYS),
+    }));
+    const model = await medModel();
+    const result = await inspectMeshioFieldsTool(c, { path: model });
+    expect(c.pipeline.readMeshioDataInfo).toHaveBeenCalledWith(
+      expect.any(Uint8Array), "med", "model.med", []
+    );
+    expect(result).toMatchObject({ format: "med", supported: true, arrays: FAKE_ARRAYS });
+    // Narrative warning envelopes the document-derived names; structured rows carry them raw.
+    expect(result.warnings.some((w) => w.includes("⟦field data: Temperature⟧"))).toBe(true);
+    expect(result.arrays[0].name).toBe("Temperature");
+  });
+
+  it("reports a multi-component array with its width, not an error", async () => {
+    const c = ctx(fakePipeline({
+      readMeshioDataInfo: vi.fn(async () => [
+        { name: "Temperature:gradient", location: "cell" as const, numComponents: 3, min: -1, max: 1, numNan: 0, consistent: true },
+      ]),
+    }));
+    const result = await inspectMeshioFieldsTool(c, { path: await medModel() });
+    expect(result.supported).toBe(true);
+    expect(result.arrays[0].numComponents).toBe(3);
+  });
+
+  it("says so when the source declares no arrays at all", async () => {
+    const c = ctx();
+    const result = await inspectMeshioFieldsTool(c, { path: await medModel() });
+    expect(result).toMatchObject({ supported: true, arrays: [] });
+    expect(result.warnings.some((w) => /declares no point\/cell data arrays/i.test(w))).toBe(true);
+  });
+
+  it("distinguishes an unreadable read from a genuinely field-less file", async () => {
+    const c = ctx(fakePipeline({
+      readMeshioDataInfo: vi.fn(async () => []),
+      readMeshioMetadata: vi.fn(async () => ({
+        regions: [], pointDataNames: ["Temperature"], cellDataNames: [], fieldDataNames: [],
+      })),
+    }));
+    const result = await inspectMeshioFieldsTool(c, { path: await medModel() });
+    expect(result).toMatchObject({ supported: true, arrays: [] });
+    expect(result.warnings.some((w) => /could not be read/i.test(w))).toBe(true);
+  });
+
+  it("returns supported:false for a B-rep source, without touching the pipeline", async () => {
+    const c = ctx();
+    const result = await inspectMeshioFieldsTool(c, { path: stpModel });
+    expect(result).toMatchObject({ format: "step", supported: false, arrays: [] });
+    expect(c.pipeline.readMeshioDataInfo).not.toHaveBeenCalled();
+    expect(c.pipeline.readMeshioMetadata).not.toHaveBeenCalled();
+  });
+
+  it("returns supported:false for a mesh-parser source (.stl), without touching the pipeline", async () => {
+    const c = ctx();
+    const result = await inspectMeshioFieldsTool(c, { path: stlModel });
+    expect(result).toMatchObject({ format: "stl", supported: false, arrays: [] });
+    expect(c.pipeline.readMeshioDataInfo).not.toHaveBeenCalled();
+  });
+
+  it("returns supported:false for an OpenFOAM marker (geometry-only by construction)", async () => {
+    const foamModel = path.join(dir, "case.foam");
+    await fs.writeFile(foamModel, "", "utf8");
+    const c = ctx();
+    const result = await inspectMeshioFieldsTool(c, { path: foamModel });
+    expect(result).toMatchObject({ format: "openfoam", supported: false, arrays: [] });
+    expect(result.warnings.some((w) => /geometry-only/i.test(w))).toBe(true);
+    expect(c.pipeline.readMeshioDataInfo).not.toHaveBeenCalled();
   });
 });
 
@@ -1906,6 +2072,56 @@ describe("remove_edit_op", () => {
   });
 });
 
+describe("Tier 0 save-in-place watermark (bakedThrough)", () => {
+  const box = { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] };
+  const moved = { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] };
+
+  it("apply_edit_ops preserves the watermark and replays only the tail", async () => {
+    await writeEdits(stpModel, [box, moved] as unknown as EditOp[], [], 1);
+    const c = ctx();
+    const result = await applyEditOps(c, { path: stpModel, ops: [{ op: "explode", factor: 1.5 }] });
+    // Replay = unbaked tail [moved] + the new op — never the baked prefix.
+    expect(c.pipeline.loadBRep).toHaveBeenCalledWith(
+      dir,
+      expect.anything(),
+      "step",
+      [moved, { op: "explode", factor: 1.5 }]
+    );
+    // Persisted sidecar keeps the FULL list with the watermark intact.
+    const persisted = await readEdits(stpModel);
+    expect(persisted.ops).toHaveLength(3);
+    expect(persisted.bakedThrough).toBe(1);
+    expect(result.stackLength).toBe(3);
+  });
+
+  it("remove_edit_op refuses an index inside the baked prefix", async () => {
+    await writeEdits(stpModel, [box, moved] as unknown as EditOp[], [], 2);
+    const c = ctx();
+    await expect(removeEditOp(c, { path: stpModel, index: 0 })).rejects.toThrow(/baked prefix/);
+    await expect(removeEditOp(c, { path: stpModel, index: 1 })).rejects.toThrow(/baked prefix/);
+    // The sidecar is untouched by a refused removal.
+    expect((await readEdits(stpModel)).ops).toHaveLength(2);
+  });
+
+  it("render_ops_prefix replays watermark-relative but indexes the full history", async () => {
+    await writeEdits(stpModel, [box, moved] as unknown as EditOp[], [], 1);
+    const c = ctx();
+    const result = await renderOpsPrefixTool(c, { path: stpModel, throughIndex: 1 });
+    // throughIndex addresses the full history; only ops[1..1] replay.
+    expect(c.pipeline.loadBRep).toHaveBeenCalledWith(dir, expect.anything(), "step", [moved]);
+    expect(result.throughIndex).toBe(1);
+    expect(result.totalOpCount).toBe(2);
+    expect(result.prefixOpCount).toBe(1);
+  });
+
+  it("get_state exposes the full history plus the watermark", async () => {
+    await writeEdits(stpModel, [box, moved] as unknown as EditOp[], [], 1);
+    const state = await getState({ path: stpModel });
+    expect(state.edits).toHaveLength(2);
+    expect(state.bakedThrough).toBe(1);
+  });
+});
+
 describe("set_variables", () => {
   it("evaluates top-down and re-resolves op expression caches", async () => {
     const c = ctx();
@@ -2043,6 +2259,110 @@ describe("set_plane", () => {
     const state = await getState({ path: stpModel });
     expect(state.planes).toHaveLength(1);
     expect(state.planes[0].point).toEqual([1, 2, 3]);
+  });
+});
+
+describe("pin_annotation", () => {
+  const distancePin: {
+    tool: string;
+    text: string;
+    anchorPoint: number[];
+    linePoints: number[][];
+    surfaces: string[];
+  } = {
+    tool: "distance",
+    text: "94.5 mm",
+    anchorPoint: [0, 0, 0],
+    linePoints: [[0, 0, 0], [94.5, 0, 0]],
+    surfaces: ["face-0", "face-1"],
+  };
+
+  it("pins a measurement and persists it to the sidecar", async () => {
+    const result = await pinAnnotation({ path: stpModel, ...distancePin });
+    expect(result.pinned).toMatchObject({ tool: "distance", text: "94.5 mm" });
+    expect(result.pinned!.id).toMatch(/^ann-/);
+    expect(result.removed).toBeNull();
+    const onDisk = await readAnnotations(stpModel);
+    expect(onDisk).toHaveLength(1);
+    expect(onDisk[0]).toMatchObject({ tool: "distance", surfaces: ["face-0", "face-1"] });
+    const state = await getState({ path: stpModel });
+    expect(state.annotations).toHaveLength(1);
+  });
+
+  it("pins a toleranced measurement, defaulting minus to plus", async () => {
+    const result = await pinAnnotation({
+      path: stpModel,
+      tool: "edgeLength",
+      text: "12.5 mm",
+      anchorPoint: [1, 2, 3],
+      lines: ["edge-3"],
+      tolerance: { nominal: 12.5, plus: 0.05, measured: 12.52 },
+    });
+    expect(result.pinned!.tolerance).toEqual({ nominal: 12.5, plus: 0.05, minus: 0.05, measured: 12.52 });
+  });
+
+  it("removes a pin by id, and errors on an unknown id or a missing one", async () => {
+    const created = await pinAnnotation({ path: stpModel, ...distancePin });
+    const removed = await pinAnnotation({ path: stpModel, id: created.pinned!.id, remove: true });
+    expect(removed.removed).toBe(created.pinned!.id);
+    expect(removed.pinned).toBeNull();
+    expect(await readAnnotations(stpModel)).toHaveLength(0);
+    await expect(pinAnnotation({ path: stpModel, id: "ann-nope", remove: true })).rejects.toThrow(/no annotation/i);
+    await expect(pinAnnotation({ path: stpModel, remove: true })).rejects.toThrow(/requires the annotation's id/i);
+  });
+
+  it("rejects structural misuse fail-fast", async () => {
+    const base = { path: stpModel, ...distancePin };
+    await expect(pinAnnotation({ ...base, tool: "volume" })).rejects.toThrow(/tool must be/i);
+    await expect(pinAnnotation({ ...base, text: 42 as unknown as string })).rejects.toThrow(/text must be/i);
+    await expect(pinAnnotation({ ...base, anchorPoint: [0, 0] })).rejects.toThrow(/anchorPoint must be/i);
+    await expect(pinAnnotation({ ...base, linePoints: [[0, 0, 0]] })).rejects.toThrow(/0 or 2 points/i);
+    await expect(pinAnnotation({ ...base, linePoints: [] })).rejects.toThrow(/exactly 2 points/i);
+    await expect(pinAnnotation({
+      path: stpModel, tool: "radius", text: "R 3", anchorPoint: [0, 0, 0], lines: ["edge-1"], linePoints: [[0, 0, 0], [1, 1, 1]],
+    })).rejects.toThrow(/must be empty/i);
+    await expect(pinAnnotation({
+      path: stpModel, tool: "distance", text: "x", anchorPoint: [0, 0, 0], surfaces: ["face-9"],
+    })).rejects.toThrow(/exactly 2 points/i);
+    await expect(pinAnnotation({
+      path: stpModel, tool: "distance", text: "x", anchorPoint: [0, 0, 0],
+      linePoints: [[0, 0, 0], [1, 0, 0]], surfaces: ["nope"],
+    })).rejects.toThrow(/not a resolvable entity id/i);
+    await expect(pinAnnotation({
+      path: stpModel, tool: "distance", text: "x", anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [1, 0, 0]],
+    })).rejects.toThrow(/at least one anchor/i);
+    await expect(pinAnnotation({
+      ...base, tolerance: { nominal: 10, plus: -0.05, measured: 10 },
+    })).rejects.toThrow(/magnitudes/i);
+    expect(await readAnnotations(stpModel)).toHaveLength(0); // nothing persisted on any rejection
+  });
+
+  it("accepts shape-valid but unresolvable anchors with a warning, never a silent drop", async () => {
+    const result = await pinAnnotation({
+      path: stpModel,
+      tool: "distance",
+      text: "5 mm",
+      anchorPoint: [0, 0, 0],
+      linePoints: [[0, 0, 0], [5, 0, 0]],
+      surfaces: ["face-999"],
+    });
+    expect(result.pinned!.surfaces).toEqual(["face-999"]);
+    expect(result.warnings.join(" ")).toMatch(/not verified against live geometry/i);
+    expect(await readAnnotations(stpModel)).toHaveLength(1);
+  });
+
+  it("accepts mesh-source ids (node-N volumes, node-N/face-K facets)", async () => {
+    const result = await pinAnnotation({
+      path: stlModel,
+      tool: "distance",
+      text: "10 mm",
+      anchorPoint: [5, 0, 5],
+      linePoints: [[0, 0, 0], [10, 0, 0]],
+      volumes: ["node-0"],
+      surfaces: ["node-0/face-3"],
+    });
+    expect(result.pinned!.volumes).toEqual(["node-0"]);
+    expect(result.pinned!.surfaces).toEqual(["node-0/face-3"]);
   });
 });
 
@@ -2228,6 +2548,10 @@ describe("export_mesh", () => {
         extension: "med",
         companionExtension: undefined,
         source: { name: path.basename(stpModel), format: "step" },
+        notes: expect.arrayContaining([
+          { category: "meshing-engine", detail: "gmsh" },
+          expect.objectContaining({ category: "edits-baked" }),
+        ]),
       },
     ]);
     expect(c.pipeline.exportMeshFormat).not.toHaveBeenCalled();

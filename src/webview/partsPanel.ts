@@ -15,6 +15,8 @@ export interface PartsPanelCallbacks {
   onToggleVisible: (index: number) => void;
   /** Toggles isolating this part (show only it); called with the currently selected part. */
   onToggleIsolate: (index: number) => void;
+  /** Copies the bill of materials (one TSV row per part, via a bomRequest host round trip). */
+  onCopyBom: () => void;
 }
 
 /**
@@ -32,6 +34,7 @@ export class PartsPanel {
   private readonly body: HTMLElement;
   private readonly newBtn: HTMLElement;
   private readonly isolateBtn: HTMLButtonElement;
+  private readonly copyBomBtn: HTMLButtonElement;
   private selectedIndex: number | null = null;
 
   constructor(
@@ -46,6 +49,21 @@ export class PartsPanel {
     this.isolateBtn.addEventListener("click", () => {
       if (this.selectedIndex !== null) this.cb.onToggleIsolate(this.selectedIndex);
     });
+    this.copyBomBtn = panel.querySelector("#parts-copy-bom")!;
+    this.copyBomBtn.addEventListener("click", () => {
+      if (!this.copyBomBtn.disabled) this.cb.onCopyBom();
+    });
+  }
+
+  /**
+   * Enables/disables the Copy BOM button — enabled only for a B-rep source
+   * with ≥1 part (the host computes rows via OCCT; a mesh source has no
+   * per-part rows, and zero parts would copy a header-only TSV). Called by
+   * the wiring on every model load and parts change, alongside `render()`.
+   */
+  setBomEnabled(enabled: boolean, reason: string): void {
+    this.copyBomBtn.disabled = !enabled;
+    this.copyBomBtn.title = reason;
   }
 
   render(parts: Part[]): void {

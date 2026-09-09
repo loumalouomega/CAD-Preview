@@ -248,6 +248,8 @@ export interface AddHelixOp { op: "addHelix"; center: Vec3; axis: Vec3; radius: 
 export interface ShellOp { op: "shell"; thickness: number; openingFaces: string[]; join?: "arc" | "intersection" | "tangent"; }
 /** Taper the selected faces by `angleDeg` around a neutral plane through `planePoint` with direction `planeNormal` (neutral plane = point+normal, pull = normal) or the saved construction plane `planeId` (`plane-N`); `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. Omitted = each face's own plane. */
 export interface DraftOp { op: "draft"; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; }
+/** Remove the selected faces as recognized features (fillets, chamfers, small protrusions) via `BRepAlgoAPI_Defeaturing`, healing the solid behind them. Faces that bound no removable feature are left in place by the kernel. */
+export interface DefeatureOp { op: "defeature"; faces: string[]; }
 /** Stadium slot around an existing edge: width across, length = edge length + width. */
 export interface AddEdgeSlotOp { op: "addEdgeSlot"; edge: string; width: number; }
 /** Split the target solids by the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of two planar `midplaneFaces`, keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. */
@@ -280,7 +282,7 @@ export type EditOp = (
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
-  | ShellOp | DraftOp | SplitByPlaneOp | SectionOp | RibOp | WrapOp
+   | ShellOp | DraftOp | DefeatureOp | SplitByPlaneOp | SectionOp | RibOp | WrapOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
   | AddWedgeOp | AddHoleOp | AddCounterboreHoleOp | AddCountersinkHoleOp
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
@@ -326,7 +328,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   extrude: ["profile", "profileEdges", "upToFace"], revolve: ["profile", "profileEdges"],
   sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets", "guides"],
   explode: [], mate: ["faceA", "faceB"],
-  shell: ["openingFaces"], draft: ["faces"], splitByPlane: ["targets"], section: ["targets"],
+  shell: ["openingFaces"], draft: ["faces"], defeature: ["faces"], splitByPlane: ["targets"], section: ["targets"],
   rib: ["spineEdges", "upTo"],
   wrap: ["profile", "targets"],
   addBox: [], addSphere: [], addCylinder: [], addCone: [], addTorus: [], addPrism: [],
@@ -387,7 +389,7 @@ export type OutcomeFail = (diagnostic: string, hint?: string) => void;
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
-  "shell", "draft", "splitByPlane", "section", "rib", "wrap",
+  "shell", "draft", "defeature", "splitByPlane", "section", "rib", "wrap",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
   "addWedge", "addHole", "addCounterboreHole", "addCountersinkHole",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
@@ -402,7 +404,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
  * The hole family is deliberately NOT here — the mesh engine cuts holes via CSG. */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
-  "shell", "draft", "splitByPlane", "section", "rib", "wrap",
+  "shell", "draft", "defeature", "splitByPlane", "section", "rib", "wrap",
   "addWedge",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
@@ -886,6 +888,11 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const out: DraftOp = { op: "draft", faces, angleDeg: o.angleDeg as number };
       if (o.planePoint) { out.planePoint = asVec3(o.planePoint)!; out.planeNormal = asNonZeroVec3(o.planeNormal!)!; }
       return out;
+    }
+    case "defeature": {
+      const faces = asIdArray(o.faces);
+      if (!faces) return null;
+      return { op: "defeature", faces };
     }
     case "addEdgeSlot": {
       if (typeof o.edge !== "string" || !o.edge || !isPositive(o.width)) return null;

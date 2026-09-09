@@ -367,6 +367,8 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
       return shellSolids(oc, shape, op, cleanup, fail);
     case "draft":
       return draftFaces(oc, shape, op, cleanup, fail);
+    case "defeature":
+      return defeatureFaces(oc, shape, op, cleanup, fail);
     case "splitByPlane":
       return splitSolidsByPlane(oc, shape, op as any, cleanup, fail);
     case "section":
@@ -4009,6 +4011,51 @@ function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, c
     return res;
   } catch {
     fail?.("draft builder threw");
+    return shape;
+  }
+}
+
+function defeatureFaces(oc: any, shape: any, op: Extract<EditOp, { op: "defeature" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const faces = collectFaces(oc, shape, cleanup);
+    const picked = op.faces.map((id) => faces[faceIndex(id)]).filter((f): f is any => f != null);
+    if (picked.length === 0) {
+      fail?.(`none of the face ids (${op.faces.join(", ")}) resolve`);
+      return shape;
+    }
+    // VERIFIED against the live WASM (throwaway esbuild-bundled probe, not
+    // committed): the plain `BRepAlgoAPI_Defeaturing` 0-arg ctor is the
+    // working one (`_1`/`_2` are not bound); `SetShape` + looped
+    // `AddFaceToRemove` + `Build()` (no `Message_ProgressRange`, which is
+    // unconstructible in this build) + `IsDone()` + `Shape()`. Single-face
+    // and two-face removals both restore the exact analytic volume
+    // (box+fillet 991.4159 → 1000.0000000000002).
+    const defeature = keep(new oc.BRepAlgoAPI_Defeaturing());
+    defeature.SetShape(shape);
+    for (const f of picked) {
+      try {
+        defeature.AddFaceToRemove(f);
+      } catch (err) {
+        fail?.(`defeature rejected a face: ${err instanceof Error ? err.message : String(err)}`);
+        return shape;
+      }
+    }
+    try {
+      defeature.Build();
+    } catch {
+      fail?.("defeature Build threw");
+      return shape;
+    }
+    if (!defeature.IsDone()) {
+      fail?.("defeature Build did not complete (IsDone() false)");
+      return shape;
+    }
+    const res = defeature.Shape();
+    cleanup.push(res);
+    return res;
+  } catch {
+    fail?.("defeature builder threw");
     return shape;
   }
 }

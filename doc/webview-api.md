@@ -31,13 +31,14 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/dimensionGlyph.ts` | Pure dimension-glyph math — arrowheads, witness/extension lines, value formatting (shared with the SVG/DXF export path) |
 | `src/webview/annotationsModel.ts` | Persisted, topology-anchored annotations (pinned measurements) data model, DOM-free (unit-tested) |
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
+| `src/webview/clashPanel.ts` | Clash panel DOM — Part-vs-Part and check-all interference readout (roadmap Tier 2 "Clash panel") |
 | `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
 | `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
 | `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts` |
-| `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer), DOM-free (unit-tested) |
+| `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer + save-point gates), DOM-free (unit-tested) |
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
 | `src/webview/opCatalog.ts` | Op catalog: GEOMETRY/EDIT tab structure + `describeOp`, DOM-free (unit-tested) |
@@ -101,6 +102,8 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"screenshotRequest"` | `viewer.render()` (force a fresh frame) → `viewer.captureScreenshotBase64()` → posts back `"screenshotResult"`/`"screenshotError"`, correlated by `msg.requestId` |
 | `"massPropertiesResult"` | `renderMassProperties(msg.properties)` — caches the raw (mm) result and renders it converted to `currentDisplayUnit` (see `src/webview/units.ts` below); ignored if `msg.requestId` doesn't match the latest request |
 | `"massPropertiesError"` | `MassPropertiesPanel.renderMessage(msg.message, true)` (same stale-request guard) |
+| `"bomResult"` | Renders `bomTsv(msg.rows)` (`src/bomExport.ts`, zero-import pure) and copies it with `navigator.clipboard.writeText`, then `setStatus("BOM copied (N rows)")`; a denied clipboard write surfaces as an error status, never a silent no-copy. Ignored if `msg.requestId` doesn't match the latest click (`bomRequestId`). Host `warnings` are posted as status lines first |
+| `"bomError"` | `setStatus(msg.message, true)` (same stale-request guard) |
 | `"colorFieldResult"` | `viewer.setColorFieldOverlay(buildColorFieldOverlay(pristineMeshPositions(), msg.values, msg.min, msg.max))`, then updates the legend (`#vc-colorfield-gradient`'s CSS background from `viridisCssGradientStops()`, `#vc-colorfield-min`/`-max` via the plain `formatMeasure` — no length-unit suffix, a scalar field isn't length-dimensioned) and unhides it; ignored if `msg.requestId` doesn't match the latest selection (`colorFieldRequestId`) |
 | `"colorFieldError"` | `setStatus(msg.message, true)` + resets the `<select>` to `""`, same stale-request guard |
 
@@ -139,7 +142,7 @@ Returns `true` if the root has more than one child (or any grandchild). The tree
 Collapses any sidebar section down to just its header, so the interface can be reduced to the panels actually in use. State persists per document in `<model>.view.json` (`ViewState.collapsedPanels`).
 
 ```typescript
-const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the nine sections, in #side order
+const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the ten sections, in #side order
 
 function sanitizeCollapsedPanels(ids: unknown): string[]
 function setupCollapsiblePanels(onChange: () => void): CollapsiblePanelsHandle | null
@@ -1008,20 +1011,23 @@ The in-webview **op-stack** for the replayable edit list. Pure data (no DOM), mi
 ```typescript
 class EditsModel {
   constructor(onChange: () => void)
-  load(ops: EditOp[]): void   // hydrate from sidecar — does NOT fire onChange
+  load(ops: EditOp[], bakedThrough?: number): void   // hydrate from sidecar — does NOT fire onChange
   list(): EditOp[]            // deep copies, in order
   redoList(): EditOp[]        // the redo buffer in CHRONOLOGICAL order (deep copies) — the order pending ops re-apply
-  push(op: EditOp): void      // append; clears the redo buffer
-  undo(): void                // pop last → redo buffer
-  redo(): void                // re-apply most recently undone
-  clear(): void               // empty both stacks
-  remove(index: number): void // splice out a single op from anywhere in the list; clears the redo buffer
-  jumpTo(index: number): void // op-history scrubbing: move the stack boundary straight to timeline position `index` in ONE splice, firing one onChange (a no-change jump fires none)
+  push(op: EditOp): boolean   // append; clears the redo buffer (always legal — tail only)
+  undo(): boolean             // pop last → redo buffer (refused at/inside the save point)
+  redo(): boolean             // re-apply most recently undone (always legal)
+  clear(): boolean            // empty both stacks (refused past a save point)
+  remove(index: number): boolean // splice out a single op from anywhere in the list; clears the redo buffer (refused inside the save point)
+  jumpTo(index: number): boolean // op-history scrubbing: move the stack boundary straight to timeline position `index` in ONE splice, firing one onChange (a no-change jump fires none; a jump to at/inside the save point is refused)
   get size(): number
-  get canUndo(): boolean
+  get canUndo(): boolean      // ops.length > savePoint, not > 0
   get canRedo(): boolean
+  get savePoint(): number     // leading ops already saved into the source file
 }
 ```
+
+Tier 0 Phase 2 — the save point: `bakedThrough` leading ops live in the source file itself, so `undo`/`remove`/`jumpTo`/`clear` refuse targets at or inside it (`false`, no `onChange` — `main.ts` shows the save-point guidance); `push`/`redo` only touch the unbaked tail and stay always-legal. Baked rows render locked (`edit-row-baked` + 🔒, no ✕) via `render(…, bakedThrough)`.
 
 `jumpTo` addresses the full chronological timeline — applied ops at `0..size-1`, then `redoList()`'s pending ops after them. Clicking timeline position k makes the state "after op k applied": an applied row rolls back past itself; a pending row re-applies through itself. Redo-buffer ORDER is preserved across any jump (demoted ops are prepended reversed so ↷ reapplies them in original order; promoted ops come off the buffer's end in exactly `redo()`'s order) — both orderings are pinned by worked-example tests in `editsModel.test.ts`. Known perf caveat: `loadBRepCached` only reuses its cached replay for a pure append of `previous.ops`, so a backward jump pays a full `applyEditsBRep` replay from the still-cached base shape — fine for click-to-jump; do not build a continuous-drag scrubber on top without revisiting that.
 
@@ -1168,6 +1174,7 @@ interface MeshingPanelCallbacks {
   onGenerate: () => void
   onExport: (format: MeshExportFormatId, unit: DisplayUnit) => void  // format + unit currently picked in the two `<select>`s
   onClear: () => void
+  onMeshOps: (ops: MeshioOpSpec[]) => void  // one validated op per Run (meshio++ sources only)
 }
 
 class MeshingPanel {
@@ -1176,6 +1183,9 @@ class MeshingPanel {
   renderParts(parts: Part[]): void
   setModelExtents(extents: ModelExtents | null): void
   setSourceKind(kind: "brep" | "mesh"): void
+  setMeshioOpsAvailable(enabled: boolean): void
+  renderMeshOpsResult(steps: Array<{ op: string; applied: boolean; detail: string }>, warnings: string[]): void
+  renderMeshOpsStatus(text: string, isError: boolean): void
   setBusy(busy: boolean): void
 }
 ```
@@ -1185,6 +1195,8 @@ class MeshingPanel {
 The slider commits on `change` (release) only; `input` (mid-drag) refreshes the readout/warning locally so dragging never spams `meshingChanged`. Commits that would drop `sizeMax` below the current `sizeMin` include `sizeMin: 0` in the same patch (guarding `validateMeshOptions`' pair rule). `setModelExtents()` is pushed by `main.ts` on each model load and feeds the readout's element-count estimate and the presets; `setSourceKind("brep")` disables the STL angle field (it only feeds the STL reclassification path), mirroring `editsPanel.setBRepOnly`. `renderParts()` rebuilds the Part sizes rows — `onPartMeshSize` routes to the same `PartsModel.setMeshSize` the Parts panel uses, so the two inputs are views of one value.
 
 `setBusy(true)` disables `#meshing-generate` (a slow WASM call can't be re-triggered mid-flight) and shows the indeterminate `#meshing-progress` bar (CSS keyframe sweep — GMSH's `generate()` is one opaque blocking call with no progress hook to report a real percentage from) plus a `"Generating…"` status line; `setBusy(false)` reverses both. `main.ts`'s `onGenerate` calls `setBusy(true)` before posting `meshingGenerate`, and the `meshingResult`/ `meshingError` handlers call `setBusy(false)` before rendering the outcome. Export (`onExport`) is not wired to `setBusy` — its save-dialog-driven completion surfaces through the generic `status`/`error` messages (`setStatus()`, the toolbar status bar), not this panel.
+
+**Mesh ops** (roadmap Tier 2 "Mesh-operations panel for meshio sources") is a section at the bottom of the same panel body: an operation `<select>` (the seven `MESHIO_OP_IDS` from `src/meshioOps.ts` with `MESHIO_OP_LABELS`), per-op parameter rows (keep-ratio / method / iterations / levels / group-size / mode — only the selected op's rows are shown, via `syncMeshOpsParams()`), a **Run op…** button, and a status line. `setMeshioOpsAvailable()` shows it only for a meshio++-imported source (`loadMeshBytes` with `sourceFormat !== "openfoam"` — OpenFOAM's case-staged reader has no `readMesh` path; `geometry` and `loadUrl` both hide it), and `main.ts` resets the `meshioOpsRequestId` latch on every new model load (same stale-response-guard idiom as `meshHealRequestId`). `onMeshOps` posts a one-element `meshioOpsRequest`; `renderMeshOpsResult()` renders the kernel's own per-step detail lines. Pure DOM like the rest of this panel (validation lives in `src/meshioOps.ts`, shared with the host) — no unit test, same convention as `partsPanel.ts`/`meshingPanel.ts` itself.
 
 In `main.ts`, `onGenerate`/`onExport` each independently call an async `currentStlIfMeshSource()` helper before posting (returns `undefined` for B-rep documents, since the host re-exports STEP itself), then post `meshingGenerate`/`meshingExport` with the current `MeshingModel.get()` snapshot plus that optional `stl`; `onExport` additionally forwards its `unit` argument straight onto the outgoing `meshingExport` message's own `unit` field (a real geometric scale applied host-side before Gmsh sees the geometry — `unit` is `"mm"`-default and has no bearing on `meshingGenerate`, which always meshes at native mm; see CLAUDE.md's Meshing section for the full mechanism). `onClear` calls `viewer.setMeshOverlay(null)` AND `viewer.setWorstElementsOverlay(null)` directly, resets both the toolbar toggle's `meshingEnabled`/`.active` state and `#meshing-worst-toggle`'s `worstElementsShown`/`.active`/`hidden` state (same toggle-truthfulness rule `meshingResult`/`meshingError` follow), and re-renders the panel with no status. `#meshing-worst-toggle` itself mirrors `#meshing-toggle`'s wiring pattern exactly (own `let worstElementsShown`/`worstToggle` pair, a click listener calling `viewer.setWorstElementsOverlayVisible()`), but with one difference in the `"meshingResult"` handler: rather than only ever reflecting reality like the base toggle does, it's also auto-shown whenever `msg.worstElements` is present (and auto-hidden — `hidden = true` — otherwise) on every fresh generate, the same "surface a warning by default" framing the large-mesh warning banner already uses; the user can still turn it back off via the toggle.
 
@@ -1239,6 +1251,35 @@ class MassPropertiesPanel {
 `main.ts`'s `onRefresh` reads the current `SelectionSet`: 0 entries → whole model (`entityId: null`), exactly 1 → that entity, 2+ → `renderMessage`s a "select exactly one, or none" guidance line without sending any request. For a B-rep source it posts `massPropertiesRequest` and awaits `massPropertiesResult`/ `massPropertiesError` (guarded by a `massPropertiesRequestId` so a stale reply from a superseded refresh is ignored); for a mesh source it calls `computeAndRenderMeshMassProperties()` (below) with **no host round trip at all**. `momentsOfInertia` only shows its diagonal terms (`ixx`/`iyy`/`izz`) — the off-diagonal products of inertia are near-zero for most axis-aligned bodies and not worth the panel's space; mesh sources never populate this field (client-side inertia isn't computed, out of scope for the first cut) — and, per `units.ts` below, moments of inertia are also the one field `render()` never rescales regardless of `unitLabel`.
 
 Both call sites go through `main.ts`'s `renderMassProperties(raw)` wrapper, never `massPropertiesPanel.render()` directly: it caches `raw` (always millimetres) in a module-level `lastRawMassProperties`, then calls `massPropertiesPanel.render(convertLengthBasedProperties(raw, currentDisplayUnit), currentDisplayUnit)`. Caching the *raw* value (not the already-converted one) is what lets `setDisplayUnit()` (below) live-rescale an already-displayed result when the user changes the unit selector, without re-requesting anything from the host or recomputing the mesh-source case.
+
+---
+
+## `src/webview/clashPanel.ts`
+
+The Clash panel — the interactive counterpart of the MCP-only `check_interference` / `check_interference_all` tools (roadmap Tier 2 "Clash panel"). A small DOM class following `MassPropertiesPanel`'s readout convention: two Part `<select>`s plus **Check**, and a header **Check all** over every Part with volumes.
+
+```typescript
+interface ClashPairDisplay {
+  partA: string; partB: string
+  hasOverlap: boolean
+  overlapVolume: number | null  // already in the display unit; null renders as "—"
+  screenedByBbox?: boolean
+  unresolvedA: string[]; unresolvedB: string[]
+}
+
+class ClashPanel {
+  constructor(panel: HTMLElement, cb: { onCheck: (partA: string, partB: string) => void; onCheckAll: () => void })
+  setEligible(eligible: boolean): void   // B-rep only — hides the section otherwise
+  renderParts(names: string[]): void     // repopulates both dropdowns, preserving selections
+  setBusy(busy: boolean): void
+  renderMessage(text: string, isError?: boolean): void
+  clear(): void
+  renderPair(pair: ClashPairDisplay, unitLabel?: string): void
+  renderAll(pairs: ClashPairDisplay[], unitLabel?: string): void
+}
+```
+
+`main.ts` drives it with two `requestId` latches (`clashCheckRequestId` / `clashCheckAllRequestId`, same stale-response-guard idiom as `massPropertiesRequestId`) plus a remembered `clashLastPair` (the pair result carries geometry only, so the requested names are remembered to label the row). Raw mm volumes cache in `lastClashResults` so `setDisplayUnit()` re-renders via the existing `convertVolume()` without a new host round trip (the `lastRawMassProperties` precedent); everything clears on model rebuild (re-tessellation may renumber the ids results name). The section hides itself for non-B-rep sources (`setEligible`), with the `#clash-panel[hidden]` CSS override the `[hidden]` hazard demands. Rows reuse the `mass-row`/`mass-message` styles: `A × B` → `overlap <volume>` or `no overlap`, with an `AABB-screened` / unresolved-id note line where applicable.
 
 ---
 

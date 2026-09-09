@@ -23,7 +23,7 @@ export type PanelOpId =
   // EDIT — features
   | "extrude" | "revolve" | "sweep" | "loft" | "rib" | "wrap"
   // EDIT — modify
-  | "shell" | "draft" | "splitByPlane" | "section" | "drill"
+  | "shell" | "draft" | "defeature" | "splitByPlane" | "section" | "drill"
   // EDIT — assembly
   | "explode" | "mate" | "align" | "patternLinear" | "patternCircular"
   // GEOMETRY 2D — wireframe
@@ -173,6 +173,7 @@ export const OP_CATALOG: {
       ops: [
         entry("shell", "Shell", ["shell"]),
         entry("draft", "Draft", ["draft"]),
+        entry("defeature", "Defeature", ["defeature"]),
         entry("splitByPlane", "Split", ["splitByPlane"]),
         entry("section", "Section", ["section"]),
         entry("drill", "Drill", ["drill"]),
@@ -261,6 +262,7 @@ function describeOpBase(op: EditOp): string {
     case "mate": return `Mate ${op.faceA} → ${op.faceB}`;
     case "shell": return `▣ Shell t=${op.thickness} (${op.openingFaces.length} openings)`;
     case "draft": return `⬔ Draft ${op.faces.length} ${op.angleDeg}°`;
+    case "defeature": return `⬔ Defeature ${op.faces.length} faces`;
     case "splitByPlane": return `⧄ Split ${op.targets.length} (${op.keep})`;
     case "section": return `⊟ Section ${op.targets.length}`;
     case "drill": return `⦿ Drill ${op.targets.length} ${profileLabel(op)} ×${op.length}`;
@@ -374,6 +376,8 @@ export function referencedEntities(op: EditOp): string[] {
       if ((op as any).planeId) refs.push((op as any).planeId as string);
       return refs;
     }
+    case "defeature":
+      return [...op.faces];
     case "explode":
     case "addBox":
     case "addSphere":

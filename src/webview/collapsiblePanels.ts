@@ -21,13 +21,14 @@
  * the camera/display-mode/clip state — see `ViewState.collapsedPanels`.
  */
 
-/** The nine collapsible sidebar sections, in `#side` source order. */
+/** The ten collapsible sidebar sections, in `#side` source order. */
 export const COLLAPSIBLE_PANELS: readonly { readonly panel: string; readonly header: string }[] = [
   { panel: "tree-panel", header: "tree-header" },
   { panel: "parts-panel", header: "parts-header" },
   { panel: "edits-panel", header: "edits-header" },
   { panel: "meshing-panel", header: "meshing-header" },
   { panel: "mass-panel", header: "mass-header" },
+  { panel: "clash-panel", header: "clash-header" },
   { panel: "mesh-health-panel", header: "mesh-health-header" },
   { panel: "region-fit-panel", header: "region-fit-header" },
   { panel: "macros-panel", header: "macros-header" },

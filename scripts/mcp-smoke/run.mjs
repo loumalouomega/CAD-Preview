@@ -231,8 +231,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 46, `tools/list exposes 46 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
+  assert(tools.length === 48, `tools/list exposes 48 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -309,16 +309,16 @@ try {
     );
   }
 
-  // OpenSCAD .scad via user-installed binary (roadmap Tier 2 item 2, path
-  // (b)) — minimal.scad mirrors bracket.csg's shape vocabulary, so a
-  // binary-present run cross-checks structure AND analytic volume against
-  // the .csg oracle. No binary exists in CI or this dev environment, so the
-  // DEFAULT branch asserts the graceful path instead (null inventory +
-  // install hint, never a throw) — the render_snapshot/Chromium-absent
-  // tolerance idiom. To exercise the analytic path, run with OPENSCAD_BINARY
-  // pointing at a real binary (the unit-test stub is for plumbing, not
-  // fidelity — its canned single cube would fail the 2-solid assertion with
-  // an obvious diff).
+  // OpenSCAD .scad via user-installed binary (path (b)) — minimal.scad
+  // mirrors bracket.csg's shape vocabulary, so a binary-present run
+  // cross-checks structure AND analytic volume against the .csg oracle. No
+  // binary exists in CI, so the DEFAULT branch asserts the graceful path
+  // instead (null inventory + install hint, never a throw) — the
+  // render_snapshot/Chromium-absent tolerance idiom. To exercise the analytic
+  // path, run with OPENSCAD_BINARY pointing at a real binary (verified
+  // against OpenSCAD 2021.01 on 2026-09-07 — see src/scadService.ts; the
+  // unit-test stub is for plumbing, not fidelity — its canned single cube
+  // would fail the 2-solid assertion with an obvious diff).
   {
     const minimalScad = path.join(dir, "minimal.scad");
     fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "minimal.scad"), minimalScad);
@@ -559,6 +559,63 @@ try {
     );
     const splicedPart = (await call("get_state", { path: persistModel })).parts.find((p) => p.name === "Fillet");
     assert(splicedPart.selector !== undefined, "the stored query itself survives the splice (only the cache may freeze)");
+  }
+
+  // defeature — block.stp + a 10x20x30 box at [200,0,0], fillet one of the
+  // added box's edges, then remove the band cylinder: the solid must heal to
+  // its exact pre-fillet volume (6060 = 60 + 6000), the neighbor box op still
+  // applies, and an unresolvable face id skips with a diagnostic — never a
+  // silent no-op. A skipped defeature records no bucket.
+  {
+    const defModel = path.join(dir, "block-for-defeature.stp");
+    const resetDef = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), defModel);
+      fs.rmSync(`${defModel}.edits.json`, { force: true });
+    };
+    resetDef();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: defModel, ops: [{ op: "addBox", center: [200, 0, 0], size: [10, 20, 30] }] },
+      resetDef
+    );
+    const defFilleted = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: defModel, ops: [{ op: "fillet", edges: ["edge-12"], radius: 1 }] },
+      resetDef
+    );
+    assert(defFilleted.applied === 1, `fillet applied for the defeature fixture (got ${JSON.stringify(defFilleted.report)})`);
+    const defLoaded = await call("load_model", { path: defModel });
+    const defBand = ((defLoaded.opBuckets ?? []).find((b) => b.op === 1)?.roles?.band ?? []);
+    let defTarget = null;
+    for (const id of defBand) {
+      const facts = await call("inspect", { path: defModel, entityId: id });
+      if (facts.surfaceType === "cylinder") defTarget = id;
+    }
+    assert(defTarget !== null, `the band bucket holds the fillet cylinder (band: ${JSON.stringify(defBand)})`);
+    const defRemoved = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: defModel, ops: [{ op: "defeature", faces: [defTarget] }] },
+      resetDef
+    );
+    assert(defRemoved.applied === 1, `defeature applied (got ${JSON.stringify(defRemoved.report)})`);
+    const defMass = await call("get_mass_properties", { path: defModel });
+    assert(
+      Math.abs(defMass.volume - 6060) / 6060 < 1e-6,
+      `defeature healed the solid to its exact pre-fillet volume 6060 (got ${defMass.volume})`
+    );
+    const defBuckets = await call("load_model", { path: defModel });
+    const defBucket = (defBuckets.opBuckets ?? []).find((b) => b.op === 2);
+    assert(
+      defBucket !== undefined && Object.keys(defBucket.roles).every((r) => r === "produced"),
+      `defeature records only the generic produced role (got ${JSON.stringify(defBucket?.roles)})`
+    );
+    const defBad = await call("apply_edit_ops", {
+      path: defModel, ops: [{ op: "defeature", faces: ["face-9999"] }],
+    });
+    assert(
+      defBad.applied === 0 && (defBad.report[0]?.diagnostic ?? "").match(/face/i) !== null,
+      `an unresolvable defeature face skips with a diagnostic (got ${JSON.stringify(defBad.report)})`
+    );
   }
 
   // Op-operand queries (Phase B) — block.stp + a 10x20x30 box at [200,0,0],
@@ -2024,6 +2081,21 @@ try {
     `a QUAD-boundary mesh now auto-creates one Part per region — the gate this phase closed (got ${JSON.stringify(hexPartNames)})`
   );
 
+  // Tier 0 defect: an all-HEX volume with NO regions imported as an empty
+  // model, silently — `convertSurface` emits `solid endsolid` (zero facets,
+  // no throw) for a quad-only boundary, and the shared
+  // `convertToStlBoundary` path returned it verbatim. It now falls back to
+  // readMesh → extractSurface → simplexify → hand-built STL.
+  const singleHexMed = path.join(dir, "single-hex.med");
+  fs.copyFileSync(path.join(ROOT, "examples", "MED", "single-hex.med"), singleHexMed);
+  const singleHexLoaded = await call("load_model", { path: singleHexMed });
+  assert(singleHexLoaded.strategy === "meshio", "the region-free hex fixture loads through meshio");
+  const singleHexMeshed = await call("generate_mesh", { path: singleHexMed, options: { sizeMax: 0.5 } });
+  assert(
+    singleHexMeshed.nodeCount > 0 && singleHexMeshed.elementCount > 0,
+    `generate_mesh on a region-free all-hex source produces a real mesh, not an empty model (got ${singleHexMeshed.nodeCount} nodes, ${singleHexMeshed.elementCount} elements)`
+  );
+
   // (b) transform_mesh — one declarative tool for the whole op family.
   const decimated = path.join(dir, "decimated.med");
   const transformed = await call("transform_mesh", {
@@ -2148,6 +2220,48 @@ try {
     vtkHealthRejected.supported === false && /no host-side triangle-soup parser/i.test(vtkHealthRejected.warnings?.[0] ?? ""),
     `check_mesh_health rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkHealthRejected)})`
   );
+
+  // Tier 1 "Auto-decimate under MAX_HEALABLE_TRIANGLES" —
+  // examples/STL/large-sphere-100k.stl is a real 99904-triangle mesh, over
+  // the 50000-triangle ceiling the per-triangle sewing pipeline refuses.
+  const bigSphereStl = path.join(dir, "large-sphere-100k.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "large-sphere-100k.stl"), bigSphereStl);
+  const overCeiling = await callTolerant("check_mesh_health", { path: bigSphereStl });
+  assert(
+    overCeiling.error && /triangle ceiling/.test(overCeiling.error),
+    `check_mesh_health refuses an over-ceiling mesh with the actionable error (got: ${overCeiling.error})`
+  );
+  const decHealth = await call("check_mesh_health", { path: bigSphereStl, autoDecimate: true });
+  assert(
+    decHealth.decimated && decHealth.decimated.fromTriangles === 99904 &&
+      Math.abs(decHealth.decimated.toTriangles - 1000) / 1000 < 0.1,
+    `check_mesh_health{autoDecimate} reports the resampling actually applied (got: ${JSON.stringify(decHealth.decimated)})`
+  );
+  assert(
+    decHealth.components[0].requiredTolerance === 1e-6,
+    `the decimated sphere still closes at the tightest rung (got: ${JSON.stringify(decHealth.components[0])})`
+  );
+  assert(
+    decHealth.warnings.some((w) => /auto-decimated mesh.*99904 → 1000/.test(w)),
+    "the report warns it describes the decimated mesh, never silently"
+  );
+  // Decimation introduces non-manifold/sliver artifacts that break the
+  // per-triangle solidify (verified live: closes at 1e-6 yet heals to
+  // volume exactly 0) — the report must show the degenerate heal honestly,
+  // and promote must refuse to write it rather than emit a wrong solid. If
+  // a future meshio++ decimates cleanly, these fail: revisit, don't delete.
+  const decComponent = decHealth.components[0];
+  assert(
+    decComponent.nonManifoldEdgeCount > 0 && decComponent.healedVolume === 0 && decComponent.volumeDeltaPct === -100,
+    `the degenerate heal is reported as facts, not a fabricated volume (got: ${JSON.stringify(decComponent)})`
+  );
+  const decPromotedStep = path.join(dir, "dec-promoted.step");
+  const decPromoted = await callTolerant("promote_mesh_to_brep", { path: bigSphereStl, outputPath: decPromotedStep, autoDecimate: true });
+  assert(
+    decPromoted.error && /degenerate/.test(decPromoted.error),
+    `promote_mesh_to_brep{autoDecimate} refuses a degenerately-healed mesh instead of writing a wrong solid (got: ${decPromoted.error})`
+  );
+  assert(!fs.existsSync(decPromotedStep), "no output file is written for the refused promotion");
 
   // promote_mesh_to_brep (roadmap "Mesh -> B-rep promotion", Phase 2 — a
   // one-shot EXPORT to a NEW file, never an in-place reclassification).
@@ -2363,6 +2477,50 @@ try {
   assert(dxfDimResult.dimensionCount === 1, `export_svg_silhouette(format:"dxf") bakes dimensions too (got ${dxfDimResult.dimensionCount})`);
   const dxfDimText = fs.readFileSync(dxfDim, "utf8");
   assert(dxfDimText.includes("DIMENSIONS") && dxfDimText.includes("TEXT") && dxfDimText.includes("10 mm [10 ±0.05]"), "the DXF drawing carries DIMENSIONS-layer TEXT entities with the toleranced label");
+
+  // pin_annotation (Tier 2 "Headless annotation authoring"): the headless
+  // counterpart of the Measure panel's Pin button — create + delete over the
+  // annotations sidecar, kernel-free. Pinned via the TOOL here (not a
+  // hand-written sidecar like the block above), then baked by the same
+  // drawing export — the end-to-end headless dimensioned drawing this item
+  // exists to unlock.
+  const pinModel = path.join(dir, "cube-for-pin.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), pinModel);
+  const pinned = await call("pin_annotation", {
+    path: pinModel,
+    tool: "distance",
+    text: "10 mm",
+    anchorPoint: [5, 0, 5],
+    linePoints: [[0, 0, 0], [10, 0, 0]],
+    volumes: ["node-0"],
+  });
+  assert(
+    typeof pinned.pinned?.id === "string" && pinned.pinned.tool === "distance" && pinned.removed === null,
+    `pin_annotation pins and returns the annotation with a server id (got: ${JSON.stringify(pinned.pinned)})`
+  );
+  const pinSvg = path.join(dir, "cube-pin.svg");
+  const pinSvgResult = await call("export_svg_silhouette", { path: pinModel, outputPath: pinSvg, view: "FRONT" });
+  assert(pinSvgResult.dimensionCount === 1, `a tool-pinned annotation bakes as a dimension (got ${JSON.stringify(pinSvgResult.dimensionCount)})`);
+  const pinState = await call("get_state", { path: pinModel });
+  assert(
+    pinState.annotations.length === 1 && pinState.annotations[0].id === pinned.pinned.id,
+    "get_state reflects the tool-pinned annotation"
+  );
+  const unpinned = await call("pin_annotation", { path: pinModel, id: pinned.pinned.id, remove: true });
+  assert(unpinned.removed === pinned.pinned.id && unpinned.pinned === null, "pin_annotation removes by id");
+  const pinStateAfter = await call("get_state", { path: pinModel });
+  assert(pinStateAfter.annotations.length === 0, "the sidecar is empty after removal");
+  // Structural misuse fails fast; unknown ids error rather than silently no-op.
+  const badPin = await callTolerant("pin_annotation", {
+    path: pinModel, tool: "volume", text: "x", anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [1, 0, 0]], volumes: ["node-0"],
+  });
+  assert(badPin.error && /tool must be/i.test(badPin.error), `pin_annotation rejects a bad tool kind (got: ${JSON.stringify(badPin)})`);
+  const noAnchor = await callTolerant("pin_annotation", {
+    path: pinModel, tool: "distance", text: "x", anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [1, 0, 0]],
+  });
+  assert(noAnchor.error && /at least one anchor/i.test(noAnchor.error), "pin_annotation refuses an anchor-less pin");
+  const unknownRemove = await callTolerant("pin_annotation", { path: pinModel, id: "ann-nope", remove: true });
+  assert(unknownRemove.error && /no annotation/i.test(unknownRemove.error), "pin_annotation errors on removing an unknown id");
 
   // An unknown view name falls back with a warning rather than throwing —
   // the same never-fail-on-ambiguous-input convention `unit` uses.
@@ -2734,6 +2892,58 @@ try {
     "an export with no parts assigned stays on the plain writer (no XCAF document-management entities)"
   );
 
+  // Tier 0 Phase 1 — the `bakedThrough` watermark end to end through the real
+  // kernel: export a file with an edit baked in (exactly what save-in-place
+  // writes), attach the sidecar WITH the watermark (exactly what save-in-place
+  // persists), and confirm the reopened document replays only the tail — no
+  // double-apply, same geometry, watermark visible in get_state. Uses BREP as
+  // the baked format (no unit header to interfere, full-precision round trip).
+  const watermarkModel = path.join(dir, "bull-for-watermark-test.stp");
+  fs.copyFileSync(FIXTURE, watermarkModel);
+  await call("apply_edit_ops", {
+    path: watermarkModel,
+    ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }],
+  });
+  const watermarkBefore = await call("load_model", { path: watermarkModel });
+  assert(watermarkBefore.solids.length === 2, `edited model has 2 solids before baking (got ${watermarkBefore.solids.length})`);
+  const watermarkVolume = (await call("get_mass_properties", { path: watermarkModel })).volume;
+  const watermarkBaked = path.join(dir, "watermark-baked.brep");
+  await call("export_brep", { path: watermarkModel, targetFormat: "brep", outputPath: watermarkBaked });
+  // Simulate the save-in-place sidecar write: same op list, watermark set.
+  const watermarkSidecar = JSON.parse(fs.readFileSync(`${watermarkModel}.edits.json`, "utf8"));
+  watermarkSidecar.bakedThrough = watermarkSidecar.ops.length;
+  fs.writeFileSync(`${watermarkBaked}.edits.json`, JSON.stringify(watermarkSidecar, null, 2));
+  const watermarkReloaded = await call("load_model", { path: watermarkBaked });
+  assert(
+    watermarkReloaded.solids.length === 2,
+    `reopening the baked file replays the tail only — still 2 solids, not a double-applied 3 (got ${watermarkReloaded.solids.length})`
+  );
+  assert(
+    !watermarkReloaded.warnings.some((w) => /did NOT apply/.test(w)),
+    "reopening the baked file reports no skipped persisted ops"
+  );
+  const watermarkReloadedVolume = (await call("get_mass_properties", { path: watermarkBaked })).volume;
+  assert(
+    Math.abs(watermarkReloadedVolume / watermarkVolume - 1) < 1e-6,
+    `baked file's volume matches the pre-bake edited model (BREP round-trips at full precision): ${watermarkReloadedVolume.toFixed(6)} vs ${watermarkVolume.toFixed(6)}`
+  );
+  const watermarkState = await call("get_state", { path: watermarkBaked });
+  assert(watermarkState.bakedThrough === 1 && watermarkState.edits.length === 1, `get_state exposes the full history plus the watermark (got bakedThrough=${watermarkState.bakedThrough}, edits=${watermarkState.edits.length})`);
+  // A further edit appends past the watermark and replays cleanly.
+  const watermarkAppend = await call("apply_edit_ops", {
+    path: watermarkBaked,
+    ops: [{ op: "translate", targets: ["solid-1"], vec: [1, 0, 0] }],
+  });
+  assert(watermarkAppend.applied === 1 && watermarkAppend.stackLength === 2, `appending past the watermark applies (got applied=${watermarkAppend.applied}, stack=${watermarkAppend.stackLength})`);
+  const watermarkAfterAppend = JSON.parse(fs.readFileSync(`${watermarkBaked}.edits.json`, "utf8"));
+  assert(watermarkAfterAppend.bakedThrough === 1 && watermarkAfterAppend.ops.length === 2, "appending preserves the watermark and the full list");
+  // Removing a baked op is refused, not silently mis-replayed.
+  const watermarkRemove = await callTolerant("remove_edit_op", { path: watermarkBaked, index: 0 });
+  assert(
+    watermarkRemove.error !== undefined && /baked prefix/.test(watermarkRemove.error),
+    "remove_edit_op refuses an index inside the baked prefix with a clear error"
+  );
+
   // Regression guard: does the meshing-input STEP path (export_mesh/
   // generate_mesh's internal re-export, NOT export_brep above) stay scale-
   // correct now that STEP header-patching exists? Verified against the live
@@ -2962,6 +3172,29 @@ try {
         `${id} embeds no provenance block — the documented coverage gap, pinned so a future meshio++ release that closes it is noticed`
       );
     }
+
+    // Tier 1 "meshio++ provenance, read and write" — the conversion chain
+    // lands as Note lines where the container has a header slot, and
+    // load_model reads the block back.
+    {
+      const out = path.join(dir, "prov-notes.vtu");
+      await call("export_mesh", { path: vtkModel, format: "vtu", outputPath: out, options: { sizeMax: 0.5 } });
+      const text = fs.readFileSync(out, "latin1");
+      assert(
+        text.includes("Note [meshing-engine]") && text.includes("Note [mesh-size]") && text.includes("sizeMax=0.5"),
+        "a meshio-routed export records the conversion chain as Note lines (engine, sizes)"
+      );
+      assert(
+        text.includes("Note [edits-baked]"),
+        "the export records whether edits were baked"
+      );
+      const reloaded = await call("load_model", { path: out });
+      const provWarning = reloaded.warnings.find((w) => w.startsWith("Provenance block:"));
+      assert(
+        provWarning && /meshing-engine/.test(provWarning) && /informational only/.test(provWarning),
+        `load_model surfaces the provenance block as an informational warning (got: ${JSON.stringify(reloaded.warnings)})`
+      );
+    }
   }
 
   // Richer meshio++ import visibility (roadmap item, closed): a real MED
@@ -3021,6 +3254,40 @@ try {
   const medMeshed = await call("generate_mesh", { path: medFixture, options: { sizeMax: 0.5 } });
   assert(medMeshed.nodeCount > 0 && medMeshed.elementCount > 0, `generate_mesh still works on the MED source: ${medMeshed.nodeCount} nodes, ${medMeshed.elementCount} elements`);
   assert(fs.statSync(path.join(dir, "tet.h5")).size > 0, "HDF5 companion has content");
+
+  // inspect_meshio_fields (Tier 2 symmetry item 4): the read path the
+  // colour-by-field picker uses, headlessly — summaries only, never values.
+  const medFields = await call("inspect_meshio_fields", { path: medFixture });
+  assert(medFields.supported === true, "inspect_meshio_fields supports a meshio source");
+  const tempField = medFields.arrays.find((a) => a.name === "Temperature");
+  assert(
+    tempField && tempField.location === "point" && tempField.numComponents === 1 && tempField.max > tempField.min,
+    `inspect_meshio_fields reports Temperature as a scalar point field with a real range (got: ${JSON.stringify(tempField)})`
+  );
+  assert(
+    medFields.arrays.some((a) => a.location === "cell"),
+    `inspect_meshio_fields also reports cell fields (got: ${JSON.stringify(medFields.arrays.map((a) => a.name))})`
+  );
+  // A multi-component array reports its width — the case the picker disables
+  // up front — rather than erroring.
+  const vecFixture = path.join(dir, "vector-field-tets.med");
+  fs.copyFileSync(path.join(ROOT, "examples", "MED", "vector-field-tets.med"), vecFixture);
+  const vecFields = await call("inspect_meshio_fields", { path: vecFixture });
+  const gradient = vecFields.arrays.find((a) => a.name === "Temperature:gradient");
+  assert(
+    gradient && gradient.numComponents === 3,
+    `inspect_meshio_fields reports the 3-component gradient with its width (got: ${JSON.stringify(gradient)})`
+  );
+  const fieldsBrepRejected = await call("inspect_meshio_fields", { path: model });
+  assert(
+    fieldsBrepRejected.supported === false,
+    "inspect_meshio_fields rejects a B-rep source (exact geometry, no result fields)"
+  );
+  const fieldsStlRejected = await call("inspect_meshio_fields", { path: cubeStl });
+  assert(
+    fieldsStlRejected.supported === false,
+    "inspect_meshio_fields rejects a mesh-parser source (no meshio++ mesh model)"
+  );
 
   // Gapped-node-id Kratos MDPA import (examples/MDPA/gapped-ids.mdpa — see its
   // README). This is THE regression the @meshioplusplus/wasm 9.13.0→9.14.0
@@ -4040,6 +4307,21 @@ try {
   const ftwMedOut = path.join(dir, "ftetwild.med");
   await call("export_mesh", { path: cleanCubeStl, format: "med", outputPath: ftwMedOut, options: { engine: "ftetwild" } });
   assert(fs.statSync(ftwMedOut).size > 0, "export_mesh med (via meshio++) succeeds under engine:\"ftetwild\"");
+
+  // 6b. The threaded-through fTetWild flags (roadmap "Wire fTetWild's four
+  // unspent parameters", closed): manifoldSurface keeps a real mesh real,
+  // coarsen measurably reduces element count on the same input, and the
+  // flags ride the standard options path (no new tool params needed).
+  const ftwManifold = await call("generate_mesh", { path: cleanCubeStl, options: { engine: "ftetwild", ftetwildManifoldSurface: true } });
+  assert(
+    ftwManifold.nodeCount > 0 && ftwManifold.elementCount > 0 && ftwManifold.engineUsed === "ftetwild",
+    `generate_mesh(engine:"ftetwild", manifoldSurface:true) still meshes (got ${ftwManifold.nodeCount} nodes, ${ftwManifold.elementCount} elements)`
+  );
+  const ftwCoarse = await call("generate_mesh", { path: cleanCubeStl, options: { engine: "ftetwild", ftetwildCoarsen: true } });
+  assert(
+    ftwCoarse.elementCount > 0 && ftwCoarse.elementCount < ftwOnClean.elementCount,
+    `generate_mesh(engine:"ftetwild", coarsen:true) yields fewer elements than without (${ftwCoarse.elementCount} vs ${ftwOnClean.elementCount})`
+  );
 
   // 7. .geo_unrolled has nothing to represent for an fTetWild-meshed
   // document (no Gmsh geometry-import step ever ran) — a clean, actionable
