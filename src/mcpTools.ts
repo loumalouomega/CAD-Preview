@@ -61,7 +61,7 @@ import { validateSelectorQuery } from "./selectorQuery";
 import { envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./meshExportFormats";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
-import type { Part, Annotation, ConstructionPlane } from "./protocol";
+import type { Part, Annotation, ConstructionPlane, MeasureTool } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, computeBom, MassProperties } from "./massProperties";
 import type {
@@ -463,7 +463,7 @@ export function describeCapabilities() {
       ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups, same as .stl. Still not exportable headless as a SOURCE DOCUMENT (export_brep/export_mesh always target a B-rep or a generated FE mesh, never these formats' own native representation) — edit ops can still be written to the sidecar for the extension to replay.",
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written; edits/parts/annotations/construction planes/mesh options persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open.",
-      "get_state's annotations are read-only headless (pinned interactively from the webview's Measure tool, B-rep sources only) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
+      "get_state's annotations are pinned interactively (Measure tool) or headlessly (pin_annotation) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
       "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first three rungs of the Selector-synthesis ladder. An optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts; one leaf or an AND-list) plus rank ({by:'area',order:'max'|'min',n}) narrows the bucket without baking in coordinates (e.g. the largest endCap face) — or {version: 1, source: {kind: 'scene', filter?, rank?}} drops the bucket anchor entirely (at least one of filter/rank required), e.g. the largest planar face in the model, in a single replay. Each returned bucket id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance; the scene path returns no matches — the exact facts are the oracle); unresolved names reference ids with no confident match, an induced selection of zero is an honest empty (never a fallback), and bindable:false means the producing op was a pattern instance (use a scene query to match across all copies instead).",
       "synthesize_selector (B-rep sources only) is resolve_selector's inverse: given a picked entityId plus its producing op/role, it induces the constant-free-first query naming exactly that entity (qualitative leaves before the exact normal, area literals last) and verifies it live (exact re-execution plus centreDistance ~ 0) before returning — query:null with a reason means nothing exact exists, never a guess.",
     ],
@@ -2433,11 +2433,9 @@ export async function getState(params: { path: string }) {
       error: errors.get(v.name) ?? null,
     })),
     parts,
-    // Read-only: annotations are pinned interactively from the Measure tool
-    // (roadmap "Persisted, topology-anchored annotations", closed) — there's
-    // no MCP tool to create/delete one, only to see what a human pinned and
-    // have it rebound correctly across the agent's own topology-changing ops
-    // (see `maybeRebindParts`).
+    // Pinned interactively (Measure tool) or headlessly (pin_annotation) —
+    // see `get_state` via `readAnnotations`; topology-changing ops rebind
+    // their anchor ids (see `maybeRebindParts`).
     annotations,
     // Writable, unlike annotations: an agent that has just called `inspect`
     // holds a face's `normal` and `planeOrigin`, and storing that as a named
@@ -3524,6 +3522,141 @@ export async function setPlane(params: {
     "A construction plane stores resolved vectors, not a live face reference — it is deliberately NOT rebound when a later op renumbers face ids, so it stays where it was put."
   );
   return { plane, planes: summarize(), warnings };
+}
+
+// ---------------------------------------------------------------------------
+// pin_annotation
+
+const MEASURE_TOOLS: readonly MeasureTool[] = ["distance", "edgeLength", "angle", "radius"];
+// B-rep ids (solid/face/edge/point-N) plus mesh ids (node-N volumes,
+// node-N/face-K facets) — the Pin button works on any source kind, so the
+// headless tool must accept every id the webview can produce, not just B-rep.
+const ANNOTATION_ID_PATTERN = /^(solid|face|edge|point|node)-\d+(\/face-\d+)?$/;
+
+/**
+ * `pin_annotation` — create or remove a persisted measurement annotation
+ * (`<model>.annotations.json`) headlessly. The interactive Measure tool's Pin
+ * button was the only author; `get_state`'s annotations were read-only
+ * headless until now. Kernel-free (no `ctx` — pins anchor ids, never geometry;
+ * the webview's own live `detached` check plus the existing op-change rebind
+ * in `maybeRebindParts` stay the correctness backstops, so nothing here touches
+ * the pipeline). This is also what lets `export_technical_drawing` produce a
+ * dimensioned drawing end-to-end headlessly, since that tool bakes whatever
+ * pins the sidecar holds.
+ *
+ * Create + delete only (roadmap Tier 2 "Headless annotation authoring"): an
+ * update is delete + re-pin, and the sidecar is a plain array with no keyed
+ * map to make an update atomic. Structural misuse (bad tool/text/anchor/
+ * linePoints/tolerance shape) throws fail-fast, like `set_plane`'s
+ * zero-normal; an anchor id that doesn't resolve is accepted with a warning
+ * (the Parts unresolved-id precedent — a pin across a renumbering window must
+ * stay writable, and `detached` renders honestly when nothing resolves).
+ */
+export async function pinAnnotation(params: {
+  path: string;
+  id?: string;
+  remove?: boolean;
+  tool?: string;
+  text?: string;
+  anchorPoint?: number[];
+  linePoints?: number[][];
+  volumes?: string[];
+  surfaces?: string[];
+  lines?: string[];
+  points?: string[];
+  tolerance?: { nominal: number; plus: number; minus?: number; measured: number };
+  label?: string;
+}) {
+  const modelPath = params.path;
+  requireRoute(modelPath);
+  const annotations = await readAnnotations(modelPath);
+  const warnings: string[] = [];
+
+  if (params.remove) {
+    if (!params.id) throw new Error("remove requires the annotation's id.");
+    const index = annotations.findIndex((a) => a.id === params.id);
+    if (index === -1) throw new Error(`No annotation with id "${params.id}".`);
+    annotations.splice(index, 1);
+    await writeAnnotations(modelPath, annotations);
+    return { annotations, pinned: null, removed: params.id, warnings };
+  }
+
+  if (typeof params.tool !== "string" || !(MEASURE_TOOLS as readonly string[]).includes(params.tool)) {
+    throw new Error(`tool must be one of ${MEASURE_TOOLS.join("/")}.`);
+  }
+  const tool = params.tool as MeasureTool;
+  if (typeof params.text !== "string") throw new Error("text must be the frozen readout string (e.g. \"12.5 mm\").");
+  const asVec = (v: unknown, label: string): [number, number, number] => {
+    if (!Array.isArray(v) || v.length !== 3 || !v.every((n) => typeof n === "number" && Number.isFinite(n))) {
+      throw new Error(`${label} must be three finite numbers.`);
+    }
+    return [v[0], v[1], v[2]];
+  };
+  const anchorPoint = asVec(params.anchorPoint, "anchorPoint");
+  const linePoints = (params.linePoints ?? []).map((p, i) => asVec(p, `linePoints[${i}]`));
+  if (linePoints.length !== 0 && linePoints.length !== 2) {
+    throw new Error("linePoints must hold 0 or 2 points (2 for distance/angle, 0 for edgeLength/radius).");
+  }
+  if ((tool === "distance" || tool === "angle") && linePoints.length !== 2) {
+    throw new Error(`tool "${tool}" measures between two picks — linePoints must hold exactly 2 points.`);
+  }
+  if ((tool === "edgeLength" || tool === "radius") && linePoints.length !== 0) {
+    throw new Error(`tool "${tool}" measures a single entity — linePoints must be empty.`);
+  }
+  const buckets: Array<[string, string[] | undefined]> = [
+    ["volumes", params.volumes],
+    ["surfaces", params.surfaces],
+    ["lines", params.lines],
+    ["points", params.points],
+  ];
+  const anchors: { volumes: string[]; surfaces: string[]; lines: string[]; points: string[] } = {
+    volumes: [], surfaces: [], lines: [], points: [],
+  };
+  for (const [bucket, ids] of buckets) {
+    for (const id of ids ?? []) {
+      if (typeof id !== "string" || !ANNOTATION_ID_PATTERN.test(id)) {
+        throw new Error(`Anchor "${id}" is not a resolvable entity id (expected solid-N/face-N/edge-N/point-N, or node-N[/face-K] on a mesh source).`);
+      }
+      (anchors as unknown as Record<string, string[]>)[bucket].push(id);
+    }
+  }
+  if (Object.values(anchors).every((ids) => ids.length === 0)) {
+    throw new Error("A pin needs at least one anchor id — with none it would be detached on arrival.");
+  }
+  let tolerance: Annotation["tolerance"];
+  if (params.tolerance !== undefined) {
+    const t = params.tolerance;
+    const fields = [t.nominal, t.plus, t.minus ?? t.plus, t.measured];
+    if (!fields.every((v) => typeof v === "number" && Number.isFinite(v))) {
+      throw new Error("tolerance needs finite nominal/plus/measured (minus defaults to plus).");
+    }
+    if (t.plus < 0 || (t.minus ?? t.plus) < 0) throw new Error("tolerance allowances are magnitudes, not signed deviations — pass positive numbers.");
+    tolerance = { nominal: t.nominal, plus: t.plus, minus: t.minus ?? t.plus, measured: t.measured };
+  }
+  // Same id scheme as the interactive Pin button (`ann-<ts>-<ctr>`), with a
+  // random suffix headlessly; regenerate on the negligible collision.
+  let id = `ann-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  while (annotations.some((a) => a.id === id)) {
+    id = `ann-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  const pinned: Annotation = {
+    id,
+    tool,
+    label: typeof params.label === "string" && params.label ? params.label : undefined,
+    text: params.text,
+    anchorPoint,
+    linePoints,
+    ...anchors,
+    tolerance,
+  };
+  annotations.push(pinned);
+  await writeAnnotations(modelPath, annotations);
+  warnings.push(
+    "Anchors are stored as positional entity ids and are NOT verified against live geometry here — " +
+    "if a later op renumbers them, the existing rebind pass settles them (see warnings on apply_edit_ops), " +
+    "and the webview reports an unresolvable pin as detached rather than pointing at the wrong geometry."
+  );
+  return { annotations, pinned, removed: null, warnings };
 }
 
 // ---------------------------------------------------------------------------

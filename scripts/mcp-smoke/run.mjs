@@ -231,8 +231,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 47, `tools/list exposes 47 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields"]) {
+  assert(tools.length === 48, `tools/list exposes 48 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -2477,6 +2477,50 @@ try {
   assert(dxfDimResult.dimensionCount === 1, `export_svg_silhouette(format:"dxf") bakes dimensions too (got ${dxfDimResult.dimensionCount})`);
   const dxfDimText = fs.readFileSync(dxfDim, "utf8");
   assert(dxfDimText.includes("DIMENSIONS") && dxfDimText.includes("TEXT") && dxfDimText.includes("10 mm [10 ±0.05]"), "the DXF drawing carries DIMENSIONS-layer TEXT entities with the toleranced label");
+
+  // pin_annotation (Tier 2 "Headless annotation authoring"): the headless
+  // counterpart of the Measure panel's Pin button — create + delete over the
+  // annotations sidecar, kernel-free. Pinned via the TOOL here (not a
+  // hand-written sidecar like the block above), then baked by the same
+  // drawing export — the end-to-end headless dimensioned drawing this item
+  // exists to unlock.
+  const pinModel = path.join(dir, "cube-for-pin.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), pinModel);
+  const pinned = await call("pin_annotation", {
+    path: pinModel,
+    tool: "distance",
+    text: "10 mm",
+    anchorPoint: [5, 0, 5],
+    linePoints: [[0, 0, 0], [10, 0, 0]],
+    volumes: ["node-0"],
+  });
+  assert(
+    typeof pinned.pinned?.id === "string" && pinned.pinned.tool === "distance" && pinned.removed === null,
+    `pin_annotation pins and returns the annotation with a server id (got: ${JSON.stringify(pinned.pinned)})`
+  );
+  const pinSvg = path.join(dir, "cube-pin.svg");
+  const pinSvgResult = await call("export_svg_silhouette", { path: pinModel, outputPath: pinSvg, view: "FRONT" });
+  assert(pinSvgResult.dimensionCount === 1, `a tool-pinned annotation bakes as a dimension (got ${JSON.stringify(pinSvgResult.dimensionCount)})`);
+  const pinState = await call("get_state", { path: pinModel });
+  assert(
+    pinState.annotations.length === 1 && pinState.annotations[0].id === pinned.pinned.id,
+    "get_state reflects the tool-pinned annotation"
+  );
+  const unpinned = await call("pin_annotation", { path: pinModel, id: pinned.pinned.id, remove: true });
+  assert(unpinned.removed === pinned.pinned.id && unpinned.pinned === null, "pin_annotation removes by id");
+  const pinStateAfter = await call("get_state", { path: pinModel });
+  assert(pinStateAfter.annotations.length === 0, "the sidecar is empty after removal");
+  // Structural misuse fails fast; unknown ids error rather than silently no-op.
+  const badPin = await callTolerant("pin_annotation", {
+    path: pinModel, tool: "volume", text: "x", anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [1, 0, 0]], volumes: ["node-0"],
+  });
+  assert(badPin.error && /tool must be/i.test(badPin.error), `pin_annotation rejects a bad tool kind (got: ${JSON.stringify(badPin)})`);
+  const noAnchor = await callTolerant("pin_annotation", {
+    path: pinModel, tool: "distance", text: "x", anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [1, 0, 0]],
+  });
+  assert(noAnchor.error && /at least one anchor/i.test(noAnchor.error), "pin_annotation refuses an anchor-less pin");
+  const unknownRemove = await callTolerant("pin_annotation", { path: pinModel, id: "ann-nope", remove: true });
+  assert(unknownRemove.error && /no annotation/i.test(unknownRemove.error), "pin_annotation errors on removing an unknown id");
 
   // An unknown view name falls back with a warning rather than throwing —
   // the same never-fail-on-ambiguous-input convention `unit` uses.

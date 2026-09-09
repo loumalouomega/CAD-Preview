@@ -46,6 +46,7 @@ import {
   setPart,
   setPlane,
   setMeshOptions,
+  pinAnnotation,
   type Pipeline,
   type ToolContext,
 } from "./mcpTools";
@@ -2258,6 +2259,110 @@ describe("set_plane", () => {
     const state = await getState({ path: stpModel });
     expect(state.planes).toHaveLength(1);
     expect(state.planes[0].point).toEqual([1, 2, 3]);
+  });
+});
+
+describe("pin_annotation", () => {
+  const distancePin: {
+    tool: string;
+    text: string;
+    anchorPoint: number[];
+    linePoints: number[][];
+    surfaces: string[];
+  } = {
+    tool: "distance",
+    text: "94.5 mm",
+    anchorPoint: [0, 0, 0],
+    linePoints: [[0, 0, 0], [94.5, 0, 0]],
+    surfaces: ["face-0", "face-1"],
+  };
+
+  it("pins a measurement and persists it to the sidecar", async () => {
+    const result = await pinAnnotation({ path: stpModel, ...distancePin });
+    expect(result.pinned).toMatchObject({ tool: "distance", text: "94.5 mm" });
+    expect(result.pinned!.id).toMatch(/^ann-/);
+    expect(result.removed).toBeNull();
+    const onDisk = await readAnnotations(stpModel);
+    expect(onDisk).toHaveLength(1);
+    expect(onDisk[0]).toMatchObject({ tool: "distance", surfaces: ["face-0", "face-1"] });
+    const state = await getState({ path: stpModel });
+    expect(state.annotations).toHaveLength(1);
+  });
+
+  it("pins a toleranced measurement, defaulting minus to plus", async () => {
+    const result = await pinAnnotation({
+      path: stpModel,
+      tool: "edgeLength",
+      text: "12.5 mm",
+      anchorPoint: [1, 2, 3],
+      lines: ["edge-3"],
+      tolerance: { nominal: 12.5, plus: 0.05, measured: 12.52 },
+    });
+    expect(result.pinned!.tolerance).toEqual({ nominal: 12.5, plus: 0.05, minus: 0.05, measured: 12.52 });
+  });
+
+  it("removes a pin by id, and errors on an unknown id or a missing one", async () => {
+    const created = await pinAnnotation({ path: stpModel, ...distancePin });
+    const removed = await pinAnnotation({ path: stpModel, id: created.pinned!.id, remove: true });
+    expect(removed.removed).toBe(created.pinned!.id);
+    expect(removed.pinned).toBeNull();
+    expect(await readAnnotations(stpModel)).toHaveLength(0);
+    await expect(pinAnnotation({ path: stpModel, id: "ann-nope", remove: true })).rejects.toThrow(/no annotation/i);
+    await expect(pinAnnotation({ path: stpModel, remove: true })).rejects.toThrow(/requires the annotation's id/i);
+  });
+
+  it("rejects structural misuse fail-fast", async () => {
+    const base = { path: stpModel, ...distancePin };
+    await expect(pinAnnotation({ ...base, tool: "volume" })).rejects.toThrow(/tool must be/i);
+    await expect(pinAnnotation({ ...base, text: 42 as unknown as string })).rejects.toThrow(/text must be/i);
+    await expect(pinAnnotation({ ...base, anchorPoint: [0, 0] })).rejects.toThrow(/anchorPoint must be/i);
+    await expect(pinAnnotation({ ...base, linePoints: [[0, 0, 0]] })).rejects.toThrow(/0 or 2 points/i);
+    await expect(pinAnnotation({ ...base, linePoints: [] })).rejects.toThrow(/exactly 2 points/i);
+    await expect(pinAnnotation({
+      path: stpModel, tool: "radius", text: "R 3", anchorPoint: [0, 0, 0], lines: ["edge-1"], linePoints: [[0, 0, 0], [1, 1, 1]],
+    })).rejects.toThrow(/must be empty/i);
+    await expect(pinAnnotation({
+      path: stpModel, tool: "distance", text: "x", anchorPoint: [0, 0, 0], surfaces: ["face-9"],
+    })).rejects.toThrow(/exactly 2 points/i);
+    await expect(pinAnnotation({
+      path: stpModel, tool: "distance", text: "x", anchorPoint: [0, 0, 0],
+      linePoints: [[0, 0, 0], [1, 0, 0]], surfaces: ["nope"],
+    })).rejects.toThrow(/not a resolvable entity id/i);
+    await expect(pinAnnotation({
+      path: stpModel, tool: "distance", text: "x", anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [1, 0, 0]],
+    })).rejects.toThrow(/at least one anchor/i);
+    await expect(pinAnnotation({
+      ...base, tolerance: { nominal: 10, plus: -0.05, measured: 10 },
+    })).rejects.toThrow(/magnitudes/i);
+    expect(await readAnnotations(stpModel)).toHaveLength(0); // nothing persisted on any rejection
+  });
+
+  it("accepts shape-valid but unresolvable anchors with a warning, never a silent drop", async () => {
+    const result = await pinAnnotation({
+      path: stpModel,
+      tool: "distance",
+      text: "5 mm",
+      anchorPoint: [0, 0, 0],
+      linePoints: [[0, 0, 0], [5, 0, 0]],
+      surfaces: ["face-999"],
+    });
+    expect(result.pinned!.surfaces).toEqual(["face-999"]);
+    expect(result.warnings.join(" ")).toMatch(/not verified against live geometry/i);
+    expect(await readAnnotations(stpModel)).toHaveLength(1);
+  });
+
+  it("accepts mesh-source ids (node-N volumes, node-N/face-K facets)", async () => {
+    const result = await pinAnnotation({
+      path: stlModel,
+      tool: "distance",
+      text: "10 mm",
+      anchorPoint: [5, 0, 5],
+      linePoints: [[0, 0, 0], [10, 0, 0]],
+      volumes: ["node-0"],
+      surfaces: ["node-0/face-3"],
+    });
+    expect(result.pinned!.volumes).toEqual(["node-0"]);
+    expect(result.pinned!.surfaces).toEqual(["node-0/face-3"]);
   });
 });
 

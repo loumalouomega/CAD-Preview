@@ -53,11 +53,9 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
 *Admission: one half of a capability ships and the other does not, while the computational half is already pure and reusable. This codebase names the convention itself ("headless and interactive capabilities stay in sync"), and the Standard Parts panel closed one of these already.*
 
-4. **Headless annotation authoring** (**S–M**). `describeCapabilities` states it: *"get_state's annotations are read-only headless"*. `writeAnnotations` is already imported into `mcpTools.ts` but only reached from the rebinding path — there is no `pin_annotation`. The sidecar, the rebinder (`src/entityRebind.ts`) and the tolerance-band model (`src/toleranceBand.ts`) all exist. **This is also what would let `export_technical_drawing` produce a dimensioned drawing end-to-end headlessly**, since it bakes whatever pins the sidecar holds (see the Non-goal correction below) — today that requires a human to pin them in the GUI first.
+4. **BOM "Copy" button** (**S**). `bomTsv` (`src/bomExport.ts`) is pure and documented as the ready-to-paste spreadsheet handoff; nothing in the webview imports it. Drop it under the existing Parts section.
 
-5. **BOM "Copy" button** (**S**). `bomTsv` (`src/bomExport.ts`) is pure and documented as the ready-to-paste spreadsheet handoff; nothing in the webview imports it. Drop it under the existing Parts section.
-
-6. **Primitive-recognition panel** (**M**). `recognize_primitives` / `decompose_to_primitives` are MCP-only, while the *mesh*-side counterpart already ships interactively as `src/webview/regionFitPanel.ts` — so this is the missing B-rep half of a pattern this codebase already committed to. `primitiveRecognition.ts` / `primitiveReport.ts` / `primitiveEmit.ts` are pure and unit-tested.
+5. **Primitive-recognition panel** (**M**). `recognize_primitives` / `decompose_to_primitives` are MCP-only, while the *mesh*-side counterpart already ships interactively as `src/webview/regionFitPanel.ts` — so this is the missing B-rep half of a pattern this codebase already committed to. `primitiveRecognition.ts` / `primitiveReport.ts` / `primitiveEmit.ts` are pure and unit-tested.
 
 ### Tier 3 — New domain capability
 
@@ -123,7 +121,7 @@ Three groups, three different revival rules. Each says what would change our min
 
   **What routed around it, and what that leaves.** `export_svg_silhouette` (`src/silhouetteEdges.ts`) and then `export_technical_drawing` (`src/hiddenLineRemoval.ts`) both ship on triangle adjacency, calling no OCCT hidden-line API at all — so hidden-line *drawings*, visible edges solid and occluded runs dashed, exist today for B-rep **and** mesh sources alike, which the kernel path never could have handled. A local sibling project, HCAD, independently arrived at the same shape.
 
-  **Correction, recorded because this entry was stale for a while:** it used to say dimensions were also out of scope. They are not. `exportTechnicalDrawingTool` is a one-line wrapper over `exportSvgSilhouetteTool`, which reads `<model>.annotations.json` unconditionally, projects every pinned measurement through the export's own view basis, and returns `dimensionCount` — in SVG *and* on DXF's own `DIMENSIONS` layer, tolerance bands included. What actually remains unshipped is **multi-view sheet layout** (now Tier 3 item 11) and **authoring pins headlessly** (Tier 2 item 7).
+  **Correction, recorded because this entry was stale for a while:** it used to say dimensions were also out of scope. They are not. `exportTechnicalDrawingTool` is a one-line wrapper over `exportSvgSilhouetteTool`, which reads `<model>.annotations.json` unconditionally, projects every pinned measurement through the export's own view basis, and returns `dimensionCount` — in SVG *and* on DXF's own `DIMENSIONS` layer, tolerance bands included. What actually remains unshipped is **multi-view sheet layout** (now Tier 3 item 11).
 
 - **Glyph → `TopoDS_Shape` via OCCT fonts.** Every `Font_*` class is red: `Font_BRepFont`, `Font_BRepTextBuilder`, `Font_FTFont`, `Font_FTLibrary`, `Font_FontMgr`, `Font_SystemFont`, `Font_TextFormatter`. There is no path from a font file to a shape inside this build.
 
