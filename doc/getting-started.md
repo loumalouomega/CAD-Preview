@@ -519,6 +519,7 @@ To generate a mesh:
 | **📤 Export** | Mesh with the current options (at the chosen export unit) and save the result in the format picked above, via a Save dialog (independent of whether **▶ Generate** was already clicked — it always (re)generates fresh) |
 | **⚠ Worst** | Only shown after a 3D generate with at least one element below quality 0.20 (auto-shown then, since it's a warning). Toggles the worst-quality-elements highlight in place, without discarding it |
 | **Clear** | Remove the mesh overlay and the worst-elements highlight (the original model is unaffected either way) |
+| **Mesh ops** | Only shown for a meshio++-imported source (VTK/MED/CGNS/…). One operation per **Run op…** — Clean, Decimate, Smooth, Subdivide, Refine, Agglomerate, or Convert cells — with only that op's parameters shown. Writes a NEW file via a Save dialog (same format as the source); the open document is never modified. The per-step applied/skipped report renders in the section's status line |
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
   <img src="/screenshots/part-sizes.png" alt="Per-part mesh-size inputs mirrored in the FE Mesh panel." style="max-width:260px; flex:1 1 220px;" />

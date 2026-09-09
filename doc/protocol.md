@@ -772,6 +772,18 @@ Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh �
 { "type": "meshHealError", "requestId": "1234-0.56", "message": "Mesh healability check requires an STL/OBJ/PLY source." }
 ```
 
+### `meshioOpsResult` / `meshioOpsError`
+
+Sent in reply to `meshioOpsRequest` (webview → host, below) — roadmap Tier 2 "Mesh-operations panel for meshio sources". `steps`/`warnings` are `runMeshioOps`'s own per-step report verbatim (one entry per requested op, including the ones that did nothing — a step that cannot run is reported with `applied: false` and its reason, never silent). **meshio++-imported sources only** (every `loadMeshBytes` source except OpenFOAM, whose case-staged reader has no `readMesh` path); the FE Mesh panel's Mesh-ops section hides itself otherwise, so the host gate is a backstop, not the primary UX. The result file itself is written through the shared save flow (`promptSaveAndWrite`, same shape as Repair) — success/failure of the write surface through the generic `status`/`error` messages; this pair only carries the report back to the panel.
+
+```json
+{ "type": "meshioOpsResult", "requestId": "1234-0.56", "steps": [{ "op": "<op id>", "applied": true, "detail": "welded 4, dropped 0 degenerate / 0 duplicate" }], "warnings": [] }
+```
+
+```json
+{ "type": "meshioOpsError", "requestId": "1234-0.56", "message": "Mesh operations require a meshio++-imported source (VTK/MED/CGNS/Exodus/XDMF/MDPA/Gmsh/Abaqus/UNV/SU2/Medit/GiD)." }
+```
+
 ### `opPreviewResult` / `opPreviewError`
 
 Sent in reply to `opPreviewRequest` (webview → host, below) — roadmap "Live operation preview", closed. The payload is the SAME encoded shape the `"geometry"` message carries (`meshes`/`edges`/`points`), computed from a speculative replay of `[...currentOps, draftOp]` against the document's cached base shape — so the webview builds the preview group with the exact same `buildGroupFromEncoded()` path it uses for real geometry, and preview can never render something Apply would not produce. **B-rep sources only** — mesh sources never send the request (their preview is entirely client-side via `applyEditsMesh`). The host persists nothing: the replay runs under a separate cache key (`<documentKey>::oppreview`) so it never evicts the real document's cache, no sidecar is touched, and the CAD file stays read-only as ever.
@@ -1147,6 +1159,14 @@ Sent whenever a field in the open Edits-panel op form changes (and once when the
 
 ```json
 { "type": "meshHealRequest", "requestId": "1234-0.56" }
+```
+
+### `meshioOpsRequest`
+
+Sent when the FE Mesh panel's Mesh-ops **Run op…** button is clicked — only reachable for a meshio++-imported source (the section hides itself for B-rep and native-mesh documents, mirroring `transform_mesh`'s own MCP-tool gate; OpenFOAM case markers are additionally refused host-side). `ops` is a one-element array of `MeshioOpSpec` (`src/meshioOps.ts`: `{op, ratio?, iterations?, levels?, method?, mode?, targetGroupSize?}` — one operation per Run, not the multi-op lists `transform_mesh` accepts). The host validates each entry, runs `runMeshioOps` against the currently-open document's own bytes (+ companions), and writes the result to a NEW file via the shared save flow — the source is never modified. Replies with `meshioOpsResult`/`meshioOpsError`, correlated via `requestId` like every other request/response pair in this file.
+
+```json
+{ "type": "meshioOpsRequest", "requestId": "1234-0.56", "ops": [{ "op": "<one of clean|decimate|smooth|subdivide|refine|agglomerate|convertCells>" }] }
 ```
 
 ### `fitRegionRequest`

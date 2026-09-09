@@ -381,6 +381,75 @@ test("mesh export: every target serializes real geometry from the live scene", a
 });
 
 /**
+ * H2. Mesh-ops section — the interactive half of Tier 2 symmetry item 4.
+ *
+ * `transform_mesh` was MCP-only with zero webview callers; the FE Mesh panel
+ * grew a Mesh-ops section driving the same `runMeshioOps` pipeline entry via
+ * `meshioOpsRequest`/`meshioOpsResult`. This covers the webview half the host
+ * harness cannot: section visibility per source kind, a well-formed request,
+ * and the stale-response guard. The host half (save dialog → write) is
+ * F5-only, like every other `provider.ts` save flow.
+ */
+test("mesh ops: section tracks source kind and posts a guarded request", async (page) => {
+  await populate(page);
+
+  const hiddenOf = () =>
+    page.evaluate(() => document.getElementById("meshing-meshops")?.hidden ?? null);
+  assert((await hiddenOf()) === true, "mesh ops section is hidden for a B-rep source");
+
+  // A meshio++-imported document arrives as STL bytes + its real format name.
+  const tet = [
+    "solid tet",
+    "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+    "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 0 0 1", "vertex 1 0 0", "endloop", "endfacet",
+    "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 1 0", "vertex 0 0 1", "endloop", "endfacet",
+    "facet normal 0.577 0.577 0.577", "outer loop", "vertex 1 0 0", "vertex 0 0 1", "vertex 0 1 0", "endloop", "endfacet",
+    "endsolid tet",
+  ].join("\n");
+  const dataBase64 = Buffer.from(tet, "utf8").toString("base64");
+  await post(page, { type: "loadMeshBytes", sourceFormat: "vtu", dataBase64 });
+  await sleep(800);
+  assert((await hiddenOf()) === false, "mesh ops section is shown for a meshio++ source");
+
+  await page.click("#meshing-ops-run");
+  const req = await page
+    .waitForFunction(
+      () => window.__sent?.findLast((m) => m.type === "meshioOpsRequest") ?? null,
+      null,
+      { timeout: 10000 }
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(
+    req && Array.isArray(req.ops) && req.ops.length === 1 && req.ops[0].op === "clean",
+    `Run posts one validated op (got ${JSON.stringify(req?.ops)})`
+  );
+
+  // A stale reply (superseded requestId) must not touch the status line.
+  await post(page, { type: "meshioOpsResult", requestId: "stale-id", steps: [], warnings: [] });
+  await sleep(150);
+  const kept = await page.evaluate(() => document.getElementById("meshing-ops-status")?.textContent);
+  assert(kept === "Running…", `a stale reply is ignored (status still "Running…", got ${JSON.stringify(kept)})`);
+
+  await post(page, {
+    type: "meshioOpsResult",
+    requestId: req.requestId,
+    steps: [{ op: "clean", applied: true, detail: "welded 4, dropped 0 degenerate / 0 duplicate" }],
+    warnings: [],
+  });
+  await sleep(150);
+  const shown = await page.evaluate(() => document.getElementById("meshing-ops-status")?.textContent);
+  assert(
+    (shown ?? "").includes("welded 4"),
+    `the real reply renders the kernel's step detail (got ${JSON.stringify(shown)})`
+  );
+
+  // A new B-rep load hides the section again (no stale UI for the next file).
+  await populate(page);
+  assert((await hiddenOf()) === true, "mesh ops section hides again on a B-rep load");
+});
+
+/**
  * I. Framing invariants — the automated half of "visual correctness is nobody's
  * job".
  *

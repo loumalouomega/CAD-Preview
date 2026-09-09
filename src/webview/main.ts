@@ -1083,6 +1083,11 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onExport: async (format, unit) => {
     post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource(), unit });
   },
+  onMeshOps: (ops) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    meshioOpsRequestId = requestId;
+    post({ type: "meshioOpsRequest", requestId, ops });
+  },
   onClear: () => {
     viewer.setMeshOverlay(null);
     viewer.setWorstElementsOverlay(null);
@@ -1348,6 +1353,9 @@ const clashPanel = new ClashPanel(document.getElementById("clash-panel")!, {
 // triangulated but not itself one of those FILES) stays ineligible.
 let meshHealthEligibleFormat: MeshParseFormat | null = null;
 let meshHealRequestId: string | null = null;
+// Mesh-ops panel (roadmap Tier 2): requestId latch + meshio eligibility live
+// beside the Mesh Health latch — same stale-response-guard idiom.
+let meshioOpsRequestId: string | null = null;
 
 const macrosPanel = new MacrosPanel(document.getElementById("macros-panel")!, {
   onRun: (name, parameters) => post({ type: "macroRun", name, parameters }),
@@ -4136,6 +4144,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         for (const id of msg.guideIds ?? []) guideEntityIds.add(id); // construction geometry: dimmed, refused as feature operands
         viewer.setGuideIds(msg.guideIds ?? []);
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
+        meshingPanel.setMeshioOpsAvailable(false); // B-rep has exact geometry — no meshio mesh model
         clashPanel.setEligible(true); // exact booleans exist only for B-rep
         clearClashResults(); // re-tessellation may renumber the ids results name
         viewer.setFitSeedPickHandler(null);
@@ -4209,6 +4218,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "loadUrl":
       setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
+      meshingPanel.setMeshioOpsAvailable(false); // native mesh has no meshio++ mesh model
       clashPanel.setEligible(false); // no exact boolean geometry for a mesh
       clearClashResults();
       viewer.setFitSeedPickHandler(null);
@@ -4223,6 +4233,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // check_mesh_health's MCP tool would reject that source's real path
       // the same way, so the panel stays ineligible here too.
       setMeshHealthEligibility(null);
+      // Mesh-ops needs a meshio++ mesh model — every loadMeshBytes source has
+      // one except OpenFOAM (geometry-only case staging, no readMesh path).
+      meshingPanel.setMeshioOpsAvailable(msg.sourceFormat !== "openfoam");
+      meshioOpsRequestId = null; // a new document supersedes any in-flight op
       clashPanel.setEligible(false); // meshio boundary has no B-rep booleans
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
@@ -4577,6 +4591,18 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "meshHealError":
       if (msg.requestId !== meshHealRequestId) break;
       meshHealthPanel.renderMessage(msg.message, true);
+      break;
+
+    case "meshioOpsResult":
+      if (msg.requestId !== meshioOpsRequestId) break; // stale — a newer run/load superseded it
+      meshioOpsRequestId = null;
+      meshingPanel.renderMeshOpsResult(msg.steps, msg.warnings);
+      break;
+
+    case "meshioOpsError":
+      if (msg.requestId !== meshioOpsRequestId) break;
+      meshioOpsRequestId = null;
+      meshingPanel.renderMeshOpsStatus(msg.message, true);
       break;
 
     case "fitRegionResult":

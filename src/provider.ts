@@ -19,10 +19,11 @@ import {
   type SelectorSynthesizeResultEntry,
 } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
-import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor } from "./fileRouter";
+import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor, matchExtension } from "./fileRouter";
 import { resolveEffectiveSource } from "./scadService";
 import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
 import { isMeshioFieldFailure, describeMeshioFieldFailure, isHealableSizeError, AUTO_DECIMATE_TARGET_TRIANGLES, stlBytesForHeal } from "./meshioService";
+import { validateMeshioOpSpec } from "./meshioOps";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
@@ -1968,6 +1969,27 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      if (msg.type === "meshioOpsRequest") {
+        try {
+          if (!route || route.strategy !== "meshio") {
+            throw new Error("Mesh operations require a meshio++-imported source (VTK/MED/CGNS/Exodus/XDMF/MDPA/Gmsh/Abaqus/UNV/SU2/Medit/GiD).");
+          }
+          if (route.format === "openfoam") {
+            throw new Error("Mesh operations are not available for OpenFOAM case markers — open the converted mesh instead.");
+          }
+          const specs = (msg.ops ?? []).map((o) => validateMeshioOpSpec(o));
+          if (specs.length === 0 || specs.some((s) => s === null)) {
+            throw new Error("Unknown mesh operation — pick one of clean/decimate/smooth/subdivide/refine/agglomerate/convertCells.");
+          }
+          const report = await this.handleMeshioOps(document.uri, route, specs.map((s) => s!), post);
+          if (report) post({ type: "meshioOpsResult", requestId: msg.requestId, steps: report.steps, warnings: report.warnings });
+          // A dismissed save dialog is a quiet no-op (no result post), mirroring every other save flow here.
+        } catch (err) {
+          post({ type: "meshioOpsError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
       if (msg.type === "fitRegionRequest") {
         try {
           if (!route || route.strategy !== "three") {
@@ -2709,6 +2731,59 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       },
       post
     );
+  }
+
+  /**
+   * Mesh-operations panel (roadmap Tier 2 "Mesh-operations panel for meshio
+   * sources") — runs one validated meshio++ operation over the current
+   * meshio++-imported source and writes the result to a NEW file at a
+   * save-dialog-chosen path (the export model, like `transform_mesh`'s
+   * `outputPath` — the source is never modified). Mirrors `handleRepairMesh`'s
+   * structure via the shared `promptSaveAndWrite`, but keeps the source's own
+   * extension (including the compound `.post.msh`) so the output stays in the
+   * same format family the user opened. Returns the per-step report for the
+   * `meshioOpsResult` post, or `null` when the save dialog was dismissed (a
+   * quiet no-op, never an error). A step that cannot run is reported and
+   * skipped by `runMeshioOps` itself, never silent — those warnings surface
+   * both in the result post and as status lines.
+   */
+  private async handleMeshioOps(
+    uri: vscode.Uri,
+    route: FileRoute,
+    ops: import("./meshioOps").MeshioOpSpec[],
+    post: (msg: HostToWebview) => void
+  ): Promise<{ steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] } | null> {
+    const extKey = matchExtension(uri.fsPath) ?? route.format;
+    // The save-dialog filter takes a bare extension; the compound GiD key
+    // (`post.msh`) is not one — fall back to the route format there.
+    const ext = extKey.includes(".") ? route.format : extKey;
+    let report: { steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] } | null = null;
+    await this.promptSaveAndWrite(
+      uri,
+      ext,
+      `${route.format.toUpperCase()} Mesh`,
+      async (_saveUri) => {
+        const basename = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+        const sourceBytes = await vscode.workspace.fs.readFile(uri);
+        const companions = await resolveMeshioCompanionsFor(uri, basename, route.format, sourceBytes);
+        const result = await this.pipeline.runMeshioOps(
+          sourceBytes,
+          route.format,
+          ops as Parameters<typeof this.pipeline.runMeshioOps>[2],
+          ext,
+          basename,
+          companions
+        );
+        report = { steps: result.steps, warnings: result.warnings };
+        for (const step of result.steps) {
+          post({ type: "status", text: `Mesh op ${step.op}: ${step.applied ? step.detail : `skipped — ${step.detail}`}` });
+        }
+        for (const warning of result.warnings) post({ type: "status", text: warning });
+        return result.bytes;
+      },
+      post
+    );
+    return report;
   }
 
   /**

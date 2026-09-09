@@ -4,6 +4,7 @@ import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import { DISPLAY_UNITS, UNIT_LABELS, type DisplayUnit } from "../lengthUnits";
 import type { Part } from "../protocol";
+import { MESHIO_OP_IDS, MESHIO_OP_LABELS, type MeshioOpId, type MeshioOpSpec } from "../meshioOps";
 import {
   LARGE_ELEMENT_COUNT,
   PRESET_DIVISORS,
@@ -51,6 +52,11 @@ export interface MeshingPanelCallbacks {
    * native/no-op. */
   onExport: (format: MeshExportFormatId, unit: DisplayUnit) => void;
   onClear: () => void;
+  /** Run one meshio++ mesh operation over the current meshio++-imported
+   * source (a new file via the host's save flow — the source is never
+   * modified). The wiring posts `meshioOpsRequest` and renders the per-step
+   * report from `meshioOpsResult`. */
+  onMeshOps: (ops: MeshioOpSpec[]) => void;
 }
 
 /** Curated, well-known GMSH 2D algorithm ids (`Mesh.Algorithm`) — not exhaustive. */
@@ -119,6 +125,18 @@ export class MeshingPanel {
   private readonly ftetwildManifoldSurfaceCheckbox: HTMLInputElement;
   private readonly ftetwildCoarsenCheckbox: HTMLInputElement;
   private readonly ftetwildDisableFilteringCheckbox: HTMLInputElement;
+
+  /** Mesh-ops section (meshio++ sources only) — one operation per Run. */
+  private readonly meshOpsSection: HTMLElement;
+  private readonly meshOpsSelect: HTMLSelectElement;
+  private readonly meshOpsRatio: HTMLInputElement;
+  private readonly meshOpsMethod: HTMLSelectElement;
+  private readonly meshOpsIterations: HTMLInputElement;
+  private readonly meshOpsLevels: HTMLInputElement;
+  private readonly meshOpsTargetGroupSize: HTMLInputElement;
+  private readonly meshOpsMode: HTMLSelectElement;
+  private readonly meshOpsRun: HTMLButtonElement;
+  private readonly meshOpsStatus: HTMLElement;
 
   /** Model bounding box, pushed by the wiring after each model load. */
   private extents: ModelExtents | null = null;
@@ -412,6 +430,92 @@ export class MeshingPanel {
 
     advSection.appendChild(form);
     this.body.appendChild(advSection);
+
+    // ── Mesh ops (meshio++ sources only — hidden otherwise) ──
+    // One declarative operation per Run (clean/decimate/smooth/subdivide/
+    // refine/agglomerate/convertCells), mirroring `transform_mesh`'s own op
+    // family but as single interactive steps: the host runs it via the same
+    // `runMeshioOps` pipeline entry and writes a NEW file (the export model —
+    // the source is never modified), reporting per-step applied/skipped.
+    this.meshOpsSection = document.createElement("div");
+    this.meshOpsSection.className = "meshing-section";
+    this.meshOpsSection.id = "meshing-meshops";
+    this.meshOpsSection.hidden = true;
+    const opsHeader = document.createElement("div");
+    opsHeader.className = "meshing-section-title";
+    opsHeader.textContent = "Mesh ops";
+    opsHeader.title = "Clean, decimate, smooth or convert the imported mesh (meshio++ sources only) — writes a new file";
+    this.meshOpsSection.appendChild(opsHeader);
+    const opsForm = document.createElement("div");
+    opsForm.className = "meshing-form";
+    this.meshOpsSelect = this.select(
+      opsForm,
+      "Operation",
+      MESHIO_OP_IDS.map((id) => [id, MESHIO_OP_LABELS[id]])
+    );
+    this.meshOpsRatio = this.numberField(opsForm, "Keep ratio", 0.5);
+    this.meshOpsRatio.title = "Decimate: fraction of faces to KEEP, in (0, 1]";
+    this.meshOpsRatio.step = "0.05";
+    this.meshOpsRatio.max = "1";
+    this.meshOpsMethod = this.select(opsForm, "Method", [
+      ["taubin", "Taubin (shrink-free)"],
+      ["laplacian", "Laplacian"],
+    ]);
+    this.meshOpsIterations = this.numberField(opsForm, "Iterations", 1);
+    this.meshOpsIterations.min = "1";
+    this.meshOpsIterations.step = "1";
+    this.meshOpsLevels = this.numberField(opsForm, "Levels", 1);
+    this.meshOpsLevels.min = "1";
+    this.meshOpsLevels.step = "1";
+    this.meshOpsTargetGroupSize = this.numberField(opsForm, "Group size", 4);
+    this.meshOpsTargetGroupSize.min = "1";
+    this.meshOpsTargetGroupSize.step = "1";
+    this.meshOpsMode = this.select(opsForm, "Mode", [
+      ["simplexify", "simplexify (quads/hexes → triangles/tets)"],
+      ["linearize", "linearize (higher-order → linear)"],
+      ["elevate", "elevate (linear → higher-order)"],
+    ]);
+    const opsRunRow = document.createElement("div");
+    opsRunRow.className = "meshing-field";
+    this.meshOpsRun = document.createElement("button");
+    this.meshOpsRun.type = "button";
+    this.meshOpsRun.id = "meshing-ops-run";
+    this.meshOpsRun.textContent = "Run op…";
+    this.meshOpsRun.title = "Run the selected operation — prompts for a save location for the result";
+    this.meshOpsRun.addEventListener("click", () => {
+      const op = this.meshOpsSelect.value as MeshioOpId;
+      const spec: MeshioOpSpec = { op };
+      if (op === "decimate") {
+        const ratio = Number(this.meshOpsRatio.value);
+        if (!(ratio > 0 && ratio <= 1)) {
+          this.renderMeshOpsStatus("Keep ratio must be in (0, 1].", true);
+          return;
+        }
+        spec.ratio = ratio;
+      } else if (op === "smooth") {
+        spec.method = this.meshOpsMethod.value;
+        spec.iterations = Math.max(1, Math.floor(Number(this.meshOpsIterations.value) || 1));
+      } else if (op === "refine") {
+        spec.levels = Math.max(1, Math.floor(Number(this.meshOpsLevels.value) || 1));
+      } else if (op === "agglomerate") {
+        spec.targetGroupSize = Math.max(1, Math.floor(Number(this.meshOpsTargetGroupSize.value) || 4));
+      } else if (op === "convertCells") {
+        spec.mode = this.meshOpsMode.value;
+      }
+      this.renderMeshOpsStatus("Running…", false);
+      this.meshOpsRun.disabled = true;
+      cb.onMeshOps([spec]);
+    });
+    opsRunRow.appendChild(this.meshOpsRun);
+    opsForm.appendChild(opsRunRow);
+    this.meshOpsStatus = document.createElement("div");
+    this.meshOpsStatus.className = "meshing-status";
+    this.meshOpsStatus.id = "meshing-ops-status";
+    opsForm.appendChild(this.meshOpsStatus);
+    this.meshOpsSection.appendChild(opsForm);
+    this.body.appendChild(this.meshOpsSection);
+    this.meshOpsSelect.addEventListener("change", () => this.syncMeshOpsParams());
+    this.syncMeshOpsParams();
   }
 
   /** Rebuilds the form controls to reflect `options`, and the stats/error readout. */
@@ -541,6 +645,55 @@ export class MeshingPanel {
     this.stlAngleInput.disabled = kind === "brep";
     this.stlAngleInput.title =
       kind === "brep" ? "Only used for mesh/STL sources" : "Surface-classification angle for mesh/STL sources";
+  }
+
+  /**
+   * Shows/hides the Mesh-ops section — visible only for a meshio++-imported
+   * source (VTK/MED/CGNS/…), never for B-rep or native-mesh documents (those
+   * have no meshio++ mesh model to operate on). Called by the wiring on every
+   * model load alongside `setSourceKind`.
+   */
+  setMeshioOpsAvailable(enabled: boolean): void {
+    this.meshOpsSection.hidden = !enabled;
+    if (!enabled) {
+      this.meshOpsRun.disabled = false;
+      this.meshOpsStatus.textContent = "";
+      this.meshOpsStatus.classList.remove("meshing-status-error");
+    }
+  }
+
+  /** Shows only the parameter rows the selected operation actually reads. */
+  private syncMeshOpsParams(): void {
+    const op = this.meshOpsSelect.value as MeshioOpId;
+    const show = (el: HTMLElement, visible: boolean): void => {
+      (el.closest("label") ?? el).toggleAttribute("hidden", !visible);
+    };
+    show(this.meshOpsRatio, op === "decimate");
+    show(this.meshOpsMethod, op === "smooth");
+    show(this.meshOpsIterations, op === "smooth");
+    show(this.meshOpsLevels, op === "refine");
+    show(this.meshOpsTargetGroupSize, op === "agglomerate");
+    show(this.meshOpsMode, op === "convertCells");
+  }
+
+  /**
+   * Renders the mesh-ops outcome: re-enables Run and shows the kernel's own
+   * per-step detail (or the error). Called by the wiring's
+   * `meshioOpsResult`/`meshioOpsError` handlers — the save-dialog completion
+   * itself already surfaces through the generic status bar.
+   */
+  renderMeshOpsResult(steps: Array<{ op: string; applied: boolean; detail: string }>, warnings: string[]): void {
+    this.meshOpsRun.disabled = false;
+    const lines = steps.map((s) => `${s.op}: ${s.applied ? s.detail : `skipped — ${s.detail}`}`);
+    for (const w of warnings) lines.push(w);
+    this.renderMeshOpsStatus(lines.join(" · ") || "Done.", false);
+  }
+
+  renderMeshOpsStatus(text: string, isError: boolean): void {
+    this.meshOpsRun.disabled = isError ? false : this.meshOpsRun.disabled;
+    if (!isError && text !== "Running…") this.meshOpsRun.disabled = false;
+    this.meshOpsStatus.textContent = text;
+    this.meshOpsStatus.classList.toggle("meshing-status-error", isError);
   }
 
   /**

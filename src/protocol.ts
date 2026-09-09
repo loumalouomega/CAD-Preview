@@ -14,6 +14,7 @@ import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 import type { MeshRegionFit } from "./fitMapping";
+import type { MeshioOpSpec } from "./meshioOps";
 import type { AnnotatedTolerance } from "./toleranceBand";
 import type { SelectorQuery } from "./selectorQuery";
 
@@ -448,6 +449,12 @@ export type HostToWebview =
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
   | { type: "meshHealError"; requestId: string; message: string }
+  /** Mesh-ops panel (roadmap Tier 2 "Mesh-operations panel"): one declarative
+   * meshio++ operation applied to the current meshio++-imported source and
+   * written to a new file via the shared save flow. Mirrors
+   * `meshHealRequest`'s requestId + stale-response-guard idiom. */
+  | { type: "meshioOpsResult"; requestId: string; steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] }
+  | { type: "meshioOpsError"; requestId: string; message: string }
   | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }
   | { type: "fitRegionError"; requestId: string; message: string }
   /**
@@ -636,6 +643,12 @@ export type WebviewToHost =
   | { type: "renderViewError"; requestId: string; message: string }
   | { type: "colorFieldRequest"; requestId: string; field: string; kind: "point" | "cell" }
   | { type: "meshHealRequest"; requestId: string; autoDecimate?: boolean }
+  /** Run one validated meshio++ operation (see `src/meshioOps.ts`) against the
+   * currently-open meshio++ source. The host owns the save dialog + write
+   * (`promptSaveAndWrite`, same shape as Repair), so success/failure also
+   * surface through the generic `status`/`error` messages — this pair only
+   * carries the per-step report back to the panel. */
+  | { type: "meshioOpsRequest"; requestId: string; ops: MeshioOpSpec[] }
   | { type: "fitRegionRequest"; requestId: string; point: [number, number, number] }
   | { type: "setCamerasLinked"; enabled: boolean };
 
