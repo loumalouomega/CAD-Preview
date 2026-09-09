@@ -1444,7 +1444,7 @@ describe("repair_mesh", () => {
     const c = ctx();
     const outputPath = path.join(dir, "repaired.stl");
     const result = await repairMeshTool(c, { path: stlModel, outputPath });
-    expect(c.pipeline.repairMesh).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", undefined);
+    expect(c.pipeline.repairMesh).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "stl", undefined, DEFAULT_MESH_OPTIONS);
     expect(result).toMatchObject({
       written: outputPath,
       nodeCount: FAKE_REPAIR_RESULT.nodeCount,
@@ -1457,16 +1457,16 @@ describe("repair_mesh", () => {
   it("repairs OBJ/PLY sources too", async () => {
     const c = ctx();
     await repairMeshTool(c, { path: objModel, outputPath: path.join(dir, "repaired-obj.stl") });
-    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", undefined);
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "obj", undefined, DEFAULT_MESH_OPTIONS);
 
     await repairMeshTool(c, { path: plyModel, outputPath: path.join(dir, "repaired-ply.stl") });
-    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", undefined);
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "ply", undefined, DEFAULT_MESH_OPTIONS);
   });
 
   it("repairs a glTF source, passing its resolved external buffers", async () => {
     const c = ctx();
     await repairMeshTool(c, { path: gltfModel, outputPath: path.join(dir, "repaired-gltf.stl") });
-    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "gltf", {});
+    expect(c.pipeline.repairMesh).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "gltf", {}, DEFAULT_MESH_OPTIONS);
   });
 
   it("throws for a B-rep source (nothing to repair), without touching WASM", async () => {
