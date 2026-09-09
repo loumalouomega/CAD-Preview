@@ -55,6 +55,7 @@ import {
   decomposeToPrimitivesTool,
   fitMeshRegionTool,
   transformMeshTool,
+  inspectMeshioFieldsTool,
   promoteMeshToBrepTool,
   repairMeshTool,
   exportSvgSilhouetteTool,
@@ -564,6 +565,18 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; ops: unknown[]; outputPath: string }) => transformMeshTool(ctx, args))
+);
+
+server.registerTool(
+  "inspect_meshio_fields",
+  {
+    description:
+      "List a meshio++-readable source's scalar result fields headlessly — per-array facts (name, point|cell location, component width, finite-only min/max, NaN count) for every point/cell data array the file declares. Summaries only, never raw values. A multi-component array (e.g. a 3-component gradient) is reported with its width, not an error. meshio-only sources; B-rep, mesh-parser (stl/obj/ply/gltf) and OpenFOAM sources return supported:false.",
+    inputSchema: {
+      path: modelPath,
+    },
+  },
+  wrap((args: { path: string }) => inspectMeshioFieldsTool(ctx, args))
 );
 
 server.registerTool(

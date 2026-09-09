@@ -14,6 +14,7 @@ import {
   checkMeshHealthTool,
   promoteMeshToBrepTool,
   repairMeshTool,
+  inspectMeshioFieldsTool,
   inspectEntity,
   measureTool,
   measureExactTool,
@@ -1495,6 +1496,89 @@ describe("repair_mesh", () => {
     const c = ctx();
     await expect(repairMeshTool(c, { path: stlModel, outputPath: stlModel })).rejects.toThrow();
     expect(c.pipeline.repairMesh).not.toHaveBeenCalled();
+  });
+});
+
+describe("inspect_meshio_fields", () => {
+  const FAKE_ARRAYS = [
+    { name: "Temperature", location: "point" as const, numComponents: 1, min: 20, max: 100, numNan: 0, consistent: true },
+    { name: "cell_tags", location: "cell" as const, numComponents: 1, min: 1, max: 2, numNan: 0, consistent: true },
+  ];
+
+  async function medModel(name = "model.med"): Promise<string> {
+    const p = path.join(dir, name);
+    await fs.writeFile(p, "MED placeholder — bytes never reach the fake pipeline", "utf8");
+    return p;
+  }
+
+  it("returns the pipeline's per-array facts verbatim for a meshio source", async () => {
+    const c = ctx(fakePipeline({
+      readMeshioDataInfo: vi.fn(async () => FAKE_ARRAYS),
+    }));
+    const model = await medModel();
+    const result = await inspectMeshioFieldsTool(c, { path: model });
+    expect(c.pipeline.readMeshioDataInfo).toHaveBeenCalledWith(
+      expect.any(Uint8Array), "med", "model.med", []
+    );
+    expect(result).toMatchObject({ format: "med", supported: true, arrays: FAKE_ARRAYS });
+    // Narrative warning envelopes the document-derived names; structured rows carry them raw.
+    expect(result.warnings.some((w) => w.includes("⟦field data: Temperature⟧"))).toBe(true);
+    expect(result.arrays[0].name).toBe("Temperature");
+  });
+
+  it("reports a multi-component array with its width, not an error", async () => {
+    const c = ctx(fakePipeline({
+      readMeshioDataInfo: vi.fn(async () => [
+        { name: "Temperature:gradient", location: "cell" as const, numComponents: 3, min: -1, max: 1, numNan: 0, consistent: true },
+      ]),
+    }));
+    const result = await inspectMeshioFieldsTool(c, { path: await medModel() });
+    expect(result.supported).toBe(true);
+    expect(result.arrays[0].numComponents).toBe(3);
+  });
+
+  it("says so when the source declares no arrays at all", async () => {
+    const c = ctx();
+    const result = await inspectMeshioFieldsTool(c, { path: await medModel() });
+    expect(result).toMatchObject({ supported: true, arrays: [] });
+    expect(result.warnings.some((w) => /declares no point\/cell data arrays/i.test(w))).toBe(true);
+  });
+
+  it("distinguishes an unreadable read from a genuinely field-less file", async () => {
+    const c = ctx(fakePipeline({
+      readMeshioDataInfo: vi.fn(async () => []),
+      readMeshioMetadata: vi.fn(async () => ({
+        regions: [], pointDataNames: ["Temperature"], cellDataNames: [], fieldDataNames: [],
+      })),
+    }));
+    const result = await inspectMeshioFieldsTool(c, { path: await medModel() });
+    expect(result).toMatchObject({ supported: true, arrays: [] });
+    expect(result.warnings.some((w) => /could not be read/i.test(w))).toBe(true);
+  });
+
+  it("returns supported:false for a B-rep source, without touching the pipeline", async () => {
+    const c = ctx();
+    const result = await inspectMeshioFieldsTool(c, { path: stpModel });
+    expect(result).toMatchObject({ format: "step", supported: false, arrays: [] });
+    expect(c.pipeline.readMeshioDataInfo).not.toHaveBeenCalled();
+    expect(c.pipeline.readMeshioMetadata).not.toHaveBeenCalled();
+  });
+
+  it("returns supported:false for a mesh-parser source (.stl), without touching the pipeline", async () => {
+    const c = ctx();
+    const result = await inspectMeshioFieldsTool(c, { path: stlModel });
+    expect(result).toMatchObject({ format: "stl", supported: false, arrays: [] });
+    expect(c.pipeline.readMeshioDataInfo).not.toHaveBeenCalled();
+  });
+
+  it("returns supported:false for an OpenFOAM marker (geometry-only by construction)", async () => {
+    const foamModel = path.join(dir, "case.foam");
+    await fs.writeFile(foamModel, "", "utf8");
+    const c = ctx();
+    const result = await inspectMeshioFieldsTool(c, { path: foamModel });
+    expect(result).toMatchObject({ format: "openfoam", supported: false, arrays: [] });
+    expect(result.warnings.some((w) => /geometry-only/i.test(w))).toBe(true);
+    expect(c.pipeline.readMeshioDataInfo).not.toHaveBeenCalled();
   });
 });
 

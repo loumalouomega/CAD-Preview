@@ -91,7 +91,7 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo, readMeshioProvenance, decimateStlBoundary, runMeshioOps } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo, readMeshioProvenance, decimateStlBoundary, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { buildMeshProvenanceNotes } from "./meshProvenanceNotes";
 import { evaluateToleranceBand } from "./toleranceBand";
@@ -451,6 +451,7 @@ export function describeCapabilities() {
       "decompose_to_primitives (B-rep sources only) recognizes each solid as a box/sphere/cylinder/cone/torus when its face inventory matches exactly and emits a creation op per recognized solid with each dimension bound to a named variable via exprs — the first programmatic producer of expression strings — plus a parametric script document; optionally writes a new B-rep file (export model, like promote_mesh_to_brep) and/or saves the script to the macro library. Unrecognized solids are reported in perSolid with a reason, never a guess. This is a one-shot emit/export, not an in-place replacement — the source file is never modified.",
       "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Pass autoDecimate:true to run over a meshio++-decimated mesh instead (target ~1000 triangles; the response reports the ratio actually applied and warns that it describes the decimated mesh, never silently) — but note the sewing cost scales steeply past ~1k triangles, which is why the target is ~2% of the ceiling rather than just under it; and a decimated mesh can heal degenerately (decimation artifacts break the solidify — the report's own healedVolume/volumeDeltaPct/nonManifoldEdgeCount reveal it, and promote refuses to write such a solid rather than emitting a wrong file).",
       "repair_mesh (STL/OBJ/PLY/glTF sources only) writes a NEW watertight STL file at outputPath by tetrahedralizing the mesh with fTetWild and taking the resulting volume mesh's own boundary — watertight/manifold by construction regardless of how broken the input was, since fTetWild survives holes/self-intersections/non-manifold edges Gmsh's own classifySurfaces path rejects. A one-shot export (the source is untouched); the natural next step is re-running check_mesh_health/promote_mesh_to_brep on the repaired output. Unlike those two, it has no triangle-count ceiling (a different cost profile than the per-triangle OCCT sewing pipeline) — a very large/slow mesh may instead hit this server's own per-call timeout.",
+      "inspect_meshio_fields (meshio++ sources only) lists a file's scalar result fields headlessly — per-array name, point|cell location, component width, finite-only min/max, NaN count — summaries only, never raw values. A multi-component array is reported with its width, not an error. Read-only, never mutates or persists anything.",
       "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). On documents with many Parts, pass an explicit parts subset.",
       "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
@@ -1884,6 +1885,79 @@ export async function transformMeshTool(
     steps: result.steps,
     warnings: result.warnings,
   };
+}
+
+/**
+ * `inspect_meshio_fields` — "what result fields does this file carry, and
+ * what are their ranges?" The reverse asymmetry of `transform_mesh`: the
+ * interactive colour-by-field picker is the only caller of the read path
+ * (`readMeshioDataInfo` is already a `Pipeline` key; `readMeshioFieldValues`
+ * has exactly one caller), so an agent had no way to list a `.med`'s fields
+ * headlessly. Summaries only — names + component width + finite-only min/max
+ * per array — never the raw per-corner values (a boundary soup's `Float32Array`
+ * can be MBs; an agent needs facts, not pixels).
+ *
+ * Read-only: no `outputPath`, so no `assertNotSourcePath`. Never throws for a
+ * missing/empty answer — an unreadable file degrades to `arrays: []` with a
+ * warning (the same supplementary-information contract `readMeshioDataInfo`
+ * itself has), distinguished from "genuinely no arrays" via a cheap parallel
+ * `readMeshioMetadata` check.
+ */
+export async function inspectMeshioFieldsTool(
+  ctx: ToolContext,
+  params: { path: string }
+): Promise<{
+  format: CadFormat;
+  supported: boolean;
+  arrays: MeshioDataArrayInfo[];
+  warnings: string[];
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "meshio") {
+    return {
+      format: route.format,
+      supported: false,
+      arrays: [],
+      warnings: [
+        `inspect_meshio_fields operates on meshio++-readable sources (${MESHIO_FORMATS.join("/")}); ` +
+          `${route.format} is not one. A B-rep source has exact geometry and no result fields.`,
+      ],
+    };
+  }
+  if (route.format === "openfoam") {
+    return {
+      format: route.format,
+      supported: false,
+      arrays: [],
+      warnings: [
+        "OpenFOAM source: geometry-only import — meshio++ does not surface patch names or field data to JS, so there is nothing to inspect.",
+      ],
+    };
+  }
+  const bytes = await readModelBytes(modelPath);
+  const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
+  const [arrays, meta] = await Promise.all([
+    ctx.pipeline.readMeshioDataInfo(bytes, route.format, path.basename(modelPath), companions),
+    ctx.pipeline.readMeshioMetadata(bytes, route.format, path.basename(modelPath), companions),
+  ]);
+  const warnings: string[] = [];
+  if (arrays.length === 0) {
+    const declared = [...meta.pointDataNames, ...meta.cellDataNames];
+    warnings.push(
+      declared.length > 0
+        ? `The source declares ${declared.length} data array(s) (${declared.map((n) => envelope(n, "field data")).join(", ")}) but their per-array facts could not be read — treated as no inspectable fields.`
+        : "The source declares no point/cell data arrays."
+    );
+  } else {
+    // Array names come from the file's author — attacker-influenced text.
+    // Structured `arrays[].name` fields carry them raw (the convention for
+    // structured fields); the narrative line below envelopes them (see
+    // src/untrustedText.ts and describe_capabilities' verdictConventions).
+    const names = arrays.map((a) => envelope(a.name, "field data")).join(", ");
+    warnings.push(`Source declares ${arrays.length} data array(s): ${names} (informational only).`);
+  }
+  return { format: route.format, supported: true, arrays, warnings };
 }
 
 export async function checkMeshHealthTool(

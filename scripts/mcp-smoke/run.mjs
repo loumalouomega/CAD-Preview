@@ -231,8 +231,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 46, `tools/list exposes 46 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance"]) {
+  assert(tools.length === 47, `tools/list exposes 47 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -3210,6 +3210,40 @@ try {
   const medMeshed = await call("generate_mesh", { path: medFixture, options: { sizeMax: 0.5 } });
   assert(medMeshed.nodeCount > 0 && medMeshed.elementCount > 0, `generate_mesh still works on the MED source: ${medMeshed.nodeCount} nodes, ${medMeshed.elementCount} elements`);
   assert(fs.statSync(path.join(dir, "tet.h5")).size > 0, "HDF5 companion has content");
+
+  // inspect_meshio_fields (Tier 2 symmetry item 4): the read path the
+  // colour-by-field picker uses, headlessly — summaries only, never values.
+  const medFields = await call("inspect_meshio_fields", { path: medFixture });
+  assert(medFields.supported === true, "inspect_meshio_fields supports a meshio source");
+  const tempField = medFields.arrays.find((a) => a.name === "Temperature");
+  assert(
+    tempField && tempField.location === "point" && tempField.numComponents === 1 && tempField.max > tempField.min,
+    `inspect_meshio_fields reports Temperature as a scalar point field with a real range (got: ${JSON.stringify(tempField)})`
+  );
+  assert(
+    medFields.arrays.some((a) => a.location === "cell"),
+    `inspect_meshio_fields also reports cell fields (got: ${JSON.stringify(medFields.arrays.map((a) => a.name))})`
+  );
+  // A multi-component array reports its width — the case the picker disables
+  // up front — rather than erroring.
+  const vecFixture = path.join(dir, "vector-field-tets.med");
+  fs.copyFileSync(path.join(ROOT, "examples", "MED", "vector-field-tets.med"), vecFixture);
+  const vecFields = await call("inspect_meshio_fields", { path: vecFixture });
+  const gradient = vecFields.arrays.find((a) => a.name === "Temperature:gradient");
+  assert(
+    gradient && gradient.numComponents === 3,
+    `inspect_meshio_fields reports the 3-component gradient with its width (got: ${JSON.stringify(gradient)})`
+  );
+  const fieldsBrepRejected = await call("inspect_meshio_fields", { path: model });
+  assert(
+    fieldsBrepRejected.supported === false,
+    "inspect_meshio_fields rejects a B-rep source (exact geometry, no result fields)"
+  );
+  const fieldsStlRejected = await call("inspect_meshio_fields", { path: cubeStl });
+  assert(
+    fieldsStlRejected.supported === false,
+    "inspect_meshio_fields rejects a mesh-parser source (no meshio++ mesh model)"
+  );
 
   // Gapped-node-id Kratos MDPA import (examples/MDPA/gapped-ids.mdpa — see its
   // README). This is THE regression the @meshioplusplus/wasm 9.13.0→9.14.0
