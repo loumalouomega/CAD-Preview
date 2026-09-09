@@ -7,6 +7,7 @@ import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
+import { bomTsv } from "../bomExport";
 import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay } from "./geometryBuilder";
 import { viridisCssGradientStops } from "./colorMap";
@@ -142,6 +143,7 @@ const partsModel = new PartsModel(() => {
   partsPanel.render(partsModel.list());
   meshingPanel.renderParts(partsModel.list());
   clashPanel.renderParts(partsModel.list().map((p) => p.name));
+  refreshBomButton();
 });
 
 const partsPanel = new PartsPanel(
@@ -172,6 +174,12 @@ const partsPanel = new PartsPanel(
       visibilityState.toggleIsolatedPart(index);
       applyVisibilityState();
       partsPanel.render(partsModel.list());
+    },
+    onCopyBom: () => {
+      const requestId = `${Date.now()}-${Math.random()}`;
+      bomRequestId = requestId;
+      setStatus("Copying BOM…");
+      post({ type: "bomRequest", requestId });
     },
   },
   visibilityState
@@ -1109,6 +1117,14 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
 let sourceKind: "brep" | "mesh" | null = null;
 let massPropertiesRequestId: string | null = null;
 
+// ── Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button") ────
+// One TSV row per Part over a single host parse/replay (`computeBom`, the same
+// function `generate_bom` drives headlessly) — requested with a stale-guarded
+// `bomRequestId` like every other request/response round trip here, rendered
+// locally via `bomTsv` (zero-import pure, so the webview bundle stays
+// WASM-free), and copied with the async clipboard API.
+let bomRequestId: string | null = null;
+
 // ── Standard parts (step.parts search/insert) ────────────────────────────
 // Search requestId is stale-guarded like every other request/response round
 // trip here; insert requestId maps to the part id so the settling response
@@ -1385,6 +1401,22 @@ function setMeshHealthEligibility(format: MeshParseFormat | null): void {
   meshHealthEligibleFormat = format;
   meshHealthPanel.setEligible(format !== null);
   regionFitPanel.setEligible(format !== null);
+}
+
+/**
+ * Enables the Parts-section "Copy BOM" button only for a B-rep source with
+ * ≥1 part — the host computes rows via OCCT, so a mesh source has nothing to
+ * copy, and zero parts would copy a header-only TSV. Called on every model
+ * load (sourceKind may have changed) and every parts change (count may have).
+ */
+function refreshBomButton(): void {
+  if (sourceKind === "brep" && partsModel.size > 0) {
+    partsPanel.setBomEnabled(true, "Copy the bill of materials (one row per part) as tab-separated text");
+  } else if (sourceKind !== "brep") {
+    partsPanel.setBomEnabled(false, "BOM rows need a B-rep source (mesh sources have no per-part rows)");
+  } else {
+    partsPanel.setBomEnabled(false, "Define a part first — an empty document would copy a header-only TSV");
+  }
 }
 
 let regionFitRequestId: string | null = null;
@@ -4147,6 +4179,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         meshingPanel.setMeshioOpsAvailable(false); // B-rep has exact geometry — no meshio mesh model
         clashPanel.setEligible(true); // exact booleans exist only for B-rep
         clearClashResults(); // re-tessellation may renumber the ids results name
+        bomRequestId = null; // a new model supersedes any in-flight BOM request
         viewer.setFitSeedPickHandler(null);
         lastRegionFit = null;
         regionFitRequestId = null;
@@ -4159,6 +4192,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         sourceKind = "brep";
         refreshExactButton();
         refreshPinButton();
+        refreshBomButton(); // re-evaluate now sourceKind is settled; parts hydration refreshes again if needed
         meshingPanel.setSourceKind("brep");
         meshingPanel.setModelExtents(viewer.getModelExtents());
         syncMeshSizeSeed();
@@ -4182,6 +4216,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       partsPanel.render(partsModel.list());
       meshingPanel.renderParts(partsModel.list());
       clashPanel.renderParts(partsModel.list().map((p) => p.name));
+      refreshBomButton(); // part count may have changed (hydration, auto-create, external edit)
       showSidebar();
       break;
 
@@ -4221,6 +4256,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshingPanel.setMeshioOpsAvailable(false); // native mesh has no meshio++ mesh model
       clashPanel.setEligible(false); // no exact boolean geometry for a mesh
       clearClashResults();
+      bomRequestId = null; // a new model supersedes any in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
       regionFitRequestId = null;
@@ -4237,6 +4273,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // one except OpenFOAM (geometry-only case staging, no readMesh path).
       meshingPanel.setMeshioOpsAvailable(msg.sourceFormat !== "openfoam");
       meshioOpsRequestId = null; // a new document supersedes any in-flight op
+      bomRequestId = null; // same for an in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
       clashPanel.setEligible(false); // meshio boundary has no B-rep booleans
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
@@ -4407,6 +4444,46 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "massPropertiesError":
       if (msg.requestId !== massPropertiesRequestId) break;
       massPropertiesPanel.renderMessage(msg.message, true);
+      break;
+
+    case "bomResult": {
+      if (msg.requestId !== bomRequestId) break; // stale — a newer click/load superseded it
+      bomRequestId = null;
+      for (const w of msg.warnings) setStatus(w);
+      const tsv = bomTsv(msg.rows);
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(tsv);
+        copied = true;
+      } catch {
+        // Fallback for contexts where the async clipboard API is denied (some
+        // webview/embed contexts): the deprecated execCommand path via a
+        // temporary selected textarea.
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = tsv;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          copied = document.execCommand("copy");
+          ta.remove();
+        } catch {
+          copied = false;
+        }
+      }
+      if (copied) {
+        setStatus(`BOM copied (${msg.rows.length} row${msg.rows.length === 1 ? "" : "s"}).`);
+      } else {
+        setStatus("Copy BOM failed: the clipboard write was denied.", true);
+      }
+      break;
+    }
+
+    case "bomError":
+      if (msg.requestId !== bomRequestId) break;
+      bomRequestId = null;
+      setStatus(msg.message, true);
       break;
 
     case "clashCheckResult":
@@ -4761,6 +4838,7 @@ async function loadMeshObjectFromUrl(
     lastMeasurement = null; // stale entity ids — refer to the just-replaced model; also hides #measure-exact-btn (mesh sources can't use it)
     refreshExactButton();
     refreshPinButton();
+    refreshBomButton(); // mesh source: Copy BOM stays disabled with reason
     meshingPanel.setSourceKind("mesh");
     meshingPanel.setModelExtents(viewer.getModelExtents());
     syncMeshSizeSeed();

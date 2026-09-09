@@ -57,6 +57,7 @@ export function viewerBodyHtml(): string {
           <div id="parts-header-actions">
             <button id="parts-isolate" title="Isolate the selected part (show only it)">${icon("isolate")} Isolate</button>
             <button id="parts-new" title="New part">${icon("add")} New</button>
+            <button id="parts-copy-bom" title="Copy the bill of materials (one row per part) as tab-separated text">Copy BOM</button>
           </div>
         </div>
         <div id="parts-body"></div>

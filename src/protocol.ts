@@ -15,6 +15,7 @@ import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 import type { MeshRegionFit } from "./fitMapping";
 import type { MeshioOpSpec } from "./meshioOps";
+import type { BomRow } from "./bomExport";
 import type { AnnotatedTolerance } from "./toleranceBand";
 import type { SelectorQuery } from "./selectorQuery";
 
@@ -410,6 +411,14 @@ export type HostToWebview =
   | { type: "importDxfError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
+  /** Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button"): one
+   * row per Part over a single host parse/replay (`computeBom`, the same
+   * function `generate_bom` drives headless) — the webview renders
+   * `bomTsv(rows)` itself and copies it to the clipboard. B-rep sources only;
+   * a mesh source has no per-part rows to compute, so the host answers with
+   * `bomError` otherwise. */
+  | { type: "bomResult"; requestId: string; rows: BomRow[]; warnings: string[] }
+  | { type: "bomError"; requestId: string; message: string }
   /** Clash panel (roadmap Tier 2 "Clash panel"): Part-vs-Part interference
    * over the existing `checkInterference` kernel function — a new protocol
    * pair over existing kernel surface, not new geometry work (the same shape
@@ -587,6 +596,10 @@ export type WebviewToHost =
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
+  /** Parts-section "Copy BOM" button: no params beyond `requestId` — the host
+   * reads the sidecar Parts and replays the current (tail) ops itself, so the
+   * TSV always reflects the live model rather than a stale client snapshot. */
+  | { type: "bomRequest"; requestId: string }
   /** Clash panel: check one Part against another (volumes only — same
    * Part-name resolution the `check_interference` MCP tool applies). */
   | { type: "clashCheckRequest"; requestId: string; partA: string; partB: string }

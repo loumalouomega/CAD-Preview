@@ -102,6 +102,8 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"screenshotRequest"` | `viewer.render()` (force a fresh frame) → `viewer.captureScreenshotBase64()` → posts back `"screenshotResult"`/`"screenshotError"`, correlated by `msg.requestId` |
 | `"massPropertiesResult"` | `renderMassProperties(msg.properties)` — caches the raw (mm) result and renders it converted to `currentDisplayUnit` (see `src/webview/units.ts` below); ignored if `msg.requestId` doesn't match the latest request |
 | `"massPropertiesError"` | `MassPropertiesPanel.renderMessage(msg.message, true)` (same stale-request guard) |
+| `"bomResult"` | Renders `bomTsv(msg.rows)` (`src/bomExport.ts`, zero-import pure) and copies it with `navigator.clipboard.writeText`, then `setStatus("BOM copied (N rows)")`; a denied clipboard write surfaces as an error status, never a silent no-copy. Ignored if `msg.requestId` doesn't match the latest click (`bomRequestId`). Host `warnings` are posted as status lines first |
+| `"bomError"` | `setStatus(msg.message, true)` (same stale-request guard) |
 | `"colorFieldResult"` | `viewer.setColorFieldOverlay(buildColorFieldOverlay(pristineMeshPositions(), msg.values, msg.min, msg.max))`, then updates the legend (`#vc-colorfield-gradient`'s CSS background from `viridisCssGradientStops()`, `#vc-colorfield-min`/`-max` via the plain `formatMeasure` — no length-unit suffix, a scalar field isn't length-dimensioned) and unhides it; ignored if `msg.requestId` doesn't match the latest selection (`colorFieldRequestId`) |
 | `"colorFieldError"` | `setStatus(msg.message, true)` + resets the `<select>` to `""`, same stale-request guard |
 

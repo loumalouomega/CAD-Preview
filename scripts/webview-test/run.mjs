@@ -450,6 +450,108 @@ test("mesh ops: section tracks source kind and posts a guarded request", async (
 });
 
 /**
+ * H3. BOM Copy button — the interactive half of Tier 2 symmetry item 4.
+ *
+ * `generate_bom` was MCP-only with nothing in the webview importing `bomTsv`;
+ * the Parts header grew a Copy BOM button driving the same `computeBom`
+ * pipeline entry via `bomRequest`/`bomResult`. This covers the webview half
+ * the host harness cannot: button presence/eligibility, a well-formed request,
+ * the stale-response guard, and the copy + status confirmation. The host half
+ * (rows computed over a real parse/replay) is F5-only, like every other
+ * `provider.ts` save/compute flow. Status text — not a clipboard read-back —
+ * is the copy assertion: headless Chromium grants no `clipboard-read`
+ * permission, but a denied/failed `writeText` would surface the error status
+ * instead of the confirmation, so the confirmation proves the write resolved.
+ */
+test("bom: Copy BOM posts a guarded request and copies the TSV", async (page) => {
+  await populate(page);
+
+  const btn = await page.evaluate(() => {
+    const el = document.getElementById("parts-copy-bom");
+    return el ? { present: true, disabled: el.disabled } : { present: false, disabled: null };
+  });
+  assert(btn.present, "Copy BOM button is present in the Parts header");
+  assert(btn.disabled === false, "Copy BOM is enabled for a B-rep source with parts (3-part fixture)");
+
+  await page.click("#parts-copy-bom");
+  const req = await page
+    .waitForFunction(
+      () => window.__sent?.findLast((m) => m.type === "bomRequest") ?? null,
+      null,
+      { timeout: 10000 }
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(
+    req && typeof req.requestId === "string" && Object.keys(req).length === 2,
+    `click posts a well-formed bomRequest (got ${JSON.stringify(req)})`
+  );
+
+  // A stale reply (superseded requestId) must copy nothing.
+  await post(page, { type: "bomResult", requestId: "stale-id", rows: [], warnings: [] });
+  await sleep(150);
+  const noCopy = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(!/BOM copied/.test(noCopy), `a stale reply copies nothing (status: ${JSON.stringify(noCopy)})`);
+
+  const rows = [
+    { name: "Bracket", color: "#ff8800", solidCount: 1, surfaceCount: 0, lineCount: 0, pointCount: 0, volume: 1000, area: 600, unresolvedIds: [] },
+    { name: "Plate", color: "#38c172", solidCount: 2, surfaceCount: 0, lineCount: 0, pointCount: 0, volume: null, area: null, unresolvedIds: ["solid-9"] },
+  ];
+  await post(page, { type: "bomResult", requestId: req.requestId, rows, warnings: ["Part \"Plate\" has 1 unresolved id."] });
+  await sleep(250);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(status === "BOM copied (2 rows).", `the real reply copies and confirms the row count (status: ${JSON.stringify(status)})`);
+
+  // Warnings travel as status lines first — the copy confirmation lands last.
+  await page.click("#parts-copy-bom");
+  const req2 = await page
+    .waitForFunction(
+      () => window.__sent?.filter((m) => m.type === "bomRequest").length === 2 ?? null,
+      null,
+      { timeout: 10000 }
+    )
+    .catch(() => null);
+  assert(req2 !== null, "a second click posts a second request (no latch wedging)");
+
+  // An error reply surfaces as an error status, never a copy confirmation.
+  await post(page, { type: "bomError", requestId: "stale-id", message: "boom" });
+  await sleep(150);
+  const stillCopy = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(!/boom/.test(stillCopy), `a stale error reply changes nothing (status: ${JSON.stringify(stillCopy)})`);
+
+  // Empty parts disable the button with a reason (no header-only copy).
+  await post(page, { type: "parts", parts: [] });
+  await sleep(150);
+  const emptyState = await page.evaluate(() => {
+    const el = document.getElementById("parts-copy-bom");
+    return el ? { disabled: el.disabled, title: el.title } : null;
+  });
+  assert(emptyState?.disabled === true, "Copy BOM disables with zero parts");
+  assert(
+    (emptyState?.title ?? "").length > 0,
+    `the disabled button explains why (title: ${JSON.stringify(emptyState?.title)})`
+  );
+
+  // A mesh source disables it too — rows need a B-rep parse/replay.
+  const tet = [
+    "solid tet",
+    "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+    "endsolid tet",
+  ].join("\n");
+  await post(page, { type: "loadMeshBytes", sourceFormat: "stl", dataBase64: Buffer.from(tet, "utf8").toString("base64") });
+  await sleep(800);
+  const meshState = await page.evaluate(() => {
+    const el = document.getElementById("parts-copy-bom");
+    return el ? { disabled: el.disabled, title: el.title } : null;
+  });
+  assert(meshState?.disabled === true, "Copy BOM disables on a mesh source");
+  assert(
+    /B-rep/.test(meshState?.title ?? ""),
+    `the mesh-source tooltip names the B-rep requirement (title: ${JSON.stringify(meshState?.title)})`
+  );
+});
+
+/**
  * I. Framing invariants — the automated half of "visual correctness is nobody's
  * job".
  *

@@ -410,6 +410,8 @@ type HostToWebview =
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'bomResult'; requestId: string; rows: BomRow[]; warnings: string[] }
+  | { type: 'bomError'; requestId: string; message: string }
   | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
   | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'spacemouse'; motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }; buttons?: number }
@@ -698,6 +700,18 @@ Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh source
 { "type": "massPropertiesError", "requestId": "1234-0.56", "message": "Unknown entity id: solid-9" }
 ```
 
+### `bomResult` / `bomError`
+
+Sent in reply to `bomRequest` (webview → host, below) — roadmap Tier 2 "BOM Copy button". `rows` is one `BomRow` per Part over a single host parse/replay (`computeBom`, the same function the `generate_bom` MCP tool drives headless); `warnings` carries per-row degradations (unresolved ids) and scad-conversion chatter. **B-rep sources only**, same gate as `massPropertiesResult` — a mesh source has no per-part rows to compute. The webview renders `bomTsv(rows)` itself (`src/bomExport.ts`, zero-import pure) and copies it to the clipboard; an empty parts sidecar returns zero rows with a warning rather than an error (the button stays disabled in that case, so this is a backstop).
+
+```json
+{ "type": "bomResult", "requestId": "1234-0.56", "rows": [{ "name": "Bracket", "color": "#ff8800", "solidCount": 1, "surfaceCount": 0, "lineCount": 0, "pointCount": 0, "volume": 1000, "area": 600, "unresolvedIds": [] }], "warnings": [] }
+```
+
+```json
+{ "type": "bomError", "requestId": "1234-0.56", "message": "BOM rows are computed for B-rep sources on the host; mesh sources have no per-part rows to compute." }
+```
+
 ### `clashCheckResult` / `clashCheckError` / `clashCheckAllResult` / `clashCheckAllError`
 
 Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep sources only** (a mesh has no exact B-rep boolean geometry to intersect; the Clash section hides itself for mesh sources and never sends either request). Carries `InterferenceResult` / named `InterferencePairResult`s verbatim from the existing `checkInterference` / `checkInterferenceAll` pipeline functions — the Clash panel is a new protocol pair over existing kernel surface, not new geometry work; the same functions back the `check_interference` / `check_interference_all` MCP tools. `clashCheckAllRequest` takes no operands (every Part with volumes); each returned pair is named `partA`/`partB` in the kernel's `i<j` enumeration order.
@@ -914,6 +928,7 @@ type WebviewToHost =
   | { type: 'selectorSynthesizeRequest'; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string; autoDecimate?: boolean }
+  | { type: 'bomRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
@@ -1131,6 +1146,14 @@ Sent when the Mass Properties panel's **Compute** button is clicked, for a B-rep
 
 ```json
 { "type": "massPropertiesRequest", "requestId": "1234-0.56", "entityId": "solid-0" }
+```
+
+### `bomRequest`
+
+Sent when the Parts section's **Copy BOM** button is clicked — only enabled for a B-rep source with ≥1 part (mesh sources and empty part lists keep the button disabled with an explanatory tooltip, mirroring `generate_bom`'s own MCP-tool gate; see `bomResult`/`bomError` above). No parameters beyond `requestId` — the host reads the sidecar Parts and replays the current (tail) ops itself.
+
+```json
+{ "type": "bomRequest", "requestId": "1234-0.56" }
 ```
 
 ### `clashCheckRequest` / `clashCheckAllRequest`

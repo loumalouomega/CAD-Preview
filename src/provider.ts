@@ -1522,6 +1522,42 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       /**
+       * Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button"): one
+       * row per Part over a single parse/replay — the same `computeBom` call
+       * shape `generateBomTool` uses headless (existing kernel surface, no new
+       * geometry work). B-rep sources only: a mesh source has no per-part rows
+       * to compute. An empty parts sidecar returns zero rows (not an error —
+       * same convention as `generate_bom`); the button stays disabled in that
+       * case, so this is a backstop, never the primary UX.
+       */
+      if (msg.type === "bomRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("BOM rows are computed for B-rep sources on the host; mesh sources have no per-part rows to compute.");
+          }
+          const parts = await readParts(document.uri);
+          if (parts.length === 0) {
+            post({ type: "bomResult", requestId: msg.requestId, rows: [], warnings: ["No parts defined on this document."] });
+            return;
+          }
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const result = await this.pipeline.computeBom(
+            this.context.extensionPath,
+            src.bytes,
+            src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+            replayTail(currentEdits, currentBakedThrough),
+            parts
+          );
+          post({ type: "bomResult", requestId: msg.requestId, rows: result.rows, warnings: [...scadWarnings, ...result.warnings] });
+        } catch (err) {
+          post({ type: "bomError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      /**
        * Clash panel (roadmap Tier 2 "Clash panel"): Part-vs-Part interference
        * over the existing `checkInterference` kernel function — the same
        * request/response shape as `massPropertiesRequest` above, over existing

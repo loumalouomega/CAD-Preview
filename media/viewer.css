@@ -916,7 +916,8 @@ input[type="range"]#vc-opacity.meshing-slider {
 }
 
 #parts-new,
-#parts-isolate {
+#parts-isolate,
+#parts-copy-bom {
   font: inherit;
   font-size: 11px;
   padding: 2px 6px;
@@ -927,15 +928,18 @@ input[type="range"]#vc-opacity.meshing-slider {
   cursor: pointer;
 }
 #parts-new:hover,
-#parts-isolate:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, #1177bb); }
-#parts-isolate {
+#parts-isolate:hover:not(:disabled),
+#parts-copy-bom:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, #1177bb); }
+#parts-isolate,
+#parts-copy-bom {
   background: var(--vscode-button-secondaryBackground, #3a3d41);
 }
 #parts-isolate.active {
   background: var(--vscode-inputValidation-infoBackground, #063b49);
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
 }
-#parts-isolate:disabled { opacity: 0.4; cursor: default; }
+#parts-isolate:disabled,
+#parts-copy-bom:disabled { opacity: 0.4; cursor: default; }
 
 #parts-body {
   flex: 1;

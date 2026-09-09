@@ -53,9 +53,7 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
 *Admission: one half of a capability ships and the other does not, while the computational half is already pure and reusable. This codebase names the convention itself ("headless and interactive capabilities stay in sync"), and the Standard Parts panel closed one of these already.*
 
-4. **BOM "Copy" button** (**S**). `bomTsv` (`src/bomExport.ts`) is pure and documented as the ready-to-paste spreadsheet handoff; nothing in the webview imports it. Drop it under the existing Parts section.
-
-5. **Primitive-recognition panel** (**M**). `recognize_primitives` / `decompose_to_primitives` are MCP-only, while the *mesh*-side counterpart already ships interactively as `src/webview/regionFitPanel.ts` — so this is the missing B-rep half of a pattern this codebase already committed to. `primitiveRecognition.ts` / `primitiveReport.ts` / `primitiveEmit.ts` are pure and unit-tested.
+4. **Primitive-recognition panel** (**M**). `recognize_primitives` / `decompose_to_primitives` are MCP-only, while the *mesh*-side counterpart already ships interactively as `src/webview/regionFitPanel.ts` — so this is the missing B-rep half of a pattern this codebase already committed to. `primitiveRecognition.ts` / `primitiveReport.ts` / `primitiveEmit.ts` are pure and unit-tested.
 
 ### Tier 3 — New domain capability
 
