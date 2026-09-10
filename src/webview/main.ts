@@ -37,6 +37,8 @@ import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertie
 import { ClashPanel, type ClashPairDisplay } from "./clashPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
 import { RegionFitPanel } from "./regionFitPanel";
+import { PrimitivePanel } from "./primitivePanel";
+import { emitPrimitiveOps } from "../primitiveEmit";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
 import { validateEditOp, GUIDE_KINDS } from "../editOps";
 import type { SelectorQuery } from "../selectorQuery";
@@ -1482,8 +1484,83 @@ const regionFitPanel = new RegionFitPanel(document.getElementById("region-fit-pa
   },
 });
 
-const standardPartsPanel = new StandardPartsPanel(document.getElementById("standard-parts-panel")!, {
-  onSearch: (q: string) => {
+// ── Primitives (Tier 2 "Primitive-recognition panel") ──────────────────────
+// B-rep-only interactive half of recognize_primitives/decompose_to_primitives.
+// The report is host-computed (needs the OCCT kernel); Apply is webview-side
+// (the emission is pure — `emitPrimitiveOps` over the already-posted report —
+// pushed onto the webview's own op stack like a macro, so it stays undoable).
+// Export/Save-macro are host-owned one-shot flows via parameter-free button
+// messages (the Mesh Health Promote/Repair shape).
+let primitiveRecognizeRequestId: string | null = null;
+let lastPrimitiveReport: import("../primitiveReport").PrimitiveReport | null = null;
+
+function primitiveCandidateSummary(c: import("../primitiveSdf").Primitive): string {
+  const f = (n: number): string => {
+    if (!Number.isFinite(n)) return String(n);
+    return String(Number(n.toPrecision(6)));
+  };
+  switch (c.kind) {
+    case "box": return `box ${c.size.map(f).join(" × ")}`;
+    case "sphere": return `sphere r=${f(c.radius)}`;
+    case "cylinder": return `cylinder r=${f(c.radius)} h=${f(c.height)}`;
+    case "cone": return `cone r1=${f(c.radius1)} r2=${f(c.radius2)} h=${f(c.height)}`;
+    case "torus": return `torus R=${f(c.majorRadius)} r=${f(c.minorRadius)}`;
+    case "plane": return "plane";
+  }
+}
+
+const primitivePanel = new PrimitivePanel(document.getElementById("primitives-panel")!, {
+  onRecognize: () => {
+    if (sourceKind !== "brep") return;
+    const requestId = `${Date.now()}-${Math.random()}`;
+    primitiveRecognizeRequestId = requestId;
+    lastPrimitiveReport = null;
+    primitivePanel.setBusy(true);
+    primitivePanel.renderMessage("Recognizing…");
+    post({ type: "primitiveRecognizeRequest", requestId });
+  },
+  onApply: () => {
+    if (!lastPrimitiveReport) return;
+    const emission = emitPrimitiveOps(lastPrimitiveReport, {
+      existingVariableNames: variablesModel.list().map((v) => v.name),
+    });
+    if (emission.ops.length === 0) {
+      setStatus("No primitives recognized — nothing to apply.", true);
+      return;
+    }
+    // Variables first (silent load), then ops push one by one — each push
+    // fires syncEdits with the new variables already in place, so exprs
+    // resolve correctly from the first op (the macro-apply precedent loops
+    // the same way).
+    const current = variablesModel.list();
+    variablesModel.load([...current, ...emission.variables]);
+    for (const op of emission.ops) editsModel.push(op);
+    const skipped = emission.perSolid.filter((p) => !p.emitted);
+    setStatus(
+      `Applied ${emission.ops.length} primitive op(s) for ${emission.perSolid.filter((p) => p.emitted).length} solid(s)` +
+        (skipped.length > 0 ? ` — ${skipped.length} solid(s) not recognized, left untouched.` : ".")
+    );
+    for (const w of emission.warnings) setStatus(w, true);
+  },
+  onExport: () => {
+    if (!lastPrimitiveReport) return;
+    post({ type: "decomposeExportClicked" });
+  },
+  onSaveMacro: () => {
+    if (!lastPrimitiveReport) return;
+    post({ type: "decomposeSaveMacroClicked" });
+  },
+});
+
+function setPrimitivesEligible(eligible: boolean): void {
+  primitivePanel.setEligible(eligible);
+  if (!eligible) {
+    primitiveRecognizeRequestId = null;
+    lastPrimitiveReport = null;
+  }
+}
+
+const standardPartsPanel = new StandardPartsPanel(document.getElementById("standard-parts-panel")!, {  onSearch: (q: string) => {
     const requestId = `${Date.now()}-${Math.random()}`;
     standardPartsSearchRequestId = requestId;
     post({ type: "standardPartsSearchRequest", requestId, q });
@@ -4180,6 +4257,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         clashPanel.setEligible(true); // exact booleans exist only for B-rep
         clearClashResults(); // re-tessellation may renumber the ids results name
         bomRequestId = null; // a new model supersedes any in-flight BOM request
+        setPrimitivesEligible(true); // exact analytic surfaces exist only for B-rep
+        primitiveRecognizeRequestId = null; // a new model supersedes any in-flight recognition
+        lastPrimitiveReport = null;
         viewer.setFitSeedPickHandler(null);
         lastRegionFit = null;
         regionFitRequestId = null;
@@ -4257,6 +4337,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       clashPanel.setEligible(false); // no exact boolean geometry for a mesh
       clearClashResults();
       bomRequestId = null; // a new model supersedes any in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
+      setPrimitivesEligible(false); // a mesh has no analytic surfaces to classify
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
       regionFitRequestId = null;
@@ -4275,6 +4356,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshioOpsRequestId = null; // a new document supersedes any in-flight op
       bomRequestId = null; // same for an in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
       clashPanel.setEligible(false); // meshio boundary has no B-rep booleans
+      setPrimitivesEligible(false); // meshio boundary has no analytic surfaces
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
       regionFitRequestId = null;
@@ -4691,6 +4773,33 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "fitRegionError":
       if (msg.requestId !== regionFitRequestId) break;
       regionFitPanel.renderMessage(msg.message, true);
+      break;
+
+    case "primitiveRecognizeResult":
+      if (msg.requestId !== primitiveRecognizeRequestId) break; // stale — a newer recognition/load superseded it
+      primitiveRecognizeRequestId = null;
+      lastPrimitiveReport = msg.report;
+      primitivePanel.setBusy(false);
+      primitivePanel.render({
+        solidCount: msg.report.solidCount,
+        solids: msg.report.solids.map((s) => ({
+          solidId: s.solidId,
+          faceCount: s.faceCount,
+          inventory: s.inventory as unknown as Record<string, number>,
+          candidateKind: s.candidate?.kind ?? null,
+          candidateSummary: s.candidate ? primitiveCandidateSummary(s.candidate) : null,
+          fitResidual: s.fitResidual,
+          fitResidualFrac: s.fitResidualFrac,
+          reason: s.candidate ? undefined : "no signature match — not a recognized primitive",
+        })),
+      });
+      break;
+
+    case "primitiveRecognizeError":
+      if (msg.requestId !== primitiveRecognizeRequestId) break;
+      primitiveRecognizeRequestId = null;
+      primitivePanel.setBusy(false);
+      primitivePanel.renderMessage(msg.message, true);
       break;
 
     case "opPreviewResult":

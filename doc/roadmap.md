@@ -49,12 +49,6 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
    **Doc debt, named up front so it is not discovered late.** The read-only claim is stated in `README.md`, `doc/index.md`, `doc/getting-started.md` (including its Limitations list), `doc/file-formats.md` (once per sidecar section), `doc/extension-host-api.md`, `doc/protocol.md`, `doc/mcp-server.md`, and in `mcpServer.ts`'s own `instructions` block plus roughly ten tool descriptions. `npm run mcp:smoke` asserts the source stays byte-identical, so that assertion is re-scoped rather than deleted — it remains exactly right for every tool that is not the new one.
 
-### Tier 2 — Headless ↔ interactive symmetry
-
-*Admission: one half of a capability ships and the other does not, while the computational half is already pure and reusable. This codebase names the convention itself ("headless and interactive capabilities stay in sync"), and the Standard Parts panel closed one of these already.*
-
-4. **Primitive-recognition panel** (**M**). `recognize_primitives` / `decompose_to_primitives` are MCP-only, while the *mesh*-side counterpart already ships interactively as `src/webview/regionFitPanel.ts` — so this is the missing B-rep half of a pattern this codebase already committed to. `primitiveRecognition.ts` / `primitiveReport.ts` / `primitiveEmit.ts` are pure and unit-tested.
-
 ### Tier 3 — New domain capability
 
 *Admission: adds a genuinely new capability to the CAD-inspection or FEM-prep domain, rather than closing a gap in an existing one.*

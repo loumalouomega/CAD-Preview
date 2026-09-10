@@ -58,6 +58,7 @@ import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { mergeScriptOverrides, parseScriptLibraryJson, scriptParameters, serializeScriptLibraryJson } from "./scriptLibrary";
+import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
 import * as path from "path";
@@ -2045,6 +2046,45 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         }
         return;
       }
+
+      /**
+       * Primitives panel (Tier 2 "Primitive-recognition panel"): read-only
+       * per-solid report over the existing `recognizePrimitives` kernel
+       * function — the same request/response shape as `massPropertiesRequest`
+       * above, over existing kernel surface. B-rep sources only: a mesh has
+       * no analytic surface type, so this answers with
+       * `primitiveRecognizeError` otherwise.
+       */
+      if (msg.type === "primitiveRecognizeRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Primitive recognition needs a B-rep source; mesh sources have no analytic surfaces to classify.");
+          }
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const report = await this.pipeline.recognizePrimitives(
+            this.context.extensionPath,
+            src.bytes,
+            src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+            replayTail(currentEdits, currentBakedThrough)
+          );
+          post({ type: "primitiveRecognizeResult", requestId: msg.requestId, report });
+        } catch (err) {
+          post({ type: "primitiveRecognizeError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "decomposeExportClicked") {
+        if (route) void this.handleDecomposeExport(document.uri, route, post, replayTail(currentEdits, currentBakedThrough), currentVariables);
+        return;
+      }
+
+      if (msg.type === "decomposeSaveMacroClicked") {
+        if (route) void this.handleDecomposeSaveMacro(document.uri, route, post, replayTail(currentEdits, currentBakedThrough), currentVariables);
+        return;
+      }
     });
 
     webviewPanel.webview.html = this.getHtml(webviewPanel.webview);
@@ -2767,6 +2807,143 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       },
       post
     );
+  }
+
+  /**
+   * Primitives panel (Tier 2 "Primitive-recognition panel") — the interactive
+   * half of `decompose_to_primitives`. Deliberately a ONE-SHOT EXPORT
+   * (recognize each solid, emit parametric creation ops, write them as a
+   * brand-new STEP/IGES/BREP file the user opens separately), not an in-place
+   * reclassification of THIS document — the same export model
+   * `handlePromoteToBrep` follows, and `decompose_to_primitives`' own
+   * headless contract. Mirrors `handlePromoteToBrep`'s exact structure
+   * (format quick-pick over the same `BREP_FORMATS`, the existing
+   * `pickExportUnit()`, the shared `promptSaveAndWrite()`) with the emission
+   * (`emitPrimitiveOps`, same call shape `decomposeToPrimitivesTool` uses
+   * headless, including collision-renaming against the document's own
+   * variables) computed fresh here rather than trusting a client snapshot.
+   * A document with zero recognized solids posts an explanatory error rather
+   * than writing an empty file.
+   */
+  private async handleDecomposeExport(
+    uri: vscode.Uri,
+    route: FileRoute,
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[],
+    variables: ParamVariable[]
+  ): Promise<void> {
+    if (route.strategy !== "occt") {
+      post({ type: "error", message: "Primitive export needs a B-rep source; mesh sources have no analytic surfaces to classify." });
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      [...BREP_FORMATS].map((format) => ({
+        label: EXPORT_LABEL[format],
+        description: `.${EXPORT_EXTENSION[format]}`,
+        format: format as Extract<CadFormat, "step" | "iges" | "brep">,
+      })),
+      { placeHolder: "Export recognized primitives as…" }
+    );
+    if (!picked) return;
+
+    const unit = await this.pickExportUnit();
+
+    await this.promptSaveAndWrite(
+      uri,
+      EXPORT_EXTENSION[picked.format],
+      EXPORT_LABEL[picked.format],
+      async (_saveUri) => {
+        const scadWarnings: string[] = [];
+        const src = await this.readOcctSource(uri, route.format, scadWarnings);
+        for (const w of scadWarnings) post({ type: "status", text: w });
+        const report = await this.pipeline.recognizePrimitives(
+          this.context.extensionPath,
+          src.bytes,
+          src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+          ops
+        );
+        const emission = emitPrimitiveOps(report, {
+          existingVariableNames: variables.map((v) => v.name),
+        });
+        if (emission.ops.length === 0) {
+          throw new Error("No primitives recognized — nothing to export.");
+        }
+        const build = await this.pipeline.buildPrimitivesFile(
+          this.context.extensionPath,
+          emission.ops,
+          picked.format,
+          unit
+        );
+        for (const w of [...emission.warnings, ...build.warnings]) post({ type: "status", text: w });
+        return build.bytes;
+      },
+      post
+    );
+  }
+
+  /**
+   * Primitives panel, Save-macro variant — the same emission as
+   * `handleDecomposeExport`, saved as a reusable parameterized macro into
+   * this document's folder `cad-preview-macros.json` (the same file
+   * `macroSaveCurrent` and the MCP `save_parametric_script` tool write, so a
+   * macro recorded here is directly runnable by an agent and vice versa)
+   * instead of a B-rep file. The emitted script is dry-compiled against its
+   * own declared defaults before saving (the `save_parametric_script`
+   * precedent) so a broken macro never enters the library silently.
+   */
+  private async handleDecomposeSaveMacro(
+    uri: vscode.Uri,
+    route: FileRoute,
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[],
+    variables: ParamVariable[]
+  ): Promise<void> {
+    try {
+      if (route.strategy !== "occt") {
+        throw new Error("Primitive macros need a B-rep source; mesh sources have no analytic surfaces to classify.");
+      }
+      const scadWarnings: string[] = [];
+      const src = await this.readOcctSource(uri, route.format, scadWarnings);
+      for (const w of scadWarnings) post({ type: "status", text: w });
+      const report = await this.pipeline.recognizePrimitives(
+        this.context.extensionPath,
+        src.bytes,
+        src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+        ops
+      );
+      const emission = emitPrimitiveOps(report, {
+        existingVariableNames: variables.map((v) => v.name),
+      });
+      if (emission.ops.length === 0) {
+        throw new Error("No primitives recognized — nothing to save.");
+      }
+      const name = await vscode.window.showInputBox({
+        title: "Save primitives as macro",
+        prompt: `Name for this macro (${emission.ops.length} op(s), ${emission.variables.length} variable(s))`,
+        placeHolder: "recognized-primitives",
+        validateInput: (v) => (v.trim() === "" ? "A name is required" : null),
+      });
+      if (name === undefined) return; // dismissed — a quiet no-op
+      const trimmed = name.trim();
+      const scriptDoc: Record<string, unknown> = {
+        variables: emission.variables,
+        steps: emission.ops.map((op) => ({ op })),
+      };
+      const probe = compileParametricScript(scriptDoc, {});
+      if (probe.ops.length === 0) throw new Error(`Refusing to save "${trimmed}": the emitted script compiled to no ops.`);
+      const libraryPath = macroLibraryPath(uri);
+      const library = parseScriptLibraryJson(await readTextFile(libraryPath));
+      const existed = Object.prototype.hasOwnProperty.call(library, trimmed);
+      library[trimmed] = { name: trimmed, script: scriptDoc };
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(libraryPath),
+        Buffer.from(serializeScriptLibraryJson(library), "utf8")
+      );
+      await this.sendMacros(uri, post);
+      post({ type: "status", text: `Saved macro "${trimmed}"${existed ? " (replaced existing)." : "."}` });
+    } catch (err) {
+      post({ type: "error", message: (err as Error).message });
+    }
   }
 
   /**

@@ -152,6 +152,19 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="region-fit-body"></div>
       </div>
+      <div id="primitives-panel" hidden>
+        <div id="primitives-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <span id="primitives-title">Primitives</span>
+          <div id="primitives-actions">
+            <button id="primitives-recognize" title="Read-only diagnostic: classify each solid as a box/sphere/cylinder/cone/torus with a fit residual — emits nothing, changes nothing">${icon("generate")} Recognize</button>
+            <button id="primitives-apply" title="Push the recognized primitives as parametric creation ops (one per solid, dimensions bound to named variables) onto the edit history — undoable, removable op-by-op" disabled>${icon("add")} Apply as edits</button>
+            <button id="primitives-export" title="Write the recognized primitives as a brand-new STEP/IGES/BREP file — the original file is left untouched" disabled>${icon("export")} Export…</button>
+            <button id="primitives-save-macro" title="Save the recognized primitives as a reusable parameterized macro" disabled>${icon("save")} Save macro…</button>
+          </div>
+        </div>
+        <div id="primitives-body"></div>
+      </div>
       <div id="macros-panel">
         <div id="macros-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>

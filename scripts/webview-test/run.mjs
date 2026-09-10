@@ -1273,7 +1273,7 @@ test("collapse: every sidebar section has a working chevron", async (page) => {
   const panels = [
     "tree-panel", "parts-panel", "edits-panel", "meshing-panel", "mass-panel",
     "clash-panel",
-    "mesh-health-panel", "region-fit-panel", "macros-panel", "standard-parts-panel",
+    "mesh-health-panel", "region-fit-panel", "primitives-panel", "macros-panel", "standard-parts-panel",
   ];
   const missing = await page.evaluate(
     (ids) => ids.filter((id) => !document.querySelector(`#${id} > .panel-header > .panel-chevron`)),
@@ -1521,6 +1521,133 @@ test("clash: the hidden attribute genuinely hides the section", async (page) => 
     return el.getBoundingClientRect().height;
   });
   assert(height === 0, `#clash-panel[hidden] renders nothing (got ${height}px)`);
+});
+
+// ── Primitives panel (Tier 2 "Primitive-recognition panel") ───────────────
+//
+// The kernel side (`recognizePrimitives`/`buildPrimitivesFile` +
+// `emitPrimitiveOps`) is covered against live OCCT in `npm run mcp:smoke` and
+// by `primitiveEmit` unit tests, so what needs checking here is the panel:
+// B-rep-only eligibility, the request it posts, the rendering decision
+// (recognized rows show candidate + residual, unrecognized rows show
+// inventory + reason — never a guess), and that Apply pushes emitted ops.
+// Host replies are faked by posting `primitiveRecognizeResult` directly (the
+// inspector-card / clash precedent).
+
+const PRIMITIVE_BOX_REPORT = {
+  solidCount: 2,
+  solids: [
+    {
+      solidId: "solid-0",
+      faceCount: 6,
+      inventory: { plane: 6, cylinder: 0, cone: 0, sphere: 0, torus: 0, other: 0 },
+      candidate: {
+        kind: "box",
+        center: [0, 0, 0],
+        size: [10, 20, 30],
+        xAxis: [1, 0, 0],
+        yAxis: [0, 1, 0],
+        zAxis: [0, 0, 1],
+      },
+      fitResidual: 0.00001,
+      fitResidualFrac: 0.0000003,
+    },
+    {
+      solidId: "solid-1",
+      faceCount: 7,
+      inventory: { plane: 6, cylinder: 1, cone: 0, sphere: 0, torus: 0, other: 0 },
+      candidate: null,
+      fitResidual: null,
+      fitResidualFrac: null,
+    },
+  ],
+};
+
+test("primitives: B-rep source shows the section; Recognize posts a well-formed request", async (page) => {
+  await populate(page); // bull.stp — B-rep, so the section is eligible
+  const shown = await page.evaluate(() => document.getElementById("primitives-panel")?.offsetParent !== null);
+  assert(shown, "the Primitives section is genuinely rendered for a B-rep source");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#primitives-recognize");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "primitiveRecognizeRequest").at(-1) ?? null
+  );
+  assert(req !== null && typeof req.requestId === "string", `clicking Recognize posts a primitiveRecognizeRequest with a requestId (got ${JSON.stringify(req)})`);
+});
+
+test("primitives: reply renders recognized + unrecognized rows; a stale reply is ignored", async (page) => {
+  await populate(page);
+  await page.click("#primitives-recognize");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "primitiveRecognizeRequest").at(-1) ?? null
+  );
+  assert(req !== null, "clicking Recognize posts a primitiveRecognizeRequest");
+  // Playwright evaluate takes a single argument — pack both values.
+  await page.evaluate(([id, report]) =>
+    window.postMessage({ type: "primitiveRecognizeResult", requestId: id, report }, "*"),
+    [req.requestId, PRIMITIVE_BOX_REPORT]
+  );
+  await sleep(200);
+  const text = await page.evaluate(() => document.getElementById("primitives-body")?.textContent ?? "");
+  assert(text.includes("solid-0") && text.includes("box"), `the recognized solid renders with its candidate (got ${JSON.stringify(text.slice(0, 200))})`);
+  assert(text.includes("solid-1") && /not a recognized primitive/i.test(text), `the unrecognized solid renders its honest reason (got ${JSON.stringify(text.slice(0, 200))})`);
+  const buttons = await page.evaluate(() => ({
+    apply: document.getElementById("primitives-apply")?.disabled ?? null,
+    export: document.getElementById("primitives-export")?.disabled ?? null,
+    macro: document.getElementById("primitives-save-macro")?.disabled ?? null,
+  }));
+  assert(buttons.apply === false && buttons.export === false && buttons.macro === false, `the action buttons enable with ≥1 recognized solid (got ${JSON.stringify(buttons)})`);
+
+  await page.evaluate(([id, report]) =>
+    window.postMessage({ type: "primitiveRecognizeResult", requestId: id, report }, "*"),
+    ["stale-id", { solidCount: 0, solids: [] }]
+  );
+  await sleep(200);
+  const after = await page.evaluate(() => document.getElementById("primitives-body")?.textContent ?? "");
+  assert(after === text, "a stale-requestId reply is ignored");
+});
+
+test("primitives: Apply pushes the emitted ops via editsChanged", async (page) => {
+  await populate(page);
+  await page.click("#primitives-recognize");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "primitiveRecognizeRequest").at(-1) ?? null
+  );
+  await page.evaluate(([id, report]) =>
+    window.postMessage({ type: "primitiveRecognizeResult", requestId: id, report }, "*"),
+    [req.requestId, PRIMITIVE_BOX_REPORT]
+  );
+  await sleep(200);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#primitives-apply");
+  await sleep(300);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged"));
+  assert(sent.length > 0, "clicking Apply as edits posts an editsChanged");
+  // The fixture pre-populates the history (an addBox/addCylinder/translate
+  // with variables L, H), so the emission lands at the END, not alone.
+  const ops = sent.at(-1).ops ?? [];
+  const last = ops.at(-1) ?? null;
+  assert(
+    last !== null && last.op === "addBox" && eq(last.center, [0, 0, 0]) && eq(last.size, [10, 20, 30]),
+    `the appended op is the emitted box creation op (got ${JSON.stringify(last)?.slice(0, 200)})`
+  );
+  const vars = sent.at(-1).variables ?? [];
+  const names = vars.map((v) => v.name);
+  assert(
+    names.includes("box1_x") && names.includes("box1_y") && names.includes("box1_z"),
+    `the box dimensions arrive as named variables alongside the pre-existing ones (got ${JSON.stringify(names)})`
+  );
+});
+
+test("primitives: the hidden attribute genuinely hides the section", async (page) => {
+  // Same regression shape as the clash `[hidden]` test above.
+  await populate(page);
+  const height = await page.evaluate(() => {
+    const el = document.getElementById("primitives-panel");
+    el.hidden = true;
+    return el.getBoundingClientRect().height;
+  });
+  assert(height === 0, `#primitives-panel[hidden] renders nothing (got ${height}px)`);
 });
 
 // ── Tier 0 Phase 2: save-point-locked history ─────────────────────────────

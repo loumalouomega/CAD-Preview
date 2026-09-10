@@ -14,6 +14,7 @@ import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 import type { MeshRegionFit } from "./fitMapping";
+import type { PrimitiveReport } from "./primitiveReport";
 import type { MeshioOpSpec } from "./meshioOps";
 import type { BomRow } from "./bomExport";
 import type { AnnotatedTolerance } from "./toleranceBand";
@@ -466,6 +467,15 @@ export type HostToWebview =
   | { type: "meshioOpsError"; requestId: string; message: string }
   | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }
   | { type: "fitRegionError"; requestId: string; message: string }
+  /** Primitive-recognition panel (Tier 2 "Primitive-recognition panel"): a
+   * read-only per-solid report over the existing `recognizePrimitives` kernel
+   * function — a new protocol pair over existing kernel surface, not new
+   * geometry work (the same shape `entityFactsRequest` used when it shipped).
+   * B-rep sources only: a mesh has no analytic surface type, so the host
+   * answers with `primitiveRecognizeError` otherwise. Mirrors
+   * `meshHealRequest`'s requestId + stale-response-guard idiom. */
+  | { type: "primitiveRecognizeResult"; requestId: string; report: PrimitiveReport }
+  | { type: "primitiveRecognizeError"; requestId: string; message: string }
   /**
    * SpaceMouse 6DOF motion event (roadmap Tier 2 item 2) — raw device units
    * (signed 16-bit per axis, full deflection ≈ ±350), NOT camera deltas.
@@ -593,6 +603,15 @@ export type WebviewToHost =
   | { type: "screenshotButtonClicked" }
   | { type: "promoteToBrepButtonClicked" }
   | { type: "repairMeshButtonClicked" }
+  /** Primitives panel (Tier 2 "Primitive-recognition panel"): one-shot
+   * actions over the last recognized report. Like `promoteToBrepButtonClicked`,
+   * the host owns the whole flow from here (for Export: format quick-pick →
+   * unit quick-pick → save dialog; for Save-macro: name prompt → library
+   * write; for Apply the webview pushes onto its own op stack directly and
+   * never posts this), so there is nothing to correlate and no result message:
+   * success/failure come back through the generic `status`/`error` messages. */
+  | { type: "decomposeExportClicked" }
+  | { type: "decomposeSaveMacroClicked" }
   | { type: "screenshotResult"; requestId: string; data: string }
   | { type: "screenshotError"; requestId: string; message: string }
   | { type: "massPropertiesRequest"; requestId: string; entityId: string | null }
@@ -663,6 +682,11 @@ export type WebviewToHost =
    * carries the per-step report back to the panel. */
   | { type: "meshioOpsRequest"; requestId: string; ops: MeshioOpSpec[] }
   | { type: "fitRegionRequest"; requestId: string; point: [number, number, number] }
+  /** Primitive-recognition panel: run `recognizePrimitives` over the
+   * currently-open B-rep source. No params beyond `requestId` — the host
+   * reads the source bytes + tail ops itself, so the report always reflects
+   * the live model rather than a stale client snapshot. */
+  | { type: "primitiveRecognizeRequest"; requestId: string }
   | { type: "setCamerasLinked"; enabled: boolean };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
