@@ -231,7 +231,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 48, `tools/list exposes 48 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 49, `tools/list exposes 49 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -2942,6 +2942,51 @@ try {
   assert(
     watermarkRemove.error !== undefined && /baked prefix/.test(watermarkRemove.error),
     "remove_edit_op refuses an index inside the baked prefix with a clear error"
+  );
+
+  // Tier 0 Phase 3 — `save_model` end to end through the real kernel: bake
+  // the tail into the source itself, keep the history with the watermark,
+  // leave a `.bak`, and reopen with no double-apply. Mesh sources refuse.
+  const saveModel = path.join(dir, "bull-for-save-model.stp");
+  fs.copyFileSync(FIXTURE, saveModel);
+  await call("apply_edit_ops", {
+    path: saveModel,
+    ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }],
+  });
+  const saveVolume = (await call("get_mass_properties", { path: saveModel })).volume;
+  const saveModelResult = await callWithCleanRetry(
+    "save_model",
+    { path: saveModel },
+    () => {
+      // A retry must never observe a partial prior attempt: if the aborted
+      // call already overwrote the source but not the watermark, replaying
+      // the same tail again would double-apply. Restoring the source from
+      // the .bak (or the pristine fixture when no .bak exists yet) while
+      // leaving the sidecar's ops + watermark untouched puts the retry back
+      // on (original bytes + full ops + watermark 0), which bakes cleanly.
+      try {
+        fs.copyFileSync(`${saveModel}.bak`, saveModel);
+      } catch {
+        fs.copyFileSync(FIXTURE, saveModel);
+      }
+    }
+  );
+  assert(saveModelResult.baked === 1 && saveModelResult.editsBaked === 1, `save_model bakes the tail (got baked=${saveModelResult.baked}, editsBaked=${saveModelResult.editsBaked})`);
+  assert(fs.existsSync(`${saveModel}.bak`), "save_model leaves a one-deep .bak beside the source");
+  const saveState = await call("get_state", { path: saveModel });
+  assert(saveState.bakedThrough === 1 && saveState.edits.length === 1, "save_model persists the watermark with the full history");
+  const saveReloadedVolume = (await call("get_mass_properties", { path: saveModel })).volume;
+  assert(
+    Math.abs(saveReloadedVolume / saveVolume - 1) < 1e-6,
+    `saved file's volume matches the pre-save edited model: ${saveReloadedVolume.toFixed(6)} vs ${saveVolume.toFixed(6)}`
+  );
+  const saveAgain = await call("save_model", { path: saveModel });
+  assert(saveAgain.baked === 0, "save_model with an empty tail succeeds with baked: 0 and no rewrite");
+  // Refusal happens before any write, so the read-only fixture path is safe.
+  const stlSaveRefused = await callTolerant("save_model", { path: path.join(ROOT, "examples", "STL", "cube.stl") });
+  assert(
+    stlSaveRefused.error !== undefined && /cannot be saved in place headless/i.test(stlSaveRefused.error),
+    "save_model refuses a mesh source with a clear error"
   );
 
   // Regression guard: does the meshing-input STEP path (export_mesh/

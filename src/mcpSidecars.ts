@@ -174,8 +174,10 @@ export async function writeScriptLibrary(libraryPath: string, library: ScriptLib
 }
 
 /**
- * Project invariant: the CAD source file is never written. Every tool that
- * takes a caller-chosen output path must run it through this guard first.
+ * Project invariant: the CAD source file is never written except by the
+ * explicit opt-in `save_model` tool (which takes no output path at all).
+ * Every other tool that takes a caller-chosen output path must run it
+ * through this guard first.
  */
 export function assertNotSourcePath(modelPath: string, outPath: string): void {
   if (path.resolve(modelPath) === path.resolve(outPath)) {

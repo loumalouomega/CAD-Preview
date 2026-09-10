@@ -27,7 +27,7 @@ import { validateMeshioOpSpec } from "./meshioOps";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
-import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS, MESH_SAVE_IN_PLACE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readPlanes, writePlanes, planesSidecarUri } from "./planesStore";
@@ -58,6 +58,7 @@ import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { mergeScriptOverrides, parseScriptLibraryJson, scriptParameters, serializeScriptLibraryJson } from "./scriptLibrary";
+import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
 import * as path from "path";
@@ -206,8 +207,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * completes. Only `CustomDocumentContentChangeEvent` is ever fired (never
    * `CustomDocumentEditEvent` — the webview owns the undo stack, and the API
    * requires one kind or the other, never mixed). Dirty means exactly one
-   * thing: the op list has an unbaked tail for a B-rep source that can bake
-   * it (`currentEdits.length > currentBakedThrough` on step/iges/brep) —
+   * thing: the op list has an unbaked tail for a source that can bake it
+   * (`currentEdits.length > currentBakedThrough` on step/iges/brep for B-rep,
+   * and on stl/obj/ply for mesh save-in-place — Tier 0 Phase 3) —
    * sidecar-only changes never dirty the document (they're covered by the
    * ~500 ms autosave plus the explicit File-Save flush).
    */
@@ -770,21 +772,102 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      * confirmed (the Export flow keeps its Phase-1 modal).
      */
     const performSaveInPlace = async (targetFormat: CadFormat): Promise<void> => {
-      if (!route || route.strategy !== "occt") return;
+      if (!route) return;
       if (targetFormat !== route.format) return;
-      await bakeTailToSource("always");
+      if (route.strategy === "occt") {
+        await bakeTailToSource("always");
+        return;
+      }
+      // Tier 0 Phase 3 — same-format mesh save-in-place (STL→STL, OBJ→OBJ,
+      // PLY→PLY) from the Export flow. Serializes the currently displayed
+      // (edited) model via the webview, then writes it back over the source
+      // through the same temp-sibling + rename + one-deep `.bak` + watcher
+      // guard as the B-rep bake above. glTF never reaches here (excluded from
+      // `MESH_SAVE_IN_PLACE_FORMATS` — its exporter only emits binary `.glb`).
+      if (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) {
+        await bakeMeshToSource("always");
+      }
+    };
+
+    /**
+     * Tier 0 Phase 3 — mesh save-in-place body (STL/OBJ/PLY only). The
+     * displayed model already includes the unbaked tail (mesh edits replay in
+     * the webview), so saving serializes it via the `exportMesh` round trip
+     * at native mm and writes it over the source. The sidecar KEEPS the full
+     * op list with the watermark set — the webview's `rebuildMeshModel`
+     * replays only the tail after the save point, so history is preserved
+     * exactly like the B-rep bake (not cleared). Mesh Parts reference
+     * `node-N` ids by traversal order over the single root mesh, which this
+     * serialization preserves, so no rebind pass is needed (unlike B-rep's
+     * two-byte `rebindPartsAcrossSave`).
+     */
+    const bakeMeshToSource = async (confirmPolicy: "always" | "first"): Promise<boolean> => {
+      if (!route || route.strategy !== "three" || !MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) return false;
+      const fileName = document.uri.path.slice(document.uri.path.lastIndexOf("/") + 1);
+      if (currentEdits.length < currentBakedThrough) {
+        post({ type: "error", message: "The op list changed below the save point — close and reopen the file to work from the saved state." });
+        return false;
+      }
+      const tailLength = currentEdits.length - currentBakedThrough;
+      try {
+        const needsConfirm = confirmPolicy === "always" || !madeSourceBackupThisSession;
+        if (needsConfirm) {
+          const confirm = await vscode.window.showWarningMessage(
+            `Save ${tailLength} edit op(s) into ${fileName} itself? The file is re-emitted from the displayed model, not patched: facet structure and authoring metadata are not preserved. This cannot be undone past the save point.`,
+            { modal: true },
+            "Save in place",
+            "Cancel"
+          );
+          if (confirm !== "Save in place") return false;
+        }
+        const requestId = `${Date.now()}-${Math.random()}`;
+        const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
+          pending.set(requestId, { resolve, reject });
+          post({ type: "exportMesh", requestId, format: route.format, unit: "mm" });
+        });
+        const bytes = result.binary ? Buffer.from(result.data, "base64") : Buffer.from(result.data, "utf8");
+        if (!madeSourceBackupThisSession) {
+          await vscode.workspace.fs.copy(document.uri, document.uri.with({ path: `${document.uri.path}.bak` }), { overwrite: true });
+          madeSourceBackupThisSession = true;
+        }
+        const baseName = fileName.replace(/\.[^.]+$/, "");
+        const tmpUri = vscode.Uri.joinPath(document.uri, "..", `${baseName}.save-tmp.${EXPORT_EXTENSION[route.format as CadFormat]}`);
+        try {
+          await vscode.workspace.fs.writeFile(tmpUri, bytes);
+          expectOwnSourceSave = true;
+          await vscode.workspace.fs.rename(tmpUri, document.uri, { overwrite: true });
+        } catch (err) {
+          expectOwnSourceSave = false;
+          await vscode.workspace.fs.delete(tmpUri).then(undefined, () => undefined);
+          throw err;
+        }
+        if (editsSaveTimer) clearTimeout(editsSaveTimer);
+        currentBakedThrough = currentEdits.length;
+        await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+        post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+        post({ type: "status", text: `Saved in place to ${fileName} (${tailLength} op(s) baked)` });
+        loadModel(true);
+        return true;
+      } catch (err) {
+        post({ type: "error", message: `Save in place failed: ${(err as Error).message}` });
+        return false;
+      }
     };
 
     /**
      * Tier 0 Phase 2 — `saveCustomDocument` body (Ctrl+S / Save All /
      * auto-save): sidecars flush as PART of the save, then any unbaked tail
-     * bakes for a B-rep source that can bake it. Mesh/meshio/CAD-text sources
-     * flush sidecars only (nothing bakes headlessly before Phase 3).
+     * bakes for a source that can bake it (B-rep via `bakeTailToSource`,
+     * STL/OBJ/PLY via `bakeMeshToSource` — Tier 0 Phase 3; meshio/CAD-text
+     * sources flush sidecars only).
      */
     const saveDocumentSource = async (): Promise<void> => {
       await flushSidecars();
-      if (route && route.strategy === "occt" && currentEdits.length > currentBakedThrough) {
+      if (currentEdits.length <= currentBakedThrough) return;
+      if (route && route.strategy === "occt") {
         await bakeTailToSource("first");
+      } else if (route && route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) {
+        await bakeMeshToSource("first");
       }
     };
 
@@ -1302,12 +1385,18 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const previousOps = currentEdits;
         currentEdits = msg.ops;
         currentVariables = msg.variables;
-        // Tier 0 Phase 2 — dirty tracking: an unbaked tail on a B-rep source
+        // Tier 0 Phase 2+3 — dirty tracking: an unbaked tail on a source
         // that can bake it marks the editor dirty (VS Code clears it when a
         // save/revert completes). Sidecar-only changes never fire — they're
-        // covered by autosave + File-Save. Mesh/meshio/CAD-text sources never
-        // fire either (nothing bakes headlessly before Phase 3).
-        if (route && route.strategy === "occt" && BREP_FORMATS.has(route.format) && currentEdits.length > currentBakedThrough) {
+        // covered by autosave + File-Save. meshio/CAD-text sources never
+        // fire (nothing bakes for them); glTF never fires (no same-format
+        // writer — its exporter only emits binary `.glb`).
+        if (
+          route &&
+          currentEdits.length > currentBakedThrough &&
+          ((route.strategy === "occt" && BREP_FORMATS.has(route.format)) ||
+            (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)))
+        ) {
           this.fireDirty(document);
         }
         // Debounced sidecar autosave (separate timer/file from parts).
@@ -2045,6 +2134,45 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         }
         return;
       }
+
+      /**
+       * Primitives panel (Tier 2 "Primitive-recognition panel"): read-only
+       * per-solid report over the existing `recognizePrimitives` kernel
+       * function — the same request/response shape as `massPropertiesRequest`
+       * above, over existing kernel surface. B-rep sources only: a mesh has
+       * no analytic surface type, so this answers with
+       * `primitiveRecognizeError` otherwise.
+       */
+      if (msg.type === "primitiveRecognizeRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Primitive recognition needs a B-rep source; mesh sources have no analytic surfaces to classify.");
+          }
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const report = await this.pipeline.recognizePrimitives(
+            this.context.extensionPath,
+            src.bytes,
+            src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+            replayTail(currentEdits, currentBakedThrough)
+          );
+          post({ type: "primitiveRecognizeResult", requestId: msg.requestId, report });
+        } catch (err) {
+          post({ type: "primitiveRecognizeError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "decomposeExportClicked") {
+        if (route) void this.handleDecomposeExport(document.uri, route, post, replayTail(currentEdits, currentBakedThrough), currentVariables);
+        return;
+      }
+
+      if (msg.type === "decomposeSaveMacroClicked") {
+        if (route) void this.handleDecomposeSaveMacro(document.uri, route, post, replayTail(currentEdits, currentBakedThrough), currentVariables);
+        return;
+      }
     });
 
     webviewPanel.webview.html = this.getHtml(webviewPanel.webview);
@@ -2570,10 +2698,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      */
     onSaveInPlace?: (targetFormat: CadFormat) => Promise<void>
   ): Promise<void> {
-    // Tier 0 Phase 1: a B-rep source may target its OWN format (STEP-from-STEP
-    // save-in-place). Mesh sources keep the exclusion — mesh in-place is
-    // Phase 3 work.
-    const targets = exportTargetsFor(route, route.strategy === "occt");
+    // Tier 0 Phase 1+3: a B-rep source may target its OWN format (STEP-from-STEP
+    // save-in-place), as may an STL/OBJ/PLY mesh source (mesh save-in-place).
+    // glTF/meshio/CAD-text sources keep the exclusion (no same-format writer).
+    const targets = exportTargetsFor(
+      route,
+      route.strategy === "occt" || (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format))
+    );
     if (targets.length === 0) return;
 
     const picked = await vscode.window.showQuickPick(
@@ -2587,13 +2718,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     if (!picked) return;
 
     const targetFormat = picked.format;
-    // Tier 0 Phase 1: same-format B-rep pick is a save-in-place, not an
-    // export — a confirmed write back to the open document (temp sibling +
-    // rename, one-deep .bak, bakedThrough watermark). Cross-format picks and
-    // every mesh target keep the export flow below. Without a session
-    // callback (no open document owns this call) it cannot run — refuse
-    // rather than silently exporting over the source.
-    if (BREP_FORMATS.has(targetFormat) && targetFormat === route.format) {
+    // Tier 0 Phase 1+3: same-format pick is a save-in-place, not an export —
+    // a confirmed write back to the open document (temp sibling + rename,
+    // one-deep .bak, bakedThrough watermark). Cross-format picks keep the
+    // export flow below. Without a session callback (no open document owns
+    // this call) it cannot run — refuse rather than silently exporting over
+    // the source.
+    if (
+      targetFormat === route.format &&
+      (BREP_FORMATS.has(targetFormat) || MESH_SAVE_IN_PLACE_FORMATS.has(targetFormat))
+    ) {
       if (onSaveInPlace) {
         await onSaveInPlace(targetFormat);
       } else {
@@ -2767,6 +2901,143 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       },
       post
     );
+  }
+
+  /**
+   * Primitives panel (Tier 2 "Primitive-recognition panel") — the interactive
+   * half of `decompose_to_primitives`. Deliberately a ONE-SHOT EXPORT
+   * (recognize each solid, emit parametric creation ops, write them as a
+   * brand-new STEP/IGES/BREP file the user opens separately), not an in-place
+   * reclassification of THIS document — the same export model
+   * `handlePromoteToBrep` follows, and `decompose_to_primitives`' own
+   * headless contract. Mirrors `handlePromoteToBrep`'s exact structure
+   * (format quick-pick over the same `BREP_FORMATS`, the existing
+   * `pickExportUnit()`, the shared `promptSaveAndWrite()`) with the emission
+   * (`emitPrimitiveOps`, same call shape `decomposeToPrimitivesTool` uses
+   * headless, including collision-renaming against the document's own
+   * variables) computed fresh here rather than trusting a client snapshot.
+   * A document with zero recognized solids posts an explanatory error rather
+   * than writing an empty file.
+   */
+  private async handleDecomposeExport(
+    uri: vscode.Uri,
+    route: FileRoute,
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[],
+    variables: ParamVariable[]
+  ): Promise<void> {
+    if (route.strategy !== "occt") {
+      post({ type: "error", message: "Primitive export needs a B-rep source; mesh sources have no analytic surfaces to classify." });
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      [...BREP_FORMATS].map((format) => ({
+        label: EXPORT_LABEL[format],
+        description: `.${EXPORT_EXTENSION[format]}`,
+        format: format as Extract<CadFormat, "step" | "iges" | "brep">,
+      })),
+      { placeHolder: "Export recognized primitives as…" }
+    );
+    if (!picked) return;
+
+    const unit = await this.pickExportUnit();
+
+    await this.promptSaveAndWrite(
+      uri,
+      EXPORT_EXTENSION[picked.format],
+      EXPORT_LABEL[picked.format],
+      async (_saveUri) => {
+        const scadWarnings: string[] = [];
+        const src = await this.readOcctSource(uri, route.format, scadWarnings);
+        for (const w of scadWarnings) post({ type: "status", text: w });
+        const report = await this.pipeline.recognizePrimitives(
+          this.context.extensionPath,
+          src.bytes,
+          src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+          ops
+        );
+        const emission = emitPrimitiveOps(report, {
+          existingVariableNames: variables.map((v) => v.name),
+        });
+        if (emission.ops.length === 0) {
+          throw new Error("No primitives recognized — nothing to export.");
+        }
+        const build = await this.pipeline.buildPrimitivesFile(
+          this.context.extensionPath,
+          emission.ops,
+          picked.format,
+          unit
+        );
+        for (const w of [...emission.warnings, ...build.warnings]) post({ type: "status", text: w });
+        return build.bytes;
+      },
+      post
+    );
+  }
+
+  /**
+   * Primitives panel, Save-macro variant — the same emission as
+   * `handleDecomposeExport`, saved as a reusable parameterized macro into
+   * this document's folder `cad-preview-macros.json` (the same file
+   * `macroSaveCurrent` and the MCP `save_parametric_script` tool write, so a
+   * macro recorded here is directly runnable by an agent and vice versa)
+   * instead of a B-rep file. The emitted script is dry-compiled against its
+   * own declared defaults before saving (the `save_parametric_script`
+   * precedent) so a broken macro never enters the library silently.
+   */
+  private async handleDecomposeSaveMacro(
+    uri: vscode.Uri,
+    route: FileRoute,
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[],
+    variables: ParamVariable[]
+  ): Promise<void> {
+    try {
+      if (route.strategy !== "occt") {
+        throw new Error("Primitive macros need a B-rep source; mesh sources have no analytic surfaces to classify.");
+      }
+      const scadWarnings: string[] = [];
+      const src = await this.readOcctSource(uri, route.format, scadWarnings);
+      for (const w of scadWarnings) post({ type: "status", text: w });
+      const report = await this.pipeline.recognizePrimitives(
+        this.context.extensionPath,
+        src.bytes,
+        src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+        ops
+      );
+      const emission = emitPrimitiveOps(report, {
+        existingVariableNames: variables.map((v) => v.name),
+      });
+      if (emission.ops.length === 0) {
+        throw new Error("No primitives recognized — nothing to save.");
+      }
+      const name = await vscode.window.showInputBox({
+        title: "Save primitives as macro",
+        prompt: `Name for this macro (${emission.ops.length} op(s), ${emission.variables.length} variable(s))`,
+        placeHolder: "recognized-primitives",
+        validateInput: (v) => (v.trim() === "" ? "A name is required" : null),
+      });
+      if (name === undefined) return; // dismissed — a quiet no-op
+      const trimmed = name.trim();
+      const scriptDoc: Record<string, unknown> = {
+        variables: emission.variables,
+        steps: emission.ops.map((op) => ({ op })),
+      };
+      const probe = compileParametricScript(scriptDoc, {});
+      if (probe.ops.length === 0) throw new Error(`Refusing to save "${trimmed}": the emitted script compiled to no ops.`);
+      const libraryPath = macroLibraryPath(uri);
+      const library = parseScriptLibraryJson(await readTextFile(libraryPath));
+      const existed = Object.prototype.hasOwnProperty.call(library, trimmed);
+      library[trimmed] = { name: trimmed, script: scriptDoc };
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(libraryPath),
+        Buffer.from(serializeScriptLibraryJson(library), "utf8")
+      );
+      await this.sendMacros(uri, post);
+      post({ type: "status", text: `Saved macro "${trimmed}"${existed ? " (replaced existing)." : "."}` });
+    } catch (err) {
+      post({ type: "error", message: (err as Error).message });
+    }
   }
 
   /**

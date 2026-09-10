@@ -5,11 +5,11 @@ description: Use when CAD-Preview MCP tools are available (mcp__cad-preview__*) 
 
 # CAD-Preview
 
-Headless CAD modeling and simulation through the `cad-preview` MCP server. Every tool takes an absolute file path; the CAD source is never written — state lives in sidecars next to it.
+Headless CAD modeling and simulation through the `cad-preview` MCP server. Every tool takes an absolute file path; the CAD source is never written except by the explicit opt-in `save_model` tool (STEP/IGES/BREP only) — state otherwise lives in sidecars next to it.
 
 ## Ground rules
 
-- **All paths are absolute.** `path` and `outputPath` are absolute file paths. The CAD source file is never written; edits, parts, annotations and mesh options persist to sidecars (`<model>.edits.json`, `.parts.json`, `.annotations.json`, `.mesh.json`).
+- **All paths are absolute.** `path` and `outputPath` are absolute file paths. The CAD source file is never written except by the explicit opt-in `save_model` tool (STEP/IGES/BREP only); edits, parts, annotations and mesh options otherwise persist to sidecars (`<model>.edits.json`, `.parts.json`, `.annotations.json`, `.mesh.json`).
 - **Tools report facts, you render the verdict.** Inspect/measure/mass-properties return numbers and warnings — a check never says "pass" or "fail" for you. A `supported: false` result or a tool/network failure is **need-more-info**, never a silent pass or fail. Re-check with a different tool before calling anything validated.
 - **Read the catalog before you write ops.** Call `describe_capabilities` (or read `cad-preview://capabilities`; per-op `cad-preview://op/{kind}`) first. It is the single source for every EditOp kind, its parameter docs, entity-id scheme (`solid-N`/`face-N`/`edge-N`/`point-N`), and B-rep-only / topology-changing flags. Ops are raw JSON with an `op` kind field validated by the same tolerant gate the extension uses.
 - **Resources and the tool are the same source.** `cad-preview://capabilities` and `describe_capabilities` return identical JSON from the same function — prefer whichever your client surfaces with fewer calls.

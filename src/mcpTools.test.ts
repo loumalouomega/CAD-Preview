@@ -30,6 +30,7 @@ import {
   generateMeshTool,
   exportMeshTool,
   exportBRepTool,
+  saveModelTool,
   rewriteGeoMerge,
   savePreprocessTool,
   loadPreprocessTool,
@@ -2119,6 +2120,41 @@ describe("Tier 0 save-in-place watermark (bakedThrough)", () => {
     const state = await getState({ path: stpModel });
     expect(state.edits).toHaveLength(2);
     expect(state.bakedThrough).toBe(1);
+  });
+});
+
+describe("save_model (Tier 0 Phase 3)", () => {
+  const box = { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] };
+
+  it("bakes the tail into the source, sets the watermark, and writes a .bak", async () => {
+    await fs.writeFile(stpModel, "STEP-SOURCE");
+    await writeEdits(stpModel, [box] as unknown as EditOp[], [], 0);
+    const c = ctx();
+    const result = await saveModelTool(c, { path: stpModel });
+    expect(result.baked).toBe(1);
+    expect(result.editsBaked).toBe(1);
+    // Source overwritten with the pipeline's bytes; .bak keeps the original.
+    expect(await fs.readFile(stpModel, "utf8")).toBe("\u0001\u0002\u0003");
+    expect(await fs.readFile(`${stpModel}.bak`, "utf8")).toBe("STEP-SOURCE");
+    expect((await readEdits(stpModel)).bakedThrough).toBe(1);
+    expect(c.pipeline.exportBRep).toHaveBeenCalled();
+  });
+
+  it("is a no-op with baked: 0 when the tail is already empty", async () => {
+    await fs.writeFile(stpModel, "STEP-SOURCE");
+    await writeEdits(stpModel, [box] as unknown as EditOp[], [], 1);
+    const c = ctx();
+    const result = await saveModelTool(c, { path: stpModel });
+    expect(result.baked).toBe(0);
+    expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
+    expect(await fs.readFile(stpModel, "utf8")).toBe("STEP-SOURCE");
+  });
+
+  it("refuses mesh/meshio/CAD-text sources with a clear message", async () => {
+    const c = ctx();
+    await expect(saveModelTool(c, { path: stlModel })).rejects.toThrow(/cannot be saved in place headless/i);
+    await expect(saveModelTool(c, { path: vtkModel })).rejects.toThrow(/cannot be saved in place headless/i);
+    expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
   });
 });
 

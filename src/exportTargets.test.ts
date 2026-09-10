@@ -67,8 +67,14 @@ describe("exportTargetsFor", () => {
     expect(exportTargetsFor({ strategy: "occt", format: "brep" }, true)[0]).toBe("brep");
   });
 
-  it("keeps the mesh exclusion even with allowSameFormat (mesh in-place is Phase 3)", () => {
-    expect(exportTargetsFor({ strategy: "three", format: "stl" }, true)).toEqual(["obj", "ply", "gltf"]);
+  it("offers the source's own mesh format first for STL/OBJ/PLY when allowSameFormat is set (Tier 0 Phase 3)", () => {
+    expect(exportTargetsFor({ strategy: "three", format: "stl" }, true)).toEqual(["stl", "obj", "ply", "gltf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "obj" }, true)).toEqual(["obj", "stl", "ply", "gltf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "ply" }, true)).toEqual(["ply", "stl", "obj", "gltf"]);
+  });
+
+  it("keeps the glTF exclusion even with allowSameFormat (exporter only emits binary .glb)", () => {
+    expect(exportTargetsFor({ strategy: "three", format: "gltf" }, true)).toEqual(["stl", "obj", "ply"]);
   });
 });
 

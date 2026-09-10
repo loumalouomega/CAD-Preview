@@ -3,6 +3,15 @@ import type { CadFormat, FileRoute } from "./fileRouter";
 const BREP_FORMATS: CadFormat[] = ["step", "iges", "brep"];
 const MESH_FORMATS: CadFormat[] = ["stl", "obj", "ply", "gltf"];
 /**
+ * Mesh formats that can be saved back to their own file in place (Tier 0
+ * Phase 3). STL/OBJ/PLY serialize through the webview's Three.js exporters
+ * (`src/webview/meshExporters.ts`) — the same bytes the Export flow already
+ * produces. glTF is deliberately excluded: `exportModel` always emits a
+ * single binary `.glb`, so a `.gltf` could not be saved in place without
+ * changing container behind the user's back.
+ */
+export const MESH_SAVE_IN_PLACE_FORMATS: ReadonlySet<CadFormat> = new Set(["stl", "obj", "ply"]);
+/**
  * The formats a loaded document can be exported to, excluding its own format
  * by default.
  *
@@ -11,8 +20,9 @@ const MESH_FORMATS: CadFormat[] = ["stl", "obj", "ply", "gltf"];
  * mesh formats — there is no path to promote a triangle soup into a B-rep.
  *
  * Tier 0 Phase 1 (save-in-place): pass `allowSameFormat: true` to also offer
- * the source's own B-rep format (STEP-from-STEP, …). Mesh sources keep the
- * exclusion regardless — mesh in-place save is Phase 3 work.
+ * the source's own B-rep format (STEP-from-STEP, …). Tier 0 Phase 3 extends
+ * the same flag to STL/OBJ/PLY mesh sources (own format first); glTF keeps
+ * the exclusion regardless (container would change to `.glb`).
  */
 export function exportTargetsFor(route: FileRoute, allowSameFormat = false): CadFormat[] {
   if (route.strategy === "occt") {
@@ -21,6 +31,9 @@ export function exportTargetsFor(route: FileRoute, allowSameFormat = false): Cad
         ? [route.format, ...BREP_FORMATS.filter((f) => f !== route.format)]
         : BREP_FORMATS.filter((f) => f !== route.format);
     return [...breps, ...MESH_FORMATS];
+  }
+  if (allowSameFormat && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) {
+    return [route.format, ...MESH_FORMATS.filter((f) => f !== route.format)];
   }
   return MESH_FORMATS.filter((f) => f !== route.format);
 }

@@ -33,6 +33,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
 | `src/webview/clashPanel.ts` | Clash panel DOM — Part-vs-Part and check-all interference readout (roadmap Tier 2 "Clash panel") |
 | `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
+| `src/webview/primitivePanel.ts` | Primitives panel DOM — per-solid recognition report + apply/export/save-macro actions (Tier 2 "Primitive-recognition panel") |
 | `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
@@ -155,7 +156,7 @@ interface CollapsiblePanelsHandle {
 
 - **Markup contract**: every section is `#x-panel > #x-header.panel-header > button.panel-chevron`, with the chevron as the header's first child. It must be a **sibling** of `#x-title`, never nested inside it — `TreePanel` overwrites `#tree-title.textContent` on every render and would wipe a nested chevron.
 - **A dedicated chevron button, not a click-anywhere header.** Every header already holds action buttons (Isolate/New, Undo/Redo/Clear, Generate/Export/Clear plus two `<select>`s, Compute, Check/Promote/Repair, …) and `#tree-header` additionally holds `<input id="tree-filter">`, which a header-wide handler would toggle on every keystroke's click. A button is also focusable and carries `aria-expanded`.
-- **Three independent visibility mechanisms act on these panels and must not fight**: `#tree-panel.visible` (whether the Components tree is shown at all), the `hidden` property on `#mesh-health-panel`/`#region-fit-panel` (source-format eligibility), and `.collapsed`. The first two set `display` on the *panel*; the collapse CSS therefore never does — it only hides the panel's own non-header children (`#side > .collapsed > :not(.panel-header)`) and drops the panel to `flex: 0 0 auto`. That last part is load-bearing for `#parts-panel`/`#edits-panel`, the two `flex: 1` panels, where a collapsed header would otherwise still claim its share of the column.
+- **Three independent visibility mechanisms act on these panels and must not fight**: `#tree-panel.visible` (whether the Components tree is shown at all), the `hidden` property on `#mesh-health-panel`/`#region-fit-panel`/`#primitives-panel`/`#clash-panel` (source-format eligibility), and `.collapsed`. The first two set `display` on the *panel*; the collapse CSS therefore never does — it only hides the panel's own non-header children (`#side > .collapsed > :not(.panel-header)`) and drops the panel to `flex: 0 0 auto`. That last part is load-bearing for `#parts-panel`/`#edits-panel`, the two `flex: 1` panels, where a collapsed header would otherwise still claim its share of the column.
 - The `:not(.panel-header)` child selector rather than `#x-body` because the panels are not uniform: `#meshing-panel` has four body siblings (progress/body/status/quality) and `#standard-parts-panel` three (search-row/body/status).
 - **Returns `null`, never throws**, when the sidebar is missing — same reason as `setupDropdown` below.
 - `setCollapsed` is the restore path and deliberately does not fire `onChange`, the same silent-`load()` contract `PartsModel`/`PlanesModel` follow, so reopening a document cannot rewrite the sidecar it just read.
@@ -1280,6 +1281,24 @@ class ClashPanel {
 ```
 
 `main.ts` drives it with two `requestId` latches (`clashCheckRequestId` / `clashCheckAllRequestId`, same stale-response-guard idiom as `massPropertiesRequestId`) plus a remembered `clashLastPair` (the pair result carries geometry only, so the requested names are remembered to label the row). Raw mm volumes cache in `lastClashResults` so `setDisplayUnit()` re-renders via the existing `convertVolume()` without a new host round trip (the `lastRawMassProperties` precedent); everything clears on model rebuild (re-tessellation may renumber the ids results name). The section hides itself for non-B-rep sources (`setEligible`), with the `#clash-panel[hidden]` CSS override the `[hidden]` hazard demands. Rows reuse the `mass-row`/`mass-message` styles: `A × B` → `overlap <volume>` or `no overlap`, with an `AABB-screened` / unresolved-id note line where applicable.
+
+---
+
+## `src/webview/primitivePanel.ts`
+
+The Primitives panel — the interactive counterpart of the MCP-only `recognize_primitives` / `decompose_to_primitives` tools (Tier 2 "Primitive-recognition panel", closed). A small DOM class following `MeshHealthPanel`'s report convention: **Recognize**, **Apply as edits**, **Export…**, **Save macro…**, plus a per-solid readout.
+
+```typescript
+class PrimitivePanel {
+  constructor(panel: HTMLElement, cb: { onRecognize: () => void; onApply: () => void; onExport: () => void; onSaveMacro: () => void })
+  setEligible(eligible: boolean): void   // B-rep only — hides the section otherwise
+  setBusy(busy: boolean): void
+  renderMessage(text: string, isError?: boolean): void
+  render(report: PrimitiveReportDisplay): void
+}
+```
+
+`main.ts` drives it with a `primitiveRecognizeRequestId` latch (same stale-response-guard idiom as `meshHealRequestId`) plus a remembered `lastPrimitiveReport` (the Apply path runs `emitPrimitiveOps` locally over the already-posted report — pure, no second round trip — then pushes variables silently + ops one by one onto `EditsModel`, the macro-apply precedent, so the result stays undoable; Export/Save-macro post parameter-free button messages and the host recomputes the emission itself, the Mesh Health Promote/Repair shape). Everything clears on model rebuild (re-tessellation may renumber the solids the report names). The section hides itself for non-B-rep sources (`setPrimitivesEligible`), with the `#primitives-panel[hidden]` CSS override the `[hidden]` hazard demands. Rows show face inventory, candidate + key dimensions, fit residual (absolute + frac), and an honest "not a recognized primitive" note for unrecognized solids — never a guess.
 
 ---
 

@@ -414,6 +414,8 @@ type HostToWebview =
   | { type: 'bomError'; requestId: string; message: string }
   | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
   | { type: 'fitRegionError'; requestId: string; message: string }
+  | { type: 'primitiveRecognizeResult'; requestId: string; report: PrimitiveReport }
+  | { type: 'primitiveRecognizeError'; requestId: string; message: string }
   | { type: 'spacemouse'; motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }; buttons?: number }
   | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
   | { type: 'opPreviewError'; requestId: string; message: string }
@@ -930,6 +932,9 @@ type WebviewToHost =
   | { type: 'meshHealRequest'; requestId: string; autoDecimate?: boolean }
   | { type: 'bomRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
+  | { type: 'primitiveRecognizeRequest'; requestId: string }
+  | { type: 'decomposeExportClicked' }
+  | { type: 'decomposeSaveMacroClicked' }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
@@ -1198,6 +1203,14 @@ Sent when the Region fit panel's **Pick seed** button is armed and the user clic
 
 ```json
 { "type": "fitRegionRequest", "requestId": "1234-0.56", "point": [5, 5, 0] }
+```
+
+### `primitiveRecognizeRequest` / `decomposeExportClicked` / `decomposeSaveMacroClicked`
+
+Sent from the Primitives panel (Tier 2 "Primitive-recognition panel", closed) — the interactive B-rep half of `recognize_primitives` / `decompose_to_primitives`. Only reachable for a STEP/IGES/BREP source (the panel hides itself for mesh sources, mirroring `recognize_primitives`' own MCP-tool gate, inverted from Mesh Health's). `primitiveRecognizeRequest` carries no parameters beyond `requestId` — the host re-reads the currently-open document's own bytes plus the unbaked op tail and runs `recognizePrimitives` against them; replies with `primitiveRecognizeResult` (a `PrimitiveReport`: one entry per solid with face inventory, candidate + fit residual, `candidate: null` + reason when nothing matches exactly — never a guess) / `primitiveRecognizeError`, correlated via `requestId` like every other request/response pair in this file. `decomposeExportClicked` / `decomposeSaveMacroClicked` are parameter-free (the `promoteToBrepButtonClicked` shape — the host recomputes the emission itself via `emitPrimitiveOps`, owns the format/unit quick-picks + save dialog or the macro-name prompt + library write, and reports through the generic `status`/`error` messages).
+
+```json
+{ "type": "primitiveRecognizeRequest", "requestId": "1234-0.56" }
 ```
 
 ### `colorFieldRequest`

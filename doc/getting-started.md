@@ -106,11 +106,11 @@ Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one afte
 
 ### Collapsing Sidebar Sections
 
-Every sidebar section — Components, Parts, Edits, FE Mesh, Mass Properties, Clash, Mesh Health, Region fit, Macros, Standard Parts — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
+Every sidebar section — Components, Parts, Edits, FE Mesh, Mass Properties, Clash, Mesh Health, Region fit, Primitives, Macros, Standard Parts — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Clash is shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this.
+Sections that don't apply to the current file (Clash and Primitives are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this.
 
 ### Camera Interaction
 
@@ -551,6 +551,15 @@ The **Clash** panel (below Mass Properties, B-rep sources only) checks Parts aga
 2. Each result row reads `A × B` → `overlap <volume>` or `no overlap`. Pairs the AABB pre-filter decided without a boolean carry an `AABB-screened` note; genuinely touching Parts (shared face, zero volume) correctly report no overlap. Volumes follow the **Units** dropdown like Mass Properties, live-rescaled on change.
 
 Results are session-only and clear on every model rebuild, since re-tessellation may renumber the ids they name.
+
+### Primitives
+
+The **Primitives** panel (below Region fit, B-rep sources only) classifies each solid as a box, sphere, cylinder, cone, or torus — the interactive counterpart of the `recognize_primitives` / `decompose_to_primitives` MCP tools.
+
+1. Click **Recognize** for a read-only per-solid report: face inventory by surface type, the candidate primitive with its key dimensions, and the fit residual (absolute and as a fraction of the solid's size) — or an honest "not a recognized primitive" for anything that doesn't match a signature exactly (e.g. a filleted box), never a guess.
+2. With at least one solid recognized, **Apply as edits** pushes one parametric creation op per recognized solid (each dimension bound to a named variable) onto the edit history — undoable, removable op-by-op like any hand-applied edit. **Export…** writes the same ops as a brand-new STEP/IGES/BREP file (format + unit picks, then a save dialog — the source file is untouched). **Save macro…** stores them as a reusable parameterized macro in the folder's `cad-preview-macros.json`.
+
+The report is session-only and clears on every model rebuild, since re-tessellation may renumber the solids it names.
 
 ### Exporting a Model
 
