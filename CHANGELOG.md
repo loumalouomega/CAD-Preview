@@ -4,6 +4,14 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [2.2.0] - 2026-09-10
+
+### Changed
+
+- **Dependency updates.** `@meshioplusplus/wasm` 10.20.2 → 10.21.1, `vitest` 4.1.11 → 5.0.0, `@types/node` 26.4.0 → 26.5.0, `@types/vscode` 1.134.0 → 1.136.0, `playwright` 1.62.1 → 1.63.0. Minimum supported VS Code engine raised to `^1.136.0` to match `@types/vscode`.
+
+There are no user-facing changes in this release.
+
 ## [2.1.0] - 2026-09-10
 
 Closes Tier 0 in full (mesh save-in-place + headless `save_model`) and adds the interactive counterpart of primitive recognition/decomposition.
@@ -416,6 +424,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[2.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.13.0...v2.0.0
 [1.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.12.0...v1.13.0
