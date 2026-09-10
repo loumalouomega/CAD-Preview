@@ -2437,7 +2437,9 @@ async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknow
   if (sourceKind === "mesh") {
     if (!pristineMesh) return;
     const clone = pristineMesh.clone(true);
-    applyEditsMesh(clone, [...currentResolvedOps().ops, clean]);
+    // Tier 0 Phase 3 — preview replays the unbaked tail only (baked prefix
+    // already lives in the pristine file after a mesh save-in-place).
+    applyEditsMesh(clone, [...currentResolvedOps().ops.slice(editsModel.savePoint), clean]);
     viewer.setOpPreview(clone, tint);
     return;
   }
@@ -2497,10 +2499,16 @@ function pristineMeshPositions(): Float32Array | null {
 // correct as long as both sides agree on "pristine, no edits yet".
 let importedRegionInfo: { triangleRegion: Int32Array } | null = null;
 
-/** Rebuilds the displayed mesh model: clone pristine → apply resolved ops → facet-split. */
+/** Rebuilds the displayed mesh model: clone pristine → apply resolved tail ops → facet-split.
+ *
+ * Tier 0 Phase 3 — only the unbaked tail replays: ops at or below
+ * `editsModel.savePoint` already live in the source file itself (mesh
+ * save-in-place), so replaying them again would double-apply. B-rep sources
+ * never reach here (the host replays their tail via OCCT).
+ */
 function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   if (!pristineMesh) return;
-  const ops = currentResolvedOps().ops;
+  const ops = currentResolvedOps().ops.slice(editsModel.savePoint);
   const outcomes: OpOutcome[] = [];
   const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)

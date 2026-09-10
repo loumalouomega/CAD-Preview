@@ -525,7 +525,7 @@ class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocument> {
 }
 ```
 
-Dirty means exactly one thing: the op list has an unbaked tail on a B-rep source that can bake it (`currentEdits.length > currentBakedThrough` on step/iges/brep). Fired from the `editsChanged` handler via a provider-level `EventEmitter` (`CustomDocumentContentChangeEvent` only — never `EditEvent`, since the webview owns undo and the API forbids mixing kinds). VS Code clears dirty when `saveCustomDocument`/`revertCustomDocument` completes.
+ Dirty means exactly one thing: the op list has an unbaked tail on a source that can bake it (`currentEdits.length > currentBakedThrough` on step/iges/brep, and on stl/obj/ply for mesh save-in-place). Fired from the `editsChanged` handler via a provider-level `EventEmitter` (`CustomDocumentContentChangeEvent` only — never `EditEvent`, since the webview owns undo and the API forbids mixing kinds). VS Code clears dirty when `saveCustomDocument`/`revertCustomDocument` completes.
 
 **`register(context)`** — Registers the provider with VS Code. Called once from `activate()`. Returns a `Disposable` pushed onto `context.subscriptions`.
 
@@ -1407,6 +1407,6 @@ The standalone MCP server — a third esbuild bundle (`dist/mcp-server.js`) that
 
 - **`mcpServer.ts`** is the entry: it rebinds `console.log/info/warn/debug` to stderr *before anything else* (the Emscripten WASM modules print through `console.log`, and stdout is the JSON-RPC channel), resolves `extensionPath` (`CAD_PREVIEW_ROOT` env var or the bundle dir's parent), and registers the fourteen tools with the `@modelcontextprotocol/sdk` `McpServer` + `StdioServerTransport`.
 - **`mcpTools.ts`** holds the tool handlers as plain async functions over an injected `Pipeline` object (defaulting to the real OCCT/Gmsh functions in the server, faked in `mcpTools.test.ts` — the `.wasm` imports only resolve under esbuild's plugin, never vitest). Ops arrive as raw JSON gated by `validateEditOp`; results are stats/summaries, never geometry buffers.
-- **`mcpSidecars.ts`** is the node-fs counterpart of `editsStore.ts`/ `partsStore.ts`/`annotationsStore.ts`/`meshOptionsStore.ts` over the same pure `*Sidecar.ts` parsers — byte-compatible with what `provider.ts` reads on reopen — plus the `assertNotSourcePath` guard enforcing the CAD-file-is-never-written invariant. `readAnnotations`/`writeAnnotations` are plain sidecar I/O (not part of the `Pipeline` interface — that interface holds only WASM/OCCT/Gmsh/network-touching functions vitest must fake; `rebindPartsAcrossOps` IS in `Pipeline` since it re-derives ids from live geometry).
+- **`mcpSidecars.ts`** is the node-fs counterpart of `editsStore.ts`/ `partsStore.ts`/`annotationsStore.ts`/`meshOptionsStore.ts` over the same pure `*Sidecar.ts` parsers — byte-compatible with what `provider.ts` reads on reopen — plus the `assertNotSourcePath` guard (every writer except the explicit opt-in `save_model` tool still refuses the source path). `readAnnotations`/`writeAnnotations` are plain sidecar I/O (not part of the `Pipeline` interface — that interface holds only WASM/OCCT/Gmsh/network-touching functions vitest must fake; `rebindPartsAcrossOps` IS in `Pipeline` since it re-derives ids from live geometry).
 
 See [MCP Server](./mcp-server.md) for registration, the tool reference, and the headless capability matrix.

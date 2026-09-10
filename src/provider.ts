@@ -27,7 +27,7 @@ import { validateMeshioOpSpec } from "./meshioOps";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
-import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS, MESH_SAVE_IN_PLACE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readPlanes, writePlanes, planesSidecarUri } from "./planesStore";
@@ -207,8 +207,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * completes. Only `CustomDocumentContentChangeEvent` is ever fired (never
    * `CustomDocumentEditEvent` — the webview owns the undo stack, and the API
    * requires one kind or the other, never mixed). Dirty means exactly one
-   * thing: the op list has an unbaked tail for a B-rep source that can bake
-   * it (`currentEdits.length > currentBakedThrough` on step/iges/brep) —
+   * thing: the op list has an unbaked tail for a source that can bake it
+   * (`currentEdits.length > currentBakedThrough` on step/iges/brep for B-rep,
+   * and on stl/obj/ply for mesh save-in-place — Tier 0 Phase 3) —
    * sidecar-only changes never dirty the document (they're covered by the
    * ~500 ms autosave plus the explicit File-Save flush).
    */
@@ -771,21 +772,102 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      * confirmed (the Export flow keeps its Phase-1 modal).
      */
     const performSaveInPlace = async (targetFormat: CadFormat): Promise<void> => {
-      if (!route || route.strategy !== "occt") return;
+      if (!route) return;
       if (targetFormat !== route.format) return;
-      await bakeTailToSource("always");
+      if (route.strategy === "occt") {
+        await bakeTailToSource("always");
+        return;
+      }
+      // Tier 0 Phase 3 — same-format mesh save-in-place (STL→STL, OBJ→OBJ,
+      // PLY→PLY) from the Export flow. Serializes the currently displayed
+      // (edited) model via the webview, then writes it back over the source
+      // through the same temp-sibling + rename + one-deep `.bak` + watcher
+      // guard as the B-rep bake above. glTF never reaches here (excluded from
+      // `MESH_SAVE_IN_PLACE_FORMATS` — its exporter only emits binary `.glb`).
+      if (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) {
+        await bakeMeshToSource("always");
+      }
+    };
+
+    /**
+     * Tier 0 Phase 3 — mesh save-in-place body (STL/OBJ/PLY only). The
+     * displayed model already includes the unbaked tail (mesh edits replay in
+     * the webview), so saving serializes it via the `exportMesh` round trip
+     * at native mm and writes it over the source. The sidecar KEEPS the full
+     * op list with the watermark set — the webview's `rebuildMeshModel`
+     * replays only the tail after the save point, so history is preserved
+     * exactly like the B-rep bake (not cleared). Mesh Parts reference
+     * `node-N` ids by traversal order over the single root mesh, which this
+     * serialization preserves, so no rebind pass is needed (unlike B-rep's
+     * two-byte `rebindPartsAcrossSave`).
+     */
+    const bakeMeshToSource = async (confirmPolicy: "always" | "first"): Promise<boolean> => {
+      if (!route || route.strategy !== "three" || !MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) return false;
+      const fileName = document.uri.path.slice(document.uri.path.lastIndexOf("/") + 1);
+      if (currentEdits.length < currentBakedThrough) {
+        post({ type: "error", message: "The op list changed below the save point — close and reopen the file to work from the saved state." });
+        return false;
+      }
+      const tailLength = currentEdits.length - currentBakedThrough;
+      try {
+        const needsConfirm = confirmPolicy === "always" || !madeSourceBackupThisSession;
+        if (needsConfirm) {
+          const confirm = await vscode.window.showWarningMessage(
+            `Save ${tailLength} edit op(s) into ${fileName} itself? The file is re-emitted from the displayed model, not patched: facet structure and authoring metadata are not preserved. This cannot be undone past the save point.`,
+            { modal: true },
+            "Save in place",
+            "Cancel"
+          );
+          if (confirm !== "Save in place") return false;
+        }
+        const requestId = `${Date.now()}-${Math.random()}`;
+        const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
+          pending.set(requestId, { resolve, reject });
+          post({ type: "exportMesh", requestId, format: route.format, unit: "mm" });
+        });
+        const bytes = result.binary ? Buffer.from(result.data, "base64") : Buffer.from(result.data, "utf8");
+        if (!madeSourceBackupThisSession) {
+          await vscode.workspace.fs.copy(document.uri, document.uri.with({ path: `${document.uri.path}.bak` }), { overwrite: true });
+          madeSourceBackupThisSession = true;
+        }
+        const baseName = fileName.replace(/\.[^.]+$/, "");
+        const tmpUri = vscode.Uri.joinPath(document.uri, "..", `${baseName}.save-tmp.${EXPORT_EXTENSION[route.format as CadFormat]}`);
+        try {
+          await vscode.workspace.fs.writeFile(tmpUri, bytes);
+          expectOwnSourceSave = true;
+          await vscode.workspace.fs.rename(tmpUri, document.uri, { overwrite: true });
+        } catch (err) {
+          expectOwnSourceSave = false;
+          await vscode.workspace.fs.delete(tmpUri).then(undefined, () => undefined);
+          throw err;
+        }
+        if (editsSaveTimer) clearTimeout(editsSaveTimer);
+        currentBakedThrough = currentEdits.length;
+        await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+        post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+        post({ type: "status", text: `Saved in place to ${fileName} (${tailLength} op(s) baked)` });
+        loadModel(true);
+        return true;
+      } catch (err) {
+        post({ type: "error", message: `Save in place failed: ${(err as Error).message}` });
+        return false;
+      }
     };
 
     /**
      * Tier 0 Phase 2 — `saveCustomDocument` body (Ctrl+S / Save All /
      * auto-save): sidecars flush as PART of the save, then any unbaked tail
-     * bakes for a B-rep source that can bake it. Mesh/meshio/CAD-text sources
-     * flush sidecars only (nothing bakes headlessly before Phase 3).
+     * bakes for a source that can bake it (B-rep via `bakeTailToSource`,
+     * STL/OBJ/PLY via `bakeMeshToSource` — Tier 0 Phase 3; meshio/CAD-text
+     * sources flush sidecars only).
      */
     const saveDocumentSource = async (): Promise<void> => {
       await flushSidecars();
-      if (route && route.strategy === "occt" && currentEdits.length > currentBakedThrough) {
+      if (currentEdits.length <= currentBakedThrough) return;
+      if (route && route.strategy === "occt") {
         await bakeTailToSource("first");
+      } else if (route && route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) {
+        await bakeMeshToSource("first");
       }
     };
 
@@ -1303,12 +1385,18 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const previousOps = currentEdits;
         currentEdits = msg.ops;
         currentVariables = msg.variables;
-        // Tier 0 Phase 2 — dirty tracking: an unbaked tail on a B-rep source
+        // Tier 0 Phase 2+3 — dirty tracking: an unbaked tail on a source
         // that can bake it marks the editor dirty (VS Code clears it when a
         // save/revert completes). Sidecar-only changes never fire — they're
-        // covered by autosave + File-Save. Mesh/meshio/CAD-text sources never
-        // fire either (nothing bakes headlessly before Phase 3).
-        if (route && route.strategy === "occt" && BREP_FORMATS.has(route.format) && currentEdits.length > currentBakedThrough) {
+        // covered by autosave + File-Save. meshio/CAD-text sources never
+        // fire (nothing bakes for them); glTF never fires (no same-format
+        // writer — its exporter only emits binary `.glb`).
+        if (
+          route &&
+          currentEdits.length > currentBakedThrough &&
+          ((route.strategy === "occt" && BREP_FORMATS.has(route.format)) ||
+            (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)))
+        ) {
           this.fireDirty(document);
         }
         // Debounced sidecar autosave (separate timer/file from parts).
@@ -2610,10 +2698,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      */
     onSaveInPlace?: (targetFormat: CadFormat) => Promise<void>
   ): Promise<void> {
-    // Tier 0 Phase 1: a B-rep source may target its OWN format (STEP-from-STEP
-    // save-in-place). Mesh sources keep the exclusion — mesh in-place is
-    // Phase 3 work.
-    const targets = exportTargetsFor(route, route.strategy === "occt");
+    // Tier 0 Phase 1+3: a B-rep source may target its OWN format (STEP-from-STEP
+    // save-in-place), as may an STL/OBJ/PLY mesh source (mesh save-in-place).
+    // glTF/meshio/CAD-text sources keep the exclusion (no same-format writer).
+    const targets = exportTargetsFor(
+      route,
+      route.strategy === "occt" || (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format))
+    );
     if (targets.length === 0) return;
 
     const picked = await vscode.window.showQuickPick(
@@ -2627,13 +2718,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     if (!picked) return;
 
     const targetFormat = picked.format;
-    // Tier 0 Phase 1: same-format B-rep pick is a save-in-place, not an
-    // export — a confirmed write back to the open document (temp sibling +
-    // rename, one-deep .bak, bakedThrough watermark). Cross-format picks and
-    // every mesh target keep the export flow below. Without a session
-    // callback (no open document owns this call) it cannot run — refuse
-    // rather than silently exporting over the source.
-    if (BREP_FORMATS.has(targetFormat) && targetFormat === route.format) {
+    // Tier 0 Phase 1+3: same-format pick is a save-in-place, not an export —
+    // a confirmed write back to the open document (temp sibling + rename,
+    // one-deep .bak, bakedThrough watermark). Cross-format picks keep the
+    // export flow below. Without a session callback (no open document owns
+    // this call) it cannot run — refuse rather than silently exporting over
+    // the source.
+    if (
+      targetFormat === route.format &&
+      (BREP_FORMATS.has(targetFormat) || MESH_SAVE_IN_PLACE_FORMATS.has(targetFormat))
+    ) {
       if (onSaveInPlace) {
         await onSaveInPlace(targetFormat);
       } else {

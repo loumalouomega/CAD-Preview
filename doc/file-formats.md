@@ -417,11 +417,12 @@ The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displaye
 
 | Source pipeline | Export targets |
 | --- | --- |
-| B-rep (STEP/IGES/BREP) | the other two B-rep formats, **plus** STL/OBJ/PLY/glTF |
-| Mesh (STL/OBJ/PLY/glTF) | the other mesh formats only |
+| B-rep (STEP/IGES/BREP) | its **own** format first (confirmed save-in-place), then the other two B-rep formats, **plus** STL/OBJ/PLY/glTF |
+| Mesh (STL/OBJ/PLY) | its **own** format first (confirmed save-in-place), then the other mesh formats |
+| Mesh (glTF) | the other mesh formats only (glTF is never offered its own format — the exporter only emits binary `.glb`, so saving in place would change container) |
 | meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) | STL/OBJ/PLY/glTF — the displayed model is an ordinary `THREE.Object3D` by this point (see the meshio++ Bridge Formats section above), so it exports exactly like a native mesh source |
 
-The source format is never offered as its own export target (moot for the meshio++ row above, since none of those formats are export targets to begin with).
+Picking the source's own format above is a confirmed save-in-place (modal data-loss confirmation, temp sibling + rename, one-deep `<model>.bak`, `bakedThrough` watermark with history preserved), not an export — meshio++ and CAD-text sources never offer their own format (no same-format writer).
 
 **B-rep targets** are written entirely in the extension host: the source file is re-parsed with the same OCCT reader used to open it, the current edit op-list is applied (`applyEditsBRep`), then the result is handed to the matching OCCT writer (`STEPControl_Writer`, `IGESControl_Writer`, or `BRepTools::Write`) in `exportBRep()` (`src/occtService.ts`). There is no path from a triangulated mesh back to a B-rep, so mesh-sourced documents never offer STEP/IGES/BREP as a target.
 

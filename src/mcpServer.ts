@@ -74,6 +74,7 @@ import {
   generateMeshTool,
   exportMeshTool,
   exportBRepTool,
+  saveModelTool,
   savePreprocessTool,
   loadPreprocessTool,
   type ToolContext,
@@ -107,7 +108,7 @@ const ctx: ToolContext = {
 
 const INSTRUCTIONS = [
   "CAD-Preview — headless CAD modeling via sidecar-persisted edit ops.",
-  "Every path/outputPath is absolute. The CAD source file is never written — edits, parts, annotations and mesh options live in sidecars next to it (<model>.edits.json etc.) and are replayed on open in VS Code.",
+  "Every path/outputPath is absolute. The CAD source file is never written except by the explicit opt-in save_model tool (STEP/IGES/BREP only) — edits, parts, annotations and mesh options otherwise live in sidecars next to it (<model>.edits.json etc.) and are replayed on open in VS Code.",
   "Tools report facts (numbers, entity inventories, images, warnings) — you render the verdict. A supported:false response or a tool/network failure is need-more-info, never a silent pass or fail.",
   "Call describe_capabilities first (or read cad-preview://capabilities) for the full op catalog with per-kind parameter docs, B-rep-only/topology-changing flags, entity-id scheme and headless limitations. Prefer the resource if your client auto-attaches it. Pass ops as raw JSON with an op kind field — they are validated by the same tolerant gate the extension uses.",
   "render_snapshot images (and compare_models includeSnapshots ones) are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
@@ -1124,6 +1125,18 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; targetFormat: string; outputPath: string; unit?: string }) => exportBRepTool(ctx, args))
+);
+
+server.registerTool(
+  "save_model",
+  {
+    description:
+      "Bake the unbaked op tail into the CAD source file itself (STEP→STEP, IGES→IGES, BREP→BREP only) — the same write export_brep performs, pointed at the file it came from. The sidecar keeps the full op list with the bakedThrough watermark (history preserved, not cleared); a one-deep <model>.bak is written beside the source first. Mesh/meshio/CAD-text sources are refused. This server cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race this write.",
+    inputSchema: {
+      path: modelPath,
+    },
+  },
+  wrap((args: { path: string }) => saveModelTool(ctx, args))
 );
 
 server.registerTool(
