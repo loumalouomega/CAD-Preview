@@ -4,6 +4,27 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [2.0.0] - 2026-09-09
+
+The major bump marks Tier 0: documents are now genuinely editable — the read-only invariant is narrowed to "never written silently" (every source write stays an explicit, confirmed action). All four Tier 2 headless↔interactive symmetry items also close in this release.
+
+### Added
+
+- **Editable documents (Tier 0, Phases 1–2).** Picking the source's own STEP/IGES/BREP format in File ▸ Export… is now a confirmed write back to the open document, and `Ctrl+S` bakes the unbaked op tail into it. A `bakedThrough` watermark on the edits sidecar keeps the full history visible while replaying only the tail; undo/remove/jump refuse to cross the save point, `File: Revert File` drops back to the watermark, Save-As copies source + sidecars, and hot-exit backs up both. Part/annotation ids are rebound across the save via a two-byte replay. Headless is unchanged (`assertNotSourcePath` still refuses). Mesh-format in-place save stays a later phase.
+- **Mesh-operations panel for meshio sources.** The FE Mesh panel grew a Mesh ops section driving the existing `runMeshioOps` pipeline entry (clean/decimate/smooth/subdivide/refine/agglomerate/convertCells, one per Run) over VTK/MED/CGNS/… sources, writing a new file in the source's own format. No new kernel surface.
+- **`inspect_meshio_fields` MCP tool.** Headless per-array facts (name, point/cell location, component width, finite-only min/max, NaN count) for meshio++ sources — summaries only, never raw values; multi-component arrays report their width. Read-only.
+- **`pin_annotation` MCP tool.** Headless create + delete over the annotations sidecar (fail-fast structure, accept-and-warn anchors incl. mesh `node-N` ids) — closes end-to-end headless dimensioned drawings via `export_technical_drawing`.
+- **BOM "Copy" button.** Parts-header action copying one TSV row per part (via a new `bomRequest` round trip over the existing `computeBom` kernel surface), enabled only for B-rep sources with ≥1 part.
+- **Clash panel.** Part-vs-Part interference checks (single pair + check-all over `checkInterference`/`checkInterferenceAll`) as a sidebar section over the `massPropertiesRequest` message shape. Zero kernel work.
+- **Mesh auto-decimate.** `check_mesh_health`/`promote_mesh_to_brep` accept `autoDecimate` for meshes over the 50,000-triangle ceiling (meshio++ quadric edge-collapse to ~1,000 triangles, resampling stated in the response, never silent); degenerate heals are reported/skipped, never promoted as wrong solids.
+- **Defeature op.** Remove a recognized feature (fillet band, chamfer) by face selection via `BRepAlgoAPI_Defeaturing`, healing the solid behind it — B-rep only, topology-changing.
+- **Hex-boundary region correlation.** `convertToStlBoundaryWithRegions` triangulates quad boundaries (verified provenance-preserving) instead of bailing to the plain path, so hexahedral volumes keep their region→Parts correlation.
+
+### Fixed
+
+- **`repair_mesh` unit tests now cover the stored-options pipeline arg** (the 5th `repairMesh` parameter never made it into the assertions — the only CI failure on the release branch).
+- **OpenSCAD `.scad` conversion resolves relative paths** (a live-binary run caught argv carrying a relative caller path while `cwd` was already the source dir, so every relative `load_model` failed to open the input).
+
 ## [1.13.0] - 2026-09-06
 
 ### Added
@@ -381,6 +402,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[2.0.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.13.0...v2.0.0
 [1.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.10.0...v1.11.0
