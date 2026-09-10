@@ -4,6 +4,20 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [2.1.0] - 2026-09-10
+
+Closes Tier 0 in full (mesh save-in-place + headless `save_model`) and adds the interactive counterpart of primitive recognition/decomposition.
+
+### Added
+
+- **Tier 0 Phase 3 — mesh save-in-place + headless `save_model`.** STL/OBJ/PLY now offer their own format first in File ▸ Export… as a confirmed save-in-place (modal data-loss confirmation, temp sibling + rename, one-deep `<model>.bak`, `bakedThrough` watermark with history preserved; the webview's mesh replay consumes only the tail after the save point, so no double-apply; glTF stays excluded since its exporter only emits binary `.glb`). Headless gains a `save_model` MCP tool (STEP→STEP, IGES→IGES, BREP→BREP only — mesh/meshio/CAD-text refused): bakes the unbaked op tail into the source itself, keeps the full history with the watermark, leaves a `.bak`, and rebinds Part/annotation ids across the save. Every other writer still refuses the source via `assertNotSourcePath`.
+- **Primitive-recognition panel.** The interactive counterpart of `recognize_primitives` / `decompose_to_primitives` (previously MCP-only): a new Primitives sidebar section classifies B-rep solids with candidate type + fit residual, applies the emitted variable-bound ops onto `EditsModel` (undoable op-by-op), and exports the result to STEP/IGES/BREP or saves the emission as a macro. Unrecognized solids report their face inventory with a reason — facts only, never a guess. Zero kernel work (both pipeline functions were already `Pipeline` keys).
+
+### Fixed
+
+- **Dependabot alerts for hono and js-yaml** resolved via overrides.
+- **Roadmap item numbering** updated for clarity and consistency.
+
 ## [2.0.0] - 2026-09-09
 
 The major bump marks Tier 0: documents are now genuinely editable — the read-only invariant is narrowed to "never written silently" (every source write stays an explicit, confirmed action). All four Tier 2 headless↔interactive symmetry items also close in this release.
@@ -402,6 +416,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[2.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.13.0...v2.0.0
 [1.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.11.0...v1.12.0
