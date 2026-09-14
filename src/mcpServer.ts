@@ -772,7 +772,7 @@ server.registerTool(
   "apply_edit_ops",
   {
     description:
-      "Validate and append edit operations to the model's op stack (persisted to <model>.edits.json — the CAD file itself is never written; the VS Code extension replays the same sidecar). Returns a per-op accept/reject report and, for B-rep sources, the post-replay entity inventory (topology-changing ops renumber face/edge ids). Use dryRun to validate without persisting.",
+      "Validate and append edit operations to the model's op stack (persisted to <model>.edits.json — this call never writes the CAD file itself; the VS Code extension replays the same sidecar. Use save_model separately to bake the tail into the source). Returns a per-op accept/reject report and, for B-rep sources, the post-replay entity inventory (topology-changing ops renumber face/edge ids). Use dryRun to validate without persisting.",
     inputSchema: { path: modelPath, ops: rawOps, dryRun: z.boolean().optional() },
   },
   wrap((args: { path: string; ops: Array<Record<string, unknown>>; dryRun?: boolean }) => applyEditOps(ctx, args))

@@ -166,7 +166,7 @@ Unlike the MDPA **export** path (`src/mdpaWriter.ts`, hand-written — see `doc/
 
 ## Parts Sidecar (`<model>.parts.json`)
 
-User-defined **parts** (named groups of volumes / surfaces / lines) are stored in a JSON sidecar written **next to** the CAD file — e.g. `bull.stp` → `bull.stp.parts.json`. The CAD file itself is never modified; the custom editor stays read-only. The sidecar is read on open (`readParts()`) and autosaved, debounced, on every edit (`writeParts()`), both in `src/partsStore.ts`. Parsing and serialization live in the vscode-free `src/partsSidecar.ts` so they are unit-tested.
+User-defined **parts** (named groups of volumes / surfaces / lines) are stored in a JSON sidecar written **next to** the CAD file — e.g. `bull.stp` → `bull.stp.parts.json`. Part assignments never modify the CAD file itself — a Part edit writes only this sidecar. The sidecar is read on open (`readParts()`) and autosaved, debounced, on every edit (`writeParts()`), both in `src/partsStore.ts`. Parsing and serialization live in the vscode-free `src/partsSidecar.ts` so they are unit-tested.
 
 ```json
 {
@@ -190,9 +190,9 @@ A part may additionally carry a re-executable `selector` (a SelectorQuery, same 
 
 ## Edits Sidecar (`<model>.edits.json`)
 
-User-applied **edit operations** (transforms and booleans, and — in later milestones — feature modeling, assembly) are stored in a **second** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.edits.json`. Like parts, this never modifies the CAD file: the editor stays read-only. The sidecar holds an **ordered, replayable op-list** that is re-applied on every open, so the displayed model is `base shape ∘ ops`. It is read on open (`readEdits()`) and autosaved, debounced, on every change (`writeEdits()`), both in `src/editsStore.ts`; parse/serialize live in the vscode-free `src/editsSidecar.ts` so they are unit-tested.
+User-applied **edit operations** (transforms and booleans, and — in later milestones — feature modeling, assembly) are stored in a **second** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.edits.json`. Applying an edit itself never writes the CAD file — only this sidecar changes on every op. The sidecar holds an **ordered, replayable op-list** that is re-applied on every open, so the displayed model is `base shape ∘ ops`. It is read on open (`readEdits()`) and autosaved, debounced, on every change (`writeEdits()`), both in `src/editsStore.ts`; parse/serialize live in the vscode-free `src/editsSidecar.ts` so they are unit-tested.
 
-After a same-format **save in place** (Tier 0 Phase 1 — picking the source's own STEP/IGES/BREP format in the Export flow), the sidecar additionally carries a `bakedThrough` watermark: the file on disk already contains `ops[0..bakedThrough]`, so replay starts after it and every kernel replay consumes only the tail. The field is omitted when `0`, so pre-watermark documents are byte-identical to before; parsing clamps an out-of-range value instead of throwing. Undo cannot cross the save point, and `remove_edit_op` refuses an index inside the baked prefix headless.
+The source file is written only by an explicit, confirmed action — Ctrl+S on a dirty tab (for STEP/IGES/BREP/STL/OBJ/PLY), an Export pick of the source's own format ("save in place"), or the headless `save_model` MCP tool — never as a side effect of applying or autosaving an edit. That save **bakes** the unbaked op tail into the file and records how far via a `bakedThrough` watermark: the file on disk already contains `ops[0..bakedThrough]`, so replay starts after it and every kernel replay consumes only the tail. The field is omitted when `0`, so a never-saved-in-place document's sidecar is byte-identical to before this feature existed; parsing clamps an out-of-range value instead of throwing. Undo cannot cross the save point, and `remove_edit_op` refuses an index inside the baked prefix headless.
 
 ```json
 {

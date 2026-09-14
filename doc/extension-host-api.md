@@ -127,7 +127,7 @@ export function showWhatsNewPanel(context, version, entries: readonly ChangelogE
 
 - `maybeShowWhatsNew` runs once per `activate()`. It compares `context.extension.packageJSON.version` against the version stashed in `context.globalState` under `"cadPreview.lastVersion"` (this project's first use of `globalState`/`workspaceState` — everything else persists via sidecar files instead). On a fresh install (no stored value) it silently records the current version and shows nothing — there's nothing to diff against yet. On an upgrade, it reads and parses the repo-root `CHANGELOG.md` (already shipped in the packaged `.vsix` — nothing in `.vscodeignore` excludes it) and shows every entry newer than the last-seen version, falling back to just the latest entry if none qualify (e.g. the stored version predates everything still in the file). A same version or a downgrade just updates the stored value, silently. Every failure path (missing/corrupt `CHANGELOG.md`, anything else) is swallowed — this check must never throw out of `activate()`.
 - `showLatestWhatsNew` backs the manual `cad-preview.whatsNew` command (registered in `provider.ts`, standalone like `cad-preview.open`) — it always shows the **full** changelog, not just what's new since last seen.
-- `showWhatsNewPanel` was the first standalone `vscode.window.createWebviewPanel` in this extension (`src/modelComparePanel.ts`, below, is the second) — every other webview goes through `CustomReadonlyEditorProvider`. It opens in `vscode.ViewColumn.Beside` (never `Active`), so it can never contend with a CAD file's own custom-editor tab for the same slot when both open around the same time. It builds its own small nonce-gated CSP HTML string (shares `getNonce()` from `src/nonce.ts` with `provider.ts`'s `getHtml`, styled entirely with `var(--vscode-*)` theme variables, no external stylesheet needed) and never touches `CHANGELOG.md` — this feature only ever reads it.
+- `showWhatsNewPanel` was the first standalone `vscode.window.createWebviewPanel` in this extension (`src/modelComparePanel.ts`, below, is the second) — every other webview goes through `CadPreviewProvider`'s `CustomEditorProvider`. It opens in `vscode.ViewColumn.Beside` (never `Active`), so it can never contend with a CAD file's own custom-editor tab for the same slot when both open around the same time. It builds its own small nonce-gated CSP HTML string (shares `getNonce()` from `src/nonce.ts` with `provider.ts`'s `getHtml`, styled entirely with `var(--vscode-*)` theme variables, no external stylesheet needed) and never touches `CHANGELOG.md` — this feature only ever reads it.
 
 ---
 
@@ -1256,7 +1256,7 @@ Legacy flat tessellation (no grouping). Kept for test compatibility. Returns one
 
 ## `src/partsStore.ts` and `src/partsSidecar.ts`
 
-Persist user-defined parts in a `<model>.parts.json` sidecar beside the CAD file. The CAD file is never written — only the sidecar — so the editor stays read-only.
+Persist user-defined parts in a `<model>.parts.json` sidecar beside the CAD file. Assigning/renaming/recolouring a Part writes only the sidecar, never the CAD file itself — the source is written only by an explicit save (see `src/provider.ts`'s `CustomEditorProvider` contract above).
 
 `src/partsSidecar.ts` is **vscode-free** (so it unit-tests under vitest):
 

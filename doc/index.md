@@ -38,7 +38,7 @@ features:
 
   - icon: 🏷️
     title: Define Parts (Volumes / Surfaces / Lines / Points)
-    details: Click solids, faces, edges, or vertices in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only. Per-part eye-toggles and a panel-level Isolate button (plus a matching filter/eye-toggle on the Components tree) let you focus on just the geometry you're working on, display-only and never persisted.
+    details: Click solids, faces, edges, or vertices in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar, never into the CAD source. Per-part eye-toggles and a panel-level Isolate button (plus a matching filter/eye-toggle on the Components tree) let you focus on just the geometry you're working on, display-only and never persisted.
 
   - icon: 🔩
     title: Standard Parts Catalog

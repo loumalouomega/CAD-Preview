@@ -1,8 +1,10 @@
 /**
  * Refuses to overwrite a sidecar the user has open with unsaved changes.
  *
- * The CAD source is never written (that invariant is enforced elsewhere), but
- * the `.edits.json` / `.parts.json` / `.annotations.json` / `.mesh.json`
+ * The CAD source is never written *silently* — only by an explicit, confirmed
+ * save (Ctrl+S on a dirty tab, Export → the source's own format, or the
+ * headless `save_model` tool) — but the `.edits.json` / `.parts.json` /
+ * `.annotations.json` / `.mesh.json`
  * sidecars are ordinary JSON files a user may well have open and hand-edited —
  * and the extension autosaves them on a debounce. Without this guard, a
  * keystroke in the viewer silently clobbers work the user typed by hand.

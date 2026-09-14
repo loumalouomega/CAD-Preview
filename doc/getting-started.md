@@ -54,7 +54,7 @@ You don't need an existing file. **File ▾ → New Blank Model…** (also `CAD 
 
 Two things are worth knowing about how a blank model is stored:
 
-- **The `.brep` file itself stays empty.** Exactly as for an edited STEP file, your geometry is an ordered, replayable op-list in the `<model>.brep.edits.json` sidecar beside it; the CAD file is never written. Keep the pair together, or use **Export…** / **Save Preprocess…** to produce something standalone.
+- **The `.brep` file itself stays empty until you explicitly save.** Exactly as for an edited STEP file, your geometry is an ordered, replayable op-list in the `<model>.brep.edits.json` sidecar beside it; nothing writes the CAD file as a side effect of editing. Keep the pair together, or use **Export…** / **Save Preprocess…** to produce something standalone — or save in place (below) to bake the geometry into the `.brep` file itself.
 - **Export offers STEP/IGES and the mesh formats, plus the source's own B-rep format as a confirmed save-in-place** — the export list excludes a document's own format only for mesh sources. Picking your own STEP/IGES/BREP writes the baked model back to the open file (with `.bak` + history watermark); export anything else for a file that carries the geometry itself.
 
 New Blank Model only ever creates new files: if you point it at a path that already exists it refuses rather than overwriting, since blanking a model would leave its existing edit history replaying against nothing.

@@ -269,7 +269,7 @@ Runs on **any** op-list change — an append (`apply_edit_ops`/`run_parametric_s
 
 ## The sidecar contract
 
-The server never writes the CAD source file (every output path is guarded). State persists to the same sidecars the extension reads on open:
+The server never writes the CAD source file except through the explicit, opt-in `save_model` tool (STEP→STEP / IGES→IGES / BREP→BREP only) — every other output path is guarded against it. State otherwise persists to the same sidecars the extension reads on open:
 
 | File | Contents |
 | --- | --- |
