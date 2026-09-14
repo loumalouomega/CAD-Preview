@@ -27,6 +27,8 @@ import {
 } from "./editOps";
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { resolvePlaneRefs } from "./planeRefs";
+import { parseSvgDocument, svgSubpathsToPolylineOps } from "./svgImport";
+import { nestLoops } from "./loopNesting";
 async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fullOps: EditOp[]; variables: ParamVariable[]; bakedThrough: number }> {
   const parsed = await readEditsRaw(modelPath);
   const bakedThrough = parsed.bakedThrough;
@@ -239,7 +241,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   defeature: '{faces: faceId[] (>=1): faces to remove as recognized features (fillets, chamfers) via BRepAlgoAPI_Defeaturing; the solid heals behind them}',
   splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR with planePoint/planeNormal and midplaneFaces; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
   rib: '{spineEdges: edgeId[] (open wire, assembled in any order), dir: [x,y,z], thin: n>0 (required; symmetric — thinOuter must be absent or exactly thin/2), upTo: faceId (planar terminator — wall runs to its plane plus one thin of embed, then fuses), blendRadius?: n>=0 (junction blend; default thin/4; 0 = fuse only)}',
-  wrap: '{profile: faceId (flat sketch face — face-only, no profileEdges form), target: "cylinder"|"cone", axisPoint: [x,y,z], axisDir: [x,y,z], radius: n>0, halfAngleDeg?: 0<n<90 (cone only, required; refused on cylinder), thickness: n>0 (total, symmetric about the developed surface), variant: "emboss"|"engrave"|"standalone", targets?: solidId[] (required for emboss/engrave, refused for standalone)}',
+  wrap: '{profile: faceId (flat sketch face — face-only, no profileEdges form; holed profiles supported, e.g. a letter with a counter — each hole is cut out of the developed shell), target: "cylinder"|"cone", axisPoint: [x,y,z], axisDir: [x,y,z], radius: n>0, halfAngleDeg?: 0<n<90 (cone only, required; refused on cylinder), thickness: n>0 (total, symmetric about the developed surface), variant: "emboss"|"engrave"|"standalone", targets?: solidId[] (required for emboss/engrave, refused for standalone)}',
   section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR)}',
   addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
   addSphere: '{center: [x,y,z], radius: n>0}',
@@ -274,7 +276,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addEllipseArc:
     '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radiusX: n>0, radiusY: n>0, startAngleDeg: n, endAngleDeg: n}',
   addHelix: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, pitch: n>0, turns: n>0}',
-  addSurfaceFromLines: '{edges: edgeId[] (must connect into a closed loop)}',
+  addSurfaceFromLines: '{edges: edgeId[] (a single connected loop, or several disjoint closed loops forming exactly ONE outer boundary plus its holes — e.g. a letter "O"\'s outer ring + inner ring build one holed face; a set spanning more than one outer loop is refused)}',
   addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
   addEdgeSlot: '{edge: edgeId, width: n>0}',
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
@@ -2805,6 +2807,172 @@ export async function applyEditOps(
     report,
     stackLength: params.dryRun ? current.fullOps.length : newOps.length,
     model,
+    warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// import_svg
+
+/**
+ * Re-tessellates and returns the current entity summary with no ops applied
+ * — the "before" half of `import_svg`'s edge-id-prediction guard. Mirrors
+ * `applyEditOps`'s own replay branch exactly (same `readOcctSource`,
+ * `readEditsResolved`, `replayTail`, `ctx.pipeline.loadBRep`,
+ * `entitySummary`) rather than reusing `applyEditOps` itself, which has no
+ * way to produce a `model` summary for zero accepted ops.
+ */
+async function currentEntitySummary(
+  ctx: ToolContext,
+  modelPath: string,
+  route: FileRoute,
+  warnings: string[]
+): Promise<ReturnType<typeof entitySummary> | null> {
+  if (route.strategy !== "occt") return null;
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    warnings.push(src.reason);
+    return null;
+  }
+  const current = await readEditsResolved(modelPath);
+  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, src.bytes, src.format as BRepFormat, replayTail(current.fullOps, current.bakedThrough));
+  return entitySummary(result);
+}
+
+/**
+ * Imports an SVG file's shape elements as sketch `addPolyline` ops, and —
+ * unless `buildSurfaces: false` — groups each region (one outer loop plus
+ * its holes, via `loopNesting.ts`'s pure, shared `nestLoops`) into an
+ * `addSurfaceFromLines` op, so a letter with a counter (an "O") imports as
+ * one ready-to-extrude holed face rather than a bare set of polylines a
+ * caller must group by hand. The headless counterpart of `main.ts`'s
+ * `importSvgPaths` — both go through the SAME `parseSvgDocument`/
+ * `svgSubpathsToPolylineOps` (`svgImport.ts`), so the two can never
+ * disagree about what an SVG document means; only the extra
+ * surface-building step is new here (item 1's roadmap gap: SVG import was
+ * webview-only).
+ *
+ * B-rep sources only — `addPolyline`/`addSurfaceFromLines` are both
+ * `BREP_ONLY_OPS` (meshes have no sketch/exact topology), same gate every
+ * other sketch-producing tool in this codebase uses.
+ *
+ * **Edge-id prediction, guarded rather than assumed.** After the polyline
+ * ops apply, each new polyline's edges are assumed to land as one
+ * contiguous, in-order run at the tail of the model's edge enumeration
+ * (verified live: sequential `addPolyline` ops each append their own edges,
+ * in point order, after every edge that already existed) — this is what
+ * lets the SAME call compute `edge-N` ids for the just-created polylines
+ * without a second round trip to ask the kernel "which ids are these". But
+ * this is an ASSUMPTION about kernel internals, not a guarantee this module
+ * controls, so it is checked, not trusted: if the model's edge count after
+ * applying the polylines doesn't grow by EXACTLY the sum of each
+ * placement's own segment count, surface-building is skipped with a named
+ * warning rather than emitting `addSurfaceFromLines` ops against
+ * possibly-wrong ids.
+ */
+export async function importSvgTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    svgPath: string;
+    scale?: number;
+    origin?: [number, number, number];
+    buildSurfaces?: boolean;
+    dryRun?: boolean;
+  }
+): Promise<{
+  supported: boolean;
+  polylines: number;
+  surfaces: number;
+  polylineReport?: unknown[];
+  surfaceReport?: unknown[];
+  model?: ReturnType<typeof entitySummary> | null;
+  dryRun: boolean;
+  warnings: string[];
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const dryRun = params.dryRun === true;
+
+  if (route.strategy !== "occt") {
+    return {
+      supported: false,
+      polylines: 0,
+      surfaces: 0,
+      dryRun,
+      warnings: [`${route.format} sources have no sketch/exact topology for imported SVG polylines — open a STEP/IGES/BREP source.`],
+    };
+  }
+  if (path.resolve(params.svgPath) === path.resolve(modelPath)) {
+    throw new Error("svgPath must not be the model file itself.");
+  }
+
+  const warnings: string[] = [];
+  const svgText = await fs.readFile(params.svgPath, "utf8");
+  const { subpaths, warnings: parseWarnings } = parseSvgDocument(svgText);
+  warnings.push(...parseWarnings);
+
+  const placements = svgSubpathsToPolylineOps(subpaths, { scale: params.scale, origin: params.origin });
+  if (placements.length === 0) {
+    warnings.push("No usable paths found in that SVG (no recognized shape elements, or every one was degenerate).");
+    return { supported: true, polylines: 0, surfaces: 0, dryRun, warnings };
+  }
+
+  const before = await currentEntitySummary(ctx, modelPath, route, warnings);
+  const beforeEdgeCount = before?.edgeCount ?? 0;
+
+  const polylineOps = placements.map((p) => ({ op: "addPolyline", points: p.points, closed: p.closed }));
+  const polylineResult = await applyEditOps(ctx, { path: modelPath, ops: polylineOps, dryRun });
+  warnings.push(...polylineResult.warnings);
+
+  let surfaces = 0;
+  let surfaceResult: Awaited<ReturnType<typeof applyEditOps>> | null = null;
+
+  if ((params.buildSurfaces ?? true) && !dryRun && polylineResult.model) {
+    const afterEdgeCount: number = polylineResult.model.edgeCount;
+    const addedEdgeCount = afterEdgeCount - beforeEdgeCount;
+    const segmentCountOf = (p: { points: unknown[]; closed: boolean }): number => (p.closed ? p.points.length : p.points.length - 1);
+    const expectedEdgeCount = placements.reduce((n, p) => n + segmentCountOf(p), 0);
+
+    if (addedEdgeCount !== expectedEdgeCount) {
+      warnings.push(
+        `Skipped building surfaces: expected ${expectedEdgeCount} new edge(s) from the imported polylines but the model gained ${addedEdgeCount} — the edge-id prediction would be unsafe here. Re-inspect the model (load_model) and build surfaces manually via apply_edit_ops's addSurfaceFromLines, or interactively via Build → Surface.`
+      );
+    } else {
+      // Assign each placement its own contiguous, in-order block of the
+      // newly-appended edge ids (verified live — see this function's doc
+      // comment), then group loops into regions (outer + holes) via the
+      // SAME pure rule the kernel's own multi-loop addSurfaceFromLines
+      // uses, so every emitted op is one the kernel will accept.
+      let cursor = beforeEdgeCount;
+      const edgeIdsByPlacement: string[][] = placements.map((p) => {
+        const ids: string[] = [];
+        for (let i = 0; i < segmentCountOf(p); i++) ids.push(`edge-${cursor++}`);
+        return ids;
+      });
+      const loops2d: [number, number][][] = placements.map((p) => p.points.map(([x, y]) => [x, y] as [number, number]));
+      const regions = nestLoops(loops2d);
+      const surfaceOps = regions.map((region) => ({
+        op: "addSurfaceFromLines",
+        edges: [...edgeIdsByPlacement[region.outer], ...region.holes.flatMap((h) => edgeIdsByPlacement[h])],
+      }));
+
+      if (surfaceOps.length > 0) {
+        surfaceResult = await applyEditOps(ctx, { path: modelPath, ops: surfaceOps, dryRun: false });
+        warnings.push(...surfaceResult.warnings);
+        surfaces = surfaceResult.report.filter((r) => r.accepted && r.applied !== false).length;
+      }
+    }
+  }
+
+  return {
+    supported: true,
+    polylines: placements.length,
+    surfaces,
+    polylineReport: polylineResult.report,
+    surfaceReport: surfaceResult?.report ?? [],
+    model: surfaceResult?.model ?? polylineResult.model,
+    dryRun,
     warnings,
   };
 }

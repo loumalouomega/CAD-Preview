@@ -36,6 +36,7 @@ import {
   loadPreprocessTool,
   getState,
   applyEditOps,
+  importSvgTool,
   runParametricScriptTool,
   runSavedScript,
   saveParametricScript,
@@ -1803,6 +1804,145 @@ describe("apply_edit_ops", () => {
       });
       expect(result.warnings.some((w) => /Rebound/.test(w))).toBe(false);
     });
+  });
+});
+
+describe("import_svg", () => {
+  // Models a real kernel's edge growth closely enough to test the tool's
+  // guard/prediction logic: every replayed `addPolyline` op contributes one
+  // edge per segment; `addSurfaceFromLines` contributes none (it consumes
+  // existing edges, never creates new ones) — matching what the live probe
+  // in this feature's own development actually measured.
+  function edgeGrowingPipeline(overrides: Partial<Pipeline> = {}): Pipeline {
+    return fakePipeline({
+      loadBRep: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, ops: EditOp[] = []) => {
+        let n = 0;
+        for (const op of ops) {
+          if (op.op === "addPolyline") {
+            const pts = op.points;
+            n += op.closed ? pts.length : pts.length - 1;
+          }
+        }
+        return {
+          ...FAKE_BREP_RESULT,
+          edges: Array.from({ length: n }, (_, i) => ({ edgeId: `edge-${i}`, positions: new Float32Array(), smooth: false })),
+        };
+      }),
+      ...overrides,
+    });
+  }
+
+  async function writeSvg(text: string): Promise<string> {
+    const svgPath = path.join(dir, "shape.svg");
+    await fs.writeFile(svgPath, text, "utf8");
+    return svgPath;
+  }
+
+  it("imports a letter-with-a-hole shape as two polylines grouped into one holed addSurfaceFromLines op", async () => {
+    const svgPath = await writeSvg(
+      `<svg><rect x="0" y="0" width="10" height="6"/><rect x="3" y="2" width="4" height="2"/></svg>`
+    );
+    const c = ctx(edgeGrowingPipeline());
+    const result = await importSvgTool(c, { path: stpModel, svgPath });
+    expect(result.supported).toBe(true);
+    expect(result.polylines).toBe(2);
+    expect(result.surfaces).toBe(1);
+    expect(result.warnings).toEqual([]);
+    const edits = await readEdits(stpModel);
+    expect(edits.ops).toHaveLength(3); // 2 polylines + 1 holed surface
+    expect(edits.ops[2]).toMatchObject({ op: "addSurfaceFromLines" });
+    const surfaceOp = edits.ops[2] as EditOp & { op: "addSurfaceFromLines" };
+    expect(surfaceOp.edges).toHaveLength(8); // outer(4) + hole(4)
+    expect(result.model).not.toBeNull();
+  });
+
+  it("emits one addSurfaceFromLines op PER independent region (two disjoint shapes)", async () => {
+    const svgPath = await writeSvg(
+      `<svg><rect x="0" y="0" width="4" height="4"/><rect x="20" y="0" width="4" height="4"/></svg>`
+    );
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath });
+    expect(result.polylines).toBe(2);
+    expect(result.surfaces).toBe(2);
+    const edits = await readEdits(stpModel);
+    expect(edits.ops.filter((o) => o.op === "addSurfaceFromLines")).toHaveLength(2);
+  });
+
+  it("respects the transform attribute (a real text-to-outlines shape)", async () => {
+    const svgPath = await writeSvg(
+      `<svg><g transform="translate(100,0) scale(2)"><rect x="0" y="0" width="5" height="3"/></g></svg>`
+    );
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath, buildSurfaces: false });
+    const edits = await readEdits(stpModel);
+    const op = edits.ops[0] as EditOp & { op: "addPolyline" };
+    // scale(2) first -> (0,0)..(10,6); then translate(100,0) -> x+=100;
+    // then the SVG->world Y-flip negates y.
+    expect(op.points[0]).toEqual([100, 0, 0]);
+    expect(op.points[2]).toEqual([110, -6, 0]);
+    expect(result.polylines).toBe(1);
+  });
+
+  it("buildSurfaces: false imports polylines only, no addSurfaceFromLines op and no extra pipeline call", async () => {
+    const svgPath = await writeSvg(`<svg><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const c = ctx(edgeGrowingPipeline());
+    const result = await importSvgTool(c, { path: stpModel, svgPath, buildSurfaces: false });
+    expect(result.polylines).toBe(1);
+    expect(result.surfaces).toBe(0);
+    const edits = await readEdits(stpModel);
+    expect(edits.ops).toHaveLength(1);
+    expect(edits.ops[0].op).toBe("addPolyline");
+  });
+
+  it("dryRun never persists and never builds surfaces", async () => {
+    const svgPath = await writeSvg(`<svg><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath, dryRun: true });
+    expect(result.dryRun).toBe(true);
+    expect(result.surfaces).toBe(0);
+    expect(result.model).toBeNull();
+    expect((await readEdits(stpModel)).ops).toHaveLength(0);
+  });
+
+  it("skips surface-building with a named warning when the edge-count guard doesn't match (never guesses at wrong ids)", async () => {
+    // A pipeline whose edge count doesn't grow the way the polyline ops
+    // predict — the guard this feature's own doc comment calls out as the
+    // difference between "assumed" and "checked".
+    const c = ctx(fakePipeline({ loadBRep: vi.fn(async () => ({ ...FAKE_BREP_RESULT, edges: [FAKE_BREP_RESULT.edges[0]] })) }));
+    const svgPath = await writeSvg(`<svg><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const result = await importSvgTool(c, { path: stpModel, svgPath });
+    expect(result.polylines).toBe(1); // the polyline itself still applied
+    expect(result.surfaces).toBe(0);
+    expect(result.warnings.some((w) => /Skipped building surfaces/.test(w) && /edge-id prediction would be unsafe/.test(w))).toBe(true);
+    const edits = await readEdits(stpModel);
+    expect(edits.ops).toHaveLength(1); // only the polyline, no addSurfaceFromLines
+  });
+
+  it("rejects a mesh-format source without touching the pipeline", async () => {
+    const c = ctx(edgeGrowingPipeline());
+    const svgPath = await writeSvg(`<svg><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const result = await importSvgTool(c, { path: stlModel, svgPath });
+    expect(result.supported).toBe(false);
+    expect(result.polylines).toBe(0);
+    expect(result.warnings[0]).toMatch(/no sketch\/exact topology/);
+    expect(c.pipeline.loadBRep).not.toHaveBeenCalled();
+  });
+
+  it("throws when svgPath is the model's own path", async () => {
+    await expect(importSvgTool(ctx(), { path: stpModel, svgPath: stpModel })).rejects.toThrow(/must not be the model file itself/);
+  });
+
+  it("surfaces parser warnings (<text>/<use>) alongside the import status", async () => {
+    const svgPath = await writeSvg(`<svg><text x="0" y="0">hi</text><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath });
+    expect(result.polylines).toBe(1);
+    expect(result.warnings.some((w) => /<text>/.test(w) && /outlines/.test(w))).toBe(true);
+  });
+
+  it("reports zero polylines with a clear warning for an SVG with no usable shapes", async () => {
+    const svgPath = await writeSvg(`<svg><g/></svg>`);
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath });
+    expect(result.supported).toBe(true);
+    expect(result.polylines).toBe(0);
+    expect(result.surfaces).toBe(0);
+    expect(result.warnings[0]).toMatch(/No usable paths found/);
   });
 });
 

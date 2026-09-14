@@ -250,8 +250,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 50, `tools/list exposes 50 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation"]) {
+  assert(tools.length === 51, `tools/list exposes 51 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -5041,6 +5041,116 @@ try {
       xorRejected.rejected === 1,
       `standalone wrap with targets is rejected at validation (got ${JSON.stringify(xorRejected.report)})`
     );
+  }
+
+  // --- 3D text via outline import (roadmap "3D text via outline import",
+  // closed): import_svg + multi-loop addSurfaceFromLines + holed wrap() ---
+  //
+  // A real letter-with-a-counter shape (an "O": outer 10x6 rect, inner 4x2
+  // rect, both authored under a <g transform="translate(...) scale(...)">
+  // so the transform-composition path is genuinely exercised, not just the
+  // identity case). Fresh copy of block.stp (3x4x5, 12 base edges).
+  {
+    const seedBlock = path.join(ROOT, "examples", "STP", "block.stp");
+    const svgModel = path.join(dir, "svg-text.stp");
+    const svgPath = path.join(dir, "letter-o.svg");
+    const resetSvg = () => {
+      fs.copyFileSync(seedBlock, svgModel);
+      fs.rmSync(`${svgModel}.edits.json`, { force: true });
+    };
+    // translate(20,0) scale(1) keeps the numbers simple: outer local
+    // (0,0)-(10,6) -> world (20,0)-(30,6); Y-flip on import negates Y, so
+    // the imported polyline spans y in [-6,0]. Inner local (3,2)-(7,4) ->
+    // world (23,2)-(27,4) -> y in [-4,-2] after the flip. Outer area 60,
+    // inner area 8, holed face area exactly 52 (same fixture shape as the
+    // CLAUDE.md-recorded live probe).
+    fs.writeFileSync(
+      svgPath,
+      `<svg><g transform="translate(20,0)"><rect x="0" y="0" width="10" height="6"/><rect x="3" y="2" width="4" height="2"/></g></svg>`,
+      "utf8"
+    );
+    resetSvg();
+
+    const imported = await callWithCleanRetry("import_svg", { path: svgModel, svgPath }, resetSvg);
+    assert(imported.supported === true, `import_svg supported on a B-rep source (got ${JSON.stringify(imported)})`);
+    assert(imported.polylines === 2, `import_svg reports 2 polylines for the letter-O shape (got ${imported.polylines})`);
+    assert(imported.surfaces === 1, `import_svg groups the outer+hole into exactly 1 surface (got ${imported.surfaces})`);
+    assert(imported.warnings.length === 0, `import_svg reports no warnings for a clean <rect>-only SVG (got ${JSON.stringify(imported.warnings)})`);
+
+    const svgEdits = JSON.parse(fs.readFileSync(`${svgModel}.edits.json`, "utf8"));
+    const surfaceOp = svgEdits.ops.find((o) => o.op === "addSurfaceFromLines");
+    assert(surfaceOp && surfaceOp.edges.length === 8, `the persisted addSurfaceFromLines op carries outer(4)+hole(4)=8 edges (got ${surfaceOp?.edges?.length})`);
+    // addPolyline builds a bare WIRE, not a free face (unlike
+    // addRectangleProfile) — so block.stp's 6 solid faces are the only
+    // faces that exist before addSurfaceFromLines runs, and the new holed
+    // face lands at face-6, not face-8 (verified live — an initial draft of
+    // this fixture guessed "face-8" by analogy with a DIFFERENT, face-
+    // building profile op and it silently resolved to a wrong solid face
+    // instead of the sketch, caught only by re-deriving the count here).
+    const holedFaceFacts = await call("inspect", { path: svgModel, entityId: "face-6" });
+    assert(
+      holedFaceFacts.area != null && Math.abs(holedFaceFacts.area - 52) < 1e-6,
+      `the imported letter-O's holed face has area exactly 52 = 60 - 8 (got ${holedFaceFacts.area})`
+    );
+
+    // A <text> element is recognized and warned about, not silently skipped;
+    // any real geometry in the same file still imports.
+    const textSvgPath = path.join(dir, "with-text.svg");
+    fs.writeFileSync(textSvgPath, `<svg><text x="0" y="0">hi</text><rect x="0" y="0" width="4" height="4"/></svg>`, "utf8");
+    resetSvg();
+    const withText = await callWithCleanRetry("import_svg", { path: svgModel, svgPath: textSvgPath }, resetSvg);
+    assert(withText.polylines === 1, `the real <rect> still imports alongside a <text> warning (got ${withText.polylines})`);
+    assert(
+      withText.warnings.some((w) => /<text>/.test(w) && /outlines/.test(w)),
+      `import_svg surfaces the <text> warning (got ${JSON.stringify(withText.warnings)})`
+    );
+
+    // Two disjoint (non-nested) shapes group into two SEPARATE surface ops,
+    // never one wrong holed face spanning both.
+    const disjointSvgPath = path.join(dir, "disjoint.svg");
+    fs.writeFileSync(disjointSvgPath, `<svg><rect x="0" y="0" width="4" height="4"/><rect x="20" y="0" width="4" height="4"/></svg>`, "utf8");
+    resetSvg();
+    const disjoint = await callWithCleanRetry("import_svg", { path: svgModel, svgPath: disjointSvgPath }, resetSvg);
+    assert(disjoint.surfaces === 2, `two disjoint shapes group into 2 separate surface ops (got ${disjoint.surfaces})`);
+
+    // wrap() on the holed "O" face, developed onto a cylinder — the holed
+    // shell's volume is exactly (outerArea - holeArea) x thickness, the
+    // same isometric-development property CLAUDE.md records for a plain
+    // profile, now verified for a holed one: (60-8)*2 = 104. A fresh
+    // reset+re-import first, since the file was overwritten by the <text>/
+    // disjoint checks above — plain `call` for the wrap step itself (not
+    // `callWithCleanRetry`): that op-list depends on the prior import
+    // already having landed in the SAME file, so a transient-abort retry
+    // here would need to redo the whole reset+re-import sequence, which a
+    // bare resetState callback can't express — acceptable, since this
+    // specific op has shown no sign of the accumulated-heap-pressure class
+    // this file guards elsewhere with the retry wrapper.
+    resetSvg();
+    const svgImportedForWrap = await callWithCleanRetry("import_svg", { path: svgModel, svgPath }, resetSvg);
+    assert(svgImportedForWrap.surfaces === 1, "re-import for the wrap block groups into 1 surface");
+    // axisDir PERPENDICULAR to the sketch's own normal (the sketch lies flat
+    // in z=0, normal ±Z, since every SVG import is flat XY) — the SAME
+    // "axis lies within the sketch plane" branch the existing cylWrap
+    // fixture above already exercises, verified live for this exact holed
+    // profile (probe: volume 104.00000000754444, matching (60-8)*2).
+    const cylWrapSvg = {
+      op: "wrap", profile: "face-6", target: "cylinder",
+      axisPoint: [20, -15, 0], axisDir: [1, 0, 0], radius: 10, thickness: 2,
+      variant: "standalone",
+    };
+    const wrapped = await call("apply_edit_ops", { path: svgModel, ops: [cylWrapSvg] });
+    assert(wrapped.applied === 1, `wrap on the imported holed face applies (got ${JSON.stringify(wrapped.report)})`);
+    const wrappedShellMass = await call("get_mass_properties", { path: svgModel, entityId: "solid-1" });
+    assert(
+      wrappedShellMass.supported && Math.abs(wrappedShellMass.volume - 104) < 1e-3,
+      `the wrapped holed shell has volume exactly (60-8)*2=104 (got ${wrappedShellMass.volume})`
+    );
+
+    // Non-B-rep source refusal, no pipeline call needed to know this.
+    const meshSvgPath = path.join(dir, "for-mesh.svg");
+    fs.writeFileSync(meshSvgPath, `<svg><rect x="0" y="0" width="4" height="4"/></svg>`, "utf8");
+    const meshRefused = await call("import_svg", { path: path.join(ROOT, "examples", "STL", "cube.stl"), svgPath: meshSvgPath });
+    assert(meshRefused.supported === false, `import_svg refuses a mesh-format source (got ${JSON.stringify(meshRefused)})`);
   }
 
   // --- loft guide rail (roadmap item 1: resampled-intermediate fallback) ---

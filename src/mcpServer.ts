@@ -64,6 +64,7 @@ import {
   exportTechnicalDrawingTool,
   getState,
   applyEditOps,
+  importSvgTool,
   runParametricScriptTool,
   removeEditOp,
   runSavedScript,
@@ -813,6 +814,26 @@ server.registerTool(
     inputSchema: { path: modelPath, ops: rawOps, dryRun: z.boolean().optional() },
   },
   wrap((args: { path: string; ops: Array<Record<string, unknown>>; dryRun?: boolean }) => applyEditOps(ctx, args))
+);
+
+server.registerTool(
+  "import_svg",
+  {
+    description:
+      "Import an SVG file's shape elements (<path>, <rect>, <circle>, <ellipse>, <line>, <polyline>, <polygon> — full transform-list composition, i.e. a real Inkscape/Illustrator 'convert text to outlines' export wrapped in <g transform=\"...\"> groups imports at the right place and scale) as sketch addPolyline ops, then — unless buildSurfaces is false — groups each region (one outer loop plus its holes) into an addSurfaceFromLines op, so a letter with a counter (an \"O\") imports as one ready-to-extrude holed face. <use> and <text> elements are recognized and warned about (not traced) rather than silently skipped; convert text to outlines/paths first. B-rep sources only (addPolyline/addSurfaceFromLines are BREP_ONLY_OPS). Same placement convention as the interactive File ▸ Import SVG… (SVG's Y-down flipped to this codebase's Y-up, flat in the XY plane, 1 SVG unit = 1mm × scale, plus an optional origin offset) — the two share the same parser, so they can never disagree. Persists to <model>.edits.json like apply_edit_ops; use dryRun to preview the polyline count without persisting (surfaces are never built on a dry run).",
+    inputSchema: {
+      path: modelPath,
+      svgPath: z.string().describe("Absolute path to the .svg file to import (must not be the model's own path)"),
+      scale: z.number().optional().describe("Uniform scale applied after the Y-flip (default 1 — 1 SVG user unit = 1mm)"),
+      origin: z.tuple([z.number(), z.number(), z.number()]).optional().describe("World-space [x,y,z] offset applied after scaling (default [0,0,0])"),
+      buildSurfaces: z.boolean().optional().describe("Group loops into addSurfaceFromLines ops (default true)"),
+      dryRun: z.boolean().optional(),
+    },
+  },
+  wrap(
+    (args: { path: string; svgPath: string; scale?: number; origin?: [number, number, number]; buildSurfaces?: boolean; dryRun?: boolean }) =>
+      importSvgTool(ctx, args)
+  )
 );
 
 server.registerTool(
