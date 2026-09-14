@@ -250,7 +250,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 49, `tools/list exposes 49 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 50, `tools/list exposes 50 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -768,7 +768,12 @@ try {
     );
     assert(base.warnings.some((w) => /Read-only preview/.test(w)), "render_ops_prefix says plainly that nothing was written");
 
-    const mid = await call("render_ops_prefix", { path: model, throughIndex: 0 });
+    // Real, reproducible-at-clean-HEAD finding: this exact call once threw a
+    // bare-digit OCCT exception pointer that escaped `wrapOcctFault` unwrapped
+    // (fixed in `isOcctWasmAbort`'s vocabulary — see `occtService.test.ts`).
+    // `callWithCleanRetry` is the standing belt-and-suspenders here: the call
+    // is read-only, so there is nothing for `resetState` to undo.
+    const mid = await callWithCleanRetry("render_ops_prefix", { path: model, throughIndex: 0 }, () => {});
     assert(
       mid.supported === true && mid.prefixOpCount === 1 && mid.totalOpCount === 1 && mid.model.solids.length === 2,
       `render_ops_prefix at op 0 replays just the box (got ${mid.model.solids.length} solid(s))`
@@ -3577,6 +3582,87 @@ try {
       wireframe.warnings.some((w) => /wireframe/.test(w)),
       `a crease angle below the mesh's own facet angle warns rather than silently drawing every facet (got ${JSON.stringify(wireframe.warnings)})`
     );
+  }
+
+  // export_drawing_sheet (roadmap "Multi-view sheet layout"): several views on
+  // one sheet at a shared scale with a title block. Uses the same block.stp
+  // fixture (a real, analytically-known 3×4×5 box centred at the origin) as
+  // above, so the dimension-placement assertion below has a known answer.
+  {
+    const sheetModel = path.join(dir, "sheet-box.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), sheetModel);
+
+    // Default views, first-angle, "fit" paper.
+    const sheetSvgOut = path.join(dir, "sheet-default.svg");
+    const sheet = await call("export_drawing_sheet", { path: sheetModel, outputPath: sheetSvgOut });
+    assert(
+      sheet.views.length === 4 && sheet.views.every((v) => v.segmentCount > 0),
+      `the default sheet draws all 4 views (front/top/right/iso), each with real geometry (got ${JSON.stringify(sheet.views)})`
+    );
+    assert(sheet.views.map((v) => v.name).join(",") === "front,top,right,iso-ftr", `default view order (got ${sheet.views.map((v) => v.name).join(",")})`);
+    assert(sheet.projection === "first" && sheet.scale === "1:1", `default projection/scale (got ${sheet.projection}/${sheet.scale})`);
+    assert(sheet.warnings.length === 0, `a clean sheet writes with no warnings (got ${JSON.stringify(sheet.warnings)})`);
+    const sheetSvgText = fs.readFileSync(sheetSvgOut, "utf8");
+    for (const name of ["front", "top", "right", "iso-ftr"]) assert(sheetSvgText.includes(`<g id="view-${name}">`), `SVG sheet has a group for ${name}`);
+    assert(sheetSvgText.includes('id="title-block"') && !/NaN|Infinity/.test(sheetSvgText), "SVG sheet carries a title block and no non-finite coordinates");
+
+    // A4 picks a standard ISO 5455 scale and reports the real sheet size.
+    const a4 = await call("export_drawing_sheet", { path: sheetModel, outputPath: path.join(dir, "sheet-a4.svg"), paper: "A4" });
+    assert(a4.paper === "A4" && a4.sheetSize[0] === 297 && a4.sheetSize[1] === 210, `A4 sheet reports its real size (got ${JSON.stringify(a4.sheetSize)})`);
+
+    // DXF: BORDER/TITLE/HIDDEN/DIMENSIONS layers all present, and a pinned
+    // annotation is drawn exactly ONCE, in the view where it reads at true
+    // length — an X-axis-spanning edge is foreshortened in "right" but true
+    // length in "front" (listed first, so ties resolve there too).
+    await call("pin_annotation", {
+      path: sheetModel,
+      tool: "distance",
+      text: "3 mm",
+      anchorPoint: [0, 0, 2.5],
+      linePoints: [[-1.5, 0, 2.5], [1.5, 0, 2.5]],
+      volumes: ["solid-0"],
+    });
+    const sheetDxfOut = path.join(dir, "sheet-dim.dxf");
+    const dimSheet = await call("export_drawing_sheet", { path: sheetModel, outputPath: sheetDxfOut, format: "dxf" });
+    assert(dimSheet.format === "dxf" && dimSheet.dimensionCount === 1, `a pinned annotation is drawn exactly once across the sheet (got ${dimSheet.dimensionCount})`);
+    const frontView = dimSheet.views.find((v) => v.name === "front");
+    const otherDims = dimSheet.views.filter((v) => v.name !== "front").reduce((n, v) => n + v.dimensionCount, 0);
+    assert(frontView.dimensionCount === 1 && otherDims === 0, `the dimension lands in FRONT, where it reads at true length (got ${JSON.stringify(dimSheet.views)})`);
+    const sheetDxfText = fs.readFileSync(sheetDxfOut, "utf8");
+    for (const layer of ["\nHIDDEN\n", "\nDIMENSIONS\n", "\nBORDER\n", "\nTITLE\n"]) {
+      assert(sheetDxfText.includes(layer), `DXF sheet carries a ${layer.trim()} layer`);
+    }
+    assert(!/NaN|Infinity/.test(sheetDxfText), "DXF sheet carries no non-finite coordinates");
+
+    // Third-angle is a real, selectable alternative to the default.
+    const thirdSheet = await call("export_drawing_sheet", {
+      path: sheetModel,
+      outputPath: path.join(dir, "sheet-third.svg"),
+      projection: "third",
+    });
+    assert(thirdSheet.projection === "third", "projection:'third' is honoured");
+
+    // An unknown view is skipped with a warning, not a hard failure; an
+    // all-unknown request is a caller error.
+    const partial = await call("export_drawing_sheet", {
+      path: sheetModel,
+      outputPath: path.join(dir, "sheet-partial.svg"),
+      views: ["front", "sideways"],
+    });
+    assert(
+      partial.views.length === 1 && partial.warnings.some((w) => /sideways/.test(w)),
+      `an unknown view is dropped with a warning rather than failing the whole sheet (got ${JSON.stringify(partial)})`
+    );
+    const noViews = await callTolerant("export_drawing_sheet", {
+      path: sheetModel,
+      outputPath: path.join(dir, "sheet-none.svg"),
+      views: ["nope"],
+    });
+    assert(noViews.error && /at least one named view/i.test(noViews.error), "a sheet with no usable view errors clearly");
+
+    // A meshio-only source is rejected the same way the single-view tools reject it.
+    const sheetVtk = await callTolerant("export_drawing_sheet", { path: vtkModel, outputPath: path.join(dir, "sheet.svg") });
+    assert(sheetVtk.error && /no host-side geometry/i.test(sheetVtk.error), "export_drawing_sheet rejects a meshio-only source");
   }
 
   // hit_test (roadmap "close the pixel -> entity loop"): the sharp assertion the

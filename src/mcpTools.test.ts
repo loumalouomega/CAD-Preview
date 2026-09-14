@@ -50,6 +50,7 @@ import {
   pinAnnotation,
   type Pipeline,
   type ToolContext,
+  exportDrawingSheetTool,
 } from "./mcpTools";
 import { readEdits, readParts, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
 import type { EditOp } from "./editOps";
@@ -370,6 +371,19 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       return { pairs, warnings: [] };
     }),
     renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
+    exportDrawingSheet: vi.fn(async (_ext: string, _source: unknown, opts: { views: Array<{ name: string }>; paper?: string; projection?: string; format?: string }) => ({
+      content: opts.format === "dxf" ? "0\nEOF\n" : "<svg/>\n",
+      format: opts.format === "dxf" ? "dxf" : "svg",
+      width: 297,
+      height: 210,
+      scale: 1,
+      scaleLabel: "1:1",
+      paper: opts.paper ?? "fit",
+      projection: opts.projection ?? "first",
+      views: opts.views.map((v) => ({ name: v.name, segmentCount: 4, hiddenSegmentCount: 0, dimensionCount: 0 })),
+      triangleCount: 12,
+      warnings: [],
+    })),
     isRenderAvailable: vi.fn(async () => ({ available: true })),
     searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
     downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
@@ -3312,5 +3326,70 @@ describe("render_ops_prefix", () => {
     const withRender = await renderOpsPrefixTool(available, { path: stpModel, throughIndex: -1, render: true });
     expect(withRender.images).toHaveLength(4);
     expect(available.pipeline.renderSnapshot).toHaveBeenCalled();
+  });
+});
+
+describe("export_drawing_sheet", () => {
+  it("defaults to front/top/right/iso, first-angle, fit paper, SVG — and writes the file", async () => {
+    const c = ctx();
+    const out = path.join(dir, "sheet.svg");
+    const r = await exportDrawingSheetTool(c, { path: stpModel, outputPath: out });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(call.views.map((v: { name: string }) => v.name)).toEqual(["front", "top", "right", "iso-ftr"]);
+    expect(call.projection).toBe("first");
+    expect(call.paper).toBe("fit");
+    expect(call.hiddenLines).toBe(true);
+    expect(r.format).toBe("svg");
+    expect(r.views).toHaveLength(4);
+    expect(await fs.readFile(out, "utf8")).toBe("<svg/>\n");
+    expect(r.dimensionCount).toBeUndefined();
+  });
+
+  it("skips unknown and repeated views with a warning, and refuses a sheet with no usable view", async () => {
+    const c = ctx();
+    const r = await exportDrawingSheetTool(c, {
+      path: stpModel,
+      outputPath: path.join(dir, "s.svg"),
+      views: ["FRONT", "sideways", "front", "top"],
+    });
+    expect(r.views.map((v) => v.name)).toEqual(["front", "top"]);
+    expect(r.warnings.join(" ")).toMatch(/sideways/);
+    expect(r.warnings.join(" ")).toMatch(/repeated/);
+    await expect(
+      exportDrawingSheetTool(ctx(), { path: stpModel, outputPath: path.join(dir, "t.svg"), views: ["nope"] })
+    ).rejects.toThrow(/at least one named view/);
+  });
+
+  it("falls back with a warning on an invalid paper, projection or scale", async () => {
+    const c = ctx();
+    const r = await exportDrawingSheetTool(c, {
+      path: stpModel,
+      outputPath: path.join(dir, "s.dxf"),
+      format: "dxf",
+      paper: "B5",
+      projection: "second",
+      scale: -2,
+    });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect([call.paper, call.projection, call.scale]).toEqual(["fit", "first", undefined]);
+    expect(r.format).toBe("dxf");
+    expect(r.warnings.join(" ")).toMatch(/B5/);
+    expect(r.warnings.join(" ")).toMatch(/second/);
+    expect(r.warnings.join(" ")).toMatch(/-2/);
+  });
+
+  it("passes paper/projection/scale through and refuses the source path", async () => {
+    const c = ctx();
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "s.svg"), paper: "A3", projection: "third", scale: 0.5 });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect([call.paper, call.projection, call.scale]).toEqual(["A3", "third", 0.5]);
+    await expect(exportDrawingSheetTool(ctx(), { path: stpModel, outputPath: stpModel })).rejects.toThrow();
+  });
+
+  it("rejects a meshio-only source before touching the pipeline", async () => {
+    const c = ctx();
+    await fs.writeFile(vtkModel, "# vtk DataFile Version 2.0\n", "utf8");
+    await expect(exportDrawingSheetTool(c, { path: vtkModel, outputPath: path.join(dir, "v.svg") })).rejects.toThrow(/no host-side geometry/);
+    expect(c.pipeline.exportDrawingSheet).not.toHaveBeenCalled();
   });
 });

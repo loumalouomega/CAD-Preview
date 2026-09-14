@@ -86,7 +86,9 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/gltfSolidSignatures.ts` | Wires `gltfParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' glTF side (pure, unit-tested) |
 | `src/silhouetteEdges.ts` | Pure silhouette-edge extraction from a welded indexed mesh, given a view direction (vscode/OCCT/THREE-free, unit-tested) |
 | `src/svgSilhouette.ts` | Pure orthographic projection + SVG serialization — the codebase's first runtime SVG *writer* (vscode/OCCT/THREE-free, unit-tested) |
-| `src/svgSilhouetteHost.ts` | OCCT-touching orchestrator for silhouette SVG export: any `CompareSource` → triangles → `silhouetteEdges` → `svgSilhouette` (runs in the kernel worker) |
+| `src/svgSilhouetteHost.ts` | OCCT-touching orchestrator for silhouette SVG/technical-drawing/sheet export: any `CompareSource` → one welded mesh (`loadDrawingMesh`) → per-view projection (`silhouetteEdges` or `hiddenLineDrawing`) → `svgSilhouette`/`dxfSilhouette`/`drawingSheet` (runs in the kernel worker) |
+| `src/hiddenLineRemoval.ts` | Pure exact hidden-line removal over a welded triangle mesh — per-edge occluded-interval clipping against candidate triangles, world-projected output (vscode/OCCT/THREE-free, unit-tested) |
+| `src/drawingSheet.ts` | Pure multi-view drawing-sheet layout: cell placement per first/third-angle projection, the ISO 5455 standard-scale search, per-view dimension assignment, and the title block (vscode/OCCT/THREE-free, unit-tested) |
 | `src/stepPartsService.ts` | `searchStandardParts`/`downloadStandardPart` over the hosted [step.parts](https://www.step.parts) REST API — this extension's only external network dependency; a `{available: false, reason}` result on any network/API failure, never a thrown error. Shared by the `search_standard_parts`/`download_standard_part` MCP tools AND the interactive Standard Parts sidebar panel (`provider.ts`'s `standardPartsSearchRequest`/`standardPartsInsertRequest` handlers) — one HTTP client, two call sites |
 | `src/mcpServer.ts` | Standalone stdio MCP server entry (own `dist/mcp-server.js` bundle, not part of the extension) |
 | `src/mcpTools.ts` | MCP tool handlers over the headless pipeline (MCP-SDK/WASM-free, unit-tested) — including stateless discovery (`list_workspace_models`) and read-only prefix replay (`render_ops_prefix`) |
@@ -195,9 +197,9 @@ function extractGltfSolidSignatures(bytes: Uint8Array, external?: GltfExternalBu
 
 ---
 
-## `src/silhouetteEdges.ts`, `src/svgSilhouette.ts`, and `src/svgSilhouetteHost.ts`
+## `src/silhouetteEdges.ts`, `src/svgSilhouette.ts`, `src/dxfSilhouette.ts`, `src/hiddenLineRemoval.ts`, `src/drawingSheet.ts`, and `src/svgSilhouetteHost.ts`
 
-Silhouette SVG export (roadmap item, closed) — a 2D **outline drawing** of any source with host-side geometry, reached from **File ▸ Export Silhouette SVG…** / the `cad-preview.exportSvg` command (`provider.ts`'s `handleExportSvg`, via the `exportSvgRequest` protocol message) and from the MCP server's `export_svg_silhouette` tool. Same pure-core / thin-OCCT-shell split as the Compare Models group above, and it reuses that group's `CompareSource` union verbatim rather than inventing a parallel one.
+Silhouette/technical-drawing/sheet export (roadmap items, closed) — 2D drawings of any source with host-side geometry, reached from **File ▸ Export Silhouette SVG/DXF…**, **Export Technical Drawing…**, and **Export Drawing Sheet…** (`provider.ts`'s `handleExportSvg`/`handleExportSheet`, via the `exportSvgRequest`/`exportDxfRequest`/`exportDrawingRequest`/`exportSheetRequest` protocol messages) and the MCP server's `export_svg_silhouette`/`export_technical_drawing`/`export_drawing_sheet` tools. Same pure-core / thin-OCCT-shell split as the Compare Models group above, and it reuses that group's `CompareSource` union verbatim rather than inventing a parallel one.
 
 ```typescript
 // silhouetteEdges.ts (pure)
@@ -206,18 +208,38 @@ function silhouetteEdges(positions: Float32Array, indices: Uint32Array, directio
 // svgSilhouette.ts (pure)
 interface ViewBasis { right: Vec3; up: Vec3; forward: Vec3 }
 interface ViewSpec { direction: Vec3; up?: Vec3 }
-interface SvgOptions { strokeWidth?: number; marginFrac?: number; stroke?: string; title?: string }
-interface SvgResult { svg: string; segmentCount: number }
+interface SvgOptions { hiddenSegments?: Segment2[]; strokeWidth?: number; marginFrac?: number; stroke?: string; title?: string; annotations?: DimensionSource[]; dimensionScaleHint?: number }
+interface SvgResult { svg: string; segmentCount: number; hiddenSegmentCount?: number; dimensionCount?: number }
 const SVG_VIEWS: Record<string, { direction: [number, number, number]; up?: [number, number, number] }>
 function viewBasis(direction: Vec3, up: Vec3 = [0, 1, 0]): ViewBasis
+function drawingBounds(visible: Segment2[], hidden: Segment2[], drawings: DimensionDrawing[]): { minX; minY; maxX; maxY } | null
 function silhouetteSvg(positions: Float32Array, edges: Array<[number, number]>, view: ViewSpec, options?: SvgOptions): SvgResult
+function technicalDrawingSvg(visible: Segment2[], hidden: Segment2[], view: ViewSpec, options?: SvgOptions): SvgResult
 function polylinesSvg(polylines: Float32Array[], view: ViewSpec, options?: SvgOptions): SvgResult
+function sheetSvg(layout: SheetLayout, options?: { stroke?: string; title?: string }): string
 function scalePositions(positions: Float32Array, factor: number): Float32Array
 
+// dxfSilhouette.ts (pure)
+function silhouetteDxf(positions: Float32Array, edges: Array<[number, number]>, view: ViewSpec, options?: DxfOptions): DxfResult
+function technicalDrawingDxf(visible: Segment2[], hidden: Segment2[], view: ViewSpec, options?: DxfOptions): DxfResult & { hiddenSegmentCount: number }
+function sheetDxf(layout: SheetLayout, options?: { title?: string }): { dxf: string; chainCount: number; lineCount: number }
+
+// hiddenLineRemoval.ts (pure)
+function hiddenLineDrawing(mesh: HiddenLineMesh, basis: ScreenBasis, options?: HiddenLineOptions): HiddenLineResult
+
+// drawingSheet.ts (pure)
+function assignCells(views: { name: string }[], projection: 'first' | 'third'): [number, number][]
+function assignDimensionsToViews(annotations: DimensionSource[], views: { direction: Vec3; up?: Vec3 }[]): number[][]
+function layoutSheet(inputs: SheetViewInput[], options?: SheetOptions): SheetLayout
+
 // svgSilhouetteHost.ts (OCCT-touching; runs in the kernel worker)
-interface SvgSilhouetteOptions { direction: Vec3; up?: Vec3; unit?: DisplayUnit; strokeWidth?: number; title?: string; quality?: TessellationQuality }
-interface SvgSilhouetteResult { svg: string; segmentCount: number; triangleCount: number; warnings: string[] }
+interface SvgSilhouetteOptions { direction: Vec3; up?: Vec3; unit?: DisplayUnit; strokeWidth?: number; title?: string; quality?: TessellationQuality; format?: 'svg' | 'dxf'; annotations?: DimensionSource[]; hiddenLines?: boolean; creaseAngleDeg?: number }
+interface SvgSilhouetteResult { svg: string; dxf?: string; segmentCount: number; hiddenSegmentCount?: number; featureEdgeCount?: number; triangleCount: number; warnings: string[]; chainCount?: number; lineCount?: number; dimensionCount?: number }
 async function exportSvgSilhouette(extensionPath: string, source: CompareSource, options: SvgSilhouetteOptions): Promise<SvgSilhouetteResult>
+
+interface DrawingSheetOptions { views: { name: string; direction: Vec3; up?: Vec3 }[]; quality?: TessellationQuality; format?: 'svg' | 'dxf'; annotations?: DimensionSource[]; hiddenLines?: boolean; creaseAngleDeg?: number; paper?: PaperSize; projection?: ProjectionMethod; scale?: number; title?: string; date?: string }
+interface DrawingSheetResult { content: string; format: 'svg' | 'dxf'; width: number; height: number; scale: number; scaleLabel: string; paper: PaperSize; projection: ProjectionMethod; views: { name: string; segmentCount: number; hiddenSegmentCount: number; dimensionCount: number }[]; triangleCount: number; warnings: string[] }
+async function exportDrawingSheet(extensionPath: string, source: CompareSource, options: DrawingSheetOptions): Promise<DrawingSheetResult>
 ```
 
 - **`silhouetteEdges`** is the whole algorithm, and it needs no kernel at all. An edge is kept when its two adjacent triangles **disagree** about facing the viewer (the silhouette proper), when exactly one triangle references it (an open boundary — this is what lets an unclosed STL/glTF still draw as something sensible rather than nothing), or when 3+ triangles do (non-manifold, always a genuine feature of the geometry — the same judgement `meshTopology.ts` already applies). `direction` follows this codebase's own `ViewState.viewDirection` convention (model → camera), so a triangle is front-facing when its normal has a positive dot product with it; a triangle exactly edge-on (`dot === 0`) counts as back-facing, which is deterministic rather than arbitrary and puts exactly one silhouette line along a cylinder's tangent instead of zero or two. It shares `meshComponents.ts`'s **`edgeKey`** and its edge→triangle adjacency scaffolding — `edgeKey` was module-private to `meshTopology.ts` before this; it now lives in `meshComponents.ts` (the geometry toolkit both files already depend on) and `meshTopology.ts` imports it from there, so the two adjacency builders can't drift.
@@ -227,6 +249,8 @@ async function exportSvgSilhouette(extensionPath: string, source: CompareSource,
 - **`HLRAppli_ReflectLines` was probed against the live WASM and deliberately not used.** The roadmap listed it as the one surviving door to a kernel-computed outline (every `HLRBRep_*` class is red in this build), and it does genuinely work — the unsuffixed constructor takes a `TopoDS_Shape`, `SetAxes`/`Perform`/`GetResult` are all bound and functional (249 ms on `examples/STP/bull.stp`, returning a non-null compound this codebase's own `enumerateEdges` reads as 25 edges). It was rejected because **the resulting drawing is worse**, which is only visible by looking at it: rendered side by side against the tessellation silhouette for the same view, `GetResult()` produced the outer boundary and a few fragments while missing the part's circular holes and interior cutout entirely, where the tessellation path drew all of them. `GetResult()` returns reflect lines only; the sharp feature edges live behind `GetCompoundOf3dEdges(type, …)`, whose `type` argument is an `HLRBRep_TypeOfResultingEdge` from the entirely-red `HLRBRep_*` family — calling it throws. So the one filter that would make the kernel path competitive is unreachable: the familiar "green in the manifest is necessary but not sufficient" pattern. The tessellation path also works for STL/OBJ/PLY/glTF, which ReflectLines never could, and needs no WASM at all for those.
 - **There is no hidden-line removal, and the docs say so everywhere this surfaces.** Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette — see the MCP tool description, `doc/mcp-server.md`, `doc/file-formats.md`, and `doc/getting-started.md`, all of which carry the same framing.
 - **Wired through the kernel worker like every other OCCT-touching function** — added to `mcpTools.ts`'s `Pipeline` interface, `kernelWorker.ts`'s typed `handlers` dispatch table, and `kernelClient.ts`'s `callKernel`-backed object literal (the same 4-touch-point pattern `checkMeshHealth`/`promoteMeshToBrep` established).
+- **`hiddenLineDrawing`'s output frame is world-projected, not model-centred, and that is a real fix.** The engine centres the model on its own bounding box before the depth test, for Float32 precision (the same "coordinate magnitude, not model size" reasoning `render_snapshot`'s projection-centering carries) — but until now it never added that centre back before returning segments, while `svgSilhouette.ts`'s `project()`/`dimensionDrawings` always worked in world coordinates. The result: a technical drawing's pinned dimension glyphs were silently offset from the geometry by the projected bbox centre, and two views of one model could never share one sheet frame. `Projected.originX`/`originY` (the projected centre) are now added back exactly once, in `emitRuns`, so `hiddenLineDrawing`'s output aligns with every other writer in this file.
+- **`drawingSheet.ts`'s `layoutSheet`** (roadmap "Multi-view sheet layout") places several already-projected views on one sheet at a shared scale: `assignCells` slots the principal views relative to front — **first-angle** (ISO, default) puts top *below* front and the right view to its *left*; **third-angle** (ASME) mirrors both, and back always sits at the far right — with iso/other views filling the remaining free cells. `assignDimensionsToViews` draws each pinned annotation exactly once, in whichever orthographic view shows its `linePoints` at the largest true-length ratio (ties favour the earlier view; iso views are candidates only when no orthographic view exists). The shared scale is either the caller's explicit `scale`, a 1:1 fit for `paper: "fit"`, or — for a named ISO paper size — the largest [ISO 5455](https://en.wikipedia.org/wiki/ISO_5455) standard ratio (`STANDARD_SCALES`, 50:1 down to 1:1000) that fits the content, warning rather than silently clipping when even the smallest doesn't. `drawingBounds` (exported from `svgSilhouette.ts`) is the one bounds computation both the single-view writer and the sheet layout share. `svgSilhouetteHost.ts`'s `exportDrawingSheet` does the OCCT-touching orchestration: **load the model once, project N views** (the reason `loadDrawingMesh` was split out of the old single-view `render` closure), then `layoutSheet` → `sheetSvg`/`sheetDxf`. Deliberately **no unit conversion** — a sheet's scale ratio is only meaningful against the model's native millimetres.
 
 ---
 

@@ -60,6 +60,7 @@ import {
   promoteMeshToBrepTool,
   repairMeshTool,
   exportSvgSilhouetteTool,
+  exportDrawingSheetTool,
   exportTechnicalDrawingTool,
   getState,
   applyEditOps,
@@ -691,7 +692,7 @@ server.registerTool(
   "export_technical_drawing",
   {
     description:
-      "Write a 2D TECHNICAL DRAWING to .svg or .dxf: feature edges with hidden-line removal — visible runs solid, occluded runs dashed (SVG) or on a HIDDEN layer (DXF). Unlike export_svg_silhouette, which draws an outline only, this also draws interior feature edges and shows what is behind them. Single orthographic view, no dimensions. Works for B-rep AND mesh sources: the visibility test runs on tessellated triangles and calls no OCCT hidden-line API (that family is unavailable in this build), so it is not limited to B-rep. Treat it as a review/illustration artifact — use measure/measure_exact for any dimension you need to be sure of.",
+      "Write a 2D TECHNICAL DRAWING to .svg or .dxf: feature edges with hidden-line removal — visible runs solid, occluded runs dashed (SVG) or on a HIDDEN layer (DXF). Unlike export_svg_silhouette, which draws an outline only, this also draws interior feature edges and shows what is behind them. One view per file (export_drawing_sheet lays several out on one sheet); pinned annotations are baked in as dimensions. Works for B-rep AND mesh sources: the visibility test runs on tessellated triangles and calls no OCCT hidden-line API (that family is unavailable in this build), so it is not limited to B-rep. Treat it as a review/illustration artifact — use measure/measure_exact for any dimension you need to be sure of.",
     inputSchema: {
       path: modelPath,
       outputPath: z.string().describe("Absolute path to write (.svg or .dxf)"),
@@ -721,6 +722,42 @@ server.registerTool(
       creaseAngleDeg?: number;
       format?: "svg" | "dxf";
     }) => exportTechnicalDrawingTool(ctx, args)
+  )
+);
+
+server.registerTool(
+  "export_drawing_sheet",
+  {
+    description:
+      "Write a multi-view DRAFTING SHEET to .svg or .dxf: several views of one model (default front, top, right, iso) at one shared scale, inside a frame with a title block (title, scale ratio, projection method, date, views). Views are technical drawings by default — visible edges solid, hidden edges dashed (SVG) / on a HIDDEN layer (DXF) — and are aligned orthographically: first-angle (ISO, default) puts the top view BELOW the front and the right view on its LEFT; third-angle (ASME) mirrors that. Pinned annotations are drawn once each, in the orthographic view where the measured line reads at true length. paper \"fit\" (default) sizes the sheet to the views at 1:1 (or `scale`); A4–A0 (landscape) picks the largest ISO 5455 standard scale that fits and warns if none does. No unit conversion: the scale is a real drawn-to-actual ratio in millimetres. Works for B-rep and STL/OBJ/PLY/glTF sources (edits baked in for B-rep only). A review/illustration artifact — use measure_exact for dimensions you must rely on.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write (.svg or .dxf); must not be the source path"),
+      views: z.array(z.string()).optional().describe(`Named views in any order (default front, top, right, iso): ${NAMED_VIEW_NAMES.join(", ")}`),
+      format: z.enum(["svg", "dxf"]).optional(),
+      paper: z.enum(["fit", "A4", "A3", "A2", "A1", "A0"]).optional().describe('Default "fit"'),
+      projection: z.enum(["first", "third"]).optional().describe('Default "first" (ISO)'),
+      scale: z.number().optional().describe("Sheet mm per model mm (e.g. 0.5 for 1:2); overrides the automatic choice"),
+      hiddenLines: z.boolean().optional().describe("Draw hidden edges (default true); false draws outlines only"),
+      creaseAngleDeg: z.number().optional().describe("Mesh sources only: dihedral angle above which an interior edge is drawn (default 35°)"),
+      tessellationQuality: z.string().optional().describe('B-rep only: draft/standard/fine (default "fine")'),
+      title: z.string().optional().describe("Title-block title (default: the model's file name)"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      outputPath: string;
+      views?: string[];
+      format?: "svg" | "dxf";
+      paper?: string;
+      projection?: string;
+      scale?: number;
+      hiddenLines?: boolean;
+      creaseAngleDeg?: number;
+      tessellationQuality?: string;
+      title?: string;
+    }) => exportDrawingSheetTool(ctx, args)
   )
 );
 

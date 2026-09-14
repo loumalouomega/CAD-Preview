@@ -941,6 +941,8 @@ type WebviewToHost =
   | { type: 'importSvgRequest' }
   | { type: 'importDxfRequest' }
   | { type: 'exportDxfRequest' }
+  | { type: 'exportDrawingRequest' }
+  | { type: 'exportSheetRequest' }
   | { type: 'opPreviewRequest'; requestId: string; op: EditOp }
 ```
 ### `partsChanged`
@@ -1095,6 +1097,22 @@ The DXF sibling of `exportSvgRequest`, sent by **File ▸ Export Silhouette DXF�
 
 ```json
 { "type": "exportDxfRequest" }
+```
+
+### `exportDrawingRequest`
+
+The hidden-line-removal sibling of `exportSvgRequest`/`exportDxfRequest`, sent by **File ▸ Export Technical Drawing…** (`#menu-export-drawing`) or the `cad-preview.exportDrawing` command. Identical host-owned flow and message shape, differing only in `hiddenLines: true` on the `exportSvgSilhouette` call (SVG output; occluded edges dashed).
+
+```json
+{ "type": "exportDrawingRequest" }
+```
+
+### `exportSheetRequest`
+
+Sent by **File ▸ Export Drawing Sheet…** (`#menu-export-sheet`) or the `cad-preview.exportSheet` command — the multi-view counterpart of the three single-view drawing exports above (roadmap "Multi-view sheet layout"). Same **no `requestId`, no result message** shape: the host owns a *format* quick-pick (SVG/DXF), a *paper size* quick-pick (Fit / A4 / A3 / A2 / A1 / A0 — Escape on either cancels), a save dialog, and finally the kernel-worker `exportDrawingSheet` call with the default four views (front/top/right/iso) at first-angle projection. **Deliberately no unit quick-pick, unlike the other three drawing exports** — a sheet's scale ratio is a real drawn-to-actual relationship in millimetres, and a coordinate-unit conversion would make it lie. Success, per-view counts, and warnings all come back through the plain `status`/`error` messages.
+
+```json
+{ "type": "exportSheetRequest" }
 ```
 
 ### `exportResult` / `exportError`

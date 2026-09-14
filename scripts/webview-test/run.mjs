@@ -1723,6 +1723,20 @@ test("new blank: the File menu item posts newBlank", async (page) => {
   assert(await dropdownOpen(page, "file-dropdown") === false, "the menu closes after the click");
 });
 
+test("drawing sheet: the File menu item posts exportSheetRequest", async (page) => {
+  // The multi-view sheet-layout feature's File ▸ Export Drawing Sheet… entry
+  // — the host owns the format/paper picks and the save dialog from here, so
+  // (like exportSvg/exportDxf/exportDrawing) there is nothing else to assert
+  // client-side beyond "the menu item posts the right message and closes".
+  await populate(page);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#file-menu");
+  await page.click("#menu-export-sheet");
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "exportSheetRequest"));
+  assert(sent.length === 1, `clicking Export Drawing Sheet posts exactly one exportSheetRequest (got ${sent.length})`);
+  assert(await dropdownOpen(page, "file-dropdown") === false, "the menu closes after the click");
+});
+
 test("new blank: an EMPTY geometry message yields a usable blank document", async (page) => {
   // The blank-document webview contract, host-free: `handleBRep` posts a
   // `geometry` with no meshes/edges/points for a document whose source is an

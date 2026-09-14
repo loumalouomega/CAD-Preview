@@ -4,6 +4,18 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [Unreleased]
+
+### Added
+
+- **Multi-view drawing sheets.** File ▸ Export Drawing Sheet… and the MCP tool `export_drawing_sheet` place several views (default front/top/right/iso) on one SVG or DXF sheet at a shared scale, orthographically aligned per first-angle (ISO, default) or third-angle (ASME) projection, inside a frame with a title block. `paper: "fit"` sizes the sheet to the content at 1:1 (or an explicit `scale`); a named ISO paper size (A4–A0) picks the largest ISO 5455 standard scale that fits. A pinned annotation is drawn once, in whichever orthographic view shows it at true length.
+
+### Fixed
+
+- **Technical drawings with pinned annotations were misaligned.** `export_technical_drawing`'s hidden-line engine returned coordinates in a model-centred frame while the dimension-glyph renderer worked in world coordinates, so a pinned dimension's glyph was offset from the geometry it measured by the model's own bounding-box centre. Fixed as part of the multi-view sheet work, since a sheet needs every view in one shared frame to align them at all.
+- **DXF technical drawings and silhouettes were mirrored vertically** when opened in a real (Y-up) CAD viewer — every coordinate was written with the wrong sign for DXF's Y-up convention.
+- **A raw OCCT exception pointer (no message text at all) could escape the kernel-fault detector unwrapped**, leaving the WASM singleton corrupt with no reset and no actionable error. `isOcctWasmAbort`'s vocabulary (and its siblings in the Gmsh/meshio++/fTetWild services) now also recognizes a bare all-digit exception message.
+
 ## [2.2.0] - 2026-09-10
 
 ### Changed

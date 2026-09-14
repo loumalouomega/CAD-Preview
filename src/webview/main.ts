@@ -3421,6 +3421,7 @@ function setupFileMenu(): void {
   item("menu-export-svg", () => post({ type: "exportSvgRequest" }));
   item("menu-export-dxf", () => post({ type: "exportDxfRequest" }));
   item("menu-export-drawing", () => post({ type: "exportDrawingRequest" }));
+  item("menu-export-sheet", () => post({ type: "exportSheetRequest" }));
 }
 
 /**

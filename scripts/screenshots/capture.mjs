@@ -51,8 +51,8 @@ const SHOTS = [
     // the last entry off rather than failing the run. Two more rows landed
     // with Import/Export DXF (285 → 342), one more with Export Technical
     // Drawing (342 → 371), and one more plus a separator with New Blank Model
-    // (371 → 410).
-    target: { clip: { x: 0, y: 0, width: 320, height: 410 } },
+    // (371 → 410), and one more with Export Drawing Sheet (410 → 439).
+    target: { clip: { x: 0, y: 0, width: 320, height: 439 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the

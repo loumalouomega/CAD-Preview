@@ -124,7 +124,8 @@ const MIN_RUN_FRACTION = 1e-6;
  * Splits a mesh's feature edges into visible and occluded 2D runs.
  *
  * Returns projected 2D segments ready for `svgSilhouette.ts`'s writer, in the
- * same Y-down convention `project()` uses there.
+ * same world-projected, Y-down frame `project()` uses there — so they align
+ * with that writer's dimension glyphs and with other views of the same model.
  */
 export function hiddenLineDrawing(
   mesh: HiddenLineMesh,
@@ -179,11 +180,26 @@ export function hiddenLineDrawing(
 }
 
 interface Projected {
+  /** Screen coordinates RELATIVE to the projected bbox centre — see
+   * {@link projectVertices}. Every depth/overlap test runs in this frame. */
   x: Float64Array;
   y: Float64Array;
   depth: Float64Array;
   spanXY: number;
   spanDepth: number;
+  /**
+   * The projected bbox centre, added back only when a run is EMITTED.
+   *
+   * Without it the returned segments were silently in a model-centred frame
+   * while `svgSilhouette.ts`'s `project()` and `dimensionDrawings` work in
+   * world-projected coordinates — so a technical drawing's pinned dimension
+   * glyphs landed offset from the geometry by exactly this vector, and two
+   * views of one model could not be aligned on a shared sheet. The centring
+   * itself stays (it is what keeps the depth tests precise); only the output
+   * frame changes.
+   */
+  originX: number;
+  originY: number;
 }
 
 /**
@@ -248,7 +264,9 @@ function projectVertices(positions: Float32Array, basis: ScreenBasis): Projected
   }
   const spanXY = Number.isFinite(loX) ? Math.hypot(hiX - loX, hiY - loY) : 0;
   const spanDepth = Number.isFinite(loD) ? hiD - loD : 0;
-  return { x, y, depth, spanXY, spanDepth };
+  const originX = cx * basis.right[0] + cy * basis.right[1] + cz * basis.right[2];
+  const originY = -(cx * basis.up[0] + cy * basis.up[1] + cz * basis.up[2]);
+  return { x, y, depth, spanXY, spanDepth, originX, originY };
 }
 
 /**
@@ -658,11 +676,12 @@ function emitRuns(
   visible: Segment2[],
   hidden: Segment2[]
 ): void {
-  const { x, y } = projected;
+  const { x, y, originX, originY } = projected;
   const ax = x[edge.a], ay = y[edge.a];
   const bx = x[edge.b], by = y[edge.b];
   const length = Math.hypot(bx - ax, by - ay);
-  const at = (t: number): Point2 => [ax + (bx - ax) * t, ay + (by - ay) * t];
+  // Back to world-projected coordinates at the very last step; see `Projected.originX`.
+  const at = (t: number): Point2 => [originX + ax + (bx - ax) * t, originY + ay + (by - ay) * t];
   const push = (list: Segment2[], t0: number, t1: number): void => {
     if ((t1 - t0) * length <= minRun) return;
     list.push([at(t0), at(t1)]);

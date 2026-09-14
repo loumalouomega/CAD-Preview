@@ -19,6 +19,9 @@
 import { computeDistanceGlyph } from "./webview/dimensionGlyph";
 import { annotatedLabelText, type AnnotatedTolerance } from "./toleranceBand";
 import { resolveNamedView } from "./viewDirections";
+// Type-only: `drawingSheet.ts` imports `drawingBounds` from this module as a
+// VALUE, so a value import back would be a real cycle.
+import type { SheetLayout, SheetText } from "./drawingSheet";
 
 export type Vec3 = readonly [number, number, number];
 type Pt2 = [number, number];
@@ -155,14 +158,21 @@ function fmtStrokeWidth(n: number): string {
   return String(Number(n.toPrecision(6)));
 }
 
-function serialize(segments: Array<[[number, number], [number, number]]>, options: SvgOptions): SvgResult {
-  const marginFrac = options.marginFrac ?? DEFAULT_MARGIN_FRAC;
-  const stroke = options.stroke ?? DEFAULT_STROKE;
-  const titleTag = options.title ? `<title>${escapeXml(options.title)}</title>` : "";
-  const dims = options.dimensions;
-  const drawings = dims?.drawings ?? [];
-  const hiddenSegments = options.hiddenSegments ?? [];
+type Seg2 = [[number, number], [number, number]];
 
+/**
+ * Bounds of one projected drawing — visible and hidden geometry plus dimension
+ * glyphs — or `null` when there is nothing finite to bound.
+ *
+ * Shared by the single-view writer below and `drawingSheet.ts`'s layout, so a
+ * view is sized the same way whether it is a file of its own or one cell of a
+ * sheet.
+ */
+export function drawingBounds(
+  visible: ReadonlyArray<Seg2>,
+  hidden: ReadonlyArray<Seg2>,
+  drawings: ReadonlyArray<DimensionDrawing>
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
   // Bounds must cover the dimension glyphs too, so a drawing is never clipped
   // by its own annotations. Label points contribute their anchor (the text
   // extends around it; the margin covers the overflow).
@@ -173,13 +183,13 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
     if (y < minY) minY = y;
     if (y > maxY) maxY = y;
   };
-  for (const [a, b] of segments) {
+  for (const [a, b] of visible) {
     grow(a[0], a[1]);
     grow(b[0], b[1]);
   }
   // Hidden lines are geometry too — a drawing whose bounds ignored them would
   // clip them at the margin.
-  for (const [a, b] of hiddenSegments) {
+  for (const [a, b] of hidden) {
     grow(a[0], a[1]);
     grow(b[0], b[1]);
   }
@@ -193,15 +203,28 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
     }
     for (const l of drawing.labels) grow(l.x, l.y);
   }
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+function serialize(segments: Array<[[number, number], [number, number]]>, options: SvgOptions): SvgResult {
+  const marginFrac = options.marginFrac ?? DEFAULT_MARGIN_FRAC;
+  const stroke = options.stroke ?? DEFAULT_STROKE;
+  const titleTag = options.title ? `<title>${escapeXml(options.title)}</title>` : "";
+  const dims = options.dimensions;
+  const drawings = dims?.drawings ?? [];
+  const hiddenSegments = options.hiddenSegments ?? [];
+
+  const bounds = drawingBounds(segments, hiddenSegments, drawings);
 
   // A model that projects to a single point, or produces no segments at all,
   // must still yield a VALID document — never a viewBox full of NaN/Infinity.
-  if (!Number.isFinite(minX)) {
+  if (!bounds) {
     return {
       svg: `<svg xmlns="http://www.w3.org/2000/svg" width="1mm" height="1mm" viewBox="0 0 1 1">${titleTag}</svg>\n`,
       segmentCount: 0,
     };
   }
+  const { minX, minY, maxX, maxY } = bounds;
 
   let width = maxX - minX;
   let height = maxY - minY;
@@ -216,6 +239,50 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
   const boxHeight = height + 2 * pad;
   const strokeWidth = options.strokeWidth ?? Math.max(boxWidth, boxHeight) / 500;
   const decimals = decimalsFor(Math.max(boxWidth, boxHeight));
+
+  const layers = drawingLayers(segments, hiddenSegments, dims, { decimals, strokeWidth, stroke });
+
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(boxWidth, decimals)}mm" height="${fmt(boxHeight, decimals)}mm" ` +
+    `viewBox="${fmt(minX - pad, decimals)} ${fmt(minY - pad, decimals)} ${fmt(boxWidth, decimals)} ${fmt(boxHeight, decimals)}">` +
+    titleTag +
+    layers.hidden +
+    layers.visible +
+    layers.dimensions +
+    `</svg>\n`;
+
+  return {
+    svg,
+    segmentCount: segments.length,
+    ...(options.hiddenSegments !== undefined ? { hiddenSegmentCount: hiddenSegments.length } : {}),
+    ...(layers.dimensionCount !== undefined ? { dimensionCount: layers.dimensionCount } : {}),
+  };
+}
+
+interface LayerStyle {
+  decimals: number;
+  /** Visible-edge stroke width; also the unit the dash pattern derives from. */
+  strokeWidth: number;
+  stroke: string;
+  /** Defaults to `strokeWidth`. */
+  hiddenStrokeWidth?: number;
+  /** Defaults to `strokeWidth * 0.6`. */
+  glyphStrokeWidth?: number;
+}
+
+/**
+ * The three drawing layers of one view as SVG markup: dashed hidden edges,
+ * the solid visible path, and dimension glyphs + labels. Shared by the
+ * single-view writer and {@link sheetSvg}.
+ */
+function drawingLayers(
+  segments: ReadonlyArray<Seg2>,
+  hiddenSegments: ReadonlyArray<Seg2>,
+  dims: { drawings: DimensionDrawing[]; textHeight: number } | undefined,
+  style: LayerStyle
+): { hidden: string; visible: string; dimensions: string; dimensionCount?: number } {
+  const { decimals, strokeWidth, stroke } = style;
+  const drawings = dims?.drawings ?? [];
 
   const d = segments
     .map(([a, b]) => `M ${fmt(a[0], decimals)} ${fmt(a[1], decimals)} L ${fmt(b[0], decimals)} ${fmt(b[1], decimals)}`)
@@ -237,7 +304,7 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
     // hidden curve (a hole rim is dozens of short segments) then draws SOLID,
     // indistinguishable from a visible edge. Caught by looking at the output,
     // not by any assertion: every count was correct while the drawing lied.
-    const hiddenD = segmentsToPolylines(hiddenSegments)
+    const hiddenD = segmentsToPolylines([...hiddenSegments])
       .map((chain) => {
         const pts = chain.closed ? [...chain.points, chain.points[0]] : chain.points;
         return pts
@@ -247,7 +314,7 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
       .join(" ");
     const dash = `${fmtStrokeWidth(strokeWidth * 12)} ${fmtStrokeWidth(strokeWidth * 6)}`;
     hiddenContent =
-      `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(strokeWidth)}" ` +
+      `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(style.hiddenStrokeWidth ?? strokeWidth)}" ` +
       `stroke-linecap="butt" stroke-dasharray="${dash}" d="${hiddenD}"/>`;
   }
 
@@ -258,7 +325,7 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
   let dimensionCount: number | undefined;
   if (dims && drawings.length > 0) {
     dimensionCount = drawings.length;
-    const glyphWidth = strokeWidth * 0.6;
+    const glyphWidth = style.glyphStrokeWidth ?? strokeWidth * 0.6;
     const lineD = drawings
       .flatMap((dr) => dr.lines)
       .map(([a, b]) => `M ${fmt(a[0], decimals)} ${fmt(a[1], decimals)} L ${fmt(b[0], decimals)} ${fmt(b[1], decimals)}`)
@@ -279,21 +346,59 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
     }
   }
 
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(boxWidth, decimals)}mm" height="${fmt(boxHeight, decimals)}mm" ` +
-    `viewBox="${fmt(minX - pad, decimals)} ${fmt(minY - pad, decimals)} ${fmt(boxWidth, decimals)} ${fmt(boxHeight, decimals)}">` +
-    titleTag +
-    hiddenContent +
-    `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(strokeWidth)}" stroke-linecap="round" stroke-linejoin="round" d="${d}"/>` +
-    dimContent +
-    `</svg>\n`;
-
   return {
-    svg,
-    segmentCount: segments.length,
-    ...(options.hiddenSegments !== undefined ? { hiddenSegmentCount: hiddenSegments.length } : {}),
+    hidden: hiddenContent,
+    visible: `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(strokeWidth)}" stroke-linecap="round" stroke-linejoin="round" d="${d}"/>`,
+    dimensions: dimContent,
     ...(dimensionCount !== undefined ? { dimensionCount } : {}),
   };
+}
+
+/** Sheet stroke widths, in real print millimetres (ISO 128 line series). */
+const SHEET_STROKE = { visible: 0.35, hidden: 0.25, glyph: 0.18, frame: 0.7, titleBlock: 0.35 } as const;
+
+/** An element id made safe from a view name (`iso-ftr` stays `iso-ftr`). */
+function viewId(name: string): string {
+  return name.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+/**
+ * Serializes a laid-out drawing sheet (see `drawingSheet.ts`'s `layoutSheet`)
+ * as one SVG in sheet millimetres: the frame, one `<g id="view-…">` per view
+ * with its label, and the title block.
+ */
+export function sheetSvg(layout: SheetLayout, options: { stroke?: string; title?: string } = {}): string {
+  const stroke = options.stroke ?? DEFAULT_STROKE;
+  const decimals = decimalsFor(Math.max(layout.width, layout.height));
+  const seg = (list: ReadonlyArray<Seg2>): string =>
+    list.map(([a, b]) => `M ${fmt(a[0], decimals)} ${fmt(a[1], decimals)} L ${fmt(b[0], decimals)} ${fmt(b[1], decimals)}`).join(" ");
+  const text = (t: SheetText): string =>
+    `<text x="${fmt(t.x, decimals)}" y="${fmt(t.y, decimals)}" font-family="sans-serif" font-size="${fmtStrokeWidth(t.height)}" fill="${stroke}" text-anchor="${t.anchor}">${escapeXml(t.text)}</text>`;
+
+  let body = "";
+  for (const view of layout.views) {
+    const layers = drawingLayers(view.visible, view.hidden, view.dimensions, {
+      decimals,
+      strokeWidth: SHEET_STROKE.visible,
+      hiddenStrokeWidth: SHEET_STROKE.hidden,
+      glyphStrokeWidth: SHEET_STROKE.glyph,
+      stroke,
+    });
+    body += `<g id="view-${viewId(view.name)}">${layers.hidden}${layers.visible}${layers.dimensions}${text(view.label)}</g>`;
+  }
+  const w = fmt(layout.width, decimals);
+  const h = fmt(layout.height, decimals);
+  const title = options.title ? `<title>${escapeXml(options.title)}</title>` : "";
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}">` +
+    title +
+    `<rect x="0" y="0" width="${w}" height="${h}" fill="#ffffff"/>` +
+    `<path id="frame" fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.frame)}" d="${seg(layout.frame)}"/>` +
+    body +
+    `<g id="title-block"><path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.titleBlock)}" d="${seg(layout.titleBlock.lines)}"/>` +
+    layout.titleBlock.texts.map(text).join("") +
+    `</g></svg>\n`
+  );
 }
 
 function escapeXml(text: string): string {

@@ -193,6 +193,10 @@
         "category": "CAD Preview"
       },
       {
+        "command": "cad-preview.exportSheet",
+        "title": "CAD Preview: Export Drawing Sheet…"
+      },
+      {
         "command": "cad-preview.exportMesh",
         "title": "CAD Preview: Export FE Mesh…"
       },
@@ -279,6 +283,10 @@
         },
         {
           "command": "cad-preview.exportDrawing",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.exportSheet",
           "when": "activeCustomEditorId == 'cad-preview.mesh'"
         },
         {

@@ -119,7 +119,11 @@ export function resetGmsh(): void {
  * be turned into an actionable message instead of the raw "memory access out of
  * bounds" that reaches the panel today. */
 function isWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message);
+  // A bare all-digit message (a raw exception pointer with no text at all —
+  // see `occtService.ts`'s `isOcctWasmAbort` doc comment for the live-caught
+  // finding) is a sixth abort signal, updated across all four kernel services
+  // together like every earlier vocabulary addition.
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message);
 }
 
 /**

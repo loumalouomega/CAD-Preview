@@ -218,6 +218,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     promoteMeshToBrep: (...args) => callKernel("promoteMeshToBrep", args) as ReturnType<Pipeline["promoteMeshToBrep"]>,
     repairMesh: (...args) => callKernel("repairMesh", args) as ReturnType<Pipeline["repairMesh"]>,
     exportSvgSilhouette: (...args) => callKernel("exportSvgSilhouette", args) as ReturnType<Pipeline["exportSvgSilhouette"]>,
+    exportDrawingSheet: (...args) => callKernel("exportDrawingSheet", args) as ReturnType<Pipeline["exportDrawingSheet"]>,
     buildPrimitivesFile: (...args) => callKernel("buildPrimitivesFile", args) as ReturnType<Pipeline["buildPrimitivesFile"]>,
     cancelCurrent: killCurrentChild,
   };

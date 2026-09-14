@@ -662,6 +662,9 @@ export type WebviewToHost =
   /** File ▸ Export Technical Drawing… — the hidden-line counterpart of the two
    *  silhouette exports; the host owns the view/unit picks and the save dialog. */
   | { type: "exportDrawingRequest" }
+  /** File ▸ Export Drawing Sheet… — several views on one sheet with a title
+   *  block; the host owns the format/paper picks and the save dialog. */
+  | { type: "exportSheetRequest" }
   /** Live operation preview (roadmap item, closed): the webview's open Edits
    * form changed — replay the current ops PLUS this not-yet-committed draft
    * op and post the resulting geometry back for a tinted overlay. The webview

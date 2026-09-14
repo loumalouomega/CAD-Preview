@@ -112,9 +112,10 @@ import { parseToWeldedMesh } from "./meshHeal";
 import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal } from "./meshioService";
 import { weldedMeshToStlBytes } from "./meshComponents";
-import type { exportSvgSilhouette } from "./svgSilhouetteHost";
+import type { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
 import { normalizeTessellationQuality } from "./tessellationQuality";
-import { SVG_VIEWS } from "./svgSilhouette";
+import { SVG_VIEWS, type DimensionSource } from "./svgSilhouette";
+import { PAPER_SIZES, PROJECTION_METHODS, type PaperSize, type ProjectionMethod } from "./drawingSheet";
 import type { hitTest } from "./hitTestService";
 import { NAMED_VIEW_NAMES, orbitDirection, resolveNamedView, type Vec3 } from "./viewDirections";
 import { HOLE_STANDARDS, allHoleSizes, depthPresetsFor, findHoleSize, holeSizesFor, type HoleStandard } from "./holeStandards";
@@ -202,6 +203,7 @@ export interface Pipeline {
   promoteMeshToBrep: typeof promoteMeshToBrep;
   repairMesh: typeof repairMesh;
   exportSvgSilhouette: typeof exportSvgSilhouette;
+  exportDrawingSheet: typeof exportDrawingSheet;
   buildPrimitivesFile: typeof buildPrimitivesFile;
 }
 
@@ -461,6 +463,7 @@ export function describeCapabilities() {
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
       "list_workspace_models is pure on-disk discovery over the same routing rules load_model uses — depth-capped walk, .git/node_modules never scanned, caps reported via truncated/warnings rather than a quietly-partial list. This server holds no open-document/session state anywhere, so there is nothing else to discover.",
       "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of. For a drawing WITH hidden-line removal — interior feature edges, occluded runs dashed — use export_technical_drawing, which gets there on the same triangle adjacency rather than through the unavailable kernel API.",
+      "export_drawing_sheet places several views (default front/top/right/iso) on ONE sheet at a shared scale with a title block, orthographically aligned per first-angle (default) or third-angle projection. It is the one drawing tool with dimension logic beyond baking a pin verbatim: each pinned annotation is drawn exactly once, in the orthographic view where its measured line reads at true length (never foreshortened, never repeated). paper:'fit' (default) sizes the sheet to the content at 1:1 or an explicit scale; a named ISO paper size picks the largest ISO 5455 standard scale that fits and reports if none does, rather than silently clipping. No unit conversion — a sheet's scale ratio is only meaningful against the model's native millimetres.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep/.csg): full pipeline — load, edit, mesh, export. `.scad` converts to `.csg` first via a user-installed openscad binary (see below); without one every .scad tool returns supported:false.",
       ".scad sources: identical to .csg once converted — which needs the openscad binary (cadPreview.openscadBinary setting, OPENSCAD_BINARY env override, else PATH). Absent binary → supported:false with an install hint on every .scad call, never a throw. Conversion runs `openscad -o <tmp>/model.csg <real path>` with cwd = the source directory (relative use/include/import keep working), capped at a 2-minute kill; openscad's own stderr chatter surfaces as warnings.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
@@ -4247,6 +4250,166 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
  * difference is that hidden-line removal runs. Duplicating that chain would be
  * two places for the view-resolution convention to drift.
  */
+/** The drawing tools' shared gate: any source with host-side triangles. */
+function requireDrawableRoute(modelPath: string): FileRoute {
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
+    throw new Error(
+      `${route.format} has no host-side geometry to derive an outline from (supported: STEP/IGES/BREP/STL/OBJ/PLY/glTF) — meshio-only formats never expose a triangle array to JS.`
+    );
+  }
+  return route;
+}
+
+/**
+ * Builds the `CompareSource` and pinned-annotation list every drawing export
+ * draws from — shared by the single-view tools and `export_drawing_sheet` so
+ * the edits-baking and annotation conventions cannot drift between them.
+ */
+async function resolveDrawingSource(
+  modelPath: string,
+  warnings: string[]
+): Promise<{ source: CompareSource; annotations: DimensionSource[] }> {
+  const route = requireDrawableRoute(modelPath);
+  // Pinned annotations ride the same drawing (roadmap "Dimension-style
+  // rendering", Phase 2): their frozen world-space facts are projected
+  // through this export's own view basis and baked in as dimension glyphs.
+  // Absent sidecar = a plain outline exactly as before this existed.
+  const pinnedAnnotations = await readAnnotations(modelPath);
+  const annotations = pinnedAnnotations.map((a) => ({
+    anchorPoint: a.anchorPoint,
+    linePoints: a.linePoints,
+    text: a.text,
+    ...(a.tolerance ? { tolerance: a.tolerance } : {}),
+  }));
+  const bytes = await readModelBytes(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
+
+  let source: CompareSource;
+  if (route.strategy === "occt") {
+    const src = await readOcctSource(modelPath, route, warnings);
+    if (!src.ok) {
+      throw new Error(`Cannot draw ${path.basename(modelPath)} — ${src.reason}`);
+    }
+    source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
+  } else {
+    if (ops.length > 0) {
+      warnings.push(
+        `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — drawing the raw file only.`
+      );
+    }
+    source =
+      route.format === "gltf"
+        ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffers(modelPath, bytes) }
+        : { kind: route.format as "stl" | "obj" | "ply", bytes };
+  }
+  return { source, annotations };
+}
+
+/** Default views of a drawing sheet: the three principal views plus an iso. */
+export const DEFAULT_SHEET_VIEWS = ["front", "top", "right", "iso"] as const;
+
+/**
+ * Several views of one model on a single drafting sheet (roadmap "Multi-view
+ * sheet layout"). Views resolve against the full named-view vocabulary; an
+ * unknown or repeated name is skipped with a warning, and a sheet with no
+ * usable view left is a caller error.
+ */
+export async function exportDrawingSheetTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    outputPath: string;
+    views?: string[];
+    format?: string;
+    paper?: string;
+    projection?: string;
+    scale?: number;
+    hiddenLines?: boolean;
+    creaseAngleDeg?: number;
+    tessellationQuality?: string;
+    title?: string;
+  }
+) {
+  const modelPath = params.path;
+  requireDrawableRoute(modelPath);
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(modelPath, outputPath);
+  const warnings: string[] = [];
+
+  const views: Array<{ name: string; direction: [number, number, number]; up?: [number, number, number] }> = [];
+  for (const requested of params.views ?? DEFAULT_SHEET_VIEWS) {
+    const named = resolveNamedView(requested);
+    if (!named) {
+      warnings.push(`Unknown view "${requested}" — valid: ${NAMED_VIEW_NAMES.join(", ")}. Skipped.`);
+      continue;
+    }
+    if (views.some((v) => v.name === named.canonical)) {
+      warnings.push(`View "${requested}" is repeated — drawn once.`);
+      continue;
+    }
+    views.push({ name: named.canonical, direction: named.direction, ...(named.up ? { up: named.up } : {}) });
+  }
+  if (views.length === 0) throw new Error("No usable view was given — a drawing sheet needs at least one named view.");
+
+  const format = params.format === "dxf" ? ("dxf" as const) : ("svg" as const);
+  if (params.format != null && params.format !== "svg" && params.format !== "dxf") {
+    warnings.push(`Unknown format "${params.format}" — valid: svg, dxf. Falling back to "svg".`);
+  }
+  let paper: PaperSize = "fit";
+  if (params.paper != null) {
+    if ((PAPER_SIZES as readonly string[]).includes(params.paper)) paper = params.paper as PaperSize;
+    else warnings.push(`Unknown paper "${params.paper}" — valid: ${PAPER_SIZES.join(", ")}. Falling back to "fit".`);
+  }
+  let projection: ProjectionMethod = "first";
+  if (params.projection != null) {
+    if ((PROJECTION_METHODS as readonly string[]).includes(params.projection)) projection = params.projection as ProjectionMethod;
+    else warnings.push(`Unknown projection "${params.projection}" — valid: first, third. Falling back to "first".`);
+  }
+  let scale: number | undefined;
+  if (params.scale != null) {
+    if (Number.isFinite(params.scale) && params.scale > 0) scale = params.scale;
+    else warnings.push(`Invalid scale ${params.scale} — must be a positive number (sheet mm per model mm). Choosing one automatically.`);
+  }
+
+  const { source, annotations } = await resolveDrawingSource(modelPath, warnings);
+  const result = await ctx.pipeline.exportDrawingSheet(ctx.extensionPath, source, {
+    views,
+    quality: normalizeTessellationQuality(params.tessellationQuality ?? "fine"),
+    format,
+    annotations,
+    hiddenLines: params.hiddenLines ?? true,
+    creaseAngleDeg: params.creaseAngleDeg,
+    paper,
+    projection,
+    scale,
+    title: params.title ?? path.basename(modelPath),
+    date: new Date().toISOString().slice(0, 10),
+  });
+  await fs.writeFile(outputPath, result.content, "utf8");
+
+  const drawnDimensions = result.views.reduce((n, v) => n + v.dimensionCount, 0);
+  return {
+    written: outputPath,
+    bytes: Buffer.byteLength(result.content, "utf8"),
+    format,
+    paper: result.paper,
+    projection: result.projection,
+    sheetSize: [result.width, result.height],
+    scale: result.scaleLabel,
+    views: result.views,
+    triangleCount: result.triangleCount,
+    ...(annotations.length > 0 ? { dimensionCount: drawnDimensions } : {}),
+    warnings: [
+      ...warnings,
+      ...(annotations.length > 0 && drawnDimensions < annotations.length
+        ? [`${annotations.length - drawnDimensions} pinned annotation(s) could not be projected into any view and were skipped.`]
+        : []),
+      ...result.warnings,
+    ],
+  };
+}
+
 export async function exportTechnicalDrawingTool(
   ctx: ToolContext,
   params: Parameters<typeof exportSvgSilhouetteTool>[1] & { creaseAngleDeg?: number }
@@ -4271,12 +4434,7 @@ export async function exportSvgSilhouetteTool(
   }
 ): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number; dimensionCount?: number }> {
   const modelPath = params.path;
-  const route = requireRoute(modelPath);
-  if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
-    throw new Error(
-      `${route.format} has no host-side geometry to derive an outline from (supported: STEP/IGES/BREP/STL/OBJ/PLY/glTF) — meshio-only formats never expose a triangle array to JS.`
-    );
-  }
+  requireDrawableRoute(modelPath);
 
   const outputPath = path.resolve(params.outputPath);
   assertNotSourcePath(modelPath, outputPath);
@@ -4327,38 +4485,7 @@ export async function exportSvgSilhouetteTool(
     warnings.push(`Unknown format "${params.format}" — valid: svg, dxf. Falling back to "svg".`);
   }
 
-  // Pinned annotations ride the same drawing (roadmap "Dimension-style
-  // rendering", Phase 2): their frozen world-space facts are projected
-  // through this export's own view basis and baked in as dimension glyphs.
-  // Absent sidecar = a plain outline exactly as before this existed.
-  const pinnedAnnotations = await readAnnotations(modelPath);
-  const annotations = pinnedAnnotations.map((a) => ({
-    anchorPoint: a.anchorPoint,
-    linePoints: a.linePoints,
-    text: a.text,
-    ...(a.tolerance ? { tolerance: a.tolerance } : {}),
-  }));
-  const bytes = await readModelBytes(modelPath);
-  const { ops } = await readEditsResolved(modelPath);
-
-  let source: CompareSource;
-  if (route.strategy === "occt") {
-    const src = await readOcctSource(modelPath, route, warnings);
-    if (!src.ok) {
-      throw new Error(`Cannot draw ${path.basename(modelPath)} — ${src.reason}`);
-    }
-    source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
-  } else {
-    if (ops.length > 0) {
-      warnings.push(
-        `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — drawing the raw file only.`
-      );
-    }
-    source =
-      route.format === "gltf"
-        ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffers(modelPath, bytes) }
-        : { kind: route.format as "stl" | "obj" | "ply", bytes };
-  }
+  const { source, annotations } = await resolveDrawingSource(modelPath, warnings);
 
   const result = await ctx.pipeline.exportSvgSilhouette(ctx.extensionPath, source, {
     direction,

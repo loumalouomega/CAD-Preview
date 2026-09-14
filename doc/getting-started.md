@@ -139,7 +139,8 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | **Import DXF…** | Pick a `.dxf` file and import its model-space `LINE` / `LWPOLYLINE` (bulge arcs sampled) / `POLYLINE` / `CIRCLE` / `ARC` / `SPLINE` entities as the matching Line/Polyline/Circle/Arc/Spline edit ops. B-rep only; blocks/INSERT/TEXT/DIMENSION/HATCH and paper space are skipped, and geometry lands flat at z=0 (1 DXF unit = 1 mm, Y-up native — adjust afterward with Scale/Move/Rotate) | — |
 | **Export Silhouette SVG…** | Write a 2D **outline** of the model as an `.svg` file — pick a view (**Current view**, or Front/Back/Top/Bottom/Left/Right/Iso), then an export unit, then a destination. An outline, **not** a dimensioned technical drawing (see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg)) | — |
 | **Export Silhouette DXF…** | The same outline flow with a DXF serializer (`LWPOLYLINE` chains + `LINE` singletons), saved with a `.dxf` extension | — |
-| **Export Technical Drawing…** | A 2D drawing with **hidden-line removal**: feature edges solid where visible, dashed where hidden behind the part. Unlike the two silhouette exports it draws interior edges too, so a hole's far rim shows dashed. Same view and unit picks; SVG or DXF (where hidden geometry lands on a `HIDDEN` layer). Still a review artifact — no dimensions, single view | — |
+| **Export Technical Drawing…** | A 2D drawing with **hidden-line removal**: feature edges solid where visible, dashed where hidden behind the part. Unlike the two silhouette exports it draws interior edges too, so a hole's far rim shows dashed. Same view and unit picks; SVG or DXF (where hidden geometry lands on a `HIDDEN` layer). Still a review artifact and a single view — pinned annotations still bake in as dimensions | — |
+| **Export Drawing Sheet…** | Several views (front/top/right/iso by default) on **one sheet** at a shared scale, orthographically aligned (first-angle by default) with a title block. Format, then paper size, then export unit, then a destination. A pinned annotation is drawn once, in whichever view shows it at true length (see [Exporting a Drawing Sheet](#exporting-a-drawing-sheet)) | — |
 
 ![The File dropdown open, showing New Blank Model, Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, Import DXF, and the silhouette/technical-drawing exports.](/screenshots/file-menu.png)
 
@@ -582,8 +583,10 @@ Pick **File ▸ Export Silhouette SVG…** (or **Export Silhouette DXF…** for 
 That one runs hidden-line removal: it draws interior feature edges as well as the outline, and
 renders anything occluded as a dashed line — so a through-hole's far rim appears dashed rather than
 missing. It shares the same view and unit picks, and writes SVG or DXF (where hidden geometry goes
-on a `HIDDEN` layer you can toggle in a CAD tool). It is still a single view with no dimensions:
-treat it as a review or illustration artifact and measure anything you need to be sure of. This is separate from the Export… flow above — an outline is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
+on a `HIDDEN` layer you can toggle in a CAD tool). It is still a single view — treat it as a review
+or illustration artifact and measure anything you need to be sure of, though any measurement you've
+pinned (see [Measuring](#measuring)) still bakes in as a dimension glyph. This is separate from the
+Export… flow above — an outline is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
 
 1. **Pick a view.** The first entry is **Current view** — the angle you are currently looking at — followed by Front, Back, Top, Bottom, Left, Right, and Iso. Pressing Escape here cancels the export.
 2. **Pick an export unit.** The same quick-pick every other export shows, defaulting to native mm; Escape here still exports (at mm), it doesn't cancel.
@@ -592,6 +595,20 @@ treat it as a review or illustration artifact and measure anything you need to b
 > **It's an outline, not a dimensioned 2D technical drawing — there is no hidden-line removal.** Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette (a hole seen face-on draws as a circle; the same hole seen edge-on draws nothing). OpenCascade's hidden-line machinery is entirely unavailable in the bundled WASM build, so the outline is derived from triangle adjacency instead — which is also why this works for mesh files, not just B-rep. Use it for review notes, documentation figures, and laser/plotter outlines; use the [Measurement](#measuring) tools for any dimension you need to be sure of.
 
 Works for STEP/IGES/BREP (with your edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (from the raw file — edits are **not** baked in, since mesh edits can't be replayed outside the viewer). meshio-only sources (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit) are rejected.
+
+### Exporting a Drawing Sheet
+
+Pick **File ▸ Export Drawing Sheet…** (or `CAD Preview: Export Drawing Sheet…`) to place several views of the model on one sheet — the ordinary output of a drafting workflow, rather than one file per view.
+
+1. **Pick a format.** SVG or DXF.
+2. **Pick a paper size.** **Fit (1:1)** sizes the sheet to the views at full scale; A4 through A0 (landscape) pick the largest [ISO 5455](https://en.wikipedia.org/wiki/ISO_5455) standard scale (50:1 down to 1:1000) that fits the views inside the page, warning rather than silently clipping if even the smallest doesn't fit.
+3. **Pick an export unit**, then a destination, same as every other export.
+
+The default four views — **Front**, **Top**, **Right**, **Iso** — are laid out orthographically: **first-angle projection** (the default, and the ISO convention) places the top view *below* the front view and the right-side view to its *left*; third-angle (ASME) mirrors both. Each view is a technical drawing like the single-view export above — hidden edges dashed (SVG) or on a `HIDDEN` layer (DXF) — inside a title block naming the model, the scale ratio, the projection method, the date, and the views shown.
+
+A pinned annotation is drawn **once**, in whichever orthographic view shows its measured line at true length rather than foreshortened — an edge running front-to-back reads true in the Right view and appears nowhere else on the sheet. Works for the same source formats as the single-view exports above.
+
+The MCP server exposes the identical capability as `export_drawing_sheet` — see [`doc/mcp-server.md`](mcp-server.md).
 
 The SVG output is a single self-contained `<path>` with no external references, at **1 SVG user unit = 1 model unit** and a physical size in millimetres — so a drawing exported from a native (mm) model prints 1:1 in any vector tool. The DXF output is minimal model-space `ENTITIES`: chained collinear outline runs become `LWPOLYLINE`s and unmatched singletons stay independent `LINE`s. One caveat: the outline depends on consistent triangle winding, so a mesh with mixed winding (as some exporters and hand-edited files produce) draws spurious interior lines.
 
