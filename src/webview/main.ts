@@ -1086,6 +1086,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onOptionsChange: (patch) => meshingModel.update(patch),
   // Same store the Parts panel edits — one Part.meshSize, two mirrored inputs.
   onPartMeshSize: (index, size) => partsModel.setMeshSize(index, size),
+  onPartMeshGrading: (index, grading) => partsModel.setMeshGrading(index, grading),
   onGenerate: async () => {
     meshingPanel.setBusy(true);
     post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });

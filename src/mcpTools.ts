@@ -52,10 +52,12 @@ import {
   DEFAULT_MESH_OPTIONS,
   SIZE_MAX_SENTINEL,
   validateMeshOptions,
+  validateMeshGrading,
   applyStlPartSizeOverride,
   scaleMeshOptionsForUnit,
   scalePartsMeshSizeForUnit,
   type MeshOptions,
+  type MeshGrading,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
@@ -436,7 +438,7 @@ export function describeCapabilities() {
         `sizeMax = ${SIZE_MAX_SENTINEL} is the "unbounded" sentinel (no explicit target size); set a real value for predictable element counts.`,
         'elementShape "simplex" = triangles/tetrahedra, "subdivided" = all-quad/all-hex, "hexDominant" = mixed tet/hex (3D only, RTree recombiner) — NOT exportable to Kratos MDPA (export_mesh throws a clear error; other formats like msh/vtk are unaffected). elementOrder 2 adds mid-side nodes (quadratic).',
         "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
-        "A part's meshSize gives local refinement (B-rep sources only).",
+        "A part's meshSize gives local refinement (B-rep sources only). A part's meshGrading grades the mesh AROUND the part with distance — sizeAtWall within distNear, growing linearly to sizeFar at distFar (set_part; B-rep sources only, same as physical groups and meshSize; ignored on a mesh-format source).",
         'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction), ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction), ftetwildManifoldSurface (force a manifold boundary), ftetwildCoarsen (fewer, larger tets), and ftetwildDisableFiltering (skip interior filtering — returns a hull fill, NOT the part interior; inspection only) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. repair_mesh honors the stored options (still forcing engine/dimension). generate_mesh\'s response reports engineUsed and any fallback warnings.',
       ],
     },
@@ -3339,6 +3341,7 @@ export async function setPart(params: {
   lines?: string[];
   points?: string[];
   meshSize?: number | null;
+  meshGrading?: MeshGrading | null;
   /**
    * Optional re-executable selector (roadmap "Selector synthesis") stored
    * beside the raw ids as annotation+cache: the host re-resolves it against
@@ -3405,10 +3408,21 @@ export async function setPart(params: {
         : typeof params.meshSize === "number" && Number.isFinite(params.meshSize) && params.meshSize > 0
           ? params.meshSize
           : existing?.meshSize,
+    meshGrading:
+      params.meshGrading === null
+        ? undefined
+        : params.meshGrading !== undefined
+          ? validateMeshGrading(params.meshGrading) ?? existing?.meshGrading
+          : existing?.meshGrading,
     ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),
   };
   if (typeof params.meshSize === "number" && !(Number.isFinite(params.meshSize) && params.meshSize > 0)) {
     warnings.push("meshSize must be a positive number — ignored.");
+  }
+  if (params.meshGrading !== undefined && params.meshGrading !== null && !validateMeshGrading(params.meshGrading)) {
+    warnings.push(
+      "meshGrading must have sizeAtWall > 0, sizeFar >= sizeAtWall, distNear >= 0 and distFar > distNear — ignored."
+    );
   }
   if (index === -1) parts.push(part);
   else parts[index] = part;
@@ -3419,10 +3433,13 @@ export async function setPart(params: {
   );
   if (route.strategy === "three") {
     warnings.push(
-      "Mesh-format source: parts cannot become Gmsh physical groups; a single part's meshSize acts as a one-off global size override when meshing."
+      "Mesh-format source: parts cannot become Gmsh physical groups; a single part's meshSize acts as a one-off global size override when meshing. meshGrading is ignored entirely (no per-entity correlation for mesh sources)."
     );
   }
-  return { parts: parts.map((p) => ({ name: p.name, color: p.color, meshSize: p.meshSize ?? null })), warnings };
+  return {
+    parts: parts.map((p) => ({ name: p.name, color: p.color, meshSize: p.meshSize ?? null, meshGrading: p.meshGrading ?? null })),
+    warnings,
+  };
 }
 
 // ---------------------------------------------------------------------------

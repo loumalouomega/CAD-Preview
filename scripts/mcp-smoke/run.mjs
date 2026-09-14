@@ -201,6 +201,25 @@ function maxAbsMshCoord(mshText) {
   return max;
 }
 
+/** Every node's `[x, y, z]` coordinate triple from a Gmsh MSH 4.1 `$Nodes`
+ * block — the same 3-token-line filter `maxAbsMshCoord` uses (cleanly
+ * distinguishes coordinate lines from the interleaved single-integer tag
+ * lines and 4-token block headers), but returning the full set rather than
+ * just the max magnitude, so a caller can bucket nodes by position to check
+ * a distance-graded sizing gradient. */
+function parseMshNodeCoords(mshText) {
+  const body = mshText.split("$Nodes")[1]?.split("$EndNodes")[0] ?? "";
+  const coords = [];
+  for (const line of body.split("\n")) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens.length !== 3) continue;
+    const nums = tokens.map(Number);
+    if (nums.some((n) => Number.isNaN(n))) continue;
+    coords.push(nums);
+  }
+  return coords;
+}
+
 // --- the scenario ------------------------------------------------------------
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-preview-mcp-smoke-"));
@@ -5372,6 +5391,132 @@ try {
     // 3. thin loft + smoothing completes (the P4 verdict: shared choke point).
     const thinSmoothVol = await loftVolume("thin smoothed loft", { thin: 2, smoothing: true });
     assert(Number.isFinite(thinSmoothVol) && thinSmoothVol > 0, `thin + smoothing completes with sane volume (${thinSmoothVol})`);
+  }
+
+  // ── Distance-graded mesh sizing anchored on a Part (roadmap "Boundary-
+  // layer and distance-threshold mesh sizing", Phase 1) ────────────────────
+  // Own `block.stp` copies throughout (a real 3x4x5 box, faces at x=±1.5,
+  // y=±2, z=±2.5 — the same fixture the item-10 ops section above uses) so
+  // baseline/graded/uniform generates can each start from a fresh, unedited
+  // shape with no cross-contamination.
+  {
+    const gradingBaseModel = path.join(dir, "grading-baseline.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), gradingBaseModel);
+    const gradingBaseline = await call("generate_mesh", { path: gradingBaseModel, options: { sizeMin: 0, sizeMax: 1 } });
+
+    // Identify the x=-1.5 wall face by POSITION (planeOrigin), never by the
+    // sign of `normal` — `inspect`'s normal for a planar face is verified
+    // orientation-AMBIGUOUS elsewhere in this codebase (`faceSurfaceInfo`),
+    // and a first draft of this exact block picked the OPPOSITE wall
+    // (x=+1.5) by matching normal[0]≈-1, silently inverting the whole
+    // near/far assertion below until caught by inspecting the actual
+    // planeOrigin values live.
+    const gradingModel = path.join(dir, "grading.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), gradingModel);
+    const gradingLoaded = await call("load_model", { path: gradingModel });
+    let wallFace = null;
+    for (const fid of gradingLoaded.solids[0].faceIds) {
+      const facts = await call("inspect", { path: gradingModel, entityId: fid });
+      if (facts.surfaceType === "plane" && facts.planeOrigin && Math.abs(facts.planeOrigin[0] + 1.5) < 1e-3) wallFace = fid;
+    }
+    assert(wallFace !== null, `found block.stp's x=-1.5 planar wall face (got ${wallFace})`);
+
+    const grading = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
+    await call("set_part", { path: gradingModel, name: "Wall", surfaces: [wallFace], meshGrading: grading });
+    const graded = await call("generate_mesh", { path: gradingModel, options: { sizeMin: 0, sizeMax: 1 } });
+
+    const gradingUniformModel = path.join(dir, "grading-uniform.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), gradingUniformModel);
+    await call("set_part", {
+      path: gradingUniformModel,
+      name: "All",
+      surfaces: gradingLoaded.solids[0].faceIds,
+      meshSize: grading.sizeAtWall,
+    });
+    const uniform = await call("generate_mesh", { path: gradingUniformModel, options: { sizeMin: 0, sizeMax: 1 } });
+
+    assert(
+      gradingBaseline.nodeCount < graded.nodeCount && graded.nodeCount < uniform.nodeCount,
+      `distance-graded sizing sits strictly between an ungraded baseline and a uniform fine mesh (baseline=${gradingBaseline.nodeCount}, graded=${graded.nodeCount}, uniform=${uniform.nodeCount})`
+    );
+
+    // The gradient itself, read off the exported .msh's own node coordinates
+    // — a near slab against the graded wall vs. a mid-domain far slab (well
+    // away from the OPPOSITE wall's own boundary-density bump).
+    const gradingMshOut = path.join(dir, "grading.msh");
+    await call("export_mesh", { path: gradingModel, format: "msh", outputPath: gradingMshOut, options: { sizeMin: 0, sizeMax: 1 } });
+    const gradingCoords = parseMshNodeCoords(fs.readFileSync(gradingMshOut, "utf8"));
+    const nearCount = gradingCoords.filter((c) => c[0] >= -1.5 && c[0] < -1.2).length;
+    const farCount = gradingCoords.filter((c) => c[0] >= 0.3 && c[0] < 0.6).length;
+    assert(
+      nearCount / farCount >= 3,
+      `node density is far higher near the graded wall than mid-domain (near=${nearCount}, far=${farCount}, ratio=${(nearCount / farCount).toFixed(2)})`
+    );
+
+    // An invalid band is rejected with a warning, and the part's existing
+    // (valid) grading is left untouched — never silently cleared/clobbered.
+    const invalidGradingResult = await call("set_part", {
+      path: gradingModel,
+      name: "Wall",
+      meshGrading: { ...grading, sizeFar: 0.01 }, // sizeFar < sizeAtWall: invalid
+    });
+    assert(
+      invalidGradingResult.warnings.some((w) => /meshGrading/i.test(w)),
+      `an invalid meshGrading band is rejected with a named warning (got ${JSON.stringify(invalidGradingResult.warnings)})`
+    );
+
+    // unit:"in" export: the geometry, the global size options, AND the
+    // part's grading band are all rescaled by the SAME factor, so the
+    // gradient must still be visible at the smaller absolute scale.
+    const gradingMshInOut = path.join(dir, "grading-in.msh");
+    await call("export_mesh", {
+      path: gradingModel,
+      format: "msh",
+      outputPath: gradingMshInOut,
+      unit: "in",
+      options: { sizeMin: 0, sizeMax: 1 },
+    });
+    const gradingCoordsIn = parseMshNodeCoords(fs.readFileSync(gradingMshInOut, "utf8"));
+    const nearCountIn = gradingCoordsIn.filter((c) => c[0] >= -1.5 / 25.4 && c[0] < -1.2 / 25.4).length;
+    const farCountIn = gradingCoordsIn.filter((c) => c[0] >= 0.3 / 25.4 && c[0] < 0.6 / 25.4).length;
+    assert(
+      nearCountIn / farCountIn >= 3,
+      `unit:"in" export still shows the same density gradient (near=${nearCountIn}, far=${farCountIn}, ratio=${(nearCountIn / farCountIn).toFixed(2)})`
+    );
+
+    // A mesh-format source has no per-entity correlation (same gate physical
+    // groups already use) — meshGrading is accepted structurally but warned
+    // as entirely ignored, never silently applied to a global override the
+    // way a single sized `meshSize` part is.
+    const gradingStlModel = path.join(dir, "grading.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), gradingStlModel);
+    const gradingStlResult = await call("set_part", {
+      path: gradingStlModel,
+      name: "P",
+      volumes: ["node-0"],
+      meshGrading: grading,
+    });
+    assert(
+      gradingStlResult.warnings.some((w) => /meshGrading is ignored/i.test(w)),
+      `a mesh-format source warns that meshGrading is ignored entirely (got ${JSON.stringify(gradingStlResult.warnings)})`
+    );
+
+    // Volume-anchored grading exercises the getBoundary(volume)->SurfacesList
+    // conversion (a Distance field cannot target a volume tag directly) —
+    // never exercised by the face-anchored case above. No near/far
+    // distinction is meaningful for a whole-volume anchor (the entire
+    // exterior is "near" its own volume), so this only asserts real
+    // refinement over baseline: a broken conversion degrades SILENTLY to the
+    // ungraded baseline density (an empty SurfacesList is not an error to
+    // Gmsh), which is exactly what this assertion is written to catch.
+    const gradingVolModel = path.join(dir, "grading-volume.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), gradingVolModel);
+    await call("set_part", { path: gradingVolModel, name: "Body", volumes: ["solid-0"], meshGrading: grading });
+    const volGraded = await call("generate_mesh", { path: gradingVolModel, options: { sizeMin: 0, sizeMax: 1 } });
+    assert(
+      volGraded.nodeCount > gradingBaseline.nodeCount * 2,
+      `volume-anchored grading (via getBoundary) refines well beyond baseline (got ${volGraded.nodeCount} vs baseline ${gradingBaseline.nodeCount})`
+    );
   }
 
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");

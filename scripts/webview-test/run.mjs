@@ -2300,6 +2300,128 @@ test("planes P1: a stored plane renders, and Use applies it as the clip", async 
   );
 });
 
+/**
+ * Distance-graded mesh sizing (roadmap "Boundary-layer and distance-threshold
+ * mesh sizing", Phase 1) — the FE Mesh panel's "Part sizes" Grade toggle.
+ *
+ * This case exists because of a REAL, live-caught regression: the grading
+ * row's own CSS (`.meshing-part-grading { display: flex; ... }`) is an
+ * unconditional author rule, which beats the `[hidden]` UA default regardless
+ * of specificity — the exact "gated panel never actually hides" hazard
+ * CLAUDE.md's "Collapsible sidebar sections" section already documents twice.
+ * Without the `[hidden]` override this case pins, the row never actually
+ * collapses, which in a real session pushes the sidebar's flex:1 panels
+ * (Parts, Edits) past their squeeze point (`#side` clips overflow rather than
+ * scrolling) — caught only by inspecting the SCREENSHOTS, not by a green
+ * `npm run docs:screenshots` exit code, per this repo's own standing lesson.
+ */
+test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and clears", async (page) => {
+  await populate(page);
+
+  // The "Contact faces" fixture part already carries a meshGrading band
+  // (fixtures-entry.ts) — its toggle should read as ACTIVE (a band exists)
+  // while its row stays collapsed by default (the fix this case pins).
+  const initial = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")];
+    const gradingRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-grading")];
+    return {
+      rowCount: rows.length,
+      toggles: rows.map((r) => {
+        const t = r.querySelector(".meshing-part-grade-toggle");
+        return { active: t.classList.contains("active"), ariaExpanded: t.getAttribute("aria-expanded") };
+      }),
+      gradingRowCount: gradingRows.length,
+      allHiddenAndInvisible: gradingRows.every((r) => r.hidden && r.offsetParent === null),
+    };
+  });
+  assert(initial.rowCount === 3, `three part rows rendered (got ${initial.rowCount})`);
+  assert(initial.toggles[1]?.active === true, "the part with a meshGrading band shows an active Grade toggle");
+  assert(initial.toggles[0]?.active === false && initial.toggles[2]?.active === false, "parts with no band show an inactive toggle");
+  assert(initial.toggles.every((t) => t.ariaExpanded === "false"), "every Grade toggle starts aria-expanded=false, regardless of whether a band exists");
+  assert(
+    initial.gradingRowCount === 3 && initial.allHiddenAndInvisible,
+    `every grading row starts genuinely invisible, not just [hidden]-attributed-but-still-rendered (got ${JSON.stringify(initial)})`
+  );
+
+  // Expand the active (Contact faces) row and confirm it pre-fills with the
+  // fixture's real band values, not blank inputs.
+  await page.click(".meshing-part-grade-toggle.active");
+  await sleep(150);
+  const expanded = await page.evaluate(() => {
+    const row = document.querySelector(".meshing-part-grade-toggle.active");
+    const gradingRow = row.closest(".meshing-part-row").nextElementSibling;
+    const inputs = [...gradingRow.querySelectorAll("input")].map((i) => i.value);
+    return { hidden: gradingRow.hidden, visible: gradingRow.offsetParent !== null, ariaExpanded: row.getAttribute("aria-expanded"), inputs };
+  });
+  assert(expanded.hidden === false && expanded.visible === true, "clicking Grade reveals the row");
+  assert(expanded.ariaExpanded === "true", "aria-expanded now reflects the row's real visibility");
+  assert(
+    expanded.inputs.length === 4 && expanded.inputs.every((v) => v !== ""),
+    `the row pre-fills from the part's existing band (got ${JSON.stringify(expanded.inputs)})`
+  );
+
+  // Commit a valid edit — a real MeshGrading object must reach partsChanged.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = document.querySelector(".meshing-part-grade-toggle.active");
+    const gradingRow = row.closest(".meshing-part-row").nextElementSibling;
+    const input = gradingRow.querySelectorAll("input")[0]; // Wall
+    input.value = "1";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const committed = await page.evaluate(() => {
+    const m = (window.__sent || []).findLast((x) => x.type === "partsChanged");
+    const p = m?.parts?.find((p) => p.name === "Contact faces");
+    return { grading: p?.meshGrading ?? null, errorText: document.querySelector(".meshing-part-grading-error")?.textContent ?? "" };
+  });
+  assert(committed.grading?.sizeAtWall === 1, `a valid wall-size edit posts partsChanged with the new value (got ${JSON.stringify(committed.grading)})`);
+  assert(committed.errorText === "", "no inline error for a valid band");
+
+  // Commit an invalid edit (sizeFar < sizeAtWall) — must NOT post, and the
+  // part's existing (still-valid) band must survive untouched.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = document.querySelector(".meshing-part-grade-toggle.active");
+    const gradingRow = row.closest(".meshing-part-row").nextElementSibling;
+    const farInput = gradingRow.querySelectorAll("input")[1]; // Far
+    farInput.value = "0.1"; // < the wall size of 1 just committed above
+    farInput.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const rejected = await page.evaluate(() => {
+    const row = document.querySelector(".meshing-part-grade-toggle.active");
+    const gradingRow = row.closest(".meshing-part-row").nextElementSibling;
+    return {
+      posted: (window.__sent || []).some((x) => x.type === "partsChanged"),
+      errorText: gradingRow.querySelector(".meshing-part-grading-error")?.textContent ?? "",
+    };
+  });
+  assert(rejected.posted === false, "an invalid band (far < wall) posts nothing");
+  assert(rejected.errorText.length > 0, "an invalid band shows an inline error instead");
+
+  // Clearing all four fields removes the band entirely.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = document.querySelector(".meshing-part-grade-toggle.active");
+    const gradingRow = row.closest(".meshing-part-row").nextElementSibling;
+    for (const input of gradingRow.querySelectorAll("input")) {
+      input.value = "";
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+  await sleep(150);
+  const cleared = await page.evaluate(() => {
+    const m = (window.__sent || []).findLast((x) => x.type === "partsChanged");
+    const p = m?.parts?.find((p) => p.name === "Contact faces");
+    // No `??` sentinel here on purpose: `undefined` (the correct cleared
+    // value) must reach the assertion below unchanged, not get masked into
+    // a truthy placeholder string that would defeat the `== null` check.
+    return p ? p.meshGrading : "no-such-part";
+  });
+  assert(cleared == null, `clearing every field removes the band (got ${JSON.stringify(cleared)})`);
+});
+
 
 async function main() {
   if (!nodeSupportsPlaywright()) {

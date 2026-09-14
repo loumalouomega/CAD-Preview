@@ -960,7 +960,7 @@ server.registerTool(
   "set_part",
   {
     description:
-      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), and optional per-part meshSize refinement. Omitted fields keep their current values; meshSize: null clears it. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
+      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize). Omitted fields keep their current values; meshSize/meshGrading: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Part name (the upsert key)"),
@@ -971,6 +971,16 @@ server.registerTool(
       lines: z.array(z.string()).optional().describe("edge-N ids"),
       points: z.array(z.string()).optional().describe("point-N ids"),
       meshSize: z.number().nullable().optional().describe("Target element size for local refinement; null clears"),
+      meshGrading: z
+        .object({
+          sizeAtWall: z.number().describe("Element size at/within distNear of the part's entities (> 0)"),
+          sizeFar: z.number().describe("Element size at/beyond distFar (>= sizeAtWall)"),
+          distNear: z.number().describe("Distance kept at sizeAtWall (>= 0)"),
+          distFar: z.number().describe("Distance where size reaches sizeFar (> distNear)"),
+        })
+        .nullable()
+        .optional()
+        .describe("Distance-graded sizing anchored on this part; null clears"),
       selector: z.looseObject({}).nullable().optional().describe("SelectorQuery to store (validated structurally); null clears a stored one"),
     },
   },
@@ -985,6 +995,7 @@ server.registerTool(
       lines?: string[];
       points?: string[];
       meshSize?: number | null;
+      meshGrading?: { sizeAtWall: number; sizeFar: number; distNear: number; distFar: number } | null;
       selector?: unknown;
     }) => setPart(args)
   )

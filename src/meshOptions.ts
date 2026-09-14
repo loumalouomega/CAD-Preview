@@ -81,6 +81,52 @@ export interface MeshOptions {
 }
 
 /**
+ * Distance-graded sizing anchored on a `Part` (roadmap "Boundary-layer and
+ * distance-threshold mesh sizing", Phase 1) — a Gmsh `Distance` + `Threshold`
+ * field pair (`gmshSizingFields.ts`'s `addDistanceThresholdField`): elements
+ * stay at `sizeAtWall` within `distNear` of the part's own entities, grow
+ * linearly out to `sizeFar` at `distFar`, and stay at `sizeFar` beyond that.
+ * All four fields are in the model's own length unit (mm for a native
+ * document); see `scalePartsMeshSizeForUnit` for unit-converted exports.
+ */
+export interface MeshGrading {
+  sizeAtWall: number;
+  sizeFar: number;
+  distNear: number;
+  distFar: number;
+}
+
+/**
+ * Validates one raw value into a clean {@link MeshGrading}, or `undefined` if
+ * `raw` isn't a well-formed band — all-or-nothing (unlike {@link
+ * validateMeshOptions}'s per-field clamping), since a partially-valid grading
+ * band has no sensible "fall back to the default" reading the way a single
+ * numeric option does. The tolerant-parse convention this codebase uses
+ * elsewhere for a malformed *annotation* (a bad `tolerance` on an
+ * `Annotation`, a bad `selector` on a `Part`): drop the annotation, keep the
+ * entity it's attached to — so a `Part` with an invalid `meshGrading` still
+ * parses, just without grading.
+ */
+export function validateMeshGrading(raw: unknown): MeshGrading | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  const { sizeAtWall, sizeFar, distNear, distFar } = o;
+  if (
+    !isFiniteNumber(sizeAtWall) ||
+    !isFiniteNumber(sizeFar) ||
+    !isFiniteNumber(distNear) ||
+    !isFiniteNumber(distFar) ||
+    sizeAtWall <= 0 ||
+    sizeFar < sizeAtWall ||
+    distNear < 0 ||
+    distFar <= distNear
+  ) {
+    return undefined;
+  }
+  return { sizeAtWall, sizeFar, distNear, distFar };
+}
+
+/**
  * Gmsh's "unbounded" sentinel for `Mesh.MeshSizeMax`. A `sizeMax` equal to
  * this means "no explicit target size yet" — the webview seeds a real,
  * bbox-derived default in its place once the model's extents are known (see
@@ -262,11 +308,27 @@ export function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): M
 
 /**
  * The `Part[]`-side sibling of {@link scaleMeshOptionsForUnit} — rescales
- * every part's own `meshSize` (mm) by the same `factor`, for the same
- * unit-converted-export-only, never-persisted reason. A part with no
- * `meshSize` set is left untouched.
+ * every part's own `meshSize` (mm) AND every length in its `meshGrading`
+ * band (all four fields are lengths in the same unit) by the same `factor`,
+ * for the same unit-converted-export-only, never-persisted reason. A part
+ * with neither set is left untouched.
  */
 export function scalePartsMeshSizeForUnit(parts: Part[], factor: number): Part[] {
   if (factor === 1) return parts;
-  return parts.map((p) => (p.meshSize != null ? { ...p, meshSize: p.meshSize * factor } : p));
+  return parts.map((p) => {
+    if (p.meshSize == null && p.meshGrading == null) return p;
+    return {
+      ...p,
+      meshSize: p.meshSize != null ? p.meshSize * factor : p.meshSize,
+      meshGrading:
+        p.meshGrading != null
+          ? {
+              sizeAtWall: p.meshGrading.sizeAtWall * factor,
+              sizeFar: p.meshGrading.sizeFar * factor,
+              distNear: p.meshGrading.distNear * factor,
+              distFar: p.meshGrading.distFar * factor,
+            }
+          : p.meshGrading,
+    };
+  });
 }

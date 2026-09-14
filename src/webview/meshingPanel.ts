@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, validateMeshGrading, type MeshOptions, type MeshGrading } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
@@ -45,6 +45,11 @@ export interface MeshingPanelCallbacks {
   onOptionsChange: (patch: Partial<MeshOptions>) => void;
   /** A part's target mesh size changed in the "Part sizes" section (`undefined` = inherit global). */
   onPartMeshSize: (index: number, size: number | undefined) => void;
+  /** A part's distance-graded sizing band changed in the "Part sizes" section
+   * (`undefined` = clear it). Only called with a well-formed band or
+   * `undefined` — an invalid band is caught and shown inline, never
+   * forwarded. */
+  onPartMeshGrading: (index: number, grading: MeshGrading | undefined) => void;
   onGenerate: () => void;
   /** Export in the format/unit currently picked in the two `<select>`s. `unit`
    * is a real geometric scale applied before Gmsh ever sees the geometry
@@ -734,8 +739,101 @@ export class MeshingPanel {
       });
       row.appendChild(input);
 
+      const gradeToggle = document.createElement("button");
+      gradeToggle.type = "button";
+      gradeToggle.className = "meshing-part-grade-toggle";
+      gradeToggle.textContent = "Grade";
+      gradeToggle.title = "Distance-graded sizing anchored on this part (B-rep sources only)";
+      // `.active` is a plain visual indicator that a band is SET, independent
+      // of whether the row is currently expanded — the row itself always
+      // starts collapsed (below), matching the "Advanced settings" section's
+      // own collapsed-by-default convention. `#side` clips overflow rather
+      // than scrolling (`overflow: hidden`), so auto-expanding this row for
+      // every part that happens to have a band set risks pushing the
+      // sidebar's OTHER flex:1 panels (Parts, Edits) past their squeeze
+      // point — a real, live-caught layout regression, not a hypothetical.
+      gradeToggle.setAttribute("aria-expanded", "false");
+      gradeToggle.classList.toggle("active", part.meshGrading != null);
+      row.appendChild(gradeToggle);
+
       this.partsBody.appendChild(row);
+
+      const gradingRow = this.buildPartGradingRow(index, part.meshGrading);
+      gradingRow.hidden = true;
+      this.partsBody.appendChild(gradingRow);
+
+      gradeToggle.addEventListener("click", () => {
+        const nowHidden = !gradingRow.hidden;
+        gradingRow.hidden = nowHidden;
+        gradeToggle.setAttribute("aria-expanded", String(!nowHidden));
+      });
     });
+  }
+
+  /**
+   * Builds the (initially hidden) grading-band row for one part: four
+   * number inputs (wall size / far size / near dist / far dist) plus an
+   * inline error line. Committing any field validates the WHOLE band
+   * through {@link validateMeshGrading} and only calls back on success;
+   * clearing all four fields calls back with `undefined` to remove the
+   * band. An invalid band is never forwarded — it shows inline instead,
+   * leaving the last-good `meshGrading` (if any) untouched host-side.
+   */
+  private buildPartGradingRow(index: number, initial: MeshGrading | undefined): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = "meshing-part-grading";
+
+    const field = (label: string, title: string, value: number | undefined) => {
+      const wrap = document.createElement("label");
+      wrap.className = "meshing-part-grading-field";
+      const span = document.createElement("span");
+      span.textContent = label;
+      wrap.appendChild(span);
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.className = "meshing-num";
+      inp.title = title;
+      inp.min = "0";
+      inp.step = "any";
+      inp.value = value != null ? String(value) : "";
+      wrap.appendChild(inp);
+      row.appendChild(wrap);
+      return inp;
+    };
+
+    const wallInput = field("Wall", "Element size at/within the near distance", initial?.sizeAtWall);
+    const farInput = field("Far", "Element size at/beyond the far distance", initial?.sizeFar);
+    const nearInput = field("Near dist", "Distance kept at the wall size", initial?.distNear);
+    const farDistInput = field("Far dist", "Distance where the size reaches the far value", initial?.distFar);
+
+    const error = document.createElement("span");
+    error.className = "meshing-part-grading-error";
+    row.appendChild(error);
+
+    const commit = () => {
+      const raws = [wallInput.value.trim(), farInput.value.trim(), nearInput.value.trim(), farDistInput.value.trim()];
+      if (raws.every((r) => r === "")) {
+        error.textContent = "";
+        this.cb.onPartMeshGrading(index, undefined);
+        return;
+      }
+      const candidate = {
+        sizeAtWall: Number(raws[0]),
+        sizeFar: Number(raws[1]),
+        distNear: Number(raws[2]),
+        distFar: Number(raws[3]),
+      };
+      const valid = validateMeshGrading(candidate);
+      if (!valid) {
+        error.textContent = "Needs wall > 0, far ≥ wall, near ≥ 0, far dist > near dist.";
+        return;
+      }
+      error.textContent = "";
+      this.cb.onPartMeshGrading(index, valid);
+    };
+    for (const inp of [wallInput, farInput, nearInput, farDistInput]) inp.addEventListener("change", commit);
+
+    return row;
   }
 
   /**

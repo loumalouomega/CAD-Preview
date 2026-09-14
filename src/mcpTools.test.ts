@@ -2216,6 +2216,28 @@ describe("set_part", () => {
     expect(result.warnings[0]).toMatch(/positive/);
   });
 
+  it("sets, updates, clears, and rejects an invalid meshGrading band", async () => {
+    const grading = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
+    await setPart({ path: stpModel, name: "P", surfaces: ["face-0"], meshGrading: grading });
+    await setPart({ path: stpModel, name: "P", meshGrading: { ...grading, sizeFar: 2 } });
+    expect((await readParts(stpModel))[0].meshGrading).toEqual({ ...grading, sizeFar: 2 });
+
+    // An invalid band keeps the existing value and warns, rather than clobbering it.
+    const result = await setPart({ path: stpModel, name: "P", meshGrading: { ...grading, sizeFar: 0.01 } });
+    expect((await readParts(stpModel))[0].meshGrading).toEqual({ ...grading, sizeFar: 2 }); // unchanged
+    expect(result.warnings.some((w) => /meshGrading/.test(w))).toBe(true);
+
+    await setPart({ path: stpModel, name: "P", meshGrading: null });
+    expect((await readParts(stpModel))[0].meshGrading).toBeUndefined();
+  });
+
+  it("warns that meshGrading is ignored entirely for a mesh-format source", async () => {
+    const result = await setPart({ path: stlModel, name: "P", volumes: ["node-0"], meshGrading: {
+      sizeAtWall: 0.1, sizeFar: 1, distNear: 0.2, distFar: 1,
+    } });
+    expect(result.warnings.some((w) => /meshGrading is ignored/.test(w))).toBe(true);
+  });
+
   it("stores a selector with a server-derived op-kind tag, and clears it with null", async () => {
     const { writeEdits } = await import("./mcpSidecars");
     await writeEdits(stpModel, [{ op: "addBox", center: [0, 0, 0], size: [5, 5, 5] }] as unknown as EditOp[], []);

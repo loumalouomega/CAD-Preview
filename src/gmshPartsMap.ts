@@ -3,6 +3,7 @@ import type { Part } from "./protocol";
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { resetGmsh } from "./gmshService";
 import { collectFaces, collectEdges, collectSolids, collectVertices, bboxCenter } from "./occtOperations";
+import { addConstantField, addDistanceThresholdField, setBackgroundMin } from "./gmshSizingFields";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -32,7 +33,9 @@ export interface PartGroupMaps {
  * (call this right after `gmsh.model.occ.importShapes(...)` +
  * `gmsh.model.occ.synchronize()` on the SAME `stepBytes`), creates one Gmsh
  * physical group per part per dimension it has resolved entities in, sets up
- * a per-part background sizing field for parts with `meshSize`, and returns
+ * a per-part background sizing field for parts with `meshSize` and/or
+ * `meshGrading` (see `gmshSizingFields.ts` for the field composition itself
+ * — this function only resolves ids to tags and dispatches), and returns
  * tag -> part lookup maps.
  *
  * B-rep only — never call this for an STL-sourced `MeshGenerationInput`; Gmsh's
@@ -127,7 +130,7 @@ export async function applyPartsToGmshModel(
       curveTagToPart: new Map(),
       pointTagToPart: new Map(),
     };
-    const constantFieldTags: number[] = [];
+    const sizeFieldTags: number[] = [];
 
     for (const part of parts) {
       const info: PartGroupInfo = { name: part.name, color: part.color };
@@ -155,23 +158,21 @@ export async function applyPartsToGmshModel(
         for (const t of pointTags) maps.pointTagToPart.set(t, info);
       }
 
+      const resolvedTags = { volTags, surfTags, curveTags, pointTags };
       const resolvedCount = volTags.length + surfTags.length + curveTags.length + pointTags.length;
-      if (part.meshSize != null && resolvedCount > 0) {
-        const fieldTag = gmsh.model.mesh.field.add("Constant");
-        if (volTags.length > 0) gmsh.model.mesh.field.setNumbers(fieldTag, "VolumesList", volTags);
-        if (surfTags.length > 0) gmsh.model.mesh.field.setNumbers(fieldTag, "SurfacesList", surfTags);
-        if (curveTags.length > 0) gmsh.model.mesh.field.setNumbers(fieldTag, "CurvesList", curveTags);
-        if (pointTags.length > 0) gmsh.model.mesh.field.setNumbers(fieldTag, "PointsList", pointTags);
-        gmsh.model.mesh.field.setNumber(fieldTag, "VIn", part.meshSize);
-        constantFieldTags.push(fieldTag);
+      if (resolvedCount === 0) continue;
+
+      if (part.meshSize != null) {
+        const fieldTag = addConstantField(gmsh, resolvedTags, part.meshSize);
+        if (fieldTag !== null) sizeFieldTags.push(fieldTag);
+      }
+      if (part.meshGrading != null) {
+        const fieldTag = addDistanceThresholdField(gmsh, resolvedTags, part.meshGrading);
+        if (fieldTag !== null) sizeFieldTags.push(fieldTag);
       }
     }
 
-    if (constantFieldTags.length > 0) {
-      const minTag = gmsh.model.mesh.field.add("Min");
-      gmsh.model.mesh.field.setNumbers(minTag, "FieldsList", constantFieldTags);
-      gmsh.model.mesh.field.setAsBackgroundMesh(minTag);
-    }
+    setBackgroundMin(gmsh, sizeFieldTags);
 
     return maps;
   } catch (err) {

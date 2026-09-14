@@ -1,7 +1,7 @@
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import type { MeshOptions } from "./meshOptions";
+import type { MeshOptions, MeshGrading } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
@@ -71,6 +71,17 @@ export interface Part {
   lines: string[];     // edge ids
   points: string[];    // point (vertex) ids
   meshSize?: number;   // optional Gmsh target element size for local refinement
+  /**
+   * Optional distance-graded sizing (roadmap "Boundary-layer and
+   * distance-threshold mesh sizing", Phase 1): elements stay at `sizeAtWall`
+   * within `distNear` of this part's own entities, grow linearly out to
+   * `sizeFar` at `distFar`, and stay at `sizeFar` beyond that — a Gmsh
+   * Distance+Threshold field pair, B-rep sources only (see
+   * `gmshSizingFields.ts`). Distinct from `meshSize` (a flat `Constant`
+   * field confined to the part's own entities): grading refines the space
+   * AROUND the part, which is what a CFD/thermal mesh needs at a wall.
+   */
+  meshGrading?: MeshGrading;
   /**
    * Optional re-executable selector (roadmap "Selector synthesis") naming
    * this part's surfaces without baking in positional ids. The `surfaces`

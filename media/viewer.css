@@ -1527,6 +1527,66 @@ input[type="range"].meshing-slider:focus {
   flex: 0 0 64px;
 }
 
+.meshing-part-grade-toggle {
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 9px;
+  padding: 1px 4px;
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.meshing-part-grade-toggle:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+.meshing-part-grade-toggle.active {
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e70c0);
+}
+
+.meshing-part-grading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px 12px;
+  padding: 4px 0 4px 6px;
+  border-left: 1px solid var(--vscode-input-border, #3c3c3c);
+}
+/* The unconditional `display: flex` above is an AUTHOR rule and beats the
+ * UA stylesheet's `[hidden] { display: none }` regardless of specificity
+ * (origin is checked before specificity) — the exact "gated panel never
+ * actually hides" hazard CLAUDE.md's "Collapsible sidebar sections" section
+ * already documents twice for #mesh-health-panel/#region-fit-panel. Without
+ * this override, setting `.hidden = true` on a grading row does nothing:
+ * it keeps rendering at full height, which is what pushed the sidebar's
+ * flex:1 panels (Parts, Edits) past their squeeze point in the first place
+ * (a real, live-caught regression — `#side` clips overflow rather than
+ * scrolling, so a collapsed row that silently isn't collapsed steals space
+ * from every sibling below the panel it's attached to). */
+.meshing-part-grading[hidden] {
+  display: none;
+}
+
+.meshing-part-grading-field {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  opacity: 0.8;
+}
+.meshing-part-grading-field input {
+  width: 56px;
+}
+
+.meshing-part-grading-error {
+  flex-basis: 100%;
+  font-size: 9px;
+  color: var(--vscode-errorForeground, #f48771);
+}
+
 #meshing-status {
   padding: 4px 8px;
   font-size: 10px;

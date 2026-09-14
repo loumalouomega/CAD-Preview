@@ -91,6 +91,20 @@ describe("parsePartsJson", () => {
       expect(parsePartsJson(text)[0].meshSize).toBe(expected);
     }
   });
+
+  it("parses a valid meshGrading band and drops an invalid one", () => {
+    const base = { name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] };
+    const valid = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
+
+    const validText = JSON.stringify({ parts: [{ ...base, meshGrading: valid }] });
+    expect(parsePartsJson(validText)[0].meshGrading).toEqual(valid);
+
+    const invalidText = JSON.stringify({ parts: [{ ...base, meshGrading: { ...valid, sizeFar: 0.01 } }] });
+    expect(parsePartsJson(invalidText)[0].meshGrading).toBeUndefined();
+
+    const missingText = JSON.stringify({ parts: [{ ...base }] });
+    expect(parsePartsJson(missingText)[0].meshGrading).toBeUndefined();
+  });
 });
 
 describe("serializePartsJson", () => {
@@ -109,6 +123,15 @@ describe("serializePartsJson", () => {
   it("round-trips a part's meshSize", () => {
     const parts: Part[] = [{
       name: "P", color: "#123456", volumes: ["solid-0"], surfaces: [], lines: [], points: [], meshSize: 0.25,
+    }];
+    const text = serializePartsJson("model.step", parts);
+    expect(parsePartsJson(text)).toEqual(parts);
+  });
+
+  it("round-trips a part's meshGrading", () => {
+    const parts: Part[] = [{
+      name: "P", color: "#123456", volumes: ["solid-0"], surfaces: [], lines: [], points: [],
+      meshGrading: { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 },
     }];
     const text = serializePartsJson("model.step", parts);
     expect(parsePartsJson(text)).toEqual(parts);

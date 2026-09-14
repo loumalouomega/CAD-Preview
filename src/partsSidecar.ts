@@ -1,5 +1,6 @@
 import type { Part } from "./protocol";
 import { validateSelectorQuery } from "./selectorQuery";
+import { validateMeshGrading } from "./meshOptions";
 
 /** Pure (vscode-free) parse/serialize for the parts sidecar — unit-testable. */
 
@@ -53,6 +54,7 @@ export function parsePartsJson(text: string): Part[] {
         typeof p.meshSize === "number" && Number.isFinite(p.meshSize) && p.meshSize > 0
           ? p.meshSize
           : undefined,
+      meshGrading: validateMeshGrading((p as { meshGrading?: unknown }).meshGrading),
       ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),
     });
   }

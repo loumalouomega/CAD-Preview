@@ -162,7 +162,19 @@ const SHOTS = [
     },
     target: { sel: "#meshing-panel" },
   },
-  { file: "part-sizes.png", setup: populate, target: { sel: "#meshing-part-sizes" } },
+  {
+    file: "part-sizes.png",
+    setup: async (page) => {
+      await populate(page);
+      // Reveal one part's grading band — the row starts collapsed by design
+      // (see meshingPanel.ts's renderParts) so a document with a band set
+      // doesn't grow the sidebar past its overflow:hidden squeeze point on
+      // load; click it open here so the shot documents the feature.
+      await page.locator(".meshing-part-grade-toggle.active").first().click();
+      await sleep(150);
+    },
+    target: { sel: "#meshing-part-sizes" },
+  },
   {
     file: "export-formats.png",
     setup: async (page) => {
