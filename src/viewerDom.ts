@@ -36,6 +36,7 @@ export function viewerBodyHtml(): string {
         <button id="menu-export-svg" role="menuitem" title="Export a 2D outline (silhouette) of the model as an SVG drawing — outline only, no hidden-line removal">${icon("export")} Export Silhouette SVG…</button>
         <button id="menu-export-dxf" role="menuitem" title="Export a 2D outline (silhouette) of the model as a DXF drawing — chained polylines (LWPOLYLINE with bulges for arcs) plus singletons as LINEs, outline only">${icon("export")} Export Silhouette DXF…</button>
         <button id="menu-export-drawing" role="menuitem" title="Export a 2D technical drawing — feature edges with hidden-line removal, occluded runs dashed">${icon("export")} Export Technical Drawing…</button>
+        <button id="menu-export-sheet" role="menuitem" title="Export a drafting sheet — front, top, right and iso views at one shared scale, with a title block (first-angle projection)">${icon("export")} Export Drawing Sheet…</button>
       </div>
     </div>
   </div>

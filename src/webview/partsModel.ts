@@ -1,4 +1,5 @@
 import type { Part } from "../protocol";
+import type { MeshGrading } from "../meshOptions";
 import type { SelectedEntity } from "./selection";
 import type { EntityColorMap } from "./viewer";
 
@@ -71,6 +72,13 @@ export class PartsModel {
     this.onChange();
   }
 
+  setMeshGrading(index: number, grading: MeshGrading | undefined): void {
+    const p = this.parts[index];
+    if (!p) return;
+    p.meshGrading = grading;
+    this.onChange();
+  }
+
   remove(index: number): void {
     if (index < 0 || index >= this.parts.length) return;
     this.parts.splice(index, 1);
@@ -140,6 +148,13 @@ function clone(p: Part): Part {
     lines: [...p.lines],
     points: [...p.points],
     meshSize: p.meshSize,
+    // Same immutable-object-reference-is-safe reasoning as `selector` below —
+    // `meshGrading`'s four numbers are only ever read, never mutated in
+    // place; a shared reference across clones is safe. Must be copied here
+    // at all, though — this is the exact "a field added to a clone() must be
+    // copied or it silently unpersists" defect class this file's own comment
+    // already names for `selector`.
+    meshGrading: p.meshGrading,
     // A stored selector is data, not derived state — dropping it here would
     // silently unpersist the query on the next autosave (the exact
     // `AnnotationsModel.clone`-omitted-`tolerance` defect class). The query

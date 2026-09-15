@@ -724,7 +724,7 @@ Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep source
 
 ### `macros` / `macroApplyOps`
 
-The saved-macro library for the document's folder (`cad-preview-macros.json` — the same file the MCP tools take as `libraryPath`). `macros` is sent unprompted on `ready` and after every save/delete, so the panel never has to ask for it.
+The saved-macro library for the document's folder (`cad-preview-macros.json` — the same file the MCP tools take as `libraryPath`), unioned with the bundled starter library (`spring`, `bolt-circle-flange`, `hex-bolt` — a caller-owned entry shadows a bundled one of the same name). `macros` is sent unprompted on `ready` and after every save/delete, so the panel never has to ask for it. A bundled row carries `readOnly: true` (absent means false) and shows no Delete button; the host refuses `macroDelete` for it as a backstop.
 
 `macroApplyOps` carries a macro's **compiled** ops for the webview to push onto its own op stack — deliberately not a host-side append, so a macro is undoable, visible in the history and removable op-by-op exactly like a hand-applied edit, with no special "macro" state for undo/redo to reason about.
 
@@ -941,6 +941,8 @@ type WebviewToHost =
   | { type: 'importSvgRequest' }
   | { type: 'importDxfRequest' }
   | { type: 'exportDxfRequest' }
+  | { type: 'exportDrawingRequest' }
+  | { type: 'exportSheetRequest' }
   | { type: 'opPreviewRequest'; requestId: string; op: EditOp }
 ```
 ### `partsChanged`
@@ -1095,6 +1097,22 @@ The DXF sibling of `exportSvgRequest`, sent by **File ▸ Export Silhouette DXF�
 
 ```json
 { "type": "exportDxfRequest" }
+```
+
+### `exportDrawingRequest`
+
+The hidden-line-removal sibling of `exportSvgRequest`/`exportDxfRequest`, sent by **File ▸ Export Technical Drawing…** (`#menu-export-drawing`) or the `cad-preview.exportDrawing` command. Identical host-owned flow and message shape, differing only in `hiddenLines: true` on the `exportSvgSilhouette` call (SVG output; occluded edges dashed).
+
+```json
+{ "type": "exportDrawingRequest" }
+```
+
+### `exportSheetRequest`
+
+Sent by **File ▸ Export Drawing Sheet…** (`#menu-export-sheet`) or the `cad-preview.exportSheet` command — the multi-view counterpart of the three single-view drawing exports above (roadmap "Multi-view sheet layout"). Same **no `requestId`, no result message** shape: the host owns a *format* quick-pick (SVG/DXF), a *paper size* quick-pick (Fit / A4 / A3 / A2 / A1 / A0 — Escape on either cancels), a save dialog, and finally the kernel-worker `exportDrawingSheet` call with the default four views (front/top/right/iso) at first-angle projection. **Deliberately no unit quick-pick, unlike the other three drawing exports** — a sheet's scale ratio is a real drawn-to-actual relationship in millimetres, and a coordinate-unit conversion would make it lie. Success, per-view counts, and warnings all come back through the plain `status`/`error` messages.
+
+```json
+{ "type": "exportSheetRequest" }
 ```
 
 ### `exportResult` / `exportError`

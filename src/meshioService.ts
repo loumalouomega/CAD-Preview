@@ -101,7 +101,10 @@ export function resetMeshio(): void {
  * each kernel's fault handling staying self-contained in its own service file.
  */
 function isMeshioWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message);
+  // See `occtService.ts`'s `isOcctWasmAbort` doc comment: a bare all-digit
+  // message is a raw exception pointer with no text, updated across all four
+  // kernel services together like every earlier vocabulary addition.
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message);
 }
 
 /**

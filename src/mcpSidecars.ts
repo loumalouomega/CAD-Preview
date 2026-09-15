@@ -18,6 +18,7 @@ import { parsePlanesJson, serializePlanesJson } from "./planesSidecar";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 import { parseScriptLibraryJson, serializeScriptLibraryJson, type ScriptLibrary } from "./scriptLibrary";
+import { bundledMacrosPath } from "./starterMacros";
 import { parseViewStateJson } from "./viewStateSidecar";
 import type { ViewState } from "./protocol";
 
@@ -171,6 +172,23 @@ export async function readScriptLibrary(libraryPath: string): Promise<ScriptLibr
 
 export async function writeScriptLibrary(libraryPath: string, library: ScriptLibrary): Promise<void> {
   await fs.writeFile(libraryPath, serializeScriptLibraryJson(library), "utf8");
+}
+
+/**
+ * The read-only bundled starter library (roadmap Tier 1 "A bundled starter
+ * macro library") — `dist/macros/starter-library.json` beside the bundle
+ * (copied there by `esbuild.mjs`'s `copyMacros()`). Missing/unreadable/
+ * corrupt yields an empty library, same bare-catch convention as
+ * `readScriptLibrary` above — a broken bundle must degrade to "no starters",
+ * never fail a list/run call.
+ */
+export async function readBundledScriptLibrary(extensionPath: string): Promise<ScriptLibrary> {
+  try {
+    const text = await fs.readFile(bundledMacrosPath(extensionPath), "utf8");
+    return parseScriptLibraryJson(text);
+  } catch {
+    return {};
+  }
 }
 
 /**

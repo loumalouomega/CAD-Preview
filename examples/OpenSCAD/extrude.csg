@@ -1,0 +1,45 @@
+// extrude.csg — 2D-profile extrusion coverage: linear_extrude of a polygon,
+// a centered square and a faceted circle, plus rotate_extrude full and
+// partial, each placed disjointly with translate(). Two later-phase refusals
+// (twist=, paths=) round it out — expect warnings for those two plus the
+// circle faceting, and nothing else.
+//
+// Volumes (analytic): polygon 10x6x5 = 300; centered square 4x4x8 = 128;
+// full revolve of [0..4]x[0..6] = 96*pi ~= 301.5929; half revolve = 48*pi ~=
+// 150.7965; $fn=12 circle r=3 x h=5 = 6*9*sin(30deg)*5 = 135. Total ~=
+// 1015.3893 across 5 solids — verified against the live kernel.
+group() {
+  linear_extrude(height = 5, center = false, convexity = 2, twist = 0, slices = 1, scale = 1) {
+    polygon(points = [[0, 0], [10, 0], [10, 6], [0, 6]]);
+  }
+  translate(v = [20, 0, 0]) {
+    linear_extrude(height = 8, center = false, convexity = 2, twist = 0, slices = 1, scale = 1) {
+      square(size = [4, 4], center = true);
+    }
+  }
+  translate(v = [-30, 0, 0]) {
+    rotate_extrude(angle = 360, convexity = 2) {
+      square(size = [4, 6], center = false);
+    }
+  }
+  translate(v = [0, 30, 0]) {
+    rotate_extrude(angle = 180, convexity = 2) {
+      square(size = [4, 6], center = false);
+    }
+  }
+  translate(v = [40, 0, 0]) {
+    linear_extrude(height = 5, center = false, convexity = 2, twist = 0, slices = 1, scale = 1) {
+      circle($fn = 12, $fa = 12, $fs = 2, r = 3);
+    }
+  }
+  translate(v = [60, 0, 0]) {
+    linear_extrude(height = 5, center = false, convexity = 2, twist = 30, slices = 10, scale = 1) {
+      polygon(points = [[0, 0], [10, 0], [10, 6], [0, 6]]);
+    }
+  }
+  translate(v = [80, 0, 0]) {
+    linear_extrude(height = 5, center = false, convexity = 2, twist = 0, slices = 1, scale = 1) {
+      polygon(points = [[0, 0], [10, 0], [10, 10], [0, 10], [2, 2], [8, 2], [8, 8], [2, 8]], paths = [[0, 1, 2, 3], [4, 5, 6, 7]]);
+    }
+  }
+}

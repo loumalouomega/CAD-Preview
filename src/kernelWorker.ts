@@ -27,7 +27,7 @@ console.debug = console.error.bind(console);
 
 import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, type BRepCacheEntry, type BRepResult } from "./occtService";
 import { generateMesh, exportMeshFormat, exportMdpa, exportGeoUnrolled, repairMesh } from "./gmshService";
-import { computeMassProperties, computeBom } from "./massProperties";
+import { computeMassProperties, computeBom, computeHoleTable } from "./massProperties";
 import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps, rebindPartsAcrossSave, resolveBucketSelector, synthesizeSelector, resolvePartSelectors } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
 import { searchStandardParts, downloadStandardPart } from "./stepPartsService";
@@ -47,7 +47,7 @@ import {
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
 import { recognizePrimitives } from "./primitiveReport";
 import { fitMeshRegion } from "./meshRegionFit";
-import { exportSvgSilhouette } from "./svgSilhouetteHost";
+import { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
 import { buildPrimitivesFile } from "./primitiveWrite";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
@@ -114,6 +114,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   exportGeoUnrolled: exportGeoUnrolled as Handler,
   computeMassProperties: computeMassProperties as Handler,
   computeBom: computeBom as Handler,
+  computeHoleTable: computeHoleTable as Handler,
   getEntityFacts: getEntityFacts as Handler,
   hitTest: hitTest as Handler,
   measureEntities: measureEntities as Handler,
@@ -148,6 +149,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   promoteMeshToBrep: promoteMeshToBrep as Handler,
   repairMesh: repairMesh as Handler,
   exportSvgSilhouette: exportSvgSilhouette as Handler,
+  exportDrawingSheet: exportDrawingSheet as Handler,
   buildPrimitivesFile: buildPrimitivesFile as Handler,
 };
 

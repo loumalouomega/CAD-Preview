@@ -125,4 +125,35 @@ describe("parseCsg", () => {
     const r = parseCsg(`cube(size = 1)`);
     expect(r.roots).toHaveLength(1);
   });
+
+  it("captures linear_extrude params including twist/scale defaults", () => {
+    // Real openscad always writes twist/slices/scale even when defaulted.
+    const r = parseCsg(
+      `linear_extrude(height = 5, center = false, convexity = 2, twist = 0, slices = 1, scale = 1) { polygon(points = [[0, 0], [10, 0], [10, 6]]); }`
+    );
+    expect(r.warnings).toEqual([]);
+    const ex = r.roots[0];
+    expect(ex.name).toBe("linear_extrude");
+    expect(ex.params).toMatchObject({ height: 5, center: false, convexity: 2, twist: 0, slices: 1, scale: 1 });
+    expect(ex.children).toHaveLength(1);
+    expect(ex.children[0].name).toBe("polygon");
+  });
+
+  it("flattens polygon points= to a number array (pairs regrouped kernel-side)", () => {
+    const r = parseCsg(`polygon(points = [[0, 0], [10, 0], [10, 6], [0, 6]]);`);
+    expect(r.roots[0].params["points"]).toEqual([0, 0, 10, 0, 10, 6, 0, 6]);
+  });
+
+  it("keeps a vector scale= as an array (identity check is kernel-side)", () => {
+    const r = parseCsg(`linear_extrude(height = 5, scale = [1, 1]) { square(size = [4, 4]); }`);
+    expect(r.roots[0].params["scale"]).toEqual([1, 1]);
+  });
+
+  it("captures rotate_extrude angle and square size forms", () => {
+    const r = parseCsg(
+      `rotate_extrude(angle = 180, convexity = 2) { square(size = [4, 6], center = false); }`
+    );
+    expect(r.roots[0].params).toMatchObject({ angle: 180, convexity: 2 });
+    expect(r.roots[0].children[0].params).toMatchObject({ size: [4, 6], center: false });
+  });
 });

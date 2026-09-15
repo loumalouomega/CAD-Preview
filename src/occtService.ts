@@ -85,8 +85,27 @@ export function resetOcct(): void {
  * application errors (unlike a generic `is not a function`, which is a common
  * JS bug phrase and deliberately NOT matched). All four vocabularies updated
  * together, same as the `function table` fix. */
+/**
+ * A FIFTH signal, structurally different from the six textual ones above:
+ * bare digits and nothing else.
+ *
+ * Live-caught, reproducible at clean HEAD (`npm run mcp:smoke`'s
+ * `render_ops_prefix` block, two consecutive `-1`/`0`-prefix calls on the
+ * same document): the escaping exception was the literal string `"24012480"`
+ * — a raw OCCT/Emscripten exception POINTER with no message text attached at
+ * all, the same "escaped throw ... surfaces ... as the literal string"
+ * failure mode this codebase's `inspect`/`surfaceParams` work already
+ * documented for a *caught* pointer exception. `wrapOcctFault`'s `const raw =
+ * ((err as Error)?.message ?? String(err)).trim()` turns a raw number into
+ * exactly this shape, and no textual vocabulary — however large — can ever
+ * match it, so it silently passed through UNWRAPPED as a plain "24012480"
+ * error with the kernel left corrupt and un-reset. A bare all-digit message
+ * is a signal no ordinary application error in this codebase can produce
+ * (every deliberate `throw` here is a template-literal sentence), so it is
+ * exactly as safe to key on as `wasmtable` was.
+ */
 function isOcctWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message);
 }
 
 /**

@@ -106,6 +106,12 @@ async function main(): Promise<void> {
       lines: [],
       points: [],
       meshSize: +(diag / 45).toFixed(4),
+      meshGrading: {
+        sizeAtWall: +(diag / 45).toFixed(4),
+        sizeFar: +(diag / 10).toFixed(4),
+        distNear: +(diag / 20).toFixed(4),
+        distFar: +(diag / 5).toFixed(4),
+      },
     },
     { name: "Feature edges", color: "#38c172", volumes: [], surfaces: [], lines: edgeIds.slice(0, Math.min(6, edgeIds.length)), points: [] },
   ];

@@ -12,7 +12,7 @@ import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay } from "./geometryBuilder";
 import { viridisCssGradientStops } from "./colorMap";
 import { splitMeshesIntoFacets } from "./meshFacets";
-import { parseSvgPaths } from "../svgImport";
+import { parseSvgDocument, svgSubpathsToPolylineOps } from "../svgImport";
 import { parseDxf } from "../dxfImport";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
@@ -1086,6 +1086,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onOptionsChange: (patch) => meshingModel.update(patch),
   // Same store the Parts panel edits — one Part.meshSize, two mirrored inputs.
   onPartMeshSize: (index, size) => partsModel.setMeshSize(index, size),
+  onPartMeshGrading: (index, grading) => partsModel.setMeshGrading(index, grading),
   onGenerate: async () => {
     meshingPanel.setBusy(true);
     post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
@@ -3319,29 +3320,21 @@ function setupViewControls(): void {
 // existing export flow. Wired inside the same guard as the view controls so a
 // failure here can never block the `ready` handshake below.
 /**
- * Converts an imported SVG's `<path>` elements into standalone `addPolyline`
- * ops (roadmap "SVG import → profile ops", closed) — genuinely no new
- * kernel surface, since `addPolyline` already exists exactly for "straight
- * edges through points in order." One op per subpath (a single `<path
- * d="...">` with a hole, e.g. a letter "O", parses into TWO subpaths and
- * becomes two separate `addPolyline` ops — matching how `Build → Surface`
- * already treats each closed loop as its own entity to select later).
+ * Converts an imported SVG's shape elements into standalone `addPolyline`
+ * ops (roadmap "SVG import → profile ops", closed, then widened for "3D
+ * text via outline import") — genuinely no new kernel surface, since
+ * `addPolyline` already exists exactly for "straight edges through points
+ * in order." One op per subpath (a single `<path d="...">` with a hole,
+ * e.g. a letter "O", parses into TWO subpaths and becomes two separate
+ * `addPolyline` ops — matching how `Build → Surface` already treats each
+ * closed loop as its own entity to select later, and how `Build → Surface`
+ * can now also combine an outer loop with its holes into one face — see
+ * `occtOperations.ts`'s `addSurfaceFromLines`).
  *
- * Placement: SVG's Y axis points DOWN; every other coordinate this codebase
- * ever shows the user (view axes, typed op fields, …) is Y-up, so Y is
- * negated on the way in — an unflipped import would look correct in a flat
- * top-down view but mirrored in every other orientation. Imports flat into
- * the XY plane at z=0, 1 SVG user unit = 1mm (this codebase's cascade
- * unit) — a deliberate, simple default matching how Inkscape/Illustrator
- * "trace outline" exports are typically already sized for downstream CAD
- * use; a poorly-scaled source can be fixed afterward with the EXISTING
- * `scale` op, same as any other placement adjustment.
- *
- * Degenerate subpaths (fewer than 2 points; fewer than 3 for a closed one,
- * or a closed one whose first/last point are exactly equal after the Y
- * flip) are silently skipped rather than pushing an op `validateEditOp`
- * would reject anyway — same graceful-degradation rule as every other
- * import path in this codebase.
+ * Parsing (`parseSvgDocument`) and placement (`svgSubpathsToPolylineOps`)
+ * both live in the shared, pure `svgImport.ts` — the same functions the
+ * `import_svg` MCP tool uses, so the two import paths can never disagree on
+ * what an SVG document means.
  */
 function importSvgPaths(svgText: string): void {
   if (sourceKind === "mesh") {
@@ -3353,24 +3346,16 @@ function importSvgPaths(svgText: string): void {
     setStatus("SVG import builds sketch polylines, which are B-rep only — open a STEP/IGES/BREP file to use it.", true);
     return;
   }
-  const subpaths = parseSvgPaths(svgText);
-  let imported = 0;
-  for (const sub of subpaths) {
-    const points: [number, number, number][] = sub.points.map(([x, y]) => [x, -y, 0]);
-    if (points.length < 2) continue;
-    if (sub.closed && (points.length < 3 || pointsEqual(points[0], points[points.length - 1]))) continue;
-    editsModel.push({ op: "addPolyline", points, closed: sub.closed });
-    imported++;
-  }
+  const { subpaths, warnings } = parseSvgDocument(svgText);
+  const placements = svgSubpathsToPolylineOps(subpaths);
+  for (const p of placements) editsModel.push({ op: "addPolyline", points: p.points, closed: p.closed });
+  const imported = placements.length;
+  const warningSuffix = warnings.length > 0 ? ` (${warnings.join("; ")})` : "";
   if (imported === 0) {
-    setStatus("No usable paths found in that SVG (no <path> elements, or every one was degenerate).", true);
+    setStatus(`No usable paths found in that SVG (no recognized shape elements, or every one was degenerate).${warningSuffix}`, true);
     return;
   }
-  setStatus(`Imported ${imported} path${imported === 1 ? "" : "s"} from SVG as sketch polylines.`);
-}
-
-function pointsEqual(a: [number, number, number], b: [number, number, number]): boolean {
-  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+  setStatus(`Imported ${imported} path${imported === 1 ? "" : "s"} from SVG as sketch polylines.${warningSuffix}`);
 }
 
 /**
@@ -3420,6 +3405,7 @@ function setupFileMenu(): void {
   item("menu-export-svg", () => post({ type: "exportSvgRequest" }));
   item("menu-export-dxf", () => post({ type: "exportDxfRequest" }));
   item("menu-export-drawing", () => post({ type: "exportDrawingRequest" }));
+  item("menu-export-sheet", () => post({ type: "exportSheetRequest" }));
 }
 
 /**

@@ -21,6 +21,7 @@
  */
 
 import { segmentsToPolylines, viewBasis, dimensionDrawings, type Vec3, type ViewSpec, type DimensionSource, type DimensionDrawing } from "./svgSilhouette";
+import type { SheetLayout } from "./drawingSheet";
 
 export interface DxfOptions {
   /** Optional DXF header title (written as a comment, not a formal header var). */
@@ -88,127 +89,184 @@ function serializeDxf(
     singleLines: Array<[[number, number], [number, number]]>;
   }
 ): { dxf: string; dimensionCount?: number } {
-  const lines: string[] = [];
-  const push = (code: number, value: string) => { lines.push(String(code)); lines.push(value); };
-  // Minimal HEADER
-  push(0, "SECTION");
-  push(2, "HEADER");
-  push(9, "$ACADVER");
-  push(1, "AC1015");
-  if (options.title) {
-    push(9, "$COMMENTS");
-    push(1, options.title);
-  }
-  push(0, "ENDSEC");
-  push(0, "SECTION");
-  push(2, "ENTITIES");
-
-  // Emit chains as LWPOLYLINE
-  for (const ch of chains) {
-    if (ch.points.length < 2) continue;
-    // Chains of exactly 2 points could be emitted as LINE instead; we keep
-    // them as LWPOLYLINE so the file has a consistent polyline representation
-    // for chained outlines. The caller may split singletons separately.
-    push(0, "LWPOLYLINE");
-    push(8, "0");
-    push(90, String(ch.points.length));
-    push(70, ch.closed ? "1" : "0");
-    // Constant width / elevation not needed
-    for (let i = 0; i < ch.points.length; i++) {
-      const [x, y] = ch.points[i];
-      push(10, fmt(x));
-      push(20, fmt(y));
-      // Bulge for segment starting at this vertex (last vertex's bulge is for
-      // closing segment when closed, otherwise irrelevant)
-      const bulge = ch.bulges?.[i] ?? 0;
-      if (bulge !== 0) push(42, fmt(bulge));
-    }
-  }
-
-  for (const [a, b] of singleLines) {
-    push(0, "LINE");
-    push(8, "0");
-    push(10, fmt(a[0]));
-    push(20, fmt(a[1]));
-    push(30, "0");
-    push(11, fmt(b[0]));
-    push(21, fmt(b[1]));
-    push(31, "0");
-  }
+  const w = new DxfEntityWriter();
+  w.header(options.title);
+  w.chains("0", chains);
+  w.lines("0", singleLines);
   // Occluded geometry on its own layer.
   //
   // A LAYER, not a dashed linetype: this writer emits no TABLES/LTYPE section
   // at all, so a genuine DASHED linetype would mean adding that machinery. A
   // separate layer is the honest cheap form — a CAD user toggles or restyles it
   // — and it is the same mechanism the DIMENSIONS glyphs already use.
-  for (const ch of hidden?.chains ?? []) {
-    if (ch.points.length < 2) continue;
-    push(0, "LWPOLYLINE");
-    push(8, "HIDDEN");
-    push(90, String(ch.points.length));
-    push(70, ch.closed ? "1" : "0");
-    for (const p of ch.points) {
-      push(10, fmt(p[0]));
-      push(20, fmt(p[1]));
-      push(42, "0");
-    }
-  }
-  for (const [a, b] of hidden?.singleLines ?? []) {
-    push(0, "LINE");
-    push(8, "HIDDEN");
-    push(10, fmt(a[0]));
-    push(20, fmt(a[1]));
-    push(11, fmt(b[0]));
-    push(21, fmt(b[1]));
-  }
-
-
+  w.chains("HIDDEN", hidden?.chains ?? []);
+  w.lines("HIDDEN", hidden?.singleLines ?? []);
   // Dimension glyphs — a separate layer so a CAD user can toggle them
   // independently of the outline geometry.
   let dimensionCount: number | undefined;
   if (dims && dims.drawings.length > 0) {
     dimensionCount = dims.drawings.length;
-    for (const drawing of dims.drawings) {
-      for (const [a, b] of drawing.lines) {
-        push(0, "LINE");
-        push(8, "DIMENSIONS");
-        push(10, fmt(a[0]));
-        push(20, fmt(a[1]));
-        push(30, "0");
-        push(11, fmt(b[0]));
-        push(21, fmt(b[1]));
-        push(31, "0");
-      }
-      for (const t of drawing.triangles) {
-        push(0, "LWPOLYLINE");
-        push(8, "DIMENSIONS");
-        push(90, "3");
-        push(70, "1"); // closed
-        for (const p of t) {
-          push(10, fmt(p[0]));
-          push(20, fmt(p[1]));
-        }
-      }
-      for (const l of drawing.labels) {
-        push(0, "TEXT");
-        push(8, "DIMENSIONS");
-        push(10, fmt(l.x)); // insertion point (ignored when justified)
-        push(20, fmt(l.y));
-        push(30, "0");
-        push(40, fmt(dims.textHeight));
-        push(1, l.text);
-        push(72, "1"); // horizontal: center
-        push(73, "2"); // vertical: middle
-        push(11, fmt(l.x)); // alignment point (used because 72/73 are set)
-        push(21, fmt(l.y));
-        push(31, "0");
+    w.dimensions(dims);
+  }
+  return { dxf: w.finish(), ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
+}
+
+type Chain = { points: Array<[number, number]>; closed: boolean; bulges?: number[] };
+type Seg = [[number, number], [number, number]];
+
+/**
+ * Line-oriented DXF emission shared by every entry point in this file.
+ *
+ * **Y is negated on the way out, and that is a correctness fix.** Everything
+ * upstream works in the SVG's Y-down screen frame (`project()` negates screen
+ * up). DXF is Y-UP, so writing those values verbatim drew every drawing
+ * vertically MIRRORED in a CAD viewer: world-top maps to the most negative y,
+ * which a Y-up viewer puts at the bottom. (An earlier comment here called the
+ * verbatim write a deliberate match with the SVG; the arithmetic does not
+ * support that.) Mirroring also flips an arc's sweep, so bulges are negated
+ * too.
+ */
+class DxfEntityWriter {
+  private readonly out: string[] = [];
+
+  private push(code: number, value: string): void {
+    this.out.push(String(code), value);
+  }
+
+  private xy(x: number, y: number, codeX = 10, codeY = 20): void {
+    this.push(codeX, fmt(x));
+    this.push(codeY, fmt(-y));
+  }
+
+  header(title?: string, extents?: { width: number; height: number }): void {
+    this.push(0, "SECTION");
+    this.push(2, "HEADER");
+    this.push(9, "$ACADVER");
+    this.push(1, "AC1015");
+    if (title) {
+      this.push(9, "$COMMENTS");
+      this.push(1, title);
+    }
+    if (extents) {
+      // Sheet extents in the written (Y-up) frame: y runs from -height to 0.
+      this.push(9, "$EXTMIN");
+      this.push(10, "0");
+      this.push(20, fmt(-extents.height));
+      this.push(30, "0");
+      this.push(9, "$EXTMAX");
+      this.push(10, fmt(extents.width));
+      this.push(20, "0");
+      this.push(30, "0");
+    }
+    this.push(0, "ENDSEC");
+    this.push(0, "SECTION");
+    this.push(2, "ENTITIES");
+  }
+
+  chains(layer: string, chains: ReadonlyArray<Chain>): void {
+    for (const ch of chains) {
+      if (ch.points.length < 2) continue;
+      this.push(0, "LWPOLYLINE");
+      this.push(8, layer);
+      this.push(90, String(ch.points.length));
+      this.push(70, ch.closed ? "1" : "0");
+      for (let i = 0; i < ch.points.length; i++) {
+        this.xy(ch.points[i][0], ch.points[i][1]);
+        // Bulge for the segment starting at this vertex; zero is the default.
+        const bulge = ch.bulges?.[i] ?? 0;
+        if (bulge !== 0) this.push(42, fmt(-bulge));
       }
     }
   }
 
-  push(0, "ENDSEC");
-  push(0, "EOF");
-  return { dxf: lines.join("\n") + "\n", ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
+  lines(layer: string, segments: ReadonlyArray<Seg>): void {
+    for (const [a, b] of segments) {
+      this.push(0, "LINE");
+      this.push(8, layer);
+      this.xy(a[0], a[1]);
+      this.push(30, "0");
+      this.xy(b[0], b[1], 11, 21);
+      this.push(31, "0");
+    }
+  }
+
+  /** Chains segments (LWPOLYLINE) and keeps unmatched singletons as LINEs. */
+  segments(layer: string, segments: ReadonlyArray<Seg>): { chainCount: number; lineCount: number } {
+    const { polyChains, singleLines } = splitChains(segments);
+    this.chains(layer, polyChains);
+    this.lines(layer, singleLines);
+    return { chainCount: polyChains.length, lineCount: singleLines.length };
+  }
+
+  text(layer: string, x: number, y: number, height: number, text: string, anchor: "start" | "middle"): void {
+    this.push(0, "TEXT");
+    this.push(8, layer);
+    this.xy(x, y); // insertion point (ignored when justified)
+    this.push(30, "0");
+    this.push(40, fmt(height));
+    this.push(1, text);
+    if (anchor === "middle") {
+      this.push(72, "1"); // horizontal: center
+      this.push(73, "2"); // vertical: middle
+      this.xy(x, y, 11, 21); // alignment point (used because 72/73 are set)
+      this.push(31, "0");
+    }
+  }
+
+  dimensions(dims: { drawings: DimensionDrawing[]; textHeight: number }): void {
+    for (const drawing of dims.drawings) {
+      this.lines("DIMENSIONS", drawing.lines);
+      this.chains(
+        "DIMENSIONS",
+        drawing.triangles.map((t) => ({ points: [t[0], t[1], t[2]], closed: true }))
+      );
+      for (const l of drawing.labels) this.text("DIMENSIONS", l.x, l.y, dims.textHeight, l.text, "middle");
+    }
+  }
+
+  finish(): string {
+    this.push(0, "ENDSEC");
+    this.push(0, "EOF");
+    return this.out.join("\n") + "\n";
+  }
+}
+
+function splitChains(segments: ReadonlyArray<Seg>): { polyChains: Chain[]; singleLines: Seg[] } {
+  const polyChains: Chain[] = [];
+  const singleLines: Seg[] = [];
+  for (const ch of segmentsToPolylines(segments as Seg[])) {
+    if (!ch.closed && ch.points.length === 2) singleLines.push([ch.points[0], ch.points[1]]);
+    else polyChains.push(ch);
+  }
+  return { polyChains, singleLines };
+}
+
+/**
+ * Serializes a laid-out drawing sheet (`drawingSheet.ts`'s `layoutSheet`) as
+ * DXF in sheet millimetres. Layers: `0` visible, `HIDDEN`, `DIMENSIONS`,
+ * `BORDER` (frame), `TITLE` (title block + view labels).
+ *
+ * Views are chained PER VIEW and per visibility: `segmentsToPolylines` joins by
+ * exact endpoint, so one concatenated list could chain a run of one view into a
+ * run of another that merely touches it.
+ */
+export function sheetDxf(layout: SheetLayout, options: { title?: string } = {}): { dxf: string; chainCount: number; lineCount: number } {
+  const w = new DxfEntityWriter();
+  w.header(options.title, { width: layout.width, height: layout.height });
+  let chainCount = 0;
+  let lineCount = 0;
+  for (const view of layout.views) {
+    const vis = w.segments("0", view.visible);
+    const hid = w.segments("HIDDEN", view.hidden);
+    chainCount += vis.chainCount + hid.chainCount;
+    lineCount += vis.lineCount + hid.lineCount;
+    if (view.dimensions && view.dimensions.drawings.length > 0) w.dimensions(view.dimensions);
+    w.text("TITLE", view.label.x, view.label.y, view.label.height, view.label.text, view.label.anchor);
+  }
+  w.segments("BORDER", layout.frame);
+  w.lines("TITLE", layout.titleBlock.lines);
+  for (const t of layout.titleBlock.texts) w.text("TITLE", t.x, t.y, t.height, t.text, t.anchor);
+  return { dxf: w.finish(), chainCount, lineCount };
 }
 
 /** Computes the dimensions payload for a view, shared by both DXF entry points. */

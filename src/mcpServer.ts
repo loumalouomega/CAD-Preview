@@ -31,6 +31,7 @@ import {
   loadModel,
   getMassProperties,
   generateBomTool,
+  generateHoleTableTool,
   inspectEntity,
   measureTool,
   measureExactTool,
@@ -60,9 +61,11 @@ import {
   promoteMeshToBrepTool,
   repairMeshTool,
   exportSvgSilhouetteTool,
+  exportDrawingSheetTool,
   exportTechnicalDrawingTool,
   getState,
   applyEditOps,
+  importSvgTool,
   runParametricScriptTool,
   removeEditOp,
   runSavedScript,
@@ -272,13 +275,15 @@ server.registerTool(
   "get_mass_properties",
   {
     description:
-      "Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources only headless (OCCT BRepGProp); mesh formats return supported: false (compute client-side in the webview instead).",
+      "Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources via OCCT BRepGProp; STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area/centroid/watertight, no length or inertia). Other mesh formats compute client-side in the webview instead.",
     inputSchema: {
       path: modelPath,
       entityId: z
         .string()
         .optional()
-        .describe("solid-N / face-N / edge-N id from load_model's inventory; omit for the whole model"),
+        .describe(
+          "solid-N / face-N / edge-N id (B-rep) or mesh-component-N / mesh-triangle-N / mesh-vertex-N id (STL/OBJ/PLY/glTF) from load_model's inventory; omit for the whole model"
+        ),
     },
   },
   wrap((args: { path: string; entityId?: string }) => getMassProperties(ctx, args))
@@ -295,13 +300,23 @@ server.registerTool(
 );
 
 server.registerTool(
+  "generate_hole_table",
+  {
+    description:
+      "One hole-schedule row per (diameter, axis-direction) group of cylindrical faces: diameter, canonical axis, count, face-N/solid-N ids, and the nearest standard designation (designation + standard + which table column matched + signed delta — always reported, so a far match reads as far, never as a verdict). Also returns `table`, a ready-to-paste tab-separated string with a header row for spreadsheet handoff. Facts only — non-cylindrical faces are ignored with a count; a model with no cylindrical faces returns zero rows with a warning. Shaft ODs and hole IDs are both cylinders and both tabulate (no convex/concave filtering). Read-only. B-rep sources only headless.",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => generateHoleTableTool(ctx, args))
+);
+
+server.registerTool(
   "inspect",
   {
     description:
-      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, surface/curve classification, and the underlying ANALYTIC PARAMETERS for one entity id — a cylinder's radius and axis, a cone's half-angle (degrees, signed: positive means the radius grows along the axis) with its apex and reference radius, a sphere's centre and radius, a torus's major/minor radii. Points and directions are in world coordinates, lengths in the file's own units. `surfaceParams.axisLocation` is a point ON the axis, not the face's centre and not necessarily within its extent — use bbox/center for where the face is. B-rep sources only headless.",
+      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, surface/curve classification, and the underlying ANALYTIC PARAMETERS for one entity id — a cylinder's radius and axis, a cone's half-angle (degrees, signed: positive means the radius grows along the axis) with its apex and reference radius, a sphere's centre and radius, a torus's major/minor radii. Points and directions are in world coordinates, lengths in the file's own units. `surfaceParams.axisLocation` is a point ON the axis, not the face's centre and not necessarily within its extent — use bbox/center for where the face is. B-rep sources (solid-N / face-N / edge-N / point-N) plus STL/OBJ/PLY/glTF sources headless (triangle-based bbox/center/area with mesh-component-N / mesh-triangle-N / mesh-vertex-N ids, no analytic parameters).",
     inputSchema: {
       path: modelPath,
-      entityId: z.string().describe("solid-N / face-N / edge-N / point-N id from load_model's inventory"),
+      entityId: z.string().describe("entity id from load_model's inventory (B-rep or headless mesh ids)"),
     },
   },
   wrap((args: { path: string; entityId: string }) => inspectEntity(ctx, args))
@@ -311,11 +326,11 @@ server.registerTool(
   "measure",
   {
     description:
-      "Facts only: straight-line distance between two entities' bbox centers, plus (if `axis` is given) the signed component of that displacement along it — 'is this hole 25mm from that edge' class questions. B-rep sources only headless.",
+      "Facts only: straight-line distance between two entities' bbox centers, plus (if `axis` is given) the signed component of that displacement along it — 'is this hole 25mm from that edge' class questions. B-rep sources plus STL/OBJ/PLY/glTF sources headless (bbox centers in raw file coordinates).",
     inputSchema: {
       path: modelPath,
-      from: z.string().describe("solid-N / face-N / edge-N / point-N id"),
-      to: z.string().describe("solid-N / face-N / edge-N / point-N id"),
+      from: z.string().describe("entity id from load_model's inventory (B-rep or headless mesh ids)"),
+      to: z.string().describe("entity id from load_model's inventory (B-rep or headless mesh ids)"),
       axis: z
         .tuple([z.number(), z.number(), z.number()])
         .optional()
@@ -329,7 +344,7 @@ server.registerTool(
   "measure_exact",
   {
     description:
-      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true minimum distance plus the realizing points where it lands, centreDistance (bbox-centre-to-bbox-centre, what `measure` reports), and — for two planar faces — angleDeg between their normals and parallelDistance (perpendicular plane-to-plane gap) when the planes are parallel; `primary` names which value most likely answers 'how far apart are these' for that pair ('parallel' for two parallel planar faces, else 'min') — a fact about which quantity fits the geometry, never a judgment of it. There is NO maximum-distance field: probed and genuinely unavailable in this WASM build. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
+      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true minimum distance plus the realizing points where it lands, centreDistance (bbox-centre-to-bbox-centre, what `measure` reports), axisDistance for two cylindrical faces (shortest infinite-axis separation), and — for two planar faces — angleDeg between their normals and parallelDistance (perpendicular plane-to-plane gap) when the planes are parallel; `primary` names which value most likely answers 'how far apart are these' for that pair ('parallel' for two parallel planar faces, else 'min') — a fact about which quantity fits the geometry, never a judgment of it. There is NO maximum-distance field: probed and genuinely unavailable in this WASM build. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
     inputSchema: {
       path: modelPath,
       kind: z.enum(["distance", "edgeLength", "radius"]),
@@ -691,7 +706,7 @@ server.registerTool(
   "export_technical_drawing",
   {
     description:
-      "Write a 2D TECHNICAL DRAWING to .svg or .dxf: feature edges with hidden-line removal — visible runs solid, occluded runs dashed (SVG) or on a HIDDEN layer (DXF). Unlike export_svg_silhouette, which draws an outline only, this also draws interior feature edges and shows what is behind them. Single orthographic view, no dimensions. Works for B-rep AND mesh sources: the visibility test runs on tessellated triangles and calls no OCCT hidden-line API (that family is unavailable in this build), so it is not limited to B-rep. Treat it as a review/illustration artifact — use measure/measure_exact for any dimension you need to be sure of.",
+      "Write a 2D TECHNICAL DRAWING to .svg or .dxf: feature edges with hidden-line removal — visible runs solid, occluded runs dashed (SVG) or on a HIDDEN layer (DXF). Unlike export_svg_silhouette, which draws an outline only, this also draws interior feature edges and shows what is behind them. One view per file (export_drawing_sheet lays several out on one sheet); pinned annotations are baked in as dimensions. Works for B-rep AND mesh sources: the visibility test runs on tessellated triangles and calls no OCCT hidden-line API (that family is unavailable in this build), so it is not limited to B-rep. Treat it as a review/illustration artifact — use measure/measure_exact for any dimension you need to be sure of.",
     inputSchema: {
       path: modelPath,
       outputPath: z.string().describe("Absolute path to write (.svg or .dxf)"),
@@ -721,6 +736,42 @@ server.registerTool(
       creaseAngleDeg?: number;
       format?: "svg" | "dxf";
     }) => exportTechnicalDrawingTool(ctx, args)
+  )
+);
+
+server.registerTool(
+  "export_drawing_sheet",
+  {
+    description:
+      "Write a multi-view DRAFTING SHEET to .svg or .dxf: several views of one model (default front, top, right, iso) at one shared scale, inside a frame with a title block (title, scale ratio, projection method, date, views). Views are technical drawings by default — visible edges solid, hidden edges dashed (SVG) / on a HIDDEN layer (DXF) — and are aligned orthographically: first-angle (ISO, default) puts the top view BELOW the front and the right view on its LEFT; third-angle (ASME) mirrors that. Pinned annotations are drawn once each, in the orthographic view where the measured line reads at true length. paper \"fit\" (default) sizes the sheet to the views at 1:1 (or `scale`); A4–A0 (landscape) picks the largest ISO 5455 standard scale that fits and warns if none does. No unit conversion: the scale is a real drawn-to-actual ratio in millimetres. Works for B-rep and STL/OBJ/PLY/glTF sources (edits baked in for B-rep only). A review/illustration artifact — use measure_exact for dimensions you must rely on.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write (.svg or .dxf); must not be the source path"),
+      views: z.array(z.string()).optional().describe(`Named views in any order (default front, top, right, iso): ${NAMED_VIEW_NAMES.join(", ")}`),
+      format: z.enum(["svg", "dxf"]).optional(),
+      paper: z.enum(["fit", "A4", "A3", "A2", "A1", "A0"]).optional().describe('Default "fit"'),
+      projection: z.enum(["first", "third"]).optional().describe('Default "first" (ISO)'),
+      scale: z.number().optional().describe("Sheet mm per model mm (e.g. 0.5 for 1:2); overrides the automatic choice"),
+      hiddenLines: z.boolean().optional().describe("Draw hidden edges (default true); false draws outlines only"),
+      creaseAngleDeg: z.number().optional().describe("Mesh sources only: dihedral angle above which an interior edge is drawn (default 35°)"),
+      tessellationQuality: z.string().optional().describe('B-rep only: draft/standard/fine (default "fine")'),
+      title: z.string().optional().describe("Title-block title (default: the model's file name)"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      outputPath: string;
+      views?: string[];
+      format?: "svg" | "dxf";
+      paper?: string;
+      projection?: string;
+      scale?: number;
+      hiddenLines?: boolean;
+      creaseAngleDeg?: number;
+      tessellationQuality?: string;
+      title?: string;
+    }) => exportDrawingSheetTool(ctx, args)
   )
 );
 
@@ -772,10 +823,30 @@ server.registerTool(
   "apply_edit_ops",
   {
     description:
-      "Validate and append edit operations to the model's op stack (persisted to <model>.edits.json — the CAD file itself is never written; the VS Code extension replays the same sidecar). Returns a per-op accept/reject report and, for B-rep sources, the post-replay entity inventory (topology-changing ops renumber face/edge ids). Use dryRun to validate without persisting.",
+      "Validate and append edit operations to the model's op stack (persisted to <model>.edits.json — this call never writes the CAD file itself; the VS Code extension replays the same sidecar. Use save_model separately to bake the tail into the source). Returns a per-op accept/reject report and, for B-rep sources, the post-replay entity inventory (topology-changing ops renumber face/edge ids). Use dryRun to validate without persisting.",
     inputSchema: { path: modelPath, ops: rawOps, dryRun: z.boolean().optional() },
   },
   wrap((args: { path: string; ops: Array<Record<string, unknown>>; dryRun?: boolean }) => applyEditOps(ctx, args))
+);
+
+server.registerTool(
+  "import_svg",
+  {
+    description:
+      "Import an SVG file's shape elements (<path>, <rect>, <circle>, <ellipse>, <line>, <polyline>, <polygon> — full transform-list composition, i.e. a real Inkscape/Illustrator 'convert text to outlines' export wrapped in <g transform=\"...\"> groups imports at the right place and scale) as sketch addPolyline ops, then — unless buildSurfaces is false — groups each region (one outer loop plus its holes) into an addSurfaceFromLines op, so a letter with a counter (an \"O\") imports as one ready-to-extrude holed face. <use> and <text> elements are recognized and warned about (not traced) rather than silently skipped; convert text to outlines/paths first. B-rep sources only (addPolyline/addSurfaceFromLines are BREP_ONLY_OPS). Same placement convention as the interactive File ▸ Import SVG… (SVG's Y-down flipped to this codebase's Y-up, flat in the XY plane, 1 SVG unit = 1mm × scale, plus an optional origin offset) — the two share the same parser, so they can never disagree. Persists to <model>.edits.json like apply_edit_ops; use dryRun to preview the polyline count without persisting (surfaces are never built on a dry run).",
+    inputSchema: {
+      path: modelPath,
+      svgPath: z.string().describe("Absolute path to the .svg file to import (must not be the model's own path)"),
+      scale: z.number().optional().describe("Uniform scale applied after the Y-flip (default 1 — 1 SVG user unit = 1mm)"),
+      origin: z.tuple([z.number(), z.number(), z.number()]).optional().describe("World-space [x,y,z] offset applied after scaling (default [0,0,0])"),
+      buildSurfaces: z.boolean().optional().describe("Group loops into addSurfaceFromLines ops (default true)"),
+      dryRun: z.boolean().optional(),
+    },
+  },
+  wrap(
+    (args: { path: string; svgPath: string; scale?: number; origin?: [number, number, number]; buildSurfaces?: boolean; dryRun?: boolean }) =>
+      importSvgTool(ctx, args)
+  )
 );
 
 server.registerTool(
@@ -803,6 +874,7 @@ server.registerTool(
 );
 
 const libraryPath = z.string().describe("Absolute path to the script-library JSON file (you name it; it is created on first save)");
+const optionalLibraryPath = z.string().optional().describe("Absolute path to your script-library JSON file. Omit to use the bundled starter library (spring, bolt-circle-flange, hex-bolt) — pass it to union that file's entries on top (yours win name collisions).");
 
 server.registerTool(
   "save_parametric_script",
@@ -826,19 +898,19 @@ server.registerTool(
   "list_parametric_scripts",
   {
     description:
-      "List the saved scripts in a library file with their descriptions and declared parameters (name + default expression), so you can discover what is available without reading the raw JSON. A missing or empty library reads as empty with a warning, never an error.",
-    inputSchema: { libraryPath },
+      "List the saved scripts in a library file with their descriptions and declared parameters (name + default expression), so you can discover what is available without reading the raw JSON. Omit libraryPath to list the bundled starter library (spring, bolt-circle-flange, hex-bolt); pass it to union that file's entries on top. A missing or empty library reads as empty with a warning, never an error.",
+    inputSchema: { libraryPath: optionalLibraryPath },
   },
-  wrap((args: { libraryPath: string }) => listParametricScripts(args))
+  wrap((args: { libraryPath?: string }) => listParametricScripts({ ...args, extensionPath }))
 );
 
 server.registerTool(
   "run_saved_script",
   {
     description:
-      "Run a saved script from a library against a model, optionally overriding its declared parameters by name (e.g. {radius: 30, count: 8}). Goes through the exact same compile/validate/bake/persist path as run_parametric_script — same B-rep-only op gate, same entity rebinding, same response — differing only in where the script came from. An override naming no declared parameter is warned about, not fatal.",
+      "Run a saved script from a library against a model, optionally overriding its declared parameters by name (e.g. {radius: 30, count: 8}). Your library file is searched first, then the bundled starter library (spring, bolt-circle-flange, hex-bolt) — omit libraryPath to run a starter by name. Goes through the exact same compile/validate/bake/persist path as run_parametric_script — same B-rep-only op gate, same entity rebinding, same response — differing only in where the script came from. An override naming no declared parameter is warned about, not fatal.",
     inputSchema: {
-      libraryPath,
+      libraryPath: optionalLibraryPath,
       name: z.string().describe("The saved script's name, as reported by list_parametric_scripts"),
       path: modelPath,
       parameters: z
@@ -849,7 +921,7 @@ server.registerTool(
     },
   },
   wrap(
-    (args: { libraryPath: string; name: string; path: string; parameters?: Record<string, number | string>; dryRun?: boolean }) =>
+    (args: { libraryPath?: string; name: string; path: string; parameters?: Record<string, number | string>; dryRun?: boolean }) =>
       runSavedScript(ctx, args)
   )
 );
@@ -960,7 +1032,7 @@ server.registerTool(
   "set_part",
   {
     description:
-      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), and optional per-part meshSize refinement. Omitted fields keep their current values; meshSize: null clears it. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
+      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize). Omitted fields keep their current values; meshSize/meshGrading: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Part name (the upsert key)"),
@@ -971,6 +1043,16 @@ server.registerTool(
       lines: z.array(z.string()).optional().describe("edge-N ids"),
       points: z.array(z.string()).optional().describe("point-N ids"),
       meshSize: z.number().nullable().optional().describe("Target element size for local refinement; null clears"),
+      meshGrading: z
+        .object({
+          sizeAtWall: z.number().describe("Element size at/within distNear of the part's entities (> 0)"),
+          sizeFar: z.number().describe("Element size at/beyond distFar (>= sizeAtWall)"),
+          distNear: z.number().describe("Distance kept at sizeAtWall (>= 0)"),
+          distFar: z.number().describe("Distance where size reaches sizeFar (> distNear)"),
+        })
+        .nullable()
+        .optional()
+        .describe("Distance-graded sizing anchored on this part; null clears"),
       selector: z.looseObject({}).nullable().optional().describe("SelectorQuery to store (validated structurally); null clears a stored one"),
     },
   },
@@ -985,6 +1067,7 @@ server.registerTool(
       lines?: string[];
       points?: string[];
       meshSize?: number | null;
+      meshGrading?: { sizeAtWall: number; sizeFar: number; distNear: number; distFar: number } | null;
       selector?: unknown;
     }) => setPart(args)
   )

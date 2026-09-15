@@ -25,6 +25,7 @@ import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
 import { isMeshioFieldFailure, describeMeshioFieldFailure, isHealableSizeError, AUTO_DECIMATE_TARGET_TRIANGLES, stlBytesForHeal } from "./meshioService";
 import { validateMeshioOpSpec } from "./meshioOps";
 import { SVG_VIEWS } from "./svgSilhouette";
+import { PAPER_SIZES } from "./drawingSheet";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS, MESH_SAVE_IN_PLACE_FORMATS } from "./exportTargets";
@@ -58,6 +59,7 @@ import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { mergeScriptOverrides, parseScriptLibraryJson, scriptParameters, serializeScriptLibraryJson } from "./scriptLibrary";
+import { bundledMacrosPath, mergeScriptLibraries } from "./starterMacros";
 import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
@@ -152,6 +154,8 @@ interface EditorSession {
   exportDxf(): void;
   /** File ▸ Export Technical Drawing… (hidden-line removal). */
   exportDrawing(): void;
+  /** File ▸ Export Drawing Sheet… (several views, shared scale, title block). */
+  exportSheet(): void;
   /** Generate and export an FE mesh (format + unit quick-picks, then a save dialog). */
   exportMesh(): void;
   /** Post a message to this session's webview — the registry entry for the
@@ -289,6 +293,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       vscode.commands.registerCommand("cad-preview.exportSvg", withSession((s) => s.exportSvg())),
       vscode.commands.registerCommand("cad-preview.exportDxf", withSession((s) => s.exportDxf())),
       vscode.commands.registerCommand("cad-preview.exportDrawing", withSession((s) => s.exportDrawing())),
+      vscode.commands.registerCommand("cad-preview.exportSheet", withSession((s) => s.exportSheet())),
       vscode.commands.registerCommand("cad-preview.exportMesh", withSession((s) => s.exportMesh())),
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
@@ -1247,6 +1252,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       exportDrawing: () => {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true, currentBakedThrough);
       },
+      exportSheet: () => {
+        if (route) void this.handleExportSheet(document.uri, route, post, currentEdits, currentAnnotations, currentBakedThrough);
+      },
       post,
     };
     this.sessions.set(documentKey, session);
@@ -1771,7 +1779,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         try {
           const libraryPath = macroLibraryPath(document.uri);
           const library = parseScriptLibraryJson(await readTextFile(libraryPath));
-          const entry = library[msg.name];
+          const bundled = parseScriptLibraryJson(await readTextFile(bundledMacrosPath(this.context.extensionPath)));
+          // Caller-owned entries shadow bundled starters of the same name —
+          // the same merge (and precedence) `sendMacros` displays, so Run and
+          // the panel list can never disagree about which script a name means.
+          const { merged } = mergeScriptLibraries(bundled, library);
+          const entry = merged[msg.name];
           if (!entry) throw new Error(`No saved macro named "${msg.name}".`);
 
           const { script, unknownNames } = mergeScriptOverrides(entry.script, msg.parameters);
@@ -1834,6 +1847,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         try {
           const libraryPath = macroLibraryPath(document.uri);
           const library = parseScriptLibraryJson(await readTextFile(libraryPath));
+          if (!Object.prototype.hasOwnProperty.call(library, msg.name)) {
+            // Either a bundled starter (read-only — the panel hides its
+            // Delete button, so this is a backstop, not a normal path) or a
+            // name that was never saved here at all.
+            const bundled = parseScriptLibraryJson(await readTextFile(bundledMacrosPath(this.context.extensionPath)));
+            if (Object.prototype.hasOwnProperty.call(bundled, msg.name)) {
+              throw new Error(`"${msg.name}" is a bundled starter macro and cannot be deleted — save your own macro under a different name to override it.`);
+            }
+            throw new Error(`No saved macro named "${msg.name}".`);
+          }
           delete library[msg.name];
           await vscode.workspace.fs.writeFile(
             vscode.Uri.file(libraryPath),
@@ -2001,6 +2024,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
       if (msg.type === "exportDrawingRequest") {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true, currentBakedThrough);
+        return;
+      }
+
+      if (msg.type === "exportSheetRequest") {
+        if (route) void this.handleExportSheet(document.uri, route, post, currentEdits, currentAnnotations, currentBakedThrough);
         return;
       }
 
@@ -2562,11 +2590,17 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    */
   private async sendMacros(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
     const library = parseScriptLibraryJson(await readTextFile(macroLibraryPath(uri)));
-    const macros = Object.values(library)
+    const bundled = parseScriptLibraryJson(await readTextFile(bundledMacrosPath(this.context.extensionPath)));
+    const { merged } = mergeScriptLibraries(bundled, library);
+    const owned = new Set(Object.keys(library));
+    const macros = Object.values(merged)
       .map((entry) => ({
         name: entry.name,
         description: entry.description ?? null,
         parameters: scriptParameters(entry.script),
+        // A caller-owned entry shadows a bundled starter of the same name —
+        // the merged row is theirs (deletable), never the read-only starter.
+        readOnly: !owned.has(entry.name),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
     post({ type: "macros", macros });
@@ -3183,6 +3217,86 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         for (const warning of result.warnings) post({ type: "status", text: warning });
         const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;
         return Buffer.from(content, "utf8");
+      },
+      post
+    );
+  }
+
+  /**
+   * File ▸ Export Drawing Sheet… and `cad-preview.exportSheet` (roadmap
+   * "Multi-view sheet layout"): front/top/right/iso on one sheet with a title
+   * block, first-angle projection.
+   *
+   * Same structure as {@link handleExportSvg}, with a format and a paper pick
+   * in place of the view pick, and deliberately NO unit pick: a sheet's scale
+   * is a real drawn-to-actual ratio, which a coordinate conversion would
+   * silently falsify. Escape on either pick cancels.
+   */
+  private async handleExportSheet(
+    uri: vscode.Uri,
+    route: FileRoute,
+    post: (msg: HostToWebview) => void,
+    ops: EditOp[],
+    annotations: Annotation[],
+    bakedThrough: number
+  ): Promise<void> {
+    if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
+      post({ type: "error", message: "Drawing sheet export requires a STEP/IGES/BREP/CSG/SCAD or STL/OBJ/PLY/glTF source." });
+      return;
+    }
+
+    const formatPick = await vscode.window.showQuickPick(
+      [
+        { label: "SVG", description: "vector drawing, prints at the sheet's physical size", format: "svg" as const },
+        { label: "DXF", description: "layers 0 / HIDDEN / DIMENSIONS / BORDER / TITLE", format: "dxf" as const },
+      ],
+      { placeHolder: "Drawing sheet format…" }
+    );
+    if (!formatPick) return;
+
+    const paperPick = await vscode.window.showQuickPick(
+      PAPER_SIZES.map((paper) =>
+        paper === "fit"
+          ? { label: "Fit (1:1)", description: "sheet sized to the views at full scale", paper }
+          : { label: paper, description: "landscape — largest standard scale that fits", paper }
+      ),
+      { placeHolder: "Paper size…" }
+    );
+    if (!paperPick) return;
+
+    const format = formatPick.format;
+    const name = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+    await this.promptSaveAndWrite(
+      uri,
+      format,
+      format === "dxf" ? "DXF Drawing" : "SVG Drawing",
+      async () => {
+        const scadWarnings: string[] = [];
+        const src = await this.readOcctSource(uri, route.format, scadWarnings);
+        for (const w of scadWarnings) post({ type: "status", text: w });
+        const bytes = src.bytes;
+        const source: CompareSource =
+          route.strategy === "occt"
+            ? { kind: "brep", bytes, format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">, ops: replayTail(ops, bakedThrough) }
+            : route.format === "gltf"
+              ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes) }
+              : { kind: route.format as "stl" | "obj" | "ply", bytes };
+        const views = (["front", "top", "right", "iso-ftr"] as const).map((view) => {
+          const key = view === "iso-ftr" ? "ISO" : view.toUpperCase();
+          return { name: view, ...SVG_VIEWS[key] };
+        });
+        const result = await this.pipeline.exportDrawingSheet(this.context.extensionPath, source, {
+          views,
+          format,
+          paper: paperPick.paper,
+          projection: "first",
+          annotations,
+          title: name,
+          date: new Date().toISOString().slice(0, 10),
+        });
+        for (const warning of result.warnings) post({ type: "status", text: warning });
+        post({ type: "status", text: `Drawing sheet: ${result.views.length} views at ${result.scaleLabel}` });
+        return Buffer.from(result.content, "utf8");
       },
       post
     );

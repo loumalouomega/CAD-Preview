@@ -40,6 +40,25 @@ describe("wrapOcctFault", () => {
     expect(wrapOcctFault(original)).toBe(original);
   });
 
+  it("recognizes a bare-digit message — a raw exception pointer with no text at all", () => {
+    // Real, reproducible-at-clean-HEAD failure: `npm run mcp:smoke`'s
+    // render_ops_prefix block threw a literal `24012480` — an OCCT/Emscripten
+    // exception POINTER, not a textual message — which every earlier
+    // vocabulary word necessarily missed (there is no word to match). A raw
+    // JS number thrown by OCCT has no `.message`; `wrapOcctFault`'s own
+    // `String(err)` turns it into exactly this all-digit string.
+    expect(wrapOcctFault(24012480).message).toMatch(/^OCCT crashed/);
+    expect(wrapOcctFault(24012480).message).toContain("24012480");
+  });
+
+  it("does NOT match an ordinary sentence containing digits as an abort", () => {
+    // The bare-digit rule must require the WHOLE message to be digits, or it
+    // would misclassify any real error that happens to mention a number —
+    // e.g. this codebase's own "radius 1000000 is likely too large" diagnostics.
+    const original = new Error("the fillet build threw — the radius 1000000 is likely too large for the geometry");
+    expect(wrapOcctFault(original)).toBe(original);
+  });
+
   it("leaves an ordinary application error unchanged (same instance, same message)", () => {
     const original = new Error("Unknown entity id: face-99");
     const wrapped = wrapOcctFault(original);

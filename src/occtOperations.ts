@@ -7,7 +7,8 @@ import { PRODUCED_ROLE } from "./opBuckets";
 // the CJS bundle.
 import type { SurfaceType, SurfaceParams } from "./entityFacts";
 import { enumerateEdges, buildEdgeFaceAdjacency, EDGE_DEFLECTION } from "./edgeEnumeration";
-import { volumePropertiesAdaptive } from "./brepGProp";
+import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
+import { signedArea2d, nestLoops } from "./loopNesting";
 
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
 const HASH_UPPER = 1 << 30;
@@ -1979,10 +1980,18 @@ function ribFused(
  * and is refused.
  *
  * Each stage degrades to a graceful skip with a diagnostic (never a throw,
- * never a wrong solid): unresolved/non-planar/holed profile, apex
- * crossing (`r ≤ 0`), over-wide loop, offset/skirt/sew failure, unresolved
- * fuse/cut targets.
+ * never a wrong solid): unresolved/non-planar profile, apex crossing
+ * (`r ≤ 0`), over-wide loop, offset/skirt/sew failure, unresolved fuse/cut
+ * targets. **Holed profiles are supported** (roadmap "3D text via outline
+ * import") — see the `holeWires` handling inside this function.
  */
+// The extra tool shell used to CUT a hole is oversized by this fraction of
+// `thickness` so it fully passes through the outer shell's own radial
+// extent rather than leaving a shallow, non-through pocket — the same
+// "oversize the tool operand past a coplanar touch" discipline the rib op's
+// own live probe already established for a different boolean.
+const WRAP_HOLE_OVERCUT = 1e-3;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrapDevelop(
   oc: any,
@@ -2001,13 +2010,15 @@ function wrapDevelop(
       );
       return shape;
     }
-    if (wireCountOf(oc, face, cleanup) !== 1) {
-      fail?.(
-        `wrap profile ${op.profile} already has a hole`,
-        "a developed band is built from the outer boundary alone, which would silently discard it"
-      );
-      return shape;
-    }
+    // Holed profiles (roadmap "3D text via outline import") — the outer
+    // boundary still drives the whole frame (O/xdir/ydir/phi/s0/refR/cosA/
+    // sinA, all computed below from `wrapBoundaryLoop`'s `OuterWire` read,
+    // unchanged); each hole is separately developed into its OWN thickened
+    // shell using that SAME frame, then cut out of the outer shell. This is
+    // what lets a letter with a counter (an "O") wrap onto a cylinder/cone
+    // as one holed shell, not a filled one.
+    const outerWire = keep(oc.BRepTools.OuterWire(face));
+    const holeWires = wiresOfFace(oc, face, cleanup).filter((w) => !outerWire.IsSame(w));
     const info = faceSurfaceInfo(oc, face, cleanup);
     if (info.type !== "plane" || !info.params || info.params.kind !== "plane") {
       fail?.(
@@ -2130,8 +2141,52 @@ function wrapDevelop(
     const syy = sY.Y();
     const syz = sY.Z();
     const phi = Math.atan2(refx * syx + refy * syy + refz * syz, refx * sxx + refy * sxy + refz * sxz);
-    const shell = wrapThickenedShell(oc, loop, O, xdir, ydir, phi, s0, refR, cosA, sinA, op, cleanup, fail);
+    let shell = wrapThickenedShell(oc, loop, O, xdir, ydir, phi, s0, refR, cosA, sinA, op, cleanup, fail);
     if (!shell) return shape;
+
+    if (holeWires.length > 0) {
+      // Each hole is developed with the SAME frame as the outer boundary
+      // (uvOf inside wrapThickenedShell only ever reads O/xdir/ydir/the axis
+      // — it has no notion of "which loop", so reusing the outer's frame is
+      // exactly correct) and thickened slightly MORE than the outer shell
+      // (`WRAP_HOLE_OVERCUT`) so the cut fully passes through the outer
+      // band's own radial extent rather than leaving a shallow pocket — the
+      // same "oversize the tool operand" discipline the rib op's own probe
+      // already established for a coplanar-touch boolean.
+      const overOp = { ...op, thickness: op.thickness * (1 + WRAP_HOLE_OVERCUT) };
+      const toolShells: any[] = [];
+      for (const hw of holeWires) {
+        const holeLoop = chainWirePoints(oc, hw, cleanup, true);
+        if (!holeLoop || holeLoop.length < 3) {
+          fail?.(
+            `wrap profile ${op.profile} has a hole with no usable boundary loop`,
+            "the hole may be degenerate — pick a sketch profile whose holes have real extent"
+          );
+          return shape;
+        }
+        const toolShell = wrapThickenedShell(oc, holeLoop, O, xdir, ydir, phi, s0, refR, cosA, sinA, overOp, cleanup, fail);
+        if (!toolShell) return shape; // fail already told inside
+        toolShells.push(toolShell);
+      }
+      const tool = toolShells.length > 1 ? combineSolids(oc, toolShells, cleanup) : toolShells[0];
+      try {
+        const cutAlgo = keep(new oc.BRepAlgoAPI_Cut_3(shell, tool));
+        if (!cutAlgo.IsDone()) {
+          fail?.(
+            `the wrap hole cut did not complete (IsDone() false)`,
+            "a hole may lie outside the developed band — check the sketch's hole position against the target radius"
+          );
+          return shape;
+        }
+        shell = keep(cutAlgo.Shape());
+      } catch (err) {
+        fail?.(
+          `the wrap hole cut threw (${err instanceof Error ? err.message : String(err)})`.slice(0, 160),
+          "a hole may lie outside the developed band — check the sketch's hole position against the target radius"
+        );
+        return shape;
+      }
+    }
 
     if (op.variant === "standalone") {
       const comp = keep(new oc.TopoDS_Compound());
@@ -3011,7 +3066,7 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
  * pnt)` edge → `BRepBuilderAPI_MakeFace_15(wire, true)`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildFlatFace(oc: any, points: Vec3[], cleanup: Array<{ delete(): void }>): any {
+export function buildFlatFace(oc: any, points: Vec3[], cleanup: Array<{ delete(): void }>): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   const pts = points.map((p) => keep(pnt(oc, p)));
   const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
@@ -3456,11 +3511,11 @@ function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): vo
 }
 
 /**
- * Builds a standalone flat face from the wire formed by the selected edges and
- * **appends** it — same non-destructive `compound(existing shape + new face)`
- * pattern as {@link addProfile}, and it likewise benefits from the free-face
- * tessellation pass with zero further changes needed there. Edge `edge-N` ids
- * are resolved via the **existing** `collectEdges`.
+ * Builds a standalone flat face from the wire(s) formed by the selected edges
+ * and **appends** it — same non-destructive `compound(existing shape + new
+ * face)` pattern as {@link addProfile}, and it likewise benefits from the
+ * free-face tessellation pass with zero further changes needed there. Edge
+ * `edge-N` ids are resolved via the **existing** `collectEdges`.
  *
  * OCCT wire-assembly API, verified against the live WASM: `BRepBuilderAPI_
  * MakeWire_1` + `.Add_1()` per selected edge — confirmed to auto-assemble
@@ -3477,6 +3532,20 @@ function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): vo
  * `ShapeAnalysis_Wire.CheckClosed` did not distinguish the two cases in
  * testing). Accepted: a best-effort face from an open chain is harmless
  * (never a crash), consistent with this codebase's graceful-degradation rule.
+ *
+ * **Multi-loop (holed) faces — roadmap "3D text via outline import".** When
+ * the picked edges do NOT form a single connected wire, `buildSurfaceFromLines`
+ * falls back to splitting them into connected components (one wire per
+ * component, via the shared `HashCode`+`IsSame` vertex-bucket technique
+ * `wireIsClosed` already uses) and, if there is EXACTLY one outer loop plus
+ * depth-1 holes (per `src/loopNesting.ts`'s pure even-odd grouping — shared
+ * with the `import_svg` MCP tool so the two can never disagree about what a
+ * hole is), builds one face with those holes. This is what lets an imported
+ * letter like "O" become one face with its counter, rather than needing a
+ * manual boolean. Anything else (an open component, non-coplanar loops,
+ * multiple disjoint outers, or an island) is refused with a named reason —
+ * `addSurfaceFromLines` is a single-region op; a caller with several letters
+ * emits one op per region.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
@@ -3484,7 +3553,7 @@ function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "add
     const edges = collectEdges(oc, shape, cleanup);
     for (const id of op.edges) { const e = edges[edgeIndex(id)]; if (e && isGuideHandle(e, guideCollector)) { fail?.(`edge ${id} is construction (guide) geometry — guide entities are excluded from surface resolution`); return shape; } }
   }
-  const face = buildSurfaceFromLines(oc, shape, op, cleanup);
+  const face = buildSurfaceFromLines(oc, shape, op, cleanup, fail);
   if (!face) {
     fail?.(
       "the selected edges did not form a buildable face",
@@ -3502,24 +3571,245 @@ function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "add
   return comp;
 }
 
-/** Builds the new face from the selected edges, or null on unresolved operands / failure. */
+/**
+ * Groups `edges` into connected components by shared vertices, using the
+ * established `HashCode`-bucket + `IsSame` dedup technique (`wireIsClosed`,
+ * `enumerateEdges`) to give each vertex a canonical id, then union-finding
+ * edges that share one id. Needed because `addSurfaceFromLines`'s picked
+ * edges may span several disjoint closed loops (a letter's outer boundary
+ * and its counter), which a single `MakeWire` cannot represent — verified
+ * live that a single `MakeWire` fed two disjoint closed loops' edges reports
+ * `IsDone() === false`, never a silently-wrong single result.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>): any {
+function splitEdgesIntoComponents(oc: any, edges: any[], cleanup: Array<{ delete(): void }>): any[][] {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const buckets = new Map<number, Array<{ vertex: any; id: number }>>();
+  let nextVertexId = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const vertexIdOf = (vertex: any): number => {
+    const hash = vertex.HashCode(HASH_UPPER);
+    const bucket = buckets.get(hash);
+    const found = bucket?.find((v) => v.vertex.IsSame(vertex));
+    if (found) return found.id;
+    const id = nextVertexId++;
+    if (bucket) bucket.push({ vertex, id });
+    else buckets.set(hash, [{ vertex, id }]);
+    return id;
+  };
+  const edgesByVertex = new Map<number, number[]>();
+  edges.forEach((edge, i) => {
+    const verts = keep(new oc.TopExp_Explorer_2(edge, oc.TopAbs_ShapeEnum.TopAbs_VERTEX, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    for (; verts.More(); verts.Next()) {
+      const vId = vertexIdOf(keep(oc.TopoDS.Vertex_1(verts.Current())));
+      const list = edgesByVertex.get(vId);
+      if (list) list.push(i);
+      else edgesByVertex.set(vId, [i]);
+    }
+  });
+  const parent = edges.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+  for (const list of edgesByVertex.values()) for (let k = 1; k < list.length; k++) union(list[0], list[k]);
+  const groups = new Map<number, any[]>();
+  edges.forEach((edge, i) => {
+    const root = find(i);
+    const g = groups.get(root);
+    if (g) g.push(edge);
+    else groups.set(root, [edge]);
+  });
+  return [...groups.values()];
+}
+
+/** Coplanarity tolerance for a multi-loop surface, relative to the combined
+ * point set's own bbox diagonal — with an absolute floor so a tiny sketch
+ * still gets a meaningful tolerance. */
+const COPLANAR_REL_TOL = 1e-4;
+const COPLANAR_ABS_FLOOR = 1e-7;
+
+/**
+ * Builds the new face from the selected edges, or null on unresolved
+ * operands / failure (`fail` names the reason at every refusal site — see
+ * `addSurfaceFromLines`'s doc comment for the multi-loop path this covers).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     const edges = collectEdges(oc, shape, cleanup);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const picked = op.edges.map((id) => edges[edgeIndex(id)]).filter((e): e is any => e != null);
-    if (picked.length < 3) return null; // a closed loop needs at least 3 edges
+    if (picked.length < 3) {
+      fail?.("addSurfaceFromLines needs at least 3 edge-N ids", "a closed loop needs at least 3 edges");
+      return null;
+    }
 
+    // Fast path: a single connected wire (open or closed) — byte-for-byte
+    // the original single-loop behavior.
     const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
     for (const e of picked) mkWire.Add_1(e);
-    if (!mkWire.IsDone()) return null; // edges don't connect into a wire at all
+    if (mkWire.IsDone()) {
+      const wire = keep(mkWire.Wire());
+      const face = keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face();
+      if (face.IsNull()) {
+        fail?.("the selected edges bound a wire but not a face", "the wire may be self-intersecting or open");
+        return null;
+      }
+      return keep(face);
+    }
 
-    const wire = keep(mkWire.Wire());
-    const face = keep(new oc.BRepBuilderAPI_MakeFace_15(wire, true)).Face();
-    return face.IsNull() ? null : keep(face);
-  } catch {
+    // Multi-loop path: split into connected components, one wire per
+    // component. Every component must be closed — a disconnected set, or a
+    // component that doesn't loop back on itself, is refused rather than
+    // guessed at.
+    const components = splitEdgesIntoComponents(oc, picked, cleanup);
+    if (components.length < 2) {
+      fail?.(
+        "the selected edges did not form a buildable face",
+        "at least 3 edge-N ids that connect into a chain are required (a genuinely disconnected set is rejected)"
+      );
+      return null;
+    }
+    const wires: any[] = [];
+    const loops3d: Vec3[][] = [];
+    for (const comp of components) {
+      if (comp.length < 3) {
+        fail?.("one of the selected loops has fewer than 3 edges", "every loop (outer boundary and each hole) needs at least 3 edges");
+        return null;
+      }
+      const mk = keep(new oc.BRepBuilderAPI_MakeWire_1());
+      for (const e of comp) mk.Add_1(e);
+      if (!mk.IsDone()) {
+        fail?.("some selected edges did not connect into a closed loop", "pick edges for each loop (outer boundary or hole) that meet end-to-end");
+        return null;
+      }
+      const wire = keep(mk.Wire());
+      if (!wireIsClosed(oc, wire, cleanup)) {
+        fail?.(
+          "one of the selected loops is open",
+          "addSurfaceFromLines' multi-loop path needs every loop (outer boundary and each hole) closed — an open profile is a single-loop op instead"
+        );
+        return null;
+      }
+      const loop = chainWirePoints(oc, wire, cleanup, true);
+      if (!loop) {
+        fail?.("could not walk one of the selected loops", "the loop's edges may not chain into a single ordered ring");
+        return null;
+      }
+      wires.push(wire);
+      loops3d.push(loop);
+    }
+
+    // Reference plane: the first non-degenerate loop's own Newell normal +
+    // centroid. Every other loop's points are then checked against it.
+    let normal: Vec3 | null = null;
+    let origin: Vec3 | null = null;
+    for (const loop of loops3d) {
+      const n = newellNormal(loop);
+      if (Math.hypot(n[0], n[1], n[2]) > 1e-9) {
+        normal = n;
+        origin = loopCentroid(loop);
+        break;
+      }
+    }
+    if (!normal || !origin) {
+      fail?.("the selected loops are degenerate (zero area)", "every loop needs real extent to define a plane");
+      return null;
+    }
+
+    let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+    for (const loop of loops3d) for (const p of loop) {
+      if (p[0] < mnx) mnx = p[0];
+      if (p[1] < mny) mny = p[1];
+      if (p[2] < mnz) mnz = p[2];
+      if (p[0] > mxx) mxx = p[0];
+      if (p[1] > mxy) mxy = p[1];
+      if (p[2] > mxz) mxz = p[2];
+    }
+    const diag = Math.hypot(mxx - mnx, mxy - mny, mxz - mnz);
+    const coplanarTol = Math.max(COPLANAR_ABS_FLOOR, diag * COPLANAR_REL_TOL);
+    for (const loop of loops3d) for (const p of loop) {
+      const dist = (p[0] - origin[0]) * normal[0] + (p[1] - origin[1]) * normal[1] + (p[2] - origin[2]) * normal[2];
+      if (Math.abs(dist) > coplanarTol) {
+        fail?.("the selected edges do not all lie in one plane", "addSurfaceFromLines builds a single flat face — pick edges from one sketch plane");
+        return null;
+      }
+    }
+
+    // Project every loop into the plane's 2D basis and group into regions
+    // (one outer boundary plus its holes) via the shared, pure nesting rule.
+    const [u, v] = planeBasis(normal);
+    const loops2d: [number, number][][] = loops3d.map((loop) => loop.map((p) => {
+      const dx = p[0] - origin[0], dy = p[1] - origin[1], dz = p[2] - origin[2];
+      return [dx * u[0] + dy * u[1] + dz * u[2], dx * v[0] + dy * v[1] + dz * v[2]] as [number, number];
+    }));
+    const regions = nestLoops(loops2d);
+    if (regions.length !== 1) {
+      fail?.(
+        `the selected edges form ${regions.length} separate region(s), not one outer loop plus its holes`,
+        "select edges for a single region (one outer boundary and its holes) per addSurfaceFromLines call"
+      );
+      return null;
+    }
+    const region = regions[0];
+
+    // Build the face: the outer wire, then each hole. Orientation is decided
+    // purely by comparing the hole's 2D winding sign against the outer's —
+    // `TopoDS.Orientation` is unbound in this build, so this sign comparison
+    // is the only available signal. Verified live both ways: an inner wire
+    // with the SAME winding sign as the outer, added as-is, becomes an
+    // ISLAND (adds area); the identical wire `.Reversed()` — or, equivalently,
+    // one independently authored with the OPPOSITE winding and added as-is —
+    // becomes a HOLE (subtracts area). Same-sign holes are therefore
+    // reversed before `.Add()`; opposite-sign holes are added unchanged.
+    const mkFace = keep(new oc.BRepBuilderAPI_MakeFace_15(wires[region.outer], true));
+    if (!mkFace.IsDone()) {
+      fail?.("the outer loop did not bound a face", "the loop may be self-intersecting");
+      return null;
+    }
+    const outerSign = Math.sign(signedArea2d(loops2d[region.outer]));
+    let expectedArea = Math.abs(signedArea2d(loops2d[region.outer]));
+    for (const holeIdx of region.holes) {
+      const holeSign = Math.sign(signedArea2d(loops2d[holeIdx]));
+      const holeWire = holeSign === outerSign ? keep(oc.TopoDS.Wire_1(wires[holeIdx].Reversed())) : wires[holeIdx];
+      mkFace.Add(holeWire);
+      expectedArea -= Math.abs(signedArea2d(loops2d[holeIdx]));
+    }
+    if (!mkFace.IsDone()) {
+      fail?.("the holed face did not build", "a hole may not lie fully inside the outer boundary");
+      return null;
+    }
+    const face = keep(mkFace.Face());
+    if (face.IsNull()) {
+      fail?.("the holed face is null", "a hole may not lie fully inside the outer boundary");
+      return null;
+    }
+
+    // Defensive integrity check, not a guess: confirm OCCT's own computed
+    // area matches the 2D shoelace expectation (outer minus holes) within a
+    // loose relative tolerance. A mismatch means the orientation rule above
+    // didn't hold for this geometry — refuse rather than ship a
+    // plausible-looking wrong face.
+    const props = keep(new oc.GProp_GProps_1());
+    surfacePropertiesAdaptive(oc, face, props);
+    const actualArea = props.Mass();
+    if (!(Math.abs(actualArea - expectedArea) < Math.max(1e-6, expectedArea * 1e-3))) {
+      fail?.(
+        `the holed face's area (${actualArea.toFixed(4)}) does not match the expected outer-minus-holes area (${expectedArea.toFixed(4)})`,
+        "the loops may overlap, or a hole may not lie fully inside the outer boundary"
+      );
+      return null;
+    }
+    return face;
+  } catch (err) {
+    fail?.(
+      `addSurfaceFromLines threw (${err instanceof Error ? err.message : String(err)})`.slice(0, 160),
+      "check that every loop is planar, closed, and non-self-intersecting"
+    );
     return null;
   }
 }

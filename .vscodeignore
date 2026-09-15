@@ -66,6 +66,10 @@ node_modules/**
 examples/**
 doc/**
 icons/**
+# `macros/` source data ships as `dist/macros/` (copied by esbuild.mjs's
+# `copyMacros()`, resolved at runtime via `bundledMacrosPath`) — exclude the
+# source dir so the packaged .vsix carries exactly one copy.
+macros/**
 scripts/screenshots/**
 scripts/mcp-smoke/**
 scripts/perf/**

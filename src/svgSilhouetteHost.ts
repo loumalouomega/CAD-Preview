@@ -39,8 +39,15 @@ import { silhouetteDxf, polylinesDxf } from "./dxfSilhouette";
 import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import type { CompareSource } from "./modelDiffHost";
 import { hiddenLineDrawing } from "./hiddenLineRemoval";
-import { technicalDrawingSvg, viewBasis } from "./svgSilhouette";
-import { technicalDrawingDxf } from "./dxfSilhouette";
+import { technicalDrawingSvg, viewBasis, dimensionDrawings, sheetSvg } from "./svgSilhouette";
+import { technicalDrawingDxf, sheetDxf } from "./dxfSilhouette";
+import {
+  assignDimensionsToViews,
+  layoutSheet,
+  type PaperSize,
+  type ProjectionMethod,
+  type SheetViewInput,
+} from "./drawingSheet";
 
 /**
  * Tangent-continuity threshold for a given tessellation quality.
@@ -268,7 +275,24 @@ export async function exportSvgSilhouette(
     return { svg, segmentCount, triangleCount, warnings, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
   };
 
-  if (source.kind !== "brep") return render(meshFromSource(source));
+  const { mesh, triangleFace } = await loadDrawingMesh(extensionPath, source, options.quality ?? "fine");
+  return render(mesh, triangleFace);
+}
+
+/**
+ * Reads any drawable source into one welded triangle mesh — the view-
+ * independent half of every drawing export, split out so a multi-view sheet
+ * parses and replays the model ONCE and projects it N times.
+ *
+ * The returned arrays are ordinary JS typed arrays (the weld copies out of the
+ * tessellation), so they stay valid after the OCCT handles are freed below.
+ */
+async function loadDrawingMesh(
+  extensionPath: string,
+  source: CompareSource,
+  quality: TessellationQuality
+): Promise<{ mesh: WeldedMesh; triangleFace?: Uint32Array }> {
+  if (source.kind !== "brep") return { mesh: meshFromSource(source) };
 
   const oc = await getOcct(extensionPath);
   // Short MEMFS path — this OCCT WASM build silently fails/corrupts at roughly
@@ -279,8 +303,7 @@ export async function exportSvgSilhouette(
   try {
     const baseShape = readShape(oc, tmpName, source.format, cleanup);
     const shape = applyEditsBRep(oc, baseShape, source.ops, cleanup);
-    const { mesh, triangleFace } = weldedMeshFromTessellation(oc, shape, options.quality ?? "fine");
-    return render(mesh, triangleFace);
+    return weldedMeshFromTessellation(oc, shape, quality);
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {
@@ -297,4 +320,144 @@ export async function exportSvgSilhouette(
       /* ignore */
     }
   }
+}
+
+export interface DrawingSheetView {
+  /** Canonical view name — drives slot placement and the view label. */
+  name: string;
+  direction: Vec3;
+  up?: Vec3;
+}
+
+export interface DrawingSheetOptions {
+  views: DrawingSheetView[];
+  quality?: TessellationQuality;
+  format?: "svg" | "dxf";
+  annotations?: DimensionSource[];
+  /** Technical drawing (default) or outline-only views. */
+  hiddenLines?: boolean;
+  creaseAngleDeg?: number;
+  paper?: PaperSize;
+  projection?: ProjectionMethod;
+  /** Sheet mm per model mm; overrides the standard-scale search. */
+  scale?: number;
+  title?: string;
+  date?: string;
+}
+
+export interface DrawingSheetResult {
+  content: string;
+  format: "svg" | "dxf";
+  width: number;
+  height: number;
+  scale: number;
+  scaleLabel: string;
+  paper: PaperSize;
+  projection: ProjectionMethod;
+  views: Array<{ name: string; segmentCount: number; hiddenSegmentCount: number; dimensionCount: number }>;
+  triangleCount: number;
+  warnings: string[];
+}
+
+/**
+ * Several views of one model on a single drafting sheet (roadmap "Multi-view
+ * sheet layout") — see `drawingSheet.ts` for the layout rules.
+ *
+ * **No unit conversion, deliberately.** A sheet's scale is a ratio of drawn
+ * size to REAL size; drawing inch-converted coordinates onto a millimetre
+ * sheet would make "1:2" mean nothing. The geometry stays in the cascade unit
+ * (mm) and the scale carries the real-world relationship.
+ *
+ * Each pinned annotation is drawn ONCE, in the view where it reads truest
+ * (`assignDimensionsToViews`), rather than repeated foreshortened in every view.
+ */
+export async function exportDrawingSheet(
+  extensionPath: string,
+  source: CompareSource,
+  options: DrawingSheetOptions
+): Promise<DrawingSheetResult> {
+  const warnings: string[] = [];
+  if (options.views.length === 0) throw new Error("A drawing sheet needs at least one view.");
+  const quality = options.quality ?? "fine";
+  const { mesh, triangleFace } = await loadDrawingMesh(extensionPath, source, quality);
+  const positions = mesh.positions;
+  const triangleCount = Math.floor(mesh.indices.length / 3);
+  if (triangleCount === 0) warnings.push("The source produced no triangles — the sheet is empty.");
+
+  const annotations = options.annotations ?? [];
+  const assignment = assignDimensionsToViews(annotations, options.views);
+  const glyphScale = annotations.length > 0 ? diagonalOf(positions) : 0;
+  const hiddenLines = options.hiddenLines ?? true;
+
+  const inputs: SheetViewInput[] = [];
+  const seen = new Set<string>();
+  options.views.forEach((view, i) => {
+    const basis = viewBasis(view.direction, view.up);
+    let visible: SheetViewInput["visible"];
+    let hidden: SheetViewInput["hidden"] = [];
+    if (hiddenLines) {
+      const drawing = hiddenLineDrawing({ positions, indices: mesh.indices, triangleFace }, basis, {
+        creaseAngleDeg: options.creaseAngleDeg,
+        tangentAngleDeg: tangentAngleForQuality(quality),
+      });
+      for (const w of drawing.warnings) {
+        if (!seen.has(w)) warnings.push(w); // the same crease warning for every view is noise
+        seen.add(w);
+      }
+      visible = drawing.visible;
+      hidden = drawing.hidden;
+    } else {
+      visible = [];
+      const p = (v: number): [number, number] => {
+        const x = positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+        return [
+          x * basis.right[0] + y * basis.right[1] + z * basis.right[2],
+          -(x * basis.up[0] + y * basis.up[1] + z * basis.up[2]),
+        ];
+      };
+      for (const [a, b] of silhouetteEdges(positions, mesh.indices, view.direction)) {
+        const pa = p(a), pb = p(b);
+        if ([...pa, ...pb].every(Number.isFinite)) visible.push([pa, pb]);
+      }
+    }
+    const subset = assignment[i].map((ai) => annotations[ai]);
+    inputs.push({
+      name: view.name,
+      direction: view.direction,
+      visible,
+      hidden,
+      ...(subset.length > 0 ? { dimensions: dimensionDrawings(subset, view, glyphScale) } : {}),
+    });
+  });
+
+  const layout = layoutSheet(inputs, {
+    paper: options.paper,
+    projection: options.projection,
+    scale: options.scale,
+    title: options.title,
+    unit: "mm",
+    date: options.date,
+  });
+  warnings.push(...layout.warnings);
+
+  const format = options.format === "dxf" ? "dxf" : "svg";
+  const content = format === "dxf" ? sheetDxf(layout, { title: options.title }).dxf : sheetSvg(layout, { title: options.title });
+  return {
+    content,
+    format,
+    width: layout.width,
+    height: layout.height,
+    scale: layout.scale,
+    scaleLabel: layout.scaleLabel,
+    paper: layout.paper,
+    projection: layout.projection,
+    views: layout.views.map((v) => ({
+      name: v.name,
+      segmentCount: v.visible.length,
+      hiddenSegmentCount: v.hidden.length,
+      dimensionCount: v.dimensions?.drawings.length ?? 0,
+    })),
+    triangleCount,
+    warnings,
+  };
 }

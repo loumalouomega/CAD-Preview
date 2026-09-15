@@ -1373,9 +1373,9 @@ function convertLengthBasedProperties<T extends LengthBasedProperties>(props: T,
 
 ---
 
-## `src/webview/meshMassProperties.ts`
+## `src/webview/meshMassProperties.ts` + `src/triangleMassProperties.ts`
 
-Client-side volume/area/centroid for mesh-format sources (STL/OBJ/PLY/glTF) — pure Three.js triangle math, no host round trip (no OCCT shape to query). Promotes the signed-tetrahedra volume algorithm already proven in `meshEdits.test.ts`'s test-only `volumeOf()` helper to production code.
+Client-side volume/area/centroid for mesh-format sources (STL/OBJ/PLY/glTF) — no host round trip (no OCCT shape to query). The integration lives in the shared `src/triangleMassProperties.ts` (`triangleMassProperties(soup)`, also backing the headless `get_mass_properties`/`inspect`/`measure` mesh path via `src/meshInspection.ts`); `src/webview/meshMassProperties.ts` is only the world-transform adapter (`computeMeshMassProperties(meshes)` flattens world-space triangles, then calls the shared function).
 
 ```typescript
 interface MeshMassProperties {

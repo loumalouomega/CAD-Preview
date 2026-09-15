@@ -31,10 +31,16 @@
  * against, unlike a real persisted variable). A plain (non-repeated) `op`
  * step is untouched by this: it passes straight through `validateEditOp`
  * with `exprs` intact, identical to `apply_edit_ops`'s own behavior — so a
- * script step that should stay live against a real document variable (set
- * separately via `set_variables`) still can; only the repeat construct's
- * output is baked. This is a stated v1 scope choice, not an oversight.
- */
+  * script step that should stay live against a real document variable (set
+  * separately via `set_variables`) still can; only the repeat construct's
+  * output is baked. This is a stated v1 scope choice, not an oversight.
+  * Passing through does NOT mean the numbers are stale, though: a plain
+  * step's caches are refreshed (`refreshOpCaches`) against this compile's
+  * values first, with `exprs` kept — so a caller override or script-local
+  * default reaches the persisted numbers immediately, while the next replay
+  * still re-resolves the live annotation (falling back to the refreshed
+  * caches, never the authored literals, where that fails).
+  */
 
 import { type EditOp, validateEditOp } from "./editOps";
 import { type ParamVariable, evaluateVariables, validateVariables } from "./editVariables";
@@ -137,7 +143,24 @@ export function compileParametricScript(raw: unknown, documentValues: Record<str
         report.push({ index: i, kind: "op", applied: 0, rejected: 1, reasons: ["invalid op"] });
         continue;
       }
-      ops.push(validated);
+      // Refresh the numeric caches against this compile's values (document
+      // variables + script variables, caller overrides included), KEEPING the
+      // `exprs` annotation live — unlike the repeat path below, which bakes
+      // and strips. Without this, an override (or a script-local default) for
+      // a plain step's expression would never reach the persisted numbers:
+      // the op would replay frozen at whatever literals it was authored with
+      // (live resolution on the next read only sees DOCUMENT variables, which
+      // never include script-local ones). A refresh failure keeps the original
+      // op — today's frozen-cache behavior — and is recorded, never silent.
+      const refreshed = refreshOpCaches(validated, baseValues);
+      if (!refreshed) {
+        issues.push(
+          `step ${i}: its expression(s) did not evaluate against this compile's variables — kept the authored numbers`
+        );
+        ops.push(validated);
+      } else {
+        ops.push(refreshed);
+      }
       report.push({ index: i, kind: "op", applied: 1, rejected: 0, reasons: [] });
       continue;
     }
@@ -217,8 +240,7 @@ function compileRepeatStep(
 
 /** Resolves every `exprs`-bound field on `op` against `values`, then DROPS
  * `exprs` entirely — see this file's doc comment for why repeat-generated
- * ops are baked rather than left parametrically live. */
-function bakeAndStripExprs(op: EditOp, values: Record<string, number>, reasons: string[], iteration: number): EditOp | null {
+ * ops are baked rather than left parametrically live. */function bakeAndStripExprs(op: EditOp, values: Record<string, number>, reasons: string[], iteration: number): EditOp | null {
   if (!op.exprs) return op;
   const clone = JSON.parse(JSON.stringify(op)) as EditOp & Record<string, unknown>;
   for (const [key, expr] of Object.entries(op.exprs)) {
@@ -238,4 +260,33 @@ function bakeAndStripExprs(op: EditOp, values: Record<string, number>, reasons: 
     return null;
   }
   return revalidated;
+}
+
+/**
+ * Resolves every `exprs`-bound field on an already-validated op against
+ * `values` and writes the results back into the numeric fields — KEEPING the
+ * `exprs` annotation (unlike `bakeAndStripExprs` above, which drops it for
+ * repeat-generated ops). This is what makes a plain (non-repeated) script
+ * step's caller overrides and script-local defaults actually reach the
+ * persisted numbers while staying live: the next replay re-resolves the kept
+ * annotation against the document's own variables, and where that fails the
+ * refreshed caches — not the authored literals — are the frozen fallback.
+ *
+ * Returns the refreshed op, or `null` when any expression fails to evaluate
+ * or the refreshed numbers no longer validate (e.g. an override pushed a
+ * radius negative) — the caller keeps the original op (today's frozen-cache
+ * behavior) and should say so. An op with no `exprs` returns as-is, never
+ * null.
+ */
+export function refreshOpCaches(op: EditOp, values: Record<string, number>): EditOp | null {
+  if (!op.exprs) return op;
+  const clone = JSON.parse(JSON.stringify(op)) as EditOp & Record<string, unknown>;
+  for (const [key, expr] of Object.entries(op.exprs)) {
+    const fieldPath = parseFieldPath(key);
+    if (!fieldPath) return null; // can't happen post-validate; belt and braces
+    const r = evalExpr(expr, values);
+    if (!r.ok) return null;
+    setNumericField(clone, fieldPath, r.value);
+  }
+  return validateEditOp(clone);
 }

@@ -38,6 +38,7 @@
 
 import type { CsgNode } from "./csgImport";
 import { resolveSegments } from "./csgImport";
+import { buildFlatFace } from "./occtOperations";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Oc = any;
@@ -181,6 +182,158 @@ function buildNgonPrism(
   const face = faceMk.Face();
   const vec = keep(cleanup, new oc.gp_Vec_4(0, 0, height));
   return keep(cleanup, new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape();
+}
+
+// ---------------------------------------------------------------------------
+// 2D profiles — linear_extrude / rotate_extrude children (roadmap Tier 1
+// item 2, closed). A 2D node is only ever built through here, never as a
+// standalone solid: 2D has no volume, so a bare square/circle/polygon under
+// a union (or at top level) stays skipped, same as before.
+// ---------------------------------------------------------------------------
+
+/** 2D point pairs for a polygon/square/circle node, or null (warning already
+ * issued). `paths=` (holes) is a v1 refusal: importing the outer contour
+ * alone would be a confidently-wrong disk where OpenSCAD cuts a washer. */
+function profilePoints2D(node: CsgNode, warn: (m: string) => void, useMaxFN: number): Array<[number, number]> | null {
+  const p = node.params;
+  if (node.name === "polygon") {
+    if ("paths" in p) { warn(`polygon() with paths= (holes) is a later phase — skipping`); return null; }
+    const raw = p["points"];
+    if (!Array.isArray(raw) || raw.length < 6 || raw.length % 2 !== 0) {
+      warn(`polygon() with <3 points — skipping`);
+      return null;
+    }
+    if (raw.some((x) => typeof x !== "number" || !Number.isFinite(x))) {
+      warn(`polygon() with non-numeric points — skipping`);
+      return null;
+    }
+    const pts: Array<[number, number]> = [];
+    for (let i = 0; i + 1 < raw.length; i += 2) pts.push([raw[i] as number, raw[i + 1] as number]);
+    return pts;
+  }
+  if (node.name === "square") {
+    const s = p["size"];
+    let w: number | undefined;
+    let h: number | undefined;
+    if (typeof s === "number") { w = s; h = s; }
+    else if (Array.isArray(s) && s.length === 2) { w = num(s[0]); h = num(s[1]); }
+    if (!(w !== undefined && h !== undefined && w > 0 && h > 0)) {
+      warn(`square() with non-positive/unparseable size — skipping`);
+      return null;
+    }
+    const centered = p["center"] === true;
+    const x0 = centered ? -w / 2 : 0;
+    const y0 = centered ? -h / 2 : 0;
+    return [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]];
+  }
+  if (node.name === "circle") {
+    const r = num(p["r"]) ?? (num(p["d"]) !== undefined ? (num(p["d"]) as number) / 2 : undefined);
+    if (!(r !== undefined && r > 0)) { warn(`circle() with non-positive/unparseable radius — skipping`); return null; }
+    // Always the N-gon OpenSCAD actually draws (never an analytic face whose
+    // wall would deviate from the authored outline everywhere): first vertex
+    // at +X, the `buildCylinder` convention above.
+    const n = resolveSegments(r, num(p["$fn"]), num(p["$fa"]), num(p["$fs"]));
+    warn(`circle(r=${r}, $fn=${num(p["$fn"]) ?? 0} → ${n} segments) is faceted in OpenSCAD — importing N-gon (chord error ${(r * (1 - Math.cos(Math.PI / n))).toPrecision(3)}mm)`);
+    const pts: Array<[number, number]> = [];
+    for (let i = 0; i < n; i++) {
+      const a = (2 * Math.PI * i) / n;
+      pts.push([r * Math.cos(a), r * Math.sin(a)]);
+    }
+    return pts;
+  }
+  return null;
+}
+
+/** The single 2D child of an extrude: transparent containers (`group`,
+ * `color` — the same transparency `evalShapes` gives them) unwrap one level;
+ * anything else (a 2D boolean union, `offset`, a second profile) is a v1
+ * refusal — fusing 2D faces would need an unprobed face-boolean. */
+function extrudeChild(node: CsgNode, op: string, warn: (m: string) => void): CsgNode | null {
+  if (node.children.length !== 1) {
+    warn(`${op}() with ${node.children.length} children (exactly one 2D profile in v1) — skipping`);
+    return null;
+  }
+  let child = node.children[0];
+  while (child.name === "group" || child.name === "color") {
+    if (child.children.length !== 1) break;
+    child = child.children[0];
+  }
+  if (child.name !== "polygon" && child.name !== "square" && child.name !== "circle") {
+    warn(`${op}() of ${child.name}() (only polygon/square/circle profiles in v1) — skipping`);
+    return null;
+  }
+  return child;
+}
+
+/** `true` unless `scale` is present and differs from the identity (a number
+ * `!== 1`, or a vector with any component `!== 1`): real `.csg` files always
+ * carry the default `scale = 1`, which must not trip the later-phase refusal. */
+function isIdentityScale(v: unknown): boolean {
+  if (v === undefined || v === null) return true;
+  if (typeof v === "number") return v === 1;
+  if (Array.isArray(v)) return v.length > 0 && v.every((x) => x === 1);
+  return false;
+}
+
+function buildLinearExtrude(oc: Oc, node: CsgNode, cleanup: Cleanup, warn: (m: string) => void, useMaxFN: number): Shape | null {
+  const p = node.params;
+  const child = extrudeChild(node, "linear_extrude", warn);
+  if (!child) return null;
+  const h = num(p["height"]) ?? num(p["h"]);
+  if (!(h !== undefined && h > 0)) { warn(`linear_extrude() with non-positive/unparseable height — skipping`); return null; }
+  if (num(p["twist"])) { warn(`linear_extrude() with twist=${num(p["twist"])} (a later phase) — skipping`); return null; }
+  if (!isIdentityScale(p["scale"])) { warn(`linear_extrude() with non-identity scale (a later phase) — skipping`); return null; }
+  const pts2d = profilePoints2D(child, warn, useMaxFN);
+  if (!pts2d) return null;
+  // slices/convexity are preview-only (OpenSCAD ignores them at render too).
+  const face = buildFlatFace(oc, pts2d.map(([x, y]): [number, number, number] => [x, y, 0]), cleanup);
+  if (!face || face.IsNull()) { warn(`linear_extrude() profile failed to face — skipping`); return null; }
+  const vec = keep(cleanup, new oc.gp_Vec_4(0, 0, h));
+  let solid: Shape;
+  try {
+    solid = keep(cleanup, keep(cleanup, new oc.BRepPrimAPI_MakePrism_1(face, vec, false, true)).Shape());
+  } catch (e) {
+    warn(`linear_extrude() build threw (${e instanceof Error ? e.message : String(e)}) — skipping`);
+    return null;
+  }
+  if (p["center"] === true) {
+    const moved = applyMatrix(oc, [solid], translateMatrix([0, 0, -h / 2]), cleanup, warn);
+    if (!moved) return null;
+    solid = moved[0];
+  }
+  const oriented = orientPositive(oc, solid, cleanup);
+  if (!oriented) { warn(`linear_extrude() collapsed to zero volume — skipping`); return null; }
+  return oriented;
+}
+
+function buildRotateExtrude(oc: Oc, node: CsgNode, cleanup: Cleanup, warn: (m: string) => void, useMaxFN: number): Shape | null {
+  const p = node.params;
+  const child = extrudeChild(node, "rotate_extrude", warn);
+  if (!child) return null;
+  const angleDeg = num(p["angle"]) ?? 360;
+  if (!Number.isFinite(angleDeg) || angleDeg === 0) {
+    warn(`rotate_extrude() with non-finite/zero angle — skipping`);
+    return null;
+  }
+  const pts2d = profilePoints2D(child, warn, useMaxFN);
+  if (!pts2d) return null;
+  // OpenSCAD reads profile (x, y) as (radius, height): the profile plane must
+  // CONTAIN the revolve axis, so (x, y) maps to (x, 0, y) revolved about Z —
+  // revolving the raw XY face about Z would spin it in place (volume 0,
+  // verified live). Partial angles sweep CCW from +X, matching OpenSCAD.
+  const face = buildFlatFace(oc, pts2d.map(([x, y]): [number, number, number] => [x, 0, y]), cleanup);
+  if (!face || face.IsNull()) { warn(`rotate_extrude() profile failed to face — skipping`); return null; }
+  const ax = keep(cleanup, new oc.gp_Ax1_2(pnt(oc, [0, 0, 0], cleanup), keep(cleanup, new oc.gp_Dir_4(0, 0, 1))));
+  let solid: Shape;
+  try {
+    solid = keep(cleanup, keep(cleanup, new oc.BRepPrimAPI_MakeRevol_1(face, ax, (angleDeg * Math.PI) / 180, false)).Shape());
+  } catch (e) {
+    warn(`rotate_extrude() build threw (${e instanceof Error ? e.message : String(e)}) — skipping`);
+    return null;
+  }
+  const oriented = orientPositive(oc, solid, cleanup);
+  if (!oriented) { warn(`rotate_extrude() collapsed to zero volume — skipping`); return null; }
+  return oriented;
 }
 
 function buildPolyhedron(oc: Oc, node: CsgNode, cleanup: Cleanup, warn: (m: string) => void): Shape | null {
@@ -372,11 +525,9 @@ const SKIP_SUBTREE_MSGS: Record<string, string> = {
   text: "text() carries a font name, not outlines (the reference WASM ships with no font support) — skipping",
   import: "import() references an external file — skipping",
   surface: "surface() references an external heightmap file — skipping",
-  square: "2D square() is not imported in v1 (linear_extrude of 2D is out of scope) — skipping",
-  circle: "2D circle() is not imported in v1 — skipping",
-  polygon: "2D polygon() is not imported in v1 — skipping",
-  linear_extrude: "linear_extrude() of 2D profiles is not imported in v1 — skipping",
-  rotate_extrude: "rotate_extrude() of 2D profiles is not imported in v1 — skipping",
+  square: "standalone 2D square() is not imported — only as a linear_extrude/rotate_extrude child — skipping",
+  circle: "standalone 2D circle() is not imported — only as a linear_extrude/rotate_extrude child — skipping",
+  polygon: "standalone 2D polygon() is not imported — only as a linear_extrude/rotate_extrude child — skipping",
   offset: "2D offset() is not imported in v1 — skipping",
   projection: "projection() cuts to 2D — skipping",
   resize: "resize() is not imported in v1 — skipping",
@@ -450,6 +601,8 @@ function evalShapes(oc: Oc, node: CsgNode, cleanup: Cleanup, warn: (m: string) =
   if (name === "sphere") return single(oc, buildSphere(oc, node, cleanup, warn, useMaxFN));
   if (name === "cylinder") return single(oc, buildCylinder(oc, node, cleanup, warn, useMaxFN));
   if (name === "polyhedron") return single(oc, buildPolyhedron(oc, node, cleanup, warn));
+  if (name === "linear_extrude") return single(oc, buildLinearExtrude(oc, node, cleanup, warn, useMaxFN));
+  if (name === "rotate_extrude") return single(oc, buildRotateExtrude(oc, node, cleanup, warn, useMaxFN));
 
   const skip = SKIP_SUBTREE_MSGS[name];
   if (skip) { warn(`${name}(): ${skip}`); return []; }

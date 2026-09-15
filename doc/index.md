@@ -38,7 +38,7 @@ features:
 
   - icon: 🏷️
     title: Define Parts (Volumes / Surfaces / Lines / Points)
-    details: Click solids, faces, edges, or vertices in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar — the CAD file stays read-only. Per-part eye-toggles and a panel-level Isolate button (plus a matching filter/eye-toggle on the Components tree) let you focus on just the geometry you're working on, display-only and never persisted.
+    details: Click solids, faces, edges, or vertices in the 3D view and assign them to named parts (FEM sub-model-parts). Assignments are colour-highlighted, listed in a panel, and autosaved to a `<model>.parts.json` sidecar, never into the CAD source. Per-part eye-toggles and a panel-level Isolate button (plus a matching filter/eye-toggle on the Components tree) let you focus on just the geometry you're working on, display-only and never persisted.
 
   - icon: 🔩
     title: Standard Parts Catalog
@@ -63,6 +63,10 @@ features:
   - icon: 📐
     title: Silhouette SVG/DXF Export
     details: Write a 2D outline of the model as a self-contained SVG or a minimal DXF — pick the current view or a standard one (Front/Back/Top/Bottom/Left/Right/Iso), pick a unit, save. Works for STEP/IGES/BREP/CSG/SCAD (edits baked in) and STL/OBJ/PLY/glTF, and prints 1:1 at 1 unit per model unit. An outline, not a dimensioned technical drawing — there is no hidden-line removal.
+
+  - icon: 📄
+    title: Multi-View Drawing Sheets
+    details: Export a technical drawing sheet with several views (front/top/right/iso by default) laid out at one shared scale, orthographically aligned per first- or third-angle projection, inside a frame with a title block. "Fit" sizes the sheet to the views at 1:1; a named ISO paper size (A4–A0) picks the largest standard scale that fits. A pinned measurement is drawn once, in whichever view shows it at true length.
 
   - icon: 🧮
     title: FE Mesh Generation (Gmsh)

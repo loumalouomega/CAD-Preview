@@ -178,6 +178,23 @@ function copyWasm() {
   }
 }
 
+/**
+ * Copy the bundled starter macro library to dist/ so it ships with the
+ * packaged extension AND is beside `dist/mcp-server.js` for headless use
+ * (roadmap Tier 1 "A bundled starter macro library"). Same recipe as
+ * `copyWasm()` above — a real file on disk, resolved at runtime via
+ * `starterMacros.ts`'s `bundledMacrosPath(extensionPath)`, never bundled
+ * into the JS (it is data an agent/panel reads as JSON, and bundling it
+ * would fork a second copy that could drift from the reviewed source).
+ */
+function copyMacros() {
+  const src = path.join(__dirname, "macros", "starter-library.json");
+  const dst = path.join(__dirname, "dist", "macros", "starter-library.json");
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.copyFileSync(src, dst);
+  console.log(`Copied starter-library.json → dist/macros/starter-library.json (${(fs.statSync(dst).size / 1e3).toFixed(1)} KB)`);
+}
+
 if (watch) {
   const ctxExt = await esbuild.context(extensionConfig);
   const ctxMcp = await esbuild.context(mcpConfig);
@@ -185,6 +202,7 @@ if (watch) {
   const ctxWv = await esbuild.context(webviewConfig);
   await Promise.all([ctxExt.watch(), ctxMcp.watch(), ctxKernel.watch(), ctxWv.watch()]);
   copyWasm();
+  copyMacros();
   console.log("esbuild: watching…");
 } else {
   await Promise.all([
@@ -194,4 +212,5 @@ if (watch) {
     esbuild.build(webviewConfig),
   ]);
   copyWasm();
+  copyMacros();
 }

@@ -201,6 +201,25 @@ function maxAbsMshCoord(mshText) {
   return max;
 }
 
+/** Every node's `[x, y, z]` coordinate triple from a Gmsh MSH 4.1 `$Nodes`
+ * block — the same 3-token-line filter `maxAbsMshCoord` uses (cleanly
+ * distinguishes coordinate lines from the interleaved single-integer tag
+ * lines and 4-token block headers), but returning the full set rather than
+ * just the max magnitude, so a caller can bucket nodes by position to check
+ * a distance-graded sizing gradient. */
+function parseMshNodeCoords(mshText) {
+  const body = mshText.split("$Nodes")[1]?.split("$EndNodes")[0] ?? "";
+  const coords = [];
+  for (const line of body.split("\n")) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens.length !== 3) continue;
+    const nums = tokens.map(Number);
+    if (nums.some((n) => Number.isNaN(n))) continue;
+    coords.push(nums);
+  }
+  return coords;
+}
+
 // --- the scenario ------------------------------------------------------------
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-preview-mcp-smoke-"));
@@ -231,8 +250,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 49, `tools/list exposes 49 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation"]) {
+  assert(tools.length === 52, `tools/list exposes 52 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -306,6 +325,29 @@ try {
     assert(
       mixed.warnings.some((w) => /hull\(\)/i.test(w)) && mixed.warnings.some((w) => /faceted|analytic/i.test(w)),
       `mixed.csg surfaces the hull-skip and faceted-sphere warnings (got ${JSON.stringify(mixed.warnings)})`
+    );
+    // extrude.csg (roadmap Tier 1 item 2): linear_extrude of a polygon, a
+    // centered square and a faceted circle, plus rotate_extrude full and
+    // half — each placed disjointly — with twist=/paths= refusals. Volumes
+    // are analytic: 300 + 128 + 96*pi + 48*pi + 135 = ~1015.3893, asserted
+    // ±0.5 (absolute, the bracket precedent) rather than relatively: the
+    // translated revolve solids read ~4e-5 low (the gp_GTrsf copy all
+    // transforms go through converts analytic curved faces to BSplines —
+    // pre-existing importer machinery, measured live, not a defect).
+    const extrudeCsg = path.join(dir, "extrude.csg");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "extrude.csg"), extrudeCsg);
+    const extruded = await call("load_model", { path: extrudeCsg });
+    assert(extruded.solids.length === 5, `extrude.csg builds all 5 extrusion solids (got ${extruded.solids.length})`);
+    assert(
+      extruded.warnings.some((w) => /twist=30.*later phase/.test(w)) &&
+        extruded.warnings.some((w) => /paths=.*later phase/.test(w)) &&
+        extruded.warnings.some((w) => /faceted in OpenSCAD/.test(w)),
+      `extrude.csg surfaces the twist/paths/faceted-circle warnings (got ${JSON.stringify(extruded.warnings)})`
+    );
+    const extrudeMass = await call("get_mass_properties", { path: extrudeCsg });
+    assert(
+      extrudeMass.supported === true && Math.abs(extrudeMass.volume - 1015.3893) < 0.5,
+      `extrude.csg mass matches the analytic 300+128+96pi+48pi+135 total (got ${extrudeMass.volume})`
     );
   }
 
@@ -749,7 +791,12 @@ try {
     );
     assert(base.warnings.some((w) => /Read-only preview/.test(w)), "render_ops_prefix says plainly that nothing was written");
 
-    const mid = await call("render_ops_prefix", { path: model, throughIndex: 0 });
+    // Real, reproducible-at-clean-HEAD finding: this exact call once threw a
+    // bare-digit OCCT exception pointer that escaped `wrapOcctFault` unwrapped
+    // (fixed in `isOcctWasmAbort`'s vocabulary — see `occtService.test.ts`).
+    // `callWithCleanRetry` is the standing belt-and-suspenders here: the call
+    // is read-only, so there is nothing for `resetState` to undo.
+    const mid = await callWithCleanRetry("render_ops_prefix", { path: model, throughIndex: 0 }, () => {});
     assert(
       mid.supported === true && mid.prefixOpCount === 1 && mid.totalOpCount === 1 && mid.model.solids.length === 2,
       `render_ops_prefix at op 0 replays just the box (got ${mid.model.solids.length} solid(s))`
@@ -1264,6 +1311,103 @@ try {
     if (freeform.surfaceType === "other") {
       assert(freeform.surfaceParams === null, "a free-form (other) face reports surfaceParams: null");
     }
+
+  // ── axisDistance on measure_exact + headless mesh inspection ─────────────
+  // Tier 1 close: hole-to-hole centre distance is pure vector math over the
+  // already-verified cylinder accessors, and mesh mass/inspect/measure share
+  // one headless triangle integration over the compare_models parsers.
+  {
+    // Two parallel cylinders D apart: axisDistance is the axis spacing,
+    // value is the surface clearance (D - R1 - R2).
+    const axisModel = path.join(dir, "bull-for-axis-distance.stp");
+    fs.copyFileSync(FIXTURE, axisModel);
+    const R1 = s / 8, R2 = s / 8, D = 4 * s;
+    const cx = bbox.max[0] + 12 * s;
+    const appliedAx = await call("apply_edit_ops", {
+      path: axisModel,
+      ops: [
+        { op: "addCylinder", center: [cx, 0, 0], radius: R1, height: s, axis: [0, 0, 1] },
+        { op: "addCylinder", center: [cx + D, 0, 0], radius: R2, height: s, axis: [0, 0, 1] },
+      ],
+    });
+    assert(appliedAx.applied === 2, "apply_edit_ops accepts both axis-distance cylinders");
+    const axFaces = appliedAx.model.solids.flatMap((sol) => sol.faceIds);
+    let axA = null, axB = null;
+    for (const fid of axFaces) {
+      const f = await call("inspect", { path: axisModel, entityId: fid });
+      if (f.surfaceType !== "cylinder" || !f.surfaceParams) continue;
+      if (Math.abs(f.surfaceParams.radius - R1) > 1e-9) continue;
+      if (axA === null) axA = fid; else { axB = fid; break; }
+    }
+    assert(axA !== null && axB !== null, "inspect finds both added cylinders' lateral faces");
+    const axDist = await call("measure_exact", { path: axisModel, kind: "distance", entityIdA: axA, entityIdB: axB });
+    assert(
+      Math.abs(axDist.axisDistance - D) < 1e-6,
+      `measure_exact reports parallel-axis spacing exactly (expected ${D}, got ${axDist.axisDistance})`
+    );
+    assert(
+      Math.abs(axDist.value - (D - R1 - R2)) < 1e-6,
+      `surface clearance stays the finite-surface answer (expected ${D - R1 - R2}, got ${axDist.value})`
+    );
+    const nonCyl = await call("measure_exact", { path: axisModel, kind: "distance", entityIdA: "solid-0", entityIdB: "solid-1" });
+    assert(nonCyl.axisDistance === undefined, "non-cylinder pairs omit axisDistance rather than fabricating one");
+
+    // Headless mesh facts over the raw file bytes: closed STL cube (10^3),
+    // unit OBJ cube, unit glTF cube, and the two-box glTF (2 components).
+    const meshCube = path.join(dir, "mesh-headless-cube.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), meshCube);
+    const meshLoad = await call("load_model", { path: meshCube });
+    assert(meshLoad.meshEntities.components.length === 1, "load_model inventories one mesh component for cube.stl");
+    const meshMass = await call("get_mass_properties", { path: meshCube });
+    assert(
+      Math.abs(meshMass.volume - 1000) < 1e-3 && meshMass.watertight === true,
+      `get_mass_properties recovers the STL cube volume headlessly (expected 1000, got ${meshMass.volume})`
+    );
+    const meshComp = await call("inspect", { path: meshCube, entityId: "mesh-component-0" });
+    assert(
+      meshComp.bbox.min[0] === -5 && meshComp.bbox.max[0] === 5,
+      `inspect resolves headless mesh ids to the real bbox (got ${JSON.stringify(meshComp.bbox)})`
+    );
+    const meshMeas = await call("measure", { path: meshCube, from: "mesh-component-0", to: "whole-model" });
+    assert(meshMeas.distance === 0, "measure on a single-component mesh reports zero self-distance");
+    const webviewId = await callTolerant("inspect", { path: meshCube, entityId: "node-0" });
+    assert(
+      webviewId.error && /load_model/i.test(webviewId.error),
+      "headless mesh ids reject webview node-N ids with a load_model hint"
+    );
+
+    const meshObj = path.join(dir, "mesh-headless-cube.obj");
+    fs.copyFileSync(path.join(ROOT, "examples", "OBJ", "cube.obj"), meshObj);
+    const objMass = await call("get_mass_properties", { path: meshObj });
+    assert(Math.abs(objMass.volume - 1) < 1e-3, `get_mass_properties recovers the OBJ unit-cube volume (got ${objMass.volume})`);
+
+    const meshGltf = path.join(dir, "mesh-headless-cube.gltf");
+    fs.copyFileSync(path.join(ROOT, "examples", "GLTF", "cube.gltf"), meshGltf);
+    const gltfMass = await call("get_mass_properties", { path: meshGltf });
+    assert(Math.abs(gltfMass.volume - 1) < 1e-3, `get_mass_properties recovers the glTF unit-cube volume (got ${gltfMass.volume})`);
+
+    // Two disconnected boxes: two components, 10 units apart by construction.
+    const meshTwo = path.join(dir, "mesh-headless-two.gltf");
+    fs.copyFileSync(path.join(ROOT, "examples", "GLTF", "two-boxes.gltf"), meshTwo);
+    const twoLoad = await call("load_model", { path: meshTwo });
+    assert(twoLoad.meshEntities.components.length === 2, "load_model segments two disconnected boxes");
+    const twoMeas = await call("measure", { path: meshTwo, from: "mesh-component-0", to: "mesh-component-1" });
+    assert(
+      Math.abs(twoMeas.distance - 10) < 1e-3,
+      `measure spans disconnected mesh components (expected 10, got ${twoMeas.distance})`
+    );
+
+    // Unbaked mesh edits are reported, not silently baked.
+    const meshEdit = path.join(dir, "mesh-headless-edited.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), meshEdit);
+    await call("apply_edit_ops", { path: meshEdit, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const editedMass = await call("get_mass_properties", { path: meshEdit });
+    assert(
+      Math.abs(editedMass.volume - 1000) < 1e-3 && editedMass.warnings.join(" ").match(/NOT baked in/i),
+      "mesh facts describe the raw file and warn that edits are not baked in"
+    );
+  }
+
     for (const [id, what] of [["solid-0", "solid"], ["edge-0", "edge"], ["point-0", "vertex"]]) {
       const e = await callTolerant("inspect", { path: surfModel, entityId: id });
       if (e.error) continue;
@@ -1727,6 +1871,68 @@ try {
     );
     const boxATsvLine = bomLines.find((l) => l.startsWith("BoxA\t"));
     assert(boxATsvLine && boxATsvLine.split("\t")[5] === "1000", `generate_bom's TSV carries the numbers through (${boxATsvLine})`);
+  }
+
+  // generate_hole_table (roadmap Tier 1 "Hole table") — one schedule row per
+  // (diameter, axis-direction) group of cylindrical faces, nearest standard
+  // designation with its signed delta as facts-only, plus TSV. The fixture is
+  // a plate with two blind holes at exact standard sizes (M6 tap d=5.0,
+  // M5 clearance d=5.5), so the designations AND the zero deltas are analytic
+  // cross-checks, not values copied from the implementation. NOTE the chained
+  // target ids: each hole/boolean rebuilds result-first (the bracket
+  // tutorial's documented drift), so the plate moves solid-1 -> solid-0 after
+  // the first hole — targeting solid-1 twice would drill air the second time
+  // (verified live: a no-geometry cut still reports applied:true).
+  {
+    const holeModel = path.join(dir, "bull-for-hole-table.stp");
+    fs.copyFileSync(FIXTURE, holeModel);
+    const holed = await call("apply_edit_ops", {
+      path: holeModel,
+      ops: [
+        { op: "addBox", center: [0, 0, 10], size: [40, 40, 10] },
+        { op: "addHole", targets: ["solid-1"], position: [-10, 0, 10], axis: [0, 0, 1], radius: 2.5, depth: 12 },
+        { op: "addHole", targets: ["solid-0"], position: [10, 0, 10], axis: [0, 0, 1], radius: 2.75, depth: 12 },
+      ],
+    });
+    assert(holed.applied === 3, `hole-table fixture applies all 3 ops (got ${holed.applied})`);
+
+    const holes = await call("generate_hole_table", { path: holeModel });
+    assert(holes.supported === true && holes.rows.length === 2, `hole table has one row per hole size (got ${holes.rows.length})`);
+    const m6 = holes.rows.find((r) => r.diameter === 5);
+    const m5 = holes.rows.find((r) => r.diameter === 5.5);
+    assert(
+      m6 && m6.nearest.designation === "M6" && m6.nearest.column === "tapDrill" && m6.nearest.delta === 0,
+      `d=5.0 reads M6/tapDrill with zero delta (got ${JSON.stringify(m6?.nearest)})`
+    );
+    assert(
+      m5 && m5.nearest.designation === "M5" && m5.nearest.column === "clearance" && m5.nearest.delta === 0,
+      `d=5.5 reads M5/clearance with zero delta (got ${JSON.stringify(m5?.nearest)})`
+    );
+    assert(
+      m6.count === 1 && m5.count === 1 && m6.solidIds.length === 1 && m5.solidIds.length === 1,
+      "each row counts its own wall face on the plate solid"
+    );
+    assert(
+      /2 of \d+ face\(s\) are cylindrical/.test(holes.warnings.join("\n")),
+      `the ignored-face count is reported, never silent (got ${JSON.stringify(holes.warnings)})`
+    );
+    const holeLines = holes.table.split("\n");
+    assert(
+      holeLines.length === 3 && holeLines[0].startsWith("Diameter_mm\tAxis\t"),
+      "hole-table TSV has a header plus one line per row"
+    );
+    assert(holeLines.some((l) => l.includes("\tM6\ttapDrill\t0")), `TSV carries the M6 row through (${holeLines[1]})`);
+
+    const holeyMesh = await call("generate_hole_table", { path: path.join(ROOT, "examples", "STL", "cube.stl") });
+    assert(holeyMesh.supported === false, "hole table degrades gracefully for mesh-format sources");
+
+    const plainBlock = path.join(dir, "block-for-hole-table.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), plainBlock);
+    const noHoles = await call("generate_hole_table", { path: plainBlock });
+    assert(
+      noHoles.supported === true && noHoles.rows.length === 0 && /No cylindrical faces/.test(noHoles.warnings.join("\n")),
+      "a model with no cylindrical faces returns zero rows + a warning (a fact, not an error)"
+    );
   }
 
   // Entity-id rebinding after topology-changing ops (roadmap item, closed) —
@@ -3560,6 +3766,87 @@ try {
     );
   }
 
+  // export_drawing_sheet (roadmap "Multi-view sheet layout"): several views on
+  // one sheet at a shared scale with a title block. Uses the same block.stp
+  // fixture (a real, analytically-known 3×4×5 box centred at the origin) as
+  // above, so the dimension-placement assertion below has a known answer.
+  {
+    const sheetModel = path.join(dir, "sheet-box.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), sheetModel);
+
+    // Default views, first-angle, "fit" paper.
+    const sheetSvgOut = path.join(dir, "sheet-default.svg");
+    const sheet = await call("export_drawing_sheet", { path: sheetModel, outputPath: sheetSvgOut });
+    assert(
+      sheet.views.length === 4 && sheet.views.every((v) => v.segmentCount > 0),
+      `the default sheet draws all 4 views (front/top/right/iso), each with real geometry (got ${JSON.stringify(sheet.views)})`
+    );
+    assert(sheet.views.map((v) => v.name).join(",") === "front,top,right,iso-ftr", `default view order (got ${sheet.views.map((v) => v.name).join(",")})`);
+    assert(sheet.projection === "first" && sheet.scale === "1:1", `default projection/scale (got ${sheet.projection}/${sheet.scale})`);
+    assert(sheet.warnings.length === 0, `a clean sheet writes with no warnings (got ${JSON.stringify(sheet.warnings)})`);
+    const sheetSvgText = fs.readFileSync(sheetSvgOut, "utf8");
+    for (const name of ["front", "top", "right", "iso-ftr"]) assert(sheetSvgText.includes(`<g id="view-${name}">`), `SVG sheet has a group for ${name}`);
+    assert(sheetSvgText.includes('id="title-block"') && !/NaN|Infinity/.test(sheetSvgText), "SVG sheet carries a title block and no non-finite coordinates");
+
+    // A4 picks a standard ISO 5455 scale and reports the real sheet size.
+    const a4 = await call("export_drawing_sheet", { path: sheetModel, outputPath: path.join(dir, "sheet-a4.svg"), paper: "A4" });
+    assert(a4.paper === "A4" && a4.sheetSize[0] === 297 && a4.sheetSize[1] === 210, `A4 sheet reports its real size (got ${JSON.stringify(a4.sheetSize)})`);
+
+    // DXF: BORDER/TITLE/HIDDEN/DIMENSIONS layers all present, and a pinned
+    // annotation is drawn exactly ONCE, in the view where it reads at true
+    // length — an X-axis-spanning edge is foreshortened in "right" but true
+    // length in "front" (listed first, so ties resolve there too).
+    await call("pin_annotation", {
+      path: sheetModel,
+      tool: "distance",
+      text: "3 mm",
+      anchorPoint: [0, 0, 2.5],
+      linePoints: [[-1.5, 0, 2.5], [1.5, 0, 2.5]],
+      volumes: ["solid-0"],
+    });
+    const sheetDxfOut = path.join(dir, "sheet-dim.dxf");
+    const dimSheet = await call("export_drawing_sheet", { path: sheetModel, outputPath: sheetDxfOut, format: "dxf" });
+    assert(dimSheet.format === "dxf" && dimSheet.dimensionCount === 1, `a pinned annotation is drawn exactly once across the sheet (got ${dimSheet.dimensionCount})`);
+    const frontView = dimSheet.views.find((v) => v.name === "front");
+    const otherDims = dimSheet.views.filter((v) => v.name !== "front").reduce((n, v) => n + v.dimensionCount, 0);
+    assert(frontView.dimensionCount === 1 && otherDims === 0, `the dimension lands in FRONT, where it reads at true length (got ${JSON.stringify(dimSheet.views)})`);
+    const sheetDxfText = fs.readFileSync(sheetDxfOut, "utf8");
+    for (const layer of ["\nHIDDEN\n", "\nDIMENSIONS\n", "\nBORDER\n", "\nTITLE\n"]) {
+      assert(sheetDxfText.includes(layer), `DXF sheet carries a ${layer.trim()} layer`);
+    }
+    assert(!/NaN|Infinity/.test(sheetDxfText), "DXF sheet carries no non-finite coordinates");
+
+    // Third-angle is a real, selectable alternative to the default.
+    const thirdSheet = await call("export_drawing_sheet", {
+      path: sheetModel,
+      outputPath: path.join(dir, "sheet-third.svg"),
+      projection: "third",
+    });
+    assert(thirdSheet.projection === "third", "projection:'third' is honoured");
+
+    // An unknown view is skipped with a warning, not a hard failure; an
+    // all-unknown request is a caller error.
+    const partial = await call("export_drawing_sheet", {
+      path: sheetModel,
+      outputPath: path.join(dir, "sheet-partial.svg"),
+      views: ["front", "sideways"],
+    });
+    assert(
+      partial.views.length === 1 && partial.warnings.some((w) => /sideways/.test(w)),
+      `an unknown view is dropped with a warning rather than failing the whole sheet (got ${JSON.stringify(partial)})`
+    );
+    const noViews = await callTolerant("export_drawing_sheet", {
+      path: sheetModel,
+      outputPath: path.join(dir, "sheet-none.svg"),
+      views: ["nope"],
+    });
+    assert(noViews.error && /at least one named view/i.test(noViews.error), "a sheet with no usable view errors clearly");
+
+    // A meshio-only source is rejected the same way the single-view tools reject it.
+    const sheetVtk = await callTolerant("export_drawing_sheet", { path: vtkModel, outputPath: path.join(dir, "sheet.svg") });
+    assert(sheetVtk.error && /no host-side geometry/i.test(sheetVtk.error), "export_drawing_sheet rejects a meshio-only source");
+  }
+
   // hit_test (roadmap "close the pixel -> entity loop"): the sharp assertion the
   // roadmap itself named — fire a ray down a known axis at known geometry and
   // confirm the entity it names is the one `inspect` reports at that location.
@@ -3817,8 +4104,10 @@ try {
 
   const listedMacros = await call("list_parametric_scripts", { libraryPath });
   assert(
-    listedMacros.scripts.length === 1 && listedMacros.scripts[0].name === "bolt-circle",
-    `list_parametric_scripts returns the saved macro and not the refused one (got ${JSON.stringify(listedMacros.scripts.map((x) => x.name))})`
+    listedMacros.scripts.some((x) => x.name === "bolt-circle") &&
+      !listedMacros.scripts.some((x) => x.name === "broken") &&
+      ["spring", "bolt-circle-flange", "hex-bolt"].every((n) => listedMacros.scripts.some((x) => x.name === n)),
+    `list_parametric_scripts unions the caller file on top of the bundled starters (got ${JSON.stringify(listedMacros.scripts.map((x) => x.name))})`
   );
 
   // Two runs, fresh fixture each, differing ONLY in the overrides.
@@ -3866,6 +4155,73 @@ try {
   assert(
     missingScript.error && /No saved script named/.test(missingScript.error),
     "running an unknown script name fails with a clear, actionable error"
+  );
+
+  // ── Bundled starter macro library (roadmap Tier 1 "A bundled starter macro
+  // library") ──
+  // list/run with NO libraryPath serve the bundled starters (spring,
+  // bolt-circle-flange, hex-bolt); a caller file unions on top. All three
+  // starters assume a blank base (examples/BREP/blank.brep — the empty
+  // compound New Blank Model writes), so each runs on a fresh blank copy.
+  // Volumes are analytic cross-checks, not values copied from the
+  // implementation: flange = π·40²·10 − 8·π·3²·10; bolt = 5·(3·8²·sin60°) +
+  // π·4²·20; spring is sweep-discretized, so it gets a band, not a pin.
+  const BLANK = path.join(ROOT, "examples", "BREP", "blank.brep");
+  const listedStarters = await call("list_parametric_scripts", {});
+  assert(
+    ["spring", "bolt-circle-flange", "hex-bolt"].every((n) => listedStarters.scripts.some((s) => s.name === n)),
+    `omitting libraryPath lists the bundled starters (got ${JSON.stringify(listedStarters.scripts.map((x) => x.name))})`
+  );
+  const listedUnion = await call("list_parametric_scripts", { libraryPath });
+  assert(
+    listedUnion.scripts.some((s) => s.name === "bolt-circle") &&
+      listedUnion.scripts.some((s) => s.name === "spring"),
+    "a caller libraryPath unions the caller file on top of the bundled starters"
+  );
+
+  const springBlank = path.join(dir, "starter-spring.brep");
+  const flangeBlank = path.join(dir, "starter-flange.brep");
+  const boltBlank = path.join(dir, "starter-bolt.brep");
+  fs.copyFileSync(BLANK, springBlank);
+  fs.copyFileSync(BLANK, flangeBlank);
+  fs.copyFileSync(BLANK, boltBlank);
+
+  const springRun = await call("run_saved_script", { name: "spring", path: springBlank });
+  assert(springRun.applied === 3, `starter spring applies all 3 ops (got ${springRun.applied})`);
+  const springMass = await call("get_mass_properties", { path: springBlank });
+  assert(
+    Math.abs(springMass.volume - 1776.29) / 1776.29 < 0.01,
+    `starter spring builds a real helical solid (volume=${springMass.volume}, expected ~1776.29)`
+  );
+
+  const springOverridden = path.join(dir, "starter-spring-overridden.brep");
+  fs.copyFileSync(BLANK, springOverridden);
+  const springOver = await call("run_saved_script", {
+    name: "spring",
+    path: springOverridden,
+    parameters: { R: 12, W: 2 },
+  });
+  assert(springOver.applied === 3, `starter spring applies with overrides (got ${springOver.applied})`);
+  const springOverMass = await call("get_mass_properties", { path: springOverridden });
+  assert(
+    springOverMass.volume > springMass.volume,
+    `the R/W overrides actually resize the spring (${springOverMass.volume} vs ${springMass.volume})`
+  );
+
+  const flangeRun = await call("run_saved_script", { name: "bolt-circle-flange", path: flangeBlank });
+  assert(flangeRun.applied === 4, `starter flange applies all 4 ops (got ${flangeRun.applied})`);
+  const flangeMass = await call("get_mass_properties", { path: flangeBlank });
+  assert(
+    Math.abs(flangeMass.volume - 48003.5357) < 1.0,
+    `starter flange matches the analytic disc-minus-8-holes volume (volume=${flangeMass.volume}, expected ~48003.54)`
+  );
+
+  const boltRun = await call("run_saved_script", { name: "hex-bolt", path: boltBlank });
+  assert(boltRun.applied === 3, `starter hex-bolt applies all 3 ops (got ${boltRun.applied})`);
+  const boltMass = await call("get_mass_properties", { path: boltBlank });
+  assert(
+    Math.abs(boltMass.volume - 1836.694) < 1e-3,
+    `starter hex-bolt matches the analytic prism-plus-shaft volume (volume=${boltMass.volume}, expected ~1836.694)`
   );
 
   // ── Named construction planes (roadmap "Reusable construction planes") ──
@@ -4938,6 +5294,116 @@ try {
     );
   }
 
+  // --- 3D text via outline import (roadmap "3D text via outline import",
+  // closed): import_svg + multi-loop addSurfaceFromLines + holed wrap() ---
+  //
+  // A real letter-with-a-counter shape (an "O": outer 10x6 rect, inner 4x2
+  // rect, both authored under a <g transform="translate(...) scale(...)">
+  // so the transform-composition path is genuinely exercised, not just the
+  // identity case). Fresh copy of block.stp (3x4x5, 12 base edges).
+  {
+    const seedBlock = path.join(ROOT, "examples", "STP", "block.stp");
+    const svgModel = path.join(dir, "svg-text.stp");
+    const svgPath = path.join(dir, "letter-o.svg");
+    const resetSvg = () => {
+      fs.copyFileSync(seedBlock, svgModel);
+      fs.rmSync(`${svgModel}.edits.json`, { force: true });
+    };
+    // translate(20,0) scale(1) keeps the numbers simple: outer local
+    // (0,0)-(10,6) -> world (20,0)-(30,6); Y-flip on import negates Y, so
+    // the imported polyline spans y in [-6,0]. Inner local (3,2)-(7,4) ->
+    // world (23,2)-(27,4) -> y in [-4,-2] after the flip. Outer area 60,
+    // inner area 8, holed face area exactly 52 (same fixture shape as the
+    // CLAUDE.md-recorded live probe).
+    fs.writeFileSync(
+      svgPath,
+      `<svg><g transform="translate(20,0)"><rect x="0" y="0" width="10" height="6"/><rect x="3" y="2" width="4" height="2"/></g></svg>`,
+      "utf8"
+    );
+    resetSvg();
+
+    const imported = await callWithCleanRetry("import_svg", { path: svgModel, svgPath }, resetSvg);
+    assert(imported.supported === true, `import_svg supported on a B-rep source (got ${JSON.stringify(imported)})`);
+    assert(imported.polylines === 2, `import_svg reports 2 polylines for the letter-O shape (got ${imported.polylines})`);
+    assert(imported.surfaces === 1, `import_svg groups the outer+hole into exactly 1 surface (got ${imported.surfaces})`);
+    assert(imported.warnings.length === 0, `import_svg reports no warnings for a clean <rect>-only SVG (got ${JSON.stringify(imported.warnings)})`);
+
+    const svgEdits = JSON.parse(fs.readFileSync(`${svgModel}.edits.json`, "utf8"));
+    const surfaceOp = svgEdits.ops.find((o) => o.op === "addSurfaceFromLines");
+    assert(surfaceOp && surfaceOp.edges.length === 8, `the persisted addSurfaceFromLines op carries outer(4)+hole(4)=8 edges (got ${surfaceOp?.edges?.length})`);
+    // addPolyline builds a bare WIRE, not a free face (unlike
+    // addRectangleProfile) — so block.stp's 6 solid faces are the only
+    // faces that exist before addSurfaceFromLines runs, and the new holed
+    // face lands at face-6, not face-8 (verified live — an initial draft of
+    // this fixture guessed "face-8" by analogy with a DIFFERENT, face-
+    // building profile op and it silently resolved to a wrong solid face
+    // instead of the sketch, caught only by re-deriving the count here).
+    const holedFaceFacts = await call("inspect", { path: svgModel, entityId: "face-6" });
+    assert(
+      holedFaceFacts.area != null && Math.abs(holedFaceFacts.area - 52) < 1e-6,
+      `the imported letter-O's holed face has area exactly 52 = 60 - 8 (got ${holedFaceFacts.area})`
+    );
+
+    // A <text> element is recognized and warned about, not silently skipped;
+    // any real geometry in the same file still imports.
+    const textSvgPath = path.join(dir, "with-text.svg");
+    fs.writeFileSync(textSvgPath, `<svg><text x="0" y="0">hi</text><rect x="0" y="0" width="4" height="4"/></svg>`, "utf8");
+    resetSvg();
+    const withText = await callWithCleanRetry("import_svg", { path: svgModel, svgPath: textSvgPath }, resetSvg);
+    assert(withText.polylines === 1, `the real <rect> still imports alongside a <text> warning (got ${withText.polylines})`);
+    assert(
+      withText.warnings.some((w) => /<text>/.test(w) && /outlines/.test(w)),
+      `import_svg surfaces the <text> warning (got ${JSON.stringify(withText.warnings)})`
+    );
+
+    // Two disjoint (non-nested) shapes group into two SEPARATE surface ops,
+    // never one wrong holed face spanning both.
+    const disjointSvgPath = path.join(dir, "disjoint.svg");
+    fs.writeFileSync(disjointSvgPath, `<svg><rect x="0" y="0" width="4" height="4"/><rect x="20" y="0" width="4" height="4"/></svg>`, "utf8");
+    resetSvg();
+    const disjoint = await callWithCleanRetry("import_svg", { path: svgModel, svgPath: disjointSvgPath }, resetSvg);
+    assert(disjoint.surfaces === 2, `two disjoint shapes group into 2 separate surface ops (got ${disjoint.surfaces})`);
+
+    // wrap() on the holed "O" face, developed onto a cylinder — the holed
+    // shell's volume is exactly (outerArea - holeArea) x thickness, the
+    // same isometric-development property CLAUDE.md records for a plain
+    // profile, now verified for a holed one: (60-8)*2 = 104. A fresh
+    // reset+re-import first, since the file was overwritten by the <text>/
+    // disjoint checks above — plain `call` for the wrap step itself (not
+    // `callWithCleanRetry`): that op-list depends on the prior import
+    // already having landed in the SAME file, so a transient-abort retry
+    // here would need to redo the whole reset+re-import sequence, which a
+    // bare resetState callback can't express — acceptable, since this
+    // specific op has shown no sign of the accumulated-heap-pressure class
+    // this file guards elsewhere with the retry wrapper.
+    resetSvg();
+    const svgImportedForWrap = await callWithCleanRetry("import_svg", { path: svgModel, svgPath }, resetSvg);
+    assert(svgImportedForWrap.surfaces === 1, "re-import for the wrap block groups into 1 surface");
+    // axisDir PERPENDICULAR to the sketch's own normal (the sketch lies flat
+    // in z=0, normal ±Z, since every SVG import is flat XY) — the SAME
+    // "axis lies within the sketch plane" branch the existing cylWrap
+    // fixture above already exercises, verified live for this exact holed
+    // profile (probe: volume 104.00000000754444, matching (60-8)*2).
+    const cylWrapSvg = {
+      op: "wrap", profile: "face-6", target: "cylinder",
+      axisPoint: [20, -15, 0], axisDir: [1, 0, 0], radius: 10, thickness: 2,
+      variant: "standalone",
+    };
+    const wrapped = await call("apply_edit_ops", { path: svgModel, ops: [cylWrapSvg] });
+    assert(wrapped.applied === 1, `wrap on the imported holed face applies (got ${JSON.stringify(wrapped.report)})`);
+    const wrappedShellMass = await call("get_mass_properties", { path: svgModel, entityId: "solid-1" });
+    assert(
+      wrappedShellMass.supported && Math.abs(wrappedShellMass.volume - 104) < 1e-3,
+      `the wrapped holed shell has volume exactly (60-8)*2=104 (got ${wrappedShellMass.volume})`
+    );
+
+    // Non-B-rep source refusal, no pipeline call needed to know this.
+    const meshSvgPath = path.join(dir, "for-mesh.svg");
+    fs.writeFileSync(meshSvgPath, `<svg><rect x="0" y="0" width="4" height="4"/></svg>`, "utf8");
+    const meshRefused = await call("import_svg", { path: path.join(ROOT, "examples", "STL", "cube.stl"), svgPath: meshSvgPath });
+    assert(meshRefused.supported === false, `import_svg refuses a mesh-format source (got ${JSON.stringify(meshRefused)})`);
+  }
+
   // --- loft guide rail (roadmap item 1: resampled-intermediate fallback) ---
   //
   // The kernel's MakePipeShell rail wiring is unreachable in this build
@@ -5372,6 +5838,132 @@ try {
     // 3. thin loft + smoothing completes (the P4 verdict: shared choke point).
     const thinSmoothVol = await loftVolume("thin smoothed loft", { thin: 2, smoothing: true });
     assert(Number.isFinite(thinSmoothVol) && thinSmoothVol > 0, `thin + smoothing completes with sane volume (${thinSmoothVol})`);
+  }
+
+  // ── Distance-graded mesh sizing anchored on a Part (roadmap "Boundary-
+  // layer and distance-threshold mesh sizing", Phase 1) ────────────────────
+  // Own `block.stp` copies throughout (a real 3x4x5 box, faces at x=±1.5,
+  // y=±2, z=±2.5 — the same fixture the item-10 ops section above uses) so
+  // baseline/graded/uniform generates can each start from a fresh, unedited
+  // shape with no cross-contamination.
+  {
+    const gradingBaseModel = path.join(dir, "grading-baseline.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), gradingBaseModel);
+    const gradingBaseline = await call("generate_mesh", { path: gradingBaseModel, options: { sizeMin: 0, sizeMax: 1 } });
+
+    // Identify the x=-1.5 wall face by POSITION (planeOrigin), never by the
+    // sign of `normal` — `inspect`'s normal for a planar face is verified
+    // orientation-AMBIGUOUS elsewhere in this codebase (`faceSurfaceInfo`),
+    // and a first draft of this exact block picked the OPPOSITE wall
+    // (x=+1.5) by matching normal[0]≈-1, silently inverting the whole
+    // near/far assertion below until caught by inspecting the actual
+    // planeOrigin values live.
+    const gradingModel = path.join(dir, "grading.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), gradingModel);
+    const gradingLoaded = await call("load_model", { path: gradingModel });
+    let wallFace = null;
+    for (const fid of gradingLoaded.solids[0].faceIds) {
+      const facts = await call("inspect", { path: gradingModel, entityId: fid });
+      if (facts.surfaceType === "plane" && facts.planeOrigin && Math.abs(facts.planeOrigin[0] + 1.5) < 1e-3) wallFace = fid;
+    }
+    assert(wallFace !== null, `found block.stp's x=-1.5 planar wall face (got ${wallFace})`);
+
+    const grading = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
+    await call("set_part", { path: gradingModel, name: "Wall", surfaces: [wallFace], meshGrading: grading });
+    const graded = await call("generate_mesh", { path: gradingModel, options: { sizeMin: 0, sizeMax: 1 } });
+
+    const gradingUniformModel = path.join(dir, "grading-uniform.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), gradingUniformModel);
+    await call("set_part", {
+      path: gradingUniformModel,
+      name: "All",
+      surfaces: gradingLoaded.solids[0].faceIds,
+      meshSize: grading.sizeAtWall,
+    });
+    const uniform = await call("generate_mesh", { path: gradingUniformModel, options: { sizeMin: 0, sizeMax: 1 } });
+
+    assert(
+      gradingBaseline.nodeCount < graded.nodeCount && graded.nodeCount < uniform.nodeCount,
+      `distance-graded sizing sits strictly between an ungraded baseline and a uniform fine mesh (baseline=${gradingBaseline.nodeCount}, graded=${graded.nodeCount}, uniform=${uniform.nodeCount})`
+    );
+
+    // The gradient itself, read off the exported .msh's own node coordinates
+    // — a near slab against the graded wall vs. a mid-domain far slab (well
+    // away from the OPPOSITE wall's own boundary-density bump).
+    const gradingMshOut = path.join(dir, "grading.msh");
+    await call("export_mesh", { path: gradingModel, format: "msh", outputPath: gradingMshOut, options: { sizeMin: 0, sizeMax: 1 } });
+    const gradingCoords = parseMshNodeCoords(fs.readFileSync(gradingMshOut, "utf8"));
+    const nearCount = gradingCoords.filter((c) => c[0] >= -1.5 && c[0] < -1.2).length;
+    const farCount = gradingCoords.filter((c) => c[0] >= 0.3 && c[0] < 0.6).length;
+    assert(
+      nearCount / farCount >= 3,
+      `node density is far higher near the graded wall than mid-domain (near=${nearCount}, far=${farCount}, ratio=${(nearCount / farCount).toFixed(2)})`
+    );
+
+    // An invalid band is rejected with a warning, and the part's existing
+    // (valid) grading is left untouched — never silently cleared/clobbered.
+    const invalidGradingResult = await call("set_part", {
+      path: gradingModel,
+      name: "Wall",
+      meshGrading: { ...grading, sizeFar: 0.01 }, // sizeFar < sizeAtWall: invalid
+    });
+    assert(
+      invalidGradingResult.warnings.some((w) => /meshGrading/i.test(w)),
+      `an invalid meshGrading band is rejected with a named warning (got ${JSON.stringify(invalidGradingResult.warnings)})`
+    );
+
+    // unit:"in" export: the geometry, the global size options, AND the
+    // part's grading band are all rescaled by the SAME factor, so the
+    // gradient must still be visible at the smaller absolute scale.
+    const gradingMshInOut = path.join(dir, "grading-in.msh");
+    await call("export_mesh", {
+      path: gradingModel,
+      format: "msh",
+      outputPath: gradingMshInOut,
+      unit: "in",
+      options: { sizeMin: 0, sizeMax: 1 },
+    });
+    const gradingCoordsIn = parseMshNodeCoords(fs.readFileSync(gradingMshInOut, "utf8"));
+    const nearCountIn = gradingCoordsIn.filter((c) => c[0] >= -1.5 / 25.4 && c[0] < -1.2 / 25.4).length;
+    const farCountIn = gradingCoordsIn.filter((c) => c[0] >= 0.3 / 25.4 && c[0] < 0.6 / 25.4).length;
+    assert(
+      nearCountIn / farCountIn >= 3,
+      `unit:"in" export still shows the same density gradient (near=${nearCountIn}, far=${farCountIn}, ratio=${(nearCountIn / farCountIn).toFixed(2)})`
+    );
+
+    // A mesh-format source has no per-entity correlation (same gate physical
+    // groups already use) — meshGrading is accepted structurally but warned
+    // as entirely ignored, never silently applied to a global override the
+    // way a single sized `meshSize` part is.
+    const gradingStlModel = path.join(dir, "grading.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), gradingStlModel);
+    const gradingStlResult = await call("set_part", {
+      path: gradingStlModel,
+      name: "P",
+      volumes: ["node-0"],
+      meshGrading: grading,
+    });
+    assert(
+      gradingStlResult.warnings.some((w) => /meshGrading is ignored/i.test(w)),
+      `a mesh-format source warns that meshGrading is ignored entirely (got ${JSON.stringify(gradingStlResult.warnings)})`
+    );
+
+    // Volume-anchored grading exercises the getBoundary(volume)->SurfacesList
+    // conversion (a Distance field cannot target a volume tag directly) —
+    // never exercised by the face-anchored case above. No near/far
+    // distinction is meaningful for a whole-volume anchor (the entire
+    // exterior is "near" its own volume), so this only asserts real
+    // refinement over baseline: a broken conversion degrades SILENTLY to the
+    // ungraded baseline density (an empty SurfacesList is not an error to
+    // Gmsh), which is exactly what this assertion is written to catch.
+    const gradingVolModel = path.join(dir, "grading-volume.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), gradingVolModel);
+    await call("set_part", { path: gradingVolModel, name: "Body", volumes: ["solid-0"], meshGrading: grading });
+    const volGraded = await call("generate_mesh", { path: gradingVolModel, options: { sizeMin: 0, sizeMax: 1 } });
+    assert(
+      volGraded.nodeCount > gradingBaseline.nodeCount * 2,
+      `volume-anchored grading (via getBoundary) refines well beyond baseline (got ${volGraded.nodeCount} vs baseline ${gradingBaseline.nodeCount})`
+    );
   }
 
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");

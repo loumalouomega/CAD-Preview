@@ -73,15 +73,15 @@ describe("hiddenLineDrawing — the isometric cube", () => {
     // edge: the far corner's neighbours project opposite the near corner's.
     const r = result();
     const basis = basisFor([1, 1, 1]);
-    const projectCentred = (p: [number, number, number]): [number, number] => [
+    const projectWorld = (p: [number, number, number]): [number, number] => [
       p[0] * basis.right[0] + p[1] * basis.right[1] + p[2] * basis.right[2],
       -(p[0] * basis.up[0] + p[1] * basis.up[1] + p[2] * basis.up[2]),
     ];
-    // Cube corners are ±0.5 once centred. Neighbours of the far corner (0,0,0):
+    // Output is world-projected. Neighbours of the far corner (0,0,0):
     const farNeighbours = [
-      projectCentred([0.5, -0.5, -0.5]),
-      projectCentred([-0.5, 0.5, -0.5]),
-      projectCentred([-0.5, -0.5, 0.5]),
+      projectWorld([1, 0, 0]),
+      projectWorld([0, 1, 0]),
+      projectWorld([0, 0, 1]),
     ];
     const near = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-4;
     const hitsAFarNeighbour = (s: Segment2) => s.some((q) => farNeighbours.some((f) => near(q, f)));
@@ -89,7 +89,7 @@ describe("hiddenLineDrawing — the isometric cube", () => {
     expect(r.hidden.filter(hitsAFarNeighbour), "every hidden edge runs to a far-corner neighbour").toHaveLength(3);
     // And the inverse: no VISIBLE edge runs between the shared corner point and
     // a far neighbour, which is what an inverted depth test would produce.
-    const sharedCorner = projectCentred([-0.5, -0.5, -0.5]);
+    const sharedCorner = projectWorld([0, 0, 0]);
     const isFarSpoke = (s: Segment2) =>
       s.some((q) => near(q, sharedCorner)) && hitsAFarNeighbour(s);
     expect(r.visible.filter(isFarSpoke), "no visible edge is a far-corner spoke").toHaveLength(0);
@@ -97,6 +97,24 @@ describe("hiddenLineDrawing — the isometric cube", () => {
 
   it("reports no warnings for clean geometry", () => {
     expect(result().warnings).toEqual([]);
+  });
+});
+
+describe("hiddenLineDrawing — output frame", () => {
+  it("returns WORLD-projected coordinates for a model far from the origin", () => {
+    // Regression: the engine centres the model internally for precision and
+    // used to return segments in that centred frame, so they disagreed with
+    // `project()`/`dimensionDrawings` by the projected bbox centre.
+    const soup = new Float32Array(boxSoup([100, 200, 300], [110, 210, 310]));
+    const r = hiddenLineDrawing(weldTriangleSoup(soup), basisFor([0, 0, 1]));
+    const pts = [...r.visible, ...r.hidden].flat();
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    // Front view: screen x = world x, screen y = -world y.
+    expect(Math.min(...xs)).toBeCloseTo(100, 3);
+    expect(Math.max(...xs)).toBeCloseTo(110, 3);
+    expect(Math.min(...ys)).toBeCloseTo(-210, 3);
+    expect(Math.max(...ys)).toBeCloseTo(-200, 3);
   });
 });
 
@@ -124,9 +142,8 @@ describe("hiddenLineDrawing — partial occlusion", () => {
 
   it("splits one edge into both a visible and a hidden run, at the right place", () => {
     const r = hiddenLineDrawing(twoBoxes(), basisFor([0, 0, 1]));
-    // Screen coordinates are CENTRED on the model bbox, so they are world x
-    // minus the combined centre — assert on the split's position within the
-    // run pair rather than on absolute coordinates.
+    // Assert on the split's position within the run pair rather than on
+    // absolute coordinates (the world-frame check has its own test below).
     const horizontal = (s: Segment2) => Math.abs(s[0][1] - s[1][1]) < 1e-6;
     const spanOf = (s: Segment2): [number, number] => [Math.min(s[0][0], s[1][0]), Math.max(s[0][0], s[1][0])];
 

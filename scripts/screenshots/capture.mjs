@@ -51,8 +51,8 @@ const SHOTS = [
     // the last entry off rather than failing the run. Two more rows landed
     // with Import/Export DXF (285 → 342), one more with Export Technical
     // Drawing (342 → 371), and one more plus a separator with New Blank Model
-    // (371 → 410).
-    target: { clip: { x: 0, y: 0, width: 320, height: 410 } },
+    // (371 → 410), and one more with Export Drawing Sheet (410 → 439).
+    target: { clip: { x: 0, y: 0, width: 320, height: 439 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the
@@ -162,7 +162,19 @@ const SHOTS = [
     },
     target: { sel: "#meshing-panel" },
   },
-  { file: "part-sizes.png", setup: populate, target: { sel: "#meshing-part-sizes" } },
+  {
+    file: "part-sizes.png",
+    setup: async (page) => {
+      await populate(page);
+      // Reveal one part's grading band — the row starts collapsed by design
+      // (see meshingPanel.ts's renderParts) so a document with a band set
+      // doesn't grow the sidebar past its overflow:hidden squeeze point on
+      // load; click it open here so the shot documents the feature.
+      await page.locator(".meshing-part-grade-toggle.active").first().click();
+      await sleep(150);
+    },
+    target: { sel: "#meshing-part-sizes" },
+  },
   {
     file: "export-formats.png",
     setup: async (page) => {

@@ -9,6 +9,7 @@ import {
   loadModel,
   getMassProperties,
   generateBomTool,
+  generateHoleTableTool,
   listWorkspaceModels,
   compareModelsTool,
   checkMeshHealthTool,
@@ -36,6 +37,7 @@ import {
   loadPreprocessTool,
   getState,
   applyEditOps,
+  importSvgTool,
   runParametricScriptTool,
   runSavedScript,
   saveParametricScript,
@@ -50,6 +52,7 @@ import {
   pinAnnotation,
   type Pipeline,
   type ToolContext,
+  exportDrawingSheetTool,
 } from "./mcpTools";
 import { readEdits, readParts, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
 import type { EditOp } from "./editOps";
@@ -348,6 +351,20 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       })),
       warnings: [],
     })),
+    computeHoleTable: vi.fn(async () => ({
+      rows: [
+        {
+          radius: 2.5,
+          diameter: 5,
+          axis: [0, 0, 1],
+          count: 2,
+          faceIds: ["face-10", "face-11"],
+          solidIds: ["solid-0"],
+          nearest: { designation: "M6", standard: "iso-metric-coarse", column: "tapDrill", delta: 0 },
+        },
+      ],
+      warnings: [],
+    })),
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
     hitTest: vi.fn(async () => ({ hits: [], tolerance: 0 })),
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
@@ -370,6 +387,19 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       return { pairs, warnings: [] };
     }),
     renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
+    exportDrawingSheet: vi.fn(async (_ext: string, _source: unknown, opts: { views: Array<{ name: string }>; paper?: string; projection?: string; format?: string }) => ({
+      content: opts.format === "dxf" ? "0\nEOF\n" : "<svg/>\n",
+      format: opts.format === "dxf" ? "dxf" : "svg",
+      width: 297,
+      height: 210,
+      scale: 1,
+      scaleLabel: "1:1",
+      paper: opts.paper ?? "fit",
+      projection: opts.projection ?? "first",
+      views: opts.views.map((v) => ({ name: v.name, segmentCount: 4, hiddenSegmentCount: 0, dimensionCount: 0 })),
+      triangleCount: 12,
+      warnings: [],
+    })),
     isRenderAvailable: vi.fn(async () => ({ available: true })),
     searchStandardParts: vi.fn(async () => ({ available: true, value: FAKE_PART_SEARCH_RESULT })),
     downloadStandardPart: vi.fn(async () => ({ available: true, value: FAKE_DOWNLOADED_PART })),
@@ -497,11 +527,29 @@ describe("load_model", () => {
     expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
   });
 
-  it("returns route info + limitation warning for mesh sources without touching WASM", async () => {
+  it("returns a headless mesh inventory for comparable mesh sources without touching WASM", async () => {
     const c = ctx();
-    const result = await loadModel(c, { path: stlModel });
+    const result = (await loadModel(c, { path: objModel })) as unknown as {
+      meshEntities: { components: unknown[]; triangleCount: number };
+      bbox: unknown;
+      warnings: string[];
+    };
     expect(c.pipeline.loadBRep).not.toHaveBeenCalled();
-    expect(result.warnings[0]).toMatch(/mesh-format/i);
+    expect(result.meshEntities.components).toHaveLength(1);
+    expect(result.meshEntities.triangleCount).toBe(12);
+    expect(result.bbox).toMatchObject({ min: [0, 0, 0], max: [1, 1, 1] });
+    expect(result.warnings.join(" ")).toMatch(/headless ids/i);
+  });
+
+  it("returns a null bbox for an empty mesh source", async () => {
+    const c = ctx();
+    const result = (await loadModel(c, { path: stlModel })) as unknown as {
+      meshEntities: { triangleCount: number };
+      bbox: unknown;
+    };
+    expect(c.pipeline.loadBRep).not.toHaveBeenCalled();
+    expect(result.meshEntities.triangleCount).toBe(0);
+    expect(result.bbox).toBeNull();
   });
 
   it("returns null inventory + install hint (never throws) for .scad without an openscad binary", async () => {
@@ -702,12 +750,29 @@ describe("get_mass_properties", () => {
     expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
   });
 
-  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+  it("computes triangle-based mass for a closed mesh source without touching WASM", async () => {
     const c = ctx();
-    const result = await getMassProperties(c, { path: stlModel });
+    const result = await getMassProperties(c, { path: objModel });
+    expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
+    expect(result.supported).toBe(true);
+    expect(result.volume).toBeCloseTo(1, 9);
+    expect(result.area).toBeCloseTo(6, 6);
+    expect(result.centerOfMass?.[0]).toBeCloseTo(0.5, 6);
+    expect(result.warnings.join(" ")).toMatch(/raw file coordinates/i);
+  });
+
+  it("warns that pending mesh edits are not baked in", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: objModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await getMassProperties(c, { path: objModel });
+    expect(result.warnings.join(" ")).toMatch(/NOT baked in/i);
+  });
+
+  it("still returns supported:false for meshio-only sources without touching WASM", async () => {
+    const c = ctx();
+    const result = await getMassProperties(c, { path: vtkModel });
     expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
-    expect(result.warnings[0]).toMatch(/client-side/i);
   });
 
   it("rejects unsupported extensions", async () => {
@@ -731,12 +796,17 @@ describe("inspect", () => {
     expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
   });
 
-  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+  it("resolves headless mesh ids without touching WASM", async () => {
     const c = ctx();
-    const result = await inspectEntity(c, { path: stlModel, entityId: "node-0" });
+    const result = await inspectEntity(c, { path: objModel, entityId: "mesh-component-0" });
     expect(c.pipeline.getEntityFacts).not.toHaveBeenCalled();
-    expect(result.supported).toBe(false);
-    expect(result.warnings[0]).toMatch(/headless/i);
+    expect(result).toMatchObject({ supported: true, kind: "solid" });
+    expect(result.center).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  it("rejects webview-style node ids with a load_model hint", async () => {
+    const c = ctx();
+    await expect(inspectEntity(c, { path: objModel, entityId: "node-0" })).rejects.toThrow(/load_model/i);
   });
 });
 
@@ -763,12 +833,23 @@ describe("measure", () => {
     expect(lastCall[6]).toEqual([1, 0, 0]);
   });
 
-  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+  it("measures bbox-centre distance for a mesh source without touching WASM", async () => {
     const c = ctx();
-    const result = await measureTool(c, { path: stlModel, from: "node-0", to: "node-1" });
+    const result = await measureTool(c, { path: objModel, from: "mesh-component-0", to: "whole-model" });
     expect(c.pipeline.measureEntities).not.toHaveBeenCalled();
-    expect(result.supported).toBe(false);
-    expect(result.warnings[0]).toMatch(/headless/i);
+    expect(result).toMatchObject({ supported: true, distance: 0 });
+  });
+
+  it("passes an axis through for a mesh source", async () => {
+    const c = ctx();
+    const result = await measureTool(c, {
+      path: objModel,
+      from: "mesh-triangle-0",
+      to: "mesh-triangle-1",
+      axis: [0, 0, 1],
+    });
+    expect(result.axis).toEqual([0, 0, 1]);
+    expect(result.axisComponent).toBeCloseTo(result.delta![2], 12);
   });
 });
 
@@ -1792,6 +1873,145 @@ describe("apply_edit_ops", () => {
   });
 });
 
+describe("import_svg", () => {
+  // Models a real kernel's edge growth closely enough to test the tool's
+  // guard/prediction logic: every replayed `addPolyline` op contributes one
+  // edge per segment; `addSurfaceFromLines` contributes none (it consumes
+  // existing edges, never creates new ones) — matching what the live probe
+  // in this feature's own development actually measured.
+  function edgeGrowingPipeline(overrides: Partial<Pipeline> = {}): Pipeline {
+    return fakePipeline({
+      loadBRep: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, ops: EditOp[] = []) => {
+        let n = 0;
+        for (const op of ops) {
+          if (op.op === "addPolyline") {
+            const pts = op.points;
+            n += op.closed ? pts.length : pts.length - 1;
+          }
+        }
+        return {
+          ...FAKE_BREP_RESULT,
+          edges: Array.from({ length: n }, (_, i) => ({ edgeId: `edge-${i}`, positions: new Float32Array(), smooth: false })),
+        };
+      }),
+      ...overrides,
+    });
+  }
+
+  async function writeSvg(text: string): Promise<string> {
+    const svgPath = path.join(dir, "shape.svg");
+    await fs.writeFile(svgPath, text, "utf8");
+    return svgPath;
+  }
+
+  it("imports a letter-with-a-hole shape as two polylines grouped into one holed addSurfaceFromLines op", async () => {
+    const svgPath = await writeSvg(
+      `<svg><rect x="0" y="0" width="10" height="6"/><rect x="3" y="2" width="4" height="2"/></svg>`
+    );
+    const c = ctx(edgeGrowingPipeline());
+    const result = await importSvgTool(c, { path: stpModel, svgPath });
+    expect(result.supported).toBe(true);
+    expect(result.polylines).toBe(2);
+    expect(result.surfaces).toBe(1);
+    expect(result.warnings).toEqual([]);
+    const edits = await readEdits(stpModel);
+    expect(edits.ops).toHaveLength(3); // 2 polylines + 1 holed surface
+    expect(edits.ops[2]).toMatchObject({ op: "addSurfaceFromLines" });
+    const surfaceOp = edits.ops[2] as EditOp & { op: "addSurfaceFromLines" };
+    expect(surfaceOp.edges).toHaveLength(8); // outer(4) + hole(4)
+    expect(result.model).not.toBeNull();
+  });
+
+  it("emits one addSurfaceFromLines op PER independent region (two disjoint shapes)", async () => {
+    const svgPath = await writeSvg(
+      `<svg><rect x="0" y="0" width="4" height="4"/><rect x="20" y="0" width="4" height="4"/></svg>`
+    );
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath });
+    expect(result.polylines).toBe(2);
+    expect(result.surfaces).toBe(2);
+    const edits = await readEdits(stpModel);
+    expect(edits.ops.filter((o) => o.op === "addSurfaceFromLines")).toHaveLength(2);
+  });
+
+  it("respects the transform attribute (a real text-to-outlines shape)", async () => {
+    const svgPath = await writeSvg(
+      `<svg><g transform="translate(100,0) scale(2)"><rect x="0" y="0" width="5" height="3"/></g></svg>`
+    );
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath, buildSurfaces: false });
+    const edits = await readEdits(stpModel);
+    const op = edits.ops[0] as EditOp & { op: "addPolyline" };
+    // scale(2) first -> (0,0)..(10,6); then translate(100,0) -> x+=100;
+    // then the SVG->world Y-flip negates y.
+    expect(op.points[0]).toEqual([100, 0, 0]);
+    expect(op.points[2]).toEqual([110, -6, 0]);
+    expect(result.polylines).toBe(1);
+  });
+
+  it("buildSurfaces: false imports polylines only, no addSurfaceFromLines op and no extra pipeline call", async () => {
+    const svgPath = await writeSvg(`<svg><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const c = ctx(edgeGrowingPipeline());
+    const result = await importSvgTool(c, { path: stpModel, svgPath, buildSurfaces: false });
+    expect(result.polylines).toBe(1);
+    expect(result.surfaces).toBe(0);
+    const edits = await readEdits(stpModel);
+    expect(edits.ops).toHaveLength(1);
+    expect(edits.ops[0].op).toBe("addPolyline");
+  });
+
+  it("dryRun never persists and never builds surfaces", async () => {
+    const svgPath = await writeSvg(`<svg><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath, dryRun: true });
+    expect(result.dryRun).toBe(true);
+    expect(result.surfaces).toBe(0);
+    expect(result.model).toBeNull();
+    expect((await readEdits(stpModel)).ops).toHaveLength(0);
+  });
+
+  it("skips surface-building with a named warning when the edge-count guard doesn't match (never guesses at wrong ids)", async () => {
+    // A pipeline whose edge count doesn't grow the way the polyline ops
+    // predict — the guard this feature's own doc comment calls out as the
+    // difference between "assumed" and "checked".
+    const c = ctx(fakePipeline({ loadBRep: vi.fn(async () => ({ ...FAKE_BREP_RESULT, edges: [FAKE_BREP_RESULT.edges[0]] })) }));
+    const svgPath = await writeSvg(`<svg><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const result = await importSvgTool(c, { path: stpModel, svgPath });
+    expect(result.polylines).toBe(1); // the polyline itself still applied
+    expect(result.surfaces).toBe(0);
+    expect(result.warnings.some((w) => /Skipped building surfaces/.test(w) && /edge-id prediction would be unsafe/.test(w))).toBe(true);
+    const edits = await readEdits(stpModel);
+    expect(edits.ops).toHaveLength(1); // only the polyline, no addSurfaceFromLines
+  });
+
+  it("rejects a mesh-format source without touching the pipeline", async () => {
+    const c = ctx(edgeGrowingPipeline());
+    const svgPath = await writeSvg(`<svg><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const result = await importSvgTool(c, { path: stlModel, svgPath });
+    expect(result.supported).toBe(false);
+    expect(result.polylines).toBe(0);
+    expect(result.warnings[0]).toMatch(/no sketch\/exact topology/);
+    expect(c.pipeline.loadBRep).not.toHaveBeenCalled();
+  });
+
+  it("throws when svgPath is the model's own path", async () => {
+    await expect(importSvgTool(ctx(), { path: stpModel, svgPath: stpModel })).rejects.toThrow(/must not be the model file itself/);
+  });
+
+  it("surfaces parser warnings (<text>/<use>) alongside the import status", async () => {
+    const svgPath = await writeSvg(`<svg><text x="0" y="0">hi</text><rect x="0" y="0" width="10" height="10"/></svg>`);
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath });
+    expect(result.polylines).toBe(1);
+    expect(result.warnings.some((w) => /<text>/.test(w) && /outlines/.test(w))).toBe(true);
+  });
+
+  it("reports zero polylines with a clear warning for an SVG with no usable shapes", async () => {
+    const svgPath = await writeSvg(`<svg><g/></svg>`);
+    const result = await importSvgTool(ctx(edgeGrowingPipeline()), { path: stpModel, svgPath });
+    expect(result.supported).toBe(true);
+    expect(result.polylines).toBe(0);
+    expect(result.surfaces).toBe(0);
+    expect(result.warnings[0]).toMatch(/No usable paths found/);
+  });
+});
+
 describe("list_standard_hole_sizes", () => {
   it("lists every standard when given nothing", async () => {
     const r = await listStandardHoleSizes({});
@@ -1884,6 +2104,108 @@ describe("the script library", () => {
     await expect(
       runSavedScript(ctx(), { libraryPath: lib(), name: "ghost", path: stpModel })
     ).rejects.toThrow(/No saved script named "ghost".*available: m/s);
+  });
+
+  describe("the bundled starter library fallback", () => {
+    const bundledDir = () => path.join(dir, "dist", "macros");
+    const bundledFile = () => path.join(bundledDir(), "starter-library.json");
+    const starterFile = {
+      version: 1,
+      scripts: {
+        starter: { name: "starter", description: "bundled", script },
+      },
+    };
+
+    it("lists just the bundled starters when no libraryPath is given", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      const r = await listParametricScripts({ extensionPath: dir });
+      expect(r.scripts).toEqual([{ name: "starter", description: "bundled", parameters: [{ name: "R", expr: "10" }] }]);
+      expect(r.bundled).toEqual(["starter"]);
+      expect(r.libraryPath).toBeNull();
+    });
+
+    it("reads empty without an extensionPath and without a libraryPath, never an error", async () => {
+      const r = await listParametricScripts({});
+      expect(r.scripts).toEqual([]);
+      expect(r.warnings[0]).toMatch(/No scripts found/);
+    });
+
+    it("unions a caller file on top of the bundled starters, caller winning collisions", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      await saveParametricScript({ libraryPath: lib(), name: "starter", script });
+      await saveParametricScript({ libraryPath: lib(), name: "mine", script });
+      const r = await listParametricScripts({ libraryPath: lib(), extensionPath: dir });
+      expect(r.scripts.map((s) => s.name)).toEqual(["mine", "starter"]);
+      expect(r.warnings.some((w) => /collision.*starter/.test(w))).toBe(true);
+    });
+
+    it("runs a bundled starter with no libraryPath through the same path", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      const r = await runSavedScript(ctx(), { name: "starter", path: stpModel });
+      expect(r.script).toBe("starter");
+      expect(r.applied).toBe(1);
+    });
+
+    it("prefers the caller file over a bundled starter of the same name", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      await saveParametricScript({ libraryPath: lib(), name: "starter", script });
+      const r = await runSavedScript(ctx(), { libraryPath: lib(), name: "starter", path: stpModel });
+      expect(r.applied).toBe(1);
+      const persisted = await readEdits(stpModel);
+      expect(persisted.ops).toHaveLength(1);
+    });
+
+    it("names the bundled starters in the unknown-name error when no libraryPath is given", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      await expect(runSavedScript(ctx(), { name: "ghost", path: stpModel })).rejects.toThrow(
+        /No saved script named "ghost".*available: starter/s
+      );
+    });
+
+    it("caller parameters refresh a plain step's caches while keeping exprs live", async () => {
+      const paramScript = {
+        variables: [{ name: "R", expr: "10" }],
+        steps: [
+          { op: { op: "addBox", center: [0, 0, 0], size: [10, 10, 10], exprs: { "size[0]": "R", "size[1]": "R", "size[2]": "R" } } },
+        ],
+      };
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(
+        bundledFile(),
+        JSON.stringify({ version: 1, scripts: { box: { name: "box", script: paramScript } } }),
+        "utf8"
+      );
+      const r = await runSavedScript(ctx(), { name: "box", path: stpModel, parameters: { R: 99 } });
+      expect(r.applied).toBe(1);
+      const persisted = await readEdits(stpModel);
+      expect((persisted.ops[0] as any).size).toEqual([99, 99, 99]);
+      expect((persisted.ops[0] as any).exprs).toEqual({ "size[0]": "R", "size[1]": "R", "size[2]": "R" });
+    });
+
+    it("an override that does not evaluate keeps the authored numbers and says so", async () => {
+      const paramScript = {
+        variables: [{ name: "R", expr: "10" }],
+        steps: [
+          { op: { op: "addBox", center: [0, 0, 0], size: [10, 10, 10], exprs: { "size[0]": "R" } } },
+        ],
+      };
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(
+        bundledFile(),
+        JSON.stringify({ version: 1, scripts: { box: { name: "box", script: paramScript } } }),
+        "utf8"
+      );
+      const r = await runSavedScript(ctx(), { name: "box", path: stpModel, parameters: { R: "nope" } });
+      expect(r.applied).toBe(1);
+      const persisted = await readEdits(stpModel);
+      expect((persisted.ops[0] as any).size).toEqual([10, 10, 10]);
+      expect(r.issues.some((i: string) => /step 0/.test(i))).toBe(true);
+    });
   });
 });
 
@@ -2214,6 +2536,28 @@ describe("set_part", () => {
     expect((await readParts(stpModel))[0].meshSize).toBeUndefined();
     const result = await setPart({ path: stpModel, name: "P", meshSize: -3 });
     expect(result.warnings[0]).toMatch(/positive/);
+  });
+
+  it("sets, updates, clears, and rejects an invalid meshGrading band", async () => {
+    const grading = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
+    await setPart({ path: stpModel, name: "P", surfaces: ["face-0"], meshGrading: grading });
+    await setPart({ path: stpModel, name: "P", meshGrading: { ...grading, sizeFar: 2 } });
+    expect((await readParts(stpModel))[0].meshGrading).toEqual({ ...grading, sizeFar: 2 });
+
+    // An invalid band keeps the existing value and warns, rather than clobbering it.
+    const result = await setPart({ path: stpModel, name: "P", meshGrading: { ...grading, sizeFar: 0.01 } });
+    expect((await readParts(stpModel))[0].meshGrading).toEqual({ ...grading, sizeFar: 2 }); // unchanged
+    expect(result.warnings.some((w) => /meshGrading/.test(w))).toBe(true);
+
+    await setPart({ path: stpModel, name: "P", meshGrading: null });
+    expect((await readParts(stpModel))[0].meshGrading).toBeUndefined();
+  });
+
+  it("warns that meshGrading is ignored entirely for a mesh-format source", async () => {
+    const result = await setPart({ path: stlModel, name: "P", volumes: ["node-0"], meshGrading: {
+      sizeAtWall: 0.1, sizeFar: 1, distNear: 0.2, distFar: 1,
+    } });
+    expect(result.warnings.some((w) => /meshGrading is ignored/.test(w))).toBe(true);
   });
 
   it("stores a selector with a server-derived op-kind tag, and clears it with null", async () => {
@@ -3029,6 +3373,35 @@ describe("generate_bom", () => {
 });
 
 // ---------------------------------------------------------------------------
+// generate_hole_table
+
+describe("generate_hole_table", () => {
+  it("rejects mesh-format sources without touching the pipeline", async () => {
+    const c = ctx();
+    const result = await generateHoleTableTool(c, { path: vtkModel });
+    expect(result.supported).toBe(false);
+    expect(c.pipeline.computeHoleTable).not.toHaveBeenCalled();
+  });
+
+  it("returns rows + TSV through one pipeline call", async () => {
+    const c = ctx();
+    const result = await generateHoleTableTool(c, { path: stpModel });
+    expect(result.supported).toBe(true);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows![0]).toMatchObject({
+      diameter: 5,
+      count: 2,
+      nearest: { designation: "M6", column: "tapDrill", delta: 0 },
+    });
+    const lines = result.table!.split("\n");
+    expect(lines[0]).toBe("Diameter_mm\tAxis\tCount\tFaces\tSolids\tNearest\tColumn\tDelta_mm");
+    expect(lines[1]).toContain("M6");
+    expect(c.pipeline.computeHoleTable).toHaveBeenCalledTimes(1);
+    expect(c.pipeline.computeHoleTable).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", []);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // check_interference_all
 
 describe("check_interference_all", () => {
@@ -3290,5 +3663,70 @@ describe("render_ops_prefix", () => {
     const withRender = await renderOpsPrefixTool(available, { path: stpModel, throughIndex: -1, render: true });
     expect(withRender.images).toHaveLength(4);
     expect(available.pipeline.renderSnapshot).toHaveBeenCalled();
+  });
+});
+
+describe("export_drawing_sheet", () => {
+  it("defaults to front/top/right/iso, first-angle, fit paper, SVG — and writes the file", async () => {
+    const c = ctx();
+    const out = path.join(dir, "sheet.svg");
+    const r = await exportDrawingSheetTool(c, { path: stpModel, outputPath: out });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(call.views.map((v: { name: string }) => v.name)).toEqual(["front", "top", "right", "iso-ftr"]);
+    expect(call.projection).toBe("first");
+    expect(call.paper).toBe("fit");
+    expect(call.hiddenLines).toBe(true);
+    expect(r.format).toBe("svg");
+    expect(r.views).toHaveLength(4);
+    expect(await fs.readFile(out, "utf8")).toBe("<svg/>\n");
+    expect(r.dimensionCount).toBeUndefined();
+  });
+
+  it("skips unknown and repeated views with a warning, and refuses a sheet with no usable view", async () => {
+    const c = ctx();
+    const r = await exportDrawingSheetTool(c, {
+      path: stpModel,
+      outputPath: path.join(dir, "s.svg"),
+      views: ["FRONT", "sideways", "front", "top"],
+    });
+    expect(r.views.map((v) => v.name)).toEqual(["front", "top"]);
+    expect(r.warnings.join(" ")).toMatch(/sideways/);
+    expect(r.warnings.join(" ")).toMatch(/repeated/);
+    await expect(
+      exportDrawingSheetTool(ctx(), { path: stpModel, outputPath: path.join(dir, "t.svg"), views: ["nope"] })
+    ).rejects.toThrow(/at least one named view/);
+  });
+
+  it("falls back with a warning on an invalid paper, projection or scale", async () => {
+    const c = ctx();
+    const r = await exportDrawingSheetTool(c, {
+      path: stpModel,
+      outputPath: path.join(dir, "s.dxf"),
+      format: "dxf",
+      paper: "B5",
+      projection: "second",
+      scale: -2,
+    });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect([call.paper, call.projection, call.scale]).toEqual(["fit", "first", undefined]);
+    expect(r.format).toBe("dxf");
+    expect(r.warnings.join(" ")).toMatch(/B5/);
+    expect(r.warnings.join(" ")).toMatch(/second/);
+    expect(r.warnings.join(" ")).toMatch(/-2/);
+  });
+
+  it("passes paper/projection/scale through and refuses the source path", async () => {
+    const c = ctx();
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "s.svg"), paper: "A3", projection: "third", scale: 0.5 });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect([call.paper, call.projection, call.scale]).toEqual(["A3", "third", 0.5]);
+    await expect(exportDrawingSheetTool(ctx(), { path: stpModel, outputPath: stpModel })).rejects.toThrow();
+  });
+
+  it("rejects a meshio-only source before touching the pipeline", async () => {
+    const c = ctx();
+    await fs.writeFile(vtkModel, "# vtk DataFile Version 2.0\n", "utf8");
+    await expect(exportDrawingSheetTool(c, { path: vtkModel, outputPath: path.join(dir, "v.svg") })).rejects.toThrow(/no host-side geometry/);
+    expect(c.pipeline.exportDrawingSheet).not.toHaveBeenCalled();
   });
 });

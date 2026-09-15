@@ -54,7 +54,7 @@ You don't need an existing file. **File ▾ → New Blank Model…** (also `CAD 
 
 Two things are worth knowing about how a blank model is stored:
 
-- **The `.brep` file itself stays empty.** Exactly as for an edited STEP file, your geometry is an ordered, replayable op-list in the `<model>.brep.edits.json` sidecar beside it; the CAD file is never written. Keep the pair together, or use **Export…** / **Save Preprocess…** to produce something standalone.
+- **The `.brep` file itself stays empty until you explicitly save.** Exactly as for an edited STEP file, your geometry is an ordered, replayable op-list in the `<model>.brep.edits.json` sidecar beside it; nothing writes the CAD file as a side effect of editing. Keep the pair together, or use **Export…** / **Save Preprocess…** to produce something standalone — or save in place (below) to bake the geometry into the `.brep` file itself.
 - **Export offers STEP/IGES and the mesh formats, plus the source's own B-rep format as a confirmed save-in-place** — the export list excludes a document's own format only for mesh sources. Picking your own STEP/IGES/BREP writes the baked model back to the open file (with `.bak` + history watermark); export anything else for a file that carries the geometry itself.
 
 New Blank Model only ever creates new files: if you point it at a path that already exists it refuses rather than overwriting, since blanking a model would leave its existing edit history replaying against nothing.
@@ -135,11 +135,12 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 | **Export…** | Convert the model to a compatible format and save it — or pick the source's own B-rep format to save the edits back into the open file itself (confirmed, with a `.bak` backup) — see [Exporting a Model](#exporting-a-model) | Ctrl+E |
 | **Save Preprocess…** | Bundle the CAD file plus whichever of its `.parts.json` / `.annotations.json` / `.edits.json` / `.mesh.json` sidecars currently exist into a single `.zip` archive (with a per-entry SHA-256 checksum recorded in its manifest), so the whole working state can be shared or archived as one file | Ctrl+Alt+S |
 | **Load Preprocess…** | Restore a `.zip` built by Save Preprocess: pick a destination for the CAD file, write back whichever sidecars it contains, and open the result — rejects a corrupted/tampered archive or a destination whose file extension doesn't match the archive's own format | Ctrl+Alt+O |
-| **Import SVG…** | Pick a `.svg` file and import every `<path>` in it as sketch **Polyline** edit ops — one per closed/open subpath (a shape with a hole, e.g. a traced letter "O", becomes two separate polylines) — ready to select (**Line** mode) and feed into Build → Surface / Extrude. B-rep only; only plain `<path>` elements are read (no `<rect>`/`<circle>`/other shape elements, and any `transform` attribute on the path is ignored) | — |
+| **Import SVG…** | Pick a `.svg` file and import every `<path>`/`<rect>`/`<circle>`/`<ellipse>`/`<line>`/`<polyline>`/`<polygon>` in it as sketch **Polyline** edit ops — one per closed/open subpath (a shape with a hole, e.g. a traced letter "O", becomes two separate polylines) — with every ancestor's `transform` composed in, so a real "convert text to outlines" export (typically wrapped in one or more `<g transform="...">` groups) imports at the right place and scale. Build → Surface then accepts an outer loop's edges together with its hole's to build a single holed face in one step, ready to Extrude/`wrap` onto a cylinder. B-rep only; `<use>` and `<text>` are recognized and reported in the status line rather than silently skipped (`<text>` needs converting to outlines first) | — |
 | **Import DXF…** | Pick a `.dxf` file and import its model-space `LINE` / `LWPOLYLINE` (bulge arcs sampled) / `POLYLINE` / `CIRCLE` / `ARC` / `SPLINE` entities as the matching Line/Polyline/Circle/Arc/Spline edit ops. B-rep only; blocks/INSERT/TEXT/DIMENSION/HATCH and paper space are skipped, and geometry lands flat at z=0 (1 DXF unit = 1 mm, Y-up native — adjust afterward with Scale/Move/Rotate) | — |
 | **Export Silhouette SVG…** | Write a 2D **outline** of the model as an `.svg` file — pick a view (**Current view**, or Front/Back/Top/Bottom/Left/Right/Iso), then an export unit, then a destination. An outline, **not** a dimensioned technical drawing (see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg)) | — |
 | **Export Silhouette DXF…** | The same outline flow with a DXF serializer (`LWPOLYLINE` chains + `LINE` singletons), saved with a `.dxf` extension | — |
-| **Export Technical Drawing…** | A 2D drawing with **hidden-line removal**: feature edges solid where visible, dashed where hidden behind the part. Unlike the two silhouette exports it draws interior edges too, so a hole's far rim shows dashed. Same view and unit picks; SVG or DXF (where hidden geometry lands on a `HIDDEN` layer). Still a review artifact — no dimensions, single view | — |
+| **Export Technical Drawing…** | A 2D drawing with **hidden-line removal**: feature edges solid where visible, dashed where hidden behind the part. Unlike the two silhouette exports it draws interior edges too, so a hole's far rim shows dashed. Same view and unit picks; SVG or DXF (where hidden geometry lands on a `HIDDEN` layer). Still a review artifact and a single view — pinned annotations still bake in as dimensions | — |
+| **Export Drawing Sheet…** | Several views (front/top/right/iso by default) on **one sheet** at a shared scale, orthographically aligned (first-angle by default) with a title block. Format, then paper size, then export unit, then a destination. A pinned annotation is drawn once, in whichever view shows it at true length (see [Exporting a Drawing Sheet](#exporting-a-drawing-sheet)) | — |
 
 ![The File dropdown open, showing New Blank Model, Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, Import DXF, and the silhouette/technical-drawing exports.](/screenshots/file-menu.png)
 
@@ -281,6 +282,13 @@ state to reason about.
 Macros live in `cad-preview-macros.json` in the model's own folder, shared by every model there.
 That is the **same file** the MCP tools read and write, so a macro you record by hand is directly
 runnable by an agent and vice versa.
+
+Three starter macros ship with the extension and are listed above your own entries — `spring` (a
+helical spring: wire-radius circle swept along a helix, parameters `R`/`W`/`P`/`N`), `bolt-circle-flange`
+(the bolt-circle flange walkthrough as a runnable macro, parameters `R`/`N`), and `hex-bolt` (hex-prism
+head fused to a shaft, parameters `headR`/`headH`/`shaftR`/`shaftL`). They run like any macro but show
+no Delete button (read-only). All three assume a blank model (File ▸ New Blank Model) — their
+sweep/pattern/boolean steps reference the entity ids those steps create on an empty base.
 
 ### Theme
 
@@ -450,7 +458,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | **Section** | Select volumes (**Vol** mode), define the plane, **Apply** — appends the planar cross-section as a sketch face, leaving the solids untouched (B-rep only) |
 | **Drill** | Select volumes (**Vol** mode) plus a profile face (**Surf** mode) or wire (**Line** mode), set **Dir**/**Length**, **Apply** — cuts the profile's regions through the volumes. **Regions** narrows a multi-region profile: blank (face as modeled), `all`, or indices like `0,2` (`0` = outer boundary) (B-rep only) |
 | **Rib** | Select an open spine sketch (**Line** mode), set a wall **Thickness** and an **Up-to** face, **Apply** — extrudes the wall to that face (plus one thickness of embed), fuses it into the surrounding solids, and blends the junction (B-rep only) |
-| **Wrap** | Select a flat sketch face (**Surf** mode), pick **Cylinder** or **Cone** target, set axis/radius (half-angle for cones) + wall **Thickness** and variant — **Standalone** appends the wrapped shell, **Emboss** fuses it into the target volumes, **Engrave** cuts it out (B-rep only) |
+| **Wrap** | Select a flat sketch face (**Surf** mode) — a holed profile (e.g. an imported letter with a counter) is supported, its hole cut out of the developed shell — pick **Cylinder** or **Cone** target, set axis/radius (half-angle for cones) + wall **Thickness** and variant — **Standalone** appends the wrapped shell, **Emboss** fuses it into the target volumes, **Engrave** cuts it out (B-rep only) |
 | **Explode** | Drag the slider (or type the factor) for a live preview — bodies spread radially from the model centre as you drag, snapping back at 0 — then **Apply** to commit it as an operation (all formats) |
 | **Mate** | Select two faces (**Surf** mode): face A then face B, and **Apply** — aligns A onto B (B-rep only) |
 | **Align** | Select volumes (**Vol** mode); choose an **Axis** (X/Y/Z), an **Extent** (min/center/max of each volume's own bounding box), and a target coordinate **To**; **Apply** — moves each selected volume along that one axis so its own chosen extent lands exactly on the target. Every targeted volume aligns independently, even when the whole model is selected (all formats) |
@@ -504,7 +512,7 @@ To generate a mesh:
 | --- | --- |
 | **Coarser→finer slider** | The primary control: sets the target element size (`Mesh.MeshSizeMax`), log-scaled between bbox-diagonal/5 (coarsest) and /200 (finest). The readout shows the size and an order-of-magnitude element-count estimate; a warning appears above the panel when the estimate exceeds ~1M elements |
 | **Coarse / Medium / Fine** | One-click presets: element size = bbox diagonal / 10, / 20 (the default), / 50 |
-| **Part sizes** | One size input per defined Part (visible once parts exist) — the same per-part target size as the Parts panel's input, mirrored here; blank inherits the global size |
+| **Part sizes** | One size input per defined Part (visible once parts exist) — the same per-part target size as the Parts panel's input, mirrored here; blank inherits the global size. A **Grade** toggle beside each part reveals a distance-graded band (Wall size / Far size / Near dist / Far dist): elements stay at the wall size within the near distance of the part's own entities, grow to the far size at the far distance, and stay there beyond it — for meshing toward a wall, unlike the flat size which only refines *inside* the part. B-rep sources only |
 | **Engine** | **Gmsh** (default) or **fTetWild** — an alternative volume mesher for a dirty mesh-format 3D source (holes, self-intersections, non-manifold edges) that Gmsh's own boundary reclassification rejects or silently produces no elements for. Under fTetWild, Size min / 2D-3D algorithm / Element order / Element shape / STL angle are all greyed (unused); the size slider still applies, via fTetWild's own envelope/target-edge-length settings under Advanced, plus three optional flags: **manifold surface** (force a manifold boundary), **coarsen** (fewer, larger tets), and **no interior filter** (skip interior/exterior filtering — returns a hull fill, not the part interior; inspection only). Requesting fTetWild for a B-rep source or a non-3D dimension falls back to Gmsh automatically |
 | **Advanced settings** (collapsed) | The raw Gmsh options below — expand to reveal them ([shown here](/screenshots/fe-mesh-advanced.png)) |
 | **Dimension** | 1D (edges only), 2D (surface triangulation), or 3D (volume tetrahedralization) |
@@ -517,7 +525,7 @@ To generate a mesh:
 | **fTetWild envelope (eps)** | fTetWild's envelope size, as a fraction of the model's bounding-box diagonal — smaller stays closer to the input surface (slower). Only used by engine: fTetWild |
 | **▶ Generate** | Run Gmsh now with the current options and show the result as an overlay |
 | **Export format `<select>`** | Pick which format **📤 Export** writes — **Kratos MDPA (Elements + Conditions)** (the default), Kratos MDPA (Geometries), Gmsh Mesh (`.msh`), Gmsh Mesh v2/Legacy (`.msh2`), Gmsh Geometry (`.geo_unrolled`), VTK, MED, CGNS, XDMF, I-DEAS Universal (`.unv`), Abaqus (`.inp`), Nastran Bulk Data (`.bdf`), SU2, INRIA Medit (`.mesh`), STL Mesh, Diffpack (`.diff`), OFF, VTK XML Unstructured (`.vtu`), HDF Mesh Format (`.hmf`), AVS UCD (`.avs`), COMSOL Mphtxt (`.mphtxt`), Netgen (`.vol`), FLAC3D (`.f3grid`), Well-Known Text (`.wkt`), or Flux (`.pf3`). Both Kratos MDPA modes preserve named Parts as Kratos SubModelParts and support linear or quadratic tetrahedra/hexahedra/triangles/quadrilaterals. MED/CGNS/XDMF and the 8 trailing formats (VTU through Flux) are all bridged through meshio++ (this Gmsh build has no writer for any of them) — MED preserves named Parts as **named MED groups**, and XDMF also writes a companion `.h5` file alongside the `.xdmf`. |
-| **Export unit `<select>`** | A real geometric scale applied to the exported file's geometry before Gmsh sees it — mirrors the model Export command's own unit picker (see [Units](#units)). Defaults to **mm** (native, no conversion); **Size min/max** and any per-part mesh size are automatically rescaled to match, so relative mesh density stays the same regardless of the chosen unit. Only affects **📤 Export** — **▶ Generate**'s overlay always meshes at native mm, since it has no exported file for a unit to matter to. |
+| **Export unit `<select>`** | A real geometric scale applied to the exported file's geometry before Gmsh sees it — mirrors the model Export command's own unit picker (see [Units](#units)). Defaults to **mm** (native, no conversion); **Size min/max** and any per-part mesh size or grading band are automatically rescaled to match, so relative mesh density stays the same regardless of the chosen unit. Only affects **📤 Export** — **▶ Generate**'s overlay always meshes at native mm, since it has no exported file for a unit to matter to. |
 | **📤 Export** | Mesh with the current options (at the chosen export unit) and save the result in the format picked above, via a Save dialog (independent of whether **▶ Generate** was already clicked — it always (re)generates fresh) |
 | **⚠ Worst** | Only shown after a 3D generate with at least one element below quality 0.20 (auto-shown then, since it's a warning). Toggles the worst-quality-elements highlight in place, without discarding it |
 | **Clear** | Remove the mesh overlay and the worst-elements highlight (the original model is unaffected either way) |
@@ -582,8 +590,10 @@ Pick **File ▸ Export Silhouette SVG…** (or **Export Silhouette DXF…** for 
 That one runs hidden-line removal: it draws interior feature edges as well as the outline, and
 renders anything occluded as a dashed line — so a through-hole's far rim appears dashed rather than
 missing. It shares the same view and unit picks, and writes SVG or DXF (where hidden geometry goes
-on a `HIDDEN` layer you can toggle in a CAD tool). It is still a single view with no dimensions:
-treat it as a review or illustration artifact and measure anything you need to be sure of. This is separate from the Export… flow above — an outline is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
+on a `HIDDEN` layer you can toggle in a CAD tool). It is still a single view — treat it as a review
+or illustration artifact and measure anything you need to be sure of, though any measurement you've
+pinned (see [Measuring](#measuring)) still bakes in as a dimension glyph. This is separate from the
+Export… flow above — an outline is a drawing, not a 3D model, so it never appears in that quick-pick's target list.
 
 1. **Pick a view.** The first entry is **Current view** — the angle you are currently looking at — followed by Front, Back, Top, Bottom, Left, Right, and Iso. Pressing Escape here cancels the export.
 2. **Pick an export unit.** The same quick-pick every other export shows, defaulting to native mm; Escape here still exports (at mm), it doesn't cancel.
@@ -592,6 +602,20 @@ treat it as a review or illustration artifact and measure anything you need to b
 > **It's an outline, not a dimensioned 2D technical drawing — there is no hidden-line removal.** Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette (a hole seen face-on draws as a circle; the same hole seen edge-on draws nothing). OpenCascade's hidden-line machinery is entirely unavailable in the bundled WASM build, so the outline is derived from triangle adjacency instead — which is also why this works for mesh files, not just B-rep. Use it for review notes, documentation figures, and laser/plotter outlines; use the [Measurement](#measuring) tools for any dimension you need to be sure of.
 
 Works for STEP/IGES/BREP (with your edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (from the raw file — edits are **not** baked in, since mesh edits can't be replayed outside the viewer). meshio-only sources (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit) are rejected.
+
+### Exporting a Drawing Sheet
+
+Pick **File ▸ Export Drawing Sheet…** (or `CAD Preview: Export Drawing Sheet…`) to place several views of the model on one sheet — the ordinary output of a drafting workflow, rather than one file per view.
+
+1. **Pick a format.** SVG or DXF.
+2. **Pick a paper size.** **Fit (1:1)** sizes the sheet to the views at full scale; A4 through A0 (landscape) pick the largest [ISO 5455](https://en.wikipedia.org/wiki/ISO_5455) standard scale (50:1 down to 1:1000) that fits the views inside the page, warning rather than silently clipping if even the smallest doesn't fit.
+3. **Pick an export unit**, then a destination, same as every other export.
+
+The default four views — **Front**, **Top**, **Right**, **Iso** — are laid out orthographically: **first-angle projection** (the default, and the ISO convention) places the top view *below* the front view and the right-side view to its *left*; third-angle (ASME) mirrors both. Each view is a technical drawing like the single-view export above — hidden edges dashed (SVG) or on a `HIDDEN` layer (DXF) — inside a title block naming the model, the scale ratio, the projection method, the date, and the views shown.
+
+A pinned annotation is drawn **once**, in whichever orthographic view shows its measured line at true length rather than foreshortened — an edge running front-to-back reads true in the Right view and appears nowhere else on the sheet. Works for the same source formats as the single-view exports above.
+
+The MCP server exposes the identical capability as `export_drawing_sheet` — see [`doc/mcp-server.md`](mcp-server.md).
 
 The SVG output is a single self-contained `<path>` with no external references, at **1 SVG user unit = 1 model unit** and a physical size in millimetres — so a drawing exported from a native (mm) model prints 1:1 in any vector tool. The DXF output is minimal model-space `ENTITIES`: chained collinear outline runs become `LWPOLYLINE`s and unmatched singletons stay independent `LINE`s. One caveat: the outline depends on consistent triangle winding, so a mesh with mixed winding (as some exporters and hand-edited files produce) draws spurious interior lines.
 

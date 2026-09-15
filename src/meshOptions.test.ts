@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   validateMeshOptions,
+  validateMeshGrading,
   applyStlPartSizeOverride,
   gmshShapeOptions,
   scaleMeshOptionsForUnit,
@@ -200,6 +201,78 @@ describe("scalePartsMeshSizeForUnit", () => {
 
   it("no-ops on an empty parts list", () => {
     expect(scalePartsMeshSizeForUnit([], 2)).toEqual([]);
+  });
+
+  it("scales every length in meshGrading by the same factor", () => {
+    const grading = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
+    const parts = [part({ name: "A", meshGrading: grading }), part({ name: "B" })];
+    const result = scalePartsMeshSizeForUnit(parts, 1 / 25.4);
+    const g = result[0].meshGrading!;
+    expect(g.sizeAtWall).toBeCloseTo(0.15 / 25.4, 10);
+    expect(g.sizeFar).toBeCloseTo(1 / 25.4, 10);
+    expect(g.distNear).toBeCloseTo(0.3 / 25.4, 10);
+    expect(g.distFar).toBeCloseTo(1.5 / 25.4, 10);
+    expect(result[1].meshGrading).toBeUndefined();
+    expect(parts[0].meshGrading).toEqual(grading); // original untouched
+  });
+
+  it("scales both meshSize and meshGrading on the same part independently", () => {
+    const grading = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
+    const parts = [part({ name: "A", meshSize: 10, meshGrading: grading })];
+    const result = scalePartsMeshSizeForUnit(parts, 2);
+    expect(result[0].meshSize).toBe(20);
+    expect(result[0].meshGrading).toEqual({ sizeAtWall: 0.3, sizeFar: 2, distNear: 0.6, distFar: 3 });
+  });
+});
+
+describe("validateMeshGrading", () => {
+  const valid = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
+
+  it("accepts a well-formed band unchanged", () => {
+    expect(validateMeshGrading(valid)).toEqual(valid);
+  });
+
+  it("returns undefined when raw isn't an object", () => {
+    expect(validateMeshGrading(undefined)).toBeUndefined();
+    expect(validateMeshGrading(null)).toBeUndefined();
+    expect(validateMeshGrading("nope")).toBeUndefined();
+    expect(validateMeshGrading(42)).toBeUndefined();
+    expect(validateMeshGrading([])).toBeUndefined();
+  });
+
+  it("rejects a non-positive sizeAtWall", () => {
+    expect(validateMeshGrading({ ...valid, sizeAtWall: 0 })).toBeUndefined();
+    expect(validateMeshGrading({ ...valid, sizeAtWall: -1 })).toBeUndefined();
+  });
+
+  it("rejects sizeFar below sizeAtWall", () => {
+    expect(validateMeshGrading({ ...valid, sizeFar: 0.1 })).toBeUndefined();
+  });
+
+  it("accepts sizeFar exactly equal to sizeAtWall (a flat band)", () => {
+    expect(validateMeshGrading({ ...valid, sizeFar: valid.sizeAtWall })).toEqual({
+      ...valid,
+      sizeFar: valid.sizeAtWall,
+    });
+  });
+
+  it("rejects a negative distNear", () => {
+    expect(validateMeshGrading({ ...valid, distNear: -1 })).toBeUndefined();
+  });
+
+  it("accepts a zero distNear", () => {
+    expect(validateMeshGrading({ ...valid, distNear: 0 })).toEqual({ ...valid, distNear: 0 });
+  });
+
+  it("rejects distFar at or below distNear", () => {
+    expect(validateMeshGrading({ ...valid, distFar: valid.distNear })).toBeUndefined();
+    expect(validateMeshGrading({ ...valid, distFar: valid.distNear - 0.1 })).toBeUndefined();
+  });
+
+  it("rejects a missing or non-finite field", () => {
+    expect(validateMeshGrading({ sizeFar: 1, distNear: 0.3, distFar: 1.5 })).toBeUndefined();
+    expect(validateMeshGrading({ ...valid, sizeAtWall: "x" })).toBeUndefined();
+    expect(validateMeshGrading({ ...valid, distFar: NaN })).toBeUndefined();
   });
 });
 

@@ -182,6 +182,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     exportGeoUnrolled: (...args) => callKernel("exportGeoUnrolled", args) as ReturnType<Pipeline["exportGeoUnrolled"]>,
     computeMassProperties: (...args) => callKernel("computeMassProperties", args) as ReturnType<Pipeline["computeMassProperties"]>,
     computeBom: (...args) => callKernel("computeBom", args) as ReturnType<Pipeline["computeBom"]>,
+    computeHoleTable: (...args) => callKernel("computeHoleTable", args) as ReturnType<Pipeline["computeHoleTable"]>,
     getEntityFacts: (...args) => callKernel("getEntityFacts", args) as ReturnType<Pipeline["getEntityFacts"]>,
     hitTest: (...args) => callKernel("hitTest", args) as ReturnType<Pipeline["hitTest"]>,
     measureEntities: (...args) => callKernel("measureEntities", args) as ReturnType<Pipeline["measureEntities"]>,
@@ -218,6 +219,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     promoteMeshToBrep: (...args) => callKernel("promoteMeshToBrep", args) as ReturnType<Pipeline["promoteMeshToBrep"]>,
     repairMesh: (...args) => callKernel("repairMesh", args) as ReturnType<Pipeline["repairMesh"]>,
     exportSvgSilhouette: (...args) => callKernel("exportSvgSilhouette", args) as ReturnType<Pipeline["exportSvgSilhouette"]>,
+    exportDrawingSheet: (...args) => callKernel("exportDrawingSheet", args) as ReturnType<Pipeline["exportDrawingSheet"]>,
     buildPrimitivesFile: (...args) => callKernel("buildPrimitivesFile", args) as ReturnType<Pipeline["buildPrimitivesFile"]>,
     cancelCurrent: killCurrentChild,
   };

@@ -27,6 +27,8 @@ import {
 } from "./editOps";
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { resolvePlaneRefs } from "./planeRefs";
+import { parseSvgDocument, svgSubpathsToPolylineOps } from "./svgImport";
+import { nestLoops } from "./loopNesting";
 async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fullOps: EditOp[]; variables: ParamVariable[]; bakedThrough: number }> {
   const parsed = await readEditsRaw(modelPath);
   const bakedThrough = parsed.bakedThrough;
@@ -52,10 +54,12 @@ import {
   DEFAULT_MESH_OPTIONS,
   SIZE_MAX_SENTINEL,
   validateMeshOptions,
+  validateMeshGrading,
   applyStlPartSizeOverride,
   scaleMeshOptionsForUnit,
   scalePartsMeshSizeForUnit,
   type MeshOptions,
+  type MeshGrading,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
@@ -65,7 +69,7 @@ import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./mesh
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part, Annotation, ConstructionPlane, MeasureTool } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
-import type { computeMassProperties, computeBom, MassProperties } from "./massProperties";
+import type { computeMassProperties, computeBom, computeHoleTable, MassProperties } from "./massProperties";
 import type {
   getEntityFacts,
   measureEntities,
@@ -107,16 +111,19 @@ import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM }
 import { emitPrimitiveOps } from "./primitiveEmit";
 import type { buildPrimitivesFile } from "./primitiveWrite";
 import { parseToWeldedMesh } from "./meshHeal";
+import { meshInspection } from "./meshInspection";
 import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal } from "./meshioService";
 import { weldedMeshToStlBytes } from "./meshComponents";
-import type { exportSvgSilhouette } from "./svgSilhouetteHost";
+import type { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
 import { normalizeTessellationQuality } from "./tessellationQuality";
-import { SVG_VIEWS } from "./svgSilhouette";
+import { SVG_VIEWS, type DimensionSource } from "./svgSilhouette";
+import { PAPER_SIZES, PROJECTION_METHODS, type PaperSize, type ProjectionMethod } from "./drawingSheet";
 import type { hitTest } from "./hitTestService";
 import { NAMED_VIEW_NAMES, orbitDirection, resolveNamedView, type Vec3 } from "./viewDirections";
 import { HOLE_STANDARDS, allHoleSizes, depthPresetsFor, findHoleSize, holeSizesFor, type HoleStandard } from "./holeStandards";
-import { mergeScriptOverrides, scriptParameters, type ScriptLibraryEntry } from "./scriptLibrary";
+import { mergeScriptOverrides, scriptParameters, type ScriptLibrary, type ScriptLibraryEntry } from "./scriptLibrary";
+import { mergeScriptLibraries } from "./starterMacros";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -126,6 +133,7 @@ import type {
   MeshGenerationInput,
 } from "./gmshService";
 import {
+  readBundledScriptLibrary,
   readScriptLibrary,
   readViewState,
   writeScriptLibrary,
@@ -150,6 +158,7 @@ import {
 } from "./mcpSidecars";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
+import { holeTableTsv, type HoleTableRow } from "./holeTable";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson, nextPlaneId } from "./planesSidecar";
@@ -169,6 +178,7 @@ export interface Pipeline {
   exportGeoUnrolled: typeof exportGeoUnrolled;
   computeMassProperties: typeof computeMassProperties;
   computeBom: typeof computeBom;
+  computeHoleTable: typeof computeHoleTable;
   getEntityFacts: typeof getEntityFacts;
   hitTest: typeof hitTest;
   measureEntities: typeof measureEntities;
@@ -200,6 +210,7 @@ export interface Pipeline {
   promoteMeshToBrep: typeof promoteMeshToBrep;
   repairMesh: typeof repairMesh;
   exportSvgSilhouette: typeof exportSvgSilhouette;
+  exportDrawingSheet: typeof exportDrawingSheet;
   buildPrimitivesFile: typeof buildPrimitivesFile;
 }
 
@@ -235,7 +246,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   defeature: '{faces: faceId[] (>=1): faces to remove as recognized features (fillets, chamfers) via BRepAlgoAPI_Defeaturing; the solid heals behind them}',
   splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR with planePoint/planeNormal and midplaneFaces; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
   rib: '{spineEdges: edgeId[] (open wire, assembled in any order), dir: [x,y,z], thin: n>0 (required; symmetric — thinOuter must be absent or exactly thin/2), upTo: faceId (planar terminator — wall runs to its plane plus one thin of embed, then fuses), blendRadius?: n>=0 (junction blend; default thin/4; 0 = fuse only)}',
-  wrap: '{profile: faceId (flat sketch face — face-only, no profileEdges form), target: "cylinder"|"cone", axisPoint: [x,y,z], axisDir: [x,y,z], radius: n>0, halfAngleDeg?: 0<n<90 (cone only, required; refused on cylinder), thickness: n>0 (total, symmetric about the developed surface), variant: "emboss"|"engrave"|"standalone", targets?: solidId[] (required for emboss/engrave, refused for standalone)}',
+  wrap: '{profile: faceId (flat sketch face — face-only, no profileEdges form; holed profiles supported, e.g. a letter with a counter — each hole is cut out of the developed shell), target: "cylinder"|"cone", axisPoint: [x,y,z], axisDir: [x,y,z], radius: n>0, halfAngleDeg?: 0<n<90 (cone only, required; refused on cylinder), thickness: n>0 (total, symmetric about the developed surface), variant: "emboss"|"engrave"|"standalone", targets?: solidId[] (required for emboss/engrave, refused for standalone)}',
   section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR)}',
   addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
   addSphere: '{center: [x,y,z], radius: n>0}',
@@ -270,7 +281,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addEllipseArc:
     '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radiusX: n>0, radiusY: n>0, startAngleDeg: n, endAngleDeg: n}',
   addHelix: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, pitch: n>0, turns: n>0}',
-  addSurfaceFromLines: '{edges: edgeId[] (must connect into a closed loop)}',
+  addSurfaceFromLines: '{edges: edgeId[] (a single connected loop, or several disjoint closed loops forming exactly ONE outer boundary plus its holes — e.g. a letter "O"\'s outer ring + inner ring build one holed face; a set spanning more than one outer loop is refused)}',
   addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
   addEdgeSlot: '{edge: edgeId, width: n>0}',
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
@@ -411,7 +422,7 @@ export function describeCapabilities() {
       "extrude/revolve/sweep/loft take their profile in either of two mutually exclusive forms: a `face-N` (`profile`/`profiles`), or a set of `edge-N` ids assembled into one wire (`profileEdges`/`profileEdgeSets`) — which is how an OPEN sketch (an `addPolyline` with `closed: false`) is consumed. The edges may be listed in any order; a disconnected set is skipped with a diagnostic. A closed edge set behaves exactly like the equivalent face. An OPEN one encloses no area and therefore REQUIRES `thin`: its wall is centred on the spine with semicircular ends, so `thinOuter` has no meaning there and is refused unless it is exactly thin/2. Every section of a loft must agree on closedness.",
     ],
     entityIdScheme:
-      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids. resolve_selector re-resolves a recorded op-bucket (op index + role, e.g. an extrude's endCap) to its CURRENT face-N ids with a centre-distance oracle per match — a re-executable query instead of a stale positional id.",
+      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; mesh-component-N / mesh-triangle-N / mesh-vertex-N for STL/OBJ/PLY/glTF sources headless (connected-component order and parser order over the raw file — NOT the webview's node-N / node-N/face-K object ids, which are assigned to displayed objects and are not valid here). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids. resolve_selector re-resolves a recorded op-bucket (op index + role, e.g. an extrude's endCap) to its CURRENT face-N ids with a centre-distance oracle per match — a re-executable query instead of a stale positional id.",
     verdictConventions: [
       "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
       "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
@@ -436,14 +447,14 @@ export function describeCapabilities() {
         `sizeMax = ${SIZE_MAX_SENTINEL} is the "unbounded" sentinel (no explicit target size); set a real value for predictable element counts.`,
         'elementShape "simplex" = triangles/tetrahedra, "subdivided" = all-quad/all-hex, "hexDominant" = mixed tet/hex (3D only, RTree recombiner) — NOT exportable to Kratos MDPA (export_mesh throws a clear error; other formats like msh/vtk are unaffected). elementOrder 2 adds mid-side nodes (quadratic).',
         "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
-        "A part's meshSize gives local refinement (B-rep sources only).",
+        "A part's meshSize gives local refinement (B-rep sources only). A part's meshGrading grades the mesh AROUND the part with distance — sizeAtWall within distNear, growing linearly to sizeFar at distFar (set_part; B-rep sources only, same as physical groups and meshSize; ignored on a mesh-format source).",
         'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction), ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction), ftetwildManifoldSurface (force a manifold boundary), ftetwildCoarsen (fewer, larger tets), and ftetwildDisableFiltering (skip interior filtering — returns a hull fill, NOT the part interior; inspection only) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. repair_mesh honors the stored options (still forcing engine/dimension). generate_mesh\'s response reports engineUsed and any fallback warnings.',
       ],
     },
     headlessLimitations: [
       "screenshot_shape isolates the target entity by default: a face framed at its own scale usually puts the camera inside the parent solid, so an un-isolated shot shows interior geometry or an occluded face. Pass context:true to opt out.",
-      "get_mass_properties (volume/area/length, center of mass, moments of inertia via OCCT BRepGProp) is B-rep sources only headless; mesh formats compute the equivalent client-side in the webview.",
-      "inspect (per-entity bbox/bbox-center/area/length/normal/surfaceType, plus surfaceParams: the analytic radius/axis/half-angle behind that classification) and measure (distance between two entities' bbox centers) are B-rep sources only headless, same reason. Note inspect's `center` is the bbox center, NOT get_mass_properties' mass-weighted centroid — they can differ for an asymmetric shape.",
+      "get_mass_properties is B-rep sources via OCCT BRepGProp (volume/area/length, center of mass, moments of inertia) and STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area, centroid, watertight flag; no length, no moments of inertia). Other mesh formats compute the equivalent client-side in the webview.",
+      "inspect (per-entity bbox/bbox-center/area/length/normal/surfaceType, plus surfaceParams: the analytic radius/axis/half-angle behind that classification) and measure (distance between two entities' bbox centers) are B-rep sources plus STL/OBJ/PLY/glTF sources headless (triangle-based facts in raw file coordinates with mesh-component-N / mesh-triangle-N / mesh-vertex-N ids from load_model; no analytic parameters). Note inspect's `center` is the bbox center, NOT get_mass_properties' mass-weighted centroid — they can differ for an asymmetric shape.",
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
@@ -455,10 +466,11 @@ export function describeCapabilities() {
       "repair_mesh (STL/OBJ/PLY/glTF sources only) writes a NEW watertight STL file at outputPath by tetrahedralizing the mesh with fTetWild and taking the resulting volume mesh's own boundary — watertight/manifold by construction regardless of how broken the input was, since fTetWild survives holes/self-intersections/non-manifold edges Gmsh's own classifySurfaces path rejects. A one-shot export (the source is untouched); the natural next step is re-running check_mesh_health/promote_mesh_to_brep on the repaired output. Unlike those two, it has no triangle-count ceiling (a different cost profile than the per-triangle OCCT sewing pipeline) — a very large/slow mesh may instead hit this server's own per-call timeout.",
       "inspect_meshio_fields (meshio++ sources only) lists a file's scalar result fields headlessly — per-array name, point|cell location, component width, finite-only min/max, NaN count — summaries only, never raw values. A multi-component array is reported with its width, not an error. Read-only, never mutates or persists anything.",
       "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). On documents with many Parts, pass an explicit parts subset.",
-      "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
+      "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), axisDistance for two cylindrical faces (shortest infinite-axis separation — hole-to-hole spacing independent of the finite surfaces' clearance), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
       "list_workspace_models is pure on-disk discovery over the same routing rules load_model uses — depth-capped walk, .git/node_modules never scanned, caps reported via truncated/warnings rather than a quietly-partial list. This server holds no open-document/session state anywhere, so there is nothing else to discover.",
       "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of. For a drawing WITH hidden-line removal — interior feature edges, occluded runs dashed — use export_technical_drawing, which gets there on the same triangle adjacency rather than through the unavailable kernel API.",
+      "export_drawing_sheet places several views (default front/top/right/iso) on ONE sheet at a shared scale with a title block, orthographically aligned per first-angle (default) or third-angle projection. It is the one drawing tool with dimension logic beyond baking a pin verbatim: each pinned annotation is drawn exactly once, in the orthographic view where its measured line reads at true length (never foreshortened, never repeated). paper:'fit' (default) sizes the sheet to the content at 1:1 or an explicit scale; a named ISO paper size picks the largest ISO 5455 standard scale that fits and reports if none does, rather than silently clipping. No unit conversion — a sheet's scale ratio is only meaningful against the model's native millimetres.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep/.csg): full pipeline — load, edit, mesh, export. `.scad` converts to `.csg` first via a user-installed openscad binary (see below); without one every .scad tool returns supported:false.",
       ".scad sources: identical to .csg once converted — which needs the openscad binary (cadPreview.openscadBinary setting, OPENSCAD_BINARY env override, else PATH). Absent binary → supported:false with an install hint on every .scad call, never a throw. Conversion runs `openscad -o <tmp>/model.csg <real path>` with cwd = the source directory (relative use/include/import keep working), capped at a 2-minute kill; openscad's own stderr chatter surfaces as warnings.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
@@ -660,6 +672,14 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
+  if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    const { inspection, warnings } = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    return {format: route.format, strategy: route.strategy, meshEntities: inspection.inventory,
+      tree: null, solids: null, edgeCount: null, edgeIds: null, pointCount: null,
+      bbox: inspection.inventory.triangleCount ? inspection.inspect("whole-model").bbox : null,
+      sidecars: await sidecarSummary(modelPath), warnings};
+  }
+
   if (route.strategy !== "occt") {
     const warnings = [
       `${route.format} is a mesh-format source: headless tessellation/entity inventory is B-rep-only. ` +
@@ -788,13 +808,30 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
 // ---------------------------------------------------------------------------
 // get_mass_properties
 
+async function readMeshInspection(modelPath: string, format: MeshParseFormat) {
+  const bytes = await readModelBytes(modelPath);
+  const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const inspection = meshInspection(parseToWeldedMesh(bytes, format, external));
+  const {ops} = await readEditsResolved(modelPath);
+  const warnings = ["Triangle-based facts in raw file coordinates; mesh-component-N / mesh-triangle-N / mesh-vertex-N are headless ids, not webview node-N or edit operands. No analytic surface parameters or inertia are computed."];
+  if (ops.length) warnings.push("Pending mesh edits are NOT baked in; these facts describe the raw source file.");
+  return {inspection, warnings};
+}
+
 export async function getMassProperties(
   ctx: ToolContext,
   params: { path: string; entityId?: string }
-): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[] } & Partial<MassProperties>> {
+): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[]; watertight?: boolean } & Partial<MassProperties>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   const entityId = params.entityId ?? null;
+
+  if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    const properties = inspection.mass(entityId ?? "whole-model");
+    if (properties.volume !== null && !properties.watertight) warnings.push("Not watertight — volume may not be meaningful; centerOfMass is the area centroid.");
+    return {format: route.format, entityId: entityId ?? "whole-model", supported: true, ...properties, warnings};
+  }
 
   if (route.strategy !== "occt") {
     return {
@@ -886,16 +923,58 @@ export async function generateBomTool(
 }
 
 // ---------------------------------------------------------------------------
+// generate_hole_table
+
+/**
+ * Hole table / feature schedule (roadmap Tier 1 "Hole table", closed) — one
+ * row per (radius, axis-direction) group of cylindrical faces over ONE
+ * parse/replay total, via `massProperties.ts`'s `computeHoleTable` (the
+ * loop-and-tabulate sibling of `computeBom`, zero new kernel surface). Facts
+ * only: each row's `nearest` designation is the closest table entry by
+ * measured diameter with its signed `delta` always reported (a far match
+ * reads as far, never as a verdict); non-cylindrical faces are ignored with
+ * a count, never silently; a model with no cylindrical faces returns zero
+ * rows with a warning — a missing table is a fact about the document, not
+ * an error. Read-only. B-rep sources only headless.
+ */
+export async function generateHoleTableTool(
+  ctx: ToolContext,
+  params: { path: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; rows?: HoleTableRow[]; table?: string }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: hole schedules enumerate analytic B-rep cylinder faces, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEditsResolved(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
+  const result = await ctx.pipeline.computeHoleTable(ctx.extensionPath, bytes, format as BRepFormat, ops);
+  return { format: route.format, supported: true, rows: result.rows, table: holeTableTsv(result.rows), warnings: [...warnings, ...result.warnings] };
+}
+
+// ---------------------------------------------------------------------------
 // inspect / measure
 
 /**
- * Per-entity geometric facts for `solid-N`/`face-N`/`edge-N`/`point-N` —
- * bbox, bbox-centre, area/length, and (for a planar face) normal + surface
- * type — via `entityFacts.ts`'s `getEntityFacts`. Mirrors
- * `getMassProperties`'s B-rep-only gate exactly; deliberately does not
- * duplicate `get_mass_properties`' volume/centroid/inertia numbers — call
- * that tool when the mass-weighted centroid or inertia is the actual thing
- * being asked about (see `EntityFacts.center`'s doc comment).
+ * Per-entity geometric facts — B-rep ids (`solid-N`/`face-N`/`edge-N`/
+ * `point-N`) via `entityFacts.ts`'s `getEntityFacts`, or headless mesh ids
+ * (`mesh-component-N`/`mesh-triangle-N`/`mesh-vertex-N` from `load_model`'s
+ * `meshEntities`, triangle-based bbox/center/area only) for STL/OBJ/PLY/glTF.
+ * Deliberately does not duplicate `get_mass_properties`' volume/centroid/
+ * inertia numbers — call that tool when the mass-weighted centroid or
+ * inertia is the actual thing being asked about (see `EntityFacts.center`'s
+ * doc comment).
  */
 export async function inspectEntity(
   ctx: ToolContext,
@@ -903,6 +982,11 @@ export async function inspectEntity(
 ): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<EntityFacts>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
+
+  if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    return {format: route.format, supported: true, ...inspection.inspect(params.entityId), warnings};
+  }
 
   if (route.strategy !== "occt") {
     return {
@@ -925,8 +1009,9 @@ export async function inspectEntity(
 
 /**
  * Straight-line distance between two entities' bbox centres (+ an optional
- * signed axis component) via `entityFacts.ts`'s `measureEntities`. Same
- * B-rep-only gate as `inspect`/`get_mass_properties`.
+ * signed axis component) via `entityFacts.ts`'s `measureEntities` for B-rep
+ * sources, or the shared headless triangle inspection for STL/OBJ/PLY/glTF
+ * (same bbox-centre convention, raw file coordinates).
  */
 export async function measureTool(
   ctx: ToolContext,
@@ -934,6 +1019,11 @@ export async function measureTool(
 ): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeasureResult>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
+
+  if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    return {format: route.format, supported: true, ...inspection.measure(params.from, params.to, params.axis), warnings};
+  }
 
   if (route.strategy !== "occt") {
     return {
@@ -2805,6 +2895,172 @@ export async function applyEditOps(
 }
 
 // ---------------------------------------------------------------------------
+// import_svg
+
+/**
+ * Re-tessellates and returns the current entity summary with no ops applied
+ * — the "before" half of `import_svg`'s edge-id-prediction guard. Mirrors
+ * `applyEditOps`'s own replay branch exactly (same `readOcctSource`,
+ * `readEditsResolved`, `replayTail`, `ctx.pipeline.loadBRep`,
+ * `entitySummary`) rather than reusing `applyEditOps` itself, which has no
+ * way to produce a `model` summary for zero accepted ops.
+ */
+async function currentEntitySummary(
+  ctx: ToolContext,
+  modelPath: string,
+  route: FileRoute,
+  warnings: string[]
+): Promise<ReturnType<typeof entitySummary> | null> {
+  if (route.strategy !== "occt") return null;
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    warnings.push(src.reason);
+    return null;
+  }
+  const current = await readEditsResolved(modelPath);
+  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, src.bytes, src.format as BRepFormat, replayTail(current.fullOps, current.bakedThrough));
+  return entitySummary(result);
+}
+
+/**
+ * Imports an SVG file's shape elements as sketch `addPolyline` ops, and —
+ * unless `buildSurfaces: false` — groups each region (one outer loop plus
+ * its holes, via `loopNesting.ts`'s pure, shared `nestLoops`) into an
+ * `addSurfaceFromLines` op, so a letter with a counter (an "O") imports as
+ * one ready-to-extrude holed face rather than a bare set of polylines a
+ * caller must group by hand. The headless counterpart of `main.ts`'s
+ * `importSvgPaths` — both go through the SAME `parseSvgDocument`/
+ * `svgSubpathsToPolylineOps` (`svgImport.ts`), so the two can never
+ * disagree about what an SVG document means; only the extra
+ * surface-building step is new here (item 1's roadmap gap: SVG import was
+ * webview-only).
+ *
+ * B-rep sources only — `addPolyline`/`addSurfaceFromLines` are both
+ * `BREP_ONLY_OPS` (meshes have no sketch/exact topology), same gate every
+ * other sketch-producing tool in this codebase uses.
+ *
+ * **Edge-id prediction, guarded rather than assumed.** After the polyline
+ * ops apply, each new polyline's edges are assumed to land as one
+ * contiguous, in-order run at the tail of the model's edge enumeration
+ * (verified live: sequential `addPolyline` ops each append their own edges,
+ * in point order, after every edge that already existed) — this is what
+ * lets the SAME call compute `edge-N` ids for the just-created polylines
+ * without a second round trip to ask the kernel "which ids are these". But
+ * this is an ASSUMPTION about kernel internals, not a guarantee this module
+ * controls, so it is checked, not trusted: if the model's edge count after
+ * applying the polylines doesn't grow by EXACTLY the sum of each
+ * placement's own segment count, surface-building is skipped with a named
+ * warning rather than emitting `addSurfaceFromLines` ops against
+ * possibly-wrong ids.
+ */
+export async function importSvgTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    svgPath: string;
+    scale?: number;
+    origin?: [number, number, number];
+    buildSurfaces?: boolean;
+    dryRun?: boolean;
+  }
+): Promise<{
+  supported: boolean;
+  polylines: number;
+  surfaces: number;
+  polylineReport?: unknown[];
+  surfaceReport?: unknown[];
+  model?: ReturnType<typeof entitySummary> | null;
+  dryRun: boolean;
+  warnings: string[];
+}> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const dryRun = params.dryRun === true;
+
+  if (route.strategy !== "occt") {
+    return {
+      supported: false,
+      polylines: 0,
+      surfaces: 0,
+      dryRun,
+      warnings: [`${route.format} sources have no sketch/exact topology for imported SVG polylines — open a STEP/IGES/BREP source.`],
+    };
+  }
+  if (path.resolve(params.svgPath) === path.resolve(modelPath)) {
+    throw new Error("svgPath must not be the model file itself.");
+  }
+
+  const warnings: string[] = [];
+  const svgText = await fs.readFile(params.svgPath, "utf8");
+  const { subpaths, warnings: parseWarnings } = parseSvgDocument(svgText);
+  warnings.push(...parseWarnings);
+
+  const placements = svgSubpathsToPolylineOps(subpaths, { scale: params.scale, origin: params.origin });
+  if (placements.length === 0) {
+    warnings.push("No usable paths found in that SVG (no recognized shape elements, or every one was degenerate).");
+    return { supported: true, polylines: 0, surfaces: 0, dryRun, warnings };
+  }
+
+  const before = await currentEntitySummary(ctx, modelPath, route, warnings);
+  const beforeEdgeCount = before?.edgeCount ?? 0;
+
+  const polylineOps = placements.map((p) => ({ op: "addPolyline", points: p.points, closed: p.closed }));
+  const polylineResult = await applyEditOps(ctx, { path: modelPath, ops: polylineOps, dryRun });
+  warnings.push(...polylineResult.warnings);
+
+  let surfaces = 0;
+  let surfaceResult: Awaited<ReturnType<typeof applyEditOps>> | null = null;
+
+  if ((params.buildSurfaces ?? true) && !dryRun && polylineResult.model) {
+    const afterEdgeCount: number = polylineResult.model.edgeCount;
+    const addedEdgeCount = afterEdgeCount - beforeEdgeCount;
+    const segmentCountOf = (p: { points: unknown[]; closed: boolean }): number => (p.closed ? p.points.length : p.points.length - 1);
+    const expectedEdgeCount = placements.reduce((n, p) => n + segmentCountOf(p), 0);
+
+    if (addedEdgeCount !== expectedEdgeCount) {
+      warnings.push(
+        `Skipped building surfaces: expected ${expectedEdgeCount} new edge(s) from the imported polylines but the model gained ${addedEdgeCount} — the edge-id prediction would be unsafe here. Re-inspect the model (load_model) and build surfaces manually via apply_edit_ops's addSurfaceFromLines, or interactively via Build → Surface.`
+      );
+    } else {
+      // Assign each placement its own contiguous, in-order block of the
+      // newly-appended edge ids (verified live — see this function's doc
+      // comment), then group loops into regions (outer + holes) via the
+      // SAME pure rule the kernel's own multi-loop addSurfaceFromLines
+      // uses, so every emitted op is one the kernel will accept.
+      let cursor = beforeEdgeCount;
+      const edgeIdsByPlacement: string[][] = placements.map((p) => {
+        const ids: string[] = [];
+        for (let i = 0; i < segmentCountOf(p); i++) ids.push(`edge-${cursor++}`);
+        return ids;
+      });
+      const loops2d: [number, number][][] = placements.map((p) => p.points.map(([x, y]) => [x, y] as [number, number]));
+      const regions = nestLoops(loops2d);
+      const surfaceOps = regions.map((region) => ({
+        op: "addSurfaceFromLines",
+        edges: [...edgeIdsByPlacement[region.outer], ...region.holes.flatMap((h) => edgeIdsByPlacement[h])],
+      }));
+
+      if (surfaceOps.length > 0) {
+        surfaceResult = await applyEditOps(ctx, { path: modelPath, ops: surfaceOps, dryRun: false });
+        warnings.push(...surfaceResult.warnings);
+        surfaces = surfaceResult.report.filter((r) => r.accepted && r.applied !== false).length;
+      }
+    }
+  }
+
+  return {
+    supported: true,
+    polylines: placements.length,
+    surfaces,
+    polylineReport: polylineResult.report,
+    surfaceReport: surfaceResult?.report ?? [],
+    model: surfaceResult?.model ?? polylineResult.model,
+    dryRun,
+    warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // run_parametric_script
 
 /**
@@ -3168,19 +3424,39 @@ export async function saveParametricScript(params: {
 /**
  * Lists saved scripts with their parameters, so an agent can discover what is
  * available without reading the raw library JSON. Kernel-free (no `ctx`).
+ *
+ * `libraryPath` is optional since the bundled starter library shipped: omit
+ * it to list just the starters, pass it to union that file's entries on top
+ * (the caller's own entry wins a name collision, reported in `warnings`).
+ * `extensionPath` locates the bundled file and is injected by `mcpServer.ts`
+ * (never part of the tool schema); without it only the caller file is read.
  */
-export async function listParametricScripts(params: { libraryPath: string }) {
-  const library = await readScriptLibrary(params.libraryPath);
+export async function listParametricScripts(params: { libraryPath?: string; extensionPath?: string }) {
+  const user = params.libraryPath ? await readScriptLibrary(params.libraryPath) : {};
+  const bundled = params.extensionPath ? await readBundledScriptLibrary(params.extensionPath) : {};
+  const { merged: library, collisions } = mergeScriptLibraries(bundled, user);
   const scripts = Object.values(library).map((entry) => ({
     name: entry.name,
     description: entry.description ?? null,
     parameters: scriptParameters(entry.script),
   }));
   scripts.sort((a, b) => a.name.localeCompare(b.name));
+  const warnings: string[] = [];
+  if (scripts.length === 0) {
+    warnings.push(
+      `No scripts found${params.libraryPath ? ` at ${params.libraryPath}` : ""} (a missing or empty library reads as empty, never an error).`
+    );
+  }
+  if (collisions.length > 0) {
+    warnings.push(
+      `Name collision(s) with the bundled starter library — your file wins: ${collisions.join(", ")}.`
+    );
+  }
   return {
-    libraryPath: params.libraryPath,
+    libraryPath: params.libraryPath ?? null,
+    bundled: Object.keys(bundled).sort(),
     scripts,
-    warnings: scripts.length === 0 ? [`No scripts found at ${params.libraryPath} (a missing or empty library reads as empty, never an error).`] : [],
+    warnings,
   };
 }
 
@@ -3190,23 +3466,30 @@ export async function listParametricScripts(params: { libraryPath: string }) {
  * Hands the merged script to the SAME compile-and-apply path
  * `run_parametric_script` uses — the only difference is where the document came
  * from. An override naming an undeclared parameter is warned about, not fatal.
+ *
+ * `libraryPath` is optional since the bundled starter library shipped: the
+ * caller's file is searched first, then the bundled starters (a caller entry
+ * shadows a bundled one of the same name). Omit it to run a starter by name.
  */
 export async function runSavedScript(
   ctx: ToolContext,
   params: {
-    libraryPath: string;
+    libraryPath?: string;
     name: string;
     path: string;
     parameters?: Record<string, number | string>;
     dryRun?: boolean;
   }
 ) {
-  const library = await readScriptLibrary(params.libraryPath);
+  const user = params.libraryPath ? await readScriptLibrary(params.libraryPath) : {};
+  const bundled = await readBundledScriptLibrary(ctx.extensionPath);
+  const { merged: library } = mergeScriptLibraries(bundled, user);
   const entry = library[params.name];
   if (!entry) {
     const available = Object.keys(library);
     throw new Error(
-      `No saved script named "${params.name}" in ${params.libraryPath}` +
+      `No saved script named "${params.name}"` +
+        (params.libraryPath ? ` in ${params.libraryPath}` : " in the bundled starter library") +
         (available.length > 0 ? ` — available: ${available.join(", ")}.` : " (the library is empty or missing).")
     );
   }
@@ -3339,6 +3622,7 @@ export async function setPart(params: {
   lines?: string[];
   points?: string[];
   meshSize?: number | null;
+  meshGrading?: MeshGrading | null;
   /**
    * Optional re-executable selector (roadmap "Selector synthesis") stored
    * beside the raw ids as annotation+cache: the host re-resolves it against
@@ -3405,10 +3689,21 @@ export async function setPart(params: {
         : typeof params.meshSize === "number" && Number.isFinite(params.meshSize) && params.meshSize > 0
           ? params.meshSize
           : existing?.meshSize,
+    meshGrading:
+      params.meshGrading === null
+        ? undefined
+        : params.meshGrading !== undefined
+          ? validateMeshGrading(params.meshGrading) ?? existing?.meshGrading
+          : existing?.meshGrading,
     ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),
   };
   if (typeof params.meshSize === "number" && !(Number.isFinite(params.meshSize) && params.meshSize > 0)) {
     warnings.push("meshSize must be a positive number — ignored.");
+  }
+  if (params.meshGrading !== undefined && params.meshGrading !== null && !validateMeshGrading(params.meshGrading)) {
+    warnings.push(
+      "meshGrading must have sizeAtWall > 0, sizeFar >= sizeAtWall, distNear >= 0 and distFar > distNear — ignored."
+    );
   }
   if (index === -1) parts.push(part);
   else parts[index] = part;
@@ -3419,10 +3714,13 @@ export async function setPart(params: {
   );
   if (route.strategy === "three") {
     warnings.push(
-      "Mesh-format source: parts cannot become Gmsh physical groups; a single part's meshSize acts as a one-off global size override when meshing."
+      "Mesh-format source: parts cannot become Gmsh physical groups; a single part's meshSize acts as a one-off global size override when meshing. meshGrading is ignored entirely (no per-entity correlation for mesh sources)."
     );
   }
-  return { parts: parts.map((p) => ({ name: p.name, color: p.color, meshSize: p.meshSize ?? null })), warnings };
+  return {
+    parts: parts.map((p) => ({ name: p.name, color: p.color, meshSize: p.meshSize ?? null, meshGrading: p.meshGrading ?? null })),
+    warnings,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4230,6 +4528,166 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
  * difference is that hidden-line removal runs. Duplicating that chain would be
  * two places for the view-resolution convention to drift.
  */
+/** The drawing tools' shared gate: any source with host-side triangles. */
+function requireDrawableRoute(modelPath: string): FileRoute {
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
+    throw new Error(
+      `${route.format} has no host-side geometry to derive an outline from (supported: STEP/IGES/BREP/STL/OBJ/PLY/glTF) — meshio-only formats never expose a triangle array to JS.`
+    );
+  }
+  return route;
+}
+
+/**
+ * Builds the `CompareSource` and pinned-annotation list every drawing export
+ * draws from — shared by the single-view tools and `export_drawing_sheet` so
+ * the edits-baking and annotation conventions cannot drift between them.
+ */
+async function resolveDrawingSource(
+  modelPath: string,
+  warnings: string[]
+): Promise<{ source: CompareSource; annotations: DimensionSource[] }> {
+  const route = requireDrawableRoute(modelPath);
+  // Pinned annotations ride the same drawing (roadmap "Dimension-style
+  // rendering", Phase 2): their frozen world-space facts are projected
+  // through this export's own view basis and baked in as dimension glyphs.
+  // Absent sidecar = a plain outline exactly as before this existed.
+  const pinnedAnnotations = await readAnnotations(modelPath);
+  const annotations = pinnedAnnotations.map((a) => ({
+    anchorPoint: a.anchorPoint,
+    linePoints: a.linePoints,
+    text: a.text,
+    ...(a.tolerance ? { tolerance: a.tolerance } : {}),
+  }));
+  const bytes = await readModelBytes(modelPath);
+  const { ops } = await readEditsResolved(modelPath);
+
+  let source: CompareSource;
+  if (route.strategy === "occt") {
+    const src = await readOcctSource(modelPath, route, warnings);
+    if (!src.ok) {
+      throw new Error(`Cannot draw ${path.basename(modelPath)} — ${src.reason}`);
+    }
+    source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
+  } else {
+    if (ops.length > 0) {
+      warnings.push(
+        `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — drawing the raw file only.`
+      );
+    }
+    source =
+      route.format === "gltf"
+        ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffers(modelPath, bytes) }
+        : { kind: route.format as "stl" | "obj" | "ply", bytes };
+  }
+  return { source, annotations };
+}
+
+/** Default views of a drawing sheet: the three principal views plus an iso. */
+export const DEFAULT_SHEET_VIEWS = ["front", "top", "right", "iso"] as const;
+
+/**
+ * Several views of one model on a single drafting sheet (roadmap "Multi-view
+ * sheet layout"). Views resolve against the full named-view vocabulary; an
+ * unknown or repeated name is skipped with a warning, and a sheet with no
+ * usable view left is a caller error.
+ */
+export async function exportDrawingSheetTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    outputPath: string;
+    views?: string[];
+    format?: string;
+    paper?: string;
+    projection?: string;
+    scale?: number;
+    hiddenLines?: boolean;
+    creaseAngleDeg?: number;
+    tessellationQuality?: string;
+    title?: string;
+  }
+) {
+  const modelPath = params.path;
+  requireDrawableRoute(modelPath);
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(modelPath, outputPath);
+  const warnings: string[] = [];
+
+  const views: Array<{ name: string; direction: [number, number, number]; up?: [number, number, number] }> = [];
+  for (const requested of params.views ?? DEFAULT_SHEET_VIEWS) {
+    const named = resolveNamedView(requested);
+    if (!named) {
+      warnings.push(`Unknown view "${requested}" — valid: ${NAMED_VIEW_NAMES.join(", ")}. Skipped.`);
+      continue;
+    }
+    if (views.some((v) => v.name === named.canonical)) {
+      warnings.push(`View "${requested}" is repeated — drawn once.`);
+      continue;
+    }
+    views.push({ name: named.canonical, direction: named.direction, ...(named.up ? { up: named.up } : {}) });
+  }
+  if (views.length === 0) throw new Error("No usable view was given — a drawing sheet needs at least one named view.");
+
+  const format = params.format === "dxf" ? ("dxf" as const) : ("svg" as const);
+  if (params.format != null && params.format !== "svg" && params.format !== "dxf") {
+    warnings.push(`Unknown format "${params.format}" — valid: svg, dxf. Falling back to "svg".`);
+  }
+  let paper: PaperSize = "fit";
+  if (params.paper != null) {
+    if ((PAPER_SIZES as readonly string[]).includes(params.paper)) paper = params.paper as PaperSize;
+    else warnings.push(`Unknown paper "${params.paper}" — valid: ${PAPER_SIZES.join(", ")}. Falling back to "fit".`);
+  }
+  let projection: ProjectionMethod = "first";
+  if (params.projection != null) {
+    if ((PROJECTION_METHODS as readonly string[]).includes(params.projection)) projection = params.projection as ProjectionMethod;
+    else warnings.push(`Unknown projection "${params.projection}" — valid: first, third. Falling back to "first".`);
+  }
+  let scale: number | undefined;
+  if (params.scale != null) {
+    if (Number.isFinite(params.scale) && params.scale > 0) scale = params.scale;
+    else warnings.push(`Invalid scale ${params.scale} — must be a positive number (sheet mm per model mm). Choosing one automatically.`);
+  }
+
+  const { source, annotations } = await resolveDrawingSource(modelPath, warnings);
+  const result = await ctx.pipeline.exportDrawingSheet(ctx.extensionPath, source, {
+    views,
+    quality: normalizeTessellationQuality(params.tessellationQuality ?? "fine"),
+    format,
+    annotations,
+    hiddenLines: params.hiddenLines ?? true,
+    creaseAngleDeg: params.creaseAngleDeg,
+    paper,
+    projection,
+    scale,
+    title: params.title ?? path.basename(modelPath),
+    date: new Date().toISOString().slice(0, 10),
+  });
+  await fs.writeFile(outputPath, result.content, "utf8");
+
+  const drawnDimensions = result.views.reduce((n, v) => n + v.dimensionCount, 0);
+  return {
+    written: outputPath,
+    bytes: Buffer.byteLength(result.content, "utf8"),
+    format,
+    paper: result.paper,
+    projection: result.projection,
+    sheetSize: [result.width, result.height],
+    scale: result.scaleLabel,
+    views: result.views,
+    triangleCount: result.triangleCount,
+    ...(annotations.length > 0 ? { dimensionCount: drawnDimensions } : {}),
+    warnings: [
+      ...warnings,
+      ...(annotations.length > 0 && drawnDimensions < annotations.length
+        ? [`${annotations.length - drawnDimensions} pinned annotation(s) could not be projected into any view and were skipped.`]
+        : []),
+      ...result.warnings,
+    ],
+  };
+}
+
 export async function exportTechnicalDrawingTool(
   ctx: ToolContext,
   params: Parameters<typeof exportSvgSilhouetteTool>[1] & { creaseAngleDeg?: number }
@@ -4254,12 +4712,7 @@ export async function exportSvgSilhouetteTool(
   }
 ): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number; dimensionCount?: number }> {
   const modelPath = params.path;
-  const route = requireRoute(modelPath);
-  if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
-    throw new Error(
-      `${route.format} has no host-side geometry to derive an outline from (supported: STEP/IGES/BREP/STL/OBJ/PLY/glTF) — meshio-only formats never expose a triangle array to JS.`
-    );
-  }
+  requireDrawableRoute(modelPath);
 
   const outputPath = path.resolve(params.outputPath);
   assertNotSourcePath(modelPath, outputPath);
@@ -4310,38 +4763,7 @@ export async function exportSvgSilhouetteTool(
     warnings.push(`Unknown format "${params.format}" — valid: svg, dxf. Falling back to "svg".`);
   }
 
-  // Pinned annotations ride the same drawing (roadmap "Dimension-style
-  // rendering", Phase 2): their frozen world-space facts are projected
-  // through this export's own view basis and baked in as dimension glyphs.
-  // Absent sidecar = a plain outline exactly as before this existed.
-  const pinnedAnnotations = await readAnnotations(modelPath);
-  const annotations = pinnedAnnotations.map((a) => ({
-    anchorPoint: a.anchorPoint,
-    linePoints: a.linePoints,
-    text: a.text,
-    ...(a.tolerance ? { tolerance: a.tolerance } : {}),
-  }));
-  const bytes = await readModelBytes(modelPath);
-  const { ops } = await readEditsResolved(modelPath);
-
-  let source: CompareSource;
-  if (route.strategy === "occt") {
-    const src = await readOcctSource(modelPath, route, warnings);
-    if (!src.ok) {
-      throw new Error(`Cannot draw ${path.basename(modelPath)} — ${src.reason}`);
-    }
-    source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
-  } else {
-    if (ops.length > 0) {
-      warnings.push(
-        `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — drawing the raw file only.`
-      );
-    }
-    source =
-      route.format === "gltf"
-        ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffers(modelPath, bytes) }
-        : { kind: route.format as "stl" | "obj" | "ply", bytes };
-  }
+  const { source, annotations } = await resolveDrawingSource(modelPath, warnings);
 
   const result = await ctx.pipeline.exportSvgSilhouette(ctx.extensionPath, source, {
     direction,

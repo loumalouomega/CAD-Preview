@@ -22,17 +22,21 @@
  * (blocked: no TeX toolchain here). The opaque base needs none of it —
  * `multmatrix` applies raw via `gp_GTrsf`, polyhedron sews natively.
  *
- * Scope, stated plainly, not a silent gap (see `doc/roadmap.md` item 2):
+ * Scope, stated plainly, not a silent gap (see the "Complete the OpenSCAD
+ * `.csg` node coverage" roadmap history — now closed):
  * - Built: `cube`, `sphere`, `cylinder`, `polyhedron`, `union`,
  *   `difference`, `intersection`, `group`, `color` (transparent — colour is
- *   not imported), `multmatrix`, `translate`, `rotate`, `scale`, `mirror`.
+ *   not imported), `multmatrix`, `translate`, `rotate`, `scale`, `mirror`,
+ *   `linear_extrude`/`rotate_extrude` of a single `polygon`/`square`/`circle`
+ *   child (see `csgModel.ts`).
  * - Skipped with a warning (whole subtree dropped — placing children without
  *   the operation would be confidently-wrong geometry, not a graceful
  *   subset): `hull`/`minkowski` (no OCCT equivalent), `text`/`import`/
  *   `surface` (external files / fonts the reference WASM itself ships
- *   without), all 2D (`square`/`circle`/`polygon`, `linear_extrude`/
- *   `rotate_extrude`, `offset`/`projection`), `resize`/`render` (see below),
- *   and any unknown statement.
+ *   without), standalone 2D (`square`/`circle`/`polygon` outside an extrude),
+ *   `linear_extrude` with `twist`/`scale`, `polygon` with `paths` (holes),
+ *   multi/union 2D extrude children, `offset`/`projection`, `resize`/`render`
+ *   (see below), and any unknown statement.
  * - `render` is transparent (a no-op for import); `color`'s `%`/`#`
  *   modifiers are transparent, `!` warns (siblings are NOT hidden on
  *   import), `*` disables (subtree skipped).
