@@ -18,7 +18,7 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
 ## Open items
 
-### Tier 2 — Small accepted-limitation cleanups
+### Tier 1 — Small accepted-limitation cleanups
 
 *Admission: a limitation the code already documents and accepts, where the fix is one module plus one call site. Individually minor; collectively these are most of what makes the tool feel unfinished.*
 
@@ -78,7 +78,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **Interactive sketching with geometric constraints** — rejected, not deferred. It is the single clearest "this is a modeling application now" feature, and CAD-Preview is a preview/inspect/prepare tool. More concretely: the numeric profile and curve forms are **not** a degraded mouse — they accept parametric variable expressions (`L*2`, `R*cos(i*360/N)`) that a click-to-place tool cannot express, so replacing them with drawing would trade away a distinguishing capability for a familiar one. The argument has only got stronger: no constraint solver exists anywhere in the codebase (the sole `constraint` hit is `mate`'s doc comment), while the expression-driven sketch vocabulary has kept growing to sixteen creation ops. Worth noting that SketchForge, a dedicated sketch application, still has no constraint solver either — building this would mean shipping the weak two-thirds of the feature.
 
-  **What survived the reframing:** authoring a profile *on a named construction plane* rather than in world coordinates ("Author profiles on a `plane-N`", Tier 2). That is a coordinate-frame convenience over machinery that already exists, and it does not put a solver anywhere.
+  **What survived the reframing:** authoring a profile *on a named construction plane* rather than in world coordinates ("Author profiles on a `plane-N`", Tier 1). That is a coordinate-frame convenience over machinery that already exists, and it does not put a solver anywhere.
 
 - **Reference-image tracing underlay** — rejected. Its value is almost entirely to sketching, which is a non-goal above, and it would punch a hole in a real design property: every texture in the webview is a procedurally-drawn `CanvasTexture` (`geometryBuilder.ts`'s `dotTexture()`, `labelOverlay.ts`, the generated-SVG icon pipeline), a deliberately asset-free design. Injecting a user-supplied image trades that away for a workflow the tool doesn't have — and the tool already has a *better* one, since tracing in a vector editor and importing the result through `svgImport.ts`/`dxfImport.ts` yields real, editable, snappable geometry rather than a picture to eyeball against.
 
