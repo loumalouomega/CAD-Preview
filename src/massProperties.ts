@@ -1,10 +1,11 @@
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
-import { applyEditsBRep, collectSolids, collectFaces, collectEdges } from "./occtOperations";
+import { applyEditsBRep, collectSolids, collectFaces, collectEdges, faceSurfaceInfo } from "./occtOperations";
 import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import type { Part } from "./protocol";
 import type { BomRow } from "./bomExport";
+import { groupCylindricalFaces, type CylindricalFaceFacts, type HoleTableRow } from "./holeTable";
 
 export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
@@ -280,6 +281,106 @@ export async function computeBom(
         unresolvedIds,
       };
     });
+
+    return { rows, warnings };
+  } catch (err) {
+    throw wrapOcctFault(err);
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try {
+        cleanup[i].delete();
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      oc.FS.unlink(tmpName);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hole table (roadmap Tier 1 "Hole table", closed) — the OCCT-touching half;
+// the pure row shape + grouping + nearest-designation + TSV live in
+// `holeTable.ts` so mcpTools.ts can import them without dragging this file's
+// WASM graph into vitest (the same split `computeBom`/`bomExport.ts` uses).
+
+/**
+ * One schedule row per (radius, axis-direction) group of cylindrical faces
+ * over a single parse/replay — the loop-and-tabulate sibling of
+ * {@link computeBom}, reusing its exact call shapes with zero new kernel
+ * surface (`collectFaces` + `faceSurfaceInfo`'s already-verified cylinder
+ * branch). Position is deliberately ignored (schedule convention); every
+ * row's `faceIds` say where. A face whose parameters fail to read, or whose
+ * numbers aren't real, is dropped and named — never fabricated.
+ */
+export async function computeHoleTable(
+  extensionPath: string,
+  bytes: Uint8Array,
+  format: BRepFormat,
+  ops: EditOp[]
+): Promise<{ rows: HoleTableRow[]; warnings: string[] }> {
+  const oc = await getOcct(extensionPath);
+  // Short MEMFS path ON PURPOSE: this OCCT WASM build silently corrupts
+  // writes/reads at 11+ character paths (the same cliff `exportBRep`'s
+  // `/o.<format>` and `buildPrimitivesFile`'s `/p.<format>` work around) —
+  // `/holes.step` (11 chars) fails here with "STEP ReadFile failed (code 2)".
+  const tmpName = `/h.${format}`;
+  oc.FS.writeFile(tmpName, bytes);
+
+  const cleanup: Array<{ delete(): void }> = [];
+  const warnings: string[] = [];
+  try {
+    const baseShape = readShape(oc, tmpName, format, cleanup);
+    const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+    // Global face order (position === the real `face-N`) comes ONLY from
+    // `collectFaces`; owning solids come from per-solid walks matched back by
+    // `IsSame` (the `collectGuideIds` precedent in `occtOperations.ts`) — the
+    // two walks never disturb each other's order this way.
+    const solids = collectSolids(oc, shape, cleanup);
+    const faces = collectFaces(oc, shape, cleanup);
+    const owners: string[][] = faces.map(() => []);
+    for (const s of solids) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const exp = new oc.TopExp_Explorer_2(s.solid, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+      cleanup.push(exp);
+      for (; exp.More(); exp.Next()) {
+        // Cast + cleanup, the `collectSolids`/`addFacesOf` convention — every
+        // created handle is freed in `finally`, never left for the heap.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const owned = oc.TopoDS.Face_1(exp.Current());
+        cleanup.push(owned);
+        for (let i = 0; i < faces.length; i++) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if ((faces[i] as any).IsSame(owned) && !owners[i].includes(s.id)) owners[i].push(s.id);
+        }
+      }
+    }
+
+    const facts: CylindricalFaceFacts[] = [];
+    let nonCylindrical = 0;
+    for (let i = 0; i < faces.length; i++) {
+      const info = faceSurfaceInfo(oc, faces[i], cleanup);
+      if (info.type !== "cylinder" || !info.params || info.params.kind !== "cylinder") {
+        nonCylindrical++;
+        continue;
+      }
+      facts.push({ id: `face-${i}`, solidIds: owners[i], radius: info.params.radius, axisDirection: info.params.axisDirection });
+    }
+
+    const { rows, dropped } = groupCylindricalFaces(facts);
+    if (faces.length === 0) {
+      warnings.push("The model has no faces — nothing to tabulate.");
+    } else if (rows.length === 0) {
+      warnings.push(`No cylindrical faces found among ${faces.length} face(s) — nothing to tabulate.`);
+    } else {
+      warnings.push(
+        `${facts.length} of ${faces.length} face(s) are cylindrical, in ${rows.length} size row(s) (${nonCylindrical} non-cylindrical face(s) ignored).`
+      );
+    }
+    for (const id of dropped) warnings.push(`${id} has non-physical cylinder parameters and was excluded.`);
 
     return { rows, warnings };
   } catch (err) {

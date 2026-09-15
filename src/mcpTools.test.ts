@@ -9,6 +9,7 @@ import {
   loadModel,
   getMassProperties,
   generateBomTool,
+  generateHoleTableTool,
   listWorkspaceModels,
   compareModelsTool,
   checkMeshHealthTool,
@@ -348,6 +349,20 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
         area: p.volumes.length > 0 ? 600 * p.volumes.length : null,
         unresolvedIds: [],
       })),
+      warnings: [],
+    })),
+    computeHoleTable: vi.fn(async () => ({
+      rows: [
+        {
+          radius: 2.5,
+          diameter: 5,
+          axis: [0, 0, 1],
+          count: 2,
+          faceIds: ["face-10", "face-11"],
+          solidIds: ["solid-0"],
+          nearest: { designation: "M6", standard: "iso-metric-coarse", column: "tapDrill", delta: 0 },
+        },
+      ],
       warnings: [],
     })),
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
@@ -3303,6 +3318,35 @@ describe("generate_bom", () => {
     // One pipeline call for both parts — not one per part.
     expect(c.pipeline.computeBom).toHaveBeenCalledTimes(1);
     expect(c.pipeline.computeBom).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", [], expect.arrayContaining([expect.objectContaining({ name: "Body" }), expect.objectContaining({ name: "Boss" })]));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generate_hole_table
+
+describe("generate_hole_table", () => {
+  it("rejects mesh-format sources without touching the pipeline", async () => {
+    const c = ctx();
+    const result = await generateHoleTableTool(c, { path: vtkModel });
+    expect(result.supported).toBe(false);
+    expect(c.pipeline.computeHoleTable).not.toHaveBeenCalled();
+  });
+
+  it("returns rows + TSV through one pipeline call", async () => {
+    const c = ctx();
+    const result = await generateHoleTableTool(c, { path: stpModel });
+    expect(result.supported).toBe(true);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows![0]).toMatchObject({
+      diameter: 5,
+      count: 2,
+      nearest: { designation: "M6", column: "tapDrill", delta: 0 },
+    });
+    const lines = result.table!.split("\n");
+    expect(lines[0]).toBe("Diameter_mm\tAxis\tCount\tFaces\tSolids\tNearest\tColumn\tDelta_mm");
+    expect(lines[1]).toContain("M6");
+    expect(c.pipeline.computeHoleTable).toHaveBeenCalledTimes(1);
+    expect(c.pipeline.computeHoleTable).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", []);
   });
 });
 

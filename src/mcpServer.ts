@@ -31,6 +31,7 @@ import {
   loadModel,
   getMassProperties,
   generateBomTool,
+  generateHoleTableTool,
   inspectEntity,
   measureTool,
   measureExactTool,
@@ -294,6 +295,16 @@ server.registerTool(
     inputSchema: { path: modelPath },
   },
   wrap((args: { path: string }) => generateBomTool(ctx, args))
+);
+
+server.registerTool(
+  "generate_hole_table",
+  {
+    description:
+      "One hole-schedule row per (diameter, axis-direction) group of cylindrical faces: diameter, canonical axis, count, face-N/solid-N ids, and the nearest standard designation (designation + standard + which table column matched + signed delta — always reported, so a far match reads as far, never as a verdict). Also returns `table`, a ready-to-paste tab-separated string with a header row for spreadsheet handoff. Facts only — non-cylindrical faces are ignored with a count; a model with no cylindrical faces returns zero rows with a warning. Shaft ODs and hole IDs are both cylinders and both tabulate (no convex/concave filtering). Read-only. B-rep sources only headless.",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => generateHoleTableTool(ctx, args))
 );
 
 server.registerTool(

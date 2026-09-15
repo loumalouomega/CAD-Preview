@@ -250,8 +250,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 51, `tools/list exposes 51 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg"]) {
+  assert(tools.length === 52, `tools/list exposes 52 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -1751,6 +1751,68 @@ try {
     );
     const boxATsvLine = bomLines.find((l) => l.startsWith("BoxA\t"));
     assert(boxATsvLine && boxATsvLine.split("\t")[5] === "1000", `generate_bom's TSV carries the numbers through (${boxATsvLine})`);
+  }
+
+  // generate_hole_table (roadmap Tier 1 "Hole table") — one schedule row per
+  // (diameter, axis-direction) group of cylindrical faces, nearest standard
+  // designation with its signed delta as facts-only, plus TSV. The fixture is
+  // a plate with two blind holes at exact standard sizes (M6 tap d=5.0,
+  // M5 clearance d=5.5), so the designations AND the zero deltas are analytic
+  // cross-checks, not values copied from the implementation. NOTE the chained
+  // target ids: each hole/boolean rebuilds result-first (the bracket
+  // tutorial's documented drift), so the plate moves solid-1 -> solid-0 after
+  // the first hole — targeting solid-1 twice would drill air the second time
+  // (verified live: a no-geometry cut still reports applied:true).
+  {
+    const holeModel = path.join(dir, "bull-for-hole-table.stp");
+    fs.copyFileSync(FIXTURE, holeModel);
+    const holed = await call("apply_edit_ops", {
+      path: holeModel,
+      ops: [
+        { op: "addBox", center: [0, 0, 10], size: [40, 40, 10] },
+        { op: "addHole", targets: ["solid-1"], position: [-10, 0, 10], axis: [0, 0, 1], radius: 2.5, depth: 12 },
+        { op: "addHole", targets: ["solid-0"], position: [10, 0, 10], axis: [0, 0, 1], radius: 2.75, depth: 12 },
+      ],
+    });
+    assert(holed.applied === 3, `hole-table fixture applies all 3 ops (got ${holed.applied})`);
+
+    const holes = await call("generate_hole_table", { path: holeModel });
+    assert(holes.supported === true && holes.rows.length === 2, `hole table has one row per hole size (got ${holes.rows.length})`);
+    const m6 = holes.rows.find((r) => r.diameter === 5);
+    const m5 = holes.rows.find((r) => r.diameter === 5.5);
+    assert(
+      m6 && m6.nearest.designation === "M6" && m6.nearest.column === "tapDrill" && m6.nearest.delta === 0,
+      `d=5.0 reads M6/tapDrill with zero delta (got ${JSON.stringify(m6?.nearest)})`
+    );
+    assert(
+      m5 && m5.nearest.designation === "M5" && m5.nearest.column === "clearance" && m5.nearest.delta === 0,
+      `d=5.5 reads M5/clearance with zero delta (got ${JSON.stringify(m5?.nearest)})`
+    );
+    assert(
+      m6.count === 1 && m5.count === 1 && m6.solidIds.length === 1 && m5.solidIds.length === 1,
+      "each row counts its own wall face on the plate solid"
+    );
+    assert(
+      /2 of \d+ face\(s\) are cylindrical/.test(holes.warnings.join("\n")),
+      `the ignored-face count is reported, never silent (got ${JSON.stringify(holes.warnings)})`
+    );
+    const holeLines = holes.table.split("\n");
+    assert(
+      holeLines.length === 3 && holeLines[0].startsWith("Diameter_mm\tAxis\t"),
+      "hole-table TSV has a header plus one line per row"
+    );
+    assert(holeLines.some((l) => l.includes("\tM6\ttapDrill\t0")), `TSV carries the M6 row through (${holeLines[1]})`);
+
+    const holeyMesh = await call("generate_hole_table", { path: path.join(ROOT, "examples", "STL", "cube.stl") });
+    assert(holeyMesh.supported === false, "hole table degrades gracefully for mesh-format sources");
+
+    const plainBlock = path.join(dir, "block-for-hole-table.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), plainBlock);
+    const noHoles = await call("generate_hole_table", { path: plainBlock });
+    assert(
+      noHoles.supported === true && noHoles.rows.length === 0 && /No cylindrical faces/.test(noHoles.warnings.join("\n")),
+      "a model with no cylindrical faces returns zero rows + a warning (a fact, not an error)"
+    );
   }
 
   // Entity-id rebinding after topology-changing ops (roadmap item, closed) —

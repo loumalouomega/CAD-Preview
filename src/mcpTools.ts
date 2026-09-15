@@ -69,7 +69,7 @@ import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./mesh
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part, Annotation, ConstructionPlane, MeasureTool } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
-import type { computeMassProperties, computeBom, MassProperties } from "./massProperties";
+import type { computeMassProperties, computeBom, computeHoleTable, MassProperties } from "./massProperties";
 import type {
   getEntityFacts,
   measureEntities,
@@ -157,6 +157,7 @@ import {
 } from "./mcpSidecars";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
+import { holeTableTsv, type HoleTableRow } from "./holeTable";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson, nextPlaneId } from "./planesSidecar";
@@ -176,6 +177,7 @@ export interface Pipeline {
   exportGeoUnrolled: typeof exportGeoUnrolled;
   computeMassProperties: typeof computeMassProperties;
   computeBom: typeof computeBom;
+  computeHoleTable: typeof computeHoleTable;
   getEntityFacts: typeof getEntityFacts;
   hitTest: typeof hitTest;
   measureEntities: typeof measureEntities;
@@ -892,6 +894,47 @@ export async function generateBomTool(
   const { bytes, format } = src;
   const result = await ctx.pipeline.computeBom(ctx.extensionPath, bytes, format as BRepFormat, ops, parts);
   return { format: route.format, supported: true, rows: result.rows, bom: bomTsv(result.rows), warnings: [...warnings, ...result.warnings] };
+}
+
+// ---------------------------------------------------------------------------
+// generate_hole_table
+
+/**
+ * Hole table / feature schedule (roadmap Tier 1 "Hole table", closed) — one
+ * row per (radius, axis-direction) group of cylindrical faces over ONE
+ * parse/replay total, via `massProperties.ts`'s `computeHoleTable` (the
+ * loop-and-tabulate sibling of `computeBom`, zero new kernel surface). Facts
+ * only: each row's `nearest` designation is the closest table entry by
+ * measured diameter with its signed `delta` always reported (a far match
+ * reads as far, never as a verdict); non-cylindrical faces are ignored with
+ * a count, never silently; a model with no cylindrical faces returns zero
+ * rows with a warning — a missing table is a fact about the document, not
+ * an error. Read-only. B-rep sources only headless.
+ */
+export async function generateHoleTableTool(
+  ctx: ToolContext,
+  params: { path: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; rows?: HoleTableRow[]; table?: string }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source: hole schedules enumerate analytic B-rep cylinder faces, not available headless.`],
+    };
+  }
+
+  const { ops } = await readEditsResolved(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) {
+    return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  }
+  const { bytes, format } = src;
+  const result = await ctx.pipeline.computeHoleTable(ctx.extensionPath, bytes, format as BRepFormat, ops);
+  return { format: route.format, supported: true, rows: result.rows, table: holeTableTsv(result.rows), warnings: [...warnings, ...result.warnings] };
 }
 
 // ---------------------------------------------------------------------------
