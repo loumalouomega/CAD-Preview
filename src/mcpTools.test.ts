@@ -2039,6 +2039,108 @@ describe("the script library", () => {
       runSavedScript(ctx(), { libraryPath: lib(), name: "ghost", path: stpModel })
     ).rejects.toThrow(/No saved script named "ghost".*available: m/s);
   });
+
+  describe("the bundled starter library fallback", () => {
+    const bundledDir = () => path.join(dir, "dist", "macros");
+    const bundledFile = () => path.join(bundledDir(), "starter-library.json");
+    const starterFile = {
+      version: 1,
+      scripts: {
+        starter: { name: "starter", description: "bundled", script },
+      },
+    };
+
+    it("lists just the bundled starters when no libraryPath is given", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      const r = await listParametricScripts({ extensionPath: dir });
+      expect(r.scripts).toEqual([{ name: "starter", description: "bundled", parameters: [{ name: "R", expr: "10" }] }]);
+      expect(r.bundled).toEqual(["starter"]);
+      expect(r.libraryPath).toBeNull();
+    });
+
+    it("reads empty without an extensionPath and without a libraryPath, never an error", async () => {
+      const r = await listParametricScripts({});
+      expect(r.scripts).toEqual([]);
+      expect(r.warnings[0]).toMatch(/No scripts found/);
+    });
+
+    it("unions a caller file on top of the bundled starters, caller winning collisions", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      await saveParametricScript({ libraryPath: lib(), name: "starter", script });
+      await saveParametricScript({ libraryPath: lib(), name: "mine", script });
+      const r = await listParametricScripts({ libraryPath: lib(), extensionPath: dir });
+      expect(r.scripts.map((s) => s.name)).toEqual(["mine", "starter"]);
+      expect(r.warnings.some((w) => /collision.*starter/.test(w))).toBe(true);
+    });
+
+    it("runs a bundled starter with no libraryPath through the same path", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      const r = await runSavedScript(ctx(), { name: "starter", path: stpModel });
+      expect(r.script).toBe("starter");
+      expect(r.applied).toBe(1);
+    });
+
+    it("prefers the caller file over a bundled starter of the same name", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      await saveParametricScript({ libraryPath: lib(), name: "starter", script });
+      const r = await runSavedScript(ctx(), { libraryPath: lib(), name: "starter", path: stpModel });
+      expect(r.applied).toBe(1);
+      const persisted = await readEdits(stpModel);
+      expect(persisted.ops).toHaveLength(1);
+    });
+
+    it("names the bundled starters in the unknown-name error when no libraryPath is given", async () => {
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(bundledFile(), JSON.stringify(starterFile), "utf8");
+      await expect(runSavedScript(ctx(), { name: "ghost", path: stpModel })).rejects.toThrow(
+        /No saved script named "ghost".*available: starter/s
+      );
+    });
+
+    it("caller parameters refresh a plain step's caches while keeping exprs live", async () => {
+      const paramScript = {
+        variables: [{ name: "R", expr: "10" }],
+        steps: [
+          { op: { op: "addBox", center: [0, 0, 0], size: [10, 10, 10], exprs: { "size[0]": "R", "size[1]": "R", "size[2]": "R" } } },
+        ],
+      };
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(
+        bundledFile(),
+        JSON.stringify({ version: 1, scripts: { box: { name: "box", script: paramScript } } }),
+        "utf8"
+      );
+      const r = await runSavedScript(ctx(), { name: "box", path: stpModel, parameters: { R: 99 } });
+      expect(r.applied).toBe(1);
+      const persisted = await readEdits(stpModel);
+      expect((persisted.ops[0] as any).size).toEqual([99, 99, 99]);
+      expect((persisted.ops[0] as any).exprs).toEqual({ "size[0]": "R", "size[1]": "R", "size[2]": "R" });
+    });
+
+    it("an override that does not evaluate keeps the authored numbers and says so", async () => {
+      const paramScript = {
+        variables: [{ name: "R", expr: "10" }],
+        steps: [
+          { op: { op: "addBox", center: [0, 0, 0], size: [10, 10, 10], exprs: { "size[0]": "R" } } },
+        ],
+      };
+      await fs.mkdir(bundledDir(), { recursive: true });
+      await fs.writeFile(
+        bundledFile(),
+        JSON.stringify({ version: 1, scripts: { box: { name: "box", script: paramScript } } }),
+        "utf8"
+      );
+      const r = await runSavedScript(ctx(), { name: "box", path: stpModel, parameters: { R: "nope" } });
+      expect(r.applied).toBe(1);
+      const persisted = await readEdits(stpModel);
+      expect((persisted.ops[0] as any).size).toEqual([10, 10, 10]);
+      expect(r.issues.some((i: string) => /step 0/.test(i))).toBe(true);
+    });
+  });
 });
 
 describe("run_parametric_script", () => {

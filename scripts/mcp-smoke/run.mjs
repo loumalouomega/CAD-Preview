@@ -3922,8 +3922,10 @@ try {
 
   const listedMacros = await call("list_parametric_scripts", { libraryPath });
   assert(
-    listedMacros.scripts.length === 1 && listedMacros.scripts[0].name === "bolt-circle",
-    `list_parametric_scripts returns the saved macro and not the refused one (got ${JSON.stringify(listedMacros.scripts.map((x) => x.name))})`
+    listedMacros.scripts.some((x) => x.name === "bolt-circle") &&
+      !listedMacros.scripts.some((x) => x.name === "broken") &&
+      ["spring", "bolt-circle-flange", "hex-bolt"].every((n) => listedMacros.scripts.some((x) => x.name === n)),
+    `list_parametric_scripts unions the caller file on top of the bundled starters (got ${JSON.stringify(listedMacros.scripts.map((x) => x.name))})`
   );
 
   // Two runs, fresh fixture each, differing ONLY in the overrides.
@@ -3971,6 +3973,73 @@ try {
   assert(
     missingScript.error && /No saved script named/.test(missingScript.error),
     "running an unknown script name fails with a clear, actionable error"
+  );
+
+  // ── Bundled starter macro library (roadmap Tier 1 "A bundled starter macro
+  // library") ──
+  // list/run with NO libraryPath serve the bundled starters (spring,
+  // bolt-circle-flange, hex-bolt); a caller file unions on top. All three
+  // starters assume a blank base (examples/BREP/blank.brep — the empty
+  // compound New Blank Model writes), so each runs on a fresh blank copy.
+  // Volumes are analytic cross-checks, not values copied from the
+  // implementation: flange = π·40²·10 − 8·π·3²·10; bolt = 5·(3·8²·sin60°) +
+  // π·4²·20; spring is sweep-discretized, so it gets a band, not a pin.
+  const BLANK = path.join(ROOT, "examples", "BREP", "blank.brep");
+  const listedStarters = await call("list_parametric_scripts", {});
+  assert(
+    ["spring", "bolt-circle-flange", "hex-bolt"].every((n) => listedStarters.scripts.some((s) => s.name === n)),
+    `omitting libraryPath lists the bundled starters (got ${JSON.stringify(listedStarters.scripts.map((x) => x.name))})`
+  );
+  const listedUnion = await call("list_parametric_scripts", { libraryPath });
+  assert(
+    listedUnion.scripts.some((s) => s.name === "bolt-circle") &&
+      listedUnion.scripts.some((s) => s.name === "spring"),
+    "a caller libraryPath unions the caller file on top of the bundled starters"
+  );
+
+  const springBlank = path.join(dir, "starter-spring.brep");
+  const flangeBlank = path.join(dir, "starter-flange.brep");
+  const boltBlank = path.join(dir, "starter-bolt.brep");
+  fs.copyFileSync(BLANK, springBlank);
+  fs.copyFileSync(BLANK, flangeBlank);
+  fs.copyFileSync(BLANK, boltBlank);
+
+  const springRun = await call("run_saved_script", { name: "spring", path: springBlank });
+  assert(springRun.applied === 3, `starter spring applies all 3 ops (got ${springRun.applied})`);
+  const springMass = await call("get_mass_properties", { path: springBlank });
+  assert(
+    Math.abs(springMass.volume - 1776.29) / 1776.29 < 0.01,
+    `starter spring builds a real helical solid (volume=${springMass.volume}, expected ~1776.29)`
+  );
+
+  const springOverridden = path.join(dir, "starter-spring-overridden.brep");
+  fs.copyFileSync(BLANK, springOverridden);
+  const springOver = await call("run_saved_script", {
+    name: "spring",
+    path: springOverridden,
+    parameters: { R: 12, W: 2 },
+  });
+  assert(springOver.applied === 3, `starter spring applies with overrides (got ${springOver.applied})`);
+  const springOverMass = await call("get_mass_properties", { path: springOverridden });
+  assert(
+    springOverMass.volume > springMass.volume,
+    `the R/W overrides actually resize the spring (${springOverMass.volume} vs ${springMass.volume})`
+  );
+
+  const flangeRun = await call("run_saved_script", { name: "bolt-circle-flange", path: flangeBlank });
+  assert(flangeRun.applied === 4, `starter flange applies all 4 ops (got ${flangeRun.applied})`);
+  const flangeMass = await call("get_mass_properties", { path: flangeBlank });
+  assert(
+    Math.abs(flangeMass.volume - 48003.5357) < 1.0,
+    `starter flange matches the analytic disc-minus-8-holes volume (volume=${flangeMass.volume}, expected ~48003.54)`
+  );
+
+  const boltRun = await call("run_saved_script", { name: "hex-bolt", path: boltBlank });
+  assert(boltRun.applied === 3, `starter hex-bolt applies all 3 ops (got ${boltRun.applied})`);
+  const boltMass = await call("get_mass_properties", { path: boltBlank });
+  assert(
+    Math.abs(boltMass.volume - 1836.694) < 1e-3,
+    `starter hex-bolt matches the analytic prism-plus-shaft volume (volume=${boltMass.volume}, expected ~1836.694)`
   );
 
   // ── Named construction planes (roadmap "Reusable construction planes") ──

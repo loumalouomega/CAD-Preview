@@ -121,7 +121,8 @@ import { PAPER_SIZES, PROJECTION_METHODS, type PaperSize, type ProjectionMethod 
 import type { hitTest } from "./hitTestService";
 import { NAMED_VIEW_NAMES, orbitDirection, resolveNamedView, type Vec3 } from "./viewDirections";
 import { HOLE_STANDARDS, allHoleSizes, depthPresetsFor, findHoleSize, holeSizesFor, type HoleStandard } from "./holeStandards";
-import { mergeScriptOverrides, scriptParameters, type ScriptLibraryEntry } from "./scriptLibrary";
+import { mergeScriptOverrides, scriptParameters, type ScriptLibrary, type ScriptLibraryEntry } from "./scriptLibrary";
+import { mergeScriptLibraries } from "./starterMacros";
 import type {
   generateMesh,
   exportMeshFormat,
@@ -131,6 +132,7 @@ import type {
   MeshGenerationInput,
 } from "./gmshService";
 import {
+  readBundledScriptLibrary,
   readScriptLibrary,
   readViewState,
   writeScriptLibrary,
@@ -3341,19 +3343,39 @@ export async function saveParametricScript(params: {
 /**
  * Lists saved scripts with their parameters, so an agent can discover what is
  * available without reading the raw library JSON. Kernel-free (no `ctx`).
+ *
+ * `libraryPath` is optional since the bundled starter library shipped: omit
+ * it to list just the starters, pass it to union that file's entries on top
+ * (the caller's own entry wins a name collision, reported in `warnings`).
+ * `extensionPath` locates the bundled file and is injected by `mcpServer.ts`
+ * (never part of the tool schema); without it only the caller file is read.
  */
-export async function listParametricScripts(params: { libraryPath: string }) {
-  const library = await readScriptLibrary(params.libraryPath);
+export async function listParametricScripts(params: { libraryPath?: string; extensionPath?: string }) {
+  const user = params.libraryPath ? await readScriptLibrary(params.libraryPath) : {};
+  const bundled = params.extensionPath ? await readBundledScriptLibrary(params.extensionPath) : {};
+  const { merged: library, collisions } = mergeScriptLibraries(bundled, user);
   const scripts = Object.values(library).map((entry) => ({
     name: entry.name,
     description: entry.description ?? null,
     parameters: scriptParameters(entry.script),
   }));
   scripts.sort((a, b) => a.name.localeCompare(b.name));
+  const warnings: string[] = [];
+  if (scripts.length === 0) {
+    warnings.push(
+      `No scripts found${params.libraryPath ? ` at ${params.libraryPath}` : ""} (a missing or empty library reads as empty, never an error).`
+    );
+  }
+  if (collisions.length > 0) {
+    warnings.push(
+      `Name collision(s) with the bundled starter library — your file wins: ${collisions.join(", ")}.`
+    );
+  }
   return {
-    libraryPath: params.libraryPath,
+    libraryPath: params.libraryPath ?? null,
+    bundled: Object.keys(bundled).sort(),
     scripts,
-    warnings: scripts.length === 0 ? [`No scripts found at ${params.libraryPath} (a missing or empty library reads as empty, never an error).`] : [],
+    warnings,
   };
 }
 
@@ -3363,23 +3385,30 @@ export async function listParametricScripts(params: { libraryPath: string }) {
  * Hands the merged script to the SAME compile-and-apply path
  * `run_parametric_script` uses — the only difference is where the document came
  * from. An override naming an undeclared parameter is warned about, not fatal.
+ *
+ * `libraryPath` is optional since the bundled starter library shipped: the
+ * caller's file is searched first, then the bundled starters (a caller entry
+ * shadows a bundled one of the same name). Omit it to run a starter by name.
  */
 export async function runSavedScript(
   ctx: ToolContext,
   params: {
-    libraryPath: string;
+    libraryPath?: string;
     name: string;
     path: string;
     parameters?: Record<string, number | string>;
     dryRun?: boolean;
   }
 ) {
-  const library = await readScriptLibrary(params.libraryPath);
+  const user = params.libraryPath ? await readScriptLibrary(params.libraryPath) : {};
+  const bundled = await readBundledScriptLibrary(ctx.extensionPath);
+  const { merged: library } = mergeScriptLibraries(bundled, user);
   const entry = library[params.name];
   if (!entry) {
     const available = Object.keys(library);
     throw new Error(
-      `No saved script named "${params.name}" in ${params.libraryPath}` +
+      `No saved script named "${params.name}"` +
+        (params.libraryPath ? ` in ${params.libraryPath}` : " in the bundled starter library") +
         (available.length > 0 ? ` — available: ${available.join(", ")}.` : " (the library is empty or missing).")
     );
   }

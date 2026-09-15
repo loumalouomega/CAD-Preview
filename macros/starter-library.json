@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "scripts": {
+    "spring": {
+      "name": "spring",
+      "description": "A helical compression spring: a wire-radius circle swept along a helix. Parameters R (coil radius), W (wire radius), P (pitch), N (turns). Designed for a blank model (File ▸ New Blank Model) — its sweep references the face/edge ids the first two steps create on an empty base.",
+      "script": {
+        "variables": [
+          { "name": "R", "expr": "10" },
+          { "name": "W", "expr": "1.5" },
+          { "name": "P", "expr": "6" },
+          { "name": "N", "expr": "4" }
+        ],
+        "steps": [
+          { "op": { "op": "addCircleProfile", "center": [10, 0, 0], "normal": [0, 1, 0], "radius": 1.5, "exprs": { "center[0]": "R", "radius": "W" } } },
+          { "op": { "op": "addHelix", "center": [0, 0, 0], "axis": [0, 0, 1], "radius": 10, "pitch": 6, "turns": 4, "exprs": { "radius": "R", "pitch": "P", "turns": "N" } } },
+          { "op": { "op": "sweep", "profile": "face-0", "path": "edge-1" } }
+        ]
+      }
+    },
+    "bolt-circle-flange": {
+      "name": "bolt-circle-flange",
+      "description": "A round flange with a ring of N bolt holes at radius R (the doc/tutorials/bolt-circle-flange.md walkthrough as a runnable macro). Patterns the cutting tool then subtracts the whole ring at once. Designed for a blank model — its pattern/boolean reference the solids the first two steps create on an empty base. Note: overriding N past 8 also needs the subtract's id list widened by hand (entity references stay literal).",
+      "script": {
+        "variables": [
+          { "name": "R", "expr": "30" },
+          { "name": "N", "expr": "8" }
+        ],
+        "steps": [
+          { "op": { "op": "addCylinder", "center": [0, 0, -5], "axis": [0, 0, 1], "radius": 40, "height": 10 } },
+          { "op": { "op": "addCylinder", "center": [30, 0, -10], "axis": [0, 0, 1], "radius": 3, "height": 20, "exprs": { "center[0]": "R" } } },
+          { "op": { "op": "patternCircular", "targets": ["solid-1"], "axisPoint": [0, 0, 0], "axisDir": [0, 0, 1], "angleDeg": 45, "count": 8, "exprs": { "angleDeg": "360/N", "count": "N" } } },
+          { "op": { "op": "boolean", "kind": "subtract", "a": ["solid-0"], "b": ["solid-1", "solid-2", "solid-3", "solid-4", "solid-5", "solid-6", "solid-7", "solid-8"] } }
+        ]
+      }
+    },
+    "hex-bolt": {
+      "name": "hex-bolt",
+      "description": "A hex-head bolt blank: 6-sided prism head fused to a shaft cylinder. Parameters headR (head circumradius), headH, shaftR, shaftL. Designed for a blank model — its boolean references the two solids the first steps create on an empty base.",
+      "script": {
+        "variables": [
+          { "name": "headR", "expr": "8" },
+          { "name": "headH", "expr": "5" },
+          { "name": "shaftR", "expr": "4" },
+          { "name": "shaftL", "expr": "20" }
+        ],
+        "steps": [
+          { "op": { "op": "addPrism", "center": [0, 0, 0], "axis": [0, 0, 1], "radius": 8, "height": 5, "sides": 6, "exprs": { "radius": "headR", "height": "headH" } } },
+          { "op": { "op": "addCylinder", "center": [0, 0, 5], "axis": [0, 0, 1], "radius": 4, "height": 20, "exprs": { "radius": "shaftR", "height": "shaftL" } } },
+          { "op": { "op": "boolean", "kind": "union", "a": ["solid-0"], "b": ["solid-1"] } }
+        ]
+      }
+    }
+  }
+}

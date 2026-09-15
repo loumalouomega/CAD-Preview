@@ -18,6 +18,12 @@ export interface MacroDisplay {
   name: string;
   description: string | null;
   parameters: { name: string; expr: string }[];
+  /**
+   * True for a bundled starter — runnable like any macro but read-only, so
+   * the row shows no Delete button (the host refuses the delete anyway, as a
+   * backstop). Absent means false.
+   */
+  readOnly?: boolean;
 }
 
 export interface MacrosPanelCallbacks {
@@ -92,9 +98,16 @@ export class MacrosPanel {
     const del = document.createElement("button");
     del.className = "macro-btn";
     del.textContent = "✕";
-    del.title = `Delete ${macro.name}`;
-    del.addEventListener("click", () => this.cb.onDelete(macro.name));
-    head.appendChild(del);
+    del.title = macro.readOnly
+      ? `${macro.name} is a bundled starter macro and cannot be deleted`
+      : `Delete ${macro.name}`;
+    // Bundled starters are read-only: runnable, but with no Delete affordance
+    // at all (rather than a disabled button the layout must still account
+    // for) — the host's `macroDelete` refusal is only the backstop.
+    if (!macro.readOnly) {
+      del.addEventListener("click", () => this.cb.onDelete(macro.name));
+      head.appendChild(del);
+    }
 
     wrap.appendChild(head);
 

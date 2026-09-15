@@ -283,6 +283,13 @@ Macros live in `cad-preview-macros.json` in the model's own folder, shared by ev
 That is the **same file** the MCP tools read and write, so a macro you record by hand is directly
 runnable by an agent and vice versa.
 
+Three starter macros ship with the extension and are listed above your own entries — `spring` (a
+helical spring: wire-radius circle swept along a helix, parameters `R`/`W`/`P`/`N`), `bolt-circle-flange`
+(the bolt-circle flange walkthrough as a runnable macro, parameters `R`/`N`), and `hex-bolt` (hex-prism
+head fused to a shaft, parameters `headR`/`headH`/`shaftR`/`shaftL`). They run like any macro but show
+no Delete button (read-only). All three assume a blank model (File ▸ New Blank Model) — their
+sweep/pattern/boolean steps reference the entity ids those steps create on an empty base.
+
 ### Theme
 
 The 3D scene follows VS Code's active colour theme. Switching between a light, dark, or

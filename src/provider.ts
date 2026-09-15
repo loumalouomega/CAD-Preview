@@ -59,6 +59,7 @@ import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { mergeScriptOverrides, parseScriptLibraryJson, scriptParameters, serializeScriptLibraryJson } from "./scriptLibrary";
+import { bundledMacrosPath, mergeScriptLibraries } from "./starterMacros";
 import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
@@ -1778,7 +1779,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         try {
           const libraryPath = macroLibraryPath(document.uri);
           const library = parseScriptLibraryJson(await readTextFile(libraryPath));
-          const entry = library[msg.name];
+          const bundled = parseScriptLibraryJson(await readTextFile(bundledMacrosPath(this.context.extensionPath)));
+          // Caller-owned entries shadow bundled starters of the same name —
+          // the same merge (and precedence) `sendMacros` displays, so Run and
+          // the panel list can never disagree about which script a name means.
+          const { merged } = mergeScriptLibraries(bundled, library);
+          const entry = merged[msg.name];
           if (!entry) throw new Error(`No saved macro named "${msg.name}".`);
 
           const { script, unknownNames } = mergeScriptOverrides(entry.script, msg.parameters);
@@ -1841,6 +1847,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         try {
           const libraryPath = macroLibraryPath(document.uri);
           const library = parseScriptLibraryJson(await readTextFile(libraryPath));
+          if (!Object.prototype.hasOwnProperty.call(library, msg.name)) {
+            // Either a bundled starter (read-only — the panel hides its
+            // Delete button, so this is a backstop, not a normal path) or a
+            // name that was never saved here at all.
+            const bundled = parseScriptLibraryJson(await readTextFile(bundledMacrosPath(this.context.extensionPath)));
+            if (Object.prototype.hasOwnProperty.call(bundled, msg.name)) {
+              throw new Error(`"${msg.name}" is a bundled starter macro and cannot be deleted — save your own macro under a different name to override it.`);
+            }
+            throw new Error(`No saved macro named "${msg.name}".`);
+          }
           delete library[msg.name];
           await vscode.workspace.fs.writeFile(
             vscode.Uri.file(libraryPath),
@@ -2574,11 +2590,17 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    */
   private async sendMacros(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
     const library = parseScriptLibraryJson(await readTextFile(macroLibraryPath(uri)));
-    const macros = Object.values(library)
+    const bundled = parseScriptLibraryJson(await readTextFile(bundledMacrosPath(this.context.extensionPath)));
+    const { merged } = mergeScriptLibraries(bundled, library);
+    const owned = new Set(Object.keys(library));
+    const macros = Object.values(merged)
       .map((entry) => ({
         name: entry.name,
         description: entry.description ?? null,
         parameters: scriptParameters(entry.script),
+        // A caller-owned entry shadows a bundled starter of the same name —
+        // the merged row is theirs (deletable), never the read-only starter.
+        readOnly: !owned.has(entry.name),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
     post({ type: "macros", macros });

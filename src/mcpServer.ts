@@ -861,6 +861,7 @@ server.registerTool(
 );
 
 const libraryPath = z.string().describe("Absolute path to the script-library JSON file (you name it; it is created on first save)");
+const optionalLibraryPath = z.string().optional().describe("Absolute path to your script-library JSON file. Omit to use the bundled starter library (spring, bolt-circle-flange, hex-bolt) — pass it to union that file's entries on top (yours win name collisions).");
 
 server.registerTool(
   "save_parametric_script",
@@ -884,19 +885,19 @@ server.registerTool(
   "list_parametric_scripts",
   {
     description:
-      "List the saved scripts in a library file with their descriptions and declared parameters (name + default expression), so you can discover what is available without reading the raw JSON. A missing or empty library reads as empty with a warning, never an error.",
-    inputSchema: { libraryPath },
+      "List the saved scripts in a library file with their descriptions and declared parameters (name + default expression), so you can discover what is available without reading the raw JSON. Omit libraryPath to list the bundled starter library (spring, bolt-circle-flange, hex-bolt); pass it to union that file's entries on top. A missing or empty library reads as empty with a warning, never an error.",
+    inputSchema: { libraryPath: optionalLibraryPath },
   },
-  wrap((args: { libraryPath: string }) => listParametricScripts(args))
+  wrap((args: { libraryPath?: string }) => listParametricScripts({ ...args, extensionPath }))
 );
 
 server.registerTool(
   "run_saved_script",
   {
     description:
-      "Run a saved script from a library against a model, optionally overriding its declared parameters by name (e.g. {radius: 30, count: 8}). Goes through the exact same compile/validate/bake/persist path as run_parametric_script — same B-rep-only op gate, same entity rebinding, same response — differing only in where the script came from. An override naming no declared parameter is warned about, not fatal.",
+      "Run a saved script from a library against a model, optionally overriding its declared parameters by name (e.g. {radius: 30, count: 8}). Your library file is searched first, then the bundled starter library (spring, bolt-circle-flange, hex-bolt) — omit libraryPath to run a starter by name. Goes through the exact same compile/validate/bake/persist path as run_parametric_script — same B-rep-only op gate, same entity rebinding, same response — differing only in where the script came from. An override naming no declared parameter is warned about, not fatal.",
     inputSchema: {
-      libraryPath,
+      libraryPath: optionalLibraryPath,
       name: z.string().describe("The saved script's name, as reported by list_parametric_scripts"),
       path: modelPath,
       parameters: z
@@ -907,7 +908,7 @@ server.registerTool(
     },
   },
   wrap(
-    (args: { libraryPath: string; name: string; path: string; parameters?: Record<string, number | string>; dryRun?: boolean }) =>
+    (args: { libraryPath?: string; name: string; path: string; parameters?: Record<string, number | string>; dryRun?: boolean }) =>
       runSavedScript(ctx, args)
   )
 );

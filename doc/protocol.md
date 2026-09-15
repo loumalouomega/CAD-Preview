@@ -724,7 +724,7 @@ Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep source
 
 ### `macros` / `macroApplyOps`
 
-The saved-macro library for the document's folder (`cad-preview-macros.json` — the same file the MCP tools take as `libraryPath`). `macros` is sent unprompted on `ready` and after every save/delete, so the panel never has to ask for it.
+The saved-macro library for the document's folder (`cad-preview-macros.json` — the same file the MCP tools take as `libraryPath`), unioned with the bundled starter library (`spring`, `bolt-circle-flange`, `hex-bolt` — a caller-owned entry shadows a bundled one of the same name). `macros` is sent unprompted on `ready` and after every save/delete, so the panel never has to ask for it. A bundled row carries `readOnly: true` (absent means false) and shows no Delete button; the host refuses `macroDelete` for it as a backstop.
 
 `macroApplyOps` carries a macro's **compiled** ops for the webview to push onto its own op stack — deliberately not a host-side append, so a macro is undoable, visible in the history and removable op-by-op exactly like a hand-applied edit, with no special "macro" state for undo/redo to reason about.
 

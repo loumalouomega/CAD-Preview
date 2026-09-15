@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compileParametricScript } from "./parametricScript";
+import { compileParametricScript, refreshOpCaches } from "./parametricScript";
 
 describe("compileParametricScript", () => {
   it("compiles a plain op step exactly like apply_edit_ops would validate it", () => {
@@ -29,6 +29,51 @@ describe("compileParametricScript", () => {
     );
     expect(result.ops).toHaveLength(1);
     expect(result.ops[0].exprs).toEqual({ "size[0]": "L" });
+  });
+
+  it("a plain op step's caches refresh against compile-time values, exprs kept", () => {
+    const result = compileParametricScript(
+      {
+        variables: [{ name: "R", expr: "30" }],
+        steps: [
+          { op: { op: "addCylinder", center: [10, 0, 0], axis: [0, 0, 1], radius: 3, height: 5, exprs: { "center[0]": "R" } } },
+        ],
+      },
+      {}
+    );
+    expect(result.ops).toHaveLength(1);
+    expect((result.ops[0] as any).center).toEqual([30, 0, 0]);
+    expect(result.ops[0].exprs).toEqual({ "center[0]": "R" });
+    expect(result.issues).toEqual([]);
+  });
+
+  it("a plain op step whose exprs fail keeps the authored numbers and says so", () => {
+    const result = compileParametricScript(
+      {
+        steps: [
+          { op: { op: "addBox", center: [0, 0, 0], size: [20, 10, 5], exprs: { "size[0]": "MISSING" } } },
+        ],
+      },
+      {}
+    );
+    expect(result.ops).toHaveLength(1);
+    expect((result.ops[0] as any).size).toEqual([20, 10, 5]);
+    expect(result.report).toEqual([{ index: 0, kind: "op", applied: 1, rejected: 0, reasons: [] }]);
+    expect(result.issues.some((i) => /step 0/.test(i))).toBe(true);
+  });
+
+  it("refreshOpCaches returns null when the refreshed numbers no longer validate", () => {
+    // R = -5 refreshes radius negative, which validateEditOp rejects outright.
+    const refreshed = refreshOpCaches(
+      { op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 3, height: 5, exprs: { radius: "R" } } as any,
+      { R: -5 }
+    );
+    expect(refreshed).toBeNull();
+  });
+
+  it("refreshOpCaches returns the same op when there are no exprs", () => {
+    const op = { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] } as any;
+    expect(refreshOpCaches(op, {})).toBe(op);
   });
 
   it("expands a repeat block `times` times, binding indexVar", () => {

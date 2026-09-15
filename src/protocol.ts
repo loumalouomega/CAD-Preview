@@ -133,6 +133,13 @@ export interface MacroSummary {
   name: string;
   description: string | null;
   parameters: { name: string; expr: string }[];
+  /**
+   * True for a bundled starter (roadmap Tier 1 "A bundled starter macro
+   * library") — runnable like any macro but read-only: the panel hides its
+   * Delete button and the host refuses `macroDelete` for it. Absent means
+   * false (a caller-owned entry).
+   */
+  readOnly?: boolean;
 }
 
 export interface Annotation {
