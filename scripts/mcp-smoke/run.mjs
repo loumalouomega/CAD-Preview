@@ -1311,6 +1311,103 @@ try {
     if (freeform.surfaceType === "other") {
       assert(freeform.surfaceParams === null, "a free-form (other) face reports surfaceParams: null");
     }
+
+  // ── axisDistance on measure_exact + headless mesh inspection ─────────────
+  // Tier 1 close: hole-to-hole centre distance is pure vector math over the
+  // already-verified cylinder accessors, and mesh mass/inspect/measure share
+  // one headless triangle integration over the compare_models parsers.
+  {
+    // Two parallel cylinders D apart: axisDistance is the axis spacing,
+    // value is the surface clearance (D - R1 - R2).
+    const axisModel = path.join(dir, "bull-for-axis-distance.stp");
+    fs.copyFileSync(FIXTURE, axisModel);
+    const R1 = s / 8, R2 = s / 8, D = 4 * s;
+    const cx = bbox.max[0] + 12 * s;
+    const appliedAx = await call("apply_edit_ops", {
+      path: axisModel,
+      ops: [
+        { op: "addCylinder", center: [cx, 0, 0], radius: R1, height: s, axis: [0, 0, 1] },
+        { op: "addCylinder", center: [cx + D, 0, 0], radius: R2, height: s, axis: [0, 0, 1] },
+      ],
+    });
+    assert(appliedAx.applied === 2, "apply_edit_ops accepts both axis-distance cylinders");
+    const axFaces = appliedAx.model.solids.flatMap((sol) => sol.faceIds);
+    let axA = null, axB = null;
+    for (const fid of axFaces) {
+      const f = await call("inspect", { path: axisModel, entityId: fid });
+      if (f.surfaceType !== "cylinder" || !f.surfaceParams) continue;
+      if (Math.abs(f.surfaceParams.radius - R1) > 1e-9) continue;
+      if (axA === null) axA = fid; else { axB = fid; break; }
+    }
+    assert(axA !== null && axB !== null, "inspect finds both added cylinders' lateral faces");
+    const axDist = await call("measure_exact", { path: axisModel, kind: "distance", entityIdA: axA, entityIdB: axB });
+    assert(
+      Math.abs(axDist.axisDistance - D) < 1e-6,
+      `measure_exact reports parallel-axis spacing exactly (expected ${D}, got ${axDist.axisDistance})`
+    );
+    assert(
+      Math.abs(axDist.value - (D - R1 - R2)) < 1e-6,
+      `surface clearance stays the finite-surface answer (expected ${D - R1 - R2}, got ${axDist.value})`
+    );
+    const nonCyl = await call("measure_exact", { path: axisModel, kind: "distance", entityIdA: "solid-0", entityIdB: "solid-1" });
+    assert(nonCyl.axisDistance === undefined, "non-cylinder pairs omit axisDistance rather than fabricating one");
+
+    // Headless mesh facts over the raw file bytes: closed STL cube (10^3),
+    // unit OBJ cube, unit glTF cube, and the two-box glTF (2 components).
+    const meshCube = path.join(dir, "mesh-headless-cube.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), meshCube);
+    const meshLoad = await call("load_model", { path: meshCube });
+    assert(meshLoad.meshEntities.components.length === 1, "load_model inventories one mesh component for cube.stl");
+    const meshMass = await call("get_mass_properties", { path: meshCube });
+    assert(
+      Math.abs(meshMass.volume - 1000) < 1e-3 && meshMass.watertight === true,
+      `get_mass_properties recovers the STL cube volume headlessly (expected 1000, got ${meshMass.volume})`
+    );
+    const meshComp = await call("inspect", { path: meshCube, entityId: "mesh-component-0" });
+    assert(
+      meshComp.bbox.min[0] === -5 && meshComp.bbox.max[0] === 5,
+      `inspect resolves headless mesh ids to the real bbox (got ${JSON.stringify(meshComp.bbox)})`
+    );
+    const meshMeas = await call("measure", { path: meshCube, from: "mesh-component-0", to: "whole-model" });
+    assert(meshMeas.distance === 0, "measure on a single-component mesh reports zero self-distance");
+    const webviewId = await callTolerant("inspect", { path: meshCube, entityId: "node-0" });
+    assert(
+      webviewId.error && /load_model/i.test(webviewId.error),
+      "headless mesh ids reject webview node-N ids with a load_model hint"
+    );
+
+    const meshObj = path.join(dir, "mesh-headless-cube.obj");
+    fs.copyFileSync(path.join(ROOT, "examples", "OBJ", "cube.obj"), meshObj);
+    const objMass = await call("get_mass_properties", { path: meshObj });
+    assert(Math.abs(objMass.volume - 1) < 1e-3, `get_mass_properties recovers the OBJ unit-cube volume (got ${objMass.volume})`);
+
+    const meshGltf = path.join(dir, "mesh-headless-cube.gltf");
+    fs.copyFileSync(path.join(ROOT, "examples", "GLTF", "cube.gltf"), meshGltf);
+    const gltfMass = await call("get_mass_properties", { path: meshGltf });
+    assert(Math.abs(gltfMass.volume - 1) < 1e-3, `get_mass_properties recovers the glTF unit-cube volume (got ${gltfMass.volume})`);
+
+    // Two disconnected boxes: two components, 10 units apart by construction.
+    const meshTwo = path.join(dir, "mesh-headless-two.gltf");
+    fs.copyFileSync(path.join(ROOT, "examples", "GLTF", "two-boxes.gltf"), meshTwo);
+    const twoLoad = await call("load_model", { path: meshTwo });
+    assert(twoLoad.meshEntities.components.length === 2, "load_model segments two disconnected boxes");
+    const twoMeas = await call("measure", { path: meshTwo, from: "mesh-component-0", to: "mesh-component-1" });
+    assert(
+      Math.abs(twoMeas.distance - 10) < 1e-3,
+      `measure spans disconnected mesh components (expected 10, got ${twoMeas.distance})`
+    );
+
+    // Unbaked mesh edits are reported, not silently baked.
+    const meshEdit = path.join(dir, "mesh-headless-edited.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), meshEdit);
+    await call("apply_edit_ops", { path: meshEdit, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const editedMass = await call("get_mass_properties", { path: meshEdit });
+    assert(
+      Math.abs(editedMass.volume - 1000) < 1e-3 && editedMass.warnings.join(" ").match(/NOT baked in/i),
+      "mesh facts describe the raw file and warn that edits are not baked in"
+    );
+  }
+
     for (const [id, what] of [["solid-0", "solid"], ["edge-0", "edge"], ["point-0", "vertex"]]) {
       const e = await callTolerant("inspect", { path: surfModel, entityId: id });
       if (e.error) continue;

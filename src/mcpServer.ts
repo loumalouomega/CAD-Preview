@@ -275,13 +275,15 @@ server.registerTool(
   "get_mass_properties",
   {
     description:
-      "Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources only headless (OCCT BRepGProp); mesh formats return supported: false (compute client-side in the webview instead).",
+      "Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources via OCCT BRepGProp; STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area/centroid/watertight, no length or inertia). Other mesh formats compute client-side in the webview instead.",
     inputSchema: {
       path: modelPath,
       entityId: z
         .string()
         .optional()
-        .describe("solid-N / face-N / edge-N id from load_model's inventory; omit for the whole model"),
+        .describe(
+          "solid-N / face-N / edge-N id (B-rep) or mesh-component-N / mesh-triangle-N / mesh-vertex-N id (STL/OBJ/PLY/glTF) from load_model's inventory; omit for the whole model"
+        ),
     },
   },
   wrap((args: { path: string; entityId?: string }) => getMassProperties(ctx, args))
@@ -311,10 +313,10 @@ server.registerTool(
   "inspect",
   {
     description:
-      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, surface/curve classification, and the underlying ANALYTIC PARAMETERS for one entity id — a cylinder's radius and axis, a cone's half-angle (degrees, signed: positive means the radius grows along the axis) with its apex and reference radius, a sphere's centre and radius, a torus's major/minor radii. Points and directions are in world coordinates, lengths in the file's own units. `surfaceParams.axisLocation` is a point ON the axis, not the face's centre and not necessarily within its extent — use bbox/center for where the face is. B-rep sources only headless.",
+      "Facts only (see describe_capabilities' verdictConventions): bounding box, bbox-center (NOT the mass centroid — use get_mass_properties for that), area/length, surface/curve classification, and the underlying ANALYTIC PARAMETERS for one entity id — a cylinder's radius and axis, a cone's half-angle (degrees, signed: positive means the radius grows along the axis) with its apex and reference radius, a sphere's centre and radius, a torus's major/minor radii. Points and directions are in world coordinates, lengths in the file's own units. `surfaceParams.axisLocation` is a point ON the axis, not the face's centre and not necessarily within its extent — use bbox/center for where the face is. B-rep sources (solid-N / face-N / edge-N / point-N) plus STL/OBJ/PLY/glTF sources headless (triangle-based bbox/center/area with mesh-component-N / mesh-triangle-N / mesh-vertex-N ids, no analytic parameters).",
     inputSchema: {
       path: modelPath,
-      entityId: z.string().describe("solid-N / face-N / edge-N / point-N id from load_model's inventory"),
+      entityId: z.string().describe("entity id from load_model's inventory (B-rep or headless mesh ids)"),
     },
   },
   wrap((args: { path: string; entityId: string }) => inspectEntity(ctx, args))
@@ -324,11 +326,11 @@ server.registerTool(
   "measure",
   {
     description:
-      "Facts only: straight-line distance between two entities' bbox centers, plus (if `axis` is given) the signed component of that displacement along it — 'is this hole 25mm from that edge' class questions. B-rep sources only headless.",
+      "Facts only: straight-line distance between two entities' bbox centers, plus (if `axis` is given) the signed component of that displacement along it — 'is this hole 25mm from that edge' class questions. B-rep sources plus STL/OBJ/PLY/glTF sources headless (bbox centers in raw file coordinates).",
     inputSchema: {
       path: modelPath,
-      from: z.string().describe("solid-N / face-N / edge-N / point-N id"),
-      to: z.string().describe("solid-N / face-N / edge-N / point-N id"),
+      from: z.string().describe("entity id from load_model's inventory (B-rep or headless mesh ids)"),
+      to: z.string().describe("entity id from load_model's inventory (B-rep or headless mesh ids)"),
       axis: z
         .tuple([z.number(), z.number(), z.number()])
         .optional()
@@ -342,7 +344,7 @@ server.registerTool(
   "measure_exact",
   {
     description:
-      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true minimum distance plus the realizing points where it lands, centreDistance (bbox-centre-to-bbox-centre, what `measure` reports), and — for two planar faces — angleDeg between their normals and parallelDistance (perpendicular plane-to-plane gap) when the planes are parallel; `primary` names which value most likely answers 'how far apart are these' for that pair ('parallel' for two parallel planar faces, else 'min') — a fact about which quantity fits the geometry, never a judgment of it. There is NO maximum-distance field: probed and genuinely unavailable in this WASM build. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
+      "Exact B-rep-precision measurement via live OCCT geometry (BRepExtrema_DistShapeShape for distance, BRepGProp for edge length, the edge's own curve for radius) — not an approximation, unlike `measure`'s bbox-centre distance or the interactive viewer's triangulated Measure tool. kind='distance' needs entityIdB (any entity combination: point/edge/face/solid) and returns the true minimum distance plus the realizing points where it lands, centreDistance (bbox-centre-to-bbox-centre, what `measure` reports), axisDistance for two cylindrical faces (shortest infinite-axis separation), and — for two planar faces — angleDeg between their normals and parallelDistance (perpendicular plane-to-plane gap) when the planes are parallel; `primary` names which value most likely answers 'how far apart are these' for that pair ('parallel' for two parallel planar faces, else 'min') — a fact about which quantity fits the geometry, never a judgment of it. There is NO maximum-distance field: probed and genuinely unavailable in this WASM build. kind='edgeLength' needs entityIdA to be an edge. kind='radius' needs entityIdA to be a circular edge (throws a clear error otherwise — never a meaningless best-fit number). B-rep sources only headless.",
     inputSchema: {
       path: modelPath,
       kind: z.enum(["distance", "edgeLength", "radius"]),

@@ -527,11 +527,29 @@ describe("load_model", () => {
     expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
   });
 
-  it("returns route info + limitation warning for mesh sources without touching WASM", async () => {
+  it("returns a headless mesh inventory for comparable mesh sources without touching WASM", async () => {
     const c = ctx();
-    const result = await loadModel(c, { path: stlModel });
+    const result = (await loadModel(c, { path: objModel })) as unknown as {
+      meshEntities: { components: unknown[]; triangleCount: number };
+      bbox: unknown;
+      warnings: string[];
+    };
     expect(c.pipeline.loadBRep).not.toHaveBeenCalled();
-    expect(result.warnings[0]).toMatch(/mesh-format/i);
+    expect(result.meshEntities.components).toHaveLength(1);
+    expect(result.meshEntities.triangleCount).toBe(12);
+    expect(result.bbox).toMatchObject({ min: [0, 0, 0], max: [1, 1, 1] });
+    expect(result.warnings.join(" ")).toMatch(/headless ids/i);
+  });
+
+  it("returns a null bbox for an empty mesh source", async () => {
+    const c = ctx();
+    const result = (await loadModel(c, { path: stlModel })) as unknown as {
+      meshEntities: { triangleCount: number };
+      bbox: unknown;
+    };
+    expect(c.pipeline.loadBRep).not.toHaveBeenCalled();
+    expect(result.meshEntities.triangleCount).toBe(0);
+    expect(result.bbox).toBeNull();
   });
 
   it("returns null inventory + install hint (never throws) for .scad without an openscad binary", async () => {
@@ -732,12 +750,29 @@ describe("get_mass_properties", () => {
     expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
   });
 
-  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+  it("computes triangle-based mass for a closed mesh source without touching WASM", async () => {
     const c = ctx();
-    const result = await getMassProperties(c, { path: stlModel });
+    const result = await getMassProperties(c, { path: objModel });
+    expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
+    expect(result.supported).toBe(true);
+    expect(result.volume).toBeCloseTo(1, 9);
+    expect(result.area).toBeCloseTo(6, 6);
+    expect(result.centerOfMass?.[0]).toBeCloseTo(0.5, 6);
+    expect(result.warnings.join(" ")).toMatch(/raw file coordinates/i);
+  });
+
+  it("warns that pending mesh edits are not baked in", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: objModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await getMassProperties(c, { path: objModel });
+    expect(result.warnings.join(" ")).toMatch(/NOT baked in/i);
+  });
+
+  it("still returns supported:false for meshio-only sources without touching WASM", async () => {
+    const c = ctx();
+    const result = await getMassProperties(c, { path: vtkModel });
     expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
-    expect(result.warnings[0]).toMatch(/client-side/i);
   });
 
   it("rejects unsupported extensions", async () => {
@@ -761,12 +796,17 @@ describe("inspect", () => {
     expect(lastCall[3]).toEqual([{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }]);
   });
 
-  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+  it("resolves headless mesh ids without touching WASM", async () => {
     const c = ctx();
-    const result = await inspectEntity(c, { path: stlModel, entityId: "node-0" });
+    const result = await inspectEntity(c, { path: objModel, entityId: "mesh-component-0" });
     expect(c.pipeline.getEntityFacts).not.toHaveBeenCalled();
-    expect(result.supported).toBe(false);
-    expect(result.warnings[0]).toMatch(/headless/i);
+    expect(result).toMatchObject({ supported: true, kind: "solid" });
+    expect(result.center).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  it("rejects webview-style node ids with a load_model hint", async () => {
+    const c = ctx();
+    await expect(inspectEntity(c, { path: objModel, entityId: "node-0" })).rejects.toThrow(/load_model/i);
   });
 });
 
@@ -793,12 +833,23 @@ describe("measure", () => {
     expect(lastCall[6]).toEqual([1, 0, 0]);
   });
 
-  it("returns supported: false with a warning for mesh sources, without touching WASM", async () => {
+  it("measures bbox-centre distance for a mesh source without touching WASM", async () => {
     const c = ctx();
-    const result = await measureTool(c, { path: stlModel, from: "node-0", to: "node-1" });
+    const result = await measureTool(c, { path: objModel, from: "mesh-component-0", to: "whole-model" });
     expect(c.pipeline.measureEntities).not.toHaveBeenCalled();
-    expect(result.supported).toBe(false);
-    expect(result.warnings[0]).toMatch(/headless/i);
+    expect(result).toMatchObject({ supported: true, distance: 0 });
+  });
+
+  it("passes an axis through for a mesh source", async () => {
+    const c = ctx();
+    const result = await measureTool(c, {
+      path: objModel,
+      from: "mesh-triangle-0",
+      to: "mesh-triangle-1",
+      axis: [0, 0, 1],
+    });
+    expect(result.axis).toEqual([0, 0, 1]);
+    expect(result.axisComponent).toBeCloseTo(result.delta![2], 12);
   });
 });
 

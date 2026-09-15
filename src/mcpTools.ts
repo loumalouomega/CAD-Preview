@@ -111,6 +111,7 @@ import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM }
 import { emitPrimitiveOps } from "./primitiveEmit";
 import type { buildPrimitivesFile } from "./primitiveWrite";
 import { parseToWeldedMesh } from "./meshHeal";
+import { meshInspection } from "./meshInspection";
 import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal } from "./meshioService";
 import { weldedMeshToStlBytes } from "./meshComponents";
@@ -421,7 +422,7 @@ export function describeCapabilities() {
       "extrude/revolve/sweep/loft take their profile in either of two mutually exclusive forms: a `face-N` (`profile`/`profiles`), or a set of `edge-N` ids assembled into one wire (`profileEdges`/`profileEdgeSets`) — which is how an OPEN sketch (an `addPolyline` with `closed: false`) is consumed. The edges may be listed in any order; a disconnected set is skipped with a diagnostic. A closed edge set behaves exactly like the equivalent face. An OPEN one encloses no area and therefore REQUIRES `thin`: its wall is centred on the spine with semicircular ends, so `thinOuter` has no meaning there and is refused unless it is exactly thin/2. Every section of a loft must agree on closedness.",
     ],
     entityIdScheme:
-      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; node-N / node-N/face-K for mesh sources (webview-assigned). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids. resolve_selector re-resolves a recorded op-bucket (op index + role, e.g. an extrude's endCap) to its CURRENT face-N ids with a centre-distance oracle per match — a re-executable query instead of a stale positional id.",
+      "Stable, deterministic ids assigned by the read pipeline: solid-N (volumes), face-N (surfaces), edge-N (lines), point-N (vertices) for B-rep sources; mesh-component-N / mesh-triangle-N / mesh-vertex-N for STL/OBJ/PLY/glTF sources headless (connected-component order and parser order over the raw file — NOT the webview's node-N / node-N/face-K object ids, which are assigned to displayed objects and are not valid here). Topology-changing ops renumber face/edge ids — re-run load_model after applying them. inspect and measure resolve the same ids. resolve_selector re-resolves a recorded op-bucket (op index + role, e.g. an extrude's endCap) to its CURRENT face-N ids with a centre-distance oracle per match — a re-executable query instead of a stale positional id.",
     verdictConventions: [
       "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
       "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
@@ -452,8 +453,8 @@ export function describeCapabilities() {
     },
     headlessLimitations: [
       "screenshot_shape isolates the target entity by default: a face framed at its own scale usually puts the camera inside the parent solid, so an un-isolated shot shows interior geometry or an occluded face. Pass context:true to opt out.",
-      "get_mass_properties (volume/area/length, center of mass, moments of inertia via OCCT BRepGProp) is B-rep sources only headless; mesh formats compute the equivalent client-side in the webview.",
-      "inspect (per-entity bbox/bbox-center/area/length/normal/surfaceType, plus surfaceParams: the analytic radius/axis/half-angle behind that classification) and measure (distance between two entities' bbox centers) are B-rep sources only headless, same reason. Note inspect's `center` is the bbox center, NOT get_mass_properties' mass-weighted centroid — they can differ for an asymmetric shape.",
+      "get_mass_properties is B-rep sources via OCCT BRepGProp (volume/area/length, center of mass, moments of inertia) and STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area, centroid, watertight flag; no length, no moments of inertia). Other mesh formats compute the equivalent client-side in the webview.",
+      "inspect (per-entity bbox/bbox-center/area/length/normal/surfaceType, plus surfaceParams: the analytic radius/axis/half-angle behind that classification) and measure (distance between two entities' bbox centers) are B-rep sources plus STL/OBJ/PLY/glTF sources headless (triangle-based facts in raw file coordinates with mesh-component-N / mesh-triangle-N / mesh-vertex-N ids from load_model; no analytic parameters). Note inspect's `center` is the bbox center, NOT get_mass_properties' mass-weighted centroid — they can differ for an asymmetric shape.",
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
@@ -465,7 +466,7 @@ export function describeCapabilities() {
       "repair_mesh (STL/OBJ/PLY/glTF sources only) writes a NEW watertight STL file at outputPath by tetrahedralizing the mesh with fTetWild and taking the resulting volume mesh's own boundary — watertight/manifold by construction regardless of how broken the input was, since fTetWild survives holes/self-intersections/non-manifold edges Gmsh's own classifySurfaces path rejects. A one-shot export (the source is untouched); the natural next step is re-running check_mesh_health/promote_mesh_to_brep on the repaired output. Unlike those two, it has no triangle-count ceiling (a different cost profile than the per-triangle OCCT sewing pipeline) — a very large/slow mesh may instead hit this server's own per-call timeout.",
       "inspect_meshio_fields (meshio++ sources only) lists a file's scalar result fields headlessly — per-array name, point|cell location, component width, finite-only min/max, NaN count — summaries only, never raw values. A multi-component array is reported with its width, not an error. Read-only, never mutates or persists anything.",
       "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). On documents with many Parts, pass an explicit parts subset.",
-      "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
+      "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), axisDistance for two cylindrical faces (shortest infinite-axis separation — hole-to-hole spacing independent of the finite surfaces' clearance), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
       "list_workspace_models is pure on-disk discovery over the same routing rules load_model uses — depth-capped walk, .git/node_modules never scanned, caps reported via truncated/warnings rather than a quietly-partial list. This server holds no open-document/session state anywhere, so there is nothing else to discover.",
       "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of. For a drawing WITH hidden-line removal — interior feature edges, occluded runs dashed — use export_technical_drawing, which gets there on the same triangle adjacency rather than through the unavailable kernel API.",
@@ -671,6 +672,14 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
+  if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    const { inspection, warnings } = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    return {format: route.format, strategy: route.strategy, meshEntities: inspection.inventory,
+      tree: null, solids: null, edgeCount: null, edgeIds: null, pointCount: null,
+      bbox: inspection.inventory.triangleCount ? inspection.inspect("whole-model").bbox : null,
+      sidecars: await sidecarSummary(modelPath), warnings};
+  }
+
   if (route.strategy !== "occt") {
     const warnings = [
       `${route.format} is a mesh-format source: headless tessellation/entity inventory is B-rep-only. ` +
@@ -799,13 +808,30 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
 // ---------------------------------------------------------------------------
 // get_mass_properties
 
+async function readMeshInspection(modelPath: string, format: MeshParseFormat) {
+  const bytes = await readModelBytes(modelPath);
+  const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const inspection = meshInspection(parseToWeldedMesh(bytes, format, external));
+  const {ops} = await readEditsResolved(modelPath);
+  const warnings = ["Triangle-based facts in raw file coordinates; mesh-component-N / mesh-triangle-N / mesh-vertex-N are headless ids, not webview node-N or edit operands. No analytic surface parameters or inertia are computed."];
+  if (ops.length) warnings.push("Pending mesh edits are NOT baked in; these facts describe the raw source file.");
+  return {inspection, warnings};
+}
+
 export async function getMassProperties(
   ctx: ToolContext,
   params: { path: string; entityId?: string }
-): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[] } & Partial<MassProperties>> {
+): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[]; watertight?: boolean } & Partial<MassProperties>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   const entityId = params.entityId ?? null;
+
+  if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    const properties = inspection.mass(entityId ?? "whole-model");
+    if (properties.volume !== null && !properties.watertight) warnings.push("Not watertight — volume may not be meaningful; centerOfMass is the area centroid.");
+    return {format: route.format, entityId: entityId ?? "whole-model", supported: true, ...properties, warnings};
+  }
 
   if (route.strategy !== "occt") {
     return {
@@ -941,13 +967,14 @@ export async function generateHoleTableTool(
 // inspect / measure
 
 /**
- * Per-entity geometric facts for `solid-N`/`face-N`/`edge-N`/`point-N` —
- * bbox, bbox-centre, area/length, and (for a planar face) normal + surface
- * type — via `entityFacts.ts`'s `getEntityFacts`. Mirrors
- * `getMassProperties`'s B-rep-only gate exactly; deliberately does not
- * duplicate `get_mass_properties`' volume/centroid/inertia numbers — call
- * that tool when the mass-weighted centroid or inertia is the actual thing
- * being asked about (see `EntityFacts.center`'s doc comment).
+ * Per-entity geometric facts — B-rep ids (`solid-N`/`face-N`/`edge-N`/
+ * `point-N`) via `entityFacts.ts`'s `getEntityFacts`, or headless mesh ids
+ * (`mesh-component-N`/`mesh-triangle-N`/`mesh-vertex-N` from `load_model`'s
+ * `meshEntities`, triangle-based bbox/center/area only) for STL/OBJ/PLY/glTF.
+ * Deliberately does not duplicate `get_mass_properties`' volume/centroid/
+ * inertia numbers — call that tool when the mass-weighted centroid or
+ * inertia is the actual thing being asked about (see `EntityFacts.center`'s
+ * doc comment).
  */
 export async function inspectEntity(
   ctx: ToolContext,
@@ -955,6 +982,11 @@ export async function inspectEntity(
 ): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<EntityFacts>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
+
+  if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    return {format: route.format, supported: true, ...inspection.inspect(params.entityId), warnings};
+  }
 
   if (route.strategy !== "occt") {
     return {
@@ -977,8 +1009,9 @@ export async function inspectEntity(
 
 /**
  * Straight-line distance between two entities' bbox centres (+ an optional
- * signed axis component) via `entityFacts.ts`'s `measureEntities`. Same
- * B-rep-only gate as `inspect`/`get_mass_properties`.
+ * signed axis component) via `entityFacts.ts`'s `measureEntities` for B-rep
+ * sources, or the shared headless triangle inspection for STL/OBJ/PLY/glTF
+ * (same bbox-centre convention, raw file coordinates).
  */
 export async function measureTool(
   ctx: ToolContext,
@@ -986,6 +1019,11 @@ export async function measureTool(
 ): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeasureResult>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
+
+  if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    return {format: route.format, supported: true, ...inspection.measure(params.from, params.to, params.axis), warnings};
+  }
 
   if (route.strategy !== "occt") {
     return {

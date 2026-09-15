@@ -24,6 +24,7 @@ import { induceSelector } from "./selectorInduce";
 import { ROLE_LABELS, type OpBucket } from "./opBuckets";
 import { TOPOLOGY_CHANGING_OPS } from "./editOps";
 import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp";
+import { axisDistance } from "./axisDistance";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp, Vec3 } from "./editOps";
 import type { Annotation, Part } from "./protocol";
@@ -180,6 +181,9 @@ export interface ExactMeasureResult {
    * here so one call answers both "how close do they get" and "how far apart
    * are they overall"). */
   centreDistance?: number;
+  /** Shortest infinite-axis distance for two cylindrical faces, in mm.
+   * Independent of the finite surfaces' minimum distance (`value`). */
+  axisDistance?: number;
   /** `kind: "distance"` between two PLANAR faces only — the perpendicular
    * distance between their planes, meaningful exactly when the planes are
    * parallel. Absent when either face is non-planar or the planes aren't
@@ -562,6 +566,11 @@ export async function measureExact(
       // roadmap's other ask; probed and genuinely unavailable in this WASM
       // build — see this function's doc comment.)
       if (a.kind === "face" && b.kind === "face") {
+        const surfaceA = faceSurfaceInfo(oc, a.handle, cleanup).params;
+        const surfaceB = faceSurfaceInfo(oc, b.handle, cleanup).params;
+        if (surfaceA?.kind === "cylinder" && surfaceB?.kind === "cylinder") {
+          result.axisDistance = axisDistance(surfaceA.axisLocation, surfaceA.axisDirection, surfaceB.axisLocation, surfaceB.axisDirection);
+        }
         const planeA = facePlane(oc, a.handle, cleanup);
         const planeB = facePlane(oc, b.handle, cleanup);
         if (planeA && planeB) {
