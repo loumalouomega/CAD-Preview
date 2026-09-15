@@ -3066,7 +3066,7 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
  * pnt)` edge → `BRepBuilderAPI_MakeFace_15(wire, true)`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildFlatFace(oc: any, points: Vec3[], cleanup: Array<{ delete(): void }>): any {
+export function buildFlatFace(oc: any, points: Vec3[], cleanup: Array<{ delete(): void }>): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   const pts = points.map((p) => keep(pnt(oc, p)));
   const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());

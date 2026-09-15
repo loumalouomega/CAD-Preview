@@ -326,6 +326,29 @@ try {
       mixed.warnings.some((w) => /hull\(\)/i.test(w)) && mixed.warnings.some((w) => /faceted|analytic/i.test(w)),
       `mixed.csg surfaces the hull-skip and faceted-sphere warnings (got ${JSON.stringify(mixed.warnings)})`
     );
+    // extrude.csg (roadmap Tier 1 item 2): linear_extrude of a polygon, a
+    // centered square and a faceted circle, plus rotate_extrude full and
+    // half — each placed disjointly — with twist=/paths= refusals. Volumes
+    // are analytic: 300 + 128 + 96*pi + 48*pi + 135 = ~1015.3893, asserted
+    // ±0.5 (absolute, the bracket precedent) rather than relatively: the
+    // translated revolve solids read ~4e-5 low (the gp_GTrsf copy all
+    // transforms go through converts analytic curved faces to BSplines —
+    // pre-existing importer machinery, measured live, not a defect).
+    const extrudeCsg = path.join(dir, "extrude.csg");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "extrude.csg"), extrudeCsg);
+    const extruded = await call("load_model", { path: extrudeCsg });
+    assert(extruded.solids.length === 5, `extrude.csg builds all 5 extrusion solids (got ${extruded.solids.length})`);
+    assert(
+      extruded.warnings.some((w) => /twist=30.*later phase/.test(w)) &&
+        extruded.warnings.some((w) => /paths=.*later phase/.test(w)) &&
+        extruded.warnings.some((w) => /faceted in OpenSCAD/.test(w)),
+      `extrude.csg surfaces the twist/paths/faceted-circle warnings (got ${JSON.stringify(extruded.warnings)})`
+    );
+    const extrudeMass = await call("get_mass_properties", { path: extrudeCsg });
+    assert(
+      extrudeMass.supported === true && Math.abs(extrudeMass.volume - 1015.3893) < 0.5,
+      `extrude.csg mass matches the analytic 300+128+96pi+48pi+135 total (got ${extrudeMass.volume})`
+    );
   }
 
   // OpenSCAD .scad via user-installed binary (path (b)) — minimal.scad
