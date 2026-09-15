@@ -4,11 +4,20 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
-## [Unreleased]
+## [2.3.0] - 2026-09-15
+
+Closes the roadmap Tier 1 tier: headless mesh inspection, hole-to-hole axis distance, plus the hole table, starter macros, drawing sheets, SVG import, CSG extrudes, and distance-graded mesh sizing.
 
 ### Added
 
 - **Multi-view drawing sheets.** File ▸ Export Drawing Sheet… and the MCP tool `export_drawing_sheet` place several views (default front/top/right/iso) on one SVG or DXF sheet at a shared scale, orthographically aligned per first-angle (ISO, default) or third-angle (ASME) projection, inside a frame with a title block. `paper: "fit"` sizes the sheet to the content at 1:1 (or an explicit `scale`); a named ISO paper size (A4–A0) picks the largest ISO 5455 standard scale that fits. A pinned annotation is drawn once, in whichever orthographic view shows it at true length.
+- **Headless mesh mass properties, inspect and measure.** `get_mass_properties`, `inspect`, and `measure` now serve STL/OBJ/PLY/glTF headlessly via a shared triangle integration (volume/area/centroid/`watertight`, raw file coordinates) — no analytic parameters, no moments of inertia. `load_model` returns a `meshEntities` inventory with discoverable `mesh-component-N` / `mesh-triangle-N` / `mesh-vertex-N` ids (deliberately not the webview's `node-N` object ids) and warns when pending mesh edits are not baked in. `measure_exact` stays B-rep-only.
+- **`axisDistance` on `measure_exact`.** For two cylindrical faces, the shortest infinite-axis separation (hole-to-hole spacing) is reported alongside the finite-surface clearance — pure vector math over the already-verified cylinder accessors, zero new kernel surface.
+- **Hole table / feature schedule.** New `generate_hole_table` MCP tool: one row per (diameter, axis-direction) group of cylindrical faces with the nearest standard designation and signed delta, plus a TSV string for spreadsheet handoff.
+- **Bundled starter macro library.** `macros/starter-library.json` ships `spring`, `bolt-circle-flange`, and `hex-bolt` parameterized starters, served when `libraryPath` is omitted; the interactive Macros panel lists the bundled rows read-only.
+- **SVG import.** File ▸ Import SVG… and the `import_svg` MCP tool parse `<path>`/`<rect>`/`<circle>`/`<ellipse>`/`<line>`/`<polyline>`/`<polygon>` with full ancestor-transform composition into `addPolyline` ops; multi-loop selections build one holed face via `addSurfaceFromLines`.
+- **OpenSCAD `.csg` extrude coverage.** `polygon`/`square`/`circle` profiles with `linear_extrude` (incl. centered, twist/scale refusals) and `rotate_extrude` (full/partial angles) now build instead of skipping with a warning.
+- **Distance-graded mesh sizing anchored on a Part.** `Part.meshGrading` (`sizeAtWall`/`sizeFar`/`distNear`/`distFar`) drives a Gmsh `Distance`+`Threshold` field pair (B-rep sources only), composed with per-part `meshSize` under one `Min` background field.
 
 ### Fixed
 
@@ -436,6 +445,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[2.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/loumalouomega/CAD-Preview/compare/v1.13.0...v2.0.0
