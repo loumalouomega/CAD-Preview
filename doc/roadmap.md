@@ -2,7 +2,9 @@
 
 Candidate features for future CAD-Preview releases, prioritized by value versus effort given what the extension already ships: an OCCT kernel, a Gmsh kernel, a meshio++ kernel and an fTetWild kernel live in the extension host (in a forked child process), a full picking/selection pipeline in the webview, a six-sidecar persistence model, and an MCP server mirroring the pipeline headless. Many high-value features are cheap precisely because that infrastructure exists.
 
-This page is aspirational, not a commitment — items may be re-ordered, re-scoped, or dropped. Effort is a rough order of magnitude: **S** (a day or two), **M** (roughly a week), **L** (multi-week).
+This page is aspirational, not a release commitment — items may be re-ordered, re-scoped, or dropped. Effort is a rough order of magnitude including implementation, documentation and focused verification: **S** (a day or two), **M** (roughly a week), **L** (multi-week). Estimates assume the stated dependencies hold; a short wiring change can still require substantial verification.
+
+**Planning review: 2026-09-16.** Existing implementation references were checked against the repository where noted; new candidates remain proposals, not promises of kernel support. This is a prioritized backlog, not a schedule for a particular version.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has a per-feature section with the verified implementation details for anything currently in the codebase — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -10,36 +12,195 @@ Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has 
 
 - **Tiers are ordered, and the order is the recommendation.** Each tier states an *admission criterion*; an item that doesn't meet it belongs in a different tier or in Non-goals, not at the top because it sounds exciting. An empty tier is removed from the file entirely rather than kept as a placeholder.
 - **A closed item is removed from this list entirely**, not struck through — its write-up moves to `CLAUDE.md` (a per-feature section with the verified implementation details) and its history stays in git. **Numbering is not stable across closes**, so never reference an item by number from code or another document — reference it by name.
-- **Items marked *needs live-WASM verification* are listed on the strength of the binding manifest alone.** Green in `node_modules/opencascade.js/dist/Supported APIs.md` is **necessary but not sufficient** — both the STEP-unit and the IGES-writer findings started green and only resolved (one negative, one positive) under a real probe, and `HLRAppli_ReflectLines` was green, functional, *and still the wrong tool*. No such item may be *estimated* until it has been probed against the live build; each one names its probe.
+- **Probe-gated items are hypotheses, not implementation-ready work.** Evidence may be a binding-manifest entry, an upstream API, or a proposed geometric construction. Green in `node_modules/opencascade.js/dist/Supported APIs.md` is **necessary but not sufficient** — both the STEP-unit and the IGES-writer findings started green and only resolved (one negative, one positive) under a real probe, and `HLRAppli_ReflectLines` was green, functional, *and still the wrong tool*. Do not estimate implementation until the named probe establishes useful output, failure behaviour and cost.
 - **Non-goals are not one thing.** They are split into three groups below because each has a different revival rule, and each group says plainly **what would change our mind**. A rejection nobody re-checks is how a capability stays "permanently out of reach" long after it stopped being — four entries in this file were found stale exactly that way.
-- **An item that corresponds to a GitHub issue names it inline** (e.g. *issue #35*). The issue is the request and the discussion thread; this file is the scoping — what already exists, what the real blocker is, and what the phasing should be. Where the two disagree, this file is the one that was checked against the code.
+- **An item that corresponds to a known GitHub issue names it inline.** The issue is the request and discussion thread; this file is the proposed scope. Reconcile disagreements against current code and the issue before implementation; neither document automatically overrides a newer decision.
+- **Use feature names and heading links, not ordinal item numbers.** Each candidate states its first useful increment, dependencies or decisions, and evidence needed to close it. New features belong here only when they have a concrete user workflow and an observable completion criterion.
+- **Shared capabilities must reach both consumers.** A new headless-capable operation includes MCP schemas/capabilities and sidecar compatibility; a purely visual interaction can remain webview-only. Reuse the existing pipeline and registries rather than adding parallel implementations.
 
 Several past items were identified by comparing against [SketchForge-3D](https://github.com/Formsmith746/SketchForge-3D), a browser-based direct-manipulation CAD editor over the same OCCT kernel, and [FluidCAD](https://github.com/nkarasiak/fluidcad). Their *capability* gaps transferred well; most of their *interaction* model deliberately did not — see Non-goals.
 
 ## Open items
 
-### Tier 1 — Small accepted-limitation cleanups
+### Suggested implementation sequence
 
-*Admission: a limitation the code already documents and accepts, where the fix is one module plus one call site. Individually minor; collectively these are most of what makes the tool feel unfinished.*
+| Wave | Outcome | Start with | Exit signal |
+| --- | --- | --- | --- |
+| Correctness | The view and saved state tell the same story | Clip visibility; save/reopen regression coverage; bounded clash work | Targeted tests catch the documented failure, including recovery paths |
+| Everyday use | Less typing and fewer navigation steps | Zoom to selection; sidebar usability; named-plane profiles | Complete workflows on both a small part and a multi-body model |
+| Preparation and handoff | Repeatable meshing and review output | Mesh presets; drawing settings; batch export | Reopenable outputs with explicit settings and per-file results |
+| Exploration | Decide which kernel ideas deserve implementation | B-rep health first; then surface and boundary-layer probes | Analytic or independently checked results, with failure cases and timing |
 
-1. **The clip cap doesn't track Part hide/isolate** (**S**). A part hidden after the cap was last built keeps showing its cross-section until the next plane move. One `rebuildClipCap()` call from `applyPartVisibility`/`setGroupVisible`; `clipCap.ts` is already `.visible`-filtered and needs no change, and `scripts/webview-test/run.mjs`'s `clip P0`–`P6` already give it pixel coverage.
-2. **Zoom to selection** (**S**). `Viewer.frameBox` exists and has exactly one caller — the headless harness. A toolbar button plus a `Box3` union over the current `SelectionSet` is the whole feature. (Note `placeCamera` was split out of `framePane` specifically so `frameBox` would not disturb model-scoped state — `pickThreshold`, `pointSpriteScale`, `lastFitSphere` — when wired interactively.)
-3. **Volume and point selection predicates** (**S**). `Select ▾`'s filter form greys out entirely in Vol/Point mode. `src/webview/selectFilters.ts` is a pure, 15-case-tested registry; volume ≥/≤, largest/smallest N and bbox-extent are more entries in the same table. The section also names this vocabulary as the one future items must reuse, so the gap constrains more than itself.
-4. **Per-band op-preview colouring** (**S–M**). The live preview tints per *op kind* — a cut is uniformly red — with per-band colouring flagged as a design question. It got much cheaper when op buckets shipped: `provider.ts` already has `result.opBuckets` in scope at the `opPreviewResult` post site and simply doesn't include it in the message.
-5. **Author profiles on a `plane-N`** (**S–M**) — *promoted from the sketching Non-goal*. Every 2D profile op takes a world-space `normal`/`up` pair, so sketching on a picked face means typing its plane by hand. Named construction planes already persist (`src/planesSidecar.ts`) and `mirror`/`splitByPlane`/`section`/`draft` already accept a `planeId`; extending that annotation-plus-cache pattern to the profile ops is the same mechanism again. This is coordinate-frame convenience, not constraint solving — see the Non-goal it comes from.
-6. **Four one-liners** (**S** each): a caller-visible cap on `check_interference_all` (O(n²) booleans with only the AABB pre-filter between the caller and a very long call — mirror `list_workspace_models`' `truncated` convention); standard-parts thumbnails (`modelComparePanel.ts` already set the `img-src data:` precedent, and fasteners are exactly the "text rows all look identical" case); `detail` face-area edge suppression (the `smooth` flag gives the exact plumbing template); and a ruled surface from an open profile with no `thin`, which is currently refused.
-7. **GitHub issue and PR templates** (**S**, *issue #30*). `.github/` has `dependabot.yml`, `FUNDING.yml` and `workflows/` and no templates at all.
-8. **Purge the dangling `roadmap item N` references** (**S**, mechanical). Roughly fifty comments across `src/`, `doc/` and `scripts/` cite an item by number (`roadmap item 8`, `roadmap Tier 2 item 2`, `roadmap's P3 #13`). Numbering has never been stable across closes, so every one of them now points at nothing — or, worse, at a different item than the author meant. Rewrite each to name the feature instead, per the rule in "How this file works" above. Zero behaviour change; the reason it is its own item rather than a drive-by is that it touches ~30 source files.
+These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
 
-### Probe-gated
+### Tier 1 — Correctness and bounded daily-use improvements
 
-*Admission: plausible and specific, but not estimable until probed against the live build. Each names its probe. Per the rule above, do not attach an effort estimate to these.*
+*Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-9. **A B-rep validity check — the missing sibling of `check_mesh_health`.** There is a mesh-health diagnostic and a mesh→B-rep promotion, and **nothing** that reports whether a B-rep is valid: `grep "BRepCheck\|IsValid" src/` returns exactly one hit, a comment recording that `BRepCheck_Analyzer` was rejected for a *specific closure test* — which is not the same as unusable. `BRepCheck_Analyzer`, `ShapeAnalysis_ShapeContents` and `ShapeUpgrade_UnifySameDomain` are all green in the manifest. **Probe:** on a known-bad shape (a self-intersecting boolean result, an unsewn shell), does `BRepCheck_Analyzer` return a *useful* per-subshape status, or only a bare boolean? Green is necessary but not sufficient — the `HLRAppli_ReflectLines` finding below is what a green-and-functional-but-useless binding looks like.
+#### Clip caps follow visibility (**S–M**, webview)
 
-10. **Loft takeoff conditions by resampled intermediate.** The kernel route is probed red and stays a Non-goal below. But the *technique* the just-shipped `guides` fallback uses — resample the sections and insert computed intermediates, then loft through plain `ThruSections` — is agnostic about where the intermediate comes from, and a tangent takeoff is an intermediate offset along the section normal by a signed magnitude. **This is an untested idea, not a probed finding**, and is recorded here rather than in Non-goals only so it is not mistaken for a revival of the dead kernel path. **Probe:** does inserting one near-section intermediate offset along the section plane's normal actually move the surface's takeoff angle measurably, or does `ThruSections` smooth it away?
+- **Gap:** hiding or isolating a Part can leave its cross-section visible. `Viewer.rebuildClipCap()` checks a mesh's own `.visible`, but its plain traversal does not exclude a hidden ancestor; moving the plane only repositions the existing cap.
+- **Scope:** collect effectively visible targets, invalidate after Part and assembly-group visibility changes, and coalesce rebuilds after a batch of visibility mutations. Preserve the cheap plane-move path.
+- **Done when:** hide, isolate, restore and overlay toggles update the cap immediately in single and split views; hidden-parent cases are pixel-tested in `scripts/webview-test/run.mjs`, and repeated toggles dispose the old cap resources.
 
-11. **A Gmsh `BoundaryLayer` field, 2D meshes only.** "Boundary-layer and distance-threshold mesh sizing" shipped its distance-graded (`Distance`+`Threshold`) half — see `CLAUDE.md`'s "Distance-graded mesh sizing anchored on a Part" — but true anisotropic boundary-layer elements (thin quads hugging a wall, growing by a ratio) are a genuinely different Gmsh mechanism, and neither the field's own option names (`hwall_n`, `ratio`, `thickness`, `Quads`, `FanPointsList`, …) nor `setAsBoundaryLayer` have been probed against the live gmsh-wasm 0.3.0 build — only their *string presence* in the shipped `.wasm`/`.d.ts` is confirmed, which per this file's own rule is not the same as working. Standard Gmsh docs also scope this field to 2D meshes; a genuine 3D boundary layer needs `geo.extrudeBoundaryLayer`, which OCC-imported B-rep sources can't reach at all (a separate, larger question, not assumed answered by this item). **Probe:** on a simple 2D fixture, does `field.add("BoundaryLayer")` + the option names above + `setAsBoundaryLayer` actually produce thin, graded quad elements along a chosen curve, or does it throw/no-op/produce ordinary triangles?
+#### Save, reopen and recovery regression coverage (**M**, host + webview + MCP)
+
+- **Why next:** editable documents, source backups and the `bakedThrough` watermark already ship. Their critical join is source write → sidecar watermark → reload, and several documented interactive paths still lack end-to-end verification.
+- **Scope:** drive real B-rep and STL/OBJ/PLY saves through the custom editor; cover cancellation, second save, Save As, revert and hot-exit restoration. Test source-write failure and watermark-write failure separately, then define recovery from whichever partial state can actually occur.
+- **Done when:** reopening never double-applies a baked tail; cancelled/failed pre-write saves preserve bytes; Parts and annotations either resolve correctly or report loss; the saved history locks at the correct row. Use a real VS Code host for the source-write join, not only mocked messages.
+
+#### Bounded assembly interference checks (**S–M**, shared pipeline)
+
+- **Gap:** `check_interference_all` can schedule a quadratic number of pairs; AABB screening reduces boolean cost but does not bound total work.
+- **Scope:** a caller-visible pair/work limit applied before expensive computation, deterministic pair ordering, and explicit total/checked/screened/skipped counts. The Clash panel must label a partial result as partial. Adapt the existing full `C(n,2)` response guard rather than accidentally treating truncation as a kernel error.
+- **Done when:** a limited call finishes within its work budget, reports unchecked pairs, and never describes an unchecked assembly as clash-free. Small unrestricted cases keep their current results.
+
+#### Zoom to selection (**S**, webview)
+
+- **Reuse:** `Viewer.frameBox` and its separate camera-placement helper already exist for headless framing without changing model-wide pick thresholds or the auto-fit containment cache.
+- **Scope:** expose a Select-menu action and focused-editor command; union selected entities' world-space bounds. Define small padding for a point/line selection and clear behaviour for empty, hidden or stale selections. Affect the focused pane only.
+- **Done when:** one face, several solids, an edge and a point frame correctly in perspective and ortho; explicit Fit still frames the whole model, and selection framing leaves picking usable.
+
+#### Volume and point selection predicates (**M**, webview first)
+
+- **Gap:** `selectFilters.ts` currently serves face/line predicates; Vol/Point mode needs its own coherent vocabulary.
+- **First increment:** volume-object bbox extent/position and largest/smallest N by a named metric; points inside a box, near a coordinate plane, or within a distance of a supplied point. Deduplicate volume objects before ranking.
+- **Decision:** a volume inferred from display triangles is approximate and may be meaningless on an open mesh. Start with bbox predicates; expose volume thresholds only with a documented calculation and open-mesh behaviour. Do not equate webview `node-N` ids with headless `mesh-component-N` ids.
+- **Done when:** Select/Add, hidden-subtree exclusion, units, ties and degenerate geometry are covered, with the predicate vocabulary reusable by future context-menu and headless selectors.
+
+#### Per-band operation-preview colouring (**M**, host + webview)
+
+- **Reuse:** replay already returns op buckets, but `opPreviewResult` does not expose them.
+- **Scope:** return the draft operation's own bucket and render affected faces distinctly from retained context, with a small legend. Translate full-history versus replay-tail indices correctly after a save.
+- **Constraint:** bucket roles describe the producing operation and can include rebuilt faces; a `band` is not proof that every face was newly added, and a subtractive preview has no geometry for material already removed. Keep a neutral fallback for ambiguous roles.
+- **Done when:** extrude caps/walls and fillet rebuilt faces are distinguishable; cancellation and stale replies restore the original view; colours compose with Parts, clipping and themes without persisting preview state.
+
+#### Author profiles on a named construction plane (**M**, shared op model)
+
+- **Reuse:** `planesSidecar.ts` and `planeRefs.ts` already implement the annotation-plus-cache pattern for plane-bearing edits.
+- **First increment:** circle, rectangle and polygon profile forms select a `plane-N`, with in-plane offsets and rotation; the existing numeric/expression workflow remains available.
+- **Design dependency:** point + normal does not fully specify a 2D frame. Choose a deterministic basis or persist an optional in-plane axis, with tolerant legacy parsing. Specify what changing a plane moves, and freeze last-good cached placement when it is deleted.
+- **Done when:** a tilted rectangle keeps a stable orientation across reopen, plane edits and export; expressions survive; MCP-authored and UI-authored profiles resolve identically. This remains coordinate placement, not a constraint solver.
+
+#### Standard-parts thumbnails (**S–M**, host + webview)
+
+- **Gap:** text-only fastener search results are difficult to distinguish; `stepPartsService.ts` already carries `pngUrl`.
+- **Scope:** lazy host-side image fetch with bounded size, timeout and cache; send supported images as data URLs and retain a text fallback. Avoid one eager request per result across every search page.
+- **Done when:** failed images never block search or insertion, old-search responses cannot decorate new rows, and cached thumbnails work under the existing webview CSP. No change to checksum-verified STEP downloads.
+
+#### Sidebar layout and keyboard usability (**M**, webview)
+
+- **Why:** collapsible sections help, but a narrow fixed sidebar with many headers and actions still makes forms hard to reach.
+- **First increment:** a resizable sidebar with usable minimum widths, predictable scrolling, and a view-controls placement that does not cover sidebar actions. Audit keyboard focus for dropdowns, collapsible headers and inline rename fields; Escape restores focus to the trigger.
+- **Done when:** every action is reachable at a small editor size and increased UI zoom, headers do not overlap, and keyboard-only users can select a form, apply an operation and return to the canvas. Verify light/dark/high-contrast layouts and regenerate screenshots.
+
+#### Contribution templates and durable references (**S** each, maintenance)
+
+- **Issue/PR templates — issue #30:** add bug and feature-request forms plus a concise PR checklist. Ask for source format, extension version, reproduction steps and an optional minimal fixture; explain how to reproduce with a non-confidential model. Separate a viewer failure from an MCP/kernel failure without requiring users to know the architecture.
+- **Reference cleanup:** replace positional `roadmap item N` citations in code, docs and scripts with feature names or durable documentation links. Preserve historical explanations where relevant; do not mechanically substitute today's item at the same number.
+- **Done when:** templates work on GitHub, every rewritten reference has a meaningful destination, and a lightweight documentation check prevents new ordinal-only roadmap citations without rejecting quoted historical examples.
+
+### Tier 2 — Complete preparation and review workflows
+
+*Admission: a useful extension of shipped infrastructure that spans several modules or needs a product decision. These are new candidates; implement a vertical slice before expanding the option surface.*
+
+#### Document-scoped jobs and cancellation (**M–L**, host + MCP)
+
+- **Motivation:** `kernelClient.ts` serializes requests through a shared worker; `cancelCurrent()` kills whichever job is running, which may belong to another document.
+- **Phases:** attach an owner and request identity to queued work; remove a cancelled queued job before dispatch; kill only a matching active job; then expose queued/running/cancelled state and configurable operation timeouts. Preserve lazy spawning and automatic cold-cache recovery.
+- **Done when:** cancelling tab B cannot interrupt tab A, queued cancelled work never starts, worker exit settles promises once, and the next request succeeds after cancellation or timeout. MCP cancellation should use the same job identity rather than a separate implementation.
+
+#### Explicit external-change conflict handling (**M–L**, persistence)
+
+- **Motivation:** watchers reconcile external edits, but reconciliation is not a merge protocol between a pending local debounce and another writer. The standalone MCP server also cannot inspect VS Code's dirty buffers.
+- **First increment:** detect a disk revision changing since the last read before a sidecar write; retain local state and offer reload or an explicitly chosen overwrite, with a readable summary. Distinguish an external source replacement from an ordinary sidecar change.
+- **Design dependency:** specify comparison/write race guarantees honestly. Content fingerprints alone are not an atomic cross-process transaction; stronger guarantees may require shared locking or an explicit protocol.
+- **Done when:** a reproducible local-edit/external-write race surfaces a conflict instead of silently discarding either version. No automatic merge of geometry-op lists or positional entity ids.
+
+#### Saved view bookmarks (**M**, webview + sidecar)
+
+- **Reuse:** `.view.json` restores the latest view; it is not a named collection of inspection viewpoints.
+- **Scope:** save, rename, replace and delete camera/projection/clip bookmarks; restore the focused pane, with a deliberate policy for a whole split layout. Decide whether bookmarks preserve only orientation/fit or also normalized pan and zoom before choosing the schema.
+- **Done when:** two named inspection views survive reopen and external reconciliation, restore without a save loop, and remain meaningful after a model-size change. Pure display bookmarks need no new MCP tool unless a headless render workflow is explicitly added.
+
+#### Reusable meshing presets (**M**, UI + MCP)
+
+- **Reuse:** shared `MeshOptions` validation and the macro library's bundled-plus-user-library pattern.
+- **Scope:** named option presets with explicit units and engine compatibility. Start with global options; leave Part-specific sizing and entity assignments in the document. Applying a preset changes settings but does not generate or save a source automatically.
+- **Done when:** the same preset produces equivalent effective options in UI and MCP, invalid fields are reported, and fTetWild-inapplicable Gmsh options are clearly identified. Labels such as “coarse” must not imply a mesh-quality guarantee.
+
+#### Measured mesh-refinement comparison (**M–L**, headless first)
+
+- **User goal:** compare mesh cost and quality at several sizes before choosing one.
+- **Scope:** a bounded sweep of explicit size settings, reporting actual engine, nodes/elements, elapsed time and the existing quality summary for each run; optional output files and a TSV summary. Keep the document's chosen options unchanged unless explicitly applied.
+- **Depends on:** bounded jobs/cancellation for long sweeps. Geometry and all non-swept options must stay fixed across a comparison.
+- **Done when:** failed runs are individual outcomes, exports identify their settings, and the summary makes clear that mesh-density/quality trends do not establish FE-solution convergence without a solver.
+
+#### Drawing-sheet settings and reusable templates (**M**, UI + shared serializer)
+
+- **Gap:** `export_drawing_sheet` supports more options than the interactive format/paper quick-picks expose.
+- **First increment:** expose view selection, first/third-angle projection, standard or explicit scale, and title in a compact form; add a reusable template for those settings. Continue using `drawingSheet.ts` for both serializers.
+- **Done when:** UI and MCP produce equivalent layouts from identical settings, dimensions appear once in the best view, unsupported/overflowing layouts warn, and printed SVG/DXF scale is checked against a known-length fixture. Section/detail views are a separate geometry problem, not implied by this settings work.
+
+#### Batch export with per-file results (**M–L**, host + MCP)
+
+- **User goal:** hand off a folder of models or several chosen files without repeating the same export dialogue.
+- **First increment:** sequential B-rep-to-B-rep conversion and drawing export through existing headless-capable paths; explicit destination directory and naming policy; collision handling and cancellation; per-file success/failure report. Expand to other targets only where the pipeline can actually produce them headlessly.
+- **Done when:** one bad file does not discard other results, no input is overwritten by default, companion files retain correct names/references, and the report states which edits were baked. Do not implement this by repeatedly opening hidden custom editors.
+
+#### Preparation report bundle (**M**, shared pipeline)
+
+- **User goal:** share the evidence behind a mesh or manufacturing handoff, not just the exported file.
+- **Scope:** JSON plus readable HTML containing selected existing facts: source identity, effective options, replay warnings, health/quality results, BOM/hole table and optional snapshots. Link to existing exports rather than inventing a new geometry format.
+- **Done when:** unavailable checks remain explicitly unavailable, partial/skipped checks are visible, units and raw-versus-edited geometry are identified, and a report opens without network access. Rendered images remain diagnostic; they are not a validity certificate.
+
+#### Dependency and format compatibility corpus (**M**, maintenance)
+
+- **Motivation:** past WASM upgrades changed winding, stdout routing, companion handling and supported cell layouts; a clean install alone does not establish compatibility.
+- **Scope:** a compact, version-recorded set of import/export round trips and analytic checks for each adopted kernel capability, including compound extensions and mixed cells. Supplement writer-generated fixtures with independently authored files where licensing permits. Re-check the packaged VSIX's runtime files, not only `node_modules` in the development checkout.
+- **Done when:** dependency upgrades exercise the known failure cases, distinguish fixed upstream limitations from regressions, and record artifact versions. Keep expensive/variable timing checks separate from deterministic correctness gates.
+
+### Probe-gated — establish feasibility before estimating
+
+*Admission: a specific hypothesis with a discriminating experiment. Record the installed artifact version, fixture, exact calls, output facts, cleanup behaviour and timing. A method that accepts arguments but changes nothing is a failed probe.*
+
+#### B-rep validity report
+
+- **Question:** can `BRepCheck_Analyzer` or `ShapeAnalysis_ShapeContents` expose useful diagnostics for imported solids, shells and faces? A previous rejection of `BRepCheck_Analyzer` for a closure test does not establish that it is unusable for validity.
+- **Probe:** a known-valid solid, an intentional open shell, and a deliberately malformed shape; determine which statuses and subshape references are accessible. An open shell can be valid as a shell while unsuitable as a closed solid, so report those facts separately.
+- **Admission to implementation:** actionable, reproducible status coverage with an honest “unknown” path. Begin read-only, parallel to `check_mesh_health`; `ShapeUpgrade_UnifySameDomain` and repair belong to a later, separately verified operation, not an automatic consequence of a failed check.
+
+#### Open-profile surface output
+
+- **Question:** can an open profile without `thin` produce a useful surface through the shipped sweep-family builders?
+- **Probe:** extrude a line and a bent wire; check nonzero area, expected bounds, orientation, export/reopen and free-face enumeration. Only then try revolve/sweep. Building a shell is not the same contract as the current solid-producing `featureModel` path.
+- **Admission to implementation:** define surface versus solid output explicitly, preserve face/edge id consistency and refuse volume-only operations on the result. Start with surface extrusion rather than promising all four feature builders at once.
+
+#### Loft takeoff by resampled intermediates
+
+- **Question:** can the shipped guide-rail fallback's intermediate-section technique approximate takeoff control without the blocked kernel condition API?
+- **Probe:** vary a near-end section offset on straight, curved and asymmetric fixtures; measure the resulting tangent change, endpoint preservation and self-intersections. Check sensitivity to station spacing and whether `ThruSections` smooths away the intended change.
+- **Admission to implementation:** measurable, repeatable steering with published approximation limits. Never label the result as satisfying an exact tangent/curvature constraint; the kernel route remains blocked below.
+
+#### Anisotropic boundary layers for 2D Gmsh meshes
+
+- **Question:** does the installed gmsh-wasm build support a working `BoundaryLayer` field, including `setAsBoundaryLayer`, rather than merely exposing names?
+- **Probe:** on a simple 2D domain, exercise wall size, growth ratio, thickness, quads and corner fans along a chosen curve. Inspect actual element connectivity, near-wall thickness and growth, not just the element count; repeat with the existing Distance/Threshold and Constant fields enabled.
+- **Admission to implementation:** a verified recipe, clear unsupported combinations and non-overlapping layer behaviour. Scope to 2D; this does not establish a 3D boundary-layer route for OCC-imported geometry.
+
+#### Optional small-detail edge suppression
+
+- **Question:** can a display-only classifier reduce clutter without hiding important small holes or thin features?
+- **Probe:** compare candidate relative-face-area measures on mixed-scale assemblies, fillets, small drilled holes and tiny standalone parts. Review rendered output at several zoom levels; a small area alone is not evidence of an unimportant edge.
+- **Admission to implementation:** opt-in threshold and reversible display flag, with original `edge-N` enumeration untouched. Reuse smooth-edge visibility plumbing only after the classifier earns it; no default suppression based on an unvalidated heuristic.
+
+## Definition of done
+
+- **Behaviour:** complete the stated workflow, including cancellation, stale replies, empty input and reopen where relevant. A successful API return or non-empty file is not enough.
+- **Evidence:** pure math gets analytic fixtures; kernel changes get live-WASM checks; webview changes get real-bundle interaction/render assertions; save/watch flows get the real host where feasible. State any remaining manual verification gap precisely.
+- **Compatibility:** preserve source-write confirmation, deterministic entity-id rules, tolerant sidecar parsing and lazy host-only kernels. New bundled dependencies require a GPL-compatibility check.
+- **Documentation:** update affected protocol, API, format and getting-started references together. Regenerate screenshots for viewer markup/panel changes and visually inspect a full 3D shot. Add a changelog entry when releasing a new version.
+- **Closure:** remove the completed scope from this backlog, record verified implementation details in `CLAUDE.md`, and retain only a genuinely separate, scoped follow-up. An unverified branch is not closed merely because the happy path shipped.
 
 ## Non-goals / known constraints
 
@@ -51,7 +212,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **OCCT in the webview** — the kernel stays in the extension host; the webview runs only Three.js. Since the kernel-worker work this is *stronger* than the invariant requires: OCCT, Gmsh, meshio++ and fTetWild all run in a forked child process (`src/kernelWorker.ts`), one process further from the webview than the rule demands.
 
-**Correction — "writing the CAD source file" has been promoted out of this group — and has since shipped.** It read: *"never. The read-only invariant (sidecar persistence, export-only baking) is architectural. Enforced by `assertNotSourcePath` on every caller-chosen output path, and by the six-sidecar model that exists precisely so nothing has to be written back."* Two of those three claims did not survive being checked. The enforcement is one five-line path-identity check on the *headless* side (`src/mcpSidecars.ts:180`) — `provider.ts` has no equivalent guard at all, and `promptSaveAndWrite` writes wherever the save dialog points — while the extension already writes CAD files by design in seven other places, from New Blank Model to `promote_mesh_to_brep`. And the geometry writer that would do the job (`exportBRep` → `writeShape`) takes source and target format as independent parameters and runs on every single export. What was genuinely architectural is narrower, and stays: **the source is never written silently** — no debounced autosave, no watcher side effect, no panel interaction; every source write is an explicit, confirmed action, and the six sidecars keep the state that has no home inside a CAD file. What was built on top of that — an editable custom editor, the `bakedThrough` watermark, mesh save-in-place and the headless `save_model` tool — closed in v2.0.0/v2.1.0; see `CHANGELOG.md` and `CLAUDE.md`.
+- **No silent CAD-source writes.** Explicit save-in-place already ships through the editable custom editor and headless `save_model`; this is not a read-only application. Sidecar autosave and external-change reconciliation must not silently bake edits into the source. Preserve the confirmed-save contract, `bakedThrough` replay watermark and backup/recovery behaviour. The six sidecars retain state that has no home in the source format; see `CLAUDE.md` for the implementation history.
 
 ### Kernel-blocked
 
@@ -69,19 +230,17 @@ Three groups, three different revival rules. Each says what would change our min
 
   **Narrowed twice, and this entry used to overstate itself.** It was titled "3D text, engraving, and embossing" — but engraving and embossing **ship**, as `wrap`'s `emboss`/`engrave` variants, and have nothing to do with fonts. And the text half is not kernel-blocked either, only *font*-blocked: outlines that arrive as SVG paths become ordinary sketch geometry — "3D text via outline import" (the Tier 1 item this entry used to point at) has since closed in full: `svgImport.ts` now composes ancestor `transform`s (so a real "convert text to outlines" export, typically wrapped in `<g transform="...">` groups, lands correctly), `addSurfaceFromLines` accepts several disjoint loops forming one outer boundary plus its holes (a letter with a counter, e.g. an "O", builds as one holed face), `wrap` develops a holed profile onto a cylinder/cone (each hole cut out of the shell), and `import_svg` exposes the whole pipeline headlessly. Nothing is currently tracked as unshipped from this Non-goal.
 
-- **Loft start/end (takeoff) conditions.** `BRepOffsetAPI_ThruSections` exposes no condition API — of its bound knobs only `SetSmoothing` moves geometry (`SetContinuity`/`SetParType`/`SetMaxDegree`/`SetCriteriumWeight` are accepted but byte-identical everywhere tried, so only smoothing is exposed) — and the pipe-shell conditions have no reachable consumer: `BRepOffsetAPI_MakePipeShell`'s `SetMode_4(wire)` returns `false` even for the spine itself, and `BRepFill_FaceAndOrder_2`/`EdgeFaceAndOrder_2` exist as signatures with no sweep to attach them to. Out of scope is only the *constraint*; steering a loft along a rail already ships via the resampled-intermediate `guides` fallback, which is a different feature, not a silent substitution. An approximation of the takeoff by that same resampling technique is a probe-gated idea ("Loft takeoff conditions by resampled intermediate", below), deliberately not listed here so it is not read as a revival of this dead path.
+- **Loft start/end (takeoff) conditions.** `BRepOffsetAPI_ThruSections` exposes no condition API — of its bound knobs only `SetSmoothing` moves geometry (`SetContinuity`/`SetParType`/`SetMaxDegree`/`SetCriteriumWeight` are accepted but byte-identical everywhere tried, so only smoothing is exposed) — and the pipe-shell conditions have no reachable consumer: `BRepOffsetAPI_MakePipeShell`'s `SetMode_4(wire)` returns `false` even for the spine itself, and `BRepFill_FaceAndOrder_2`/`EdgeFaceAndOrder_2` exist as signatures with no sweep to attach them to. Out of scope is only the *constraint*; steering a loft along a rail already ships via the resampled-intermediate `guides` fallback, which is a different feature, not a silent substitution. The [takeoff approximation probe](#loft-takeoff-by-resampled-intermediates) above explores a separate route, not a revival of this dead API.
 
 ### Rejected scope
 
-*Revivable only under a different framing — the objection is to what the feature would make this tool, not to whether it could be built. Two of the four below already have a narrower framing that survived, promoted into the tiers above.*
+*Revivable only under a different framing — the objection is to what the feature would make this tool, not to whether it could be built. Narrower alternatives are identified below; some already ship.*
 
 - **Interactive sketching with geometric constraints** — rejected, not deferred. It is the single clearest "this is a modeling application now" feature, and CAD-Preview is a preview/inspect/prepare tool. More concretely: the numeric profile and curve forms are **not** a degraded mouse — they accept parametric variable expressions (`L*2`, `R*cos(i*360/N)`) that a click-to-place tool cannot express, so replacing them with drawing would trade away a distinguishing capability for a familiar one. The argument has only got stronger: no constraint solver exists anywhere in the codebase (the sole `constraint` hit is `mate`'s doc comment), while the expression-driven sketch vocabulary has kept growing to sixteen creation ops. Worth noting that SketchForge, a dedicated sketch application, still has no constraint solver either — building this would mean shipping the weak two-thirds of the feature.
 
   **What survived the reframing:** authoring a profile *on a named construction plane* rather than in world coordinates ("Author profiles on a `plane-N`", Tier 1). That is a coordinate-frame convenience over machinery that already exists, and it does not put a solver anywhere.
 
-- **Reference-image tracing underlay** — rejected. Its value is almost entirely to sketching, which is a non-goal above, and it would punch a hole in a real design property: every texture in the webview is a procedurally-drawn `CanvasTexture` (`geometryBuilder.ts`'s `dotTexture()`, `labelOverlay.ts`, the generated-SVG icon pipeline), a deliberately asset-free design. Injecting a user-supplied image trades that away for a workflow the tool doesn't have — and the tool already has a *better* one, since tracing in a vector editor and importing the result through `svgImport.ts`/`dxfImport.ts` yields real, editable, snappable geometry rather than a picture to eyeball against.
-
-  **Correction:** this entry used to justify itself on the webview's CSP. That was wrong — `provider.ts` already emits `img-src ${webview.cspSource} blob: data:`, so a data-URL image would need no CSP change at all. The asset-free design argument is real; the security one was not, and a rejection resting on a false premise is worse than no rejection.
+- **Reference-image tracing underlay** — rejected for the current preparation workflow. It would introduce image placement, calibration and tracing interactions without a sketch-authoring workflow to consume them. Tracing in a vector editor and importing through `svgImport.ts`/`dxfImport.ts` already yields editable geometry. Revisit only for a concrete calibrated inspection use case that does not require a constraint-based sketcher. This is a scope decision, not a CSP or “no image assets” invariant: data images are already allowed, and standard-parts thumbnails serve a different workflow.
 
 - **Parametric part generators as kernel primitives (involute gears, thread forms, springs)** — rejected as *kernel geometry*. Standard parts are something this tool should mostly *source*, not author: `search_standard_parts`/`download_standard_part` fetch real, verified geometry from step.parts as ordinary STEP files the existing pipeline opens, and the interactive sidebar does the same. Authoring an involute tooth-flank generator in `occtOperations.ts` is modeling-application scope.
 
