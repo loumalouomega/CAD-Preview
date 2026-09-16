@@ -262,6 +262,46 @@ test("picking: geometry hidden via the tree is not pickable", async (page) => {
 });
 
 /**
+ * D3. Assembly group rows select and hide their descendant solids.
+ *
+ * The `tree` fixture is bull.stp, whose XCAF structure is a real assembly
+ * group (`xcaf-asm-1`) over one leaf (`solid-0`) — so this exercises the
+ * production group path with no synthetic posts. Before the fix the group
+ * row's eye toggled state but called `setGroupVisible` with the synthetic id,
+ * which matches nothing in the scene: the model stayed visible. Hiding via
+ * the GROUP eye must therefore leave a centre click selecting nothing (the
+ * same positional-free technique as D2).
+ */
+test("tree: assembly group rows select and hide their descendant solids", async (page) => {
+  await populate(page);
+
+  const eyeTitle = await page.evaluate(
+    () => document.querySelector("#tree-body .tree-eye")?.getAttribute("title") ?? ""
+  );
+  assert(
+    /assembly \(1 solids\)/i.test(eyeTitle),
+    `the group eye names its descendant count (got ${JSON.stringify(eyeTitle)})`
+  );
+
+  await page.evaluate(() => {
+    document.querySelector("#tree-body .tree-row")?.click();
+  });
+  await sleep(250);
+  const groupSelected = await page.evaluate(
+    () => document.querySelector("#tree-body .tree-row")?.classList.contains("selected") ?? false
+  );
+  assert(groupSelected, "clicking the assembly row marks it selected without error");
+
+  await page.click("#tree-body .tree-eye");
+  await sleep(250);
+  const picked = await pickCentreIntoNewPart(page);
+  assert(
+    picked !== null && picked.length === 0,
+    `hiding via the group eye hides its descendant solid (got ${JSON.stringify(picked)})`
+  );
+});
+
+/**
  * E. The FE mesh overlay and its toolbar toggle stay truthful about each other.
  * `CLAUDE.md`: the toggle "must never claim on for content that isn't shown",
  * and showing an overlay hides the model's own shaded faces so two opaque

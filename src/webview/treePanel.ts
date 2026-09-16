@@ -1,5 +1,6 @@
 import type { TreeNode } from "../protocol";
 import { filterTree } from "./treeFilter";
+import { descendantLeafIds } from "./treeGroups";
 import type { VisibilityState } from "./visibilityState";
 
 export class TreePanel {
@@ -37,6 +38,13 @@ export class TreePanel {
 
     this.rebuild(children, null);
     this.panel.classList.add("visible");
+  }
+
+  /** Expand a row id to the leaf `solid-N` ids it represents (`[id]` for a
+   * leaf, every descendant leaf for an assembly group, `[]` when unknown) —
+   * the tree already caches its root, so callers never duplicate it. */
+  leafIdsFor(id: string): string[] {
+    return descendantLeafIds(this.root?.children ?? [], id);
   }
 
   /** Re-renders the current tree filtered to `query` (empty/blank shows everything). */
@@ -107,7 +115,16 @@ export class TreePanel {
       eye.className = "tree-eye";
       eye.classList.toggle("hidden-off", hidden);
       eye.textContent = hidden ? "🙈" : "👁";
-      eye.title = hidden ? "Show this component" : "Hide this component";
+      if (hasChildren) {
+        const leafCount = descendantLeafIds(this.root?.children ?? [], node.id).length;
+        eye.title = hidden
+          ? `Show this assembly (${leafCount} solids)`
+          : `Hide this assembly (${leafCount} solids)`;
+      } else {
+        eye.title = hidden ? "Show this component" : "Hide this component";
+      }
+      // `isGroupNode` is intentionally unused here: `hasChildren` above is the
+      // same check against the already-loaded node, no second tree walk needed.
       eye.addEventListener("click", (e) => {
         e.stopPropagation();
         this.onToggleVisible(node.id);

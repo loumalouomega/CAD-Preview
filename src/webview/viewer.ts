@@ -194,6 +194,11 @@ export class Viewer {
    * baseline, since both features write `material.opacity` and must compose
    * rather than clobber each other (see `setOpacity`'s doc comment). */
   private highlightedGroupId: string | null = null;
+  /** Multi-id form of the spotlight above (an assembly row's descendant
+   * leaves). `highlightGroup` stays as the single-id wrapper; both write here
+   * so `setOpacity`/`setGuideIds`/`applyDisplayMode` re-apply via
+   * `highlightGroups` and never lose a group selection. */
+  private highlightedGroupIds: Set<string> | null = null;
   /** The Appearance panel's global opacity (0–1, default fully opaque) —
    * session-only, re-applied to every fresh material on `setModel()` (a model
    * rebuild after an edit creates brand-new materials with no baseline). */
@@ -1213,15 +1218,26 @@ export class Viewer {
    * hardcoded 1.0 that overrides it.
    */
   highlightGroup(groupId: string | null): void {
-    this.highlightedGroupId = groupId;
+    this.highlightGroups(groupId === null ? null : [groupId]);
+  }
+
+  /**
+   * Isolates a SET of groups (an assembly row's descendant leaves) by dimming
+   * everything else — the multi-id form of `highlightGroup`, which delegates
+   * here. A single traversal with a `Set` lookup, one `requestRender()`.
+   */
+  highlightGroups(groupIds: string[] | null): void {
+    this.highlightedGroupIds = groupIds === null ? null : new Set(groupIds);
+    this.highlightedGroupId = groupIds === null ? null : (groupIds.length === 1 ? groupIds[0] : null);
+    const selectedSet = this.highlightedGroupIds;
     const xrayFactor = this.displayOpacityFactor();
     this.model?.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
       const mat = obj.material as THREE.MeshStandardMaterial;
       const base = (mat.userData.baseOpacity as number | undefined) ?? 1;
-      const selected = groupId === null || obj.userData.groupId === groupId;
+      const isSelected = selectedSet === null || selectedSet.has(obj.userData.groupId as string);
       const guideFactor = this.guideIds.has(obj.userData.entityId as string) ? Viewer.GUIDE_DIM : 1;
-      mat.opacity = base * xrayFactor * (selected ? 1 : 0.08) * guideFactor;
+      mat.opacity = base * xrayFactor * (isSelected ? 1 : 0.08) * guideFactor;
       mat.transparent = mat.opacity < 1;
       mat.needsUpdate = true;
     });
@@ -1242,7 +1258,7 @@ export class Viewer {
    * rebuild the same way visibility state is. */
   setGuideIds(ids: string[]): void {
     this.guideIds = new Set(ids);
-    this.highlightGroup(this.highlightedGroupId); // re-apply face opacities incl. the guide factor
+    this.highlightGroups(this.highlightedGroupIds === null ? null : [...this.highlightedGroupIds]); // re-apply face opacities incl. the guide factor
     this.applyGuideDim();
   }
 
@@ -1326,7 +1342,7 @@ export class Viewer {
   setOpacity(value: number): void {
     this.modelOpacity = value;
     this.applyOpacityBaseline();
-    this.highlightGroup(this.highlightedGroupId);
+    this.highlightGroups(this.highlightedGroupIds === null ? null : [...this.highlightedGroupIds]);
     this.requestRender();
   }
 
@@ -1471,8 +1487,17 @@ export class Viewer {
    * entirely, not translucent — a different code path, not a parameterization.
    */
   setGroupVisible(groupId: string, visible: boolean): void {
+    this.setGroupsVisible([groupId], visible);
+  }
+
+  /**
+   * Multi-id form of `setGroupVisible` — an assembly row's descendant leaves
+   * in one traversal. `setGroupVisible` delegates here.
+   */
+  setGroupsVisible(groupIds: string[], visible: boolean): void {
+    const ids = new Set(groupIds);
     this.model?.traverse((obj) => {
-      if (obj.userData.groupId === groupId) obj.visible = visible;
+      if (ids.has(obj.userData.groupId as string)) obj.visible = visible;
     });
     this.requestRender();
   }
@@ -2068,7 +2093,7 @@ export class Viewer {
     this.wireframe = this.displayMode === "wireframe";
     this.applyWireframe();
     this.applyOpacityBaseline();
-    this.highlightGroup(this.highlightedGroupId);
+    this.highlightGroups(this.highlightedGroupIds === null ? null : [...this.highlightedGroupIds]);
     this.applyClippingPlane();
     if (this.displayMode === "hiddenLines") this.buildHiddenLineGhosts();
     else this.clearHiddenLineGhosts();

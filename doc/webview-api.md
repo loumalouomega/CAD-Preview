@@ -380,9 +380,10 @@ Toggles between perspective and orthographic projection. **Not a reconstruction*
 
 ```typescript
 highlightGroup(groupId: string | null): void
+highlightGroups(groupIds: string[] | null): void
 ```
 
-If `groupId` is non-null, dims all meshes in the model except the one whose `userData.groupId` matches — opacity set to `baseOpacity * 0.08` for dimmed meshes, `baseOpacity` for the selected one (`transparent` follows whether the result is `< 1`). If `groupId` is null, restores all meshes to `baseOpacity`. **Composes with `setOpacity()` below rather than clobbering it**: `baseOpacity` is read from each material's `userData.baseOpacity` (defaulting to 1) — the same slot `setOpacity` writes — so dragging the Appearance panel's opacity slider to 0.5 and then spotlighting a tree node keeps the rest of the model at 0.5×0.08, not a hardcoded 0.08 that would silently ignore the slider, and the spotlighted group stays at 0.5, not a hardcoded 1.0 that would override it. `highlightedGroupId` remembers the last call so `setOpacity` can re-apply the same spotlight on top of a new baseline.
+If `groupId` is non-null, dims all meshes in the model except the one whose `userData.groupId` matches — opacity set to `baseOpacity * 0.08` for dimmed meshes, `baseOpacity` for the selected one (`transparent` follows whether the result is `< 1`). If `groupId` is null, restores all meshes to `baseOpacity`. **Composes with `setOpacity()` below rather than clobbering it**: `baseOpacity` is read from each material's `userData.baseOpacity` (defaulting to 1) — the same slot `setOpacity` writes — so dragging the Appearance panel's opacity slider to 0.5 and then spotlighting a tree node keeps the rest of the model at 0.5×0.08, not a hardcoded 0.08 that would silently ignore the slider, and the spotlighted group stays at 0.5, not a hardcoded 1.0 that would override it. `highlightedGroupId` remembers the last call so `setOpacity` can re-apply the same spotlight on top of a new baseline. `highlightGroups` is the multi-id form — an assembly tree row's descendant leaves in one traversal with a `Set` lookup; `highlightGroup` delegates to it. `highlightedGroupIds` carries the set so `setOpacity`/`setGuideIds`/`applyDisplayMode` re-apply without losing a group selection.
 
 ```typescript
 setWireframe(on: boolean): void
@@ -443,10 +444,11 @@ The cut face is a real solid cap, not see-through — `clipCap.ts`'s stencil-buf
 
 ```typescript
 setGroupVisible(groupId: string, visible: boolean): void
+setGroupsVisible(groupIds: string[], visible: boolean): void
 applyPartVisibility(hiddenEntities: SelectedEntity[], isolatedEntities: SelectedEntity[] | null): void
 ```
 
-`setGroupVisible` fully hides/shows every object tagged with `groupId` (a solid — the Components tree's per-node eye-toggle operates at this whole-solid granularity, the only depth the tree currently has). Distinct from `highlightGroup`'s opacity-dimming: `Object3D.visible = false`, gone entirely, not translucent. `applyPartVisibility` applies the Parts panel's hide/isolate state in one pass: `hiddenEntities` are forced invisible; if `isolatedEntities` is non-null, ONLY those entities are visible, overriding `hiddenEntities` for this call. Handles surfaces (matching either the face's own id or its owning solid's `groupId`, same membership check `renderSelection` uses), lines, and points — unlike `highlightGroup`, which only ever touches `THREE.Mesh`. Composition across repeated calls (e.g. "hide part A, then isolate part B, then clear isolate — A is still hidden") is the **caller's** job: `main.ts` recomputes both sets fresh from `VisibilityState` + `PartsModel.entitiesOf()` on every hide/isolate change, so this method itself needs no memory of prior calls.
+`setGroupVisible` fully hides/shows every object tagged with `groupId` (a solid — the Components tree's per-node eye-toggle operates at this whole-solid granularity, the only depth the tree currently has). `setGroupsVisible` is the multi-id form — an assembly tree row's descendant leaves in one traversal; `setGroupVisible` delegates to it. Distinct from `highlightGroup`'s opacity-dimming: `Object3D.visible = false`, gone entirely, not translucent. `applyPartVisibility` applies the Parts panel's hide/isolate state in one pass: `hiddenEntities` are forced invisible; if `isolatedEntities` is non-null, ONLY those entities are visible, overriding `hiddenEntities` for this call. Handles surfaces (matching either the face's own id or its owning solid's `groupId`, same membership check `renderSelection` uses), lines, and points — unlike `highlightGroup`, which only ever touches `THREE.Mesh`. Composition across repeated calls (e.g. "hide part A, then isolate part B, then clear isolate — A is still hidden") is the **caller's** job: `main.ts` recomputes both sets fresh from `VisibilityState` + `PartsModel.entitiesOf()` on every hide/isolate change, so this method itself needs no memory of prior calls.
 
 **Construction geometry (`setGuideIds(ids: string[]): void`):** marks which entity ids are guide (reference-only) geometry and re-applies the dim. Faces go through `highlightGroup()`'s opacity composition as a `GUIDE_DIM = 0.35` multiplicand (never a raw opacity write — the one-writer rule); edges and points get a direct, safe opacity write (nothing else writes their opacity — `renderSelection` only touches colour). Guides stay visible, pickable, and measurable; `main.ts` keeps the id set (`guideEntityIds`) to refuse them as operands for the six profile-resolution ops, mirroring the host-side enforcement.
 
@@ -1001,7 +1003,7 @@ class TreePanel {
 
 **`private updateSelection(): void`** — Adds/removes the `selected` CSS class from rows based on `this._selectedId`. Called after each click.
 
-The `onSelect` callback is wired in `main.ts` to call `viewer.highlightGroup(id)`.
+The `onSelect` callback is wired in `main.ts` to expand the row id to its descendant leaves (`TreePanel.leafIdsFor`, via `src/webview/treeGroups.ts`'s `descendantLeafIds` — `[id]` for a leaf) and call `viewer.highlightGroups(leaves)`; the eye-toggle path expands the same way into `viewer.setGroupsVisible(leaves, visible)`, and `applyVisibilityState()` expands every stored hidden group id on each rebuild. `TreePanel.leafIdsFor` reads the panel's own cached root, so callers never duplicate tree state; an unknown id (or a tree not yet loaded) falls back to `[id]`, preserving the old single-id behavior exactly.
 
 ## `src/webview/editsModel.ts`
 

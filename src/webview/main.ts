@@ -118,11 +118,20 @@ const visibilityState = new VisibilityState();
 const treePanel = new TreePanel(
   panelEl,
   (id) => {
-    viewer.highlightGroup(id);
+    if (id === null) {
+      viewer.highlightGroups(null);
+      return;
+    }
+    // Assembly group rows expand to their descendant leaves (roadmap Tier 1
+    // "Assembly-tree group rows are inert") — `[id]` fallback preserves the
+    // old single-id behavior when the tree hasn't loaded yet or id is unknown.
+    const leaves = treePanel.leafIdsFor(id);
+    viewer.highlightGroups(leaves.length > 0 ? leaves : [id]);
   },
   (id) => {
     visibilityState.toggleTreeGroupHidden(id);
-    viewer.setGroupVisible(id, !visibilityState.isTreeGroupHidden(id));
+    const leaves = treePanel.leafIdsFor(id);
+    viewer.setGroupsVisible(leaves.length > 0 ? leaves : [id], !visibilityState.isTreeGroupHidden(id));
     treePanel.refreshVisibility();
   },
   visibilityState
@@ -1708,7 +1717,16 @@ function applyVisibilityState(): void {
   const isolated = visibilityState.isolatedPartIndex();
   const isolatedEntities = isolated !== null && isolated < parts.length ? partsModel.entitiesOf(isolated) : null;
   viewer.applyPartVisibility(hidden, isolatedEntities);
-  for (const groupId of visibilityState.hiddenTreeGroupIds()) viewer.setGroupVisible(groupId, false);
+  // Assembly group rows store their group id but hide descendant leaves: expand
+  // here (with a `[id]` fallback when the tree hasn't loaded yet, matching the
+  // toggle handler above) so one call covers leaves and groups alike.
+  const hiddenTreeLeaves = visibilityState
+    .hiddenTreeGroupIds()
+    .flatMap((groupId) => {
+      const leaves = treePanel.leafIdsFor(groupId);
+      return leaves.length > 0 ? leaves : [groupId];
+    });
+  if (hiddenTreeLeaves.length > 0) viewer.setGroupsVisible(hiddenTreeLeaves, false);
 }
 
 /** Draws either the previewed part's entities or the working selection. */
