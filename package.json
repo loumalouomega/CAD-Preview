@@ -404,14 +404,14 @@
     "float-tetwild-wasm": "^0.2.0",
     "node-hid": "^3.4.0",
     "opencascade.js": "^1.1.1",
-    "three": "^0.185.1",
+    "three": "^0.186.0",
     "three-bvh-csg": "^0.0.18",
     "three-mesh-bvh": "^0.9.14",
     "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/node": "^26.5.0",
-    "@types/three": "^0.185.4",
+    "@types/three": "^0.186.0",
     "@types/vscode": "^1.136.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.9.2",
