@@ -4,6 +4,22 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [2.4.0] - 2026-09-17
+
+Closes two more Tier 1 roadmap items — clip-cap visibility tracking and save/reopen/recovery regression coverage — plus assembly-tree group rows and a generated SVG icon set.
+
+### Added
+
+- **Clip caps follow visibility.** Hiding or isolating a Part (or a Components-tree/assembly group) now rebuilds the stencil-buffer cross-section instead of leaving a stale cap painted; mesh/color overlay toggles ride the same coalesced path. Target collection uses `traverseVisible` so a hidden ancestor's whole subtree is excluded. Covered by new `clip V1–V3` pixel cases in `test:webview`.
+- **Assembly-tree group rows select and hide their descendant solids.** Clicking or eye-toggling a synthetic `Assembly N` header expands to its descendant `solid-N` leaves instead of doing nothing.
+- **Save, reopen and recovery regression coverage.** Twelve new integration cases in a real VS Code host drive the Ctrl+S join, modal cancellation, a second save (watermark `1→2`, one-deep `.bak`), reopen stability (with a forged-watermark double-apply control), Save As copy + cross-format refusal, revert-to-watermark, hot-exit backup round trip, source-write and watermark-write failure injection with rollback + retry, dirty-sidecar pre-check refusal, save-time Part/annotation rebinding, and STL save-in-place.
+- **In-memory `vscode` stub for unit tests** (`src/vscodeStub.ts`, vitest-only alias) with headless `customBackup` coverage — no unit test had ever imported `vscode` before.
+
+### Changed
+
+- **Toolbar/panel icons are generated SVG** (theme-adaptive, `currentColor`-based) instead of hand-maintained sources.
+- **Save hardening.** Both bake paths fail fast on a dirty edits sidecar before any write or modal, and roll the source back to its pre-save bytes when the watermark write throws after the source was rewritten — the pair agrees again instead of double-applying on reopen; the documented recovery is simply saving again.
+
 ## [2.3.0] - 2026-09-15
 
 Closes the roadmap Tier 1 tier: headless mesh inspection, hole-to-hole axis distance, plus the hole table, starter macros, drawing sheets, SVG import, CSG extrudes, and distance-graded mesh sizing.
@@ -445,6 +461,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[2.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.0.0...v2.1.0
