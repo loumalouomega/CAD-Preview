@@ -37,12 +37,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-#### Clip caps follow visibility (**S–M**, webview)
-
-- **Gap:** hiding or isolating a Part can leave its cross-section visible. `Viewer.rebuildClipCap()` checks a mesh's own `.visible`, but its plain traversal does not exclude a hidden ancestor; moving the plane only repositions the existing cap.
-- **Scope:** collect effectively visible targets, invalidate after Part and assembly-group visibility changes, and coalesce rebuilds after a batch of visibility mutations. Preserve the cheap plane-move path.
-- **Done when:** hide, isolate, restore and overlay toggles update the cap immediately in single and split views; hidden-parent cases are pixel-tested in `scripts/webview-test/run.mjs`, and repeated toggles dispose the old cap resources.
-
 #### Save, reopen and recovery regression coverage (**M**, host + webview + MCP)
 
 - **Why next:** editable documents, source backups and the `bakedThrough` watermark already ship. Their critical join is source write → sidecar watermark → reload, and several documented interactive paths still lack end-to-end verification.

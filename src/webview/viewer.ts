@@ -224,6 +224,16 @@ export class Viewer {
    * center/size from — cached so `updateClipCapPlane` can reuse it on every
    * cheap plane move instead of re-walking the model's geometry per tick. */
   private clipCapBox: THREE.Box3 | null = null;
+  /** Coalesces structural clip-cap rebuilds across a batch of visibility
+   * mutations (`applyVisibilityState` fires `applyPartVisibility` +
+   * `setGroupsVisible` back-to-back). Set while a microtask rebuild is
+   * queued; further `requestClipCapRebuild()` calls until it runs are no-ops. */
+  private clipCapRebuildQueued = false;
+  /** Invalidates a queued `requestClipCapRebuild` when a direct `rebuildClipCap`
+   * (fresh geometry, clip toggle) supersedes it — e.g. `setModel` clearing
+   * overlays queues a rebuild, then rebuilds immediately for the new model;
+   * the stale queued callback must skip instead of rebuilding twice. */
+  private clipCapRebuildGen = 0;
   /** The Appearance panel's display mode — session-only, re-applied to every
    * fresh material on `setModel()`, same "materials carry no baseline state
    * on rebuild" rule as opacity/clipping. See `setDisplayMode()`. */
@@ -732,6 +742,7 @@ export class Viewer {
    * geometry completely untouched. Pass `null` to just clear the overlay.
    */
   setMeshOverlay(obj: THREE.Object3D | null): void {
+    if (!this.meshOverlay && !obj) return;
     this.clearClipCap(); // its stencil markers may reference the old overlay's geometry, about to be disposed
     if (this.meshOverlay) {
       this.scene.remove(this.meshOverlay);
@@ -756,7 +767,6 @@ export class Viewer {
     // moment the overlay is cleared. Display-only (Object3D.visible), never
     // touches geometry.
     this.refreshModelFacesVisibility();
-    this.rebuildClipCap(); // overlay content/visibility changed — a no-op if clipping is off
     this.requestRender();
   }
 
@@ -772,7 +782,6 @@ export class Viewer {
     if (!this.meshOverlay) return;
     this.meshOverlay.visible = visible;
     this.refreshModelFacesVisibility();
-    this.rebuildClipCap(); // which content is capped just flipped — a no-op if clipping is off
     this.requestRender();
   }
 
@@ -788,6 +797,7 @@ export class Viewer {
    * reappear (see that method's doc comment).
    */
   setColorFieldOverlay(obj: THREE.Object3D | null): void {
+    if (!this.colorFieldOverlay && !obj) return;
     if (this.colorFieldOverlay) {
       this.scene.remove(this.colorFieldOverlay);
       this.colorFieldOverlay.traverse((o) => {
@@ -805,7 +815,6 @@ export class Viewer {
       this.applyClippingPlane();
     }
     this.refreshModelFacesVisibility();
-    this.rebuildClipCap();
     this.requestRender();
   }
 
@@ -939,6 +948,7 @@ export class Viewer {
     const meshOverlayShown = this.meshOverlay !== null && this.meshOverlay.visible;
     const colorFieldShown = this.colorFieldOverlay !== null && this.colorFieldOverlay.visible;
     this.setModelFacesVisible(!meshOverlayShown && !colorFieldShown);
+    this.requestClipCapRebuild();
   }
 
   /**
@@ -1382,24 +1392,45 @@ export class Viewer {
   }
 
   /**
+   * Queues one structural clip-cap rebuild, coalescing a batch of visibility
+   * mutations into a single rebuild. `applyVisibilityState` (`main.ts`)
+   * fires `applyPartVisibility` + `setGroupsVisible` back-to-back; without
+   * coalescing every eye click would pay two stencil rebuilds. A no-op when
+   * clipping is off (nothing to rebuild) — callers still `requestRender()`
+   * for the visibility change itself. The queued rebuild runs in a microtask
+   * (before the next scheduled frame), then renders.
+   */
+  private requestClipCapRebuild(): void {
+    if (!this.activeClippingPlane || !this.model) return;
+    if (this.clipCapRebuildQueued) return;
+    this.clipCapRebuildQueued = true;
+    const gen = this.clipCapRebuildGen;
+    queueMicrotask(() => {
+      this.clipCapRebuildQueued = false;
+      if (gen !== this.clipCapRebuildGen) return;
+      this.rebuildClipCap();
+      this.requestRender();
+    });
+  }
+
+  /**
    * Full (re)build of the clip cap's stencil-marking meshes — one back/front
-   * pair per currently-visible target mesh (`model`'s face meshes, plus the
+   * pair per effectively-visible target mesh (`model`'s face meshes, plus the
    * FE-mesh overlay's fill mesh when it's the thing actually shown) — and the
    * cap quad itself. Called whenever WHICH meshes need capping could have
-   * changed: clipping just turned on, or `model`/`meshOverlay` changed.
+   * changed: clipping just turned on, `model`/overlay changed, or Part /
+   * assembly-group visibility changed (via `requestClipCapRebuild`, which
+   * coalesces batches).
    *
-   * Deliberately does NOT reactively track Parts/Components-tree per-entity
-   * hide/isolate (`applyPartVisibility`/`setGroupVisible`, both of which set
-   * `.visible` directly on the affected meshes with no hook into this class) —
-   * a part hidden after the cap was last (re)built keeps showing its
-   * cross-section until the next structural rebuild or plane move. Accepted,
-   * not fixed: reactively tracking every visibility mutation site for a
-   * display-only capping nicety was judged disproportionate complexity, the
-   * same call this codebase already made for the FE-mesh overlay's
-   * surface-scoped-part colouring gap and several other known, documented
-   * edge cases (see CLAUDE.md's "Visualization & UX depth" section).
+   * Visibility uses `traverseVisible`, not a plain `traverse` + `obj.visible`
+   * check: the latter misses a hidden ancestor (a hidden Part hides faces via
+   * their own `.visible`, but a hidden tree group hides whole solids whose
+   * child meshes may still read `visible === true`). `traverseVisible` prunes
+   * each invisible subtree at its ancestor, so only effectively visible meshes
+   * mark the stencil buffer.
    */
   private rebuildClipCap(): void {
+    this.clipCapRebuildGen++;
     this.clearClipCap();
     if (!this.activeClippingPlane || !this.model) return;
 
@@ -1411,19 +1442,19 @@ export class Viewer {
     this.colorFieldOverlay?.updateMatrixWorld(true);
 
     const targets: THREE.Mesh[] = [];
-    this.model.traverse((obj) => {
-      if (obj instanceof THREE.Mesh && obj.userData.entityType === "surface" && obj.visible) targets.push(obj);
+    this.model.traverseVisible((obj) => {
+      if (obj instanceof THREE.Mesh && obj.userData.entityType === "surface") targets.push(obj);
     });
     // Either overlay's own fill mesh, only when it's actually the thing being
     // shown — model faces are already hidden in that state (setModelFacesVisible),
     // so this and the branch above are naturally mutually exclusive in practice.
     if (this.meshOverlay?.visible) {
-      this.meshOverlay.traverse((obj) => {
+      this.meshOverlay.traverseVisible((obj) => {
         if (obj instanceof THREE.Mesh && obj.userData.entityType === "mesh") targets.push(obj);
       });
     }
     if (this.colorFieldOverlay?.visible) {
-      this.colorFieldOverlay.traverse((obj) => {
+      this.colorFieldOverlay.traverseVisible((obj) => {
         if (obj instanceof THREE.Mesh && obj.userData.entityType === "mesh") targets.push(obj);
       });
     }
@@ -1499,6 +1530,7 @@ export class Viewer {
     this.model?.traverse((obj) => {
       if (ids.has(obj.userData.groupId as string)) obj.visible = visible;
     });
+    this.requestClipCapRebuild();
     this.requestRender();
   }
 
@@ -1535,6 +1567,7 @@ export class Viewer {
       const owns = (set: Set<string>) => (key !== null && set.has(key)) || (groupKey !== null && set.has(groupKey));
       obj.visible = isolateKeys ? owns(isolateKeys) : !owns(hideKeys);
     });
+    this.requestClipCapRebuild();
     this.requestRender();
   }
 

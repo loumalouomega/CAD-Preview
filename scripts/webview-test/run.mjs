@@ -2265,6 +2265,127 @@ test("clip P6: Clip ▸ Face applies a plane, and refuses a non-planar face", as
   );
 });
 
+/**
+ * V1 — hiding via the Components tree removes the cap; restoring brings it back.
+ *
+ * The discriminating assertion is the HIDE step: before the visibility hook,
+ * no visibility mutation rebuilt the cap, so the stale cross-section stayed
+ * painted (`hidden` measured the same as `on`). `traverseVisible` vs a plain
+ * `traverse` + `obj.visible` check is covered structurally (a hidden ancestor
+ * prunes its whole subtree); what this pins is the missing rebuild.
+ */
+test("clip V1: hiding every tree group removes the cap, restoring brings it back", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await setPanelHidden(page, true);
+  await tagCapColour(page);
+
+  const facing = [0, 0, -1]; // +Z normal keeps the +Z half; view it from -Z
+  await post(page, clipView({ axis: "z", offsetFrac: 0 }, facing));
+  await sleep(CLIP_SETTLE);
+  const on = await magentaFraction(page);
+  const onSig = await frameSignature(page);
+  assert(on > CAP_FLOOR, `the clip is capped before hiding (got ${on.toFixed(4)})`);
+
+  const toggled = await page.evaluate(() => {
+    const eyes = document.querySelectorAll("#tree-body [data-visible-toggle], #tree-body .tree-eye");
+    eyes.forEach((e) => e.click());
+    return eyes.length;
+  });
+  assert(toggled > 0, `the tree exposes visibility toggles (found ${toggled})`);
+  await sleep(600); // queued cap rebuild (microtask) + a scheduled frame
+  const hidden = await magentaFraction(page);
+  const hiddenSig = await frameSignature(page);
+  assert(hidden < 0.002, `no cap-coloured pixels once everything is hidden (got ${hidden.toFixed(4)})`);
+  assert(hiddenSig.hash !== onSig.hash, "hiding rebuilds the cap instead of leaving it stale");
+
+  await page.evaluate(() => {
+    document.querySelectorAll("#tree-body [data-visible-toggle], #tree-body .tree-eye").forEach((e) => e.click());
+  });
+  await sleep(600);
+  const restored = await magentaFraction(page);
+  const restoredSig = await frameSignature(page);
+  assert(restored > CAP_FLOOR, `the cap returns once visibility is restored (got ${restored.toFixed(4)})`);
+  assert(restoredSig.hash === onSig.hash, "restoring rebuilds the identical cap, not an approximation");
+
+  await page.evaluate(() => document.body.style.removeProperty("--cad-face"));
+  await setPanelHidden(page, false);
+});
+
+/**
+ * V2 — hiding via the Parts panel also rebuilds the cap (face-level hide, as
+ * distinct from V1's group-level hide). Asserts a strict decrease rather than
+ * an exact zero: the fixture's three Parts may not cover every face, so
+ * unassigned faces can legitimately keep a small cap.
+ */
+test("clip V2: hiding Parts shrinks the cap instead of leaving it stale", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await setPanelHidden(page, true);
+  await tagCapColour(page);
+
+  const facing = [0, 0, -1];
+  await post(page, clipView({ axis: "z", offsetFrac: 0 }, facing));
+  await sleep(CLIP_SETTLE);
+  const on = await magentaFraction(page);
+  const onSig = await frameSignature(page);
+  assert(on > CAP_FLOOR, `the clip is capped before hiding (got ${on.toFixed(4)})`);
+
+  const toggled = await page.evaluate(() => {
+    const eyes = document.querySelectorAll("#parts-body .part-eye");
+    eyes.forEach((e) => e.click());
+    return eyes.length;
+  });
+  assert(toggled > 0, `the Parts panel exposes eye toggles (found ${toggled})`);
+  await sleep(600);
+  const hidden = await magentaFraction(page);
+  const hiddenSig = await frameSignature(page);
+  assert(hidden < on, `hiding Parts shrinks the cap (got ${hidden.toFixed(4)} vs ${on.toFixed(4)})`);
+  assert(hiddenSig.hash !== onSig.hash, "hiding Parts rebuilds the cap instead of leaving it stale");
+
+  await page.evaluate(() => {
+    document.querySelectorAll("#parts-body .part-eye").forEach((e) => e.click());
+  });
+  await sleep(600);
+  const restoredSig = await frameSignature(page);
+  assert(restoredSig.hash === onSig.hash, "restoring Parts rebuilds the identical cap");
+
+  await page.evaluate(() => document.body.style.removeProperty("--cad-face"));
+  await setPanelHidden(page, false);
+});
+
+/**
+ * V3 — the FE-mesh overlay toggle keeps a cap in every state (no regression
+ * from moving the overlay rebuild into `refreshModelFacesVisibility`).
+ * Overlay shown: the cap comes from the overlay boundary. Overlay hidden
+ * again: the cap comes back from the model faces.
+ */
+test("clip V3: the overlay toggle preserves the cap in both states", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await setPanelHidden(page, true);
+  await tagCapColour(page);
+
+  const facing = [0, 0, -1];
+  await post(page, clipView({ axis: "z", offsetFrac: 0 }, facing));
+  await sleep(CLIP_SETTLE);
+  const onModel = await magentaFraction(page);
+  assert(onModel > CAP_FLOOR, `the model clip is capped (got ${onModel.toFixed(4)})`);
+
+  await post(page, fixture("meshingResult"));
+  await sleep(700);
+  const onOverlay = await magentaFraction(page);
+  assert(onOverlay > CAP_FLOOR, `the overlay clip is capped too (got ${onOverlay.toFixed(4)})`);
+
+  await page.click("#meshing-toggle"); // hide the overlay in place; model faces return
+  await sleep(600);
+  const restored = await magentaFraction(page);
+  assert(restored > CAP_FLOOR, `the model cap returns after the overlay is hidden (got ${restored.toFixed(4)})`);
+
+  await page.evaluate(() => document.body.style.removeProperty("--cad-face"));
+  await setPanelHidden(page, false);
+});
+
 
 test("planes P1: a stored plane renders, and Use applies it as the clip", async (page) => {
   await populate(page);
