@@ -26,7 +26,7 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
-| Correctness | The view and saved state tell the same story | Clip visibility; save/reopen regression coverage; bounded clash work | Targeted tests catch the documented failure, including recovery paths |
+| Correctness | The view and saved state tell the same story | Bounded clash work (clip visibility and save/reopen coverage closed) | Targeted tests catch the documented failure, including recovery paths |
 | Everyday use | Less typing and fewer navigation steps | Zoom to selection; sidebar usability; named-plane profiles | Complete workflows on both a small part and a multi-body model |
 | Preparation and handoff | Repeatable meshing and review output | Mesh presets; drawing settings; batch export | Reopenable outputs with explicit settings and per-file results |
 | Exploration | Decide which kernel ideas deserve implementation | B-rep health first; then surface and boundary-layer probes | Analytic or independently checked results, with failure cases and timing |
@@ -36,12 +36,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 ### Tier 1 — Correctness and bounded daily-use improvements
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
-
-#### Save, reopen and recovery regression coverage (**M**, host + webview + MCP)
-
-- **Why next:** editable documents, source backups and the `bakedThrough` watermark already ship. Their critical join is source write → sidecar watermark → reload, and several documented interactive paths still lack end-to-end verification.
-- **Scope:** drive real B-rep and STL/OBJ/PLY saves through the custom editor; cover cancellation, second save, Save As, revert and hot-exit restoration. Test source-write failure and watermark-write failure separately, then define recovery from whichever partial state can actually occur.
-- **Done when:** reopening never double-applies a baked tail; cancelled/failed pre-write saves preserve bytes; Parts and annotations either resolve correctly or report loss; the saved history locks at the correct row. Use a real VS Code host for the source-write join, not only mocked messages.
 
 #### Bounded assembly interference checks (**S–M**, shared pipeline)
 

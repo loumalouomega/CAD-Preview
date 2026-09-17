@@ -101,11 +101,13 @@ The extension host is a Node.js process. These modules run there — never in th
 Entry point for VS Code extension activation.
 
 ```typescript
-export function activate(context: vscode.ExtensionContext): void
+export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | undefined
 export function deactivate(): void
 ```
 
-`activate` calls `CadPreviewProvider.register(context)`, then fires `maybeShowWhatsNew(context)` (see `src/whatsNew.ts` below) without awaiting it — a fire-and-forget check that must never delay or block activation. `deactivate` is a no-op (resources are disposed with the webview panels via VS Code's disposable system).
+`activate` calls `CadPreviewProvider.register(context)`, then fires `maybeShowWhatsNew(context)` (see `src/whatsNew.ts` below) without awaiting it — a fire-and-forget check that must never delay or block activation. `deactivate` is a no-op (resources are disposed with the webview panels via VS Code's disposable system). In production `activate` returns `undefined` exactly as before; under `ExtensionMode.Test` it returns the `CadPreviewTestApi` seam below.
+
+**Test-only API (`ExtensionMode.Test` only, never a public surface).** `onDidPostMessage` observes the six external-change watchers' fire-and-forget posts; `saveDocument`/`revertDocument` invoke the real `saveCustomDocument`/`revertCustomDocument` joins (the suite cannot push ops through the webview, so without this the Ctrl+S path would be uncovered — and a dirty tab is marked via `markDirtyDocument`, which also keeps VS Code from auto-closing a clean tab on the save's rename-overwrite); `saveDocumentAs` invokes the real `saveCustomDocumentAs` copy join (the workbench's own Save As dialog is native UI the modal stubs cannot intercept); `setExportMeshStub` substitutes bytes for the webview's `exportMesh` round trip (the integration host has no WebGL scene to serialize — the round trip itself is covered by `test:webview`'s mesh-exporter cases). See `test/integration/suite/index.ts` (roadmap "Save, reopen and recovery regression coverage", closed).
 
 ---
 
@@ -556,7 +558,7 @@ class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocument> {
 
 **`openCustomDocument(uri)`** — Creates a lightweight `CadDocument` wrapper around the URI. Honors `openContext.backupId` (hot-exit restore — fails open on a corrupt snapshot). All mutable state lives in the per-document `resolveCustomEditor` closure, reached by the save/revert routines via the `documentSavers` map.
 
-**`saveCustomDocument(document)`** (Tier 0 Phase 2) — Ctrl+S / Save All / auto-save entry point. Flushes the sidecars (part of the save, not the whole of it), then bakes any unbaked tail for a B-rep source that can bake it — via the shared `bakeTailToSource("first")` the Export-menu save-in-place also uses (confirmed only until the session's first bake; afterwards the dirty dot + explicit keypress is the confirmation). VS Code clears dirty on completion. Mesh/meshio/CAD-text sources flush sidecars only.
+**`saveCustomDocument(document)`** (Tier 0 Phase 2) — Ctrl+S / Save All / auto-save entry point. Flushes the sidecars (part of the save, not the whole of it), then bakes any unbaked tail for a B-rep source that can bake it — via the shared `bakeTailToSource("first")` the Export-menu save-in-place also uses (confirmed only until the session's first bake; afterwards the dirty dot + explicit keypress is the confirmation) — or `bakeMeshToSource("first")` for STL/OBJ/PLY (Tier 0 Phase 3). VS Code clears dirty on completion. Meshio/CAD-text sources flush sidecars only. Both bake paths pre-check `assertNotDirty` on the edits sidecar (a dirty sidecar fails the save before any write or modal), and roll the source back to its pre-save bytes when the watermark write throws after the source was already rewritten — so the pair agrees again instead of double-applying on reopen; the documented recovery is simply saving again (roadmap "Save, reopen and recovery regression coverage", closed).
 
 **`saveCustomDocumentAs(document, destination)`** — same-format copy, not a bake: source bytes + present sidecars to `destination` (watermark verbatim). No format conversion (that's Export).
 

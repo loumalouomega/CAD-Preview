@@ -3188,6 +3188,67 @@ try {
   );
   const saveAgain = await call("save_model", { path: saveModel });
   assert(saveAgain.baked === 0, "save_model with an empty tail succeeds with baked: 0 and no rewrite");
+  // A second NON-empty save advances the watermark without rotating .bak.
+  const saveVolume2 = (await call("get_mass_properties", { path: saveModel })).volume;
+  await call("apply_edit_ops", {
+    path: saveModel,
+    ops: [{ op: "addBox", center: [-50, 0, 0], size: [3, 3, 3] }],
+  });
+  const onceSavedBytes = fs.readFileSync(saveModel);
+  const saveModelResult2 = await call("save_model", { path: saveModel });
+  assert(saveModelResult2.baked === 1, `a second save_model bakes the new tail (got baked=${saveModelResult2.baked})`);
+  const saveState2 = await call("get_state", { path: saveModel });
+  assert(
+    saveState2.bakedThrough === 2 && saveState2.edits.length === 2,
+    `the second save advances the watermark to 2 (got bakedThrough=${saveState2.bakedThrough}, edits=${saveState2.edits.length})`
+  );
+  // Headless `save_model` rewrites `.bak` on every call (unlike the
+  // interactive one-deep backup): after the second save it holds the
+  // once-saved bytes, so a third save could still rewind exactly one step.
+  assert(
+    fs.readFileSync(`${saveModel}.bak`).equals(onceSavedBytes),
+    ".bak holds the once-saved bytes after the second save (one-step rewind, not pristine)"
+  );
+  const saveReloadedVolume2 = (await call("get_mass_properties", { path: saveModel })).volume;
+  assert(
+    Math.abs(saveReloadedVolume2 / (saveVolume2 + 27) - 1) < 1e-6,
+    `twice-saved file's volume is the once-saved volume plus the 3x3x3 box: ${saveReloadedVolume2.toFixed(6)} vs ${(saveVolume2 + 27).toFixed(6)}`
+  );
+
+  // Save-time Part/annotation rebind: seed both on the new box, save, and
+  // confirm the ids track the baked file instead of dropping or warning.
+  const saveRebindModel = path.join(dir, "bull-for-save-rebind.stp");
+  fs.copyFileSync(FIXTURE, saveRebindModel);
+  await call("apply_edit_ops", {
+    path: saveRebindModel,
+    ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }],
+  });
+  await call("set_part", { path: saveRebindModel, name: "NewBox", volumes: ["solid-1"] });
+  await call("pin_annotation", {
+    path: saveRebindModel,
+    tool: "distance",
+    text: "2 mm",
+    anchorPoint: [50, 0, 0],
+    linePoints: [[49, 0, 0], [51, 0, 0]],
+    volumes: ["solid-1"],
+    surfaces: [],
+    lines: [],
+    points: [],
+  });
+  const rebindSave = await call("save_model", { path: saveRebindModel });
+  assert(
+    !rebindSave.warnings.some((w) => /Could not rebind/.test(w)),
+    "saving with Parts/annotations reports no rebind failure on an identical-shape save"
+  );
+  const rebindState = await call("get_state", { path: saveRebindModel });
+  assert(
+    (rebindState.parts.find((p) => p.name === "NewBox")?.volumes ?? []).join(",") === "solid-1",
+    "the Part still references solid-1 after the save"
+  );
+  assert(
+    (rebindState.annotations[0]?.volumes ?? []).join(",") === "solid-1",
+    "the annotation anchor survives the save"
+  );
   // Refusal happens before any write, so the read-only fixture path is safe.
   const stlSaveRefused = await callTolerant("save_model", { path: path.join(ROOT, "examples", "STL", "cube.stl") });
   assert(
