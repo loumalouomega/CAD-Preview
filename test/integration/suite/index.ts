@@ -21,6 +21,17 @@
  * copies its fixture into a fresh temp dir first, mirroring
  * `scripts/mcp-smoke/run.mjs`'s discipline, and the CAD source is byte-compared
  * afterwards to hold this codebase's read-only invariant.
+ *
+ * **What is still F5-only** (narrower than it was — the quick-pick/save-dialog
+ * chains above are now covered): the Export command's mesh targets end to end
+ * through the save dialog (the serialization itself IS covered by the webview
+ * harness; the host's save/write half is covered for B-rep targets — but the
+ * join of the two, in one VS Code, is not); FE-mesh export for mesh-format
+ * sources (the command covers B-rep sources; a mesh source's geometry lives in
+ * the webview); whether the render looks *right* (framing invariants catch a
+ * blank/off-screen/full-bleed viewport, not shading/colour); and anything
+ * needing a real user gesture through VS Code chrome (menus, drag-and-drop,
+ * the orientation gizmo).
  */
 import * as fs from "fs";
 import * as os from "os";
@@ -29,10 +40,103 @@ import * as vscode from "vscode";
 import { installModalStubs, pick, save, cancel, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
 import { writePlanes } from "../../../src/planesStore";
+import { writeCustomBackup, restoreCustomBackup } from "../../../src/customBackup";
 import { ModelsTreeDataProvider } from "../../../src/modelsView";
 
 const EXTENSION_ID = "kratos-multiphysics.cad-preview";
 const VIEW_TYPE = "cad-preview.mesh";
+
+/**
+ * The `ExtensionMode.Test` seam (`src/extension.ts`) — the only way to reach
+ * `saveCustomDocument`/`revertCustomDocument` joins from the host side. The
+ * suite cannot push ops through the webview, so without this the Ctrl+S path
+ * (as opposed to the Export-menu path) would be entirely uncovered.
+ */
+interface SaveTestApi {
+  onDidPostMessage?: vscode.Event<{ type: string }>;
+  saveDocument?: (uri: vscode.Uri) => Promise<void>;
+  revertDocument?: (uri: vscode.Uri) => Promise<void>;
+  markDirtyDocument?: (uri: vscode.Uri) => void;
+  setExportMeshStub?: (stub: ((format: string) => Uint8Array | undefined) | undefined) => void;
+}
+
+async function saveTestApi(): Promise<SaveTestApi | undefined> {
+  // The activation case normally runs first, but a filtered run
+  // (`/tmp/cad-preview-test-only`) may reach here without it — activate
+  // explicitly so the seam is available either way.
+  const ext = vscode.extensions.getExtension(EXTENSION_ID);
+  if (ext && !ext.isActive) await ext.activate();
+  return ext?.exports as SaveTestApi | undefined;
+}
+
+/** Smallest x-coordinate across every mesh of the last `geometry` post seen. */
+function minXOfPosts(seen: Array<{ type: string; meshes?: Array<{ positions?: string }> }>): number | null {
+  const last = [...seen].reverse().find((m) => m.type === "geometry" && Array.isArray(m.meshes));
+  if (!last?.meshes) return null;
+  let min = Infinity;
+  for (const mesh of last.meshes) {
+    if (!mesh.positions) continue;
+    const buf = Buffer.from(mesh.positions, "base64");
+    const arr = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+    for (let i = 0; i < arr.length; i += 3) if (arr[i] < min) min = arr[i];
+  }
+  return min === Infinity ? null : min;
+}
+
+/** Opens a document with the post observer attached from before the open. */
+async function openAndWaitGeometry(
+  file: string,
+  api: SaveTestApi | undefined,
+  seen: Array<{ type: string; meshes?: Array<{ positions?: string }> }>
+): Promise<boolean> {
+  const sub = api?.onDidPostMessage?.((m) => {
+    seen.push(m as { type: string });
+  });
+  try {
+    if (!(await openDocument(file))) return false;
+    return await waitFor(() => seen.some((m) => m.type === "geometry"), 60000);
+  } finally {
+    sub?.dispose();
+  }
+}
+
+function readSidecarJson(file: string): { ops?: unknown[]; bakedThrough?: unknown } {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Marks the open CAD document dirty through the Test seam — what a webview
+ * `editsChanged` post does in production and the suite cannot do any other
+ * way. Beyond fidelity, a dirty tab is LOAD-BEARING for every save test:
+ * the save's temp-sibling rename-overwrite momentarily reads as a file
+ * delete, and VS Code auto-closes a *clean* tab on delete — the panel dies
+ * mid-save and every later post throws "Webview is disposed". A real save
+ * always runs on a dirty tab, so it never meets that path.
+ */
+function markDirty(api: SaveTestApi | undefined, file: string): void {
+  api?.markDirtyDocument?.(vscode.Uri.file(file));
+}
+
+/**
+ * Clears VS Code's dirty dot after a seam-driven save (which bypasses the
+ * platform save flow that would clear it): a real save that bakes nothing
+ * because the tail is empty. Without this, `closeAll` prompts to save.
+ * Guarded on an active editor — with nothing open the platform save throws
+ * "No custom document found", which is harness noise, not a product signal.
+ */
+async function clearDirtyViaNoopSave(): Promise<void> {
+  if (!vscode.window.activeTextEditor && !vscode.window.tabGroups.activeTabGroup.activeTab) return;
+  try {
+    await vscode.commands.executeCommand("workbench.action.files.save");
+  } catch {
+    /* nothing dirty or nothing open — either way the dot is clear */
+  }
+  await sleep(500);
+}
 
 let failures = 0;
 let checks = 0;
@@ -54,6 +158,7 @@ const ROOT = path.resolve(__dirname, "..", "..", "..");
 const GID_FIXTURE = path.join(ROOT, "examples", "GiD", "two-tets.post.msh");
 const GID_SIBLING = path.join(ROOT, "examples", "GiD", "two-tets.post.res");
 const STEP_FIXTURE = path.join(ROOT, "examples", "STP", "block.stp");
+const STL_FIXTURE = path.join(ROOT, "examples", "STL", "cube.stl");
 
 const tempDirs: string[] = [];
 function tempDir(): string {
@@ -264,6 +369,9 @@ test("Save in place bakes ops into the source with .bak + watermark", async () =
   );
   const before = fs.readFileSync(staged);
   assert(await openDocument(staged), "the STEP fixture opens with a sidecar op");
+  // Dirty like production (see `markDirty`): keeps the tab alive across the
+  // save's rename-overwrite and the post-save reload's posts deliverable.
+  markDirty(await saveTestApi(), staged);
   const record = await withModals([pick("STEP"), pick("Save in place")], async () => {
     await vscode.commands.executeCommand("cad-preview.export");
     const settled = await waitFor(() => {
@@ -290,6 +398,635 @@ test("Save in place bakes ops into the source with .bak + watermark", async () =
     sidecar.bakedThrough === 1 && sidecar.ops.length === 1,
     `the sidecar keeps the full list with the watermark (got bakedThrough=${sidecar.bakedThrough}, ops=${sidecar.ops?.length})`
   );
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+/**
+ * The Ctrl+S join (`saveCustomDocument` → `savers.save()`), as opposed to the
+ * Export-menu path above. Same kernel bake, `.bak` and watermark — reached
+ * through the Test seam because the suite cannot dirty a document any other
+ * way (dirty fires only on webview `editsChanged`, and nothing here can post
+ * into the webview).
+ */
+test("Ctrl+S bakes through the same join as Export save-in-place", async () => {
+  const api = await saveTestApi();
+  assert(!!api?.saveDocument, "the test-only saveDocument seam is exposed");
+  if (!api?.saveDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    })
+  );
+  const before = fs.readFileSync(staged);
+  const seen: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens and posts geometry");
+  markDirty(api, staged);
+
+  const uri = vscode.Uri.file(staged);
+  const record = await withModals([pick("Save in place")], async () => {
+    await api.saveDocument!(uri);
+    const settled = await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1);
+    assert(settled, "the sidecar watermark lands after Ctrl+S");
+  });
+  assert(
+    record.warnings.length === 1 && /re-emitted/.test(record.warnings[0]?.message ?? ""),
+    "the first Ctrl+S still confirms with the data-loss modal"
+  );
+  assert(!fs.readFileSync(staged).equals(before), "the source file itself is rewritten");
+  assert(fs.existsSync(`${staged}.bak`) && fs.readFileSync(`${staged}.bak`).equals(before), "a one-deep .bak holds the pre-save bytes");
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+test("Save modal cancellation writes nothing", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    })
+  );
+  const before = fs.readFileSync(staged);
+  const seen: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens");
+  markDirty(api, staged);
+
+  const record = await withModals([cancel()], async () => {
+    await api.saveDocument!(vscode.Uri.file(staged));
+    await sleep(1500);
+  });
+  assert(record.warnings.length === 1, "the confirmation modal was shown before cancelling");
+  assert(fs.readFileSync(staged).equals(before), "a cancelled save leaves the source byte-identical");
+  // Compared parsed, not byte-for-byte: `saveDocumentSource` flushes the
+  // sidecars (normalizing JSON formatting) BEFORE the modal, so the file's
+  // bytes may be re-serialized even though nothing was baked.
+  const sidecarAfterCancel = readSidecarJson(`${staged}.edits.json`);
+  assert(
+    sidecarAfterCancel.bakedThrough !== 1 && (sidecarAfterCancel.ops as unknown[])?.length === 1,
+    "a cancelled save advances no watermark and drops no op"
+  );
+  assert(!fs.existsSync(`${staged}.bak`), "a cancelled save creates no .bak");
+  // Still dirty (nothing baked): revert-and-close discards the dot without a save prompt.
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+  await sleep(500);
+  await closeAll();
+});
+
+test("A second save advances the watermark without rotating .bak or re-asking", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  const op1 = { op: "translate", targets: ["solid-0"], vec: [5, 0, 0] };
+  fs.writeFileSync(`${staged}.edits.json`, JSON.stringify({ version: 1, source: path.basename(staged), ops: [op1] }));
+  const seen: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens");
+  markDirty(api, staged);
+  const uri = vscode.Uri.file(staged);
+
+  await withModals([pick("Save in place")], async () => {
+    await api.saveDocument!(uri);
+    assert(await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1), "the first save lands");
+  });
+  const bakAfterFirst = fs.readFileSync(`${staged}.bak`);
+  const sourceAfterFirst = fs.readFileSync(staged);
+
+  // A new op arrives the way an MCP agent's would — an external sidecar write
+  // the watcher reconciles (the suite cannot push ops through the webview).
+  seen.length = 0;
+  const sub = api.onDidPostMessage?.((m) =>
+    void seen.push(m.type === "status" ? (m as unknown as { text: string }).text : m.type)
+  );
+  try {
+    const op2 = { op: "translate", targets: ["solid-0"], vec: [0, 5, 0] };
+    fs.writeFileSync(
+      `${staged}.edits.json`,
+      JSON.stringify({ version: 1, source: path.basename(staged), ops: [op1, op2], bakedThrough: 1 })
+    );
+    assert(
+      await waitFor(() => seen.includes("Edits updated externally"), 15000),
+      "the external op is reconciled before the second save"
+    );
+  } finally {
+    sub?.dispose();
+  }
+
+  // No modal scripted: the second save in a session must not re-confirm, and
+  // an unscripted modal would throw via the stub — so reaching the watermark
+  // also proves the suppression.
+  await withModals([], async () => {
+    await api.saveDocument!(uri);
+    assert(await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 2, 60000), "the second save advances the watermark to 2");
+  });
+  const sidecar = readSidecarJson(`${staged}.edits.json`);
+  assert((sidecar.ops as unknown[])?.length === 2, "the sidecar keeps both ops after the second save");
+  assert(fs.readFileSync(`${staged}.bak`).equals(bakAfterFirst), ".bak stays one-deep (pre-first-save bytes)");
+  assert(!fs.readFileSync(staged).equals(sourceAfterFirst), "the source is re-baked with the second op");
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+test("Reopening a save is stable; a stale watermark double-applies (sensitivity control)", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  const op1 = { op: "translate", targets: ["solid-0"], vec: [5, 0, 0] };
+  fs.writeFileSync(`${staged}.edits.json`, JSON.stringify({ version: 1, source: path.basename(staged), ops: [op1] }));
+  const uri = vscode.Uri.file(staged);
+
+  let seen: Array<{ type: string; meshes?: Array<{ positions?: string }> }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen), "the STEP fixture opens");
+  markDirty(api, staged);
+  await withModals([pick("Save in place")], async () => {
+    await api.saveDocument!(uri);
+    assert(await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1), "the save lands");
+  });
+  await sleep(1500); // let the post-save reload's geometry post land
+  const g1 = minXOfPosts(seen);
+  assert(g1 !== null, "a post-save geometry baseline is recorded");
+  await clearDirtyViaNoopSave();
+  await closeAll();
+
+  // Clean reopen: the baked tail must NOT replay again.
+  seen = [];
+  assert(await openAndWaitGeometry(staged, api, seen), "the saved file reopens");
+  await sleep(1500);
+  const g2 = minXOfPosts(seen);
+  assert(g1 !== null && g2 !== null && Math.abs(g2 - g1) < 1e-6, `reopening is geometrically stable (Δx ${g1} → ${g2})`);
+  await closeAll();
+
+  // Negative control: forge a stale watermark and confirm this harness CAN
+  // see the double-apply — otherwise the stability assertion above is vacuous.
+  const forged = JSON.parse(fs.readFileSync(`${staged}.edits.json`, "utf8"));
+  forged.bakedThrough = 0;
+  fs.writeFileSync(`${staged}.edits.json`, JSON.stringify(forged));
+  seen = [];
+  assert(await openAndWaitGeometry(staged, api, seen), "the forged-watermark file reopens");
+  await sleep(1500);
+  const g3 = minXOfPosts(seen);
+  assert(
+    g1 !== null && g3 !== null && g3 - g1 > 4 && g3 - g1 < 6,
+    `a stale watermark replays the baked +5 op a second time (Δx ${g1} → ${g3})`
+  );
+  await closeAll();
+
+  // Restore the true watermark: stability returns, proving the file itself
+  // was never corrupted by the experiment.
+  forged.bakedThrough = 1;
+  fs.writeFileSync(`${staged}.edits.json`, JSON.stringify(forged));
+  seen = [];
+  assert(await openAndWaitGeometry(staged, api, seen), "the repaired file reopens");
+  await sleep(1500);
+  const g4 = minXOfPosts(seen);
+  assert(g1 !== null && g4 !== null && Math.abs(g4 - g1) < 1e-6, "the repaired file is stable again");
+  await closeAll();
+});
+
+test("Save As copies source and sidecars; cross-format is refused", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocumentAs) return;
+
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+      bakedThrough: 1,
+    })
+  );
+  fs.writeFileSync(
+    `${staged}.parts.json`,
+    JSON.stringify({ version: 1, source: path.basename(staged), parts: [] })
+  );
+  assert(await openDocument(staged), "the STEP fixture opens");
+
+  // The workbench's own Save As dialog is native UI the modal stubs cannot
+  // intercept, so the Test seam calls the copy join directly — the dialog
+  // itself is not what's under test here.
+  const dest = path.join(path.dirname(staged), "copy.stp");
+  await api.saveDocumentAs(vscode.Uri.file(staged), vscode.Uri.file(dest));
+  assert(fs.readFileSync(dest).equals(fs.readFileSync(staged)), "Save As copies the source bytes verbatim");
+  assert(fs.existsSync(`${dest}.edits.json`), "the edits sidecar lands beside the destination");
+  const copied = readSidecarJson(`${dest}.edits.json`);
+  assert(copied.bakedThrough === 1 && (copied.ops as unknown[])?.length === 1, "the copy keeps the watermark verbatim");
+  assert(fs.existsSync(`${dest}.parts.json`), "present sidecars copy alongside");
+
+  const crossDest = path.join(path.dirname(staged), "copy.stl");
+  let threw = false;
+  try {
+    await api.saveDocumentAs(vscode.Uri.file(staged), vscode.Uri.file(crossDest));
+  } catch (err) {
+    threw = /keeps the source format/.test((err as Error).message);
+  }
+  assert(!fs.existsSync(crossDest), "a cross-format Save As writes nothing");
+  assert(threw, "a cross-format Save As fails loudly naming Export instead");
+  await closeAll();
+});
+
+test("Revert drops the op list to the save point", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument || !api?.revertDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  const op1 = { op: "translate", targets: ["solid-0"], vec: [5, 0, 0] };
+  fs.writeFileSync(`${staged}.edits.json`, JSON.stringify({ version: 1, source: path.basename(staged), ops: [op1] }));
+  const seen: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens");
+  markDirty(api, staged);
+  const uri = vscode.Uri.file(staged);
+
+  await withModals([pick("Save in place")], async () => {
+    await api.saveDocument!(uri);
+    assert(await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1), "the save lands");
+  });
+
+  // An unbaked op arrives externally, then File: Revert File must drop it.
+  seen.length = 0;
+  const sub = api.onDidPostMessage?.((m) =>
+    void seen.push(m.type === "status" ? (m as unknown as { text: string }).text : m.type)
+  );
+  try {
+    const op2 = { op: "translate", targets: ["solid-0"], vec: [0, 5, 0] };
+    fs.writeFileSync(
+      `${staged}.edits.json`,
+      JSON.stringify({ version: 1, source: path.basename(staged), ops: [op1, op2], bakedThrough: 1 })
+    );
+    assert(await waitFor(() => seen.includes("Edits updated externally"), 15000), "the external op is reconciled");
+  } finally {
+    sub?.dispose();
+  }
+
+  seen.length = 0;
+  const sub2 = api.onDidPostMessage?.((m) =>
+    void seen.push(m.type === "status" ? (m as unknown as { text: string }).text : m.type)
+  );
+  try {
+    await api.revertDocument!(uri);
+    const reverted = await waitFor(() => {
+      const s = readSidecarJson(`${staged}.edits.json`);
+      return s.bakedThrough === 1 && (s.ops as unknown[])?.length === 1;
+    });
+    assert(reverted, "revert truncates the sidecar to the watermark");
+    assert(await waitFor(() => seen.includes("geometry"), 30000), "revert re-tessellates the saved state");
+    assert(seen.includes("Reverted to the last save."), "revert reports itself on the status line");
+  } finally {
+    sub2?.dispose();
+  }
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+test("Hot-exit backup round-trips through the real filesystem and reopens", async () => {
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    })
+  );
+  const sourceUri = vscode.Uri.file(staged);
+  const dest = vscode.Uri.file(path.join(tempDir(), "backup"));
+  const backup = await writeCustomBackup(sourceUri, [vscode.Uri.file(`${staged}.edits.json`)], dest);
+  assert(!!backup.id, "a backup snapshot is written");
+
+  // Mutate past the snapshot (an unsaved tail plus a dirty sidecar edit).
+  fs.writeFileSync(staged, Buffer.from("MUTATED SOURCE — MUST BE RESTORED OVER"));
+  fs.writeFileSync(`${staged}.edits.json`, JSON.stringify({ version: 1, source: "x", ops: [] }));
+  await restoreCustomBackup(backup.id, sourceUri);
+  assert(fs.readFileSync(staged).toString("utf8").startsWith("ISO-10303-21"), "restore brings back the real STEP source");
+  const restored = readSidecarJson(`${staged}.edits.json`);
+  assert((restored.ops as unknown[])?.length === 1, "restore brings back the snapshotted sidecar");
+  backup.delete();
+
+  const api = await saveTestApi();
+  const seen: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the restored file opens and posts geometry");
+  await closeAll();
+});
+
+test("Source-write failure preserves bytes and advances nothing", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    })
+  );
+  const before = fs.readFileSync(staged);
+  const seen: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens");
+  markDirty(api, staged);
+  const uri = vscode.Uri.file(staged);
+
+  // Fail exactly the temp-sibling write: `vscode.workspace.fs` is a frozen
+  // API object (assignment throws), so the fault is injected with the real
+  // filesystem instead — a directory where the temp file would land makes
+  // `writeFile` fail, and every other path still works.
+  const tmpPath = path.join(path.dirname(staged), `${path.basename(staged, ".stp")}.save-tmp.step`);
+  fs.mkdirSync(tmpPath);
+  const errors: string[] = [];
+  const sub = api.onDidPostMessage?.((m) => {
+    if (m.type === "error") errors.push((m as { message?: string }).message ?? "");
+  });
+  try {
+    await withModals([pick("Save in place")], async () => {
+      await api.saveDocument!(uri);
+      await sleep(1500);
+    });
+  } finally {
+    fs.rmSync(tmpPath, { recursive: true, force: true });
+    sub?.dispose();
+  }
+  assert(fs.readFileSync(staged).equals(before), "a failed source write leaves the source byte-identical");
+  assert(readSidecarJson(`${staged}.edits.json`).bakedThrough !== 1, "a failed source write advances no watermark");
+  assert(fs.existsSync(`${staged}.bak`) && fs.readFileSync(`${staged}.bak`).equals(before), ".bak (written before the temp file) still holds the pre-save bytes");
+  assert(errors.some((e) => /Save in place failed/.test(e)), "the failure surfaces instead of reading as a save");
+  // Still dirty (nothing baked): revert-and-close discards the dot without a save prompt.
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+  await sleep(500);
+  await closeAll();
+});
+
+test("Watermark-write failure rolls the source back; retry then succeeds", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    })
+  );
+  const before = fs.readFileSync(staged);
+  const seen: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens");
+  markDirty(api, staged);
+  const uri = vscode.Uri.file(staged);
+
+  // Fail exactly the watermark write: the source IS rewritten first, so
+  // without the rollback this would leave a baked file with a stale sidecar.
+  // `vscode.workspace.fs` is frozen (assignment throws), so the fault is
+  // injected with the real filesystem: a directory where the sidecar lives
+  // makes its `writeFile` fail. Note the save's own `flushSidecars()` also
+  // fails on it first — that posts "Save failed" but does not stop the bake,
+  // which is exactly the partial state under test.
+  const sidecarPath = `${staged}.edits.json`;
+  const sidecarContent = fs.readFileSync(sidecarPath);
+  fs.rmSync(sidecarPath);
+  fs.mkdirSync(sidecarPath);
+  const errors: string[] = [];
+  const reconciles: string[] = [];
+  const sub = api.onDidPostMessage?.((m) => {
+    if (m.type === "error") errors.push((m as { message?: string }).message ?? "");
+    if (m.type === "status") reconciles.push((m as unknown as { text: string }).text);
+  });
+  try {
+    await withModals([pick("Save in place")], async () => {
+      await api.saveDocument!(uri);
+      await sleep(1500);
+    });
+  } finally {
+    fs.rmSync(sidecarPath, { recursive: true, force: true });
+    fs.writeFileSync(sidecarPath, sidecarContent);
+    sub?.dispose();
+  }
+  assert(fs.readFileSync(staged).equals(before), "the source is rolled back to its pre-save bytes");
+  assert(readSidecarJson(sidecarPath).bakedThrough !== 1, "the watermark stays down after the rollback");
+  assert(
+    errors.some((e) => /watermark write failed/.test(e) && /restored to its pre-save bytes/.test(e)),
+    "the rollback reports itself loudly instead of claiming a save"
+  );
+
+  // While the sidecar was a directory, the edits watcher read it as
+  // unreadable — and `readEdits` degrades an unreadable file to an EMPTY op
+  // list, so the session's in-memory ops were wiped (a retry right now would
+  // see an empty tail and correctly no-op). Restoring the file re-fires the
+  // watcher; the retry must wait for that reconcile first. This is genuine
+  // coverage of recovery-through-reconciliation, not test choreography.
+  const reconciledBefore = reconciles.filter((t) => t === "Edits updated externally").length;
+  const sub2 = api.onDidPostMessage?.((m) => {
+    if (m.type === "status" && (m as unknown as { text: string }).text === "Edits updated externally") reconciles.push("Edits updated externally");
+  });
+  try {
+    // Best-effort (no assert): if the wipe happened, this restores the ops
+    // before the retry; if it didn't, the retry works immediately and the
+    // final watermark assertion below discriminates either way.
+    await waitFor(
+      () => reconciles.filter((t) => t === "Edits updated externally").length > reconciledBefore,
+      15000
+    );
+  } finally {
+    sub2?.dispose();
+  }
+
+  // The documented recovery is simply saving again: no modal (the `.bak`
+  // already exists from the failed attempt), watermark lands, source bakes.
+  await withModals([], async () => {
+    await api.saveDocument!(uri);
+    assert(await waitFor(() => readSidecarJson(sidecarPath).bakedThrough === 1, 60000), "retrying the save after the rollback succeeds");
+  });
+  assert(!fs.readFileSync(staged).equals(before), "the retried save rewrites the source");
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+test("A dirty edits sidecar fails the save before any write or modal", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    })
+  );
+  const before = fs.readFileSync(staged);
+  const seen: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens");
+  markDirty(api, staged);
+
+  const sidecar = vscode.Uri.file(`${staged}.edits.json`);
+  const doc = await vscode.workspace.openTextDocument(sidecar);
+  const editor = await vscode.window.showTextDocument(doc);
+  await editor.edit((e) => e.insert(new vscode.Position(0, 0), " "));
+  assert(doc.isDirty, "the edits sidecar is open with unsaved changes");
+
+  const errors: string[] = [];
+  const sub = api.onDidPostMessage?.((m) => {
+    if (m.type === "error") errors.push((m as { message?: string }).message ?? "");
+  });
+  // No modal scripted: the pre-check must trip before the confirmation, and
+  // an unscripted modal would throw via the stub.
+  const record = await withModals([], async () => {
+    await api.saveDocument!(vscode.Uri.file(staged));
+    await sleep(1500);
+  });
+  sub?.dispose();
+  assert(record.warnings.length === 0, "no confirmation modal opens when the sidecar is dirty");
+  assert(fs.readFileSync(staged).equals(before), "the source is untouched");
+  assert(!fs.existsSync(`${staged}.bak`), "no .bak is created for a pre-check refusal");
+  assert(errors.some((e) => /unsaved changes/i.test(e)), "the refusal names the dirty sidecar");
+
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+  await sleep(300);
+  await withModals([pick("Save in place")], async () => {
+    await api.saveDocument!(vscode.Uri.file(staged));
+    assert(await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1, 60000), "the save goes through once the buffer is clean");
+  });
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+test("Save-time rebind keeps Part and annotation ids on a translated save", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument) return;
+
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    })
+  );
+  fs.writeFileSync(
+    `${staged}.parts.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      parts: [{ name: "Body", color: "#ff0000", volumes: ["solid-0"], surfaces: [], lines: [], points: [] }],
+    })
+  );
+  fs.writeFileSync(
+    `${staged}.annotations.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      annotations: [
+        {
+          id: "ann-1",
+          tool: "distance",
+          text: "5 mm",
+          anchorPoint: [0, 0, 0],
+          linePoints: [],
+          volumes: ["solid-0"],
+          surfaces: [],
+          lines: [],
+          points: [],
+        },
+      ],
+    })
+  );
+  const seen: Array<{ type: string }> = [];
+  const errors: string[] = [];
+  assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens");
+  markDirty(api, staged);
+  const sub = api.onDidPostMessage?.((m) => {
+    if (m.type === "error") errors.push((m as { message?: string }).message ?? "");
+  });
+  try {
+    await withModals([pick("Save in place")], async () => {
+      await api.saveDocument!(vscode.Uri.file(staged));
+      assert(await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1, 60000), "the save lands");
+    });
+    await sleep(2000); // the two-byte rebind runs after the watermark write
+  } finally {
+    sub?.dispose();
+  }
+  const parts = JSON.parse(fs.readFileSync(`${staged}.parts.json`, "utf8"));
+  assert(
+    parts.parts?.[0]?.volumes?.join(",") === "solid-0",
+    `the Part still references solid-0 after the save (got ${JSON.stringify(parts.parts?.[0]?.volumes)})`
+  );
+  const annotations = JSON.parse(fs.readFileSync(`${staged}.annotations.json`, "utf8"));
+  assert(
+    annotations.annotations?.[0]?.volumes?.join(",") === "solid-0",
+    "the annotation anchor survives the save"
+  );
+  assert(!errors.some((e) => /Could not rebind/.test(e)), "no rebind-failure warning is posted for an identical-shape save");
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+test("Mesh save-in-place (STL) bakes with .bak + watermark; second save is a no-op", async () => {
+  const api = await saveTestApi();
+  if (!api?.saveDocument || !api?.setExportMeshStub) return;
+
+  const staged = stage(STL_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "translate", targets: ["node-0"], vec: [5, 0, 0] }],
+    })
+  );
+  const before = fs.readFileSync(staged);
+  const stubBytes = fs.readFileSync(STL_FIXTURE);
+  api.setExportMeshStub(() => stubBytes);
+  const seen: Array<{ type: string; bakedThrough?: number }> = [];
+  const sub = api.onDidPostMessage?.((m) => void seen.push(m as never));
+  try {
+    // Mesh sources post `loadUrl`, never `geometry` (see `loadModel`'s route
+    // branch) — so this waits for the tab plus sidecar hydration, not a
+    // geometry post. The stub covers the serialization the harness cannot
+    // reach (no code here can answer a webview `exportMesh` round trip).
+    assert(await openDocument(staged), "the STL fixture opens");
+    await sleep(4000);
+    markDirty(api, staged);
+    // Tier 0 Phase 3: a mesh source offers its OWN format first, like B-rep.
+    const record = await withModals([pick("STL"), pick("Save in place")], async () => {
+      await vscode.commands.executeCommand("cad-preview.export");
+      assert(await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1, 60000), "the mesh watermark lands");
+    });
+    const offered = record.quickPicks[0]?.labels ?? [];
+    assert(offered[0] === "STL", `the source's own mesh format leads the quick-pick (offered ${JSON.stringify(offered)})`);
+    assert(record.saveDialogs.length === 0, "mesh save-in-place shows no save dialog");
+    assert(fs.readFileSync(staged).equals(stubBytes), "the source is replaced by the serialized bytes");
+    assert(fs.existsSync(`${staged}.bak`) && fs.readFileSync(`${staged}.bak`).equals(before), "a one-deep .bak holds the pre-save bytes");
+    const editsPost = [...seen].reverse().find((m) => m.type === "edits");
+    assert(editsPost?.bakedThrough === 1, "the webview is told the new save point so its replay slices the tail");
+
+    // Empty tail: no modal (unscripted would throw), no rewrite.
+    const savedOnce = fs.readFileSync(staged);
+    await withModals([], async () => {
+      await api.saveDocument!(vscode.Uri.file(staged));
+      await sleep(1500);
+    });
+    assert(fs.readFileSync(staged).equals(savedOnce), "a second save with an empty tail rewrites nothing");
+  } finally {
+    sub?.dispose();
+    api.setExportMeshStub(undefined);
+  }
+  await clearDirtyViaNoopSave();
   await closeAll();
 });
 
@@ -724,7 +1461,19 @@ test("Models view lists workspace CAD files, skips the rest, and opens on click"
   await closeAll();
 });
 
-for (const c of CASES) {
+  // `/tmp/cad-preview-test-only` (a substring) runs only matching cases —
+  // iterating on one kernel-slow case without paying for the whole suite
+  // each time. The launcher does not forward env into the test VS Code, so a
+  // file (written from the shell before spawning) is the channel. Absent file
+  // runs everything; delete it afterwards.
+  let only: string | undefined;
+  try {
+    only = fs.readFileSync("/tmp/cad-preview-test-only", "utf8").trim() || undefined;
+  } catch {
+    only = undefined;
+  }
+  for (const c of CASES) {
+    if (only && !c.name.includes(only)) continue;
     console.log(`\n${c.name}`);
     try {
       await c.run();

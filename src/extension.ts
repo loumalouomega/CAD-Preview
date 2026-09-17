@@ -18,6 +18,20 @@ import type { HostToWebview } from "./protocol";
  */
 export interface CadPreviewTestApi {
   onDidPostMessage: vscode.Event<HostToWebview>;
+  /** Runs the real `saveCustomDocument` join (sidecar flush + tail bake). */
+  saveDocument: (uri: vscode.Uri) => Promise<void>;
+  /** Runs the real `revertCustomDocument` join (drop to the save point). */
+  revertDocument: (uri: vscode.Uri) => Promise<void>;
+  /** Fires the dirty event exactly like a webview `editsChanged` post would. */
+  markDirtyDocument: (uri: vscode.Uri) => void;
+  /** Runs the real `saveCustomDocumentAs` copy join for an open document. */
+  saveDocumentAs: (uri: vscode.Uri, destination: vscode.Uri) => Promise<void>;
+  /**
+   * Installs (or clears, with `undefined`) the `testExportMeshStub` the mesh
+   * save-in-place path consults instead of the webview round trip — see its
+   * doc comment in `provider.ts`.
+   */
+  setExportMeshStub: (stub: ((format: string) => Uint8Array | undefined) | undefined) => void;
 }
 
 export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | undefined {
@@ -25,7 +39,17 @@ export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | 
   registerModelsView(context, CadPreviewProvider.viewType);
   void maybeShowWhatsNew(context);
   return context.extensionMode === vscode.ExtensionMode.Test
-    ? { onDidPostMessage: CadPreviewProvider.onDidPostMessage }
+    ? {
+        onDidPostMessage: CadPreviewProvider.onDidPostMessage,
+        saveDocument: (uri: vscode.Uri) => CadPreviewProvider.testSaveDocument(uri),
+        revertDocument: (uri: vscode.Uri) => CadPreviewProvider.testRevertDocument(uri),
+        markDirtyDocument: (uri: vscode.Uri) => CadPreviewProvider.markDirtyDocument(uri),
+        saveDocumentAs: (uri: vscode.Uri, destination: vscode.Uri) =>
+          CadPreviewProvider.testSaveDocumentAs(uri, destination),
+        setExportMeshStub: (stub) => {
+          CadPreviewProvider.testExportMeshStub = stub;
+        },
+      }
     : undefined;
 }
 

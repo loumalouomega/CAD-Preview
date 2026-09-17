@@ -33,6 +33,7 @@ import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readPlanes, writePlanes, planesSidecarUri } from "./planesStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
+import { assertNotDirty } from "./dirtyGuard";
 import type { EditOp, EditOpKind } from "./editOps";
 import { validateEditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
@@ -222,8 +223,75 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
   /** Per-document save/revert closures for `saveCustomDocument`/`revertCustomDocument`
    * (they mutate `resolveCustomEditor` state no class method can reach).
-   * Registered at the end of `resolveCustomEditor`, removed on dispose. */
-  private readonly documentSavers = new Map<string, { save: () => Promise<void>; revert: () => Promise<void> }>();
+   * Registered at the end of `resolveCustomEditor`, removed on dispose alongside the session entry below.
+   * `markDirty` fires the dirty event exactly like a webview `editsChanged`
+   * would — the suite uses it because it cannot push ops through the webview,
+   * and a dirty tab is also what keeps VS Code from auto-closing the editor
+   * when the save's rename-overwrite briefly reads as a file delete. */
+  private readonly documentSavers = new Map<
+    string,
+    { save: () => Promise<void>; revert: () => Promise<void>; markDirty: () => void }
+  >();
+
+  /**
+   * The live provider instance, for the Test-only `testSaveDocument` /
+   * `testRevertDocument` seam below. Set in `register()` — there is exactly
+   * one provider per extension-host process.
+   */
+  private static lastProvider: CadPreviewProvider | undefined;
+
+  /**
+   * Test-only: serializes the webview's `exportMesh` round trip without a
+   * webview. The integration VS Code runs with software/no WebGL, so no
+   * Three.js scene exists to serialize and a mesh save can never complete
+   * there — the round trip itself is covered by `test:webview`'s
+   * mesh-exporter cases instead. When set, `bakeMeshToSource` writes these
+   * bytes (keyed by the source format) and exercises the REAL remainder of
+   * the save: modal, `.bak`, tmp+rename, watcher guard, watermark, reload.
+   * `undefined` (production, and every non-mesh-save test) keeps the
+   * webview round trip. Never set outside the integration suite.
+   */
+  public static testExportMeshStub: ((format: string) => Uint8Array | undefined) | undefined;
+
+  /** Test-only: invokes the real `saveDocumentSource` join for an open document. */
+  public static async testSaveDocument(uri: vscode.Uri): Promise<void> {
+    const savers = CadPreviewProvider.lastProvider?.documentSavers.get(uri.toString());
+    if (!savers) throw new Error(`No open CAD Preview session for ${uri.fsPath} — open the document first.`);
+    await savers.save();
+  }
+
+  /**
+   * Test-only: invokes the real `saveCustomDocumentAs` copy for an open
+   * document. The workbench's own Save As dialog is native UI the modal stubs
+   * cannot intercept, so the suite calls the copy join directly — the dialog
+   * itself is not what's under test.
+   */
+  public static async testSaveDocumentAs(uri: vscode.Uri, destination: vscode.Uri): Promise<void> {
+    const provider = CadPreviewProvider.lastProvider;
+    if (!provider) throw new Error("No live provider — open a document first.");
+    await provider.saveCustomDocumentAs(new CadDocument(uri), destination);
+  }
+
+  /**
+   * Test-only: marks the document dirty, exactly as a webview `editsChanged`
+   * post would. Beyond fidelity (a real save always runs on a dirty tab), a
+   * dirty tab is what keeps VS Code from auto-closing the editor when the
+   * save's temp-sibling rename-overwrite momentarily reads as a file delete —
+   * a clean tab vanishes mid-save and every later post throws
+   * "Webview is disposed".
+   */
+  public static markDirtyDocument(uri: vscode.Uri): void {
+    const savers = CadPreviewProvider.lastProvider?.documentSavers.get(uri.toString());
+    if (!savers) throw new Error(`No open CAD Preview session for ${uri.fsPath} — open the document first.`);
+    savers.markDirty();
+  }
+
+  /** Test-only: invokes the real `revertToSavePoint` join for an open document. */
+  public static async testRevertDocument(uri: vscode.Uri): Promise<void> {
+    const savers = CadPreviewProvider.lastProvider?.documentSavers.get(uri.toString());
+    if (!savers) throw new Error(`No open CAD Preview session for ${uri.fsPath} — open the document first.`);
+    await savers.revert();
+  }
 
   /** Every open editor session, keyed by `uri.toString()` — the host relay
    * for linked cameras (roadmap "Split view", Phase 3). Two webviews cannot
@@ -257,6 +325,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
   public static register(context: vscode.ExtensionContext): vscode.Disposable {
     const provider = new CadPreviewProvider(context);
+    CadPreviewProvider.lastProvider = provider;
     const editorDisposable = vscode.window.registerCustomEditorProvider(
       CadPreviewProvider.viewType,
       provider,
@@ -680,6 +749,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         post({ type: "error", message: "The op list changed below the save point — close and reopen the file to work from the saved state." });
         return false;
       }
+      // Fail fast BEFORE the kernel bake and before any source write: a dirty
+      // edits sidecar would refuse the watermark write below, after the source
+      // was already rewritten — forcing the rollback path. `writeEdits` throws
+      // the identical error; this only moves it earlier, where it is free.
+      try {
+        assertNotDirty(editsSidecarUri(document.uri));
+      } catch (err) {
+        post({ type: "error", message: `Save in place failed: ${(err as Error).message}` });
+        return false;
+      }
       const tail = replayTail(currentEdits, currentBakedThrough);
       try {
         const scadWarnings: string[] = [];
@@ -725,8 +804,31 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           throw err;
         }
         if (editsSaveTimer) clearTimeout(editsSaveTimer);
+        // The source on disk is already rewritten at this point; the watermark
+        // has NOT landed yet. If `writeEdits` throws here the pair disagrees
+        // (baked file, stale sidecar) and the next open would double-apply the
+        // tail — so roll the source back to the pre-save bytes (`src.bytes`,
+        // read before the bake) and report loudly instead of claiming a save.
+        // The in-memory watermark is restored first, so a failed save never
+        // leaves this session believing it is saved either.
+        const watermarkBefore = currentBakedThrough;
         currentBakedThrough = currentEdits.length;
-        await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+        try {
+          await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+        } catch (wmErr) {
+          currentBakedThrough = watermarkBefore;
+          try {
+            expectOwnSourceSave = true;
+            await vscode.workspace.fs.writeFile(document.uri, src.bytes);
+          } catch {
+            expectOwnSourceSave = false;
+          }
+          post({
+            type: "error",
+            message: `Save in place failed: the watermark write failed (${(wmErr as Error).message}) — the source file was restored to its pre-save bytes; close any dirty sidecar tab and save again.`,
+          });
+          return false;
+        }
         // Two-byte save-time rebind: pre-save bytes + full op list vs the
         // freshly-baked bytes + (now empty) tail. On a real change persist +
         // post exactly like `rebindPartsOnChange`; on failure say so loudly
@@ -813,6 +915,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         post({ type: "error", message: "The op list changed below the save point — close and reopen the file to work from the saved state." });
         return false;
       }
+      // Fail fast BEFORE the webview serialization and before any source
+      // write — same reason as `bakeTailToSource`'s pre-check above.
+      try {
+        assertNotDirty(editsSidecarUri(document.uri));
+      } catch (err) {
+        post({ type: "error", message: `Save in place failed: ${(err as Error).message}` });
+        return false;
+      }
       const tailLength = currentEdits.length - currentBakedThrough;
       try {
         const needsConfirm = confirmPolicy === "always" || !madeSourceBackupThisSession;
@@ -825,12 +935,26 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           );
           if (confirm !== "Save in place") return false;
         }
-        const requestId = `${Date.now()}-${Math.random()}`;
-        const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
-          pending.set(requestId, { resolve, reject });
-          post({ type: "exportMesh", requestId, format: route.format, unit: "mm" });
-        });
-        const bytes = result.binary ? Buffer.from(result.data, "base64") : Buffer.from(result.data, "utf8");
+        // Test-only stub (see `testExportMeshStub`): the integration host has
+        // no WebGL scene to serialize, so the suite supplies the bytes and the
+        // REAL remainder of the save below is what gets exercised.
+        const stubBytes = CadPreviewProvider.testExportMeshStub?.(route.format);
+        let bytes: Uint8Array;
+        if (stubBytes !== undefined) {
+          bytes = stubBytes;
+        } else {
+          const requestId = `${Date.now()}-${Math.random()}`;
+          const result = await new Promise<{ data: string; binary: boolean }>((resolve, reject) => {
+            pending.set(requestId, { resolve, reject });
+            post({ type: "exportMesh", requestId, format: route.format, unit: "mm" });
+          });
+          bytes = result.binary ? Buffer.from(result.data, "base64") : Buffer.from(result.data, "utf8");
+        }
+        // Pre-save bytes for the watermark-failure rollback below. The B-rep
+        // bake reuses its `src.bytes` for this; a mesh source has no
+        // equivalent already in hand, so it reads them here (before `.bak`,
+        // before the rename — after either, they are gone).
+        const preSaveBytes = await vscode.workspace.fs.readFile(document.uri);
         if (!madeSourceBackupThisSession) {
           await vscode.workspace.fs.copy(document.uri, document.uri.with({ path: `${document.uri.path}.bak` }), { overwrite: true });
           madeSourceBackupThisSession = true;
@@ -847,8 +971,27 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           throw err;
         }
         if (editsSaveTimer) clearTimeout(editsSaveTimer);
+        // Same source-first/watermark-second hazard as the B-rep bake: roll
+        // the source back to `preSaveBytes` when the watermark write throws,
+        // so the pair agrees again instead of double-applying on reopen.
+        const watermarkBefore = currentBakedThrough;
         currentBakedThrough = currentEdits.length;
-        await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+        try {
+          await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+        } catch (wmErr) {
+          currentBakedThrough = watermarkBefore;
+          try {
+            expectOwnSourceSave = true;
+            await vscode.workspace.fs.writeFile(document.uri, preSaveBytes);
+          } catch {
+            expectOwnSourceSave = false;
+          }
+          post({
+            type: "error",
+            message: `Save in place failed: the watermark write failed (${(wmErr as Error).message}) — the source file was restored to its pre-save bytes; close any dirty sidecar tab and save again.`,
+          });
+          return false;
+        }
         post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
         post({ type: "status", text: `Saved in place to ${fileName} (${tailLength} op(s) baked)` });
         loadModel(true);
@@ -1261,7 +1404,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // Tier 0 Phase 2 — save/revert entry points for `saveCustomDocument` /
     // `revertCustomDocument` (they mutate closure state no class method can
     // reach). Removed on dispose alongside the session entry below.
-    this.documentSavers.set(documentKey, { save: saveDocumentSource, revert: revertToSavePoint });
+    this.documentSavers.set(documentKey, {
+      save: saveDocumentSource,
+      revert: revertToSavePoint,
+      markDirty: () => this.fireDirty(document),
+    });
     const track = () => {
       if (webviewPanel.active) this.activeSession = session;
     };

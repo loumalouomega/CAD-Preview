@@ -28,6 +28,7 @@ import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
 import { evaluateVariables, resolveEditOps } from "../editVariables";
+import { replayTail } from "../editsSidecar";
 import { resolvePlaneRefs } from "../planeRefs";
 import { extractIdentifiers } from "../paramExpr";
 import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } from "../toleranceBand";
@@ -2458,7 +2459,8 @@ async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknow
     const clone = pristineMesh.clone(true);
     // Tier 0 Phase 3 — preview replays the unbaked tail only (baked prefix
     // already lives in the pristine file after a mesh save-in-place).
-    applyEditsMesh(clone, [...currentResolvedOps().ops.slice(editsModel.savePoint), clean]);
+    // `replayTail` is the same helper the host uses — one tail definition.
+    applyEditsMesh(clone, [...replayTail(currentResolvedOps().ops, editsModel.savePoint), clean]);
     viewer.setOpPreview(clone, tint);
     return;
   }
@@ -2527,7 +2529,7 @@ let importedRegionInfo: { triangleRegion: Int32Array } | null = null;
  */
 function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   if (!pristineMesh) return;
-  const ops = currentResolvedOps().ops.slice(editsModel.savePoint);
+  const ops = replayTail(currentResolvedOps().ops, editsModel.savePoint);
   const outcomes: OpOutcome[] = [];
   const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)

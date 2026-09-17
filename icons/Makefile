@@ -18,11 +18,7 @@ OPS_SVGDIR := svg-ops
 OPS_TEX := $(wildcard $(OPS_TEXDIR)/*.tex)
 OPS_SVG := $(patsubst $(OPS_TEXDIR)/%.tex,$(OPS_SVGDIR)/%.svg,$(OPS_TEX))
 
-# ── Extension icon (the marketplace logo): tikz-icon/icon.tex → PDF →
-#    ../images/icon.png (white bg) + icon_transparency.png (transparent),
-#    both 512x512. Needs pdflatex + pdftocairo (poppler); `-transparent`
-#    is the only difference between the two renders. ──
-ICON_BUILDDIR := build-icon
+# Extension icon: editable SVG → 512x512 PNGs (librsvg / rsvg-convert).
 
 .PHONY: ui ts ops ops-ts icon clean
 ui: $(UI_SVG)
@@ -50,12 +46,8 @@ ops-ts: ops
 	node build-op-icons.mjs
 
 icon:
-	@mkdir -p $(ICON_BUILDDIR)
-	pdflatex -interaction=nonstopmode -halt-on-error -output-directory=$(ICON_BUILDDIR) tikz-icon/icon.tex >/dev/null
-	pdftocairo -png -singlefile -transparent -scale-to 512 $(ICON_BUILDDIR)/icon.pdf $(ICON_BUILDDIR)/icon_transparency
-	pdftocairo -png -singlefile -scale-to 512 $(ICON_BUILDDIR)/icon.pdf $(ICON_BUILDDIR)/icon
-	cp $(ICON_BUILDDIR)/icon_transparency.png ../images/icon_transparency.png
-	cp $(ICON_BUILDDIR)/icon.png ../images/icon.png
+	rsvg-convert -w 512 -h 512 ../images/icon.svg -o ../images/icon_transparency.png
+	rsvg-convert -w 512 -h 512 -b white ../images/icon.svg -o ../images/icon.png
 
 clean:
-	rm -rf $(UI_BUILDDIR) $(UI_SVGDIR) $(OPS_BUILDDIR) $(OPS_SVGDIR) $(ICON_BUILDDIR)
+	rm -rf $(UI_BUILDDIR) $(UI_SVGDIR) $(OPS_BUILDDIR) $(OPS_SVGDIR)
