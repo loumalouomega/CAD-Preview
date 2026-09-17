@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>CAD Preview</title>
+  <desc>A teal extruded L bracket with a circular bore and a drafting dimension, inspired by the Kratos geometric mark.</desc>
+  <defs>
+    <mask id="bore">
+      <rect width="512" height="512" fill="white"/>
+      <circle cx="286" cy="211" r="38" fill="black"/>
+    </mask>
+    <clipPath id="opening"><circle cx="286" cy="211" r="38"/></clipPath>
+  </defs>
+  <!-- Extruded, stepped solid: light top, teal front, deep teal side. -->
+  <g stroke="white" stroke-width="7" stroke-linejoin="round" mask="url(#bore)">
+    <path fill="#20aaa5" d="M66 137 143 75H436L359 137Z"/>
+    <path fill="#005b64" d="M359 137 436 75V318L359 380Z"/>
+    <path fill="#008580" d="M66 137H359V380H231V267H66Z"/>
+  </g>
+  <!-- The offset inner rim conveys a machined hole; the opening is transparent. -->
+  <g clip-path="url(#opening)">
+    <path fill="#004e58" fill-rule="evenodd" d="M324 211a38 38 0 1 0-76 0a38 38 0 1 0 76 0ZM337 201a38 38 0 1 0-76 0a38 38 0 1 0 76 0Z"/>
+  </g>
+  <circle cx="286" cy="211" r="38" fill="none" stroke="white" stroke-width="6"/>
+  <!-- A single restrained construction seam recalls the Kratos cells. -->
+  <path d="M231 137 308 75" fill="none" stroke="white" stroke-width="5"/>
+  <!-- Extension lines and inward arrowheads: the visual language of CAD dimensions. -->
+  <g fill="none" stroke="#007f80" stroke-width="5" stroke-linecap="round">
+    <path d="M66 298V441M359 402V441M80 423H345"/>
+  </g>
+  <path fill="#007f80" d="m69 423 22-10v20Zm287 0-22-10v20Z"/>
+</svg>
