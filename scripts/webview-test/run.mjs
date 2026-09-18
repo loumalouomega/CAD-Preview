@@ -793,6 +793,89 @@ test("zoom to selection: works under orthographic projection", async (page) => {
 });
 
 /**
+ * I3. Volume and point selection predicates (roadmap Tier 1). The pure
+ * predicates are unit-covered; what needs the real bundle is the form
+ * wiring per mode (registry population, Select/Add, status nouns) and the
+ * point reference flow. Selection is read back via `partsChanged` assignment
+ * (the D-case precedent) rather than hardcoded ids.
+ */
+async function runModeFilter(page, mode, predId, arg) {
+  await page.click("#select-menu");
+  await page.click(`.sel-mode[data-mode="${mode}"]`);
+  await page.selectOption("#filter-pred", predId);
+  if (arg !== null) await page.fill("#filter-arg", arg);
+  await page.click("#filter-replace");
+  await sleep(250);
+  return page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+}
+
+test("filters: Vol mode smallestN selects exactly one solid", async (page) => {
+  await populate(page);
+  const status = await runModeFilter(page, "volume", "smallestN", "1");
+  assert(/matched 1 of \d+ solids\./.test(status), `Vol filter reports one solid (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu"); // close: the sidebar assign click needs a dismissed menu
+  await sleep(150);
+  const before = await page.evaluate(() => {
+    const m = (window.__sent || []).findLast((x) => x.type === "partsChanged");
+    return m ? m.parts.length : 0;
+  });
+  await page.click("#parts-new");
+  await sleep(250);
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#parts-body .part-row");
+    const row = rows[rows.length - 1];
+    const assign = [...row.querySelectorAll("button.part-btn")].find((b) => b.title?.startsWith("Assign"));
+    assign?.click();
+  });
+  await sleep(250);
+  const vols = await page.evaluate((n) => {
+    const m = (window.__sent || []).findLast((x) => x.type === "partsChanged");
+    if (!m || m.parts.length <= n) return null;
+    return m.parts[m.parts.length - 1].volumes ?? null;
+  }, before);
+  assert(
+    Array.isArray(vols) && vols.length === 1 && /^solid-\d+$/.test(vols[0]),
+    `the Vol selection assigns one real solid-N id (got ${JSON.stringify(vols)})`
+  );
+});
+
+test("filters: Point mode nearXY matches a strict subset; an empty reference explains itself", async (page) => {
+  await populate(page);
+  // Reference predicates with nothing selected are guidance, not a match-all —
+  // check first, while the fresh page's selection is still empty.
+  await page.click("#select-menu");
+  await page.click('.sel-mode[data-mode="point"]');
+  await page.selectOption("#filter-pred", "nearSelectionLte");
+  await page.fill("#filter-arg", "10");
+  const sentBefore = await page.evaluate(() => (window.__sent ?? []).length);
+  await page.click("#filter-replace");
+  await sleep(250);
+  const guidance = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/Select something first/.test(guidance), `empty reference explains itself (got ${JSON.stringify(guidance)})`);
+  const sentAfter = await page.evaluate(() => (window.__sent ?? []).length);
+  assert(sentAfter === sentBefore, "guidance posts no host traffic");
+  await page.click("#select-menu"); // dismiss: runModeFilter opens the menu itself
+  await sleep(150);
+  const status = await runModeFilter(page, "point", "nearXY", "5");
+  const m = status.match(/matched (\d+) of (\d+) points\./);
+  assert(m !== null, `Point filter reports points (got ${JSON.stringify(status)})`);
+  assert(m && Number(m[1]) > 0 && Number(m[1]) < Number(m[2]), `Near XY matches a strict subset (got ${JSON.stringify(status)})`);
+});
+
+test("filters: hidden geometry matches nothing in Vol mode", async (page) => {
+  await populate(page);
+  const toggled = await page.evaluate(() => {
+    const eyes = document.querySelectorAll("#tree-body [data-visible-toggle], #tree-body .tree-eye");
+    eyes.forEach((e) => e.click());
+    return eyes.length;
+  });
+  assert(toggled > 0, "precondition: the tree exposes visibility toggles");
+  await sleep(250);
+  const status = await runModeFilter(page, "volume", "smallestN", "1");
+  assert(status === "Filter matched nothing.", `hidden solids never match (got ${JSON.stringify(status)})`);
+});
+
+/**
  * G. Dropdown menus — both of these are previously-FIXED real bugs with no
  * regression test, recorded in `CLAUDE.md`'s "Toolbar dropdown menus":
  *  1. The containment test used `e.target !== btn`, but every trigger wraps its

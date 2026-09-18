@@ -4,6 +4,10 @@ import {
   DEFAULT_DIRECTION_TOLERANCE_DEG,
   applyFaceFilter,
   applyLineFilter,
+  applyVolumeFilter,
+  applyPointFilter,
+  groupVolumes,
+  pointPosition,
   edgeDirection,
   edgeLength,
   faceArea,
@@ -221,5 +225,154 @@ describe("selectFilters edge helpers", () => {
     const deg = lineEntity([0, 0, 0, 0, 0, 0], "edge-deg");
     expect(edgeDirection(deg)).toBeNull();
     expect(applyLineFilter([deg], "alongX", 0, false)).toEqual([]);
+  });
+});
+
+describe("selectFilters volume predicates", () => {
+  /** Box mesh tagged as one face of `groupId`, centred at (cx, 0, 0). */
+  function boxFace(size: number, cx: number, entityId: string, groupId: string): THREE.Mesh {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(size, size, size));
+    m.position.set(cx, 0, 0);
+    m.userData.entityType = "surface";
+    m.userData.entityId = entityId;
+    m.userData.groupId = groupId;
+    return m;
+  }
+
+  it("size thresholds use the bbox diagonal", () => {
+    const small = boxFace(2, 0, "face-s", "solid-s"); // diagonal 2√3 ≈ 3.46
+    const large = boxFace(4, 20, "face-l", "solid-l"); // diagonal 4√3 ≈ 6.93
+    expect(applyVolumeFilter([small, large], "sizeGte", 5).map((e) => e.entityId)).toEqual(["solid-l"]);
+    expect(applyVolumeFilter([small, large], "sizeLte", 5).map((e) => e.entityId)).toEqual(["solid-s"]);
+    // exact-boundary equality matches (the 1e-9 tolerance, not strict >)
+    expect(applyVolumeFilter([small], "sizeGte", 2 * Math.sqrt(3)).map((e) => e.entityId)).toEqual(["solid-s"]);
+  });
+
+  it("center thresholds read the bbox center per axis and sign", () => {
+    const left = boxFace(2, -10, "face-l", "solid-l");
+    const right = boxFace(2, 10, "face-r", "solid-r");
+    expect(applyVolumeFilter([left, right], "centerXp", 0).map((e) => e.entityId)).toEqual(["solid-r"]);
+    expect(applyVolumeFilter([left, right], "centerXn", 0).map((e) => e.entityId)).toEqual(["solid-l"]);
+    expect(applyVolumeFilter([left, right], "centerYp", 1)).toEqual([]);
+    expect(applyVolumeFilter([left, right], "centerYn", 0).map((e) => e.entityId).sort()).toEqual(["solid-l", "solid-r"]);
+  });
+
+  it("largestN / smallestN rank by bbox volume", () => {
+    const small = boxFace(2, 0, "face-s", "solid-s"); // volume 8
+    const large = boxFace(4, 20, "face-l", "solid-l"); // volume 64
+    expect(applyVolumeFilter([small, large], "largestN", 1).map((e) => e.entityId)).toEqual(["solid-l"]);
+    expect(applyVolumeFilter([small, large], "smallestN", 1).map((e) => e.entityId)).toEqual(["solid-s"]);
+  });
+
+  it("ranks by bbox volume, not diagonal", () => {
+    // Long-thin 10×1×1 (diagonal ≈ 10.1, volume 10) vs compact 3×3×3
+    // (diagonal ≈ 5.2, volume 27): the two orders disagree, so this pins
+    // the named metric — a diagonal ranking would return thin first.
+    const thin = new THREE.Mesh(new THREE.BoxGeometry(10, 1, 1));
+    thin.userData.entityType = "surface";
+    thin.userData.entityId = "face-thin";
+    thin.userData.groupId = "solid-thin";
+    const compact = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 3));
+    compact.position.set(30, 0, 0);
+    compact.userData.entityType = "surface";
+    compact.userData.entityId = "face-compact";
+    compact.userData.groupId = "solid-compact";
+    expect(applyVolumeFilter([thin, compact], "largestN", 1).map((e) => e.entityId)).toEqual(["solid-compact"]);
+    expect(applyVolumeFilter([thin, compact], "smallestN", 1).map((e) => e.entityId)).toEqual(["solid-thin"]);
+  });
+
+  it("ranking ties break by groupId — deterministic regardless of traversal order", () => {
+    const a = boxFace(2, 0, "face-a", "solid-b");
+    const b = boxFace(2, 20, "face-b", "solid-a");
+    expect(applyVolumeFilter([a, b], "largestN", 1).map((e) => e.entityId)).toEqual(["solid-a"]);
+    expect(applyVolumeFilter([b, a], "largestN", 1).map((e) => e.entityId)).toEqual(["solid-a"]);
+  });
+
+  it("facets sharing a groupId deduplicate to one volume", () => {
+    const f1 = boxFace(2, 0, "face-0", "solid-0");
+    const f2 = boxFace(2, 0, "face-1", "solid-0");
+    const f3 = boxFace(2, 0, "face-2", "solid-0");
+    expect(groupVolumes([f1, f2, f3])).toHaveLength(1);
+    expect(applyVolumeFilter([f1, f2, f3], "largestN", 5).map((e) => e.entityId)).toEqual(["solid-0"]);
+  });
+
+  it("mesh-style node groups rank independently", () => {
+    const a = boxFace(2, 0, "face-0", "node-0");
+    const b = boxFace(4, 20, "face-1", "node-1");
+    expect(applyVolumeFilter([a, b], "largestN", 1).map((e) => e.entityId)).toEqual(["node-1"]);
+    expect(applyVolumeFilter([a, b], "sizeLte", 5).map((e) => e.entityId)).toEqual(["node-0"]);
+  });
+
+  it("degenerate and non-surface targets are dropped, never thrown", () => {
+    const empty = new THREE.Mesh(new THREE.BufferGeometry());
+    empty.userData.entityType = "surface";
+    empty.userData.entityId = "face-empty";
+    empty.userData.groupId = "solid-empty";
+    const nanBox = boxFace(2, 0, "face-nan", "solid-nan");
+    nanBox.position.set(NaN, 0, 0);
+    const line = new THREE.Line(new THREE.BufferGeometry());
+    line.userData.entityType = "line";
+    line.userData.entityId = "edge-0";
+    line.userData.groupId = "solid-line";
+    expect(groupVolumes([empty, nanBox])).toEqual([]);
+    expect(applyVolumeFilter([empty, nanBox, line], "sizeGte", 0)).toEqual([]);
+  });
+});
+
+describe("selectFilters point predicates", () => {
+  function pointAt(x: number, y: number, z: number, entityId: string): THREE.Sprite {
+    const s = new THREE.Sprite();
+    s.position.set(x, y, z);
+    s.userData.entityType = "point";
+    s.userData.entityId = entityId;
+    return s;
+  }
+
+  const REF = new THREE.Vector3(0, 0, 0);
+
+  it("plane proximity reads the matching coordinate only", () => {
+    const near = pointAt(3, 4, 0.5, "point-near");
+    const far = pointAt(0, 0, 5, "point-far");
+    expect(applyPointFilter([near, far], "nearXY", 1, null).map((e) => e.entityId)).toEqual(["point-near"]);
+    expect(applyPointFilter([near, far], "nearXZ", 1, null).map((e) => e.entityId)).toEqual(["point-far"]);
+    // nearYZ reads |x|: near sits at x=3, far at x=0
+    expect(applyPointFilter([near, far], "nearYZ", 1, null).map((e) => e.entityId)).toEqual(["point-far"]);
+  });
+
+  it("nearSelectionLte measures distance to the reference", () => {
+    const close = pointAt(1, 0, 0, "point-close");
+    const away = pointAt(10, 0, 0, "point-away");
+    expect(applyPointFilter([close, away], "nearSelectionLte", 2, REF).map((e) => e.entityId)).toEqual(["point-close"]);
+  });
+
+  it("reference predicates with a null reference match nothing", () => {
+    const p = pointAt(0, 0, 0, "point-0");
+    expect(applyPointFilter([p], "nearSelectionLte", 100, null)).toEqual([]);
+    expect(applyPointFilter([p], "inSelectionBox", 100, null)).toEqual([]);
+  });
+
+  it("inSelectionBox contains its boundary and rejects a non-positive size", () => {
+    const inside = pointAt(1, 1, 1, "point-in");
+    const onFace = pointAt(2, 0, 0, "point-face");
+    const outside = pointAt(2.5, 0, 0, "point-out");
+    expect(
+      applyPointFilter([inside, onFace, outside], "inSelectionBox", 4, REF).map((e) => e.entityId).sort()
+    ).toEqual(["point-face", "point-in"]);
+    expect(applyPointFilter([inside], "inSelectionBox", 0, REF)).toEqual([]);
+    expect(applyPointFilter([inside], "inSelectionBox", -3, REF)).toEqual([]);
+  });
+
+  it("positions are world-space and non-point targets are ignored", () => {
+    const parent = new THREE.Group();
+    parent.position.set(10, 0, 0);
+    const child = pointAt(0, 0, 0, "point-moved");
+    parent.add(child);
+    expect(pointPosition(child)!.x).toBeCloseTo(10, 5);
+    expect(applyPointFilter([child], "nearYZ", 1, null)).toEqual([]);
+    expect(applyPointFilter([child], "nearYZ", 11, null).map((e) => e.entityId)).toEqual(["point-moved"]);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    mesh.userData.entityType = "surface";
+    mesh.userData.entityId = "face-0";
+    expect(applyPointFilter([mesh as unknown as THREE.Sprite], "nearXY", 100, null)).toEqual([]);
   });
 });

@@ -57,11 +57,19 @@ import { collectTargets } from "./picking";
 import {
   FACE_FILTERS,
   LINE_FILTERS,
+  VOLUME_FILTERS,
+  POINT_FILTERS,
   applyFaceFilter,
   applyLineFilter,
+  applyVolumeFilter,
+  applyPointFilter,
+  groupVolumes,
   type FaceFilterId,
   type LineFilterId,
+  type VolumeFilterId,
+  type PointFilterId,
 } from "./selectFilters";
+import { unionSelectionBounds } from "./selectionBounds";
 import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
 import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, snapTranslateDelta, nearestSnapPoint, type TransformBase } from "./gizmoTransform";
 import {
@@ -2791,7 +2799,12 @@ function setupSelectionControls(): void {
   const filterReplace = document.getElementById("filter-replace") as HTMLButtonElement | null;
   const filterAdd = document.getElementById("filter-add") as HTMLButtonElement | null;
 
-  const filterSupportsMode = (m: EntityType) => m === "surface" || m === "line";
+  // Roadmap Tier 1 "Volume and point selection predicates": every pick mode
+  // has a predicate vocabulary now (faces, lines, volumes, points).
+  const filterSupportsMode = (_m: EntityType) => true;
+
+  const filtersForMode = (m: EntityType): readonly { id: string; label: string; argKind: string }[] =>
+    m === "line" ? LINE_FILTERS : m === "surface" ? FACE_FILTERS : m === "volume" ? VOLUME_FILTERS : POINT_FILTERS;
 
   // Keep the predicate dropdown in sync with the active pick mode — the
   // option list is registry-driven (`FACE_FILTERS`/`LINE_FILTERS`), so this
@@ -2800,9 +2813,7 @@ function setupSelectionControls(): void {
   let lastFilterMode: EntityType | null = null;
   const syncFilterUi = () => {
     if (filterPred && lastFilterMode !== selectMode) {
-      const wantLine = selectMode === "line";
-      const wantSurface = selectMode === "surface";
-      const opts = wantLine ? LINE_FILTERS : wantSurface ? FACE_FILTERS : [];
+      const opts = filtersForMode(selectMode);
       const prevVal = filterPred.value;
       filterPred.innerHTML = "";
       for (const o of opts) {
@@ -2816,7 +2827,7 @@ function setupSelectionControls(): void {
       lastFilterMode = selectMode;
     }
     const supported = filterSupportsMode(selectMode);
-    const opts = selectMode === "line" ? LINE_FILTERS : selectMode === "surface" ? FACE_FILTERS : [];
+    const opts = filtersForMode(selectMode);
     const cur = filterPred ? (opts.find((o) => o.id === filterPred.value) ?? opts[0]) : undefined;
     const needsArg = cur ? cur.argKind !== "none" : false;
     if (filterPred) filterPred.disabled = !supported;
@@ -2843,10 +2854,7 @@ function setupSelectionControls(): void {
     if (!filterPred) return;
     const filterId = filterPred.value;
     const argRaw = filterArg?.value.trim() ?? "";
-    const cur =
-      (selectMode === "line" ? (LINE_FILTERS as readonly { id: string; argKind: string }[]) : (FACE_FILTERS as readonly { id: string; argKind: string }[])).find(
-        (o) => o.id === filterId
-      ) ?? null;
+    const cur = filtersForMode(selectMode).find((o) => o.id === filterId) ?? null;
     let arg = 0;
     if (cur && cur.argKind !== "none") {
       if (argRaw === "") {
@@ -2865,14 +2873,38 @@ function setupSelectionControls(): void {
     }
     const targets = collectTargets(model, selectMode);
     const excludeSmooth = !!filterExcludeSmooth?.checked;
+    // Point reference predicates read the live selection's centroid — an
+    // empty selection is guidance, never a match-everything.
+    let reference: THREE.Vector3 | null = null;
+    if (selectMode === "point" && (filterId === "nearSelectionLte" || filterId === "inSelectionBox")) {
+      const picked = selection.list();
+      if (picked.length === 0) {
+        setStatus("Select something first to use as the reference.", true);
+        return;
+      }
+      const box = unionSelectionBounds(model, picked);
+      if (!box) {
+        setStatus("Selection is hidden or no longer in the model.", true);
+        return;
+      }
+      reference = box.getCenter(new THREE.Vector3());
+    }
     const result =
       selectMode === "line"
         ? applyLineFilter(targets, filterId as LineFilterId, arg, excludeSmooth)
-        : applyFaceFilter(targets, filterId as FaceFilterId, arg);
+        : selectMode === "surface"
+          ? applyFaceFilter(targets, filterId as FaceFilterId, arg)
+          : selectMode === "volume"
+            ? applyVolumeFilter(targets, filterId as VolumeFilterId, arg)
+            : applyPointFilter(targets, filterId as PointFilterId, arg, reference);
     if (replace) selection.clear();
     for (const e of result) selection.add(e);
     renderHighlight();
-    setStatus(result.length === 0 ? "Filter matched nothing." : `Filter matched ${result.length} of ${targets.length} ${selectMode === "line" ? "edges" : "faces"}.`);
+    const noun = selectMode === "line" ? "edges" : selectMode === "surface" ? "faces" : selectMode === "volume" ? "solids" : "points";
+    // Volumes count deduplicated objects, not raw meshes — a faceted solid
+    // is one solid, so the denominator is the group count, not targets.
+    const denom = selectMode === "volume" ? groupVolumes(targets).length : targets.length;
+    setStatus(result.length === 0 ? "Filter matched nothing." : `Filter matched ${result.length} of ${denom} ${noun}.`);
   };
 
   filterPred?.addEventListener("change", syncFilterUi);

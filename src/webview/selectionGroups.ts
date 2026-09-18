@@ -101,10 +101,11 @@ export function edgesParallelTo(
 /**
  * The groups offered for the entity under the cursor.
  *
- * Returns `[]` for volume and point modes — the same gate the filter form
- * applies (`filterSupportsMode`), for the same reason: there is no predicate
- * vocabulary for them. An empty result is rendered as an explanatory row rather
- * than an empty menu.
+ * Returns `[]` for volume and point modes — the filter form now HAS a
+ * vocabulary for them (`VOLUME_FILTERS`/`POINT_FILTERS`), but the menu's
+ * rows are reference-driven ("like the one under the cursor") and neither
+ * mode has reference-shaped rows yet. An empty result is rendered as an
+ * explanatory row rather than an empty menu.
  *
  * A group that would match nothing beyond the clicked entity itself is dropped:
  * a row reading "(1)" offers nothing a click has not already done.

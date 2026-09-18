@@ -37,13 +37,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-#### Volume and point selection predicates (**M**, webview first)
-
-- **Gap:** `selectFilters.ts` currently serves face/line predicates; Vol/Point mode needs its own coherent vocabulary.
-- **First increment:** volume-object bbox extent/position and largest/smallest N by a named metric; points inside a box, near a coordinate plane, or within a distance of a supplied point. Deduplicate volume objects before ranking.
-- **Decision:** a volume inferred from display triangles is approximate and may be meaningless on an open mesh. Start with bbox predicates; expose volume thresholds only with a documented calculation and open-mesh behaviour. Do not equate webview `node-N` ids with headless `mesh-component-N` ids.
-- **Done when:** Select/Add, hidden-subtree exclusion, units, ties and degenerate geometry are covered, with the predicate vocabulary reusable by future context-menu and headless selectors.
-
 #### Per-band operation-preview colouring (**M**, host + webview)
 
 - **Reuse:** replay already returns op buckets, but `opPreviewResult` does not expose them.
