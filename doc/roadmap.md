@@ -37,13 +37,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-#### Per-band operation-preview colouring (**M**, host + webview)
-
-- **Reuse:** replay already returns op buckets, but `opPreviewResult` does not expose them.
-- **Scope:** return the draft operation's own bucket and render affected faces distinctly from retained context, with a small legend. Translate full-history versus replay-tail indices correctly after a save.
-- **Constraint:** bucket roles describe the producing operation and can include rebuilt faces; a `band` is not proof that every face was newly added, and a subtractive preview has no geometry for material already removed. Keep a neutral fallback for ambiguous roles.
-- **Done when:** extrude caps/walls and fillet rebuilt faces are distinguishable; cancellation and stale replies restore the original view; colours compose with Parts, clipping and themes without persisting preview state.
-
 #### Author profiles on a named construction plane (**M**, shared op model)
 
 - **Reuse:** `planesSidecar.ts` and `planeRefs.ts` already implement the annotation-plus-cache pattern for plane-bearing edits.

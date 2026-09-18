@@ -23,6 +23,7 @@ import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
 import { EditsPanel, type TransformDraft, type FeatureDraft, type ModifyDraft, type PrimitiveDraft, type HoleDraft, type ProfileDraft, type WireframeDraft, type AlignDraft, type PatternDraft } from "./editsPanel";
 import { OpPreviewScheduler } from "./opPreviewScheduler";
+import { draftBucketFor, bandFaceIds, previewBandLegend, tintDisplayName } from "./opPreviewBands";
 import { applySpaceMouseInput } from "./spaceMouseDispatch";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
@@ -1845,7 +1846,8 @@ function pickOf(d: Record<string, unknown>): { pick?: RegionPick } | { pickError
 
 /** Intent colour for a previewed op kind — green adds material, red removes
  * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
- * neutral (per-band fillet colouring explicitly deferred per the roadmap).
+ * neutral at the whole-overlay level, with the produced band highlighted
+ * per-face instead (roadmap Tier 1 "Per-band operation-preview colouring").
  * `wrap` tints per VARIANT (the first such case): emboss adds, engrave cuts,
  * standalone stays neutral. */
 function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "standalone" | null): "add" | "cut" | "ref" | undefined {
@@ -2447,7 +2449,7 @@ function scheduleOpPreview(): void {
 function cancelOpPreview(): void {
   opPreviewScheduler.cancel();
   viewer.setOpPreview(null);
-  lastWrapPreviewVariant = null;
+  clearPreviewLegend();
 }
 
 // Stashed wrap variant for preview tinting (see runOpPreview): the result
@@ -2460,6 +2462,7 @@ let lastWrapPreviewVariant: "emboss" | "engrave" | "standalone" | null = null;
  * clone — the host round trip would need an STL snapshot for zero benefit);
  * B-rep sources post `opPreviewRequest` and render from `opPreviewResult`. */
 async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknown> }, generation: number): Promise<void> {
+  clearPreviewLegend(); // a new run supersedes any shown band legend
   const resolved = buildOpForPanel(entry.id, entry.draft);
   if (resolved.error || !resolved.op) {
     viewer.setOpPreview(null);
@@ -2502,6 +2505,23 @@ async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknow
  * scheduler's generation via `cancel()`). */
 const pendingOpPreviewGeneration = new Map<string, number>();
 
+/**
+ * Status-line legend for a per-band preview (roadmap Tier 1 "Per-band
+ * operation-preview colouring"). Tracked so only OUR text is ever cleared:
+ * `clearPreviewLegend` (called from `cancelOpPreview` and at the top of
+ * every new `runOpPreview`) hides it exactly when the overlay it describes
+ * goes away — a stale legend naming faces of a superseded draft would read
+ * as confidently as a fresh one.
+ */
+let previewLegendActive = false;
+
+function clearPreviewLegend(): void {
+  if (previewLegendActive) {
+    previewLegendActive = false;
+    setStatus("");
+  }
+}
+
 function handleOpPreviewResult(msg: Extract<HostToWebview, { type: "opPreviewResult" }>): void {
   const gen = pendingOpPreviewGeneration.get(msg.requestId);
   pendingOpPreviewGeneration.delete(msg.requestId);
@@ -2512,7 +2532,28 @@ function handleOpPreviewResult(msg: Extract<HostToWebview, { type: "opPreviewRes
     setStatus(`Preview skipped: ${draftOutcome.diagnostic ?? "the operation produced no change"}${draftOutcome.hint ? ` — ${draftOutcome.hint}` : ""}`, true);
     return;
   }
-  viewer.setOpPreview(buildGroupFromEncoded(msg.meshes, msg.edges, msg.points), tintForPanelOp(editsPanel.openOpId() as PanelOpId, lastWrapPreviewVariant));
+  const tint = tintForPanelOp(editsPanel.openOpId() as PanelOpId, lastWrapPreviewVariant);
+  // The replay list is [...tailOps, draft], so the draft is always the last
+  // entry — the same tail-relative indexing the outcome check above uses.
+  const replayLength = msg.opOutcomes?.length ?? 0;
+  const bucket = draftBucketFor(msg.opBuckets, replayLength);
+  viewer.setOpPreview(
+    buildGroupFromEncoded(msg.meshes, msg.edges, msg.points),
+    tint,
+    bucket ? bandFaceIds(bucket) : null
+  );
+  if (bucket) {
+    // Full-history 1-based op number for the legend — never the raw
+    // replay-tail index, which names the wrong history row after a
+    // same-format save-in-place moved the save point.
+    previewLegendActive = true;
+    setStatus(previewBandLegend(bucket, editsModel.savePoint + replayLength, tintDisplayName(tint)));
+  } else if (previewLegendActive) {
+    // A uniform preview superseded a banded one — retire its legend rather
+    // than leave it describing faces no longer highlighted.
+    previewLegendActive = false;
+    setStatus("");
+  }
 }
 
 // The pristine, tagged-but-unedited loaded object for mesh formats. Mesh edits

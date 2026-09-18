@@ -417,14 +417,16 @@ setDisplayMode(mode: DisplayMode): void
 
 **Live operation preview (`setOpPreview`)**:
 
-`setOpPreview(group: THREE.Group | null): void`
+`setOpPreview(group: THREE.Group | null, tint?: "add" | "cut" | "ref", bandFaceIds?: Set<string> | null): void`
 
 Replaces the current model with a live preview of the in-progress edit operation, rendering the preview group as a scene sibling of `model` (never a child). While a preview is active, the model is hidden (`model.visible = false`). The preview group carries an intent tint via material lerp: green for additive ops (fuse/add*), red for subtractive ops (cut/holes/shell/split), blue for wire/reference ops (profiles/curves/section/surface-from-lines), and neutral (no tint) for transforms/fillet/chamfer — per kind, documented below. The preview respects `baseOpacity` composition convention, so it never overrides the existing dimming from `highlightGroup()`. Callers must ensure the preview group is properly disposed when the operation is applied or cancelled — `main.ts` handles this via `cancelGizmoPreview()` before every real op commit and on selection/model rebuild. The preview is **not** persisted across document reloads; it resets on every new model load.
 
 - **green** (additive): fuse, add*, feature modeling, patterns
 - **red** (subtractive): cut, hole, shell, split
 - **blue** (wire/reference): profile, curve, section, surface-from-lines
-- **neutral** (transforms/fillet/chamfer): untinted, per-band deferred per roadmap design question
+- **neutral** (transforms/fillet/chamfer): untinted at the whole-overlay level, with the produced band highlighted per-face instead (roadmap Tier 1 "Per-band operation-preview colouring", closed)
+
+**Per-band colouring** (roadmap Tier 1, closed): pass the draft op's band face ids and produced faces keep the full-strength intent treatment while retained context recedes (desaturated grey, opacity ×0.45 vs ×0.75 — both via `baseOpacity`, never raw writes). The tint math lives in `src/webview/opPreviewBands.ts` (`applyPreviewTint`, pure THREE, unit-tested headless); `main.ts` looks the band up off `opPreviewResult.opBuckets` by replay-tail index with a status-line legend (`Preview op N — green: …; grey: retained`, N in full-history numbering). A null/empty set keeps the uniform treatment — the neutral fallback for ambiguous roles, missing buckets, and the mesh path (no buckets client-side).
 
 **Appearance (session-only, never persisted — mirrors `toggleGrid`'s "always wins once set"):**
 

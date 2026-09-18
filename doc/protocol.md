@@ -418,7 +418,7 @@ type HostToWebview =
   | { type: 'primitiveRecognizeError'; requestId: string; message: string }
   | { type: 'spacemouse'; motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }; buttons?: number }
   | { type: 'zoomToSelection' }
-  | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
+  | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; opBuckets?: OpBucket[] }
   | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
@@ -813,7 +813,7 @@ Sent in reply to `meshioOpsRequest` (webview → host, below) — roadmap Tier 2
 
 Sent in reply to `opPreviewRequest` (webview → host, below) — roadmap "Live operation preview", closed. The payload is the SAME encoded shape the `"geometry"` message carries (`meshes`/`edges`/`points`), computed from a speculative replay of `[...currentOps, draftOp]` against the document's cached base shape — so the webview builds the preview group with the exact same `buildGroupFromEncoded()` path it uses for real geometry, and preview can never render something Apply would not produce. **B-rep sources only** — mesh sources never send the request (their preview is entirely client-side via `applyEditsMesh`). The host persists nothing: the replay runs under a separate cache key (`<documentKey>::oppreview`) so it never evicts the real document's cache, no sidecar is touched, and the CAD file stays read-only as ever.
 
-`opOutcomes` carries the per-op replay outcomes; when the draft op itself gracefully skipped (an unresolvable operand id after id drift, a builder throw), the webview degrades to no overlay and surfaces the diagnostic in its status line instead — never a silently-wrong preview.
+`opOutcomes` carries the per-op replay outcomes; when the draft op itself gracefully skipped (an unresolvable operand id after id drift, a builder throw), the webview degrades to no overlay and surfaces the diagnostic in its status line instead — never a silently-wrong preview. `opBuckets` carries the draft op's own produced-face bucket (replay-tail-relative, like `opOutcomes`) for per-band colouring — the webview tints band faces at full intent strength while retained context recedes to grey, with a status-line legend (`Preview op N — green: …; grey: retained`).
 
 Stale responses (a result arriving after a newer keystroke, a form switch, or a model rebuild) are discarded by the webview's generation guard — same discipline as `measureExactRequest`.
 

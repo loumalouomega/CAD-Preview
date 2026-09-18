@@ -519,7 +519,10 @@ export type HostToWebview =
    * carries, but for the speculative ops+draft replay. The webview builds a
    * detached group from it (never `viewer.setModel`) and tints it by intent;
    * `opOutcomes` lets the overlay degrade to nothing when the draft op
-   * gracefully skipped, with the reason available for the status line. */
+   * gracefully skipped, with the reason available for the status line.
+   * `opBuckets` carries the draft op's own bucket (replay-tail-relative, like
+   * `opOutcomes`) for per-band colouring — affected faces read distinctly
+   * from retained context. */
   | {
       type: "opPreviewResult";
       requestId: string;
@@ -527,6 +530,7 @@ export type HostToWebview =
       edges: EncodedEdge[];
       points: EncodedPoint[];
       opOutcomes?: import("./editOps").OpOutcome[];
+      opBuckets?: import("./opBuckets").OpBucket[];
     }
   | { type: "opPreviewError"; requestId: string; message: string }
   | {

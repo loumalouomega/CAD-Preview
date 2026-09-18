@@ -876,6 +876,136 @@ test("filters: hidden geometry matches nothing in Vol mode", async (page) => {
 });
 
 /**
+ * I4. Per-band operation preview (roadmap Tier 1). The tint math itself is
+ * unit-covered against real THREE materials; what needs the real bundle is
+ * the wiring: the draft-bucket lookup off a genuine `opPreviewRequest`
+ * round trip, the status-line legend (with full-history op numbering), its
+ * retirement on a uniform supersede, stale-reply discipline, and cancel
+ * clearing it. Host replies are faked by posting `opPreviewResult`
+ * directly (the clash/context-menu precedent) with hand-built two-triangle
+ * meshes — the payload shape, not the geometry, is what's under test.
+ */
+async function openBoxForm(page) {
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".op-btn")].find(
+      (b) => b.querySelector(".op-name")?.textContent === "Box"
+    );
+    btn?.click();
+  });
+  await sleep(700); // past the 250ms preview debounce, with margin
+}
+
+async function lastPreviewRequest(page) {
+  return page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "opPreviewRequest").at(-1) ?? null
+  );
+}
+
+async function postBandedPreviewReply(page, requestId, withBucket) {
+  await page.evaluate(
+    ({ id, banded }) =>
+      window.postMessage(
+        {
+          type: "opPreviewResult",
+          requestId: id,
+          meshes: (() => {
+            const toB64 = (arr) => {
+              const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+              let s = "";
+              for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+              return btoa(s);
+            };
+            const tri = (x) => ({
+              positions: toB64(new Float32Array([x, 0, 0, x + 1, 0, 0, x, 1, 0])),
+              indices: toB64(new Uint32Array([0, 1, 2])),
+              groupId: "solid-9",
+            });
+            return [
+              { ...tri(0), faceId: "face-10" },
+              { ...tri(5), faceId: "face-11" },
+            ];
+          })(),
+          edges: [],
+          points: [],
+          opOutcomes: [{ index: 0, kind: "addBox", applied: true }],
+          ...(banded ? { opBuckets: [{ op: 0, kind: "addBox", roles: { body: ["face-10"] } }] } : {}),
+        },
+        "*"
+      ),
+    { id: requestId, banded: withBucket }
+  );
+  await sleep(250);
+}
+
+const previewStatus = (page) =>
+  page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+
+test("op preview bands: a bucket reply shows a legend; a uniform reply retires it", async (page) => {
+  await populate(page);
+  await openBoxForm(page);
+  const req = await lastPreviewRequest(page);
+  assert(req !== null && typeof req?.requestId === "string", "opening the Box form posts an opPreviewRequest");
+  await postBandedPreviewReply(page, req.requestId, true);
+  const legend = await previewStatus(page);
+  assert(
+    /Preview op 1 — green: new body ×1; grey: retained/.test(legend),
+    `the band legend names the full-history op, tint word and roles (got ${JSON.stringify(legend)})`
+  );
+  // A uniform supersede (no bucket, e.g. a non-topology-changing draft) must
+  // retire the legend, not leave it describing unhighlighted faces.
+  await page.evaluate(() => {
+    const input = document.querySelector("#edits-params input");
+    if (input) {
+      input.focus();
+      document.execCommand("selectAll", false, undefined);
+    }
+  });
+  await page.fill("#edits-params input", "2");
+  await sleep(700);
+  const req2 = await lastPreviewRequest(page);
+  assert(req2 !== null && req2.requestId !== req.requestId, "typing schedules a second preview request");
+  await postBandedPreviewReply(page, req2.requestId, false);
+  assert((await previewStatus(page)) === "", "a uniform preview retires the band legend");
+});
+
+test("op preview bands: a stale band reply is ignored", async (page) => {
+  await populate(page);
+  await openBoxForm(page);
+  const req = await lastPreviewRequest(page);
+  assert(req !== null, "precondition: a preview request is in flight");
+  await postBandedPreviewReply(page, "stale-id", true);
+  assert(
+    !(await previewStatus(page)).includes("Preview op"),
+    "a stale reply stages no legend"
+  );
+  await postBandedPreviewReply(page, req.requestId, true);
+  assert(
+    /Preview op 1 — green/.test(await previewStatus(page)),
+    "the current generation still renders once its own reply lands"
+  );
+});
+
+test("op preview bands: switching forms clears the legend", async (page) => {
+  await populate(page);
+  await openBoxForm(page);
+  const req = await lastPreviewRequest(page);
+  assert(req !== null, "precondition: a preview request is in flight");
+  await postBandedPreviewReply(page, req.requestId, true);
+  assert(/Preview op 1/.test(await previewStatus(page)), "precondition: the legend is shown");
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".op-btn")].find(
+      (b) => b.querySelector(".op-name")?.textContent === "Sphere"
+    );
+    btn?.click();
+  });
+  await sleep(200);
+  assert(
+    !(await previewStatus(page)).includes("Preview op"),
+    "leaving the form clears the band legend with the overlay"
+  );
+});
+
+/**
  * G. Dropdown menus — both of these are previously-FIXED real bugs with no
  * regression test, recorded in `CLAUDE.md`'s "Toolbar dropdown menus":
  *  1. The containment test used `e.target !== btn`, but every trigger wraps its
@@ -1503,8 +1633,9 @@ test("context menu: choosing a group selects exactly the members it advertised",
 });
 
 test("context menu: volume mode says why it has no groups instead of showing a blank menu", async (page) => {
-  // Volume/point have no predicate vocabulary — the same gate the filter form
-  // applies. An empty menu would read as a bug.
+  // Volume/point HAVE a filter-form vocabulary now, but the menu's rows are
+  // reference-driven and neither mode has reference-shaped rows yet.
+  // An empty menu would read as a bug.
   await populate(page);
   await enablePicking(page, "volume");
 

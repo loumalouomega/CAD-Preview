@@ -2606,6 +2606,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           pointId: p.pointId,
         })),
         opOutcomes: result.opOutcomes,
+        // Roadmap Tier 1 "Per-band operation-preview colouring": the draft
+        // op's own bucket (replay-tail-relative, like opOutcomes above — the
+        // webview translates to full-history numbering for any legend text).
+        opBuckets: result.opBuckets,
       });
     } catch (err) {
       post({ type: "opPreviewError", requestId, message: (err as Error).message });
