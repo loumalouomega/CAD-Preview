@@ -1526,6 +1526,10 @@ test("clash: Check-all posts one request and renders named pairs with the screen
           { partA: "Body", partB: "Far", a: ["solid-0"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, screenedByBbox: true, unresolvedA: [], unresolvedB: [] },
         ],
         warnings: [],
+        totalPairs: 2,
+        checkedPairs: 2,
+        screenedPairs: 1,
+        partial: false,
       },
       "*"
     ),
@@ -1535,6 +1539,38 @@ test("clash: Check-all posts one request and renders named pairs with the screen
   const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
   assert(text.includes("Bracket") && text.includes("overlap"), `the overlapping pair renders (got ${JSON.stringify(text)})`);
   assert(text.includes("AABB-screened"), `the pre-filtered pair carries its badge (got ${JSON.stringify(text)})`);
+});
+
+test("clash: a partial all-pairs result labels itself partial and never as clash-free", async (page) => {
+  await populate(page);
+  await page.click("#clash-check-all");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null
+  );
+  assert(req !== null && typeof req?.requestId === "string", "clicking Check all posts a clashCheckAllRequest");
+  await page.evaluate((id) =>
+    window.postMessage(
+      {
+        type: "clashCheckAllResult",
+        requestId: id,
+        pairs: [
+          { partA: "Body", partB: "Bracket", a: ["solid-0"], b: ["solid-1"], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] },
+          { partA: "Body", partB: "Far", a: ["solid-0"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], unchecked: true },
+        ],
+        warnings: ["Partial result: 1 of 2 pair(s) unchecked (maxPairs=1). Unchecked pairs are NOT clash-free — re-run with a larger budget or an explicit parts subset."],
+        totalPairs: 2,
+        checkedPairs: 1,
+        screenedPairs: 0,
+        partial: true,
+      },
+      "*"
+    ),
+    req.requestId
+  );
+  await sleep(200);
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(/Partial result/i.test(text), `a partial banner renders (got ${JSON.stringify(text)})`);
+  assert(/not checked/i.test(text), `the unchecked row never reads as "no overlap" (got ${JSON.stringify(text)})`);
 });
 
 test("clash: the same Part twice is refused without a host round trip", async (page) => {

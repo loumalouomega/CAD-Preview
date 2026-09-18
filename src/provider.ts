@@ -1895,7 +1895,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
             replayTail(currentEdits, currentBakedThrough),
-            usable.map((p) => p.volumes)
+            usable.map((p) => p.volumes),
+            msg.maxPairs !== undefined || msg.maxBooleans !== undefined
+              ? { maxPairs: msg.maxPairs, maxBooleans: msg.maxBooleans }
+              : undefined
           );
           const expected = (usable.length * (usable.length - 1)) / 2;
           if (result.pairs.length !== expected) {
@@ -1915,6 +1918,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             requestId: msg.requestId,
             pairs: named,
             warnings: result.warnings,
+            totalPairs: result.totalPairs,
+            checkedPairs: result.checkedPairs,
+            screenedPairs: result.screenedPairs,
+            partial: result.uncheckedCount > 0,
           });
         } catch (err) {
           post({ type: "clashCheckAllError", requestId: msg.requestId, message: (err as Error).message });

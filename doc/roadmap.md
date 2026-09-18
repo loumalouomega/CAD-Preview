@@ -37,12 +37,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-#### Bounded assembly interference checks (**S–M**, shared pipeline)
-
-- **Gap:** `check_interference_all` can schedule a quadratic number of pairs; AABB screening reduces boolean cost but does not bound total work.
-- **Scope:** a caller-visible pair/work limit applied before expensive computation, deterministic pair ordering, and explicit total/checked/screened/skipped counts. The Clash panel must label a partial result as partial. Adapt the existing full `C(n,2)` response guard rather than accidentally treating truncation as a kernel error.
-- **Done when:** a limited call finishes within its work budget, reports unchecked pairs, and never describes an unchecked assembly as clash-free. Small unrestricted cases keep their current results.
-
 #### Zoom to selection (**S**, webview)
 
 - **Reuse:** `Viewer.frameBox` and its separate camera-placement helper already exist for headless framing without changing model-wide pick thresholds or the auto-fit containment cache.

@@ -14,6 +14,9 @@ export interface ClashPairDisplay {
   overlapVolume: number | null;
   /** True when the AABB pre-filter decided without paying for a boolean. */
   screenedByBbox?: boolean;
+  /** True when the pair was left unevaluated by a work budget — explicitly
+   * NOT clash-free. Rendered as "not checked", never as "no overlap". */
+  unchecked?: boolean;
   unresolvedA: string[];
   unresolvedB: string[];
 }
@@ -121,11 +124,17 @@ export class ClashPanel {
     this.results.appendChild(this.pairRow(pair, unitLabel));
   }
 
-  renderAll(pairs: ClashPairDisplay[], unitLabel?: string): void {
+  renderAll(pairs: ClashPairDisplay[], unitLabel?: string, partial?: { totalPairs: number; checkedPairs: number }): void {
     this.results.innerHTML = "";
     if (pairs.length === 0) {
       this.renderMessage("No pairs to show.");
       return;
+    }
+    if (partial && partial.checkedPairs < partial.totalPairs) {
+      const banner = document.createElement("div");
+      banner.className = "mass-message mass-message-error";
+      banner.textContent = `Partial result: ${partial.checkedPairs} of ${partial.totalPairs} pairs checked — unchecked pairs are NOT clash-free.`;
+      this.results.appendChild(banner);
     }
     for (const pair of pairs) this.results.appendChild(this.pairRow(pair, unitLabel));
   }
@@ -140,11 +149,14 @@ export class ClashPanel {
     value.className = "mass-value";
     const volume = pair.overlapVolume;
     const suffix = unitLabel ? ` ${unitLabel}³` : "";
-    value.textContent = pair.hasOverlap ? `overlap${volume != null ? ` ${formatNum(volume)}${suffix}` : ""}` : "no overlap";
+    value.textContent = pair.unchecked === true
+      ? "not checked — not clash-free"
+      : pair.hasOverlap ? `overlap${volume != null ? ` ${formatNum(volume)}${suffix}` : ""}` : "no overlap";
     row.appendChild(label);
     row.appendChild(value);
     const notes: string[] = [];
-    if (pair.screenedByBbox) notes.push("AABB-screened");
+    if (pair.unchecked === true) notes.push("unchecked (over budget)");
+    else if (pair.screenedByBbox) notes.push("AABB-screened");
     if (pair.unresolvedA.length > 0) notes.push(`A unresolved: ${pair.unresolvedA.join(", ")}`);
     if (pair.unresolvedB.length > 0) notes.push(`B unresolved: ${pair.unresolvedB.join(", ")}`);
     if (notes.length > 0) {

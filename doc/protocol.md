@@ -398,7 +398,7 @@ type HostToWebview =
   | { type: 'massPropertiesError'; requestId: string; message: string }
   | { type: 'clashCheckResult'; requestId: string; result: InterferenceResult }
   | { type: 'clashCheckError'; requestId: string; message: string }
-  | { type: 'clashCheckAllResult'; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[] }
+  | { type: 'clashCheckAllResult'; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[]; totalPairs: number; checkedPairs: number; screenedPairs: number; partial: boolean }
   | { type: 'clashCheckAllError'; requestId: string; message: string }
   | { type: 'macros'; macros: MacroSummary[] }
   | { type: 'macroApplyOps'; ops: EditOp[] }
@@ -716,7 +716,7 @@ Sent in reply to `bomRequest` (webview → host, below) — roadmap Tier 2 "BOM 
 
 ### `clashCheckResult` / `clashCheckError` / `clashCheckAllResult` / `clashCheckAllError`
 
-Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep sources only** (a mesh has no exact B-rep boolean geometry to intersect; the Clash section hides itself for mesh sources and never sends either request). Carries `InterferenceResult` / named `InterferencePairResult`s verbatim from the existing `checkInterference` / `checkInterferenceAll` pipeline functions — the Clash panel is a new protocol pair over existing kernel surface, not new geometry work; the same functions back the `check_interference` / `check_interference_all` MCP tools. `clashCheckAllRequest` takes no operands (every Part with volumes); each returned pair is named `partA`/`partB` in the kernel's `i<j` enumeration order.
+Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep sources only** (a mesh has no exact B-rep boolean geometry to intersect; the Clash section hides itself for mesh sources and never sends either request). Carries `InterferenceResult` / named `InterferencePairResult`s verbatim from the existing `checkInterference` / `checkInterferenceAll` pipeline functions — the Clash panel is a new protocol pair over existing kernel surface, not new geometry work; the same functions back the `check_interference` / `check_interference_all` MCP tools. `clashCheckAllRequest` takes no operands (every Part with volumes) plus optional `maxPairs`/`maxBooleans` work-budget caps; each returned pair is named `partA`/`partB` in the kernel's `i<j` enumeration order. Bounded results carry `partial: true` with `unchecked: true` rows that are explicitly NOT clash-free — the panel renders a partial banner plus per-row "not checked" notes, and `checkedPairs`/`totalPairs` describe the budget outcome.
 
 ```json
 { "type": "clashCheckRequest", "requestId": "1234-0.56", "partA": "Housing", "partB": "Shaft" }
@@ -922,7 +922,7 @@ type WebviewToHost =
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
   | { type: 'clashCheckRequest'; requestId: string; partA: string; partB: string }
-  | { type: 'clashCheckAllRequest'; requestId: string }
+  | { type: 'clashCheckAllRequest'; requestId: string; maxPairs?: number; maxBooleans?: number }
   | { type: 'macroRun'; name: string; parameters: Record<string, string> }
   | { type: 'macroSaveCurrent' }
   | { type: 'macroDelete'; name: string }
@@ -1181,7 +1181,7 @@ Sent when the Parts section's **Copy BOM** button is clicked — only enabled fo
 
 ### `clashCheckRequest` / `clashCheckAllRequest`
 
-Sent when the Clash panel's **Check** / **Check all** button is clicked, for a B-rep source only (mesh sources never send these — the section is hidden). `clashCheckRequest` names two Parts (`partA`/`partB` — the panel refuses identical picks with a guidance message instead of sending); `clashCheckAllRequest` names none (every Part with volumes).
+Sent when the Clash panel's **Check** / **Check all** button is clicked, for a B-rep source only (mesh sources never send these — the section is hidden). `clashCheckRequest` names two Parts (`partA`/`partB` — the panel refuses identical picks with a guidance message instead of sending); `clashCheckAllRequest` names none (every Part with volumes) plus optional `maxPairs`/`maxBooleans` work-budget caps.
 
 ### `measureExactRequest`
 

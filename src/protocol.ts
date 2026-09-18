@@ -447,8 +447,10 @@ export type HostToWebview =
   | { type: "clashCheckResult"; requestId: string; result: InterferenceResult }
   | { type: "clashCheckError"; requestId: string; message: string }
   /** All-pairs variant over `checkInterferenceAll` (one parse/replay total,
-   * AABB-pre-filtered): `parts` omitted means every Part with volumes. */
-  | { type: "clashCheckAllResult"; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[] }
+   * AABB-pre-filtered): `parts` omitted means every Part with volumes.
+   * Bounded results carry `partial: true` with `unchecked: true` rows that
+   * are explicitly NOT clash-free — the panel must label them as partial. */
+  | { type: "clashCheckAllResult"; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[]; totalPairs: number; checkedPairs: number; screenedPairs: number; partial: boolean }
   | { type: "clashCheckAllError"; requestId: string; message: string }
   /** Analytic classification of one entity, for the inspector card. Carries
    * `EntityFacts` verbatim from the existing `getEntityFacts` pipeline
@@ -641,7 +643,7 @@ export type WebviewToHost =
    * Part-name resolution the `check_interference` MCP tool applies). */
   | { type: "clashCheckRequest"; requestId: string; partA: string; partB: string }
   /** Clash panel: check every Part against every other in one call. */
-  | { type: "clashCheckAllRequest"; requestId: string }
+  | { type: "clashCheckAllRequest"; requestId: string; maxPairs?: number; maxBooleans?: number }
   /** Inspector card: classify the entity the user just selected. */
   /** Run a saved macro, appending its compiled ops to the edit history. */
   | { type: "macroRun"; name: string; parameters: Record<string, string> }

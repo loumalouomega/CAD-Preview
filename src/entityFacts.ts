@@ -741,6 +741,43 @@ export interface InterferencePairResult {
    * pair to `hasOverlap: false` exactly like single-pair
    * {@link checkInterference} does). */
   screenedByBbox?: boolean;
+  /** True when this pair was NOT evaluated because a caller-supplied
+   * work budget (`maxPairs`/`maxBooleans`) was exhausted first. An
+   * unchecked pair is explicitly NOT clash-free — `hasOverlap` stays
+   * `false` with `overlapVolume` 0 only because no boolean ran. Callers
+   * must label partial results as partial, never as "no clashes". */
+  unchecked?: boolean;
+}
+
+/** Caller-visible work budget for {@link checkInterferenceAll} (roadmap
+ * "Bounded assembly interference checks"). Both limits are applied BEFORE
+ * expensive computation in deterministic `i<j` enumeration order; the
+ * cheap AABB pre-filter still runs for every in-budget pair (and for
+ * pairs past the boolean budget — a screened answer costs no boolean,
+ * so it is always reported rather than marked unchecked). */
+export interface InterferenceAllOptions {
+  /** Maximum number of pairs to evaluate (screened or boolean). Remaining
+   * pairs in enumeration order are returned as `unchecked: true`. */
+  maxPairs?: number;
+  /** Maximum number of real `BRepAlgoAPI_Common_3` booleans to run.
+   * Screened pairs never consume this budget. Pairs that would need a
+   * boolean past the budget are returned as `unchecked: true`. */
+  maxBooleans?: number;
+}
+
+export interface InterferenceAllSummary {
+  pairs: InterferencePairResult[];
+  warnings: string[];
+  /** C(n,2) over the groups handed in — always equals `pairs.length`,
+   * so the tool-layer `C(n,2)` contract guard keeps holding for both
+   * full and partial results. */
+  totalPairs: number;
+  /** Pairs actually evaluated (screened + boolean). */
+  checkedPairs: number;
+  /** Pairs decided by the AABB pre-filter without a boolean. */
+  screenedPairs: number;
+  /** Pairs left unevaluated by the work budget (`unchecked: true` rows). */
+  uncheckedCount: number;
 }
 
 /**
@@ -772,8 +809,9 @@ export async function checkInterferenceAll(
   bytes: Uint8Array,
   format: BRepFormat,
   ops: EditOp[],
-  groups: string[][]
-): Promise<{ pairs: InterferencePairResult[]; warnings: string[] }> {
+  groups: string[][],
+  options?: InterferenceAllOptions
+): Promise<InterferenceAllSummary> {
   const oc = await getOcct(extensionPath);
   const tmpName = `/cia.${format}`;
   oc.FS.writeFile(tmpName, bytes);
@@ -853,23 +891,50 @@ export async function checkInterferenceAll(
       a.max[1] < b.min[1] || b.max[1] < a.min[1] ||
       a.max[2] < b.min[2] || b.max[2] < a.min[2];
 
+    // Bounded work budget (roadmap "Bounded assembly interference checks"):
+    // deterministic i<j enumeration order; maxPairs caps evaluated pairs,
+    // maxBooleans caps real booleans (screened pairs are free and always
+    // reported, even past the boolean budget). Unexhausted callers see
+    // byte-identical behavior to before this feature (no options).
+    const rawMaxPairs = options?.maxPairs;
+    const rawMaxBooleans = options?.maxBooleans;
+    const maxPairs =
+      rawMaxPairs === undefined ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(rawMaxPairs));
+    const maxBooleans =
+      rawMaxBooleans === undefined ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(rawMaxBooleans));
+    const bounded = Number.isFinite(maxPairs) || Number.isFinite(maxBooleans);
+    let booleansUsed = 0;
+    let evaluatedPairs = 0;
+
     for (let i = 0; i < resolved.length; i++) {
       for (let j = i + 1; j < resolved.length; j++) {
         const gi = resolved[i];
         const gj = resolved[j];
         const base = { unresolvedA: gi.unresolved, unresolvedB: gj.unresolved };
+        if (evaluatedPairs >= maxPairs) {
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, unchecked: true, ...base });
+          continue;
+        }
         if (gi.extent === null || gj.extent === null) {
           pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, ...base });
+          evaluatedPairs++;
           continue;
         }
         if (strictlyDisjoint(gi.extent, gj.extent)) {
           pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, screenedByBbox: true, ...base });
+          evaluatedPairs++;
+          continue;
+        }
+        if (booleansUsed >= maxBooleans) {
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, unchecked: true, ...base });
           continue;
         }
         const shapeA = combineSolids(oc, gi.handles, cleanup);
         const shapeB = combineSolids(oc, gj.handles, cleanup);
         const algo = new oc.BRepAlgoAPI_Common_3(shapeA, shapeB);
         cleanup.push(algo);
+        booleansUsed++;
+        evaluatedPairs++;
         if (!algo.IsDone()) {
           pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, ...base });
           continue;
@@ -888,7 +953,21 @@ export async function checkInterferenceAll(
       }
     }
 
-    return { pairs, warnings };
+    const totalPairs = pairs.length;
+    const uncheckedCount = pairs.filter((p) => p.unchecked === true).length;
+    const checkedPairs = totalPairs - uncheckedCount;
+    const screenedPairs = pairs.filter((p) => p.screenedByBbox === true).length;
+    if (bounded && uncheckedCount > 0) {
+      const limits: string[] = [];
+      if (Number.isFinite(maxPairs)) limits.push(`maxPairs=${maxPairs}`);
+      if (Number.isFinite(maxBooleans)) limits.push(`maxBooleans=${maxBooleans} (used ${booleansUsed})`);
+      warnings.push(
+        `Partial result: ${uncheckedCount} of ${totalPairs} pair(s) unchecked (${limits.join(", ")}). ` +
+          `Unchecked pairs are NOT clash-free — re-run with a larger budget or an explicit parts subset.`
+      );
+    }
+
+    return { pairs, warnings, totalPairs, checkedPairs, screenedPairs, uncheckedCount };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

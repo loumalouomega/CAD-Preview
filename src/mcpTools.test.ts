@@ -384,7 +384,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
           });
         }
       }
-      return { pairs, warnings: [] };
+      return { pairs, warnings: [], totalPairs: pairs.length, checkedPairs: pairs.length, screenedPairs: 0, uncheckedCount: 0 };
     }),
     renderSnapshot: vi.fn(async () => FAKE_RENDER_RESULT),
     exportDrawingSheet: vi.fn(async (_ext: string, _source: unknown, opts: { views: Array<{ name: string }>; paper?: string; projection?: string; format?: string }) => ({
@@ -3437,7 +3437,8 @@ describe("check_interference_all", () => {
       expect.any(Uint8Array),
       "step",
       [],
-      [["solid-0"], ["solid-1"], ["solid-0", "solid-1"]]
+      [["solid-0"], ["solid-1"], ["solid-0", "solid-1"]],
+      undefined
     );
   });
 
@@ -3445,12 +3446,58 @@ describe("check_interference_all", () => {
     const pair = { a: [], b: [], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] };
     // TWO pairs for TWO parts (C(2,2) = 1) — the mislabeling guard fires.
     const pipeline = fakePipeline({
-      checkInterferenceAll: vi.fn(async () => ({ pairs: [pair, pair], warnings: [] })),
+      checkInterferenceAll: vi.fn(async () => ({ pairs: [pair, pair], warnings: [], totalPairs: 2, checkedPairs: 2, screenedPairs: 0, uncheckedCount: 0 })),
     });
     const c = ctx(pipeline);
     await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
     await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
     await expect(checkInterferenceAllTool(c, { path: stpModel })).rejects.toThrow(/shape mismatch/);
+  });
+
+  it("forwards maxPairs/maxBooleans and surfaces partial counts without tripping the C(n,2) guard", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
+    await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
+    await setPart({ path: stpModel, name: "C", volumes: ["solid-2"] });
+    const result = await checkInterferenceAllTool(c, { path: stpModel, maxPairs: 1, maxBooleans: 2 });
+    expect(c.pipeline.checkInterferenceAll).toHaveBeenCalledWith(
+      dir,
+      expect.any(Uint8Array),
+      "step",
+      [],
+      [["solid-0"], ["solid-1"], ["solid-2"]],
+      { maxPairs: 1, maxBooleans: 2 }
+    );
+    // Fake pipeline ignores the budget (full result): no partial.
+    expect(result.totalPairs).toBe(3);
+    expect(result.checkedPairs).toBe(3);
+    expect(result.partial).toBe(false);
+  });
+
+  it("labels unchecked placeholder pairs as partial, never as clash-free", async () => {
+    const checked = { a: ["solid-0"], b: ["solid-1"], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] };
+    const uncheckedPair = { a: ["solid-0"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], unchecked: true };
+    const third = { a: ["solid-1"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], unchecked: true };
+    const pipeline = fakePipeline({
+      checkInterferenceAll: vi.fn(async () => ({
+        pairs: [checked, uncheckedPair, third],
+        warnings: ["Partial result: 2 of 3 pair(s) unchecked (maxPairs=1). Unchecked pairs are NOT clash-free — re-run with a larger budget or an explicit parts subset."],
+        totalPairs: 3,
+        checkedPairs: 1,
+        screenedPairs: 0,
+        uncheckedCount: 2,
+      })),
+    });
+    const c = ctx(pipeline);
+    await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
+    await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
+    await setPart({ path: stpModel, name: "C", volumes: ["solid-2"] });
+    const result = await checkInterferenceAllTool(c, { path: stpModel, maxPairs: 1 });
+    expect(result.pairs).toHaveLength(3);
+    expect(result.partial).toBe(true);
+    expect(result.uncheckedCount).toBe(2);
+    expect(result.pairs![1]).toMatchObject({ partA: "A", partB: "C", unchecked: true, hasOverlap: false });
+    expect(result.warnings.join("\n")).toMatch(/NOT clash-free/);
   });
 });
 

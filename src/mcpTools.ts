@@ -465,7 +465,7 @@ export function describeCapabilities() {
       "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Pass autoDecimate:true to run over a meshio++-decimated mesh instead (target ~1000 triangles; the response reports the ratio actually applied and warns that it describes the decimated mesh, never silently) — but note the sewing cost scales steeply past ~1k triangles, which is why the target is ~2% of the ceiling rather than just under it; and a decimated mesh can heal degenerately (decimation artifacts break the solidify — the report's own healedVolume/volumeDeltaPct/nonManifoldEdgeCount reveal it, and promote refuses to write such a solid rather than emitting a wrong file).",
       "repair_mesh (STL/OBJ/PLY/glTF sources only) writes a NEW watertight STL file at outputPath by tetrahedralizing the mesh with fTetWild and taking the resulting volume mesh's own boundary — watertight/manifold by construction regardless of how broken the input was, since fTetWild survives holes/self-intersections/non-manifold edges Gmsh's own classifySurfaces path rejects. A one-shot export (the source is untouched); the natural next step is re-running check_mesh_health/promote_mesh_to_brep on the repaired output. Unlike those two, it has no triangle-count ceiling (a different cost profile than the per-triangle OCCT sewing pipeline) — a very large/slow mesh may instead hit this server's own per-call timeout.",
       "inspect_meshio_fields (meshio++ sources only) lists a file's scalar result fields headlessly — per-array name, point|cell location, component width, finite-only min/max, NaN count — summaries only, never raw values. A multi-component array is reported with its width, not an error. Read-only, never mutates or persists anything.",
-      "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). On documents with many Parts, pass an explicit parts subset.",
+      "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). Bound it with maxPairs/maxBooleans (deterministic i<j order; screened pairs are free); pairs past the budget return unchecked:true and are NOT clash-free (totalPairs/checkedPairs/screenedPairs/uncheckedCount/partial describe the outcome). On documents with many Parts, pass an explicit parts subset.",
       "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), axisDistance for two cylindrical faces (shortest infinite-axis separation — hole-to-hole spacing independent of the finite surfaces' clearance), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
       "list_workspace_models is pure on-disk discovery over the same routing rules load_model uses — depth-capped walk, .git/node_modules never scanned, caps reported via truncated/warnings rather than a quietly-partial list. This server holds no open-document/session state anywhere, so there is nothing else to discover.",
@@ -1272,18 +1272,26 @@ export async function checkInterferenceTool(
  * is the caller's verdict.
  *
  * Cost is O(n²) pairs worst-case (C(n,2) booleans before the AABB pre-filter);
- * deliberately NO caller-visible cap yet — the roadmap defers one until real
- * Part counts on real documents are known, and the pre-filter already cuts
- * the real cost to only geometrically-plausible pairs.
+ * bounded by the caller-visible `maxPairs`/`maxBooleans` work budget
+ * (roadmap "Bounded assembly interference checks"): deterministic i<j
+ * enumeration order, screened pairs never consume the boolean budget, and
+ * pairs past the budget return as `unchecked: true` — explicitly NOT
+ * clash-free. Counts (`totalPairs`/`checkedPairs`/`screenedPairs`/
+ * `uncheckedCount`/`partial`) describe the budget outcome.
  */
 export async function checkInterferenceAllTool(
   ctx: ToolContext,
-  params: { path: string; parts?: string[] }
+  params: { path: string; parts?: string[]; maxPairs?: number; maxBooleans?: number }
 ): Promise<{
   format: CadFormat;
   supported: boolean;
   warnings: string[];
   pairs?: Array<InterferencePairResult & { partA: string; partB: string }>;
+  totalPairs?: number;
+  checkedPairs?: number;
+  screenedPairs?: number;
+  uncheckedCount?: number;
+  partial?: boolean;
 }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -1325,7 +1333,17 @@ export async function checkInterferenceAllTool(
   }
 
   if (selected.length < 2) {
-    return { format: route.format, supported: true, pairs: [], warnings: [...warnings, "Fewer than two usable parts — nothing to compare."] };
+    return {
+      format: route.format,
+      supported: true,
+      pairs: [],
+      warnings: [...warnings, "Fewer than two usable parts — nothing to compare."],
+      totalPairs: 0,
+      checkedPairs: 0,
+      screenedPairs: 0,
+      uncheckedCount: 0,
+      partial: false,
+    };
   }
 
   const { ops } = await readEditsResolved(modelPath);
@@ -1339,14 +1357,18 @@ export async function checkInterferenceAllTool(
     bytes,
     format as BRepFormat,
     ops,
-    selected.map((p) => p.volumes)
+    selected.map((p) => p.volumes),
+    params.maxPairs !== undefined || params.maxBooleans !== undefined
+      ? { maxPairs: params.maxPairs, maxBooleans: params.maxBooleans }
+      : undefined
   );
   warnings.push(...result.warnings);
 
   // The pipeline emits exactly C(n,2) pairs in i<j order over the groups it
   // was handed — mirror that loop here to attach each pair's part names. The
   // length guard keeps a future pipeline-side change loud instead of silently
-  // mislabeling every row.
+  // mislabeling every row. Bounded results keep the same length (unchecked
+  // pairs are placeholders, never dropped), so truncation can never trip it.
   if (result.pairs.length !== (selected.length * (selected.length - 1)) / 2) {
     throw new Error(
       `checkInterferenceAll returned ${result.pairs.length} pair(s) for ${selected.length} parts — internal shape mismatch, refusing to label them.`
@@ -1360,7 +1382,22 @@ export async function checkInterferenceAllTool(
     }
   }
 
-  return { format: route.format, supported: true, pairs: namedPairs, warnings };
+  const totalPairs = result.totalPairs ?? namedPairs.length;
+  const uncheckedCount = result.uncheckedCount ?? namedPairs.filter((p) => p.unchecked === true).length;
+  const checkedPairs = result.checkedPairs ?? totalPairs - uncheckedCount;
+  const screenedPairs =
+    result.screenedPairs ?? namedPairs.filter((p) => p.screenedByBbox === true).length;
+  return {
+    format: route.format,
+    supported: true,
+    pairs: namedPairs,
+    warnings,
+    totalPairs,
+    checkedPairs,
+    screenedPairs,
+    uncheckedCount,
+    partial: uncheckedCount > 0,
+  };
 }
 
 // ---------------------------------------------------------------------------

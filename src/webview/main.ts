@@ -1317,7 +1317,12 @@ let clashCheckAllRequestId: string | null = null;
 let clashLastPair: { partA: string; partB: string } | null = null;
 let lastClashResults:
   | { kind: "pair"; pair: Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null } }
-  | { kind: "all"; pairs: Array<Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null }> }
+  | {
+      kind: "all";
+      pairs: Array<Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null }>;
+      totalPairs: number;
+      checkedPairs: number;
+    }
   | null = null;
 
 function renderClashResults(): void {
@@ -1329,7 +1334,8 @@ function renderClashResults(): void {
   } else {
     clashPanel.renderAll(
       lastClashResults.pairs.map(({ overlapVolumeMm3, ...rest }) => ({ ...rest, overlapVolume: convert(overlapVolumeMm3) })),
-      currentDisplayUnit
+      currentDisplayUnit,
+      { totalPairs: lastClashResults.totalPairs, checkedPairs: lastClashResults.checkedPairs }
     );
   }
 }
@@ -4619,9 +4625,12 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
           hasOverlap: p.hasOverlap,
           overlapVolumeMm3: p.hasOverlap ? p.overlapVolume : null,
           screenedByBbox: p.screenedByBbox,
+          unchecked: p.unchecked,
           unresolvedA: p.unresolvedA,
           unresolvedB: p.unresolvedB,
         })),
+        totalPairs: msg.totalPairs,
+        checkedPairs: msg.checkedPairs,
       };
       renderClashResults();
       break;
