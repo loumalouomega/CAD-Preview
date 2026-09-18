@@ -2081,6 +2081,18 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     if (d.exprs && Object.keys(d.exprs).length > 0) op.exprs = d.exprs;
     return op;
   };
+  // Plane-authored profile drafts (roadmap Tier 1 "Author profiles on a named
+  // construction plane"): the panel fills the resolved cache and reads the
+  // reference; the host re-resolves against the live plane on replay.
+  const planeRefOf = (draft: Record<string, any>): Record<string, unknown> =>
+    typeof draft.planeId === "string" && draft.planeId
+      ? {
+          planeId: draft.planeId,
+          offsetU: draft.offsetU ?? 0,
+          offsetV: draft.offsetV ?? 0,
+          ...(draft.rotationDeg !== undefined ? { rotationDeg: draft.rotationDeg } : {}),
+        }
+      : {};
   const selVolumes = selectedVolumes();
   const selFaces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
   const selEdges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
@@ -2320,18 +2332,21 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     }
 
     // ── 2D profiles ──
+    // Plane-authored drafts carry `planeId` + offsets/rotation alongside the
+    // resolved cache (the panel fills it from the picked plane); the host
+    // re-resolves against the live plane on replay, so preview ≡ Apply.
     case "addCircleProfile":
       if (d.radius <= 0) return { error: "Circle radius must be positive." };
-      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius }) };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius, ...planeRefOf(d) }) };
     case "addRectangleProfile":
       if (d.width <= 0 || d.height <= 0) return { error: "Width and height must be positive." };
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
-      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, width: d.width, height: d.height }) };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, width: d.width, height: d.height, ...planeRefOf(d) }) };
     case "addPolygonProfile":
       if (d.radius <= 0) return { error: "Radius must be positive." };
       if (!Number.isInteger(d.sides) || d.sides < 3) return { error: "Sides must be an integer ≥ 3." };
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
-      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radius: d.radius, sides: d.sides }) };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radius: d.radius, sides: d.sides, ...planeRefOf(d) }) };
     case "addEllipseProfile":
       if (d.radiusX <= 0 || d.radiusY <= 0) return { error: "Both radii must be positive." };
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };

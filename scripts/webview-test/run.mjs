@@ -876,6 +876,100 @@ test("filters: hidden geometry matches nothing in Vol mode", async (page) => {
 });
 
 /**
+ * J. Plane-authored profiles (roadmap Tier 1). Kernel resolution is
+ * unit-covered (`planeRefs.test.ts`) and live-verified (`mcp:smoke`'s
+ * analytic block); what needs the real bundle is the form: the Plane
+ * picker lists saved planes, picking one fills + disables the placement
+ * inputs, offsets shift the fill, and Apply attaches `planeId` + cache
+ * (read back off `editsChanged` — preview ≡ Apply through the one choke
+ * point, so the attached op IS what the preview replayed).
+ */
+async function openProfileForm(page, name) {
+  await page.evaluate((n) => {
+    const btn = [...document.querySelectorAll(".op-btn")].find(
+      (b) => b.querySelector(".op-name")?.textContent === n
+    );
+    btn?.click();
+  }, name);
+  await sleep(200);
+}
+
+async function postPlanes(page) {
+  await page.evaluate(() =>
+    window.postMessage(
+      { type: "planes", planes: [{ id: "plane-0", name: "Datum A", point: [10, 0, 0], normal: [0, 0, 1] }] },
+      "*"
+    )
+  );
+  await sleep(250);
+}
+
+test("profile planes: picker lists saved planes; picking fills and disables placement", async (page) => {
+  await populate(page);
+  await postPlanes(page);
+  await openProfileForm(page, "Circle");
+  const options = await page.evaluate(() =>
+    [...document.querySelectorAll('#edits-params select[data-name="planeId"] option')].map((o) => o.value)
+  );
+  assert(options.includes("plane-0"), `the Plane picker lists the saved plane (got ${JSON.stringify(options)})`);
+  await page.selectOption('#edits-params select[data-name="planeId"]', "plane-0");
+  await sleep(200);
+  const filled = await page.evaluate(() => ({
+    center: [...document.querySelectorAll('#edits-params input[data-name="center"]')].map((i) => i.value),
+    disabled: [...document.querySelectorAll('#edits-params input[data-name="center"]')].every((i) => i.disabled),
+    normal: [...document.querySelectorAll('#edits-params input[data-name="normal"]')].map((i) => i.value),
+  }));
+  assert(eq(filled.center, ["10", "0", "0"]), `center fills from the plane point (got ${JSON.stringify(filled.center)})`);
+  assert(filled.disabled, "filled placement inputs disable while a plane is picked");
+  assert(eq(filled.normal, ["0", "0", "1"]), `normal fills from the plane normal (got ${JSON.stringify(filled.normal)})`);
+});
+
+test("profile planes: offsets shift the fill; Apply attaches planeId + cache", async (page) => {
+  await populate(page);
+  await postPlanes(page);
+  await openProfileForm(page, "Rectangle");
+  await page.selectOption('#edits-params select[data-name="planeId"]', "plane-0");
+  await sleep(200);
+  await page.fill('#edits-params input[data-name="offsetU"]', "2");
+  await sleep(400); // delegated input refreshes the fill, then the preview debounce runs
+  const center = await page.evaluate(() =>
+    [...document.querySelectorAll('#edits-params input[data-name="center"]')].map((i) => i.value)
+  );
+  // +Z-plane frame is U=(0,−1,0): offsetU 2 shifts y by −2.
+  assert(eq(center, ["10", "-2", "0"]), `offsets shift the filled center (got ${JSON.stringify(center)})`);
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll("#edits-params button")].find((b) => b.textContent === "Sketch");
+    btn?.click();
+  });
+  await sleep(250);
+  const op = await page.evaluate(() => {
+    const m = (window.__sent || []).findLast((x) => x.type === "editsChanged");
+    return m ? m.ops[m.ops.length - 1] : null;
+  });
+  assert(op && op.op === "addRectangleProfile", `a rectangle op was pushed (got ${JSON.stringify(op?.op)})`);
+  assert(
+    op.planeId === "plane-0" && op.offsetU === 2 && op.offsetV === 0,
+    `the op carries its plane reference (got ${JSON.stringify({ planeId: op.planeId, offsetU: op.offsetU, offsetV: op.offsetV })})`
+  );
+  assert(eq(op.center, [10, -2, 0]), `the op carries the resolved cache (got ${JSON.stringify(op.center)})`);
+  assert(eq(op.up, [1, 0, 0]), `up resolves from the untilted frame (got ${JSON.stringify(op.up)})`);
+});
+
+test("profile planes: Custom restores hand typing", async (page) => {
+  await populate(page);
+  await postPlanes(page);
+  await openProfileForm(page, "Circle");
+  await page.selectOption('#edits-params select[data-name="planeId"]', "plane-0");
+  await sleep(200);
+  await page.selectOption('#edits-params select[data-name="planeId"]', "");
+  await sleep(200);
+  const enabled = await page.evaluate(() =>
+    [...document.querySelectorAll('#edits-params input[data-name="center"]')].every((i) => !i.disabled)
+  );
+  assert(enabled, "Custom re-enables the placement inputs");
+});
+
+/**
  * I4. Per-band operation preview (roadmap Tier 1). The tint math itself is
  * unit-covered against real THREE materials; what needs the real bundle is
  * the wiring: the draft-bucket lookup off a genuine `opPreviewRequest`

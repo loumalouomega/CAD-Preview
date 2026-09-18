@@ -175,6 +175,17 @@ describe("referencedEntities", () => {
       .toEqual(["face-4"]);
   });
 
+  it("reads profile planeId references", () => {
+    expect(referencedEntities({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 5 }))
+      .toEqual([]);
+    expect(referencedEntities({ op: "addCircleProfile", planeId: "plane-2", radius: 5 }))
+      .toEqual(["plane-2"]);
+    expect(referencedEntities({
+      op: "addRectangleProfile", planeId: "plane-1", width: 10, height: 6,
+      center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0],
+    })).toEqual(["plane-1"]);
+  });
+
   it("reads the scalar-string operands, including sweep's second one", () => {
     expect(referencedEntities({ op: "extrude", profile: "face-7", dir: [0, 0, 1], length: 2 }))
       .toEqual(["face-7"]);

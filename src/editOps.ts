@@ -212,12 +212,12 @@ export interface AddHoleOp { op: "addHole"; targets: string[]; position: Vec3; a
 export interface AddCounterboreHoleOp { op: "addCounterboreHole"; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; cbRadius: number; cbDepth: number; }
 /** Cut a countersunk hole: the plain hole plus a conical mouth from `csRadius` (> radius) tapering at included angle `csAngleDeg` (0 < angle < 180) down to `radius`. */
 export interface AddCountersinkHoleOp { op: "addCountersinkHole"; targets: string[]; position: Vec3; axis: Vec3; radius: number; depth: number; csRadius: number; csAngleDeg: number; }
-/** Add a standalone flat circular profile face (no thickness), for later use as an extrude/revolve/sweep/loft profile. */
-export interface AddCircleProfileOp { op: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number; guide?: boolean; }
-/** Add a standalone flat rectangular profile face. `up` (with `normal`) fixes its in-plane orientation. */
-export interface AddRectangleProfileOp { op: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; guide?: boolean; }
-/** Add a standalone flat regular `sides`-gon profile face of circumradius `radius`. When `circumscribed` is true, `radius` is the apothem. */
-export interface AddPolygonProfileOp { op: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; circumscribed?: boolean; guide?: boolean; }
+/** Add a standalone flat circular profile face (no thickness), for later use as an extrude/revolve/sweep/loft profile. With `planeId`, `center`/`normal` ride as resolved cache (overwritten at every read, omittable when authoring — a cache-less op replays only once its plane resolves) and `offsetU`/`offsetV` shift the center along the plane's deterministic frame. */
+export interface AddCircleProfileOp { op: "addCircleProfile"; center?: Vec3; normal?: Vec3; radius: number; planeId?: string; offsetU?: number; offsetV?: number; guide?: boolean; }
+/** Add a standalone flat rectangular profile face. `up` (with `normal`) fixes its in-plane orientation. With `planeId`, `center`/`normal`/`up` ride as resolved cache: `up` is the plane frame rotated by `rotationDeg` (0 = the frame itself). */
+export interface AddRectangleProfileOp { op: "addRectangleProfile"; center?: Vec3; normal?: Vec3; up?: Vec3; width: number; height: number; planeId?: string; offsetU?: number; offsetV?: number; rotationDeg?: number; guide?: boolean; }
+/** Add a standalone flat regular `sides`-gon profile face of circumradius `radius`. When `circumscribed` is true, `radius` is the apothem. Plane placement like `addRectangleProfile`. */
+export interface AddPolygonProfileOp { op: "addPolygonProfile"; center?: Vec3; normal?: Vec3; up?: Vec3; radius: number; sides: number; circumscribed?: boolean; planeId?: string; offsetU?: number; offsetV?: number; rotationDeg?: number; guide?: boolean; }
 /** Add a standalone flat elliptical profile face: `radiusX` along the in-plane `up` axis, `radiusY` perpendicular to it. */
 export interface AddEllipseProfileOp { op: "addEllipseProfile"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; guide?: boolean; }
 /** Add a standalone flat rectangle profile face with all four corners rounded to `cornerRadius` (0 < 2·cornerRadius < min(width, height) — the stadium limit case is what `addSlotProfile` is for). */
@@ -549,6 +549,65 @@ function asPlaneId(v: unknown): string | null {
   if (typeof v !== "string") return null;
   if (!/^plane-\d+$/.test(v)) return null;
   return v;
+}
+
+/**
+ * Validates the optional plane-placement annotation shared by the three
+ * plane-authorable profile kinds (`addCircleProfile`/`addRectangleProfile`/
+ * `addPolygonProfile`), returning the fields to attach (possibly just `{}`,
+ * meaning world mode) or `null` to reject the whole op. Mirrors `asThinSpec`'s
+ * optional-numeric shape: presence checks, then structural checks, then range
+ * checks.
+ *
+ * Offsets/rotation without a plane are meaningless (rejected, not ignored —
+ * silently dropping them would place the profile somewhere the author did
+ * not ask for). With a plane they default to 0 and must be finite when
+ * present. `rotationDeg` is accepted on the circle too (validated, unused —
+ * a circle has no orientation to rotate).
+ */
+function asProfilePlaneRef(o: Record<string, unknown>, wantRotation: boolean): {
+  planeId?: string; offsetU?: number; offsetV?: number; rotationDeg?: number;
+} | null {
+  if (o.planeId === undefined) {
+    if (o.offsetU !== undefined || o.offsetV !== undefined || o.rotationDeg !== undefined) return null;
+    return {};
+  }
+  const planeId = asPlaneId(o.planeId);
+  if (!planeId) return null;
+  // A circle has no orientation to rotate — accepting the field would store
+  // a value nothing reads, so it is rejected rather than carried.
+  if (!wantRotation && o.rotationDeg !== undefined) return null;
+  const offsetU = o.offsetU === undefined ? 0 : o.offsetU;
+  const offsetV = o.offsetV === undefined ? 0 : o.offsetV;
+  const rotationDeg = !wantRotation || o.rotationDeg === undefined ? 0 : o.rotationDeg;
+  if (!isFiniteNumber(offsetU) || !isFiniteNumber(offsetV) || !isFiniteNumber(rotationDeg)) return null;
+  const out: { planeId: string; offsetU: number; offsetV: number; rotationDeg?: number } = { planeId, offsetU, offsetV };
+  if (wantRotation) out.rotationDeg = rotationDeg as number;
+  return out;
+}
+
+/**
+ * Validates an optional resolved-placement cache (`center`/`normal`, plus
+ * `up` for rectangle/polygon): absent is fine (a cache-less `planeId` op
+ * replays once its plane resolves), present must be COMPLETE and
+ * structurally valid (the all-or-nothing rule `mirror` applies to its own
+ * `planePoint`/`planeNormal` pair — a half cache can never replay, so it
+ * is rejected rather than stored). Returns the cache fields to attach, or
+ * `null` to reject the whole op.
+ */
+function asProfilePlacementCache(
+  o: Record<string, unknown>, wantUp: boolean
+): { center?: Vec3; normal?: Vec3; up?: Vec3 } | null {
+  if (!wantUp && o.up !== undefined) return null;
+  const hasAny = o.center !== undefined || o.normal !== undefined || o.up !== undefined;
+  if (!hasAny) return {};
+  const center = asVec3(o.center);
+  const normal = asNonZeroVec3(o.normal);
+  if (!center || !normal) return null;
+  if (!wantUp) return { center, normal };
+  const up = asNonZeroVec3(o.up);
+  if (!up || !notParallel(normal, up)) return null;
+  return { center, normal, up };
 }
 
 /**
@@ -1068,28 +1127,26 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       return out;
     }
     case "addCircleProfile": {
-      const center = asVec3(o.center);
-      const normal = asNonZeroVec3(o.normal);
-      return center && normal && isPositive(o.radius)
-        ? { op: "addCircleProfile", center, normal, radius: o.radius }
-        : null;
+      const planeRef = asProfilePlaneRef(o, false);
+      const cache = asProfilePlacementCache(o, false);
+      if (!planeRef || !cache || !isPositive(o.radius)) return null;
+      if (planeRef.planeId === undefined && (cache.center === undefined || cache.normal === undefined)) return null;
+      return { op: "addCircleProfile", radius: o.radius, ...planeRef, ...cache };
     }
     case "addRectangleProfile": {
-      const center = asVec3(o.center);
-      const normal = asNonZeroVec3(o.normal);
-      const up = asNonZeroVec3(o.up);
-      return center && normal && up && notParallel(normal, up)
-        && isPositive(o.width) && isPositive(o.height)
-        ? { op: "addRectangleProfile", center, normal, up, width: o.width, height: o.height }
-        : null;
+      const planeRef = asProfilePlaneRef(o, true);
+      const cache = asProfilePlacementCache(o, true);
+      if (!planeRef || !cache || !isPositive(o.width) || !isPositive(o.height)) return null;
+      if (planeRef.planeId === undefined && (cache.center === undefined || cache.normal === undefined || cache.up === undefined)) return null;
+      return { op: "addRectangleProfile", width: o.width, height: o.height, ...planeRef, ...cache };
     }
     case "addPolygonProfile": {
-      const center = asVec3(o.center);
-      const normal = asNonZeroVec3(o.normal);
-      const up = asNonZeroVec3(o.up);
-      if (!center || !normal || !up || !notParallel(normal, up) || !isPositive(o.radius) || !isFiniteNumber(o.sides) || !Number.isInteger(o.sides) || o.sides < 3) return null;
+      const planeRef = asProfilePlaneRef(o, true);
+      const cache = asProfilePlacementCache(o, true);
+      if (!planeRef || !cache || !isPositive(o.radius) || !isFiniteNumber(o.sides) || !Number.isInteger(o.sides) || o.sides < 3) return null;
       if (o.circumscribed !== undefined && typeof o.circumscribed !== "boolean") return null;
-      const out: AddPolygonProfileOp = { op: "addPolygonProfile", center, normal, up, radius: o.radius, sides: o.sides };
+      if (planeRef.planeId === undefined && (cache.center === undefined || cache.normal === undefined || cache.up === undefined)) return null;
+      const out: AddPolygonProfileOp = { op: "addPolygonProfile", radius: o.radius, sides: o.sides, ...planeRef, ...cache };
       if (o.circumscribed !== undefined) out.circumscribed = o.circumscribed;
       return out;
     }

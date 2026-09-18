@@ -261,9 +261,9 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
     '{targets: solidId[], position: [x,y,z], axis: [x,y,z], radius: n>0, depth: n>0, cbRadius: n>radius, cbDepth: n<depth}',
   addCountersinkHole:
     '{targets: solidId[], position: [x,y,z], axis: [x,y,z], radius: n>0, depth: n>0, csRadius: n>radius, csAngleDeg: 0<n<180}',
-  addCircleProfile: '{center: [x,y,z], normal: [x,y,z], radius: n>0}',
-  addRectangleProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], width: n>0, height: n>0}',
-  addPolygonProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radius: n>0 (circumradius, or apothem when circumscribed), sides: int>=3, circumscribed?: boolean}',
+  addCircleProfile: '{center: [x,y,z], normal: [x,y,z], radius: n>0, planeId?: "plane-N" (with optional offsetU/offsetV in-plane offsets; center/normal then ride as resolved cache and may be omitted when authoring)}',
+  addRectangleProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], width: n>0, height: n>0, planeId?: "plane-N" (with optional offsetU/offsetV and rotationDeg about the plane normal; center/normal/up then ride as resolved cache and may be omitted when authoring)}',
+  addPolygonProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radius: n>0 (circumradius, or apothem when circumscribed), sides: int>=3, circumscribed?: boolean, planeId?: "plane-N" (with optional offsetU/offsetV and rotationDeg; center/normal/up then ride as resolved cache and may be omitted when authoring)}',
 
   addEllipseProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radiusX: n>0, radiusY: n>0}',
   addRoundedRectangleProfile:

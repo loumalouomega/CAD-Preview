@@ -97,6 +97,59 @@ describe("validateEditOp", () => {
     });
   });
 
+  it("accepts plane-authored profiles with defaults materialized", () => {
+    expect(validateEditOp({ op: "addCircleProfile", planeId: "plane-1", radius: 5 }))
+      .toEqual({ op: "addCircleProfile", radius: 5, planeId: "plane-1", offsetU: 0, offsetV: 0 });
+    expect(validateEditOp({
+      op: "addRectangleProfile", planeId: "plane-2", offsetU: 3, rotationDeg: 45,
+      center: [1, 2, 3], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 6,
+    })).toEqual({
+      op: "addRectangleProfile", width: 10, height: 6,
+      planeId: "plane-2", offsetU: 3, offsetV: 0, rotationDeg: 45,
+      center: [1, 2, 3], normal: [0, 0, 1], up: [1, 0, 0],
+    });
+  });
+
+  it("rejects malformed plane-authored profiles", () => {
+    // bad plane id shape
+    expect(validateEditOp({ op: "addCircleProfile", planeId: "deck-1", radius: 5 })).toBeNull();
+    expect(validateEditOp({ op: "addCircleProfile", planeId: "plane-x", radius: 5 })).toBeNull();
+    // offsets/rotation without a plane are meaningless, not ignorable
+    expect(validateEditOp({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 5, offsetU: 2 })).toBeNull();
+    expect(validateEditOp({ op: "addRectangleProfile", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 6, rotationDeg: 30 })).toBeNull();
+    // non-finite offsets/rotation
+    expect(validateEditOp({ op: "addCircleProfile", planeId: "plane-1", offsetV: NaN, radius: 5 })).toBeNull();
+    expect(validateEditOp({ op: "addPolygonProfile", planeId: "plane-1", rotationDeg: Infinity, radius: 5, sides: 6 })).toBeNull();
+    // partial cache (center without normal) is rejected, not stored half
+    expect(validateEditOp({ op: "addCircleProfile", planeId: "plane-1", center: [0, 0, 0], radius: 5 })).toBeNull();
+    expect(validateEditOp({
+      op: "addRectangleProfile", planeId: "plane-1", center: [0, 0, 0], normal: [0, 0, 1], width: 10, height: 6,
+    })).toBeNull();
+    // up on a circle is rejected (no orientation to fix), like world mode
+    expect(validateEditOp({ op: "addCircleProfile", planeId: "plane-1", up: [1, 0, 0], radius: 5 })).toBeNull();
+    // rotation on a circle is rejected too — nothing reads it, so carrying it would lie
+    expect(validateEditOp({ op: "addCircleProfile", planeId: "plane-1", rotationDeg: 30, radius: 5 })).toBeNull();
+    // malformed cache vectors rejected
+    expect(validateEditOp({ op: "addCircleProfile", planeId: "plane-1", center: [0, 0, 0], normal: [0, 0, 0], radius: 5 })).toBeNull();
+  });
+
+  it("keeps plane-placement expressions live", () => {
+    const op = validateEditOp({
+      op: "addRectangleProfile", planeId: "plane-1", offsetU: 5, offsetV: 0, rotationDeg: 0,
+      center: [5, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 6,
+      exprs: { offsetU: "L/2", rotationDeg: "A", width: "W" },
+    });
+    expect(op).not.toBeNull();
+    expect((op as unknown as { exprs: Record<string, string> }).exprs).toEqual({ offsetU: "L/2", rotationDeg: "A", width: "W" });
+    // an expression on a non-numeric slot is still dropped
+    const bad = validateEditOp({
+      op: "addCircleProfile", planeId: "plane-1", radius: 5,
+      exprs: { planeId: "X" },
+    });
+    expect(bad).not.toBeNull();
+    expect((bad as unknown as Record<string, unknown>).exprs).toBeUndefined();
+  });
+
   it("rejects malformed 2D profile ops", () => {
     // non-positive dimensions
     expect(validateEditOp({ op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 0 })).toBeNull();

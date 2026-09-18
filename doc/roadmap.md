@@ -37,13 +37,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-#### Author profiles on a named construction plane (**M**, shared op model)
-
-- **Reuse:** `planesSidecar.ts` and `planeRefs.ts` already implement the annotation-plus-cache pattern for plane-bearing edits.
-- **First increment:** circle, rectangle and polygon profile forms select a `plane-N`, with in-plane offsets and rotation; the existing numeric/expression workflow remains available.
-- **Design dependency:** point + normal does not fully specify a 2D frame. Choose a deterministic basis or persist an optional in-plane axis, with tolerant legacy parsing. Specify what changing a plane moves, and freeze last-good cached placement when it is deleted.
-- **Done when:** a tilted rectangle keeps a stable orientation across reopen, plane edits and export; expressions survive; MCP-authored and UI-authored profiles resolve identically. This remains coordinate placement, not a constraint solver.
-
 #### Standard-parts thumbnails (**S–M**, host + webview)
 
 - **Gap:** text-only fastener search results are difficult to distinguish; `stepPartsService.ts` already carries `pngUrl`.

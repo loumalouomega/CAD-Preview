@@ -8,6 +8,7 @@ import { PRODUCED_ROLE } from "./opBuckets";
 import type { SurfaceType, SurfaceParams } from "./entityFacts";
 import { enumerateEdges, buildEdgeFaceAdjacency, EDGE_DEFLECTION } from "./edgeEnumeration";
 import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
+import { planeBasis as planeFrameBasis } from "./planeFrame";
 import { signedArea2d, nestLoops } from "./loopNesting";
 
 /** Bucket capacity for `HashCode`-based shape de-dup (shared by face + vertex dedup; edge dedup has its own copy in `edgeEnumeration.ts`). */
@@ -3114,6 +3115,17 @@ function regularPolygonPoints(center: Vec3, u: Vec3, v: Vec3, radius: number, si
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function addProfile(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  // A plane-authored profile whose plane never resolved carries no placement
+  // cache — fail naming the plane (not the generic builder diagnostic), the
+  // same graceful-skip convention every other unresolvable-operand path uses.
+  const pod = op as unknown as { planeId?: string; center?: Vec3; normal?: Vec3 };
+  if (pod.planeId !== undefined && (pod.center === undefined || pod.normal === undefined)) {
+    fail?.(
+      `plane ${pod.planeId} did not resolve to a placement and the op has no cached one`,
+      "re-attach the profile to an existing plane (or re-type its center/normal)"
+    );
+    return shape;
+  }
   const face = buildProfileFace(oc, op, cleanup);
   if (!face) {
     fail?.(`could not build the ${op.op} sketch face`, "check the profile's parameters (radius/width/height must be positive, normal a non-zero direction)");
@@ -3136,8 +3148,13 @@ function buildProfileFace(oc: any, op: EditOp, cleanup: Array<{ delete(): void }
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     switch (op.op) {
+      // NOTE: `center`/`normal`/`up` are optional in the op TYPE (a
+      // cache-less `planeId` op omits them), but `addProfile` above already
+      // refused exactly that shape — from here on the placement is complete.
       case "addCircleProfile": {
-        const ax2 = keep(new oc.gp_Ax2_3(keep(pnt(oc, op.center)), keep(dir(oc, op.normal))));
+        const center = op.center as Vec3;
+        const normal = op.normal as Vec3;
+        const ax2 = keep(new oc.gp_Ax2_3(keep(pnt(oc, center)), keep(dir(oc, normal))));
         const circ = keep(new oc.gp_Circ_2(ax2, op.radius));
         const edge = keep(keep(new oc.BRepBuilderAPI_MakeEdge_8(circ)).Edge());
         const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
@@ -3148,19 +3165,25 @@ function buildProfileFace(oc: any, op: EditOp, cleanup: Array<{ delete(): void }
         return face.IsNull() ? null : keep(face);
       }
       case "addRectangleProfile": {
-        const [u, v] = inPlaneBasis(op.normal, op.up);
+        const center = op.center as Vec3;
+        const normal = op.normal as Vec3;
+        const up = op.up as Vec3;
+        const [u, v] = inPlaneBasis(normal, up);
         const hw = op.width / 2, hh = op.height / 2;
         const corners: Vec3[] = [
-          addScaled(op.center, u, -hw, v, -hh),
-          addScaled(op.center, u, hw, v, -hh),
-          addScaled(op.center, u, hw, v, hh),
-          addScaled(op.center, u, -hw, v, hh),
+          addScaled(center, u, -hw, v, -hh),
+          addScaled(center, u, hw, v, -hh),
+          addScaled(center, u, hw, v, hh),
+          addScaled(center, u, -hw, v, hh),
         ];
         return buildFlatFace(oc, corners, cleanup);
       }
       case "addPolygonProfile": {
-        const [u, v] = inPlaneBasis(op.normal, op.up);
-        return buildFlatFace(oc, regularPolygonPoints(op.center, u, v, op.radius, op.sides, op.circumscribed), cleanup);
+        const center = op.center as Vec3;
+        const normal = op.normal as Vec3;
+        const up = op.up as Vec3;
+        const [u, v] = inPlaneBasis(normal, up);
+        return buildFlatFace(oc, regularPolygonPoints(center, u, v, op.radius, op.sides, op.circumscribed), cleanup);
       }
       case "addEllipseProfile": {
         // `gp_Elips_2(ax2, major, minor)` requires major ≥ minor; when radiusY
@@ -3938,28 +3961,17 @@ function addScaled(base: Vec3, u: Vec3, du: number, v: Vec3, dv: number): Vec3 {
 
 /**
  * Two unit vectors spanning the plane perpendicular to `axis` (for building the
- * N-gon prism's base polygon). Pure JS math — no OCCT handles involved.
+ * N-gon prism's base polygon). Delegates to the shared `planeFrame.ts` so the
+ * host replay and the webview form resolve the identical frame — the math is
+ * byte-identical for valid (non-degenerate) inputs, which every caller here
+ * already guarantees via `validateEditOp`.
  */
 function planeBasis(axis: Vec3): [Vec3, Vec3] {
-  const [ax, ay, az] = axis;
-  const len = Math.hypot(ax, ay, az) || 1;
-  const n: Vec3 = [ax / len, ay / len, az / len];
-  // Pick a helper vector not parallel to n (avoid near-zero cross product).
-  const helper: Vec3 = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
-  const u = cross(helper, n);
-  normalize(u);
-  const v = cross(n, u);
-  normalize(v);
-  return [u, v];
+  return planeFrameBasis(axis) ?? [[1, 0, 0], [0, 1, 0]];
 }
 
 function cross(a: Vec3, b: Vec3): Vec3 {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-}
-
-function normalize(v: Vec3): void {
-  const len = Math.hypot(v[0], v[1], v[2]) || 1;
-  v[0] /= len; v[1] /= len; v[2] /= len;
 }
 
 /**

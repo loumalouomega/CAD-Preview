@@ -4372,6 +4372,59 @@ try {
     `set_plane midplaneOf refuses unknown plane ids (got: ${JSON.stringify(midMissing)})`
   );
 
+  // ── Plane-authored profiles (roadmap Tier 1 "Author profiles on a named
+  // construction plane") — circle/rect resolve placement from a saved plane
+  // plus in-plane offsets/rotation, asserted against analytically-known
+  // centers on a throwaway blank copy (not values copied from the
+  // implementation): the +Z-plane frame is U=(0,−1,0), V=(1,0,0).
+  const planeProfileModel = path.join(dir, "blank-for-plane-profiles.brep");
+  fs.copyFileSync(BLANK, planeProfileModel);
+  await call("set_plane", { path: planeProfileModel, name: "Tilt", point: [10, 0, 5], normal: [1, 1, 0] });
+  const planeCircle = await call("apply_edit_ops", {
+    path: planeProfileModel,
+    ops: [{ op: "addCircleProfile", planeId: "plane-0", radius: 4 }],
+  });
+  assert(planeCircle.applied === 1, `planeId-only circle applied with no cache vectors (got ${planeCircle.applied}/1)`);
+  const circleFacts = await call("inspect", { path: planeProfileModel, entityId: "face-0" });
+  assert(
+    Math.abs(circleFacts.center[0] - 10) < 1e-6 &&
+      Math.abs(circleFacts.center[1]) < 1e-6 &&
+      Math.abs(circleFacts.center[2] - 5) < 1e-6,
+    `the circle sits on the plane point (got ${JSON.stringify(circleFacts.center)})`
+  );
+  assert(
+    Math.abs(circleFacts.normal[0] - Math.SQRT1_2) < 1e-6 && Math.abs(circleFacts.normal[1] - Math.SQRT1_2) < 1e-6,
+    `the circle takes the tilted plane normal (got ${JSON.stringify(circleFacts.normal)})`
+  );
+  // Tilted-plane frame for normal (1,1,0)/√2 is U=(0,0,1), V=(1,−1,0)/√2, so
+  // offsets (2,−1) land at point + 2U − V.
+  const planeRect = await call("apply_edit_ops", {
+    path: planeProfileModel,
+    ops: [{ op: "addRectangleProfile", planeId: "plane-0", offsetU: 2, offsetV: -1, rotationDeg: 30, width: 10, height: 6 }],
+  });
+  assert(planeRect.applied === 1, `offset+rotated rect applied (got ${planeRect.applied}/1)`);
+  const rectFacts = await call("inspect", { path: planeProfileModel, entityId: "face-1" });
+  assert(
+    Math.abs(rectFacts.center[0] - (10 - Math.SQRT1_2)) < 1e-6 &&
+      Math.abs(rectFacts.center[1] - Math.SQRT1_2) < 1e-6 &&
+      Math.abs(rectFacts.center[2] - 7) < 1e-6,
+    `the rect center follows tilted frame + offsets (got ${JSON.stringify(rectFacts.center)})`
+  );
+  // A plane edit moves the profile on the next replay — placement is live,
+  // not baked at authoring time.
+  await call("set_plane", { path: planeProfileModel, id: "plane-0", point: [20, 0, 5] });
+  const movedFacts = await call("inspect", { path: planeProfileModel, entityId: "face-0" });
+  assert(
+    Math.abs(movedFacts.center[0] - 20) < 1e-6,
+    `editing the plane moves the profile (got ${JSON.stringify(movedFacts.center)})`
+  );
+  // Downstream use: a plane-authored sketch extrudes like any other sketch.
+  const planeExtrude = await call("apply_edit_ops", {
+    path: planeProfileModel,
+    ops: [{ op: "extrude", profile: "face-0", dir: [0, 0, 1], length: 5 }],
+  });
+  assert(planeExtrude.applied === 1, `a plane-authored sketch extrudes (got ${planeExtrude.applied}/1)`);
+
   // ── Item-10 ops live round trip (roadmap "Cheap thin-wrapper ops"): draft,
   // addEdgeSlot, guide (construction geometry + enforcement), midplaneFaces
   // mirror, midaxisOf pattern — each asserted against an analytically-known

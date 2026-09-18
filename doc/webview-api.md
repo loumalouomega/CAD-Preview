@@ -44,6 +44,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
 | `src/webview/opCatalog.ts` | Op catalog: GEOMETRY/EDIT tab structure + `describeOp`, DOM-free (unit-tested) |
+| `src/planeFrame.ts` | Deterministic 2D frame for plane-authored profiles: `planeBasis` + `profilePlacementFromPlane` (vscode/OCCT/THREE-free, unit-tested; `occtOperations.ts` delegates its own copy here) |
 | `src/webview/opIcons.ts` | Generated per-op SVG icons (`icons/build-op-icons.mjs`) |
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
@@ -1522,6 +1523,8 @@ The same silent-`load()` / firing-mutation contract as `PartsModel`/`Annotations
 `main.ts` wires it into the view-controls **Planes** group (`#planes-list`, below the Clip group): **Save clip** re-derives the current clip through `planeForClip` — the same function that built it, so a saved plane and the live clip cannot disagree about what "this plane" means — **Enter…** reveals a numeric point+normal entry (the only way to author a plane with no geometry to pick), and each row offers **Use**, rename (inline `<input>`, since webviews block `prompt()`), and delete. **Use** calls `ClippingControlsHandle.applyDerivedPlane` — the very same handle the Clip ▸ Face and 3 Pts buttons use, so a stored plane and a derived clip can never diverge into two implementations, and a stored normal is oriented toward the model's bulk on the way in exactly as a picked one is.
 
 Nothing here participates in entity rebinding: a plane stores resolved vectors, never entity ids. See [Extension Host API](./extension-host-api.md) for the sidecar pair.
+
+The circle/rectangle/polygon profile forms (roadmap Tier 1 "Author profiles on a named construction plane") each render a **Plane** picker (populated from the same `setPlanes()` list as the mirror/draft/split/section forms) plus **Offset U/V** — and **Rotation°** for rectangle/polygon — fields. Picking a plane fills + disables the form's center/normal/up inputs from `planeFrame.ts`'s placement (the mirror-form precedent); offset/rotation edits re-resolve while a plane is picked, and Custom restores hand typing. The draft carries `planeId` + offsets/rotation alongside the filled cache, so preview ≡ Apply through `buildOpForPanel`'s one choke point; the host re-resolves against the live plane on replay.
 
 ---
 

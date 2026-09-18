@@ -1343,6 +1343,8 @@ async function writePlanes(modelUri, planes): Promise<void>         // assertNot
 
 The webview counterpart is `src/webview/planesModel.ts` (`PlanesModel`), mirroring `PartsModel`/`AnnotationsModel`'s silent-`load()` / firing-mutation contract. It re-implements the never-reuse id rule rather than importing `nextPlaneId`, to stay free of the sidecar's parse/serialize surface; both copies are separately tested.
 
+`src/planeRefs.ts`'s `resolvePlaneRefs(ops, planes)` resolves `planeId` references at every replay-consuming read (host `readEdits`/`loadModel`, webview `currentResolvedOps`/`renderEditsUi`, MCP `readEditsResolved`): mirror/split/section/draft overwrite `planePoint`/`planeNormal`, while `addCircleProfile`/`addRectangleProfile`/`addPolygonProfile` overwrite the cached `center`/`normal`/`up` from `src/planeFrame.ts`'s deterministic placement (plane point + offsets along the frame, `up` rotated by `rotationDeg`). A missing plane freezes last-good caches with an issue; a cache-less op skips gracefully at replay (`addProfile` names the plane). Changing a plane moves everything referencing it; deleting one freezes placement.
+
 ---
 
 ## `src/meshOptions.ts`, `src/meshOptionsStore.ts`, `src/meshOptionsSidecar.ts`
