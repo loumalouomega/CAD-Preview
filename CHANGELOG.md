@@ -4,6 +4,22 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [2.5.0] - 2026-09-18
+
+### Added
+
+- **Standard-parts thumbnails.** Search results in the Standard Parts panel now show a 48 px thumbnail beside the part text, fetched lazily by the host and delivered as `data:` URLs. Text stays the fallback; the checksum-verified STEP download path is untouched.
+- **Author profiles on a named construction plane.** Circle/rectangle/polygon profile forms gained a Plane picker: choose a `plane-N` and the sketch is placed from the plane plus in-plane offsets (and rotation for rectangle/polygon). Changing a plane moves everything referencing it; deleting one freezes last-good caches.
+- **Per-band operation-preview colouring.** The draft op's own produced faces now read distinctly from retained context: two-tone per intent (bucket faces saturated, context desaturated grey) with a status-line legend.
+- **Volume and point selection predicates.** `Select ▾` filters now cover all four pick modes: volumes (`Size ≥/≤`, `Center ±X/±Y/±Z`, `Largest/Smallest N` by bbox volume) and points (`Near XY/XZ/YZ`, `Near selection`, `In selection box`).
+- **Zoom to selection.** `Select ▾` grew a Zoom to selection button plus a `cad-preview.zoomToSelection` command, framing the current selection in the focused pane.
+- **Bounded assembly interference checks.** `check_interference_all` (and the Clash panel's Check-all) accept `maxPairs`/`maxBooleans` budgets; pairs past the budget return as `unchecked` placeholders that are never reported as clash-free.
+
+### Changed
+
+- **Minimum supported VS Code engine raised to `^1.137.0`** to match `@types/vscode`.
+- **Dependency updates.** `three`, `three-mesh-bvh` 0.9.15, `zod` 4.6.5, plus dev-dependency refreshes.
+
 ## [2.4.0] - 2026-09-17
 
 Closes two more Tier 1 roadmap items — clip-cap visibility tracking and save/reopen/recovery regression coverage — plus assembly-tree group rows and a generated SVG icon set.
@@ -461,6 +477,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[2.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.1.0...v2.2.0
