@@ -31,6 +31,7 @@ import {
 import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
+import { unionSelectionBounds, padBoxToMinSize } from "./selectionBounds";
 import { createRenderScheduler, type FrameTick } from "./renderScheduler";
 import { paletteColor, refreshPalette } from "./palette";
 import { shouldSkipAutoReframe, type FitSphere } from "./reframePolicy";
@@ -1057,6 +1058,33 @@ export class Viewer {
   /** Frames the model keeping the focused pane's current viewing orientation. */
   fitView(): void {
     this.framePane(this.focusedPane, this.getViewDirection());
+  }
+
+  /**
+   * Frames the current transient selection in the focused pane, keeping the
+   * pane's current viewing orientation — roadmap Tier 1 "Zoom to selection".
+   * A face, several solids, an edge and a point all frame correctly in both
+   * projections, since this goes through {@link frameBox} (the same
+   * ortho/perspective split and 1.5x margin `screenshot_shape` already uses
+   * headless), and — like `frameBox` — deliberately touches none of the
+   * model-scoped state `framePane` owns (`pickThreshold`, `pointSpriteScale`,
+   * `lastFitSphere`), so framing a subset never shrinks the pick threshold
+   * or poisons the auto-reframe containment gate. Explicit Fit still frames
+   * the whole model; this never replaces that path.
+   *
+   * `"empty"` (nothing selected, or no model loaded) and `"hidden-or-stale"`
+   * (every selected object hidden, or its ids renumbered away by an edit)
+   * are distinct so the caller can say which happened instead of silently
+   * doing nothing — `frameBox`'s own `isEmpty` early return would otherwise
+   * make a stale selection indistinguishable from a working one.
+   */
+  frameSelection(entities: SelectedEntity[]): "framed" | "empty" | "hidden-or-stale" {
+    if (entities.length === 0 || !this.model) return "empty";
+    const box = unionSelectionBounds(this.model, entities);
+    if (!box) return "hidden-or-stale";
+    padBoxToMinSize(box, this.getModelExtents()?.diagonal ?? 0);
+    this.frameBox(box, this.getViewDirection());
+    return "framed";
   }
 
   /**

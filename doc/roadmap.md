@@ -37,12 +37,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-#### Zoom to selection (**S**, webview)
-
-- **Reuse:** `Viewer.frameBox` and its separate camera-placement helper already exist for headless framing without changing model-wide pick thresholds or the auto-fit containment cache.
-- **Scope:** expose a Select-menu action and focused-editor command; union selected entities' world-space bounds. Define small padding for a point/line selection and clear behaviour for empty, hidden or stale selections. Affect the focused pane only.
-- **Done when:** one face, several solids, an edge and a point frame correctly in perspective and ortho; explicit Fit still frames the whole model, and selection framing leaves picking usable.
-
 #### Volume and point selection predicates (**M**, webview first)
 
 - **Gap:** `selectFilters.ts` currently serves face/line predicates; Vol/Point mode needs its own coherent vocabulary.

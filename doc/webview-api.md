@@ -25,6 +25,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
 | `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity, plus mode-unfiltered measurement picking (unit-testable). Both collectors walk with `traverseVisible`, not `traverse` — **load-bearing**: three's `Raycaster` tests only `layers` and ignores `.visible` entirely, so plain traversal would let clicks (and measurements, and `collectSnapPoints()`'s gizmo-drag snap candidates) land on geometry the user explicitly hid — a Part hidden by its eye-toggle, anything outside an active Isolate, or the model's faces under an FE-mesh/colour-field overlay. `traverseVisible` prunes such a subtree at the invisible ancestor, exactly the unit of hiding in all four cases. |
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
+| `src/webview/selectionBounds.ts` | Pure world-space bounds of a transient selection — union over matching objects plus a model-relative minimum-size pad for degenerate (point/short-edge) selections (THREE-yes/DOM-no, unit-tested) |
 | `src/webview/measurement.ts` | Pure distance/length/angle/radius math over plain tuples (unit-tested) |
 | `src/webview/measurementState.ts` | 0–2-pick buffer for the in-progress measurement, DOM-free (unit-tested) |
 | `src/webview/measurementOverlay.ts` | Lazily-built marker/dimension-glyph/label Three.js objects for the measurement overlay |
@@ -313,6 +314,12 @@ frameFromDirection(direction: THREE.Vector3): void
 ```
 
 Frames the model along an arbitrary view direction — computes distance/target from the model's current bounding box, same math `fitView()`/`resetView()` use, but for a caller-supplied direction rather than the current or hardcoded-isometric one. Used by `main.ts`'s `applyInitialViewIfNeeded()` to restore a persisted `ViewState.viewDirection` on first load.
+
+```typescript
+frameSelection(entities: SelectedEntity[]): "framed" | "empty" | "hidden-or-stale"
+```
+
+Frames the transient selection in the focused pane, keeping the pane's current viewing orientation — roadmap Tier 1 "Zoom to selection". Goes through `frameBox` (same ortho/perspective split and 1.5x margin `screenshot_shape` uses headless) over `selectionBounds.ts`'s union, so it touches none of the model-scoped state `framePane` owns (`pickThreshold`, `pointSpriteScale`, `lastFitSphere`). `"empty"` (nothing selected, or no model) and `"hidden-or-stale"` (every selected object hidden, or its ids renumbered away) are distinct so the caller can say which happened. Driven from `main.ts`'s `zoomToSelection()` — one choke point for the Select menu's **Zoom to selection** button and the `zoomToSelection` host message behind the `cad-preview.zoomToSelection` focused-editor command.
 
 ```typescript
 resetView(): void

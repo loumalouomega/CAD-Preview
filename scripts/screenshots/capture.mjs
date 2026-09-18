@@ -68,8 +68,9 @@ const SHOTS = [
     // edges" + the layout picker + "Link cameras across tabs" landed: the
     // picker row made the panel wider (left-clipped at x=830) and the new
     // rows made it taller (Screenshot… half-cut at height 400) — now
-    // x 830→770 / height 400→470.
-    target: { clip: { x: 770, y: 30, width: 590, height: 470 } },
+    // x 830→770 / height 400→470 — plus one more row for Zoom to selection
+    // (470→500).
+    target: { clip: { x: 770, y: 30, width: 590, height: 500 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },

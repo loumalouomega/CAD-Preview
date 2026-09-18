@@ -1281,7 +1281,7 @@ test("session-gated commands are silent no-ops with no editor focused", async ()
   const session = installModalStubs([]);
   let threw = false;
   try {
-    for (const id of ["cad-preview.export", "cad-preview.saveAs", "cad-preview.exportSvg", "cad-preview.savePreprocess"]) {
+    for (const id of ["cad-preview.export", "cad-preview.saveAs", "cad-preview.exportSvg", "cad-preview.savePreprocess", "cad-preview.zoomToSelection"]) {
       await vscode.commands.executeCommand(id);
     }
     await sleep(800);

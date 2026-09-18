@@ -417,6 +417,7 @@ type HostToWebview =
   | { type: 'primitiveRecognizeResult'; requestId: string; report: PrimitiveReport }
   | { type: 'primitiveRecognizeError'; requestId: string; message: string }
   | { type: 'spacemouse'; motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }; buttons?: number }
+  | { type: 'zoomToSelection' }
   | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
   | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
@@ -688,6 +689,14 @@ SpaceMouse 6DOF motion event (closed roadmap item), pushed by the host at HID re
 
 ```json
 { "type": "spacemouse", "motion": { "tx": 120, "ty": 0, "tz": -40, "rx": 0, "ry": 60, "rz": 0 } }
+```
+
+### `zoomToSelection`
+
+Sent by the host when the `cad-preview.zoomToSelection` focused-editor command runs — the same choke point as the Select menu's **Zoom to selection** button (`main.ts`'s `zoomToSelection()`), so both surfaces stay in lockstep. Fire-and-forget, no `requestId`: the webview frames its transient selection in the focused pane via `Viewer.frameSelection` (orientation-preserving, both projections), with guidance on the status line for an empty or hidden/stale selection.
+
+```json
+{ "type": "zoomToSelection" }
 ```
 
 ### `massPropertiesResult` / `massPropertiesError`

@@ -655,6 +655,144 @@ test("framing: the model occupies a sane fraction of the viewport", async (page)
 });
 
 /**
+ * I2. Zoom to selection (roadmap Tier 1). The camera work itself
+ * (`Viewer.frameSelection` → `frameBox`) is the already-verified placement
+ * path `screenshot_shape` uses headless, so what needs checking here is the
+ * wiring: a real selection frames (fill increases, stays centred), explicit
+ * Fit still restores the whole model, and the two non-framing outcomes say
+ * so on the status line instead of silently doing nothing. Screenshots
+ * decode in-page via the framing-invariant helper above.
+ */
+async function viewportModelStats(page) {
+  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  return page.evaluate(
+    async (b64) =>
+      new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("decode failed"));
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          const { data } = ctx.getImageData(0, 0, c.width, c.height);
+          const isBg = (i) => Math.abs(data[i] - 0x1e) < 6 && Math.abs(data[i + 1] - 0x1e) < 6 && Math.abs(data[i + 2] - 0x1e) < 6;
+          let model = 0;
+          for (let i = 0; i < data.length; i += 4) if (!isBg(i)) model++;
+          let centre = 0;
+          const cx = (c.width / 2) | 0, cy = (c.height / 2) | 0, r = 40;
+          for (let y = cy - r; y < cy + r; y++) {
+            for (let x = cx - r; x < cx + r; x++) {
+              if (!isBg((y * c.width + x) * 4)) centre++;
+            }
+          }
+          resolve({ fraction: model / (c.width * c.height), centre });
+        };
+        img.src = `data:image/png;base64,${b64}`;
+      }),
+    shot
+  );
+}
+
+async function gridOff(page) {
+  await page.click("#view-menu");
+  await page.click("#grid");
+  await page.keyboard.press("Escape");
+  await sleep(400);
+}
+
+/** Selects the single smallest face via the filter form; returns the status text. */
+async function selectSmallestFace(page) {
+  await page.click("#select-menu");
+  await page.selectOption("#filter-pred", "smallestN");
+  await page.fill("#filter-arg", "1");
+  await page.click("#filter-replace");
+  await sleep(250);
+  return page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+}
+
+test("zoom to selection: framing a small face increases its fill and stays centred; Fit restores the whole model", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  const before = await viewportModelStats(page);
+  const filterStatus = await selectSmallestFace(page);
+  assert(/matched 1 of/.test(filterStatus), `the filter selected exactly one face, so the zoom acts on a real selection (got ${JSON.stringify(filterStatus)})`);
+  await page.click("#select-zoom"); // one-shot: runs, then dismisses the menu itself
+  await sleep(400);
+  const after = await viewportModelStats(page);
+  assert(after.centre > 0, "the framed selection is centred in the viewport");
+  assert(
+    after.fraction > before.fraction,
+    `framing a subset fills more of the viewport (${before.fraction.toFixed(3)} -> ${after.fraction.toFixed(3)})`
+  );
+  // Explicit Fit still frames the whole model — zoom-to-selection never replaces that path.
+  await page.click("#fit");
+  await sleep(400);
+  const fit = await viewportModelStats(page);
+  assert(
+    Math.abs(fit.fraction - before.fraction) < 0.05,
+    `Fit restores the whole-model framing (${before.fraction.toFixed(3)} -> ${fit.fraction.toFixed(3)})`
+  );
+});
+
+test("zoom to selection: empty selection shows guidance and moves nothing", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  const before = await viewportModelStats(page);
+  await page.click("#select-menu");
+  await page.click("#select-zoom");
+  await sleep(250);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/No selection/.test(status), `an empty selection explains itself (got ${JSON.stringify(status)})`);
+  const after = await viewportModelStats(page);
+  assert(Math.abs(after.fraction - before.fraction) < 0.001, "nothing framed means nothing moved");
+});
+
+test("zoom to selection: hidden selection is reported, not framed", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  const filterStatus = await selectSmallestFace(page);
+  assert(/matched 1 of/.test(filterStatus), "precondition: one face selected");
+  // Close the Select menu first: an open menu's capture-phase dismissal would
+  // swallow the first tree click below.
+  await page.click("#select-menu");
+  const toggled = await page.evaluate(() => {
+    const eyes = document.querySelectorAll("#tree-body [data-visible-toggle], #tree-body .tree-eye");
+    eyes.forEach((e) => e.click());
+    return eyes.length;
+  });
+  assert(toggled > 0, "precondition: the tree exposes visibility toggles");
+  await sleep(250);
+  const before = await viewportModelStats(page);
+  await page.click("#select-menu");
+  await page.click("#select-zoom");
+  await sleep(250);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/hidden or no longer/.test(status), `a hidden selection says so (got ${JSON.stringify(status)})`);
+  const after = await viewportModelStats(page);
+  assert(Math.abs(after.fraction - before.fraction) < 0.001, "a hidden selection moves nothing");
+});
+
+test("zoom to selection: works under orthographic projection", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  await page.click("#vc-ortho");
+  await sleep(250);
+  const before = await viewportModelStats(page);
+  const filterStatus = await selectSmallestFace(page);
+  assert(/matched 1 of/.test(filterStatus), "precondition: one face selected");
+  await page.click("#select-zoom");
+  await sleep(400);
+  const after = await viewportModelStats(page);
+  assert(after.centre > 0, "the framed selection is centred in ortho");
+  assert(
+    after.fraction > before.fraction,
+    `ortho framing also closes in (${before.fraction.toFixed(3)} -> ${after.fraction.toFixed(3)})`
+  );
+});
+
+/**
  * G. Dropdown menus — both of these are previously-FIXED real bugs with no
  * regression test, recorded in `CLAUDE.md`'s "Toolbar dropdown menus":
  *  1. The containment test used `e.target !== btn`, but every trigger wraps its

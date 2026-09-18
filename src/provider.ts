@@ -159,6 +159,9 @@ interface EditorSession {
   exportSheet(): void;
   /** Generate and export an FE mesh (format + unit quick-picks, then a save dialog). */
   exportMesh(): void;
+  /** Frame the webview's transient selection in the focused pane
+   * (roadmap Tier 1 "Zoom to selection") — fire-and-forget. */
+  zoomToSelection(): void;
   /** Post a message to this session's webview — the registry entry for the
    * linked-cameras relay (roadmap "Split view", Phase 3). */
   post(msg: HostToWebview): void;
@@ -364,6 +367,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       vscode.commands.registerCommand("cad-preview.exportDrawing", withSession((s) => s.exportDrawing())),
       vscode.commands.registerCommand("cad-preview.exportSheet", withSession((s) => s.exportSheet())),
       vscode.commands.registerCommand("cad-preview.exportMesh", withSession((s) => s.exportMesh())),
+      vscode.commands.registerCommand("cad-preview.zoomToSelection", withSession((s) => s.zoomToSelection())),
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
@@ -1388,6 +1392,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       },
       exportMesh: () => {
         void this.handleExportMesh(document.uri, route, currentEdits, currentMeshOptions, post, currentBakedThrough);
+      },
+      zoomToSelection: () => {
+        post({ type: "zoomToSelection" });
       },
       exportDxf: () => {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, false, currentBakedThrough);

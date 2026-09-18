@@ -1757,6 +1757,19 @@ function renderHighlight(): void {
   }
 }
 
+// ── Zoom to selection (roadmap Tier 1) ────────────────────────────────────
+// One choke point for the Select-menu button and the focused-editor command
+// (`cad-preview.zoomToSelection`, via the `zoomToSelection` host message):
+// frames the transient selection in the focused pane via
+// `Viewer.frameSelection` (focused-pane-only, orientation-preserving, both
+// projections — explicit Fit still frames the whole model). Guidance, not
+// geometry, for the two non-framing outcomes.
+function zoomToSelection(): void {
+  const result = viewer.frameSelection(selection.list());
+  if (result === "empty") setStatus("No selection — select entities first.", true);
+  else if (result === "hidden-or-stale") setStatus("Selection is hidden or no longer in the model.", true);
+}
+
 // ── Live operation preview (roadmap item, closed) ─────────────────────────
 // One debounced speculative replay of [...currentOps, draftOp] rendered as a
 // translucent intent-tinted stand-in for the model. The webview owns ALL of
@@ -2760,6 +2773,12 @@ function setupSelectionControls(): void {
       syncFilterUi();
     });
   }
+  // One-shot action (the `#screenshot` precedent): run, then dismiss the menu
+  // so the next canvas click reaches the viewport, not the open panel.
+  document.getElementById("select-zoom")?.addEventListener("click", () => {
+    zoomToSelection();
+    menu?.close();
+  });
 
   // ── Geometric selection filters (roadmap Tier 2 item 1, Phase 1) ──────────
   // One registry-driven predicate dropdown + numeric field + seam toggle, run
@@ -4494,6 +4513,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       } catch (err) {
         post({ type: "screenshotError", requestId: msg.requestId, message: (err as Error).message });
       }
+      break;
+
+    case "zoomToSelection":
+      // Focused-editor command (`cad-preview.zoomToSelection`) — the same
+      // choke point as the Select-menu button, so both surfaces stay in
+      // lockstep. Fire-and-forget: guidance surfaces on the status line.
+      zoomToSelection();
       break;
 
     case "spacemouse": {

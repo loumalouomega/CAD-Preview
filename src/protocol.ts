@@ -510,6 +510,11 @@ export type HostToWebview =
       motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number };
       buttons?: number;
     }
+  /** Focused-editor command (roadmap Tier 1 "Zoom to selection") — frames
+   * the webview's transient selection in the focused pane, the same choke
+   * point as the Select-menu button. No requestId: fire-and-forget, with
+   * guidance surfacing on the status line. */
+  | { type: "zoomToSelection" }
   /** Live operation preview result — the same encoded payload `"geometry"`
    * carries, but for the speculative ops+draft replay. The webview builds a
    * detached group from it (never `viewer.setModel`) and tints it by intent;
