@@ -113,6 +113,21 @@ const SHOTS = [
         total: 2,
       });
       await sleep(200);
+      // One inline thumbnail (a 1px PNG data URL — the host would fetch the
+      // real `pngUrl` and pipe it as `data:`), so the shot shows the
+      // thumbnail layout, not just the text fallback.
+      await post(page, {
+        type: "standardPartsThumbsResult",
+        searchId: requestId,
+        thumbs: [
+          {
+            id: "iso-4762-m6x20",
+            dataUrl:
+              "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          },
+        ],
+      });
+      await sleep(200);
     },
     target: { sel: "#standard-parts-panel" },
   },

@@ -417,6 +417,13 @@ export type HostToWebview =
       total: number;
     }
   | { type: "standardPartsSearchError"; requestId: string; message: string }
+  /** Thumbnails for one rendered search page (roadmap Tier 1 "Standard-parts
+   * thumbnails") — `data:` URLs only (the webview's CSP has no remote-image
+   * allowance and must never get one). Only successfully fetched images are
+   * listed; anything missing renders as the existing text row. `searchId`
+   * is the originating search's `requestId`, so rows from a newer search
+   * ignore late thumbnails. */
+  | { type: "standardPartsThumbsResult"; searchId: string; thumbs: Array<{ id: string; dataUrl: string }> }
   /** `path: null` means the user dismissed the save dialog — a quiet no-op,
    * not an error (never posted through `standardPartsInsertError`). */
   | { type: "standardPartsInsertResult"; requestId: string; path: string | null }
@@ -669,6 +676,11 @@ export type WebviewToHost =
   | { type: "selectorSynthesizeRequest"; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
+  /** Ask the host to fetch thumbnails for one rendered search page. `ids`
+   * are the row part ids currently shown; `searchId` is the search's
+   * `requestId` the rows came from. Fire-and-forget — failures surface as
+   * absent thumbnails (text fallback), never as an error message. */
+  | { type: "standardPartsThumbsRequest"; searchId: string; ids: string[] }
   | { type: "importSvgRequest" }
   | { type: "importDxfRequest" }
   /** File ▸ Export Silhouette SVG/DXF… — like `exportRequest`, the host owns

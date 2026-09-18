@@ -384,7 +384,7 @@ Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD 
 The **Standard Parts** panel (below Parts in the sidebar) searches the hosted [step.parts](https://www.step.parts) catalog — fasteners, bearings, connectors, extrusions, and more — and inserts a result as an ordinary STEP file:
 
 1. Type a query (e.g. "M6 hex bolt") and click **Search**.
-2. Each result shows its name, description, category, and standard designation. Click **Insert…** on one.
+2. Each result shows a thumbnail beside its name, description, category, and standard designation (thumbnails load lazily after the text — a result with no image simply shows its text). Click **Insert…** on one.
 3. A Save dialog appears, defaulting to `<part-id>.step` next to the currently open document. Saving downloads the file (its checksum is verified against the catalog's own recorded SHA-256, when one exists) and opens it as a new tab; dismissing the dialog is a no-op.
 
 ![The Standard Parts panel showing two search results with their Insert buttons.](/screenshots/standard-parts-panel.png)

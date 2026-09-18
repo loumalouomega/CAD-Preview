@@ -388,6 +388,7 @@ type HostToWebview =
   | { type: 'screenshotRequest'; requestId: string }
   | { type: 'standardPartsSearchResult'; requestId: string; items: StandardPart[]; page: number; totalPages: number; total: number }
   | { type: 'standardPartsSearchError'; requestId: string; message: string }
+  | { type: 'standardPartsThumbsResult'; searchId: string; thumbs: Array<{ id: string; dataUrl: string }> }
   | { type: 'standardPartsInsertResult'; requestId: string; path: string | null }
   | { type: 'standardPartsInsertError'; requestId: string; message: string }
   | { type: 'importSvgResult'; text: string }
@@ -849,6 +850,14 @@ Sent in reply to `standardPartsSearchRequest` (webview → host, below). `items`
 { "type": "standardPartsSearchError", "requestId": "1234-0.56", "message": "step.parts is unreachable (timed out after 10s)." }
 ```
 
+### `standardPartsThumbsResult`
+
+Thumbnails for one rendered search page (roadmap Tier 1 "Standard-parts thumbnails", closed) — `data:` URLs only, fetched host-side from each item's `pngUrl` (the webview's CSP has no remote-image allowance and must never get one). Only successfully fetched images are listed; a missing entry renders as the existing text row. `searchId` is the originating search's `requestId`, so rows from a newer search ignore late thumbnails; a thumbnail naming no listed row is dropped. The request side (`standardPartsThumbsRequest`, webview → host) is fire-and-forget — failures surface as absent thumbnails, never an error.
+
+```json
+{ "type": "standardPartsThumbsResult", "searchId": "1234-0.56", "thumbs": [{ "id": "iso-4762-m6x20", "dataUrl": "data:image/png;base64,iVBOR…" }] }
+```
+
 ### `standardPartsInsertResult` / `standardPartsInsertError`
 
 Sent in reply to `standardPartsInsertRequest` (webview → host, below), after `provider.ts` downloads the chosen part's STEP file (`downloadStandardPart`, verifying its checksum when the catalog records one), shows a Save dialog defaulting to `<part-id>.step`/`.stp` next to the currently open document, writes the bytes, and opens the result as a new tab via `vscode.openWith`. `path: null` means the user dismissed the Save dialog — a quiet no-op the webview treats as "re-enable the Insert button", not an error (this case never goes through `standardPartsInsertError`).
@@ -947,6 +956,7 @@ type WebviewToHost =
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
+  | { type: 'standardPartsThumbsRequest'; searchId: string; ids: string[] }
   | { type: 'importSvgRequest' }
   | { type: 'importDxfRequest' }
   | { type: 'exportDxfRequest' }

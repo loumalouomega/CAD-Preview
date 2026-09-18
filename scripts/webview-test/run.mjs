@@ -3080,6 +3080,165 @@ test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and c
 });
 
 
+/**
+ * Standard-parts thumbnails (roadmap Tier 1). Search stays text-first: rows
+ * render immediately, and a second fire-and-forget round trip decorates them
+ * with host-fetched data-URL thumbnails. Host replies are faked by posting
+ * `standardPartsSearchResult`/`standardPartsThumbsResult` directly (the
+ * clash/context-menu precedent); the fetch itself — timeouts, caps,
+ * content types — is unit-covered in `standardPartsThumbs.test.ts`.
+ */
+const THUMB_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+function thumbItem(id, name) {
+  return {
+    id,
+    name,
+    description: `${name} desc`,
+    category: "Fasteners",
+    standard: { body: "", number: "", designation: "ISO 1234" },
+    tags: [],
+    aliases: [],
+    attributes: {},
+    stepUrl: "https://x/y.step",
+    glbUrl: "",
+    pngUrl: `https://x/${id}.png`,
+    byteSize: 1,
+    sha256: null,
+    pageUrl: "",
+    apiUrl: "",
+  };
+}
+
+async function runPartsSearch(page, q) {
+  await page.fill("#standard-parts-query", q);
+  await page.click("#standard-parts-search-btn");
+  await sleep(150);
+  return page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "standardPartsSearchRequest").at(-1) ?? null
+  );
+}
+
+test("thumbs: fetched thumbnails render beside the right rows; missing ones keep text", async (page) => {
+  await populate(page);
+  const req = await runPartsSearch(page, "bolt");
+  assert(req !== null && typeof req?.requestId === "string", "search posts a standardPartsSearchRequest");
+  await post(page, {
+    type: "standardPartsSearchResult",
+    requestId: req.requestId,
+    items: [thumbItem("p1", "Bolt A"), thumbItem("p2", "Bolt B")],
+    page: 1,
+    totalPages: 1,
+    total: 2,
+  });
+  await sleep(250);
+  const thumbsReq = await page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "standardPartsThumbsRequest").at(-1) ?? null
+  );
+  assert(
+    thumbsReq !== null && thumbsReq.searchId === req.requestId,
+    `rendered rows post a thumbs request for that search (got ${JSON.stringify(thumbsReq)})`
+  );
+  assert(
+    eq([...thumbsReq.ids].sort(), ["p1", "p2"]),
+    `the thumbs request names the rendered page's ids (got ${JSON.stringify(thumbsReq?.ids)})`
+  );
+  await post(page, {
+    type: "standardPartsThumbsResult",
+    searchId: req.requestId,
+    thumbs: [{ id: "p1", dataUrl: THUMB_PNG }],
+  });
+  await sleep(250);
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll(".standard-part-row")].map((r) => ({
+      id: r.dataset.partId,
+      img: r.querySelector("img.standard-part-thumb")?.getAttribute("src") ?? null,
+      name: r.querySelector(".standard-part-name")?.textContent ?? null,
+    }))
+  );
+  const r1 = rows.find((r) => r.id === "p1");
+  const r2 = rows.find((r) => r.id === "p2");
+  assert(r1?.img === THUMB_PNG, "the fetched thumbnail lands on its own row");
+  assert(r1?.name === "Bolt A", "text stays beside the thumbnail");
+  assert(r2?.img === null && r2?.name === "Bolt B", "a row with no thumbnail keeps the text-only rendering");
+});
+
+test("thumbs: a stale-generation reply decorates nothing", async (page) => {
+  await populate(page);
+  const reqA = await runPartsSearch(page, "bolt");
+  await post(page, {
+    type: "standardPartsSearchResult",
+    requestId: reqA.requestId,
+    items: [thumbItem("p1", "Bolt A")],
+    page: 1,
+    totalPages: 1,
+    total: 1,
+  });
+  await sleep(250);
+  // A second search is issued but its results have NOT landed — the rows on
+  // screen still show A's p1, so id-matching alone would accept A's late
+  // thumbnails. The generation guard must refuse them anyway: a newer search
+  // superseded them.
+  const reqB = await runPartsSearch(page, "nut");
+  await post(page, {
+    type: "standardPartsThumbsResult",
+    searchId: reqA.requestId,
+    thumbs: [{ id: "p1", dataUrl: THUMB_PNG }],
+  });
+  await sleep(250);
+  const stale = await page.evaluate(() => document.querySelectorAll("img.standard-part-thumb").length);
+  assert(stale === 0, `superseded thumbnails never decorate, even with a matching id (got ${stale} images)`);
+  // Then B's results land and B's thumbnails apply normally.
+  await post(page, {
+    type: "standardPartsSearchResult",
+    requestId: reqB.requestId,
+    items: [thumbItem("p9", "Nut Z")],
+    page: 1,
+    totalPages: 1,
+    total: 1,
+  });
+  await sleep(250);
+  await post(page, {
+    type: "standardPartsThumbsResult",
+    searchId: reqB.requestId,
+    thumbs: [{ id: "p9", dataUrl: THUMB_PNG }],
+  });
+  await sleep(250);
+  const now = await page.evaluate(() =>
+    [...document.querySelectorAll(".standard-part-row")].map((r) => ({
+      id: r.dataset.partId,
+      img: !!r.querySelector("img.standard-part-thumb"),
+    }))
+  );
+  assert(
+    now.length === 1 && now[0].id === "p9" && now[0].img === true,
+    `the current generation still decorates (got ${JSON.stringify(now)})`
+  );
+});
+
+test("thumbs: a thumbnail for an unknown id is dropped silently", async (page) => {
+  await populate(page);
+  const req = await runPartsSearch(page, "bolt");
+  await post(page, {
+    type: "standardPartsSearchResult",
+    requestId: req.requestId,
+    items: [thumbItem("p1", "Bolt A")],
+    page: 1,
+    totalPages: 1,
+    total: 1,
+  });
+  await sleep(250);
+  await post(page, {
+    type: "standardPartsThumbsResult",
+    searchId: req.requestId,
+    thumbs: [{ id: "ghost", dataUrl: THUMB_PNG }],
+  });
+  await sleep(250);
+  const imgs = await page.evaluate(() => document.querySelectorAll("img.standard-part-thumb").length);
+  assert(imgs === 0, "a thumbnail naming no listed row creates no image");
+});
+
 async function main() {
   if (!nodeSupportsPlaywright()) {
     // Not a failure: playwright-core would `process.exit(1)` at module load, so

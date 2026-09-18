@@ -63,6 +63,30 @@ export class StandardPartsPanel {
     for (const part of items) this.body.appendChild(this.buildRow(part));
   }
 
+  /**
+   * Decorates currently-listed rows with fetched thumbnails (roadmap Tier 1
+   * "Standard-parts thumbnails"). Rows are matched by part id against what
+   * is on screen RIGHT NOW — a thumbnail for an id no longer listed (a
+   * newer search replaced the rows) is dropped, never applied elsewhere.
+   * Rows with no thumbnail keep the text-only rendering from `buildRow`.
+   */
+  setThumbnails(thumbs: Array<{ id: string; dataUrl: string }>): void {
+    for (const { id, dataUrl } of thumbs) {
+      const row = this.body.querySelector(`[data-part-id="${CSS.escape(id)}"]`);
+      const main = row?.querySelector(".standard-part-main");
+      if (!main || main.querySelector("img.standard-part-thumb")) continue;
+      const img = document.createElement("img");
+      img.className = "standard-part-thumb";
+      img.alt = "";
+      img.draggable = false;
+      img.src = dataUrl;
+      // Belt-and-suspenders behind the host's content-type allowlist: a
+      // broken image hides itself rather than showing a broken icon.
+      img.addEventListener("error", () => img.remove());
+      main.prepend(img);
+    }
+  }
+
   /** Re-enables an Insert button after its request settles (success, error,
    * or a dismissed save dialog) — called with the part id that was inserted. */
   onInsertSettled(id: string): void {
@@ -75,17 +99,28 @@ export class StandardPartsPanel {
   private buildRow(part: StandardPart): HTMLElement {
     const row = document.createElement("div");
     row.className = "standard-part-row";
+    row.dataset.partId = part.id;
+
+    // Text column inside a horizontal main row — `setThumbnails` prepends
+    // the `<img>` beside it, so a thumbnail never disturbs the text layout
+    // (and a row without one renders exactly as before).
+    const main = document.createElement("div");
+    main.className = "standard-part-main";
+    const text = document.createElement("div");
+    text.className = "standard-part-text";
+    main.appendChild(text);
+    row.appendChild(main);
 
     const name = document.createElement("div");
     name.className = "standard-part-name";
     name.textContent = part.name;
-    row.appendChild(name);
+    text.appendChild(name);
 
     if (part.description) {
       const desc = document.createElement("div");
       desc.className = "standard-part-desc";
       desc.textContent = part.description;
-      row.appendChild(desc);
+      text.appendChild(desc);
     }
 
     const metaBits = [part.category, part.standard?.designation].filter((s): s is string => !!s);
@@ -93,7 +128,7 @@ export class StandardPartsPanel {
       const meta = document.createElement("div");
       meta.className = "standard-part-meta";
       meta.textContent = metaBits.join(" · ");
-      row.appendChild(meta);
+      text.appendChild(meta);
     }
 
     const actions = document.createElement("div");

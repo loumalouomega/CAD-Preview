@@ -37,12 +37,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-#### Standard-parts thumbnails (**S–M**, host + webview)
-
-- **Gap:** text-only fastener search results are difficult to distinguish; `stepPartsService.ts` already carries `pngUrl`.
-- **Scope:** lazy host-side image fetch with bounded size, timeout and cache; send supported images as data URLs and retain a text fallback. Avoid one eager request per result across every search page.
-- **Done when:** failed images never block search or insertion, old-search responses cannot decorate new rows, and cached thumbnails work under the existing webview CSP. No change to checksum-verified STEP downloads.
-
 #### Sidebar layout and keyboard usability (**M**, webview)
 
 - **Why:** collapsible sections help, but a narrow fixed sidebar with many headers and actions still makes forms hard to reach.

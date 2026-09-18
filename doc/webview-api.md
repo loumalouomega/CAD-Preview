@@ -39,7 +39,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
-| `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts` |
+| `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts`. Rows render text-first; `setThumbnails()` decorates listed rows with fetched images by part id (unknown ids dropped, errors hide the image) |
 | `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer + save-point gates), DOM-free (unit-tested) |
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |

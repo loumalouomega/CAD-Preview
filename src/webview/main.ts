@@ -4825,6 +4825,25 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "standardPartsSearchResult":
       if (msg.requestId !== standardPartsSearchRequestId) break; // stale — a newer search superseded it
       standardPartsPanel.renderResults(msg.items, msg.total);
+      // Thumbnails are a second, fire-and-forget round trip (roadmap Tier 1
+      // "Standard-parts thumbnails"): the rows render as text immediately and
+      // decorate when images land. Failures surface as absent thumbnails —
+      // there is no error message to handle here by design.
+      if (msg.items.length > 0) {
+        post({
+          type: "standardPartsThumbsRequest",
+          searchId: msg.requestId,
+          ids: msg.items.map((i) => i.id),
+        });
+      }
+      break;
+
+    case "standardPartsThumbsResult":
+      // Stale-generation guard, twice over: the host only answers the search
+      // it remembers, AND this ignores anything that is not the latest
+      // search — an old page's thumbnails must never decorate new rows.
+      if (msg.searchId !== standardPartsSearchRequestId) break;
+      standardPartsPanel.setThumbnails(msg.thumbs);
       break;
 
     case "standardPartsSearchError":

@@ -64,6 +64,7 @@ import { bundledMacrosPath, mergeScriptLibraries } from "./starterMacros";
 import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
+import { fetchThumbnail, ThumbCache } from "./standardPartsThumbs";
 import * as path from "path";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
@@ -81,6 +82,11 @@ const EMPTY_MESHIO_METADATA: MeshioMetadataSummary = { regions: [], pointDataNam
 const EXTERNAL_CHANGE_DEBOUNCE_MS = 300;
 
 const BREP_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
+
+/** Parallel thumbnail fetches per page (roadmap Tier 1 "Standard-parts
+ * thumbnails") — bounded so one 20-result page cannot open 20 connections
+ * at once; failures resolve individually to absent (text fallback). */
+const THUMB_FETCH_CONCURRENCY = 4;
 
 /**
  * Reads a `.gltf`'s sibling `.bin` buffers, when the source is glTF at all.
@@ -317,6 +323,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * of importing `occtService.ts`/`gmshService.ts`/etc. directly.
    */
   private readonly pipeline: KernelClient;
+
+  /**
+   * Thumbnail bytes by `pngUrl`, shared across every open document (the
+   * catalog is document-independent). Session-scoped by construction —
+   * nothing persists it. Only successful fetches are stored; failures are
+   * retried next time rather than negatively cached.
+   */
+  private readonly thumbsCache = new ThumbCache();
 
   constructor(private readonly context: vscode.ExtensionContext) {
     // Assigned in the constructor body, not a field initializer, so there is
@@ -694,6 +708,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // Save before any of those simply has nothing new to write for this one
     // sidecar, matching `currentMeshOptions`'s own convention.
     let currentViewState: ViewState | undefined;
+    /** The last search this document's webview rendered (`requestId` + each
+     * item's `pngUrl` by part id) — thumbnail requests are validated against
+     * it, so a stale page's ids can never resolve (the webview only ever
+     * echoes back what this host sent it, but the check is one line). */
+    let lastPartsSearch: { requestId: string; pngById: Map<string, string> } | null = null;
 
     /** Immediately writes the parts/edits/mesh/view sidecars, bypassing the debounce. */
     const flushSidecars = async (): Promise<void> => {
@@ -2106,6 +2125,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         try {
           const result = await this.pipeline.searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });
           if (!result.available) throw new Error(result.reason);
+          lastPartsSearch = {
+            requestId: msg.requestId,
+            pngById: new Map(result.value.items.map((i) => [i.id, i.pngUrl ?? ""])),
+          };
           post({
             type: "standardPartsSearchResult",
             requestId: msg.requestId,
@@ -2117,6 +2140,43 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         } catch (err) {
           post({ type: "standardPartsSearchError", requestId: msg.requestId, message: (err as Error).message });
         }
+        return;
+      }
+
+      if (msg.type === "standardPartsThumbsRequest") {
+        // Fire-and-forget (roadmap Tier 1 "Standard-parts thumbnails"): fetch
+        // this rendered page's thumbnails with bounded concurrency and post
+        // back only the successes — failures stay absent (text fallback),
+        // never an error. Must not hold the message loop: search/insert
+        // round trips behind a slow image fetch would read as a hung panel.
+        void (async () => {
+          const seen = lastPartsSearch;
+          if (!seen || seen.requestId !== msg.searchId) return; // stale page
+          const ids = msg.ids.filter((id) => seen.pngById.has(id)).slice(0, 25);
+          const thumbs: Array<{ id: string; dataUrl: string }> = [];
+          for (let i = 0; i < ids.length; i += THUMB_FETCH_CONCURRENCY) {
+            const batch = ids.slice(i, i + THUMB_FETCH_CONCURRENCY);
+            const results = await Promise.all(
+              batch.map(async (id) => {
+                const url = seen.pngById.get(id) ?? "";
+                if (!url) return null;
+                const hit = this.thumbsCache.get(url);
+                if (hit) return { id, dataUrl: hit };
+                const dataUrl = await fetchThumbnail(url);
+                if (!dataUrl) return null; // never cached, never posted
+                this.thumbsCache.set(url, dataUrl);
+                return { id, dataUrl };
+              })
+            );
+            for (const r of results) if (r) thumbs.push(r);
+          }
+          if (thumbs.length === 0) return;
+          post({ type: "standardPartsThumbsResult", searchId: msg.searchId, thumbs });
+        })().catch(() => {
+          // Belt-and-suspenders: `fetchThumbnail` never throws and the cache
+          // never throws, but a floating promise must never take down the
+          // handler. Silence is correct here — text fallback already covers it.
+        });
         return;
       }
 
