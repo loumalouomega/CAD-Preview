@@ -181,9 +181,9 @@ A dropdown closes when you click its trigger again, press `Escape`, or click any
 
 **Select ▾**
 
-![The Select menu: Selection mode plus the Point/Vol/Surf/Line pick modes.](/screenshots/select-menu.png)
+![The Select menu: Selection mode, the Point/Vol/Surf/Line pick modes, Zoom to selection, and the filter form.](/screenshots/select-menu.png)
 
-**Selection mode** toggles entity picking; the **Point · Vol · Surf · Line** row chooses what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). Pick modes a given file format can't offer are greyed out, and a filter form below the row lets you **select by shape instead of by clicking**: faces — `Normal ±X/±Y/±Z`, `Planar`, `Area ≥/≤`, `Largest/Smallest N`; lines — `Along X/Y/Z`, `Length ≥/≤`, `Longest/Shortest N` — plus a `No seams` toggle that skips tangent seam edges. `Vol`/`Point` modes grey the whole form (a volume-level predicate would need group deduplication, not yet built). **Select** replaces the current selection; **Add** unions into it.
+**Selection mode** toggles entity picking; the **Point · Vol · Surf · Line** row chooses what a click picks — points (vertices), volumes (solids), surfaces (faces), or lines (edges). Used to assign geometry to parts (see [Defining Parts](#defining-parts)) and to feed the wireframe **Build** composer (see [Editing Geometry](#editing-geometry)). Pick modes a given file format can't offer are greyed out. **Zoom to selection** frames the current selection in the focused pane (keeping its orientation, in perspective or ortho — explicit **Fit** still frames the whole model); an empty or hidden/stale selection explains itself on the status line instead. Also available as **CAD Preview: Zoom to Selection** from the Command Palette. A filter form below the row lets you **select by shape instead of by clicking**: faces — `Normal ±X/±Y/±Z`, `Planar`, `Area ≥/≤`, `Largest/Smallest N`; lines — `Along X/Y/Z`, `Length ≥/≤`, `Longest/Shortest N` — plus a `No seams` toggle that skips tangent seam edges; volumes — `Size ≥/≤` (bbox diagonal), `Center ±X/±Y/±Z` (bbox-center coordinate), `Largest/Smallest N` (by bbox volume); points — `Near XY/XZ/YZ` (distance to the coordinate plane), `Near selection ≤` and `In selection box ×` (measured against the current selection's centroid — select something first). All thresholds are in model millimetres, like the geometry itself. **Select** replaces the current selection; **Add** unions into it.
 
 **Measure ▾**
 
@@ -384,7 +384,7 @@ Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD 
 The **Standard Parts** panel (below Parts in the sidebar) searches the hosted [step.parts](https://www.step.parts) catalog — fasteners, bearings, connectors, extrusions, and more — and inserts a result as an ordinary STEP file:
 
 1. Type a query (e.g. "M6 hex bolt") and click **Search**.
-2. Each result shows its name, description, category, and standard designation. Click **Insert…** on one.
+2. Each result shows a thumbnail beside its name, description, category, and standard designation (thumbnails load lazily after the text — a result with no image simply shows its text). Click **Insert…** on one.
 3. A Save dialog appears, defaulting to `<part-id>.step` next to the currently open document. Saving downloads the file (its checksum is verified against the catalog's own recorded SHA-256, when one exists) and opens it as a new tab; dismissing the dialog is a no-op.
 
 ![The Standard Parts panel showing two search results with their Insert buttons.](/screenshots/standard-parts-panel.png)
@@ -429,7 +429,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | **Bezier** | Appends a Bézier curve over the control-point list (passes through first and last only) |
 | **Ell. Arc** | Appends an elliptical arc — Radius X along **Up**, Radius Y perpendicular, trimmed Start°→End° |
 | **Helix** | Appends a helix: `Turns` revolutions of `Pitch` height around `Axis` from `Base`, radius `Radius` |
-| **Circle / Rectangle / Polygon / Ellipse / Rounded / Slot / Trapezoid** | **Sketch** — appends a flat profile face you can later select (**Surf** mode) and feed into Extrude/Revolve/Sweep/Loft. Rectangle-family shapes take an **Up** direction for in-plane orientation |
+| **Circle / Rectangle / Polygon / Ellipse / Rounded / Slot / Trapezoid** | **Sketch** — appends a flat profile face you can later select (**Surf** mode) and feed into Extrude/Revolve/Sweep/Loft. Rectangle-family shapes take an **Up** direction for in-plane orientation. Circle/Rectangle/Polygon additionally offer a **Plane** picker: choose a saved `plane-N` to place the sketch from the plane plus **Offset U/V** (and **Rotation°** for rectangle/polygon), or leave it on Custom and type the center by hand — picked placement fills the coordinate fields in and locks them until you switch back |
 | **Surface** (Build from selection) | Select ≥3 lines (**Line** mode) that close into a loop and **Build** — assembles them into a new flat face under "Sketches" |
 | **Edge Slot** (Build from selection) | Select one edge (**Line** mode), enter a **Width**, **Build** — appends a stadium slot face around that edge (length = edge length + width) under "Sketches" |
 | **Construction (guide)** checkbox | Every 2D profile/curve form offers one: the built entity is marked reference-only — rendered dimmed, still pickable/measurable, and refused as a profile operand by Extrude/Revolve/Sweep/Loft/Surface/Volume |

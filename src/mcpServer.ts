@@ -400,13 +400,15 @@ server.registerTool(
   "check_interference_all",
   {
     description:
-      "Facts only (see describe_capabilities' verdictConventions): assembly-wide interference check — runs the same exact BRepAlgoAPI_Common_3 overlap test over EVERY pair of Parts in one call, with a cheap bounding-box pre-filter (strictly-disjoint pairs are reported without paying for a boolean; screenedByBbox:true marks those). Each row: {partA, partB, hasOverlap, overlapVolume} plus unresolved id lists. parts omitted = every Part in the sidecar; unknown/empty parts are skipped with warnings. hasOverlap is only true for a genuine non-degenerate volume overlap (merely-touching solids report false). Cost is O(n^2) pairs worst case. Read-only, never mutates the model. B-rep sources only headless.",
+      "Facts only (see describe_capabilities' verdictConventions): assembly-wide interference check — runs the same exact BRepAlgoAPI_Common_3 overlap test over EVERY pair of Parts in one call, with a cheap bounding-box pre-filter (strictly-disjoint pairs are reported without paying for a boolean; screenedByBbox:true marks those). Each row: {partA, partB, hasOverlap, overlapVolume} plus unresolved id lists. parts omitted = every Part in the sidecar; unknown/empty parts are skipped with warnings. hasOverlap is only true for a genuine non-degenerate volume overlap (merely-touching solids report false). Cost is O(n^2) pairs worst case — bound it with maxPairs (first N pairs in i<j order) and/or maxBooleans (real booleans only; screened pairs are free). Pairs past the budget return unchecked:true and are NOT clash-free; the response reports totalPairs/checkedPairs/screenedPairs/uncheckedCount/partial. Read-only, never mutates the model. B-rep sources only headless.",
     inputSchema: {
       path: modelPath,
       parts: z.array(z.string()).optional().describe("Part names to compare pairwise (default: every Part in the sidecar)"),
+      maxPairs: z.number().int().min(0).optional().describe("Work budget: evaluate at most this many pairs in i<j order; the rest return unchecked:true (not clash-free)"),
+      maxBooleans: z.number().int().min(0).optional().describe("Work budget: run at most this many real booleans; screened pairs are free and always reported"),
     },
   },
-  wrap((args: { path: string; parts?: string[] }) => checkInterferenceAllTool(ctx, args))
+  wrap((args: { path: string; parts?: string[]; maxPairs?: number; maxBooleans?: number }) => checkInterferenceAllTool(ctx, args))
 );
 
 server.registerTool(

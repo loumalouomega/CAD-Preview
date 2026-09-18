@@ -37,8 +37,52 @@ export const LINE_FILTERS: readonly FilterOption[] = [
   { id: "shortestN", label: "Shortest N", argKind: "count" },
 ] as const;
 
+/**
+ * Volume predicates (roadmap Tier 1 "Volume and point selection
+ * predicates"). Operate on deduplicated volume objects (one entry per
+ * `groupId`), never on raw face meshes — a faceted mesh solid contributes
+ * many meshes but is one volume. All metrics derive from the world-space
+ * group bbox (`Box3.setFromObject`, unlike the local-geometry face/line
+ * helpers above — a bbox must survive ancestor transforms).
+ *
+ * Deliberately bbox-only: no `Volume ≥` threshold in mm³. A volume inferred
+ * from display triangles is approximate and may be meaningless on an open
+ * mesh (the roadmap's own Decision), while a bbox is honest about what it
+ * is. Ranking (`largestN`/`smallestN`) is by bbox volume — the named metric.
+ */
+export const VOLUME_FILTERS: readonly FilterOption[] = [
+  { id: "sizeGte", label: "Size ≥", argKind: "value" },
+  { id: "sizeLte", label: "Size ≤", argKind: "value" },
+  { id: "centerXp", label: "Center +X", argKind: "value" },
+  { id: "centerXn", label: "Center −X", argKind: "value" },
+  { id: "centerYp", label: "Center +Y", argKind: "value" },
+  { id: "centerYn", label: "Center −Y", argKind: "value" },
+  { id: "centerZp", label: "Center +Z", argKind: "value" },
+  { id: "centerZn", label: "Center −Z", argKind: "value" },
+  { id: "largestN", label: "Largest N", argKind: "count" },
+  { id: "smallestN", label: "Smallest N", argKind: "count" },
+] as const;
+
+/**
+ * Point predicates. The two reference predicates (`nearSelectionLte`,
+ * `inSelectionBox`) take the CURRENT selection's centroid as their
+ * reference — a multi-number input (a point, a box) does not fit the
+ * form's single text field, so the selection supplies it and the field
+ * stays one distance/size value. A `null` reference (empty selection)
+ * matches nothing; the caller reports guidance instead of running.
+ */
+export const POINT_FILTERS: readonly FilterOption[] = [
+  { id: "nearXY", label: "Near XY", argKind: "value" },
+  { id: "nearXZ", label: "Near XZ", argKind: "value" },
+  { id: "nearYZ", label: "Near YZ", argKind: "value" },
+  { id: "nearSelectionLte", label: "Near selection ≤", argKind: "value" },
+  { id: "inSelectionBox", label: "In selection box ×", argKind: "value" },
+] as const;
+
 export type FaceFilterId = (typeof FACE_FILTERS)[number]["id"];
 export type LineFilterId = (typeof LINE_FILTERS)[number]["id"];
+export type VolumeFilterId = (typeof VOLUME_FILTERS)[number]["id"];
+export type PointFilterId = (typeof POINT_FILTERS)[number]["id"];
 
 function positionsOf(mesh: THREE.Mesh): Float32Array | null {
   const attr = (mesh.geometry as THREE.BufferGeometry).getAttribute("position") as THREE.BufferAttribute | undefined;
@@ -259,6 +303,167 @@ export function applyLineFilter(
       keep = edgeLength(line) >= arg - 1e-9;
     } else if (filterId === "lengthLte") {
       keep = edgeLength(line) <= arg + 1e-9;
+    }
+    if (keep) out.push(ent);
+  }
+  return out;
+}
+
+/** One deduplicated volume object: every mesh sharing a `groupId`. */
+export interface VolumeEntry {
+  groupId: string;
+  box: THREE.Box3;
+  center: THREE.Vector3;
+  /** Bbox diagonal (the `Size` metric). */
+  diagonal: number;
+  /** Bbox volume (the ranking metric for `largestN`/`smallestN`). */
+  volume: number;
+}
+
+function isFiniteBox(box: THREE.Box3): boolean {
+  return (
+    Number.isFinite(box.min.x) && Number.isFinite(box.min.y) && Number.isFinite(box.min.z) &&
+    Number.isFinite(box.max.x) && Number.isFinite(box.max.y) && Number.isFinite(box.max.z)
+  );
+}
+
+/**
+ * Groups face-mesh targets by `groupId` into volume objects. Many meshes,
+ * one entry — without this a faceted mesh solid would rank once per facet.
+ * World-space boxes; a group contributing no finite geometry is dropped
+ * (degenerate, never thrown).
+ */
+export function groupVolumes(targets: Object3D[]): VolumeEntry[] {
+  const boxes = new Map<string, THREE.Box3>();
+  for (const obj of targets) {
+    const ud = obj.userData as { entityType?: string; groupId?: string };
+    if (ud.entityType !== "surface" || !ud.groupId) continue;
+    let box = boxes.get(ud.groupId);
+    if (!box) {
+      box = new THREE.Box3();
+      boxes.set(ud.groupId, box);
+    }
+    box.union(new THREE.Box3().setFromObject(obj));
+  }
+  const out: VolumeEntry[] = [];
+  for (const [groupId, box] of boxes) {
+    if (box.isEmpty() || !isFiniteBox(box)) continue;
+    const size = box.getSize(new THREE.Vector3());
+    if (!Number.isFinite(size.x + size.y + size.z)) continue;
+    out.push({
+      groupId,
+      box,
+      center: box.getCenter(new THREE.Vector3()),
+      diagonal: size.length(),
+      volume: size.x * size.y * size.z,
+    });
+  }
+  return out;
+}
+
+function volumeEntityOf(groupId: string): SelectedEntity {
+  return { entityType: "volume", entityId: groupId };
+}
+
+function pointEntityOf(obj: Object3D): SelectedEntity | null {
+  const ud = obj.userData as { entityType?: string; entityId?: string };
+  if (ud.entityType === "point" && ud.entityId) return { entityType: "point", entityId: ud.entityId };
+  return null;
+}
+
+/** World-space position of a point sprite, or null when unavailable. */
+export function pointPosition(obj: Object3D): THREE.Vector3 | null {
+  const p = new THREE.Vector3();
+  try {
+    obj.getWorldPosition(p);
+  } catch {
+    return null;
+  }
+  return Number.isFinite(p.x + p.y + p.z) ? p : null;
+}
+
+/**
+ * Filter deduplicated volumes by a volume predicate. `arg` is used for
+ * threshold/count predicates; ignored for others. Ties in `largestN`/
+ * `smallestN` break by `groupId` string order — deterministic regardless
+ * of traversal order.
+ */
+export function applyVolumeFilter(
+  targets: Object3D[],
+  filterId: VolumeFilterId,
+  arg: number
+): SelectedEntity[] {
+  const entries = groupVolumes(targets);
+  if (filterId === "largestN" || filterId === "smallestN") {
+    const n = Math.max(0, Math.floor(arg));
+    if (n <= 0) return [];
+    const sorted = [...entries].sort((a, b) =>
+      filterId === "largestN" ? b.volume - a.volume || (a.groupId < b.groupId ? -1 : 1) : a.volume - b.volume || (a.groupId < b.groupId ? -1 : 1)
+    );
+    return sorted.slice(0, n).map((e) => volumeEntityOf(e.groupId));
+  }
+  const out: SelectedEntity[] = [];
+  for (const e of entries) {
+    let keep = false;
+    if (filterId === "sizeGte") {
+      keep = e.diagonal >= arg - 1e-9;
+    } else if (filterId === "sizeLte") {
+      keep = e.diagonal <= arg + 1e-9;
+    } else if (filterId === "centerXp") {
+      keep = e.center.x >= arg - 1e-9;
+    } else if (filterId === "centerXn") {
+      keep = e.center.x <= arg + 1e-9;
+    } else if (filterId === "centerYp") {
+      keep = e.center.y >= arg - 1e-9;
+    } else if (filterId === "centerYn") {
+      keep = e.center.y <= arg + 1e-9;
+    } else if (filterId === "centerZp") {
+      keep = e.center.z >= arg - 1e-9;
+    } else if (filterId === "centerZn") {
+      keep = e.center.z <= arg + 1e-9;
+    }
+    if (keep) out.push(volumeEntityOf(e.groupId));
+  }
+  return out;
+}
+
+/**
+ * Filter point sprites by a point predicate. `reference` is the current
+ * selection's centroid and is REQUIRED for `nearSelectionLte`/
+ * `inSelectionBox` — a `null` reference matches nothing (the caller reports
+ * guidance instead of running a meaningless query).
+ */
+export function applyPointFilter(
+  targets: Object3D[],
+  filterId: PointFilterId,
+  arg: number,
+  reference: THREE.Vector3 | null
+): SelectedEntity[] {
+  const out: SelectedEntity[] = [];
+  for (const obj of targets) {
+    const ent = pointEntityOf(obj);
+    if (!ent) continue;
+    const p = pointPosition(obj);
+    if (!p) continue;
+    let keep = false;
+    if (filterId === "nearXY") {
+      keep = Math.abs(p.z) <= arg + 1e-9;
+    } else if (filterId === "nearXZ") {
+      keep = Math.abs(p.y) <= arg + 1e-9;
+    } else if (filterId === "nearYZ") {
+      keep = Math.abs(p.x) <= arg + 1e-9;
+    } else if (filterId === "nearSelectionLte") {
+      keep = reference !== null && p.distanceTo(reference) <= arg + 1e-9;
+    } else if (filterId === "inSelectionBox") {
+      if (reference === null || !(arg > 0)) {
+        keep = false;
+      } else {
+        const h = arg / 2;
+        keep =
+          Math.abs(p.x - reference.x) <= h + 1e-9 &&
+          Math.abs(p.y - reference.y) <= h + 1e-9 &&
+          Math.abs(p.z - reference.z) <= h + 1e-9;
+      }
     }
     if (keep) out.push(ent);
   }

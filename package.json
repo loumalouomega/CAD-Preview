@@ -201,6 +201,10 @@
         "title": "CAD Preview: Export FE Mesh…"
       },
       {
+        "command": "cad-preview.zoomToSelection",
+        "title": "CAD Preview: Zoom to Selection"
+      },
+      {
         "command": "cad-preview.compareModels",
         "title": "CAD Preview: Compare Models…"
       },
@@ -291,6 +295,10 @@
         },
         {
           "command": "cad-preview.exportMesh",
+          "when": "activeCustomEditorId == 'cad-preview.mesh'"
+        },
+        {
+          "command": "cad-preview.zoomToSelection",
           "when": "activeCustomEditorId == 'cad-preview.mesh'"
         },
         {

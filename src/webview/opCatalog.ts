@@ -388,7 +388,11 @@ export function referencedEntities(op: EditOp): string[] {
     case "addWedge":
     case "addCircleProfile":
     case "addRectangleProfile":
-    case "addPolygonProfile":
+    case "addPolygonProfile": {
+      const refs: string[] = [];
+      if ((op as any).planeId) refs.push((op as any).planeId as string);
+      return refs;
+    }
     case "addEllipseProfile":
     case "addRoundedRectangleProfile":
     case "addSlotProfile":

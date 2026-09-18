@@ -68,8 +68,9 @@ const SHOTS = [
     // edges" + the layout picker + "Link cameras across tabs" landed: the
     // picker row made the panel wider (left-clipped at x=830) and the new
     // rows made it taller (Screenshot… half-cut at height 400) — now
-    // x 830→770 / height 400→470.
-    target: { clip: { x: 770, y: 30, width: 590, height: 470 } },
+    // x 830→770 / height 400→470 — plus one more row for Zoom to selection
+    // (470→500).
+    target: { clip: { x: 770, y: 30, width: 590, height: 500 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },
@@ -110,6 +111,21 @@ const SHOTS = [
         page: 1,
         totalPages: 1,
         total: 2,
+      });
+      await sleep(200);
+      // One inline thumbnail (a 1px PNG data URL — the host would fetch the
+      // real `pngUrl` and pipe it as `data:`), so the shot shows the
+      // thumbnail layout, not just the text fallback.
+      await post(page, {
+        type: "standardPartsThumbsResult",
+        searchId: requestId,
+        thumbs: [
+          {
+            id: "iso-4762-m6x20",
+            dataUrl:
+              "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          },
+        ],
       });
       await sleep(200);
     },

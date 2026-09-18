@@ -37,45 +37,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
 
-#### Bounded assembly interference checks (**S–M**, shared pipeline)
-
-- **Gap:** `check_interference_all` can schedule a quadratic number of pairs; AABB screening reduces boolean cost but does not bound total work.
-- **Scope:** a caller-visible pair/work limit applied before expensive computation, deterministic pair ordering, and explicit total/checked/screened/skipped counts. The Clash panel must label a partial result as partial. Adapt the existing full `C(n,2)` response guard rather than accidentally treating truncation as a kernel error.
-- **Done when:** a limited call finishes within its work budget, reports unchecked pairs, and never describes an unchecked assembly as clash-free. Small unrestricted cases keep their current results.
-
-#### Zoom to selection (**S**, webview)
-
-- **Reuse:** `Viewer.frameBox` and its separate camera-placement helper already exist for headless framing without changing model-wide pick thresholds or the auto-fit containment cache.
-- **Scope:** expose a Select-menu action and focused-editor command; union selected entities' world-space bounds. Define small padding for a point/line selection and clear behaviour for empty, hidden or stale selections. Affect the focused pane only.
-- **Done when:** one face, several solids, an edge and a point frame correctly in perspective and ortho; explicit Fit still frames the whole model, and selection framing leaves picking usable.
-
-#### Volume and point selection predicates (**M**, webview first)
-
-- **Gap:** `selectFilters.ts` currently serves face/line predicates; Vol/Point mode needs its own coherent vocabulary.
-- **First increment:** volume-object bbox extent/position and largest/smallest N by a named metric; points inside a box, near a coordinate plane, or within a distance of a supplied point. Deduplicate volume objects before ranking.
-- **Decision:** a volume inferred from display triangles is approximate and may be meaningless on an open mesh. Start with bbox predicates; expose volume thresholds only with a documented calculation and open-mesh behaviour. Do not equate webview `node-N` ids with headless `mesh-component-N` ids.
-- **Done when:** Select/Add, hidden-subtree exclusion, units, ties and degenerate geometry are covered, with the predicate vocabulary reusable by future context-menu and headless selectors.
-
-#### Per-band operation-preview colouring (**M**, host + webview)
-
-- **Reuse:** replay already returns op buckets, but `opPreviewResult` does not expose them.
-- **Scope:** return the draft operation's own bucket and render affected faces distinctly from retained context, with a small legend. Translate full-history versus replay-tail indices correctly after a save.
-- **Constraint:** bucket roles describe the producing operation and can include rebuilt faces; a `band` is not proof that every face was newly added, and a subtractive preview has no geometry for material already removed. Keep a neutral fallback for ambiguous roles.
-- **Done when:** extrude caps/walls and fillet rebuilt faces are distinguishable; cancellation and stale replies restore the original view; colours compose with Parts, clipping and themes without persisting preview state.
-
-#### Author profiles on a named construction plane (**M**, shared op model)
-
-- **Reuse:** `planesSidecar.ts` and `planeRefs.ts` already implement the annotation-plus-cache pattern for plane-bearing edits.
-- **First increment:** circle, rectangle and polygon profile forms select a `plane-N`, with in-plane offsets and rotation; the existing numeric/expression workflow remains available.
-- **Design dependency:** point + normal does not fully specify a 2D frame. Choose a deterministic basis or persist an optional in-plane axis, with tolerant legacy parsing. Specify what changing a plane moves, and freeze last-good cached placement when it is deleted.
-- **Done when:** a tilted rectangle keeps a stable orientation across reopen, plane edits and export; expressions survive; MCP-authored and UI-authored profiles resolve identically. This remains coordinate placement, not a constraint solver.
-
-#### Standard-parts thumbnails (**S–M**, host + webview)
-
-- **Gap:** text-only fastener search results are difficult to distinguish; `stepPartsService.ts` already carries `pngUrl`.
-- **Scope:** lazy host-side image fetch with bounded size, timeout and cache; send supported images as data URLs and retain a text fallback. Avoid one eager request per result across every search page.
-- **Done when:** failed images never block search or insertion, old-search responses cannot decorate new rows, and cached thumbnails work under the existing webview CSP. No change to checksum-verified STEP downloads.
-
 #### Sidebar layout and keyboard usability (**M**, webview)
 
 - **Why:** collapsible sections help, but a narrow fixed sidebar with many headers and actions still makes forms hard to reach.

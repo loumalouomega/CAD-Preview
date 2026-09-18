@@ -23,6 +23,7 @@ import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
 import { EditsPanel, type TransformDraft, type FeatureDraft, type ModifyDraft, type PrimitiveDraft, type HoleDraft, type ProfileDraft, type WireframeDraft, type AlignDraft, type PatternDraft } from "./editsPanel";
 import { OpPreviewScheduler } from "./opPreviewScheduler";
+import { draftBucketFor, bandFaceIds, previewBandLegend, tintDisplayName } from "./opPreviewBands";
 import { applySpaceMouseInput } from "./spaceMouseDispatch";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
@@ -57,11 +58,19 @@ import { collectTargets } from "./picking";
 import {
   FACE_FILTERS,
   LINE_FILTERS,
+  VOLUME_FILTERS,
+  POINT_FILTERS,
   applyFaceFilter,
   applyLineFilter,
+  applyVolumeFilter,
+  applyPointFilter,
+  groupVolumes,
   type FaceFilterId,
   type LineFilterId,
+  type VolumeFilterId,
+  type PointFilterId,
 } from "./selectFilters";
+import { unionSelectionBounds } from "./selectionBounds";
 import { captureExplodeBase, applyExplodePreview, resetExplodePreview, type ExplodeBase } from "./explodePreview";
 import { applyTranslateDelta, applyRotateDelta, applyScaleDelta, quaternionToAxisAngle, snapTranslateDelta, nearestSnapPoint, type TransformBase } from "./gizmoTransform";
 import {
@@ -1317,7 +1326,12 @@ let clashCheckAllRequestId: string | null = null;
 let clashLastPair: { partA: string; partB: string } | null = null;
 let lastClashResults:
   | { kind: "pair"; pair: Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null } }
-  | { kind: "all"; pairs: Array<Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null }> }
+  | {
+      kind: "all";
+      pairs: Array<Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null }>;
+      totalPairs: number;
+      checkedPairs: number;
+    }
   | null = null;
 
 function renderClashResults(): void {
@@ -1329,7 +1343,8 @@ function renderClashResults(): void {
   } else {
     clashPanel.renderAll(
       lastClashResults.pairs.map(({ overlapVolumeMm3, ...rest }) => ({ ...rest, overlapVolume: convert(overlapVolumeMm3) })),
-      currentDisplayUnit
+      currentDisplayUnit,
+      { totalPairs: lastClashResults.totalPairs, checkedPairs: lastClashResults.checkedPairs }
     );
   }
 }
@@ -1751,6 +1766,19 @@ function renderHighlight(): void {
   }
 }
 
+// ── Zoom to selection (roadmap Tier 1) ────────────────────────────────────
+// One choke point for the Select-menu button and the focused-editor command
+// (`cad-preview.zoomToSelection`, via the `zoomToSelection` host message):
+// frames the transient selection in the focused pane via
+// `Viewer.frameSelection` (focused-pane-only, orientation-preserving, both
+// projections — explicit Fit still frames the whole model). Guidance, not
+// geometry, for the two non-framing outcomes.
+function zoomToSelection(): void {
+  const result = viewer.frameSelection(selection.list());
+  if (result === "empty") setStatus("No selection — select entities first.", true);
+  else if (result === "hidden-or-stale") setStatus("Selection is hidden or no longer in the model.", true);
+}
+
 // ── Live operation preview (roadmap item, closed) ─────────────────────────
 // One debounced speculative replay of [...currentOps, draftOp] rendered as a
 // translucent intent-tinted stand-in for the model. The webview owns ALL of
@@ -1818,7 +1846,8 @@ function pickOf(d: Record<string, unknown>): { pick?: RegionPick } | { pickError
 
 /** Intent colour for a previewed op kind — green adds material, red removes
  * it, blue marks wire/reference-only results; transforms/fillet/chamfer stay
- * neutral (per-band fillet colouring explicitly deferred per the roadmap).
+ * neutral at the whole-overlay level, with the produced band highlighted
+ * per-face instead (roadmap Tier 1 "Per-band operation-preview colouring").
  * `wrap` tints per VARIANT (the first such case): emboss adds, engrave cuts,
  * standalone stays neutral. */
 function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "standalone" | null): "add" | "cut" | "ref" | undefined {
@@ -2052,6 +2081,18 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     if (d.exprs && Object.keys(d.exprs).length > 0) op.exprs = d.exprs;
     return op;
   };
+  // Plane-authored profile drafts (roadmap Tier 1 "Author profiles on a named
+  // construction plane"): the panel fills the resolved cache and reads the
+  // reference; the host re-resolves against the live plane on replay.
+  const planeRefOf = (draft: Record<string, any>): Record<string, unknown> =>
+    typeof draft.planeId === "string" && draft.planeId
+      ? {
+          planeId: draft.planeId,
+          offsetU: draft.offsetU ?? 0,
+          offsetV: draft.offsetV ?? 0,
+          ...(draft.rotationDeg !== undefined ? { rotationDeg: draft.rotationDeg } : {}),
+        }
+      : {};
   const selVolumes = selectedVolumes();
   const selFaces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
   const selEdges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
@@ -2291,18 +2332,21 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     }
 
     // ── 2D profiles ──
+    // Plane-authored drafts carry `planeId` + offsets/rotation alongside the
+    // resolved cache (the panel fills it from the picked plane); the host
+    // re-resolves against the live plane on replay, so preview ≡ Apply.
     case "addCircleProfile":
       if (d.radius <= 0) return { error: "Circle radius must be positive." };
-      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius }) };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius, ...planeRefOf(d) }) };
     case "addRectangleProfile":
       if (d.width <= 0 || d.height <= 0) return { error: "Width and height must be positive." };
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
-      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, width: d.width, height: d.height }) };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, width: d.width, height: d.height, ...planeRefOf(d) }) };
     case "addPolygonProfile":
       if (d.radius <= 0) return { error: "Radius must be positive." };
       if (!Number.isInteger(d.sides) || d.sides < 3) return { error: "Sides must be an integer ≥ 3." };
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
-      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radius: d.radius, sides: d.sides }) };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radius: d.radius, sides: d.sides, ...planeRefOf(d) }) };
     case "addEllipseProfile":
       if (d.radiusX <= 0 || d.radiusY <= 0) return { error: "Both radii must be positive." };
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
@@ -2420,7 +2464,7 @@ function scheduleOpPreview(): void {
 function cancelOpPreview(): void {
   opPreviewScheduler.cancel();
   viewer.setOpPreview(null);
-  lastWrapPreviewVariant = null;
+  clearPreviewLegend();
 }
 
 // Stashed wrap variant for preview tinting (see runOpPreview): the result
@@ -2433,6 +2477,7 @@ let lastWrapPreviewVariant: "emboss" | "engrave" | "standalone" | null = null;
  * clone — the host round trip would need an STL snapshot for zero benefit);
  * B-rep sources post `opPreviewRequest` and render from `opPreviewResult`. */
 async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknown> }, generation: number): Promise<void> {
+  clearPreviewLegend(); // a new run supersedes any shown band legend
   const resolved = buildOpForPanel(entry.id, entry.draft);
   if (resolved.error || !resolved.op) {
     viewer.setOpPreview(null);
@@ -2475,6 +2520,23 @@ async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknow
  * scheduler's generation via `cancel()`). */
 const pendingOpPreviewGeneration = new Map<string, number>();
 
+/**
+ * Status-line legend for a per-band preview (roadmap Tier 1 "Per-band
+ * operation-preview colouring"). Tracked so only OUR text is ever cleared:
+ * `clearPreviewLegend` (called from `cancelOpPreview` and at the top of
+ * every new `runOpPreview`) hides it exactly when the overlay it describes
+ * goes away — a stale legend naming faces of a superseded draft would read
+ * as confidently as a fresh one.
+ */
+let previewLegendActive = false;
+
+function clearPreviewLegend(): void {
+  if (previewLegendActive) {
+    previewLegendActive = false;
+    setStatus("");
+  }
+}
+
 function handleOpPreviewResult(msg: Extract<HostToWebview, { type: "opPreviewResult" }>): void {
   const gen = pendingOpPreviewGeneration.get(msg.requestId);
   pendingOpPreviewGeneration.delete(msg.requestId);
@@ -2485,7 +2547,28 @@ function handleOpPreviewResult(msg: Extract<HostToWebview, { type: "opPreviewRes
     setStatus(`Preview skipped: ${draftOutcome.diagnostic ?? "the operation produced no change"}${draftOutcome.hint ? ` — ${draftOutcome.hint}` : ""}`, true);
     return;
   }
-  viewer.setOpPreview(buildGroupFromEncoded(msg.meshes, msg.edges, msg.points), tintForPanelOp(editsPanel.openOpId() as PanelOpId, lastWrapPreviewVariant));
+  const tint = tintForPanelOp(editsPanel.openOpId() as PanelOpId, lastWrapPreviewVariant);
+  // The replay list is [...tailOps, draft], so the draft is always the last
+  // entry — the same tail-relative indexing the outcome check above uses.
+  const replayLength = msg.opOutcomes?.length ?? 0;
+  const bucket = draftBucketFor(msg.opBuckets, replayLength);
+  viewer.setOpPreview(
+    buildGroupFromEncoded(msg.meshes, msg.edges, msg.points),
+    tint,
+    bucket ? bandFaceIds(bucket) : null
+  );
+  if (bucket) {
+    // Full-history 1-based op number for the legend — never the raw
+    // replay-tail index, which names the wrong history row after a
+    // same-format save-in-place moved the save point.
+    previewLegendActive = true;
+    setStatus(previewBandLegend(bucket, editsModel.savePoint + replayLength, tintDisplayName(tint)));
+  } else if (previewLegendActive) {
+    // A uniform preview superseded a banded one — retire its legend rather
+    // than leave it describing faces no longer highlighted.
+    previewLegendActive = false;
+    setStatus("");
+  }
 }
 
 // The pristine, tagged-but-unedited loaded object for mesh formats. Mesh edits
@@ -2754,6 +2837,12 @@ function setupSelectionControls(): void {
       syncFilterUi();
     });
   }
+  // One-shot action (the `#screenshot` precedent): run, then dismiss the menu
+  // so the next canvas click reaches the viewport, not the open panel.
+  document.getElementById("select-zoom")?.addEventListener("click", () => {
+    zoomToSelection();
+    menu?.close();
+  });
 
   // ── Geometric selection filters (roadmap Tier 2 item 1, Phase 1) ──────────
   // One registry-driven predicate dropdown + numeric field + seam toggle, run
@@ -2766,7 +2855,12 @@ function setupSelectionControls(): void {
   const filterReplace = document.getElementById("filter-replace") as HTMLButtonElement | null;
   const filterAdd = document.getElementById("filter-add") as HTMLButtonElement | null;
 
-  const filterSupportsMode = (m: EntityType) => m === "surface" || m === "line";
+  // Roadmap Tier 1 "Volume and point selection predicates": every pick mode
+  // has a predicate vocabulary now (faces, lines, volumes, points).
+  const filterSupportsMode = (_m: EntityType) => true;
+
+  const filtersForMode = (m: EntityType): readonly { id: string; label: string; argKind: string }[] =>
+    m === "line" ? LINE_FILTERS : m === "surface" ? FACE_FILTERS : m === "volume" ? VOLUME_FILTERS : POINT_FILTERS;
 
   // Keep the predicate dropdown in sync with the active pick mode — the
   // option list is registry-driven (`FACE_FILTERS`/`LINE_FILTERS`), so this
@@ -2775,9 +2869,7 @@ function setupSelectionControls(): void {
   let lastFilterMode: EntityType | null = null;
   const syncFilterUi = () => {
     if (filterPred && lastFilterMode !== selectMode) {
-      const wantLine = selectMode === "line";
-      const wantSurface = selectMode === "surface";
-      const opts = wantLine ? LINE_FILTERS : wantSurface ? FACE_FILTERS : [];
+      const opts = filtersForMode(selectMode);
       const prevVal = filterPred.value;
       filterPred.innerHTML = "";
       for (const o of opts) {
@@ -2791,7 +2883,7 @@ function setupSelectionControls(): void {
       lastFilterMode = selectMode;
     }
     const supported = filterSupportsMode(selectMode);
-    const opts = selectMode === "line" ? LINE_FILTERS : selectMode === "surface" ? FACE_FILTERS : [];
+    const opts = filtersForMode(selectMode);
     const cur = filterPred ? (opts.find((o) => o.id === filterPred.value) ?? opts[0]) : undefined;
     const needsArg = cur ? cur.argKind !== "none" : false;
     if (filterPred) filterPred.disabled = !supported;
@@ -2818,10 +2910,7 @@ function setupSelectionControls(): void {
     if (!filterPred) return;
     const filterId = filterPred.value;
     const argRaw = filterArg?.value.trim() ?? "";
-    const cur =
-      (selectMode === "line" ? (LINE_FILTERS as readonly { id: string; argKind: string }[]) : (FACE_FILTERS as readonly { id: string; argKind: string }[])).find(
-        (o) => o.id === filterId
-      ) ?? null;
+    const cur = filtersForMode(selectMode).find((o) => o.id === filterId) ?? null;
     let arg = 0;
     if (cur && cur.argKind !== "none") {
       if (argRaw === "") {
@@ -2840,14 +2929,38 @@ function setupSelectionControls(): void {
     }
     const targets = collectTargets(model, selectMode);
     const excludeSmooth = !!filterExcludeSmooth?.checked;
+    // Point reference predicates read the live selection's centroid — an
+    // empty selection is guidance, never a match-everything.
+    let reference: THREE.Vector3 | null = null;
+    if (selectMode === "point" && (filterId === "nearSelectionLte" || filterId === "inSelectionBox")) {
+      const picked = selection.list();
+      if (picked.length === 0) {
+        setStatus("Select something first to use as the reference.", true);
+        return;
+      }
+      const box = unionSelectionBounds(model, picked);
+      if (!box) {
+        setStatus("Selection is hidden or no longer in the model.", true);
+        return;
+      }
+      reference = box.getCenter(new THREE.Vector3());
+    }
     const result =
       selectMode === "line"
         ? applyLineFilter(targets, filterId as LineFilterId, arg, excludeSmooth)
-        : applyFaceFilter(targets, filterId as FaceFilterId, arg);
+        : selectMode === "surface"
+          ? applyFaceFilter(targets, filterId as FaceFilterId, arg)
+          : selectMode === "volume"
+            ? applyVolumeFilter(targets, filterId as VolumeFilterId, arg)
+            : applyPointFilter(targets, filterId as PointFilterId, arg, reference);
     if (replace) selection.clear();
     for (const e of result) selection.add(e);
     renderHighlight();
-    setStatus(result.length === 0 ? "Filter matched nothing." : `Filter matched ${result.length} of ${targets.length} ${selectMode === "line" ? "edges" : "faces"}.`);
+    const noun = selectMode === "line" ? "edges" : selectMode === "surface" ? "faces" : selectMode === "volume" ? "solids" : "points";
+    // Volumes count deduplicated objects, not raw meshes — a faceted solid
+    // is one solid, so the denominator is the group count, not targets.
+    const denom = selectMode === "volume" ? groupVolumes(targets).length : targets.length;
+    setStatus(result.length === 0 ? "Filter matched nothing." : `Filter matched ${result.length} of ${denom} ${noun}.`);
   };
 
   filterPred?.addEventListener("change", syncFilterUi);
@@ -4490,6 +4603,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       }
       break;
 
+    case "zoomToSelection":
+      // Focused-editor command (`cad-preview.zoomToSelection`) — the same
+      // choke point as the Select-menu button, so both surfaces stay in
+      // lockstep. Fire-and-forget: guidance surfaces on the status line.
+      zoomToSelection();
+      break;
+
     case "spacemouse": {
       // 6DOF motion event (roadmap Tier 2 item 2): deadzone + normalize +
       // apply via the standard rotateView/panView/zoomView entry points, so
@@ -4619,9 +4739,12 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
           hasOverlap: p.hasOverlap,
           overlapVolumeMm3: p.hasOverlap ? p.overlapVolume : null,
           screenedByBbox: p.screenedByBbox,
+          unchecked: p.unchecked,
           unresolvedA: p.unresolvedA,
           unresolvedB: p.unresolvedB,
         })),
+        totalPairs: msg.totalPairs,
+        checkedPairs: msg.checkedPairs,
       };
       renderClashResults();
       break;
@@ -4702,6 +4825,25 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "standardPartsSearchResult":
       if (msg.requestId !== standardPartsSearchRequestId) break; // stale — a newer search superseded it
       standardPartsPanel.renderResults(msg.items, msg.total);
+      // Thumbnails are a second, fire-and-forget round trip (roadmap Tier 1
+      // "Standard-parts thumbnails"): the rows render as text immediately and
+      // decorate when images land. Failures surface as absent thumbnails —
+      // there is no error message to handle here by design.
+      if (msg.items.length > 0) {
+        post({
+          type: "standardPartsThumbsRequest",
+          searchId: msg.requestId,
+          ids: msg.items.map((i) => i.id),
+        });
+      }
+      break;
+
+    case "standardPartsThumbsResult":
+      // Stale-generation guard, twice over: the host only answers the search
+      // it remembers, AND this ignores anything that is not the latest
+      // search — an old page's thumbnails must never decorate new rows.
+      if (msg.searchId !== standardPartsSearchRequestId) break;
+      standardPartsPanel.setThumbnails(msg.thumbs);
       break;
 
     case "standardPartsSearchError":

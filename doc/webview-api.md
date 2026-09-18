@@ -25,6 +25,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
 | `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity, plus mode-unfiltered measurement picking (unit-testable). Both collectors walk with `traverseVisible`, not `traverse` — **load-bearing**: three's `Raycaster` tests only `layers` and ignores `.visible` entirely, so plain traversal would let clicks (and measurements, and `collectSnapPoints()`'s gizmo-drag snap candidates) land on geometry the user explicitly hid — a Part hidden by its eye-toggle, anything outside an active Isolate, or the model's faces under an FE-mesh/colour-field overlay. `traverseVisible` prunes such a subtree at the invisible ancestor, exactly the unit of hiding in all four cases. |
 | `src/webview/selection.ts` | Transient (not-yet-assigned) entity selection set |
+| `src/webview/selectionBounds.ts` | Pure world-space bounds of a transient selection — union over matching objects plus a model-relative minimum-size pad for degenerate (point/short-edge) selections (THREE-yes/DOM-no, unit-tested) |
 | `src/webview/measurement.ts` | Pure distance/length/angle/radius math over plain tuples (unit-tested) |
 | `src/webview/measurementState.ts` | 0–2-pick buffer for the in-progress measurement, DOM-free (unit-tested) |
 | `src/webview/measurementOverlay.ts` | Lazily-built marker/dimension-glyph/label Three.js objects for the measurement overlay |
@@ -38,11 +39,12 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
 | `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
-| `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts` |
+| `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts`. Rows render text-first; `setThumbnails()` decorates listed rows with fetched images by part id (unknown ids dropped, errors hide the image) |
 | `src/webview/editsModel.ts` | Edit op-stack (push/undo/redo/clear + redo buffer + save-point gates), DOM-free (unit-tested) |
 | `src/webview/variablesModel.ts` | Parametric variables store (add/rename/setExpr/remove), DOM-free (unit-tested) |
 | `src/webview/variablesPanel.ts` | Variables table DOM inside the Edits panel (inline name/expr inputs, computed values) |
 | `src/webview/opCatalog.ts` | Op catalog: GEOMETRY/EDIT tab structure + `describeOp`, DOM-free (unit-tested) |
+| `src/planeFrame.ts` | Deterministic 2D frame for plane-authored profiles: `planeBasis` + `profilePlacementFromPlane` (vscode/OCCT/THREE-free, unit-tested; `occtOperations.ts` delegates its own copy here) |
 | `src/webview/opIcons.ts` | Generated per-op SVG icons (`icons/build-op-icons.mjs`) |
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
@@ -315,6 +317,12 @@ frameFromDirection(direction: THREE.Vector3): void
 Frames the model along an arbitrary view direction — computes distance/target from the model's current bounding box, same math `fitView()`/`resetView()` use, but for a caller-supplied direction rather than the current or hardcoded-isometric one. Used by `main.ts`'s `applyInitialViewIfNeeded()` to restore a persisted `ViewState.viewDirection` on first load.
 
 ```typescript
+frameSelection(entities: SelectedEntity[]): "framed" | "empty" | "hidden-or-stale"
+```
+
+Frames the transient selection in the focused pane, keeping the pane's current viewing orientation — roadmap Tier 1 "Zoom to selection". Goes through `frameBox` (same ortho/perspective split and 1.5x margin `screenshot_shape` uses headless) over `selectionBounds.ts`'s union, so it touches none of the model-scoped state `framePane` owns (`pickThreshold`, `pointSpriteScale`, `lastFitSphere`). `"empty"` (nothing selected, or no model) and `"hidden-or-stale"` (every selected object hidden, or its ids renumbered away) are distinct so the caller can say which happened. Driven from `main.ts`'s `zoomToSelection()` — one choke point for the Select menu's **Zoom to selection** button and the `zoomToSelection` host message behind the `cad-preview.zoomToSelection` focused-editor command.
+
+```typescript
 resetView(): void
 ```
 
@@ -410,14 +418,16 @@ setDisplayMode(mode: DisplayMode): void
 
 **Live operation preview (`setOpPreview`)**:
 
-`setOpPreview(group: THREE.Group | null): void`
+`setOpPreview(group: THREE.Group | null, tint?: "add" | "cut" | "ref", bandFaceIds?: Set<string> | null): void`
 
 Replaces the current model with a live preview of the in-progress edit operation, rendering the preview group as a scene sibling of `model` (never a child). While a preview is active, the model is hidden (`model.visible = false`). The preview group carries an intent tint via material lerp: green for additive ops (fuse/add*), red for subtractive ops (cut/holes/shell/split), blue for wire/reference ops (profiles/curves/section/surface-from-lines), and neutral (no tint) for transforms/fillet/chamfer — per kind, documented below. The preview respects `baseOpacity` composition convention, so it never overrides the existing dimming from `highlightGroup()`. Callers must ensure the preview group is properly disposed when the operation is applied or cancelled — `main.ts` handles this via `cancelGizmoPreview()` before every real op commit and on selection/model rebuild. The preview is **not** persisted across document reloads; it resets on every new model load.
 
 - **green** (additive): fuse, add*, feature modeling, patterns
 - **red** (subtractive): cut, hole, shell, split
 - **blue** (wire/reference): profile, curve, section, surface-from-lines
-- **neutral** (transforms/fillet/chamfer): untinted, per-band deferred per roadmap design question
+- **neutral** (transforms/fillet/chamfer): untinted at the whole-overlay level, with the produced band highlighted per-face instead (roadmap Tier 1 "Per-band operation-preview colouring", closed)
+
+**Per-band colouring** (roadmap Tier 1, closed): pass the draft op's band face ids and produced faces keep the full-strength intent treatment while retained context recedes (desaturated grey, opacity ×0.45 vs ×0.75 — both via `baseOpacity`, never raw writes). The tint math lives in `src/webview/opPreviewBands.ts` (`applyPreviewTint`, pure THREE, unit-tested headless); `main.ts` looks the band up off `opPreviewResult.opBuckets` by replay-tail index with a status-line legend (`Preview op N — green: …; grey: retained`, N in full-history numbering). A null/empty set keeps the uniform treatment — the neutral fallback for ambiguous roles, missing buckets, and the mesh path (no buckets client-side).
 
 **Appearance (session-only, never persisted — mirrors `toggleGrid`'s "always wins once set"):**
 
@@ -1042,10 +1052,12 @@ Every mutation fires `onChange`, wired in `main.ts` to the shared `syncEdits()`:
 
 A registry-driven geometric filter vocabulary for **Select ▾** (closed roadmap item, client-side Phase 1). Pure, THREE-yes/DOM-no, unit-tested in `selectFilters.test.ts`.
 
-- `FilterOption {id, label, argKind: "none"|"value"|"count"}` — `FACE_FILTERS`/`LINE_FILTERS` drive both the dropdown contents and the arg-field enable/disable. Volume/point modes show no options (the form is greyed — volume-level predicates need the group-dedupe asymmetry deferred with Phase 2).
+- `FilterOption {id, label, argKind: "none"|"value"|"count"}` — `FACE_FILTERS`/`LINE_FILTERS`/`VOLUME_FILTERS`/`POINT_FILTERS` drive both the dropdown contents and the arg-field enable/disable (`main.ts`'s `filtersForMode`). Every pick mode has a vocabulary now; the right-click context menu is still Surf/Line-only (its rows are reference-driven, and neither new mode has reference-shaped rows yet).
 - Face predicates: `Normal ±X/±Y/±Z` (area-weighted mean normal within `DIRECTION_TOLERANCE_DEG = 5°`), `Planar` (every triangle normal within the tolerance of the mean), `Area ≥/≤`, `Largest/Smallest N`.
 - Line predicates: `Along X/Y/Z` (chord direction, sign-insensitive), `Length ≥/≤`, `Longest/Shortest N`, plus a `No seams` toggle (`userData.smooth === true` lines dropped before any other test).
-- `faceArea`, `faceNormal`, `faceIsPlanar`, `edgeLength`, `edgeDirection` helpers; `applyFaceFilter(targets, id, arg)` / `applyLineFilter(targets, id, arg, excludeSmooth)` return `SelectedEntity[]` ready for bulk injection into `SelectionSet`. `collectTargets` already `traverseVisible`s hidden-subtree exclusion, so a filter never matches a hidden part. Deliberately the curated vocabulary future items must reuse — the selection-groups context menu and the closed selector-synthesis predicate AST are both specified to reuse this vocabulary rather than invent a second.
+- Volume predicates: `Size ≥/≤` (group bbox diagonal), `Center ±X/±Y/±Z` (bbox-center coordinate), `Largest/Smallest N` (by bbox volume — the named metric, ties by `groupId`). Volumes are deduplicated by `groupId` first (`groupVolumes`) — a faceted mesh solid is one entry, not one per facet. Deliberately no mm³ threshold: a display-triangle volume is approximate and meaningless on an open mesh, while a bbox is honest. World-space boxes throughout (unlike the local-geometry face/line helpers).
+- Point predicates: `Near XY/XZ/YZ` (coordinate-plane distance), `Near selection ≤` / `In selection box ×` (against the live selection's centroid — an empty selection is guidance, never a match-all). Positions are world-space (`getWorldPosition`).
+- `faceArea`, `faceNormal`, `faceIsPlanar`, `edgeLength`, `edgeDirection` helpers; `applyFaceFilter(targets, id, arg)` / `applyLineFilter(targets, id, arg, excludeSmooth)` / `applyVolumeFilter(targets, id, arg)` / `applyPointFilter(targets, id, arg, reference)` return `SelectedEntity[]` ready for bulk injection into `SelectionSet`. `collectTargets` already `traverseVisible`s hidden-subtree exclusion, so a filter never matches a hidden part. Deliberately the curated vocabulary future items must reuse — the selection-groups context menu and the closed selector-synthesis predicate AST are both specified to reuse this vocabulary rather than invent a second.
 
 ## `src/webview/variablesModel.ts`, `src/webview/variablesPanel.ts`
 
@@ -1282,7 +1294,7 @@ class ClashPanel {
 }
 ```
 
-`main.ts` drives it with two `requestId` latches (`clashCheckRequestId` / `clashCheckAllRequestId`, same stale-response-guard idiom as `massPropertiesRequestId`) plus a remembered `clashLastPair` (the pair result carries geometry only, so the requested names are remembered to label the row). Raw mm volumes cache in `lastClashResults` so `setDisplayUnit()` re-renders via the existing `convertVolume()` without a new host round trip (the `lastRawMassProperties` precedent); everything clears on model rebuild (re-tessellation may renumber the ids results name). The section hides itself for non-B-rep sources (`setEligible`), with the `#clash-panel[hidden]` CSS override the `[hidden]` hazard demands. Rows reuse the `mass-row`/`mass-message` styles: `A × B` → `overlap <volume>` or `no overlap`, with an `AABB-screened` / unresolved-id note line where applicable.
+`main.ts` drives it with two `requestId` latches (`clashCheckRequestId` / `clashCheckAllRequestId`, same stale-response-guard idiom as `massPropertiesRequestId`) plus a remembered `clashLastPair` (the pair result carries geometry only, so the requested names are remembered to label the row). Raw mm volumes cache in `lastClashResults` so `setDisplayUnit()` re-renders via the existing `convertVolume()` without a new host round trip (the `lastRawMassProperties` precedent); everything clears on model rebuild (re-tessellation may renumber the ids results name). The section hides itself for non-B-rep sources (`setEligible`), with the `#clash-panel[hidden]` CSS override the `[hidden]` hazard demands. Rows reuse the `mass-row`/`mass-message` styles: `A × B` → `overlap <volume>` or `no overlap`, with an `AABB-screened` / unresolved-id note line where applicable. Bounded results render a partial banner (checked of total) plus per-row "not checked — not clash-free" notes for unchecked pairs, never as "no overlap".
 
 ---
 
@@ -1511,6 +1523,8 @@ The same silent-`load()` / firing-mutation contract as `PartsModel`/`Annotations
 `main.ts` wires it into the view-controls **Planes** group (`#planes-list`, below the Clip group): **Save clip** re-derives the current clip through `planeForClip` — the same function that built it, so a saved plane and the live clip cannot disagree about what "this plane" means — **Enter…** reveals a numeric point+normal entry (the only way to author a plane with no geometry to pick), and each row offers **Use**, rename (inline `<input>`, since webviews block `prompt()`), and delete. **Use** calls `ClippingControlsHandle.applyDerivedPlane` — the very same handle the Clip ▸ Face and 3 Pts buttons use, so a stored plane and a derived clip can never diverge into two implementations, and a stored normal is oriented toward the model's bulk on the way in exactly as a picked one is.
 
 Nothing here participates in entity rebinding: a plane stores resolved vectors, never entity ids. See [Extension Host API](./extension-host-api.md) for the sidecar pair.
+
+The circle/rectangle/polygon profile forms (roadmap Tier 1 "Author profiles on a named construction plane") each render a **Plane** picker (populated from the same `setPlanes()` list as the mirror/draft/split/section forms) plus **Offset U/V** — and **Rotation°** for rectangle/polygon — fields. Picking a plane fills + disables the form's center/normal/up inputs from `planeFrame.ts`'s placement (the mirror-form precedent); offset/rotation edits re-resolve while a plane is picked, and Custom restores hand typing. The draft carries `planeId` + offsets/rotation alongside the filled cache, so preview ≡ Apply through `buildOpForPanel`'s one choke point; the host re-resolves against the live plane on replay.
 
 ---
 

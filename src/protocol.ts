@@ -417,6 +417,13 @@ export type HostToWebview =
       total: number;
     }
   | { type: "standardPartsSearchError"; requestId: string; message: string }
+  /** Thumbnails for one rendered search page (roadmap Tier 1 "Standard-parts
+   * thumbnails") — `data:` URLs only (the webview's CSP has no remote-image
+   * allowance and must never get one). Only successfully fetched images are
+   * listed; anything missing renders as the existing text row. `searchId`
+   * is the originating search's `requestId`, so rows from a newer search
+   * ignore late thumbnails. */
+  | { type: "standardPartsThumbsResult"; searchId: string; thumbs: Array<{ id: string; dataUrl: string }> }
   /** `path: null` means the user dismissed the save dialog — a quiet no-op,
    * not an error (never posted through `standardPartsInsertError`). */
   | { type: "standardPartsInsertResult"; requestId: string; path: string | null }
@@ -447,8 +454,10 @@ export type HostToWebview =
   | { type: "clashCheckResult"; requestId: string; result: InterferenceResult }
   | { type: "clashCheckError"; requestId: string; message: string }
   /** All-pairs variant over `checkInterferenceAll` (one parse/replay total,
-   * AABB-pre-filtered): `parts` omitted means every Part with volumes. */
-  | { type: "clashCheckAllResult"; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[] }
+   * AABB-pre-filtered): `parts` omitted means every Part with volumes.
+   * Bounded results carry `partial: true` with `unchecked: true` rows that
+   * are explicitly NOT clash-free — the panel must label them as partial. */
+  | { type: "clashCheckAllResult"; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[]; totalPairs: number; checkedPairs: number; screenedPairs: number; partial: boolean }
   | { type: "clashCheckAllError"; requestId: string; message: string }
   /** Analytic classification of one entity, for the inspector card. Carries
    * `EntityFacts` verbatim from the existing `getEntityFacts` pipeline
@@ -508,11 +517,19 @@ export type HostToWebview =
       motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number };
       buttons?: number;
     }
+  /** Focused-editor command (roadmap Tier 1 "Zoom to selection") — frames
+   * the webview's transient selection in the focused pane, the same choke
+   * point as the Select-menu button. No requestId: fire-and-forget, with
+   * guidance surfacing on the status line. */
+  | { type: "zoomToSelection" }
   /** Live operation preview result — the same encoded payload `"geometry"`
    * carries, but for the speculative ops+draft replay. The webview builds a
    * detached group from it (never `viewer.setModel`) and tints it by intent;
    * `opOutcomes` lets the overlay degrade to nothing when the draft op
-   * gracefully skipped, with the reason available for the status line. */
+   * gracefully skipped, with the reason available for the status line.
+   * `opBuckets` carries the draft op's own bucket (replay-tail-relative, like
+   * `opOutcomes`) for per-band colouring — affected faces read distinctly
+   * from retained context. */
   | {
       type: "opPreviewResult";
       requestId: string;
@@ -520,6 +537,7 @@ export type HostToWebview =
       edges: EncodedEdge[];
       points: EncodedPoint[];
       opOutcomes?: import("./editOps").OpOutcome[];
+      opBuckets?: import("./opBuckets").OpBucket[];
     }
   | { type: "opPreviewError"; requestId: string; message: string }
   | {
@@ -641,7 +659,7 @@ export type WebviewToHost =
    * Part-name resolution the `check_interference` MCP tool applies). */
   | { type: "clashCheckRequest"; requestId: string; partA: string; partB: string }
   /** Clash panel: check every Part against every other in one call. */
-  | { type: "clashCheckAllRequest"; requestId: string }
+  | { type: "clashCheckAllRequest"; requestId: string; maxPairs?: number; maxBooleans?: number }
   /** Inspector card: classify the entity the user just selected. */
   /** Run a saved macro, appending its compiled ops to the edit history. */
   | { type: "macroRun"; name: string; parameters: Record<string, string> }
@@ -658,6 +676,11 @@ export type WebviewToHost =
   | { type: "selectorSynthesizeRequest"; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: "standardPartsSearchRequest"; requestId: string; q: string; page?: number }
   | { type: "standardPartsInsertRequest"; requestId: string; id: string; suggestedName: string }
+  /** Ask the host to fetch thumbnails for one rendered search page. `ids`
+   * are the row part ids currently shown; `searchId` is the search's
+   * `requestId` the rows came from. Fire-and-forget — failures surface as
+   * absent thumbnails (text fallback), never as an error message. */
+  | { type: "standardPartsThumbsRequest"; searchId: string; ids: string[] }
   | { type: "importSvgRequest" }
   | { type: "importDxfRequest" }
   /** File ▸ Export Silhouette SVG/DXF… — like `exportRequest`, the host owns

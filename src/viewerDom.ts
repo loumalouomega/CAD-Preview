@@ -247,6 +247,7 @@ export function viewerBodyHtml(): string {
           <button class="sel-mode active" data-mode="surface" title="Pick surfaces (faces)">${icon("surface")} Surf</button>
           <button class="sel-mode" data-mode="line" title="Pick lines (edges)">${icon("line")} Line</button>
         </div>
+        <button id="select-zoom" role="menuitem" title="Frame the current selection in the focused pane (Fit still frames the whole model)">${icon("fit")} Zoom to selection</button>
         <div class="tb-sep"></div>
         <div id="filter-group" class="tb-filter" title="Geometric filter — select entities by shape predicates">
           <div class="tb-row">

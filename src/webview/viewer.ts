@@ -31,6 +31,8 @@ import {
 import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
+import { unionSelectionBounds, padBoxToMinSize } from "./selectionBounds";
+import { applyPreviewTint } from "./opPreviewBands";
 import { createRenderScheduler, type FrameTick } from "./renderScheduler";
 import { paletteColor, refreshPalette } from "./palette";
 import { shouldSkipAutoReframe, type FitSphere } from "./reframePolicy";
@@ -870,35 +872,28 @@ export class Viewer {
    * material (`"add"` — fuse/primitives/features/patterns), red where it
    * removes (`"cut"` — subtract/holes/shell/split), blue for wire/reference
    * results (`"ref"` — profiles/curves/section/surface-from-lines), and NO
-   * tint for transforms/fillet/chamfer (per-band colouring — one fillet band
-   * adding on a concave edge while another removes on a convex one — is
-   * explicitly deferred; neutral reads honestly as "shape changes, material
-   * intent unknown"). Either way the overlay is translucent (opacity ×0.75,
-   * folded into each material's `baseOpacity` so a user-set Appearance
-   * opacity composes rather than being clobbered) — the FluidCAD comparison's
-   * own read-unambiguously-as-"not committed yet" treatment.
+   * tint for transforms/fillet/chamfer (neutral reads honestly as "shape
+   * changes, material intent unknown"). Either way the overlay is translucent
+   * (opacity ×0.75, folded into each material's `baseOpacity` so a user-set
+   * Appearance opacity composes rather than being clobbered) — the FluidCAD
+   * comparison's own read-unambiguously-as-"not committed yet" treatment.
+   *
+   * Roadmap Tier 1 "Per-band operation-preview colouring": pass the draft
+   * op's band face ids and the produced faces keep the full-strength
+   * treatment above while retained context recedes (desaturated grey,
+   * opacity ×0.45). A null/empty set keeps the uniform treatment — the
+   * neutral fallback for ambiguous roles, missing buckets, and the mesh
+   * path (which has no buckets at all).
    */
-  setOpPreview(obj: THREE.Object3D | null, tint?: "add" | "cut" | "ref"): void {
+  setOpPreview(obj: THREE.Object3D | null, tint?: "add" | "cut" | "ref", bandFaceIds?: Set<string> | null): void {
     this.disposeOpPreview();
     if (!obj) return;
-    const tints: Record<"add" | "cut" | "ref", number> = { add: 0x2fbf4f, cut: 0xe23b3b, ref: 0x3b82f6 };
-    const target = tint ? new THREE.Color(tints[tint]) : null;
-    obj.traverse((o) => {
-      if (!(o instanceof THREE.Mesh)) return;
-      const mats = Array.isArray(o.material) ? o.material : [o.material];
-      for (const m of mats as THREE.MeshStandardMaterial[]) {
-        // Color lerp toward the intent colour; no tint leaves the geometry's
-        // own colours untouched (neutral band).
-        if (target) m.color.lerp(target, 0.65);
-        // Translucent overlay composed through baseOpacity — never a raw
-        // opacity assignment (the one-writer convention highlightGroup
-        // established).
-        const base = (m.userData.baseOpacity as number | undefined) ?? 1;
-        m.opacity = base * 0.75;
-        m.transparent = true;
-        m.needsUpdate = true;
-      }
-    });
+    // Roadmap Tier 1 "Per-band operation-preview colouring": the tint math
+    // itself lives in `opPreviewBands.applyPreviewTint` (pure THREE, unit-
+    // tested headless) — faces the draft op produced keep full intent
+    // strength while retained context recedes. A null/empty set keeps the
+    // uniform treatment exactly (the neutral fallback).
+    applyPreviewTint(obj, tint, bandFaceIds ?? null);
     this.opPreview = obj;
     this.scene.add(obj);
     this.applyClippingPlane(); // fresh materials carry no clipping state yet
@@ -1057,6 +1052,33 @@ export class Viewer {
   /** Frames the model keeping the focused pane's current viewing orientation. */
   fitView(): void {
     this.framePane(this.focusedPane, this.getViewDirection());
+  }
+
+  /**
+   * Frames the current transient selection in the focused pane, keeping the
+   * pane's current viewing orientation — roadmap Tier 1 "Zoom to selection".
+   * A face, several solids, an edge and a point all frame correctly in both
+   * projections, since this goes through {@link frameBox} (the same
+   * ortho/perspective split and 1.5x margin `screenshot_shape` already uses
+   * headless), and — like `frameBox` — deliberately touches none of the
+   * model-scoped state `framePane` owns (`pickThreshold`, `pointSpriteScale`,
+   * `lastFitSphere`), so framing a subset never shrinks the pick threshold
+   * or poisons the auto-reframe containment gate. Explicit Fit still frames
+   * the whole model; this never replaces that path.
+   *
+   * `"empty"` (nothing selected, or no model loaded) and `"hidden-or-stale"`
+   * (every selected object hidden, or its ids renumbered away by an edit)
+   * are distinct so the caller can say which happened instead of silently
+   * doing nothing — `frameBox`'s own `isEmpty` early return would otherwise
+   * make a stale selection indistinguishable from a working one.
+   */
+  frameSelection(entities: SelectedEntity[]): "framed" | "empty" | "hidden-or-stale" {
+    if (entities.length === 0 || !this.model) return "empty";
+    const box = unionSelectionBounds(this.model, entities);
+    if (!box) return "hidden-or-stale";
+    padBoxToMinSize(box, this.getModelExtents()?.diagonal ?? 0);
+    this.frameBox(box, this.getViewDirection());
+    return "framed";
   }
 
   /**

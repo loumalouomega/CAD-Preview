@@ -4,6 +4,7 @@ import type { ConstructionPlane } from "../protocol";
 import type { OpBucket } from "../opBuckets";
 import { bucketSummary } from "../opBuckets";
 import { evalExpr } from "../paramExpr";
+import { profilePlacementFromPlane } from "../planeFrame";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
@@ -69,9 +70,9 @@ export type HoleDraft = (
  * flat face you can later pick (Surf mode) as a profile for Extrude/Revolve/
  * Sweep/Loft. B-rep only (meshes have no sketch/exact topology). */
 export type ProfileDraft = (
-  | { kind: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number }
-  | { kind: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number }
-  | { kind: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number }
+  | { kind: "addCircleProfile"; center: Vec3; normal: Vec3; radius: number; planeId?: string; offsetU?: number; offsetV?: number }
+  | { kind: "addRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; planeId?: string; offsetU?: number; offsetV?: number; rotationDeg?: number }
+  | { kind: "addPolygonProfile"; center: Vec3; normal: Vec3; up: Vec3; radius: number; sides: number; planeId?: string; offsetU?: number; offsetV?: number; rotationDeg?: number }
   | { kind: "addEllipseProfile"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number }
   | { kind: "addRoundedRectangleProfile"; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number }
   | { kind: "addSlotProfile"; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number }
@@ -376,6 +377,91 @@ export class EditsPanel {
     });
     row.appendChild(select);
     return row;
+  }
+
+  /**
+   * Plane placement for the circle/rectangle/polygon profile forms (roadmap
+   * Tier 1 "Author profiles on a named construction plane"): a plane picker
+   * plus in-plane offset/rotation fields. Picking a plane fills + disables
+   * the form's center/normal/up inputs from the resolved placement (the
+   * mirror-form fill+disable precedent) — "Custom" restores hand typing.
+   * Offset/rotation edits re-resolve while a plane is picked. The draft
+   * reader picks up `planeId`/`offsetU`/`offsetV`/`rotationDeg` alongside
+   * the filled cache, so preview ≡ Apply through the one choke point.
+   */
+  private planeProfileField(wantRotation: boolean): HTMLElement {
+    const wrap = document.createElement("div");
+    const row = document.createElement("label");
+    row.className = "compose-field";
+    const span = document.createElement("span");
+    span.className = "compose-label";
+    span.textContent = "Plane";
+    row.appendChild(span);
+    const select = document.createElement("select");
+    select.className = "compose-select";
+    select.dataset.name = "planeId";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "Custom (typed center)";
+    select.appendChild(none);
+    for (const p of this.planesList) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name;
+      opt.title = `point (${p.point.join(", ")}) · normal (${p.normal.join(", ")})${p.derivedFrom ? ` · from ${p.derivedFrom}` : ""}`;
+      select.appendChild(opt);
+    }
+    const refresh = () => {
+      const plane = this.planesList.find((x) => x.id === select.value);
+      const disable = !!plane;
+      for (const name of ["center", "normal", "up"]) {
+        this.paramsEl.querySelectorAll<HTMLInputElement>(`input[data-name="${name}"]`)
+          .forEach((el) => { el.disabled = disable; });
+      }
+      if (plane) {
+        const placement = profilePlacementFromPlane(
+          plane,
+          this.readNum("offsetU"),
+          this.readNum("offsetV"),
+          wantRotation ? this.readNum("rotationDeg") : 0
+        );
+        // A degenerate plane frame cannot place anything — leave the cached
+        // inputs alone (the host resolver freezes last-good the same way).
+        if (placement) {
+          this.setVecField("center", placement.center);
+          this.setVecField("normal", placement.normal);
+          this.setVecField("up", placement.up);
+        }
+      }
+      if (this.draftReader) this.cb.onPreviewDraftChanged();
+    };
+    select.addEventListener("change", refresh);
+    row.appendChild(select);
+    wrap.appendChild(row);
+    wrap.appendChild(this.numField("offsetU", "Offset U", 0));
+    wrap.appendChild(this.numField("offsetV", "Offset V", 0));
+    if (wantRotation) wrap.appendChild(this.numField("rotationDeg", "Rotation°", 0));
+    // Offset/rotation edits re-resolve while a plane is picked (the delegated
+    // `input` listener already reschedules the preview; this refreshes the
+    // filled placement first).
+    wrap.addEventListener("input", () => {
+      if (select.value) refresh();
+    });
+    return wrap;
+  }
+
+  private readProfilePlane(): { planeId?: string; offsetU?: number; offsetV?: number; rotationDeg?: number } {
+    const sel = this.paramsEl.querySelector<HTMLSelectElement>("select[data-name=\"planeId\"]");
+    const planeId = sel?.value?.trim();
+    if (!planeId) return {};
+    const out: { planeId: string; offsetU: number; offsetV: number; rotationDeg?: number } = {
+      planeId,
+      offsetU: this.readNum("offsetU"),
+      offsetV: this.readNum("offsetV"),
+    };
+    const rot = this.paramsEl.querySelector<HTMLInputElement>("input[data-name=\"rotationDeg\"]");
+    if (rot) out.rotationDeg = this.readNum("rotationDeg");
+    return out;
   }
 
   /**
@@ -1210,9 +1296,11 @@ export class EditsPanel {
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
         f.appendChild(this.vecField("normal", "Normal", [0, 0, 1]));
         f.appendChild(this.numField("radius", "Radius", 5));
+        f.appendChild(this.planeProfileField(false));
         this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addCircleProfile", center: this.readVec("center"),
             normal: this.readVec("normal"), radius: this.readNum("radius"),
+            ...this.readProfilePlane(),
           }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addRectangleProfile":
@@ -1221,9 +1309,11 @@ export class EditsPanel {
         f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
         f.appendChild(this.numField("width", "Width", 10));
         f.appendChild(this.numField("height", "Height", 6));
+        f.appendChild(this.planeProfileField(true));
         this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addRectangleProfile", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), width: this.readNum("width"), height: this.readNum("height"),
+            ...this.readProfilePlane(),
           }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addPolygonProfile":
@@ -1232,9 +1322,11 @@ export class EditsPanel {
         f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
         f.appendChild(this.numField("radius", "Radius", 5));
         f.appendChild(this.numField("sides", "Sides", 6));
+        f.appendChild(this.planeProfileField(true));
         this.applyButtonDraft("Sketch", SKETCH_TITLE, (): ProfileDraft => ({
             kind: "addPolygonProfile", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), radius: this.readNum("radius"), sides: this.readNum("sides"),
+            ...this.readProfilePlane(),
           }), (d) => this.cb.onApplyProfile(d));
         break;
       case "addEllipseProfile":

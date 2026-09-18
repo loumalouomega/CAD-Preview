@@ -388,6 +388,7 @@ type HostToWebview =
   | { type: 'screenshotRequest'; requestId: string }
   | { type: 'standardPartsSearchResult'; requestId: string; items: StandardPart[]; page: number; totalPages: number; total: number }
   | { type: 'standardPartsSearchError'; requestId: string; message: string }
+  | { type: 'standardPartsThumbsResult'; searchId: string; thumbs: Array<{ id: string; dataUrl: string }> }
   | { type: 'standardPartsInsertResult'; requestId: string; path: string | null }
   | { type: 'standardPartsInsertError'; requestId: string; message: string }
   | { type: 'importSvgResult'; text: string }
@@ -398,7 +399,7 @@ type HostToWebview =
   | { type: 'massPropertiesError'; requestId: string; message: string }
   | { type: 'clashCheckResult'; requestId: string; result: InterferenceResult }
   | { type: 'clashCheckError'; requestId: string; message: string }
-  | { type: 'clashCheckAllResult'; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[] }
+  | { type: 'clashCheckAllResult'; requestId: string; pairs: Array<InterferencePairResult & { partA: string; partB: string }>; warnings: string[]; totalPairs: number; checkedPairs: number; screenedPairs: number; partial: boolean }
   | { type: 'clashCheckAllError'; requestId: string; message: string }
   | { type: 'macros'; macros: MacroSummary[] }
   | { type: 'macroApplyOps'; ops: EditOp[] }
@@ -417,7 +418,8 @@ type HostToWebview =
   | { type: 'primitiveRecognizeResult'; requestId: string; report: PrimitiveReport }
   | { type: 'primitiveRecognizeError'; requestId: string; message: string }
   | { type: 'spacemouse'; motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }; buttons?: number }
-  | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[] }
+  | { type: 'zoomToSelection' }
+  | { type: 'opPreviewResult'; requestId: string; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; opBuckets?: OpBucket[] }
   | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
@@ -690,6 +692,14 @@ SpaceMouse 6DOF motion event (closed roadmap item), pushed by the host at HID re
 { "type": "spacemouse", "motion": { "tx": 120, "ty": 0, "tz": -40, "rx": 0, "ry": 60, "rz": 0 } }
 ```
 
+### `zoomToSelection`
+
+Sent by the host when the `cad-preview.zoomToSelection` focused-editor command runs — the same choke point as the Select menu's **Zoom to selection** button (`main.ts`'s `zoomToSelection()`), so both surfaces stay in lockstep. Fire-and-forget, no `requestId`: the webview frames its transient selection in the focused pane via `Viewer.frameSelection` (orientation-preserving, both projections), with guidance on the status line for an empty or hidden/stale selection.
+
+```json
+{ "type": "zoomToSelection" }
+```
+
 ### `massPropertiesResult` / `massPropertiesError`
 
 Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh sources compute `MassProperties` entirely client-side and never send this request at all (no host round trip, since there's no OCCT shape to query). `properties.volume` is only ever non-`null` for the whole model or a `solid-N`; a `face-N` gets `area` only, an `edge-N` gets `length` only. See [Extension Host API](./extension-host-api.md#src-massproperties-ts)'s verified `BRepGProp` call sequence.
@@ -716,7 +726,7 @@ Sent in reply to `bomRequest` (webview → host, below) — roadmap Tier 2 "BOM 
 
 ### `clashCheckResult` / `clashCheckError` / `clashCheckAllResult` / `clashCheckAllError`
 
-Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep sources only** (a mesh has no exact B-rep boolean geometry to intersect; the Clash section hides itself for mesh sources and never sends either request). Carries `InterferenceResult` / named `InterferencePairResult`s verbatim from the existing `checkInterference` / `checkInterferenceAll` pipeline functions — the Clash panel is a new protocol pair over existing kernel surface, not new geometry work; the same functions back the `check_interference` / `check_interference_all` MCP tools. `clashCheckAllRequest` takes no operands (every Part with volumes); each returned pair is named `partA`/`partB` in the kernel's `i<j` enumeration order.
+Sent in reply to `clashCheckRequest` / `clashCheckAllRequest` — **B-rep sources only** (a mesh has no exact B-rep boolean geometry to intersect; the Clash section hides itself for mesh sources and never sends either request). Carries `InterferenceResult` / named `InterferencePairResult`s verbatim from the existing `checkInterference` / `checkInterferenceAll` pipeline functions — the Clash panel is a new protocol pair over existing kernel surface, not new geometry work; the same functions back the `check_interference` / `check_interference_all` MCP tools. `clashCheckAllRequest` takes no operands (every Part with volumes) plus optional `maxPairs`/`maxBooleans` work-budget caps; each returned pair is named `partA`/`partB` in the kernel's `i<j` enumeration order. Bounded results carry `partial: true` with `unchecked: true` rows that are explicitly NOT clash-free — the panel renders a partial banner plus per-row "not checked" notes, and `checkedPairs`/`totalPairs` describe the budget outcome.
 
 ```json
 { "type": "clashCheckRequest", "requestId": "1234-0.56", "partA": "Housing", "partB": "Shaft" }
@@ -804,7 +814,7 @@ Sent in reply to `meshioOpsRequest` (webview → host, below) — roadmap Tier 2
 
 Sent in reply to `opPreviewRequest` (webview → host, below) — roadmap "Live operation preview", closed. The payload is the SAME encoded shape the `"geometry"` message carries (`meshes`/`edges`/`points`), computed from a speculative replay of `[...currentOps, draftOp]` against the document's cached base shape — so the webview builds the preview group with the exact same `buildGroupFromEncoded()` path it uses for real geometry, and preview can never render something Apply would not produce. **B-rep sources only** — mesh sources never send the request (their preview is entirely client-side via `applyEditsMesh`). The host persists nothing: the replay runs under a separate cache key (`<documentKey>::oppreview`) so it never evicts the real document's cache, no sidecar is touched, and the CAD file stays read-only as ever.
 
-`opOutcomes` carries the per-op replay outcomes; when the draft op itself gracefully skipped (an unresolvable operand id after id drift, a builder throw), the webview degrades to no overlay and surfaces the diagnostic in its status line instead — never a silently-wrong preview.
+`opOutcomes` carries the per-op replay outcomes; when the draft op itself gracefully skipped (an unresolvable operand id after id drift, a builder throw), the webview degrades to no overlay and surfaces the diagnostic in its status line instead — never a silently-wrong preview. `opBuckets` carries the draft op's own produced-face bucket (replay-tail-relative, like `opOutcomes`) for per-band colouring — the webview tints band faces at full intent strength while retained context recedes to grey, with a status-line legend (`Preview op N — green: …; grey: retained`).
 
 Stale responses (a result arriving after a newer keystroke, a form switch, or a model rebuild) are discarded by the webview's generation guard — same discipline as `measureExactRequest`.
 
@@ -838,6 +848,14 @@ Sent in reply to `standardPartsSearchRequest` (webview → host, below). `items`
 
 ```json
 { "type": "standardPartsSearchError", "requestId": "1234-0.56", "message": "step.parts is unreachable (timed out after 10s)." }
+```
+
+### `standardPartsThumbsResult`
+
+Thumbnails for one rendered search page (roadmap Tier 1 "Standard-parts thumbnails", closed) — `data:` URLs only, fetched host-side from each item's `pngUrl` (the webview's CSP has no remote-image allowance and must never get one). Only successfully fetched images are listed; a missing entry renders as the existing text row. `searchId` is the originating search's `requestId`, so rows from a newer search ignore late thumbnails; a thumbnail naming no listed row is dropped. The request side (`standardPartsThumbsRequest`, webview → host) is fire-and-forget — failures surface as absent thumbnails, never an error.
+
+```json
+{ "type": "standardPartsThumbsResult", "searchId": "1234-0.56", "thumbs": [{ "id": "iso-4762-m6x20", "dataUrl": "data:image/png;base64,iVBOR…" }] }
 ```
 
 ### `standardPartsInsertResult` / `standardPartsInsertError`
@@ -922,7 +940,7 @@ type WebviewToHost =
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
   | { type: 'clashCheckRequest'; requestId: string; partA: string; partB: string }
-  | { type: 'clashCheckAllRequest'; requestId: string }
+  | { type: 'clashCheckAllRequest'; requestId: string; maxPairs?: number; maxBooleans?: number }
   | { type: 'macroRun'; name: string; parameters: Record<string, string> }
   | { type: 'macroSaveCurrent' }
   | { type: 'macroDelete'; name: string }
@@ -938,6 +956,7 @@ type WebviewToHost =
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
   | { type: 'standardPartsSearchRequest'; requestId: string; q: string; page?: number }
   | { type: 'standardPartsInsertRequest'; requestId: string; id: string; suggestedName: string }
+  | { type: 'standardPartsThumbsRequest'; searchId: string; ids: string[] }
   | { type: 'importSvgRequest' }
   | { type: 'importDxfRequest' }
   | { type: 'exportDxfRequest' }
@@ -1181,7 +1200,7 @@ Sent when the Parts section's **Copy BOM** button is clicked — only enabled fo
 
 ### `clashCheckRequest` / `clashCheckAllRequest`
 
-Sent when the Clash panel's **Check** / **Check all** button is clicked, for a B-rep source only (mesh sources never send these — the section is hidden). `clashCheckRequest` names two Parts (`partA`/`partB` — the panel refuses identical picks with a guidance message instead of sending); `clashCheckAllRequest` names none (every Part with volumes).
+Sent when the Clash panel's **Check** / **Check all** button is clicked, for a B-rep source only (mesh sources never send these — the section is hidden). `clashCheckRequest` names two Parts (`partA`/`partB` — the panel refuses identical picks with a guidance message instead of sending); `clashCheckAllRequest` names none (every Part with volumes) plus optional `maxPairs`/`maxBooleans` work-budget caps.
 
 ### `measureExactRequest`
 

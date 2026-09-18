@@ -655,6 +655,451 @@ test("framing: the model occupies a sane fraction of the viewport", async (page)
 });
 
 /**
+ * I2. Zoom to selection (roadmap Tier 1). The camera work itself
+ * (`Viewer.frameSelection` → `frameBox`) is the already-verified placement
+ * path `screenshot_shape` uses headless, so what needs checking here is the
+ * wiring: a real selection frames (fill increases, stays centred), explicit
+ * Fit still restores the whole model, and the two non-framing outcomes say
+ * so on the status line instead of silently doing nothing. Screenshots
+ * decode in-page via the framing-invariant helper above.
+ */
+async function viewportModelStats(page) {
+  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  return page.evaluate(
+    async (b64) =>
+      new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("decode failed"));
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          const { data } = ctx.getImageData(0, 0, c.width, c.height);
+          const isBg = (i) => Math.abs(data[i] - 0x1e) < 6 && Math.abs(data[i + 1] - 0x1e) < 6 && Math.abs(data[i + 2] - 0x1e) < 6;
+          let model = 0;
+          for (let i = 0; i < data.length; i += 4) if (!isBg(i)) model++;
+          let centre = 0;
+          const cx = (c.width / 2) | 0, cy = (c.height / 2) | 0, r = 40;
+          for (let y = cy - r; y < cy + r; y++) {
+            for (let x = cx - r; x < cx + r; x++) {
+              if (!isBg((y * c.width + x) * 4)) centre++;
+            }
+          }
+          resolve({ fraction: model / (c.width * c.height), centre });
+        };
+        img.src = `data:image/png;base64,${b64}`;
+      }),
+    shot
+  );
+}
+
+async function gridOff(page) {
+  await page.click("#view-menu");
+  await page.click("#grid");
+  await page.keyboard.press("Escape");
+  await sleep(400);
+}
+
+/** Selects the single smallest face via the filter form; returns the status text. */
+async function selectSmallestFace(page) {
+  await page.click("#select-menu");
+  await page.selectOption("#filter-pred", "smallestN");
+  await page.fill("#filter-arg", "1");
+  await page.click("#filter-replace");
+  await sleep(250);
+  return page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+}
+
+test("zoom to selection: framing a small face increases its fill and stays centred; Fit restores the whole model", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  const before = await viewportModelStats(page);
+  const filterStatus = await selectSmallestFace(page);
+  assert(/matched 1 of/.test(filterStatus), `the filter selected exactly one face, so the zoom acts on a real selection (got ${JSON.stringify(filterStatus)})`);
+  await page.click("#select-zoom"); // one-shot: runs, then dismisses the menu itself
+  await sleep(400);
+  const after = await viewportModelStats(page);
+  assert(after.centre > 0, "the framed selection is centred in the viewport");
+  assert(
+    after.fraction > before.fraction,
+    `framing a subset fills more of the viewport (${before.fraction.toFixed(3)} -> ${after.fraction.toFixed(3)})`
+  );
+  // Explicit Fit still frames the whole model — zoom-to-selection never replaces that path.
+  await page.click("#fit");
+  await sleep(400);
+  const fit = await viewportModelStats(page);
+  assert(
+    Math.abs(fit.fraction - before.fraction) < 0.05,
+    `Fit restores the whole-model framing (${before.fraction.toFixed(3)} -> ${fit.fraction.toFixed(3)})`
+  );
+});
+
+test("zoom to selection: empty selection shows guidance and moves nothing", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  const before = await viewportModelStats(page);
+  await page.click("#select-menu");
+  await page.click("#select-zoom");
+  await sleep(250);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/No selection/.test(status), `an empty selection explains itself (got ${JSON.stringify(status)})`);
+  const after = await viewportModelStats(page);
+  assert(Math.abs(after.fraction - before.fraction) < 0.001, "nothing framed means nothing moved");
+});
+
+test("zoom to selection: hidden selection is reported, not framed", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  const filterStatus = await selectSmallestFace(page);
+  assert(/matched 1 of/.test(filterStatus), "precondition: one face selected");
+  // Close the Select menu first: an open menu's capture-phase dismissal would
+  // swallow the first tree click below.
+  await page.click("#select-menu");
+  const toggled = await page.evaluate(() => {
+    const eyes = document.querySelectorAll("#tree-body [data-visible-toggle], #tree-body .tree-eye");
+    eyes.forEach((e) => e.click());
+    return eyes.length;
+  });
+  assert(toggled > 0, "precondition: the tree exposes visibility toggles");
+  await sleep(250);
+  const before = await viewportModelStats(page);
+  await page.click("#select-menu");
+  await page.click("#select-zoom");
+  await sleep(250);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/hidden or no longer/.test(status), `a hidden selection says so (got ${JSON.stringify(status)})`);
+  const after = await viewportModelStats(page);
+  assert(Math.abs(after.fraction - before.fraction) < 0.001, "a hidden selection moves nothing");
+});
+
+test("zoom to selection: works under orthographic projection", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  await page.click("#vc-ortho");
+  await sleep(250);
+  const before = await viewportModelStats(page);
+  const filterStatus = await selectSmallestFace(page);
+  assert(/matched 1 of/.test(filterStatus), "precondition: one face selected");
+  await page.click("#select-zoom");
+  await sleep(400);
+  const after = await viewportModelStats(page);
+  assert(after.centre > 0, "the framed selection is centred in ortho");
+  assert(
+    after.fraction > before.fraction,
+    `ortho framing also closes in (${before.fraction.toFixed(3)} -> ${after.fraction.toFixed(3)})`
+  );
+});
+
+/**
+ * I3. Volume and point selection predicates (roadmap Tier 1). The pure
+ * predicates are unit-covered; what needs the real bundle is the form
+ * wiring per mode (registry population, Select/Add, status nouns) and the
+ * point reference flow. Selection is read back via `partsChanged` assignment
+ * (the D-case precedent) rather than hardcoded ids.
+ */
+async function runModeFilter(page, mode, predId, arg) {
+  await page.click("#select-menu");
+  await page.click(`.sel-mode[data-mode="${mode}"]`);
+  await page.selectOption("#filter-pred", predId);
+  if (arg !== null) await page.fill("#filter-arg", arg);
+  await page.click("#filter-replace");
+  await sleep(250);
+  return page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+}
+
+test("filters: Vol mode smallestN selects exactly one solid", async (page) => {
+  await populate(page);
+  const status = await runModeFilter(page, "volume", "smallestN", "1");
+  assert(/matched 1 of \d+ solids\./.test(status), `Vol filter reports one solid (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu"); // close: the sidebar assign click needs a dismissed menu
+  await sleep(150);
+  const before = await page.evaluate(() => {
+    const m = (window.__sent || []).findLast((x) => x.type === "partsChanged");
+    return m ? m.parts.length : 0;
+  });
+  await page.click("#parts-new");
+  await sleep(250);
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#parts-body .part-row");
+    const row = rows[rows.length - 1];
+    const assign = [...row.querySelectorAll("button.part-btn")].find((b) => b.title?.startsWith("Assign"));
+    assign?.click();
+  });
+  await sleep(250);
+  const vols = await page.evaluate((n) => {
+    const m = (window.__sent || []).findLast((x) => x.type === "partsChanged");
+    if (!m || m.parts.length <= n) return null;
+    return m.parts[m.parts.length - 1].volumes ?? null;
+  }, before);
+  assert(
+    Array.isArray(vols) && vols.length === 1 && /^solid-\d+$/.test(vols[0]),
+    `the Vol selection assigns one real solid-N id (got ${JSON.stringify(vols)})`
+  );
+});
+
+test("filters: Point mode nearXY matches a strict subset; an empty reference explains itself", async (page) => {
+  await populate(page);
+  // Reference predicates with nothing selected are guidance, not a match-all —
+  // check first, while the fresh page's selection is still empty.
+  await page.click("#select-menu");
+  await page.click('.sel-mode[data-mode="point"]');
+  await page.selectOption("#filter-pred", "nearSelectionLte");
+  await page.fill("#filter-arg", "10");
+  const sentBefore = await page.evaluate(() => (window.__sent ?? []).length);
+  await page.click("#filter-replace");
+  await sleep(250);
+  const guidance = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/Select something first/.test(guidance), `empty reference explains itself (got ${JSON.stringify(guidance)})`);
+  const sentAfter = await page.evaluate(() => (window.__sent ?? []).length);
+  assert(sentAfter === sentBefore, "guidance posts no host traffic");
+  await page.click("#select-menu"); // dismiss: runModeFilter opens the menu itself
+  await sleep(150);
+  const status = await runModeFilter(page, "point", "nearXY", "5");
+  const m = status.match(/matched (\d+) of (\d+) points\./);
+  assert(m !== null, `Point filter reports points (got ${JSON.stringify(status)})`);
+  assert(m && Number(m[1]) > 0 && Number(m[1]) < Number(m[2]), `Near XY matches a strict subset (got ${JSON.stringify(status)})`);
+});
+
+test("filters: hidden geometry matches nothing in Vol mode", async (page) => {
+  await populate(page);
+  const toggled = await page.evaluate(() => {
+    const eyes = document.querySelectorAll("#tree-body [data-visible-toggle], #tree-body .tree-eye");
+    eyes.forEach((e) => e.click());
+    return eyes.length;
+  });
+  assert(toggled > 0, "precondition: the tree exposes visibility toggles");
+  await sleep(250);
+  const status = await runModeFilter(page, "volume", "smallestN", "1");
+  assert(status === "Filter matched nothing.", `hidden solids never match (got ${JSON.stringify(status)})`);
+});
+
+/**
+ * J. Plane-authored profiles (roadmap Tier 1). Kernel resolution is
+ * unit-covered (`planeRefs.test.ts`) and live-verified (`mcp:smoke`'s
+ * analytic block); what needs the real bundle is the form: the Plane
+ * picker lists saved planes, picking one fills + disables the placement
+ * inputs, offsets shift the fill, and Apply attaches `planeId` + cache
+ * (read back off `editsChanged` — preview ≡ Apply through the one choke
+ * point, so the attached op IS what the preview replayed).
+ */
+async function openProfileForm(page, name) {
+  await page.evaluate((n) => {
+    const btn = [...document.querySelectorAll(".op-btn")].find(
+      (b) => b.querySelector(".op-name")?.textContent === n
+    );
+    btn?.click();
+  }, name);
+  await sleep(200);
+}
+
+async function postPlanes(page) {
+  await page.evaluate(() =>
+    window.postMessage(
+      { type: "planes", planes: [{ id: "plane-0", name: "Datum A", point: [10, 0, 0], normal: [0, 0, 1] }] },
+      "*"
+    )
+  );
+  await sleep(250);
+}
+
+test("profile planes: picker lists saved planes; picking fills and disables placement", async (page) => {
+  await populate(page);
+  await postPlanes(page);
+  await openProfileForm(page, "Circle");
+  const options = await page.evaluate(() =>
+    [...document.querySelectorAll('#edits-params select[data-name="planeId"] option')].map((o) => o.value)
+  );
+  assert(options.includes("plane-0"), `the Plane picker lists the saved plane (got ${JSON.stringify(options)})`);
+  await page.selectOption('#edits-params select[data-name="planeId"]', "plane-0");
+  await sleep(200);
+  const filled = await page.evaluate(() => ({
+    center: [...document.querySelectorAll('#edits-params input[data-name="center"]')].map((i) => i.value),
+    disabled: [...document.querySelectorAll('#edits-params input[data-name="center"]')].every((i) => i.disabled),
+    normal: [...document.querySelectorAll('#edits-params input[data-name="normal"]')].map((i) => i.value),
+  }));
+  assert(eq(filled.center, ["10", "0", "0"]), `center fills from the plane point (got ${JSON.stringify(filled.center)})`);
+  assert(filled.disabled, "filled placement inputs disable while a plane is picked");
+  assert(eq(filled.normal, ["0", "0", "1"]), `normal fills from the plane normal (got ${JSON.stringify(filled.normal)})`);
+});
+
+test("profile planes: offsets shift the fill; Apply attaches planeId + cache", async (page) => {
+  await populate(page);
+  await postPlanes(page);
+  await openProfileForm(page, "Rectangle");
+  await page.selectOption('#edits-params select[data-name="planeId"]', "plane-0");
+  await sleep(200);
+  await page.fill('#edits-params input[data-name="offsetU"]', "2");
+  await sleep(400); // delegated input refreshes the fill, then the preview debounce runs
+  const center = await page.evaluate(() =>
+    [...document.querySelectorAll('#edits-params input[data-name="center"]')].map((i) => i.value)
+  );
+  // +Z-plane frame is U=(0,−1,0): offsetU 2 shifts y by −2.
+  assert(eq(center, ["10", "-2", "0"]), `offsets shift the filled center (got ${JSON.stringify(center)})`);
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll("#edits-params button")].find((b) => b.textContent === "Sketch");
+    btn?.click();
+  });
+  await sleep(250);
+  const op = await page.evaluate(() => {
+    const m = (window.__sent || []).findLast((x) => x.type === "editsChanged");
+    return m ? m.ops[m.ops.length - 1] : null;
+  });
+  assert(op && op.op === "addRectangleProfile", `a rectangle op was pushed (got ${JSON.stringify(op?.op)})`);
+  assert(
+    op.planeId === "plane-0" && op.offsetU === 2 && op.offsetV === 0,
+    `the op carries its plane reference (got ${JSON.stringify({ planeId: op.planeId, offsetU: op.offsetU, offsetV: op.offsetV })})`
+  );
+  assert(eq(op.center, [10, -2, 0]), `the op carries the resolved cache (got ${JSON.stringify(op.center)})`);
+  assert(eq(op.up, [1, 0, 0]), `up resolves from the untilted frame (got ${JSON.stringify(op.up)})`);
+});
+
+test("profile planes: Custom restores hand typing", async (page) => {
+  await populate(page);
+  await postPlanes(page);
+  await openProfileForm(page, "Circle");
+  await page.selectOption('#edits-params select[data-name="planeId"]', "plane-0");
+  await sleep(200);
+  await page.selectOption('#edits-params select[data-name="planeId"]', "");
+  await sleep(200);
+  const enabled = await page.evaluate(() =>
+    [...document.querySelectorAll('#edits-params input[data-name="center"]')].every((i) => !i.disabled)
+  );
+  assert(enabled, "Custom re-enables the placement inputs");
+});
+
+/**
+ * I4. Per-band operation preview (roadmap Tier 1). The tint math itself is
+ * unit-covered against real THREE materials; what needs the real bundle is
+ * the wiring: the draft-bucket lookup off a genuine `opPreviewRequest`
+ * round trip, the status-line legend (with full-history op numbering), its
+ * retirement on a uniform supersede, stale-reply discipline, and cancel
+ * clearing it. Host replies are faked by posting `opPreviewResult`
+ * directly (the clash/context-menu precedent) with hand-built two-triangle
+ * meshes — the payload shape, not the geometry, is what's under test.
+ */
+async function openBoxForm(page) {
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".op-btn")].find(
+      (b) => b.querySelector(".op-name")?.textContent === "Box"
+    );
+    btn?.click();
+  });
+  await sleep(700); // past the 250ms preview debounce, with margin
+}
+
+async function lastPreviewRequest(page) {
+  return page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "opPreviewRequest").at(-1) ?? null
+  );
+}
+
+async function postBandedPreviewReply(page, requestId, withBucket) {
+  await page.evaluate(
+    ({ id, banded }) =>
+      window.postMessage(
+        {
+          type: "opPreviewResult",
+          requestId: id,
+          meshes: (() => {
+            const toB64 = (arr) => {
+              const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+              let s = "";
+              for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+              return btoa(s);
+            };
+            const tri = (x) => ({
+              positions: toB64(new Float32Array([x, 0, 0, x + 1, 0, 0, x, 1, 0])),
+              indices: toB64(new Uint32Array([0, 1, 2])),
+              groupId: "solid-9",
+            });
+            return [
+              { ...tri(0), faceId: "face-10" },
+              { ...tri(5), faceId: "face-11" },
+            ];
+          })(),
+          edges: [],
+          points: [],
+          opOutcomes: [{ index: 0, kind: "addBox", applied: true }],
+          ...(banded ? { opBuckets: [{ op: 0, kind: "addBox", roles: { body: ["face-10"] } }] } : {}),
+        },
+        "*"
+      ),
+    { id: requestId, banded: withBucket }
+  );
+  await sleep(250);
+}
+
+const previewStatus = (page) =>
+  page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+
+test("op preview bands: a bucket reply shows a legend; a uniform reply retires it", async (page) => {
+  await populate(page);
+  await openBoxForm(page);
+  const req = await lastPreviewRequest(page);
+  assert(req !== null && typeof req?.requestId === "string", "opening the Box form posts an opPreviewRequest");
+  await postBandedPreviewReply(page, req.requestId, true);
+  const legend = await previewStatus(page);
+  assert(
+    /Preview op 1 — green: new body ×1; grey: retained/.test(legend),
+    `the band legend names the full-history op, tint word and roles (got ${JSON.stringify(legend)})`
+  );
+  // A uniform supersede (no bucket, e.g. a non-topology-changing draft) must
+  // retire the legend, not leave it describing unhighlighted faces.
+  await page.evaluate(() => {
+    const input = document.querySelector("#edits-params input");
+    if (input) {
+      input.focus();
+      document.execCommand("selectAll", false, undefined);
+    }
+  });
+  await page.fill("#edits-params input", "2");
+  await sleep(700);
+  const req2 = await lastPreviewRequest(page);
+  assert(req2 !== null && req2.requestId !== req.requestId, "typing schedules a second preview request");
+  await postBandedPreviewReply(page, req2.requestId, false);
+  assert((await previewStatus(page)) === "", "a uniform preview retires the band legend");
+});
+
+test("op preview bands: a stale band reply is ignored", async (page) => {
+  await populate(page);
+  await openBoxForm(page);
+  const req = await lastPreviewRequest(page);
+  assert(req !== null, "precondition: a preview request is in flight");
+  await postBandedPreviewReply(page, "stale-id", true);
+  assert(
+    !(await previewStatus(page)).includes("Preview op"),
+    "a stale reply stages no legend"
+  );
+  await postBandedPreviewReply(page, req.requestId, true);
+  assert(
+    /Preview op 1 — green/.test(await previewStatus(page)),
+    "the current generation still renders once its own reply lands"
+  );
+});
+
+test("op preview bands: switching forms clears the legend", async (page) => {
+  await populate(page);
+  await openBoxForm(page);
+  const req = await lastPreviewRequest(page);
+  assert(req !== null, "precondition: a preview request is in flight");
+  await postBandedPreviewReply(page, req.requestId, true);
+  assert(/Preview op 1/.test(await previewStatus(page)), "precondition: the legend is shown");
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".op-btn")].find(
+      (b) => b.querySelector(".op-name")?.textContent === "Sphere"
+    );
+    btn?.click();
+  });
+  await sleep(200);
+  assert(
+    !(await previewStatus(page)).includes("Preview op"),
+    "leaving the form clears the band legend with the overlay"
+  );
+});
+
+/**
  * G. Dropdown menus — both of these are previously-FIXED real bugs with no
  * regression test, recorded in `CLAUDE.md`'s "Toolbar dropdown menus":
  *  1. The containment test used `e.target !== btn`, but every trigger wraps its
@@ -1282,8 +1727,9 @@ test("context menu: choosing a group selects exactly the members it advertised",
 });
 
 test("context menu: volume mode says why it has no groups instead of showing a blank menu", async (page) => {
-  // Volume/point have no predicate vocabulary — the same gate the filter form
-  // applies. An empty menu would read as a bug.
+  // Volume/point HAVE a filter-form vocabulary now, but the menu's rows are
+  // reference-driven and neither mode has reference-shaped rows yet.
+  // An empty menu would read as a bug.
   await populate(page);
   await enablePicking(page, "volume");
 
@@ -1526,6 +1972,10 @@ test("clash: Check-all posts one request and renders named pairs with the screen
           { partA: "Body", partB: "Far", a: ["solid-0"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, screenedByBbox: true, unresolvedA: [], unresolvedB: [] },
         ],
         warnings: [],
+        totalPairs: 2,
+        checkedPairs: 2,
+        screenedPairs: 1,
+        partial: false,
       },
       "*"
     ),
@@ -1535,6 +1985,38 @@ test("clash: Check-all posts one request and renders named pairs with the screen
   const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
   assert(text.includes("Bracket") && text.includes("overlap"), `the overlapping pair renders (got ${JSON.stringify(text)})`);
   assert(text.includes("AABB-screened"), `the pre-filtered pair carries its badge (got ${JSON.stringify(text)})`);
+});
+
+test("clash: a partial all-pairs result labels itself partial and never as clash-free", async (page) => {
+  await populate(page);
+  await page.click("#clash-check-all");
+  const req = await page.evaluate(() =>
+    (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null
+  );
+  assert(req !== null && typeof req?.requestId === "string", "clicking Check all posts a clashCheckAllRequest");
+  await page.evaluate((id) =>
+    window.postMessage(
+      {
+        type: "clashCheckAllResult",
+        requestId: id,
+        pairs: [
+          { partA: "Body", partB: "Bracket", a: ["solid-0"], b: ["solid-1"], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] },
+          { partA: "Body", partB: "Far", a: ["solid-0"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], unchecked: true },
+        ],
+        warnings: ["Partial result: 1 of 2 pair(s) unchecked (maxPairs=1). Unchecked pairs are NOT clash-free — re-run with a larger budget or an explicit parts subset."],
+        totalPairs: 2,
+        checkedPairs: 1,
+        screenedPairs: 0,
+        partial: true,
+      },
+      "*"
+    ),
+    req.requestId
+  );
+  await sleep(200);
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(/Partial result/i.test(text), `a partial banner renders (got ${JSON.stringify(text)})`);
+  assert(/not checked/i.test(text), `the unchecked row never reads as "no overlap" (got ${JSON.stringify(text)})`);
 });
 
 test("clash: the same Part twice is refused without a host round trip", async (page) => {
@@ -2597,6 +3079,165 @@ test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and c
   assert(cleared == null, `clearing every field removes the band (got ${JSON.stringify(cleared)})`);
 });
 
+
+/**
+ * Standard-parts thumbnails (roadmap Tier 1). Search stays text-first: rows
+ * render immediately, and a second fire-and-forget round trip decorates them
+ * with host-fetched data-URL thumbnails. Host replies are faked by posting
+ * `standardPartsSearchResult`/`standardPartsThumbsResult` directly (the
+ * clash/context-menu precedent); the fetch itself — timeouts, caps,
+ * content types — is unit-covered in `standardPartsThumbs.test.ts`.
+ */
+const THUMB_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+function thumbItem(id, name) {
+  return {
+    id,
+    name,
+    description: `${name} desc`,
+    category: "Fasteners",
+    standard: { body: "", number: "", designation: "ISO 1234" },
+    tags: [],
+    aliases: [],
+    attributes: {},
+    stepUrl: "https://x/y.step",
+    glbUrl: "",
+    pngUrl: `https://x/${id}.png`,
+    byteSize: 1,
+    sha256: null,
+    pageUrl: "",
+    apiUrl: "",
+  };
+}
+
+async function runPartsSearch(page, q) {
+  await page.fill("#standard-parts-query", q);
+  await page.click("#standard-parts-search-btn");
+  await sleep(150);
+  return page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "standardPartsSearchRequest").at(-1) ?? null
+  );
+}
+
+test("thumbs: fetched thumbnails render beside the right rows; missing ones keep text", async (page) => {
+  await populate(page);
+  const req = await runPartsSearch(page, "bolt");
+  assert(req !== null && typeof req?.requestId === "string", "search posts a standardPartsSearchRequest");
+  await post(page, {
+    type: "standardPartsSearchResult",
+    requestId: req.requestId,
+    items: [thumbItem("p1", "Bolt A"), thumbItem("p2", "Bolt B")],
+    page: 1,
+    totalPages: 1,
+    total: 2,
+  });
+  await sleep(250);
+  const thumbsReq = await page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "standardPartsThumbsRequest").at(-1) ?? null
+  );
+  assert(
+    thumbsReq !== null && thumbsReq.searchId === req.requestId,
+    `rendered rows post a thumbs request for that search (got ${JSON.stringify(thumbsReq)})`
+  );
+  assert(
+    eq([...thumbsReq.ids].sort(), ["p1", "p2"]),
+    `the thumbs request names the rendered page's ids (got ${JSON.stringify(thumbsReq?.ids)})`
+  );
+  await post(page, {
+    type: "standardPartsThumbsResult",
+    searchId: req.requestId,
+    thumbs: [{ id: "p1", dataUrl: THUMB_PNG }],
+  });
+  await sleep(250);
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll(".standard-part-row")].map((r) => ({
+      id: r.dataset.partId,
+      img: r.querySelector("img.standard-part-thumb")?.getAttribute("src") ?? null,
+      name: r.querySelector(".standard-part-name")?.textContent ?? null,
+    }))
+  );
+  const r1 = rows.find((r) => r.id === "p1");
+  const r2 = rows.find((r) => r.id === "p2");
+  assert(r1?.img === THUMB_PNG, "the fetched thumbnail lands on its own row");
+  assert(r1?.name === "Bolt A", "text stays beside the thumbnail");
+  assert(r2?.img === null && r2?.name === "Bolt B", "a row with no thumbnail keeps the text-only rendering");
+});
+
+test("thumbs: a stale-generation reply decorates nothing", async (page) => {
+  await populate(page);
+  const reqA = await runPartsSearch(page, "bolt");
+  await post(page, {
+    type: "standardPartsSearchResult",
+    requestId: reqA.requestId,
+    items: [thumbItem("p1", "Bolt A")],
+    page: 1,
+    totalPages: 1,
+    total: 1,
+  });
+  await sleep(250);
+  // A second search is issued but its results have NOT landed — the rows on
+  // screen still show A's p1, so id-matching alone would accept A's late
+  // thumbnails. The generation guard must refuse them anyway: a newer search
+  // superseded them.
+  const reqB = await runPartsSearch(page, "nut");
+  await post(page, {
+    type: "standardPartsThumbsResult",
+    searchId: reqA.requestId,
+    thumbs: [{ id: "p1", dataUrl: THUMB_PNG }],
+  });
+  await sleep(250);
+  const stale = await page.evaluate(() => document.querySelectorAll("img.standard-part-thumb").length);
+  assert(stale === 0, `superseded thumbnails never decorate, even with a matching id (got ${stale} images)`);
+  // Then B's results land and B's thumbnails apply normally.
+  await post(page, {
+    type: "standardPartsSearchResult",
+    requestId: reqB.requestId,
+    items: [thumbItem("p9", "Nut Z")],
+    page: 1,
+    totalPages: 1,
+    total: 1,
+  });
+  await sleep(250);
+  await post(page, {
+    type: "standardPartsThumbsResult",
+    searchId: reqB.requestId,
+    thumbs: [{ id: "p9", dataUrl: THUMB_PNG }],
+  });
+  await sleep(250);
+  const now = await page.evaluate(() =>
+    [...document.querySelectorAll(".standard-part-row")].map((r) => ({
+      id: r.dataset.partId,
+      img: !!r.querySelector("img.standard-part-thumb"),
+    }))
+  );
+  assert(
+    now.length === 1 && now[0].id === "p9" && now[0].img === true,
+    `the current generation still decorates (got ${JSON.stringify(now)})`
+  );
+});
+
+test("thumbs: a thumbnail for an unknown id is dropped silently", async (page) => {
+  await populate(page);
+  const req = await runPartsSearch(page, "bolt");
+  await post(page, {
+    type: "standardPartsSearchResult",
+    requestId: req.requestId,
+    items: [thumbItem("p1", "Bolt A")],
+    page: 1,
+    totalPages: 1,
+    total: 1,
+  });
+  await sleep(250);
+  await post(page, {
+    type: "standardPartsThumbsResult",
+    searchId: req.requestId,
+    thumbs: [{ id: "ghost", dataUrl: THUMB_PNG }],
+  });
+  await sleep(250);
+  const imgs = await page.evaluate(() => document.querySelectorAll("img.standard-part-thumb").length);
+  assert(imgs === 0, "a thumbnail naming no listed row creates no image");
+});
 
 async function main() {
   if (!nodeSupportsPlaywright()) {
