@@ -82,6 +82,7 @@ describe("readScannedFiles + checkRoadmapCitations (fixture tree)", () => {
       fs.writeFileSync(path.join(root, "CHANGELOG.md"), "roadmap item 3\n", "utf8"); // excluded
       fs.writeFileSync(path.join(root, "doc", "guide.md"), "with a citation: see roadmap item 3\n", "utf8");
       fs.writeFileSync(path.join(root, "scripts", "node_modules", "skip.ts"), "roadmap item 3\n", "utf8"); // excluded dir
+      fs.writeFileSync(path.join(root, ".vscodeignore"), "# clean ignore rules\n", "utf8"); // extensionless root file IS scanned
       const files = readScannedFiles(root);
       expect(files.has("doc/a.md")).toBe(true);
       expect(files.has("doc/guide.md")).toBe(true);
@@ -90,6 +91,7 @@ describe("readScannedFiles + checkRoadmapCitations (fixture tree)", () => {
       expect(files.has("CLAUDE.md")).toBe(false);
       expect(files.has("CHANGELOG.md")).toBe(false);
       expect(files.has("scripts/node_modules/skip.ts")).toBe(false);
+      expect(files.has(".vscodeignore")).toBe(true);
       const hits = checkRoadmapCitations(root);
       expect(hits.map((h) => `${h.file}:${h.line}`)).toEqual(["doc/guide.md:1"]);
     } finally {

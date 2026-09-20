@@ -239,6 +239,16 @@ export function viewerBodyHtml(): string {
         <div class="tb-sep"></div>
         <button id="link-cameras" role="menuitemcheckbox" aria-checked="false" title="Share camera orientation across all open CAD Preview tabs">${icon("view")} Link cameras across tabs</button>
         <div class="tb-sep"></div>
+        <div id="bookmark-group" title="Saved view bookmarks — named inspection viewpoints for this document">
+          <button id="bookmark-save" role="menuitem" title="Save the current camera, display mode and clip plane as a named bookmark">${icon("view")} Save current view…</button>
+          <div id="bookmark-name-row" class="hidden">
+            <input id="bookmark-name-input" type="text" maxlength="120" placeholder="Bookmark name" aria-label="Bookmark name" />
+            <button id="bookmark-name-ok" title="Save bookmark">Save</button>
+            <button id="bookmark-name-cancel" title="Cancel">✕</button>
+          </div>
+          <div id="bookmark-list"></div>
+        </div>
+        <div class="tb-sep"></div>
         <button id="screenshot" role="menuitem" title="Save the current view as a PNG">${icon("screenshot")} Screenshot…</button>
       </div>
     </div>

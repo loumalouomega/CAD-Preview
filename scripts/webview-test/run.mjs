@@ -211,6 +211,11 @@ test("form state: no FE Mesh <select> is left with an unresolved value", async (
   await populate(page);
   const blanks = await page.evaluate(() =>
     Array.from(document.querySelectorAll("#meshing-panel select"))
+      // The Saved-presets picker legitimately starts unselected: its "No saved
+      // presets" placeholder (value "") is a real third state — "nothing to
+      // pick yet" — not a stale-fixture blank like the Engine case above.
+      // Apply/Delete stay disabled/hidden until a real preset arrives.
+      .filter((s) => s.id !== "meshing-preset-select")
       .filter((s) => s.options.length > 0 && s.value === "")
       .map((s) => s.id || s.previousElementSibling?.textContent || "(unlabelled)")
   );
@@ -421,7 +426,7 @@ test("mesh export: every target serializes real geometry from the live scene", a
 });
 
 /**
- * H2. Mesh-ops section — the interactive half of Tier 2 symmetry item 4.
+ * H2. Mesh-ops section — the interactive half of the mesh-operations-panel item.
  *
  * `transform_mesh` was MCP-only with zero webview callers; the FE Mesh panel
  * grew a Mesh-ops section driving the same `runMeshioOps` pipeline entry via
@@ -490,7 +495,7 @@ test("mesh ops: section tracks source kind and posts a guarded request", async (
 });
 
 /**
- * H3. BOM Copy button — the interactive half of Tier 2 symmetry item 4.
+ * H3. BOM Copy button — the interactive half of the BOM-copy item.
  *
  * `generate_bom` was MCP-only with nothing in the webview importing `bomTsv`;
  * the Parts header grew a Copy BOM button driving the same `computeBom`
@@ -1894,7 +1899,7 @@ test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", 
   assert(shown.regionFit === 0, `#region-fit-panel renders nothing (got ${shown.regionFit}px)`);
 });
 
-// ── Clash panel (roadmap Tier 2 "Clash panel") ────────────────────────────
+// ── Clash panel (roadmap Tier 1 "Clash panel") ────────────────────────────
 //
 // The kernel side (`checkInterference`/`checkInterferenceAll`) is covered
 // against live OCCT in `npm run mcp:smoke`, so what needs checking here is the
@@ -2045,7 +2050,7 @@ test("clash: the hidden attribute genuinely hides the section", async (page) => 
   assert(height === 0, `#clash-panel[hidden] renders nothing (got ${height}px)`);
 });
 
-// ── Primitives panel (Tier 2 "Primitive-recognition panel") ───────────────
+// ── Primitives panel (Tier 1 "Primitive-recognition panel") ───────────────
 //
 // The kernel side (`recognizePrimitives`/`buildPrimitivesFile` +
 // `emitPrimitiveOps`) is covered against live OCCT in `npm run mcp:smoke` and
@@ -2231,6 +2236,261 @@ test("save point: undo is disabled when only baked ops remain", async (page) => 
   await sleep(300);
   const disabled = await page.evaluate(() => document.getElementById("edits-undo")?.disabled ?? null);
   assert(disabled === true, "the Undo button disables when the stack is at the save point");
+});
+
+// ── Saved view bookmarks (roadmap Tier 1 "Saved view bookmarks") ─────────────
+//
+// A named collection of inspection viewpoints persisted as a top-level
+// `bookmarks` sibling of `view` in `<model>.view.json`. What needs the real
+// bundle here: hydrating rows from a `viewState` post, saving the live camera
+// through the menu, restoring without a save loop, and the silent-restore /
+// rename-collision contracts. The tolerant sidecar parse itself is covered by
+// `viewStateSidecar.test.ts`.
+//
+// Regression anchor for a real incident: module state the setup try-block
+// reads must be initialized before it runs — `renderBookmarkList()` once read
+// a `let` declared further down, throwing inside `setupViewMenu()` and
+// silently killing selection/measure/appearance/clipping setup behind it
+// (one `log` post, zero pageerrors, 60+ downstream failures). The first case
+// below fails on exactly that shape.
+
+const BOOKMARK_VIEW = {
+  viewDirection: [1, 0.8, 1],
+  cameraUp: [0, 1, 0],
+  orthographic: false,
+  displayMode: "shaded",
+  clip: null,
+};
+
+test("setup: view controls initialize with no error (a setup throw kills later panels silently)", async (page) => {
+  await populate(page);
+  const logs = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "log").map((m) => m.message));
+  assert(
+    !logs.some((m) => /failed to initialize/i.test(m)),
+    `no setup failure is logged (got ${JSON.stringify(logs)})`
+  );
+  // Spot-check that setup past the View ▾ menu ran: clipping + selection.
+  const wired = await page.evaluate(() => ({
+    clipFace: document.getElementById("clip-from-face")?.disabled ?? "missing",
+    selToggle: !!document.getElementById("sel-toggle"),
+  }));
+  assert(wired.clipFace === true, `clip derive buttons start gated (got ${wired.clipFace})`);
+  assert(wired.selToggle === true, "the selection toggle exists");
+});
+
+async function postBookmarks(page, bookmarks) {
+  await post(page, { type: "viewState", view: { ...BOOKMARK_VIEW, bookmarks } });
+  await sleep(700);
+}
+
+/** Like `populate`, but the FIRST `viewState` post already carries bookmarks —
+ * the real initial-hydration path (`applyInitialViewIfNeeded`), which must
+ * render the rows silently (no viewChanged echo back to the host). A second,
+ * post-initial `viewState` always re-applies the camera and echoes, so
+ * `postBookmarks` above cannot test silence. */
+async function populateWithBookmarks(page, bookmarks) {
+  await post(page, fixture("geometry"));
+  await post(page, { type: "viewState", view: { ...BOOKMARK_VIEW, bookmarks } });
+  await sleep(700);
+  await post(page, fixture("tree"));
+  await post(page, fixture("meshingOptions"));
+  await post(page, fixture("parts"));
+  await post(page, fixture("edits"));
+  await sleep(700);
+}
+
+test("bookmarks: hydrating two bookmarks renders two rows with their names", async (page) => {
+  await populate(page);
+  await postBookmarks(page, [
+    { name: "Front door", viewDirection: [0, -1, 0], cameraUp: [0, 0, -1], orthographic: false, displayMode: "shaded", clip: null },
+    { name: "Top down", viewDirection: [0, 0, 1], cameraUp: [0, 1, 0], orthographic: true, displayMode: "xray", clip: null },
+  ]);
+  const names = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("#bookmark-list .bookmark-row .bookmark-name")).map((b) => b.textContent)
+  );
+  assert(eq(names, ["Front door", "Top down"]), `two bookmark rows render with their names (got ${JSON.stringify(names)})`);
+});
+
+test("bookmarks: hydration posts no viewChanged (silent restore, not an echo)", async (page) => {
+  await page.evaluate(() => (window.__sent.length = 0));
+  await populateWithBookmarks(page, [
+    { name: "Front door", viewDirection: [0, -1, 0], cameraUp: [0, 0, -1], orthographic: false, displayMode: "shaded", clip: null },
+  ]);
+  const rows = await page.evaluate(() => document.querySelectorAll("#bookmark-list .bookmark-row").length);
+  assert(rows === 1, `the hydrated row renders (got ${rows})`);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").length);
+  assert(sent === 0, `initial hydration posts no viewChanged (got ${sent})`);
+});
+
+test("bookmarks: saving the current view posts viewChanged carrying the bookmark", async (page) => {
+  await populate(page);
+  await page.evaluate(() => (window.__sent.length = 0));
+  // The name row must be GENUINELY hidden (no layout box), not just
+  // carrying the class — the `#hover-tip.hidden` incident proved a class-only
+  // assertion passes while the element is plainly visible. Checked with the
+  // menu OPEN, so a closed panel can't make it trivially true.
+  await page.click("#view-menu");
+  const hidden = await page.evaluate(() => {
+    const el = document.getElementById("bookmark-name-row");
+    if (!el) return "missing";
+    return el.offsetParent === null;
+  });
+  assert(hidden === true, "the bookmark name row is genuinely hidden before opening");
+  await page.click("#bookmark-save");
+  await page.fill("#bookmark-name-input", "Side elevation");
+  await page.click("#bookmark-name-ok");
+  await sleep(800);
+  const posts = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged"));
+  assert(posts.length >= 1, `saving posts at least one viewChanged (got ${posts.length})`);
+  const last = posts[posts.length - 1].view;
+  assert(
+    Array.isArray(last.bookmarks) && last.bookmarks.length === 1 && last.bookmarks[0].name === "Side elevation",
+    `the posted view carries the new bookmark (got ${JSON.stringify(last.bookmarks?.map((b) => b.name))})`
+  );
+  const dir = last.bookmarks?.[0]?.viewDirection;
+  assert(
+    Array.isArray(dir) && dir.length === 3 && dir.every((c) => Number.isFinite(c)),
+    `the bookmark carries a real camera direction (got ${JSON.stringify(dir)})`
+  );
+  const rows = await page.evaluate(() => document.querySelectorAll("#bookmark-list .bookmark-row").length);
+  assert(rows === 1, `the menu shows the new row (got ${rows})`);
+});
+
+test("bookmarks: restoring reframes and persists exactly one viewChanged matching the bookmark", async (page) => {
+  await populate(page);
+  await postBookmarks(page, [
+    { name: "Top down", viewDirection: [0, 0, 1], cameraUp: [0, 1, 0], orthographic: true, displayMode: "shaded", clip: null },
+  ]);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#view-menu");
+  await page.click("#bookmark-list .bookmark-row .bookmark-name");
+  await sleep(800);
+  const posts = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged"));
+  assert(posts.length === 1, `a restore persists exactly one viewChanged (got ${posts.length})`);
+  const dir = posts[0]?.view?.viewDirection;
+  const close = Array.isArray(dir) && dir.length === 3 && dir.every((c, i) => Math.abs(c - [0, 0, 1][i]) < 1e-6);
+  assert(close, `the persisted view matches the bookmark direction (got ${JSON.stringify(dir)})`);
+  assert(posts[0]?.view?.orthographic === true, "the persisted view matches the bookmark projection");
+});
+
+test("bookmarks: rename collision is refused with guidance and posts nothing", async (page) => {
+  await populate(page);
+  await postBookmarks(page, [
+    { name: "Alpha", viewDirection: [1, 0, 0], cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null },
+    { name: "Beta", viewDirection: [0, 1, 0], cameraUp: [0, 0, 1], orthographic: false, displayMode: "shaded", clip: null },
+  ]);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#view-menu");
+  const rows = page.locator("#bookmark-list .bookmark-row");
+  await rows.first().locator(".bookmark-act", { hasText: "Rename" }).click();
+  await page.fill("#bookmark-list .bookmark-row input.bookmark-rename-input", "Beta");
+  await page.keyboard.press("Enter");
+  await sleep(800);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/already exists/i.test(status), `the collision names the existing bookmark (got ${JSON.stringify(status)})`);
+  const names = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("#bookmark-list .bookmark-row .bookmark-name")).map((b) => b.textContent)
+  );
+  assert(eq(names, ["Alpha", "Beta"]), `no rename landed (got ${JSON.stringify(names)})`);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").length);
+  assert(sent === 0, `a refused rename posts no viewChanged (got ${sent})`);
+});
+
+test("bookmarks: delete removes the row and persists the removal", async (page) => {
+  await populate(page);
+  await postBookmarks(page, [
+    { name: "Alpha", viewDirection: [1, 0, 0], cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null },
+    { name: "Beta", viewDirection: [0, 1, 0], cameraUp: [0, 0, 1], orthographic: false, displayMode: "shaded", clip: null },
+  ]);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#view-menu");
+  const rows = page.locator("#bookmark-list .bookmark-row");
+  await rows.first().locator(".bookmark-act", { hasText: "✕" }).click();
+  await sleep(800);
+  const names = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("#bookmark-list .bookmark-row .bookmark-name")).map((b) => b.textContent)
+  );
+  assert(eq(names, ["Beta"]), `only the surviving row renders (got ${JSON.stringify(names)})`);
+  const posts = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged"));
+  const last = posts[posts.length - 1]?.view?.bookmarks ?? null;
+  assert(
+    Array.isArray(last) && last.length === 1 && last[0].name === "Beta",
+    `the removal persists (got ${JSON.stringify(last?.map((b) => b.name))})`
+  );
+});
+
+// ── Reusable meshing presets (roadmap Tier 1 "Reusable meshing presets") ─────
+//
+// A "Saved presets" picker in the FE Mesh panel over the host-posted merged
+// (user + bundled) library. What needs the real bundle here: the picker
+// populating from `meshingPresets`, Apply posting the name (the host owns
+// resolution/conversion/write from there), and Delete hiding for a bundled
+// starter. Conversion math itself is covered by `meshPresets.test.ts`.
+
+async function postPresets(page, presets) {
+  await post(page, { type: "meshingPresets", presets });
+  await sleep(300);
+}
+
+const PRESET_A = { name: "coarse-preview", description: null, unit: "mm", engine: "gmsh", readOnly: true };
+const PRESET_B = { name: "mine", description: "Mine", unit: "in", engine: "ftetwild" };
+
+test("presets: the picker lists the posted library with built-in marked", async (page) => {
+  await populate(page);
+  await postPresets(page, [PRESET_A, PRESET_B]);
+  const options = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("#meshing-panel select")).map((s) =>
+      Array.from(s.options).map((o) => o.textContent)
+    )
+  );
+  const flat = options.flat();
+  assert(flat.includes("coarse-preview (built-in)"), `the bundled starter is marked built-in (got ${JSON.stringify(flat)})`);
+  assert(flat.includes("mine"), `the user preset is listed (got ${JSON.stringify(flat)})`);
+});
+
+test("presets: Apply posts meshPresetApply with the picked name and nothing else", async (page) => {
+  await populate(page);
+  await postPresets(page, [PRESET_A, PRESET_B]);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const selects = Array.from(document.querySelectorAll("#meshing-panel select"));
+    const preset = selects.find((s) => Array.from(s.options).some((o) => o.value === "mine"));
+    if (preset) preset.value = "mine";
+  });
+  await page.evaluate(() => {
+    const btns = Array.from(document.querySelectorAll("#meshing-panel button"));
+    btns.find((b) => b.textContent === "Apply")?.click();
+  });
+  await sleep(300);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshPresetApply"));
+  assert(sent.length === 1 && sent[0].name === "mine", `Apply posts exactly one meshPresetApply naming the pick (got ${JSON.stringify(sent)})`);
+});
+
+test("presets: Delete hides for a bundled starter and shows for a user preset", async (page) => {
+  await populate(page);
+  await postPresets(page, [PRESET_A, PRESET_B]);
+  const hiddenForBundled = await page.evaluate(() => {
+    const selects = Array.from(document.querySelectorAll("#meshing-panel select"));
+    const preset = selects.find((s) => Array.from(s.options).some((o) => o.value === "coarse-preview"));
+    if (preset) {
+      preset.value = "coarse-preview";
+      preset.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const btns = Array.from(document.querySelectorAll("#meshing-panel button"));
+    return btns.find((b) => b.textContent === "Delete")?.hidden ?? "missing";
+  });
+  assert(hiddenForBundled === true, "Delete hides for a bundled starter");
+  const hiddenForUser = await page.evaluate(() => {
+    const selects = Array.from(document.querySelectorAll("#meshing-panel select"));
+    const preset = selects.find((s) => Array.from(s.options).some((o) => o.value === "mine"));
+    if (preset) {
+      preset.value = "mine";
+      preset.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const btns = Array.from(document.querySelectorAll("#meshing-panel button"));
+    return btns.find((b) => b.textContent === "Delete")?.hidden ?? "missing";
+  });
+  assert(hiddenForUser === false, "Delete shows for a user preset");
 });
 
 // ── New Blank Model ───────────────────────────────────────────────────────

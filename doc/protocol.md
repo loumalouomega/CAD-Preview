@@ -383,6 +383,7 @@ type HostToWebview =
   | { type: 'editError'; message: string }
   | { type: 'exportMesh'; requestId: string; format: CadFormat; unit?: DisplayUnit }
   | { type: 'meshingOptions'; options: MeshOptions }
+  | { type: 'meshingPresets'; presets: MeshPresetSummary[] }
   | { type: 'viewState'; view: ViewState | null }
   | { type: 'meshingResult'; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
@@ -643,6 +644,12 @@ Sent once during the `ready` handshake, right after `meshingOptions`, once the h
 
 In Phase 2 (roadmap "Split view", Phase 2) `view` carries optional `layout` + per-pane `panes` alongside the existing focused/single-pane fields — the message shape is unchanged, only the payload is wider. `layout` defaults to `"1x1"` when absent (an older sidecar or a session that never entered split view); `panes` is row-major, one `PaneViewState` per pane. `view` (the focused direction/up/ortho) stays the single-pane/focused-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — tolerant-parse. The headless harness (`renderService.ts`, which posts no layout message) and `capture.mjs`'s `populate()` (which posts `{view: null}`) keep getting single-pane.
 
+`view` also carries optional `bookmarks` (roadmap "Saved view bookmarks") — the document's named viewpoint collection, a top-level `bookmarks` sibling of `view` in `<model>.view.json`, omitted when empty. The webview is the single writer of the list (save/rename/replace/delete in the View ▾ menu mutate it in place); every `viewChanged` post carries the current list, and hydration/external reconciliation only re-render the menu rows, never apply one as a camera. Restoring a bookmark reframes the focused pane from the current bbox (split layout untouched) and then posts one deliberate `viewChanged`, so the bookmark view becomes the persisted latest view — the synchronous `controls.update()` echo mid-restore is suppressed by an `applyingBookmark` flag, the `applyingLinkedCamera` precedent.
+
+```json
+{ "type": "viewState", "view": { "viewDirection": [1, 0.8, 1], "cameraUp": [0, 1, 0], "orthographic": false, "displayMode": "shaded", "clip": null, "bookmarks": [{ "name": "Top inspection", "viewDirection": [0, -1, 0], "cameraUp": [0, 0, -1], "orthographic": true, "displayMode": "xray", "clip": null }] } }
+```
+
 ### `meshingResult`
 
 Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the target is `"msh"`) on a successful GMSH run. `positions`/`indices`/`edges` are the base64 `Float32Array`/`Uint32Array` boundary triangulation + true element-edge line buffer, encoded exactly like `EncodedMesh`'s buffers — for a 3D mesh `indices` is the tetrahedra's boundary faces derived host-side, not the tetrahedra themselves. `nodeCount`/`elementCount` are the full node/element counts (not just the displayed boundary triangle count), and `elapsedMs` is the wall-clock duration of the generate call. `elementGroups` partitions `indices` into contiguous per-part runs (`{name, color, indexStart, indexCount}`, with a trailing `name`/`color` = `null` run for triangles not claimed by any part) so the overlay can be built multi-material with per-part colours. The webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))` and renders the stats (counts + time) in the panel's status line. `quality` (optional — omitted if it couldn't be computed, e.g. a 1D mesh) is a `{min, mean, histogram}` summary over the mesh's top-dimension elements' `minSICN` quality (via Gmsh's own `getElementQualities` — see `src/gmshService.ts`'s `computeQualityAndWorstElements` for the verified call shape), rendered as a small min/mean line + bar histogram below the FE Mesh panel's status line.
@@ -717,7 +724,7 @@ Sent in reply to `massPropertiesRequest` — **B-rep sources only**; mesh source
 
 ### `bomResult` / `bomError`
 
-Sent in reply to `bomRequest` (webview → host, below) — roadmap Tier 2 "BOM Copy button". `rows` is one `BomRow` per Part over a single host parse/replay (`computeBom`, the same function the `generate_bom` MCP tool drives headless); `warnings` carries per-row degradations (unresolved ids) and scad-conversion chatter. **B-rep sources only**, same gate as `massPropertiesResult` — a mesh source has no per-part rows to compute. The webview renders `bomTsv(rows)` itself (`src/bomExport.ts`, zero-import pure) and copies it to the clipboard; an empty parts sidecar returns zero rows with a warning rather than an error (the button stays disabled in that case, so this is a backstop).
+Sent in reply to `bomRequest` (webview → host, below) — roadmap Tier 1 "BOM Copy button". `rows` is one `BomRow` per Part over a single host parse/replay (`computeBom`, the same function the `generate_bom` MCP tool drives headless); `warnings` carries per-row degradations (unresolved ids) and scad-conversion chatter. **B-rep sources only**, same gate as `massPropertiesResult` — a mesh source has no per-part rows to compute. The webview renders `bomTsv(rows)` itself (`src/bomExport.ts`, zero-import pure) and copies it to the clipboard; an empty parts sidecar returns zero rows with a warning rather than an error (the button stays disabled in that case, so this is a backstop).
 
 ```json
 { "type": "bomResult", "requestId": "1234-0.56", "rows": [{ "name": "Bracket", "color": "#ff8800", "solidCount": 1, "surfaceCount": 0, "lineCount": 0, "pointCount": 0, "volume": 1000, "area": 600, "unresolvedIds": [] }], "warnings": [] }
@@ -803,7 +810,7 @@ Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh �
 
 ### `meshioOpsResult` / `meshioOpsError`
 
-Sent in reply to `meshioOpsRequest` (webview → host, below) — roadmap Tier 2 "Mesh-operations panel for meshio sources". `steps`/`warnings` are `runMeshioOps`'s own per-step report verbatim (one entry per requested op, including the ones that did nothing — a step that cannot run is reported with `applied: false` and its reason, never silent). **meshio++-imported sources only** (every `loadMeshBytes` source except OpenFOAM, whose case-staged reader has no `readMesh` path); the FE Mesh panel's Mesh-ops section hides itself otherwise, so the host gate is a backstop, not the primary UX. The result file itself is written through the shared save flow (`promptSaveAndWrite`, same shape as Repair) — success/failure of the write surface through the generic `status`/`error` messages; this pair only carries the report back to the panel.
+Sent in reply to `meshioOpsRequest` (webview → host, below) — roadmap Tier 1 "Mesh-operations panel for meshio sources". `steps`/`warnings` are `runMeshioOps`'s own per-step report verbatim (one entry per requested op, including the ones that did nothing — a step that cannot run is reported with `applied: false` and its reason, never silent). **meshio++-imported sources only** (every `loadMeshBytes` source except OpenFOAM, whose case-staged reader has no `readMesh` path); the FE Mesh panel's Mesh-ops section hides itself otherwise, so the host gate is a backstop, not the primary UX. The result file itself is written through the shared save flow (`promptSaveAndWrite`, same shape as Repair) — success/failure of the write surface through the generic `status`/`error` messages; this pair only carries the report back to the panel.
 
 ```json
 { "type": "meshioOpsResult", "requestId": "1234-0.56", "steps": [{ "op": "<op id>", "applied": true, "detail": "welded 4, dropped 0 degenerate / 0 duplicate" }], "warnings": [] }
@@ -936,6 +943,9 @@ type WebviewToHost =
   | { type: 'meshingChanged'; options: MeshOptions }
   | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
   | { type: 'meshingExport'; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
+  | { type: 'meshPresetApply'; name: string }
+  | { type: 'meshPresetSaveCurrent' }
+  | { type: 'meshPresetDelete'; name: string }
   | { type: 'screenshotButtonClicked' }
   | { type: 'promoteToBrepButtonClicked' }
   | { type: 'repairMeshButtonClicked' }
@@ -1051,6 +1061,15 @@ Sent when the user picks a format in the FE Mesh panel's export `<select>` and c
 
 ```json
 { "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 }, "unit": "in" }
+```
+
+### `meshingPresets` / `meshPresetApply` / `meshPresetSaveCurrent` / `meshPresetDelete`
+
+Reusable meshing presets (roadmap Tier 1 "Reusable meshing presets") — named, shareable `MeshOptions` bundles with explicit authored units and a pinned engine, covering global options only (Part sizing/entity assignments stay in the document). `meshingPresets` is sent unprompted on `ready` and after every preset save/delete (the `macros` message precedent), listing the merged user + bundled-starter library as `MeshPresetSummary[]` (`{name, description, unit, engine, readOnly?}` — bundled starters are `readOnly`, appliable but not deletable). The panel renders them into its "Saved presets" picker via `renderPresets()`. `meshPresetApply` names one; the host resolves the merged library itself (caller file first, then bundled), converts sizes into mm via `effectivePresetOptions` (`src/meshPresets.ts`), writes `.mesh.json` (+ regenerated `.geo`), and re-posts `meshingOptions` so the panel re-renders — settings only, never a generate. `meshPresetSaveCurrent` records the current mm-native options (the host prompts for a name; a dismissed prompt is a quiet no-op). Success/failure surface through the generic `status`/`error` messages — no requestId round trip is needed since the host owns each flow end to end (the `promoteToBrepButtonClicked` precedent).
+
+```json
+{ "type": "meshingPresets", "presets": [{ "name": "balanced", "description": null, "unit": "mm", "engine": "gmsh" }] }
+{ "type": "meshPresetApply", "name": "balanced" }
 ```
 
 ### `ready`
@@ -1247,7 +1266,7 @@ Sent when the Region fit panel's **Pick seed** button is armed and the user clic
 
 ### `primitiveRecognizeRequest` / `decomposeExportClicked` / `decomposeSaveMacroClicked`
 
-Sent from the Primitives panel (Tier 2 "Primitive-recognition panel", closed) — the interactive B-rep half of `recognize_primitives` / `decompose_to_primitives`. Only reachable for a STEP/IGES/BREP source (the panel hides itself for mesh sources, mirroring `recognize_primitives`' own MCP-tool gate, inverted from Mesh Health's). `primitiveRecognizeRequest` carries no parameters beyond `requestId` — the host re-reads the currently-open document's own bytes plus the unbaked op tail and runs `recognizePrimitives` against them; replies with `primitiveRecognizeResult` (a `PrimitiveReport`: one entry per solid with face inventory, candidate + fit residual, `candidate: null` + reason when nothing matches exactly — never a guess) / `primitiveRecognizeError`, correlated via `requestId` like every other request/response pair in this file. `decomposeExportClicked` / `decomposeSaveMacroClicked` are parameter-free (the `promoteToBrepButtonClicked` shape — the host recomputes the emission itself via `emitPrimitiveOps`, owns the format/unit quick-picks + save dialog or the macro-name prompt + library write, and reports through the generic `status`/`error` messages).
+Sent from the Primitives panel (Tier 1 "Primitive-recognition panel", closed) — the interactive B-rep half of `recognize_primitives` / `decompose_to_primitives`. Only reachable for a STEP/IGES/BREP source (the panel hides itself for mesh sources, mirroring `recognize_primitives`' own MCP-tool gate, inverted from Mesh Health's). `primitiveRecognizeRequest` carries no parameters beyond `requestId` — the host re-reads the currently-open document's own bytes plus the unbaked op tail and runs `recognizePrimitives` against them; replies with `primitiveRecognizeResult` (a `PrimitiveReport`: one entry per solid with face inventory, candidate + fit residual, `candidate: null` + reason when nothing matches exactly — never a guess) / `primitiveRecognizeError`, correlated via `requestId` like every other request/response pair in this file. `decomposeExportClicked` / `decomposeSaveMacroClicked` are parameter-free (the `promoteToBrepButtonClicked` shape — the host recomputes the emission itself via `emitPrimitiveOps`, owns the format/unit quick-picks + save dialog or the macro-name prompt + library write, and reports through the generic `status`/`error` messages).
 
 ```json
 { "type": "primitiveRecognizeRequest", "requestId": "1234-0.56" }

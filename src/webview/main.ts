@@ -88,10 +88,14 @@ import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { setupCollapsiblePanels, type CollapsiblePanelsHandle } from "./collapsiblePanels";
 import { setupSidebarResizer, clampSidebarWidth, SIDEBAR_DEFAULT_PX, type SidebarResizerHandle } from "./sidebarResizer";
+// Value import, safe the same way `sidebarResizer` above is: `viewStateSidecar`
+// is pure (no vscode, no three.js value import — only `import type` on
+// `clipping`), so it stays out of the webview bundle's way.
+import { sanitizeBookmarks } from "../viewStateSidecar";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
-import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, Annotation } from "../protocol";
+import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, ViewBookmark, Annotation } from "../protocol";
 import type { OpOutcome, RegionPick } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -1137,6 +1141,14 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     meshioOpsRequestId = requestId;
     post({ type: "meshioOpsRequest", requestId, ops });
   },
+  // Saved presets need no requestId round trip: applying/saving/deleting is
+  // host-owned end to end (the host re-posts `meshingOptions` after an apply
+  // and `meshingPresets` after a save/delete), so success/failure surface
+  // through the generic `status`/`error` messages — the
+  // `promoteToBrepButtonClicked` precedent, not the `meshioOpsRequest` one.
+  onPresetApply: (name) => post({ type: "meshPresetApply", name }),
+  onPresetSaveCurrent: () => post({ type: "meshPresetSaveCurrent" }),
+  onPresetDelete: (name) => post({ type: "meshPresetDelete", name }),
   onClear: () => {
     viewer.setMeshOverlay(null);
     viewer.setWorstElementsOverlay(null);
@@ -1158,7 +1170,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
 let sourceKind: "brep" | "mesh" | null = null;
 let massPropertiesRequestId: string | null = null;
 
-// ── Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button") ────
+// ── Parts-section "Copy BOM" button (roadmap Tier 1 "BOM Copy button") ────
 // One TSV row per Part over a single host parse/replay (`computeBom`, the same
 // function `generate_bom` drives headlessly) — requested with a stale-guarded
 // `bomRequestId` like every other request/response round trip here, rendered
@@ -1332,7 +1344,7 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
   },
 });
 
-// ── Clash panel (roadmap Tier 2 "Clash panel") ────────────────────────────
+// ── Clash panel (roadmap Tier 1 "Clash panel") ────────────────────────────
 // B-rep sources only (no exact boolean geometry exists for a mesh) — the
 // section hides itself otherwise, like `meshHealthPanel`. Raw mm results are
 // cached so a display-unit change re-renders without a new host round trip
@@ -1529,7 +1541,7 @@ const regionFitPanel = new RegionFitPanel(document.getElementById("region-fit-pa
   },
 });
 
-// ── Primitives (Tier 2 "Primitive-recognition panel") ──────────────────────
+// ── Primitives (Tier 1 "Primitive-recognition panel") ──────────────────────
 // B-rep-only interactive half of recognize_primitives/decompose_to_primitives.
 // The report is host-computed (needs the OCCT kernel); Apply is webview-side
 // (the emission is pure — `emitPrimitiveOps` over the already-posted report —
@@ -3621,6 +3633,61 @@ function setupViewMenu(): void {
     post({ type: "setCamerasLinked", enabled });
   });
 
+  // Saved view bookmarks (roadmap "Saved view bookmarks", closed) — a named
+  // collection of inspection viewpoints for this document, persisted as a
+  // top-level `bookmarks` sibling of `view` in `<model>.view.json` (see
+  // `src/viewStateSidecar.ts`). Restoring reframes the FOCUSED pane from the
+  // current bbox and never touches the split layout.
+  const bookmarkSaveBtn = document.getElementById("bookmark-save");
+  const bookmarkNameRow = document.getElementById("bookmark-name-row");
+  const bookmarkNameInput = document.getElementById("bookmark-name-input") as HTMLInputElement | null;
+  const showBookmarkNameRow = (show: boolean) => {
+    bookmarkNameRow?.classList.toggle("hidden", !show);
+    if (show && bookmarkNameInput) {
+      bookmarkNameInput.value = "";
+      bookmarkNameInput.focus();
+    }
+  };
+  bookmarkSaveBtn?.addEventListener("click", () => {
+    // Clicks inside the panel deliberately leave it open (the dropdownMenu
+    // convention) — the name field lives in the menu itself, so keep it open
+    // and move focus into the field (webviews block `prompt()`).
+    showBookmarkNameRow(bookmarkNameRow?.classList.contains("hidden") !== false);
+  });
+  const commitBookmarkName = () => {
+    const name = (bookmarkNameInput?.value ?? "").trim();
+    showBookmarkNameRow(false);
+    menu?.close();
+    if (name === "") return;
+    if (viewBookmarks.some((b) => b.name === name)) {
+      setStatus(`A bookmark named "${name}" already exists — use Replace on its row to overwrite it.`, true);
+      return;
+    }
+    viewBookmarks = [...viewBookmarks, captureBookmark(name)];
+    renderBookmarkList();
+    scheduleViewSave();
+    setStatus(`Saved bookmark "${name}".`);
+  };
+  bookmarkNameInput?.addEventListener("keydown", (e) => {
+    // A text field owns its arrows for caret motion (the `focusablesIn`
+    // contract) — stop them reaching the menu's roving navigation.
+    e.stopPropagation();
+    if (e.key === "Enter") commitBookmarkName();
+    else if (e.key === "Escape") showBookmarkNameRow(false);
+  });
+  // `blur` fires when the menu closes mid-typing (the dismissing pointerdown
+  // closes the panel, detaching the input): committing there would save a
+  // half-typed name the user never confirmed, so blur only hides the row.
+  bookmarkNameInput?.addEventListener("blur", () => showBookmarkNameRow(false));
+  const bookmarkNameOk = document.getElementById("bookmark-name-ok");
+  // `mousedown` + preventDefault keeps focus in the input: without it, the
+  // mousedown blurs the field (hiding this row via the `blur` handler above)
+  // before the click dispatches, and the commit never runs.
+  bookmarkNameOk?.addEventListener("mousedown", (e) => e.preventDefault());
+  bookmarkNameOk?.addEventListener("click", commitBookmarkName);
+  document.getElementById("bookmark-name-cancel")?.addEventListener("click", () => showBookmarkNameRow(false));
+  renderBookmarkList();
+
   // #edges is owned by setupAppearanceControls() — it holds the visibility
   // flag; this only reflects it. Screenshot is one-shot, so it dismisses.
   document.getElementById("screenshot")?.addEventListener("click", () => menu?.close());
@@ -4161,6 +4228,25 @@ let clippingControls: ClippingControlsHandle | null = null;
 let collapsiblePanels: CollapsiblePanelsHandle | null = null;
 let sidebarResizer: SidebarResizerHandle | null = null;
 
+/** While applying a saved bookmark, suppress the echo that would otherwise
+ * immediately re-persist the restored camera as a new "latest view" mid-apply
+ * (roadmap "Saved view bookmarks") — the same discipline as
+ * `applyingLinkedCamera` below. The restore posts one deliberate
+ * `scheduleViewSave()` AFTER the flag clears instead, so the bookmark view
+ * still becomes the persisted latest view. Declared up here (not beside the
+ * other bookmark code further down) because `setupViewMenu()` — called in the
+ * try block below — renders the list at setup time, and module state it reads
+ * must already be initialized by then.
+ */
+let applyingBookmark = false;
+
+/** The document's named viewpoint collection — the single writer of the
+ * `bookmarks` list `scheduleViewSave` persists. Fed silently by
+ * `applyViewState` (hydration / external reconciliation), mutated only by the
+ * View ▾ menu's save/rename/replace/delete actions. Same declaration-order
+ * requirement as `applyingBookmark` above. */
+let viewBookmarks: ViewBookmark[] = [];
+
 try {
   setupViewControls();
   setupViewMenu();
@@ -4318,6 +4404,15 @@ function applyViewState(state: ViewState): void {
   // back to the default rather than silently keep whatever came before.
   const sidebarWidth = clampSidebarWidth(state.sidebarWidth) ?? SIDEBAR_DEFAULT_PX;
   sidebarResizer?.setWidth(sidebarWidth);
+  // Bookmarks hydrate the menu list only — never applied as a camera here
+  // (the same silent-restore contract as `setCollapsed` above: no post back).
+  // Sanitized even here: this handler can receive a raw/unparsed payload (the
+  // harness does exactly that), and a zero-vector bookmark would poison
+  // `frameFromDirection` on restore. External reconciliation rides the same
+  // path: a hand-edited `.view.json` re-renders the list within the watcher
+  // debounce.
+  viewBookmarks = sanitizeBookmarks(state.bookmarks);
+  renderBookmarkList();
 }
 
 function applyInitialViewIfNeeded(): void {
@@ -4357,12 +4452,161 @@ function applyLinkedCamera(camera: import("../protocol").LinkedCameraState): voi
   }
 }
 
+/** Captures the live camera + display state as a bookmark payload. */
+function captureBookmark(name: string): ViewBookmark {
+  const dir = viewer.getViewDirection();
+  const up = viewer.getCameraUp();
+  return {
+    name,
+    viewDirection: [dir.x, dir.y, dir.z],
+    cameraUp: [up.x, up.y, up.z],
+    orthographic: viewer.isOrthographic(),
+    displayMode: viewer.getDisplayMode(),
+    clip: clippingControls?.getState() ?? null,
+  };
+}
+
+/** Restores a bookmark into the focused pane (split layout untouched) through
+ * the same handles a `linkedCamera` relay uses — `setCameraUp` / `applyOrtho` /
+ * `frameFromDirection` reframe from the CURRENT bbox, which is what keeps the
+ * bookmark meaningful after an edit changed the model's extents. */
+function applyBookmark(bm: ViewBookmark): void {
+  if (!hasAppliedInitialView || !viewer.getModel()) {
+    setStatus("No model loaded yet — bookmarks apply once geometry arrives.", true);
+    return;
+  }
+  applyingBookmark = true;
+  try {
+    viewer.setCameraUp(new THREE.Vector3(...bm.cameraUp));
+    if (bm.orthographic !== viewer.isOrthographic()) appearanceControls?.applyOrtho(bm.orthographic);
+    viewer.frameFromDirection(new THREE.Vector3(...bm.viewDirection));
+    appearanceControls?.applyDisplayMode(bm.displayMode);
+    clippingControls?.applyState(bm.clip);
+    appearanceControls?.reflectOrtho();
+  } finally {
+    applyingBookmark = false;
+  }
+  // The bookmark view is now what's on screen — persist it as the latest view
+  // too (a reopen shows what was last displayed, not what was displayed
+  // before the restore). Deliberate, not an echo: the synchronous
+  // `controls.update()` emissions above were suppressed; this one post is it.
+  scheduleViewSave();
+}
+
+/** Re-renders the View ▾ menu's bookmark rows from `viewBookmarks`. Silent —
+ * never posts anything (the `setCollapsed` silent-restore contract). */
+function renderBookmarkList(): void {
+  const list = document.getElementById("bookmark-list");
+  if (!list) return;
+  list.textContent = "";
+  if (viewBookmarks.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "bookmark-empty";
+    empty.textContent = "No saved views yet.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const bm of viewBookmarks) {
+    const row = document.createElement("div");
+    row.className = "bookmark-row";
+
+    const name = document.createElement("button");
+    name.className = "bookmark-name";
+    name.setAttribute("role", "menuitem");
+    name.textContent = bm.name;
+    name.title = `Restore "${bm.name}" in the focused pane`;
+    name.addEventListener("click", () => applyBookmark(bm));
+    row.appendChild(name);
+
+    const replace = document.createElement("button");
+    replace.className = "bookmark-act";
+    replace.textContent = "Replace";
+    replace.title = `Overwrite "${bm.name}" with the current view`;
+    replace.addEventListener("click", () => {
+      const next = captureBookmark(bm.name);
+      viewBookmarks = viewBookmarks.map((b) => (b.name === bm.name ? next : b));
+      renderBookmarkList();
+      scheduleViewSave();
+      setStatus(`Replaced bookmark "${bm.name}".`);
+    });
+    row.appendChild(replace);
+
+    const rename = document.createElement("button");
+    rename.className = "bookmark-act";
+    rename.textContent = "Rename";
+    rename.title = `Rename "${bm.name}"`;
+    rename.addEventListener("click", () => startBookmarkRename(row, bm));
+    row.appendChild(rename);
+
+    const del = document.createElement("button");
+    del.className = "bookmark-act";
+    del.textContent = "✕";
+    del.title = `Delete "${bm.name}"`;
+    del.addEventListener("click", () => {
+      viewBookmarks = viewBookmarks.filter((b) => b.name !== bm.name);
+      renderBookmarkList();
+      scheduleViewSave();
+      setStatus(`Deleted bookmark "${bm.name}".`);
+    });
+    row.appendChild(del);
+
+    list.appendChild(row);
+  }
+}
+
+/** Swaps a bookmark row for an inline rename input — Enter commits, Escape
+ * restores (the planes/parts rename precedent: a half-typed rename must never
+ * land). A name colliding with another bookmark is refused with guidance. */
+function startBookmarkRename(row: HTMLElement, bm: ViewBookmark): void {
+  row.textContent = "";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "bookmark-rename-input";
+  input.maxLength = 120;
+  input.value = bm.name;
+  input.setAttribute("aria-label", `Rename bookmark ${bm.name}`);
+  // A text field owns its arrows for caret motion (the `focusablesIn`
+  // contract) — stop them reaching the menu's roving navigation.
+  input.addEventListener("keydown", (e) => e.stopPropagation());
+  let cancelled = false;
+  let done = false;
+  const finish = () => {
+    // Enter/blur/Escape all converge here; the first one wins so a commit is
+    // never applied twice (Enter detaches the input, whose blur would
+    // otherwise re-commit against a stale name).
+    if (done) return;
+    done = true;
+    const next = input.value.trim();
+    if (!cancelled && next !== "" && next !== bm.name) {
+      if (viewBookmarks.some((b) => b.name === next)) {
+        setStatus(`A bookmark named "${next}" already exists.`, true);
+      } else {
+        viewBookmarks = viewBookmarks.map((b) => (b.name === bm.name ? { ...b, name: next } : b));
+        scheduleViewSave();
+        setStatus(`Renamed bookmark to "${next}".`);
+      }
+    }
+    renderBookmarkList();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish();
+    else if (e.key === "Escape") {
+      cancelled = true;
+      finish();
+    }
+  });
+  input.addEventListener("blur", () => finish());
+  row.appendChild(input);
+  input.focus();
+  input.select();
+}
+
 /** Debounced autosave, called from every user-facing view change (camera
  * orbit/pan/zoom/fit/reset, the orientation gizmo, ortho/display-mode
  * buttons, the clip controls, and — since Phase 2 — a layout change or any
  * per-pane camera move). */
 function scheduleViewSave(): void {
-  if (!hasAppliedInitialView || applyingLinkedCamera) return;
+  if (!hasAppliedInitialView || applyingLinkedCamera || applyingBookmark) return;
   if (viewSaveTimer) clearTimeout(viewSaveTimer);
   viewSaveTimer = setTimeout(() => {
     const dir = viewer.getViewDirection();
@@ -4383,6 +4627,11 @@ function scheduleViewSave(): void {
     if (collapsed.length > 0) view.collapsedPanels = collapsed;
     const sidebarWidth = sidebarResizer?.getWidth() ?? SIDEBAR_DEFAULT_PX;
     if (sidebarWidth !== SIDEBAR_DEFAULT_PX) view.sidebarWidth = sidebarWidth;
+    // The webview is the single writer of the bookmark list (save/rename/
+    // replace/delete below mutate `viewBookmarks` in place); every view save
+    // carries the current list, omitted when empty like every other additive
+    // field, so an untouched sidecar stays byte-stable.
+    if (viewBookmarks.length > 0) view.bookmarks = viewBookmarks.map((b) => ({ ...b }));
     post({ type: "viewChanged", view });
   }, VIEW_SAVE_DEBOUNCE_MS);
 }
@@ -4653,6 +4902,12 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshingModel.load(msg.options);
       syncMeshSizeSeed();
       meshingPanel.render(meshingModel.get());
+      break;
+
+    case "meshingPresets":
+      // The saved-preset library for this document's folder — silent load,
+      // never echoed back (the `meshingOptions` hydration contract above).
+      meshingPanel.renderPresets(msg.presets);
       break;
 
     case "viewState":

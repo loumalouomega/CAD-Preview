@@ -46,6 +46,9 @@ import {
   screenshotShapeTool,
   type SnapshotView,
   listParametricScripts,
+  listMeshPresets,
+  applyMeshPreset,
+  saveMeshPreset,
   listStandardHoleSizes,
   listWorkspaceModels,
   searchStandardPartsTool,
@@ -76,6 +79,7 @@ import {
   setMeshOptions,
   generateMeshTool,
   exportMeshTool,
+  compareMeshRefinementTool,
   exportBRepTool,
   saveModelTool,
   savePreprocessTool,
@@ -1164,6 +1168,55 @@ server.registerTool(
   )
 );
 
+const presetLibraryPath = z.string().describe("Absolute path to the mesh-preset library JSON file (you name it; it is created on first save)");
+const optionalPresetLibraryPath = z.string().optional().describe("Absolute path to your mesh-preset library JSON file. Omit to use the bundled starter presets (coarse-preview, balanced, fine-detail, robust-repair) — pass it to union that file's entries on top (yours win name collisions).");
+
+server.registerTool(
+  "save_mesh_preset",
+  {
+    description:
+      "Save the given mesh options as a named, reusable preset in a library file — the meshing counterpart of save_parametric_script. `options` is a partial MeshOptions (see describe_capabilities); `unit` names the unit its sizes were authored in (mm|cm|m|in|ft, default mm); `engine` pins gmsh|ftetwild (default gmsh). Invalid fields fall back to defaults with a warning. The bundled starters are read-only — libraryPath is always required, nothing ever writes into the bundle. Touches no model and no geometry.",
+    inputSchema: {
+      libraryPath: presetLibraryPath,
+      name: z.string().describe("Unique name within the library; how apply_mesh_preset refers to it"),
+      options: z.looseObject({}).describe("Partial MeshOptions, in `unit`"),
+      unit: z.string().optional().describe("Unit the sizes were authored in: mm | cm | m | in | ft (default mm)"),
+      engine: z.string().optional().describe("Pinned engine: gmsh | ftetwild (default gmsh)"),
+      description: z.string().optional().describe("Free text shown by list_mesh_presets"),
+      overwrite: z.boolean().optional().describe("Replace an existing preset of the same name (default false: a name collision is an error)"),
+    },
+  },
+  wrap((args: { libraryPath: string; name: string; options: Record<string, unknown>; unit?: string; engine?: string; description?: string; overwrite?: boolean }) =>
+    saveMeshPreset({ ...args, options: args.options as Partial<MeshOptions> })
+  )
+);
+
+server.registerTool(
+  "list_mesh_presets",
+  {
+    description:
+      "List the saved meshing presets in a library file with their units and pinned engines, so you can discover what is available without reading the raw JSON. Omit libraryPath to list the bundled starter presets (coarse-preview, balanced, fine-detail, robust-repair); pass it to union that file's entries on top. A missing or empty library reads as empty with a warning, never an error. Preset names describe density intent only — never a mesh-quality guarantee.",
+    inputSchema: { libraryPath: optionalPresetLibraryPath },
+  },
+  wrap((args: { libraryPath?: string }) => listMeshPresets({ ...args, extensionPath }))
+);
+
+server.registerTool(
+  "apply_mesh_preset",
+  {
+    description:
+      "Apply a named meshing preset to a model: writes the preset's options (sizes converted from its authored unit into mm) to <model>.mesh.json and regenerates <model>.geo. Your library file is searched first, then the bundled starter presets — omit libraryPath to apply a starter by name. Part-specific sizing and entity assignments are untouched (presets cover global options only). Changes settings only — never generates a mesh and never saves a source. Fields the preset's engine ignores are reported in warnings, not silently dropped.",
+    inputSchema: {
+      libraryPath: optionalPresetLibraryPath,
+      name: z.string().describe("The preset's name, as reported by list_mesh_presets"),
+      path: modelPath,
+    },
+  },
+  wrap((args: { libraryPath?: string; name: string; path: string }) =>
+    applyMeshPreset({ ...args, extensionPath })
+  )
+);
+
 server.registerTool(
   "generate_mesh",
   {
@@ -1194,6 +1247,35 @@ server.registerTool(
       args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string },
       onProgress
     ) => exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
+  )
+);
+
+server.registerTool(
+  "compare_mesh_refinement",
+  {
+    description:
+      "Mesh the same model at several explicit sizes and compare cost vs quality before choosing one: each entry of sizes (mm) runs the same resolved geometry and the same non-size options as a uniform mesh (sizeMin = sizeMax = size), reporting per-run engine, nodes/elements, elapsed ms, the minSICN quality summary, and either output paths or an individual error — a failed run is a row, never a thrown sweep. The document's stored options are never written unless applyIndex (0-based into sizes) names the run to persist. Optional outputDir + outputFormat (any export_mesh format id, default msh) writes one <stem>-size-<size>.<ext> per run through the same writer export_mesh uses. Returns a spreadsheet-ready TSV alongside the rows. Rows describe meshing cost and element shape quality only — density/quality trends do NOT establish FE-solution convergence without a solver. Sequential runs (max 8 sizes), each bounded by the kernel watchdog; progress is reported per completed run. No mid-sweep cancellation exists.",
+    inputSchema: {
+      path: modelPath,
+      sizes: z.array(z.number()).describe("Explicit mesh sizes in mm, one run each (max 8) — sizeMin = sizeMax = size per run"),
+      options: meshOptionsOverride,
+      outputDir: z.string().optional().describe("Directory for per-run output files (created if missing; omit for no files)"),
+      outputFormat: z.string().optional().describe("Export format id for output files (default msh) — outputDir is required with it"),
+      applyIndex: z.number().int().optional().describe("0-based index into sizes whose effective options to persist to <model>.mesh.json (+ regenerated .geo)"),
+    },
+  },
+  wrap(
+    (
+      args: {
+        path: string;
+        sizes: number[];
+        options?: Record<string, unknown>;
+        outputDir?: string;
+        outputFormat?: string;
+        applyIndex?: number;
+      },
+      onProgress
+    ) => compareMeshRefinementTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )
 );
 

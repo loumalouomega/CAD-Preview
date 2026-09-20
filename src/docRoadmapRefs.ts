@@ -87,7 +87,11 @@ export function readScannedFiles(root: string): Map<string, string> {
   const files = new Map<string, string>();
   const add = (abs: string, rel: string): void => {
     if (rel.endsWith(".test.ts") || rel.endsWith(".test.mjs")) return;
-    if (SCANNED_EXTENSIONS.has(path.extname(rel))) files.set(rel, fs.readFileSync(abs, "utf8"));
+    // `.vscodeignore` is extensionless, so the extension set below would skip
+    // it despite the explicit root-file list naming it — include it by name.
+    if (rel === ".vscodeignore" || SCANNED_EXTENSIONS.has(path.extname(rel))) {
+      files.set(rel, fs.readFileSync(abs, "utf8"));
+    }
   };
   const walk = (dir: string, rel: string): void => {
     if (!fs.existsSync(dir)) return;

@@ -30,6 +30,7 @@ import {
   downloadStandardPartTool,
   generateMeshTool,
   exportMeshTool,
+  compareMeshRefinementTool,
   exportBRepTool,
   saveModelTool,
   rewriteGeoMerge,
@@ -50,6 +51,9 @@ import {
   setPlane,
   setMeshOptions,
   pinAnnotation,
+  saveMeshPreset,
+  listMeshPresets,
+  applyMeshPreset,
   type Pipeline,
   type ToolContext,
   exportDrawingSheetTool,
@@ -2763,6 +2767,105 @@ describe("set_mesh_options", () => {
   });
 });
 
+describe("mesh presets (save/list/apply)", () => {
+  const presetLib = () => path.join(dir, "presets.json");
+  const bundledFile = () => path.join(dir, "dist", "mesh-presets", "starter-presets.json");
+
+  async function writeBundled() {
+    await fs.mkdir(path.join(dir, "dist", "mesh-presets"), { recursive: true });
+    await fs.writeFile(
+      bundledFile(),
+      JSON.stringify({
+        version: 1,
+        presets: {
+          "coarse-preview": {
+            name: "coarse-preview",
+            unit: "mm",
+            engine: "gmsh",
+            options: { dimension: 3, sizeMax: 5 },
+          },
+        },
+      }),
+      "utf8"
+    );
+  }
+
+  it("save_mesh_preset persists and warns on invalid fields, refusing collisions without overwrite", async () => {
+    const lib = presetLib();
+    const saved = await saveMeshPreset({
+      libraryPath: lib,
+      name: "mine",
+      options: { sizeMax: 2, dimension: 7 as never },
+      unit: "mm",
+      engine: "gmsh",
+    });
+    expect(saved.presetCount).toBe(1);
+    expect(saved.warnings.some((w) => /dimension/.test(w))).toBe(true);
+    await expect(saveMeshPreset({ libraryPath: lib, name: "mine", options: {} })).rejects.toThrow(/overwrite/);
+    const replaced = await saveMeshPreset({ libraryPath: lib, name: "mine", options: { sizeMax: 3 }, overwrite: true });
+    expect(replaced.replaced).toBe(true);
+    expect(replaced.warnings.some((w) => /Replaced/.test(w))).toBe(true);
+  });
+
+  it("list_mesh_presets unions bundled and user libraries, caller winning collisions", async () => {
+    await writeBundled();
+    const lib = presetLib();
+    await saveMeshPreset({ libraryPath: lib, name: "coarse-preview", options: { sizeMax: 9 } });
+    const listed = await listMeshPresets({ libraryPath: lib, extensionPath: dir });
+    expect(listed.bundled).toEqual(["coarse-preview"]);
+    expect(listed.presets.map((p) => p.name)).toEqual(["coarse-preview"]);
+    expect(listed.warnings.some((w) => /collision/i.test(w))).toBe(true);
+  });
+
+  it("list_mesh_presets with no library reads as empty with a warning, never an error", async () => {
+    const listed = await listMeshPresets({ extensionPath: dir });
+    expect(listed.presets).toEqual([]);
+    expect(listed.warnings.some((w) => /No presets found/.test(w))).toBe(true);
+  });
+
+  it("apply_mesh_preset converts units, pins the engine, and writes .mesh.json + .geo", async () => {
+    const lib = presetLib();
+    await saveMeshPreset({
+      libraryPath: lib,
+      name: "inchy",
+      options: { sizeMin: 0.1, sizeMax: 1 },
+      unit: "in",
+      engine: "gmsh",
+    });
+    const applied = await applyMeshPreset({ libraryPath: lib, name: "inchy", path: stpModel });
+    expect(applied.options.sizeMin).toBeCloseTo(2.54, 10);
+    expect(applied.options.sizeMax).toBeCloseTo(25.4, 10);
+    expect(applied.options.engine).toBe("gmsh");
+    expect(applied.geoScriptRegenerated).toBe(true);
+    expect(applied.warnings.some((w) => /converted from in to mm/.test(w))).toBe(true);
+    // The write is the same one set_mesh_options performs — readable back.
+    const { readMeshOptions } = await import("./mcpSidecars");
+    expect(await readMeshOptions(stpModel)).toEqual(applied.options);
+    const geo = await fs.readFile(geoScriptPath(stpModel), "utf8");
+    expect(geo).toContain("Mesh.MeshSizeMax = 25.4;");
+  });
+
+  it("apply_mesh_preset warns about engine-ignored fields and throws for unknown names", async () => {
+    const lib = presetLib();
+    await saveMeshPreset({
+      libraryPath: lib,
+      name: "robust",
+      options: { elementOrder: 2 },
+      engine: "ftetwild",
+    });
+    const applied = await applyMeshPreset({ libraryPath: lib, name: "robust", path: stpModel });
+    expect(applied.options.engine).toBe("ftetwild");
+    expect(applied.warnings.some((w) => /"elementOrder".*fTetWild/.test(w))).toBe(true);
+    await expect(applyMeshPreset({ libraryPath: lib, name: "nope", path: stpModel })).rejects.toThrow(/No mesh preset named/);
+  });
+
+  it("apply_mesh_preset runs a bundled starter with no library file at all", async () => {
+    await writeBundled();
+    const applied = await applyMeshPreset({ name: "coarse-preview", path: stpModel, extensionPath: dir });
+    expect(applied.options.sizeMax).toBe(5);
+  });
+});
+
 describe("generate_mesh", () => {
   it("bakes edits to STEP bytes for B-rep sources and returns stats only", async () => {
     const c = ctx();
@@ -2864,6 +2967,127 @@ describe("generate_mesh", () => {
     expect(onProgress).toHaveBeenCalledTimes(2);
     expect(onProgress.mock.calls[0][0]).toMatchObject({ progress: 0, total: 1 });
     expect(onProgress.mock.calls[1][0]).toMatchObject({ progress: 1, total: 1 });
+  });
+});
+
+describe("compare_mesh_refinement", () => {
+  it("sweeps each size as a uniform mesh over one resolved input, with TSV + note and no writes", async () => {
+    const c = ctx();
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2] });
+    expect(result.runs).toHaveLength(2);
+    expect(result.runs.map((r) => [r.size, r.status, r.nodeCount, r.elementCount])).toEqual([
+      [4, "ok", 42, 99],
+      [2, "ok", 42, 99],
+    ]);
+    // Uniform meshes: the sweep owns both fields.
+    const calls = vi.mocked(c.pipeline.generateMesh).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][2].sizeMin).toBe(4);
+    expect(calls[0][2].sizeMax).toBe(4);
+    expect(calls[1][2].sizeMin).toBe(2);
+    expect(calls[1][2].sizeMax).toBe(2);
+    // One geometry resolution for the whole sweep, not one per run.
+    expect(c.pipeline.exportBRep).toHaveBeenCalledTimes(1);
+    expect(result.applied).toBeNull();
+    expect(result.note).toMatch(/do NOT establish FE-solution convergence/);
+    const lines = result.tsv.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/^size_mm\tstatus\tnodes\telements\telapsed_ms\tengine\tquality_min\tquality_mean\toutputs\terror$/);
+    expect(lines[1].startsWith("4\tok\t42\t99\t")).toBe(true);
+    // Default: the document's stored options are untouched.
+    await expect(fs.stat(`${stpModel}.mesh.json`)).rejects.toThrow();
+  });
+
+  it("isolates a failed run as an error row without throwing the sweep", async () => {
+    const c = ctx(
+      fakePipeline({
+        generateMesh: vi.fn(async (_ext: string, _input: unknown, options: { sizeMax: number }) => {
+          if (options.sizeMax === 2) throw new Error("Gmsh crashed while meshing (boom).");
+          return FAKE_MESH_RESULT;
+        }),
+      })
+    );
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2, 1] });
+    expect(result.runs.map((r) => r.status)).toEqual(["ok", "error", "ok"]);
+    expect(result.runs[1]).toMatchObject({ size: 2, error: "Gmsh crashed while meshing (boom)." });
+    expect(result.runs[1].nodeCount).toBeNull();
+    expect(result.tsv.split("\n")[2]).toContain("\terror\t");
+  });
+
+  it("fails fast on caller-input shape before any WASM work", async () => {
+    const c = ctx();
+    for (const bad of [
+      { sizes: [] },
+      { sizes: [1, 2, 3, 4, 5, 6, 7, 8, 9] },
+      { sizes: [0] },
+      { sizes: [-1] },
+      { sizes: [NaN] },
+      { sizes: ["2"] },
+      { sizes: [2], applyIndex: 1 },
+      { sizes: [2], outputFormat: "msh" },
+      { sizes: [2], outputDir: path.join(dir, "o"), outputFormat: "nope" },
+    ]) {
+      await expect(compareMeshRefinementTool(c, { path: stpModel, ...bad } as never)).rejects.toThrow();
+    }
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+  });
+
+  it("ignores sizeMin/sizeMax in options with a warning", async () => {
+    const c = ctx();
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [3], options: { sizeMin: 0.1, sizeMax: 99 } });
+    expect(result.warnings.some((w) => /sizeMin\/sizeMax in options are ignored/.test(w))).toBe(true);
+    expect(vi.mocked(c.pipeline.generateMesh).mock.calls[0][2].sizeMax).toBe(3);
+  });
+
+  it("applyIndex persists that run's effective options and reports them", async () => {
+    const c = ctx();
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2], applyIndex: 1 });
+    expect(result.applied).toMatchObject({ index: 1, size: 2 });
+    expect(result.applied!.options.sizeMin).toBe(2);
+    expect(result.applied!.options.sizeMax).toBe(2);
+    const { readMeshOptions } = await import("./mcpSidecars");
+    expect(await readMeshOptions(stpModel)).toEqual(result.applied!.options);
+  });
+
+  it("writes one size-named .msh per run without re-meshing (pregenerated reuse)", async () => {
+    const c = ctx();
+    const outDir = path.join(dir, "sweep-out");
+    const result = await compareMeshRefinementTool(c, {
+      path: stpModel,
+      sizes: [4, 2],
+      outputDir: outDir,
+    });
+    // One generateMesh per run — the msh writer reuses the row's own result.
+    expect(vi.mocked(c.pipeline.generateMesh)).toHaveBeenCalledTimes(2);
+    expect(result.runs[0].outputPaths).toEqual([path.join(outDir, "model-size-4.msh")]);
+    expect(result.runs[1].outputPaths).toEqual([path.join(outDir, "model-size-2.msh")]);
+    expect(await fs.readFile(result.runs[0].outputPaths[0], "utf8")).toBe(FAKE_MESH_RESULT.mshText);
+    expect(result.tsv.split("\n")[1]).toContain(path.join(outDir, "model-size-4.msh"));
+  });
+
+  it("supports non-generateMesh formats (rows still carry stats from the direct generate)", async () => {
+    const c = ctx();
+    const outDir = path.join(dir, "sweep-mdpa");
+    const result = await compareMeshRefinementTool(c, {
+      path: stpModel,
+      sizes: [3],
+      outputDir: outDir,
+      outputFormat: "mdpaElements",
+    });
+    // Direct generate for the row + mdpa writer (which meshes internally).
+    expect(vi.mocked(c.pipeline.generateMesh)).toHaveBeenCalledTimes(1);
+    expect(c.pipeline.exportMdpa).toHaveBeenCalledTimes(1);
+    expect(result.runs[0].status).toBe("ok");
+    expect(result.runs[0].nodeCount).toBe(42);
+    expect(result.runs[0].outputPaths[0].endsWith(".mdpa")).toBe(true);
+  });
+
+  it("reports per-completed-run progress", async () => {
+    const c = ctx();
+    const onProgress = vi.fn();
+    await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2] }, onProgress);
+    expect(onProgress.mock.calls.map((call) => call[0].progress)).toEqual([0, 1, 1, 2]);
+    expect(onProgress.mock.calls[3][0]).toMatchObject({ progress: 2, total: 2 });
   });
 });
 

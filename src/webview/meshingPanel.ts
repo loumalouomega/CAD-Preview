@@ -3,7 +3,7 @@ import type { QualitySummary } from "../meshQuality";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import { DISPLAY_UNITS, UNIT_LABELS, type DisplayUnit } from "../lengthUnits";
-import type { Part } from "../protocol";
+import type { Part, MeshPresetSummary } from "../protocol";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, type MeshioOpId, type MeshioOpSpec } from "../meshioOps";
 import {
   LARGE_ELEMENT_COUNT,
@@ -57,6 +57,12 @@ export interface MeshingPanelCallbacks {
    * native/no-op. */
   onExport: (format: MeshExportFormatId, unit: DisplayUnit) => void;
   onClear: () => void;
+  /** Apply a saved meshing preset by name (host resolves the merged library,
+   * converts units, and writes `.mesh.json` — settings only, no generate). */
+  onPresetApply: (name: string) => void;
+  /** Save the current options as a preset; the host prompts for a name. */
+  onPresetSaveCurrent: () => void;
+  onPresetDelete: (name: string) => void;
   /** Run one meshio++ mesh operation over the current meshio++-imported
    * source (a new file via the host's save flow — the source is never
    * modified). The wiring posts `meshioOpsRequest` and renders the per-step
@@ -142,6 +148,12 @@ export class MeshingPanel {
   private readonly meshOpsMode: HTMLSelectElement;
   private readonly meshOpsRun: HTMLButtonElement;
   private readonly meshOpsStatus: HTMLElement;
+
+  private readonly presetSelect: HTMLSelectElement;
+  private readonly presetApplyBtn: HTMLButtonElement;
+  private readonly presetSaveBtn: HTMLButtonElement;
+  private readonly presetDeleteBtn: HTMLButtonElement;
+  private presets: MeshPresetSummary[] = [];
 
   /** Model bounding box, pushed by the wiring after each model load. */
   private extents: ModelExtents | null = null;
@@ -268,6 +280,62 @@ export class MeshingPanel {
       cb.onOptionsChange({ engine: this.engineSelect.value as MeshOptions["engine"] });
     });
     this.body.appendChild(engineSection);
+
+    // ── Saved presets (named, reusable option bundles) ──
+    // A `<select>` over the merged (user + bundled-starter) library the host
+    // posts, plus Apply / Save-current / Delete. Applying writes the preset's
+    // options (unit-converted) as the document's settings — never generates.
+    // Bundled starters are read-only: runnable, but with the Delete button
+    // hidden (the host's `meshPresetDelete` refusal is only the backstop) —
+    // the `macrosPanel.ts` precedent.
+    const presetSection = document.createElement("div");
+    presetSection.className = "meshing-section";
+    const presetHeader = document.createElement("div");
+    presetHeader.className = "meshing-section-title";
+    presetHeader.textContent = "Saved presets";
+    presetHeader.title = "Named, reusable meshing options (global settings only — Part sizing stays in the document)";
+    presetSection.appendChild(presetHeader);
+    const presetForm = document.createElement("div");
+    presetForm.className = "meshing-form";
+    this.presetSelect = this.select(presetForm, "Preset", []);
+    this.presetSelect.id = "meshing-preset-select";
+    this.presetSelect.title = "A saved preset — sizes convert from its authored unit on apply; names describe density intent, never a quality guarantee";
+    const presetBtnRow = document.createElement("div");
+    presetBtnRow.className = "meshing-field";
+    this.presetApplyBtn = document.createElement("button");
+    this.presetApplyBtn.type = "button";
+    this.presetApplyBtn.textContent = "Apply";
+    this.presetApplyBtn.title = "Apply the selected preset as the document's meshing options (settings only — nothing is generated)";
+    this.presetApplyBtn.addEventListener("click", () => {
+      if (this.presetSelect.value) cb.onPresetApply(this.presetSelect.value);
+    });
+    presetBtnRow.appendChild(this.presetApplyBtn);
+    this.presetSaveBtn = document.createElement("button");
+    this.presetSaveBtn.type = "button";
+    this.presetSaveBtn.textContent = "Save…";
+    this.presetSaveBtn.title = "Save the current options as a new preset (prompts for a name)";
+    this.presetSaveBtn.addEventListener("click", () => cb.onPresetSaveCurrent());
+    presetBtnRow.appendChild(this.presetSaveBtn);
+    this.presetDeleteBtn = document.createElement("button");
+    this.presetDeleteBtn.type = "button";
+    this.presetDeleteBtn.textContent = "Delete";
+    this.presetDeleteBtn.title = "Delete the selected preset (bundled starters cannot be deleted)";
+    this.presetDeleteBtn.addEventListener("click", () => {
+      if (this.presetSelect.value) cb.onPresetDelete(this.presetSelect.value);
+    });
+    presetBtnRow.appendChild(this.presetDeleteBtn);
+    presetForm.appendChild(presetBtnRow);
+    presetSection.appendChild(presetForm);
+    this.body.appendChild(presetSection);
+    this.presetSelect.addEventListener("change", () => this.syncPresetButtons());
+    // Pre-hydration state (before the host's `meshingPresets` post arrives):
+    // an explicit placeholder rather than an empty box, with Apply disabled
+    // and Delete hidden — `renderPresets` replaces all of this on arrival.
+    const presetPlaceholder = document.createElement("option");
+    presetPlaceholder.value = "";
+    presetPlaceholder.textContent = "No saved presets";
+    this.presetSelect.appendChild(presetPlaceholder);
+    this.syncPresetButtons();
 
     // ── Part sizes (mirrors the Parts panel's per-part size inputs) ──
     this.partsSection = document.createElement("div");
@@ -521,6 +589,42 @@ export class MeshingPanel {
     this.body.appendChild(this.meshOpsSection);
     this.meshOpsSelect.addEventListener("change", () => this.syncMeshOpsParams());
     this.syncMeshOpsParams();
+  }
+
+  /**
+   * Rebuilds the "Saved presets" picker from the host-posted library —
+   * called on `ready` hydration and after every preset save/delete (the
+   * `renderParts` precedent: full rebuild, host owns the data). Keeps the
+   * current selection when it still exists.
+   */
+  renderPresets(presets: MeshPresetSummary[]): void {
+    this.presets = presets;
+    const current = this.presetSelect.value;
+    this.presetSelect.textContent = "";
+    if (presets.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "No saved presets";
+      this.presetSelect.appendChild(opt);
+    }
+    for (const p of presets) {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.readOnly ? `${p.name} (built-in)` : p.name;
+      opt.title = `${p.description ?? p.name} — sizes in ${p.unit}, engine ${p.engine}`;
+      this.presetSelect.appendChild(opt);
+    }
+    if (presets.some((p) => p.name === current)) this.presetSelect.value = current;
+    this.syncPresetButtons();
+  }
+
+  /** Apply/Delete enable only with a real selection; Delete hides entirely
+   * for a bundled starter (read-only) rather than disabling in place. */
+  private syncPresetButtons(): void {
+    const selected = this.presets.find((p) => p.name === this.presetSelect.value);
+    this.presetApplyBtn.disabled = !selected;
+    this.presetDeleteBtn.disabled = !selected;
+    this.presetDeleteBtn.hidden = !selected || selected.readOnly === true;
   }
 
   /** Rebuilds the form controls to reflect `options`, and the stats/error readout. */

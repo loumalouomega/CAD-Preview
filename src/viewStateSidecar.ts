@@ -1,4 +1,4 @@
-import type { PaneViewState, ViewState } from "./protocol";
+import type { PaneViewState, ViewBookmark, ViewState } from "./protocol";
 // TYPE-ONLY, and that is load-bearing: `webview/clipping.ts` has a top-level
 // `import * as THREE from "three"`, so turning this into a value import (e.g.
 // to share `CLIP_AXES`) would pull three.js into the extension-host bundle.
@@ -23,6 +23,7 @@ interface SidecarFile {
   panes?: unknown;
   collapsedPanels?: unknown;
   sidebarWidth?: unknown;
+  bookmarks?: unknown;
 }
 
 const CLIP_AXES: readonly ClipAxis[] = ["x", "y", "z"];
@@ -77,25 +78,7 @@ export function parseViewStateJson(text: string): ViewState | null {
 
   let clip: ViewState["clip"] = null;
   if (r.clip && typeof r.clip === "object") {
-    const c = r.clip as Partial<NonNullable<ViewState["clip"]>>;
-    if (
-      typeof c.axis === "string" &&
-      (CLIP_AXES as readonly string[]).includes(c.axis) &&
-      typeof c.offsetFrac === "number" &&
-      Number.isFinite(c.offsetFrac)
-    ) {
-      clip = { axis: c.axis as ClipAxis, offsetFrac: Math.max(-1, Math.min(1, c.offsetFrac)) };
-      // A bad `normal` degrades only ITSELF, leaving the axis-form clip intact —
-      // deliberately unlike a bad `axis`, which still drops the whole `clip`
-      // (the pre-existing behaviour, locked by this module's own tests and left
-      // exactly as it was). Normalized on read so every consumer downstream can
-      // assume a unit vector.
-      const n = asVec3(c.normal);
-      if (n) {
-        const len = Math.hypot(n[0], n[1], n[2]);
-        if (len > 1e-9) clip.normal = [n[0] / len, n[1] / len, n[2] / len];
-      }
-    }
+    clip = parseClipState(r.clip);
   }
 
   const base: ViewState = { viewDirection, cameraUp, orthographic, displayMode, clip };
@@ -114,6 +97,11 @@ export function parseViewStateJson(text: string): ViewState | null {
   // poisoning the layout.
   const sidebarWidth = clampSidebarWidth(file?.sidebarWidth);
   if (sidebarWidth !== null) base.sidebarWidth = sidebarWidth;
+
+  // Named view bookmarks — same additive top-level sibling, same
+  // fold-before-the-1x1-early-return requirement as `collapsedPanels` above.
+  const bookmarks = sanitizeBookmarks(file?.bookmarks);
+  if (bookmarks.length > 0) base.bookmarks = bookmarks;
 
   // Optional split-view layout — purely additive, tolerant.
   const rawLayout = file?.layout;
@@ -140,10 +128,93 @@ export function parseViewStateJson(text: string): ViewState | null {
   return { ...base, layout, panes };
 }
 
+/**
+ * Parses one clip state (the `view.clip` field or a bookmark's `clip`).
+ * Factored out of the inline `view.clip` parse so bookmarks share the exact
+ * same tolerant rule — the two can never drift into accepting different
+ * shapes. Behavior byte-for-byte identical to the inline version it replaces:
+ * a bad `axis` drops the whole clip; a bad `normal` degrades only itself
+ * (normalized on read); `offsetFrac` clamped to [-1, 1].
+ */
+function parseClipState(raw: unknown): ViewState["clip"] {
+  if (!raw || typeof raw !== "object") return null;
+  const c = raw as Partial<NonNullable<ViewState["clip"]>>;
+  if (
+    typeof c.axis !== "string" ||
+    !(CLIP_AXES as readonly string[]).includes(c.axis) ||
+    typeof c.offsetFrac !== "number" ||
+    !Number.isFinite(c.offsetFrac)
+  ) {
+    return null;
+  }
+  const clip: NonNullable<ViewState["clip"]> = {
+    axis: c.axis as ClipAxis,
+    offsetFrac: Math.max(-1, Math.min(1, c.offsetFrac)),
+  };
+  // A bad `normal` degrades only ITSELF, leaving the axis-form clip intact —
+  // deliberately unlike a bad `axis`, which still drops the whole `clip`
+  // (the pre-existing behaviour, locked by this module's own tests and left
+  // exactly as it was). Normalized on read so every consumer downstream can
+  // assume a unit vector.
+  const n = asVec3(c.normal);
+  if (n) {
+    const len = Math.hypot(n[0], n[1], n[2]);
+    if (len > 1e-9) clip.normal = [n[0] / len, n[1] / len, n[2] / len];
+  }
+  return clip;
+}
+
+/** Maximum bookmark name length — the macro library's `MAX_NAME_LENGTH` precedent. */
+const MAX_BOOKMARK_NAME_LENGTH = 120;
+/** Guard against a pathological file; bookmarks are small by nature. */
+const MAX_BOOKMARKS = 100;
+
+/**
+ * Tolerant parse for the top-level `bookmarks` array — same per-entry-drop
+ * discipline as `parsePlanesJson`: a malformed entry is dropped individually
+ * rather than rejecting the whole sidecar. Folded into `base` BEFORE the
+ * `layout === "1x1"` early return, or single-pane sidecars (the overwhelmingly
+ * common case) would silently drop it — the same trap `collapsedPanels`' own
+ * comment documents. Duplicate names keep the first entry.
+ */
+export function sanitizeBookmarks(raw: unknown): ViewBookmark[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ViewBookmark[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (out.length >= MAX_BOOKMARKS) break;
+    if (!entry || typeof entry !== "object") continue;
+    const b = entry as Partial<ViewBookmark>;
+    const name = typeof b.name === "string" ? b.name.trim() : "";
+    if (name === "" || name.length > MAX_BOOKMARK_NAME_LENGTH || seen.has(name)) continue;
+    const viewDirection = asVec3(b.viewDirection);
+    const cameraUp = asVec3(b.cameraUp);
+    // A bookmark that can't orient a camera is useless — drop the entry, not
+    // the file (unlike `view` itself, which rejects the whole record, since
+    // there is no camera at all without it).
+    if (!viewDirection || !cameraUp) continue;
+    if (viewDirection.every((c) => c === 0) || cameraUp.every((c) => c === 0)) continue;
+    const displayMode =
+      typeof b.displayMode === "string" && (DISPLAY_MODES as readonly string[]).includes(b.displayMode)
+        ? (b.displayMode as ViewBookmark["displayMode"])
+        : "shaded";
+    seen.add(name);
+    out.push({
+      name,
+      viewDirection,
+      cameraUp,
+      orthographic: b.orthographic === true,
+      displayMode,
+      clip: parseClipState(b.clip),
+    });
+  }
+  return out;
+}
+
 /** Serializes view state to the sidecar JSON text (pretty-printed, trailing newline). */
 export function serializeViewStateJson(sourceName: string, view: ViewState): string {
-  const { layout, panes, collapsedPanels, sidebarWidth, ...viewCore } = view;
-  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels"> } = {
+  const { layout, panes, collapsedPanels, sidebarWidth, bookmarks, ...viewCore } = view;
+  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "sidebarWidth" | "bookmarks"> } = {
     version: VIEW_STATE_SIDECAR_VERSION,
     source: sourceName,
     view: viewCore,
@@ -162,6 +233,11 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   // byte-identical to the untouched one.
   if (sidebarWidth !== undefined && sidebarWidth !== SIDEBAR_DEFAULT_PX) {
     (file as SidecarFile).sidebarWidth = sidebarWidth;
+  }
+  // Omitted when empty: a document with no bookmarks writes a sidecar
+  // byte-identical to the pre-bookmarks shape.
+  if (bookmarks && bookmarks.length > 0) {
+    (file as SidecarFile).bookmarks = bookmarks;
   }
   return JSON.stringify(file, null, 2) + "\n";
 }

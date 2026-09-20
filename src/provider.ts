@@ -15,6 +15,7 @@ import {
   type Part,
   type Annotation,
   type ConstructionPlane,
+  type MeshPresetSummary,
   type ViewState,
   type SelectorSynthesizeResultEntry,
 } from "./protocol";
@@ -61,6 +62,13 @@ import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { mergeScriptOverrides, parseScriptLibraryJson, scriptParameters, serializeScriptLibraryJson } from "./scriptLibrary";
 import { bundledMacrosPath, mergeScriptLibraries } from "./starterMacros";
+import {
+  bundledMeshPresetsPath,
+  effectivePresetOptions,
+  mergePresetLibraries,
+  parseMeshPresetsJson,
+  serializeMeshPresetsJson,
+} from "./meshPresets";
 import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
@@ -1514,6 +1522,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         });
         this.sendViewerDefaults(post);
         void this.sendMacros(document.uri, post);
+        void this.sendMeshPresets(document.uri, post);
         if (this.camerasLinked) {
           post({ type: "camerasLinked", enabled: true });
         }
@@ -1792,7 +1801,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       /**
-       * Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button"): one
+       * Parts-section "Copy BOM" button (roadmap Tier 1 "BOM Copy button"): one
        * row per Part over a single parse/replay — the same `computeBom` call
        * shape `generateBomTool` uses headless (existing kernel surface, no new
        * geometry work). B-rep sources only: a mesh source has no per-part rows
@@ -1828,7 +1837,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       /**
-       * Clash panel (roadmap Tier 2 "Clash panel"): Part-vs-Part interference
+       * Clash panel (roadmap Tier 1 "Clash panel"): Part-vs-Part interference
        * over the existing `checkInterference` kernel function — the same
        * request/response shape as `massPropertiesRequest` above, over existing
        * kernel surface. Part-name resolution lives here (the pipeline function
@@ -2044,6 +2053,97 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           );
           await this.sendMacros(document.uri, post);
           post({ type: "status", text: `Deleted macro "${msg.name}".` });
+        } catch (err) {
+          post({ type: "error", message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "meshPresetApply") {
+        try {
+          const library = parseMeshPresetsJson(await readTextFile(meshPresetLibraryPath(document.uri)));
+          const bundled = parseMeshPresetsJson(
+            await readTextFile(bundledMeshPresetsPath(this.context.extensionPath))
+          );
+          // Same merge (and precedence) `sendMeshPresets` displays, so Apply
+          // and the panel list can never disagree about what a name means.
+          const { merged } = mergePresetLibraries(bundled, library);
+          const entry = merged[msg.name];
+          if (!entry) throw new Error(`No saved mesh preset named "${msg.name}".`);
+          const { options, warnings } = effectivePresetOptions(entry);
+          // The `set_mesh_options` write exactly: `.mesh.json` + regenerated
+          // `.geo`, kept in the session closure so a later Save flushes the
+          // applied values rather than stale ones.
+          currentMeshOptions = options;
+          await Promise.all([writeMeshOptions(document.uri, options), writeGeoScript(document.uri, options)]);
+          post({ type: "meshingOptions", options });
+          const suffix = warnings.length > 0 ? ` (${warnings.join(" ")})` : "";
+          post({ type: "status", text: `Applied mesh preset "${msg.name}".${suffix}` });
+        } catch (err) {
+          post({ type: "error", message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "meshPresetSaveCurrent") {
+        try {
+          const name = await vscode.window.showInputBox({
+            title: "Save meshing preset",
+            prompt: "Name for this preset (current FE Mesh options, stored in mm)",
+            placeHolder: "my-coarse",
+            validateInput: (v) => (v.trim() === "" ? "A name is required" : null),
+          });
+          if (name === undefined) return; // dismissed — a quiet no-op
+          const trimmed = name.trim();
+          // Current options are mm-native, so the preset is stored at
+          // `unit: "mm"` — conversion on a later apply is then a no-op, and
+          // the stored numbers always match what the panel showed.
+          const options = currentMeshOptions ?? (await readMeshOptions(document.uri));
+          const libraryPath = meshPresetLibraryPath(document.uri);
+          const library = parseMeshPresetsJson(await readTextFile(libraryPath));
+          const existed = Object.prototype.hasOwnProperty.call(library, trimmed);
+          library[trimmed] = {
+            name: trimmed,
+            description: `Saved from current options`,
+            unit: "mm",
+            engine: options.engine,
+            options,
+          };
+          await vscode.workspace.fs.writeFile(
+            vscode.Uri.file(libraryPath),
+            Buffer.from(serializeMeshPresetsJson(library), "utf8")
+          );
+          await this.sendMeshPresets(document.uri, post);
+          post({ type: "status", text: `Saved mesh preset "${trimmed}"${existed ? " (replaced existing)." : "."}` });
+        } catch (err) {
+          post({ type: "error", message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "meshPresetDelete") {
+        try {
+          const libraryPath = meshPresetLibraryPath(document.uri);
+          const library = parseMeshPresetsJson(await readTextFile(libraryPath));
+          if (!Object.prototype.hasOwnProperty.call(library, msg.name)) {
+            // Either a bundled starter (read-only — the panel hides its
+            // Delete button, so this is a backstop, not a normal path) or a
+            // name that was never saved here at all.
+            const bundled = parseMeshPresetsJson(
+              await readTextFile(bundledMeshPresetsPath(this.context.extensionPath))
+            );
+            if (Object.prototype.hasOwnProperty.call(bundled, msg.name)) {
+              throw new Error(`"${msg.name}" is a bundled starter preset and cannot be deleted — save your own preset under a different name to override it.`);
+            }
+            throw new Error(`No saved mesh preset named "${msg.name}".`);
+          }
+          delete library[msg.name];
+          await vscode.workspace.fs.writeFile(
+            vscode.Uri.file(libraryPath),
+            Buffer.from(serializeMeshPresetsJson(library), "utf8")
+          );
+          await this.sendMeshPresets(document.uri, post);
+          post({ type: "status", text: `Deleted mesh preset "${msg.name}".` });
         } catch (err) {
           post({ type: "error", message: (err as Error).message });
         }
@@ -2385,7 +2485,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       /**
-       * Primitives panel (Tier 2 "Primitive-recognition panel"): read-only
+       * Primitives panel (Tier 1 "Primitive-recognition panel"): read-only
        * per-solid report over the existing `recognizePrimitives` kernel
        * function — the same request/response shape as `massPropertiesRequest`
        * above, over existing kernel surface. B-rep sources only: a mesh has
@@ -2831,6 +2931,34 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     post({ type: "macros", macros });
   }
 
+  /**
+   * Posts the saved meshing-preset list for this document's folder.
+   *
+   * The library lives beside the model as `cad-preview-mesh-presets.json`,
+   * shared by every model in that folder — the same file the MCP preset tools
+   * take as an explicit `libraryPath`, so a preset saved here is directly
+   * appliable by an agent and vice versa (the `sendMacros` precedent).
+   * A missing library reads as empty, never an error.
+   */
+  private async sendMeshPresets(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<void> {
+    const library = parseMeshPresetsJson(await readTextFile(meshPresetLibraryPath(uri)));
+    const bundled = parseMeshPresetsJson(await readTextFile(bundledMeshPresetsPath(this.context.extensionPath)));
+    const { merged } = mergePresetLibraries(bundled, library);
+    const owned = new Set(Object.keys(library));
+    const presets: MeshPresetSummary[] = Object.values(merged)
+      .map((entry) => ({
+        name: entry.name,
+        description: entry.description ?? null,
+        unit: entry.unit,
+        engine: entry.engine,
+        // A caller-owned entry shadows a bundled starter of the same name —
+        // the merged row is theirs (deletable), never the read-only starter.
+        readOnly: !owned.has(entry.name),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    post({ type: "meshingPresets", presets });
+  }
+
   private sendViewerDefaults(post: (msg: HostToWebview) => void): void {
     const cfg = vscode.workspace.getConfiguration("cadPreview");
     const defaults = normalizeViewerDefaults({
@@ -3163,7 +3291,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   }
 
   /**
-   * Primitives panel (Tier 2 "Primitive-recognition panel") — the interactive
+   * Primitives panel (Tier 1 "Primitive-recognition panel") — the interactive
    * half of `decompose_to_primitives`. Deliberately a ONE-SHOT EXPORT
    * (recognize each solid, emit parametric creation ops, write them as a
    * brand-new STEP/IGES/BREP file the user opens separately), not an in-place
@@ -3300,7 +3428,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   }
 
   /**
-   * Mesh-operations panel (roadmap Tier 2 "Mesh-operations panel for meshio
+   * Mesh-operations panel (roadmap Tier 1 "Mesh-operations panel for meshio
    * sources") — runs one validated meshio++ operation over the current
    * meshio++-imported source and writes the result to a NEW file at a
    * save-dialog-chosen path (the export model, like `transform_mesh`'s
@@ -3957,6 +4085,21 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
  */
 function macroLibraryPath(modelUri: vscode.Uri): string {
   return path.join(path.dirname(modelUri.fsPath), "cad-preview-macros.json");
+}
+
+/**
+ * The folder-level user meshing-preset library (roadmap Tier 1 "Reusable
+ * meshing presets") — beside the model as `cad-preview-mesh-presets.json`,
+ * shared by every model in that folder.
+ *
+ * A folder-level path rather than a per-model one because a preset is
+ * reusable BY DEFINITION — tying it to one document would defeat the point —
+ * and an explicit filename rather than a hidden convention so it can be
+ * checked into a project alongside its models, and named directly to the MCP
+ * preset tools' `libraryPath` (the `macroLibraryPath` precedent verbatim).
+ */
+function meshPresetLibraryPath(modelUri: vscode.Uri): string {
+  return path.join(path.dirname(modelUri.fsPath), "cad-preview-mesh-presets.json");
 }
 
 /** Reads a text file, or `""` when it is missing/unreadable — the same

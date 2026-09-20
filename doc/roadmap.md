@@ -12,7 +12,7 @@ Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has 
 
 - **Tiers are ordered, and the order is the recommendation.** Each tier states an *admission criterion*; an item that doesn't meet it belongs in a different tier or in Non-goals, not at the top because it sounds exciting. An empty tier is removed from the file entirely rather than kept as a placeholder.
 - **A closed item is removed from this list entirely**, not struck through — its write-up moves to `CLAUDE.md` (a per-feature section with the verified implementation details) and its history stays in git. **Numbering is not stable across closes**, so never reference an item by number from code or another document — reference it by name.
-- **Probe-gated items are hypotheses, not implementation-ready work.** Evidence may be a binding-manifest entry, an upstream API, or a proposed geometric construction. Green in `node_modules/opencascade.js/dist/Supported APIs.md` is **necessary but not sufficient** — both the STEP-unit and the IGES-writer findings started green and only resolved (one negative, one positive) under a real probe, and `HLRAppli_ReflectLines` was green, functional, *and still the wrong tool*. Do not estimate implementation until the named probe establishes useful output, failure behaviour and cost.
+- **Probe-gated items are hypotheses, not implementation-ready work.** Evidence may be a binding-manifest entry, an upstream API, or a proposed geometric construction. Green in `node_modules/opencascade.js/dist/Supported APIs.md` is **necessary but not sufficient** — both the STEP-unit and the IGES-writer findings started green and only resolved (one negative, one positive) under a real probe, and `HLRAppli_ReflectLines` was green, functional, *and still the wrong tool*. Each probe carries a firm **S** estimate of its own; the implementation phases listed under an item's *If admitted* are conditional, tagged provisionally, and re-estimated once the probe establishes useful output, failure behaviour and cost.
 - **Non-goals are not one thing.** They are split into three groups below because each has a different revival rule, and each group says plainly **what would change our mind**. A rejection nobody re-checks is how a capability stays "permanently out of reach" long after it stopped being — four entries in this file were found stale exactly that way.
 - **An item that corresponds to a known GitHub issue names it inline.** The issue is the request and discussion thread; this file is the proposed scope. Reconcile disagreements against current code and the issue before implementation; neither document automatically overrides a newer decision.
 - **Use feature names and heading links, not ordinal item numbers.** Each candidate states its first useful increment, dependencies or decisions, and evidence needed to close it. New features belong here only when they have a concrete user workflow and an observable completion criterion.
@@ -29,11 +29,11 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 | Correctness | The view and saved state tell the same story | Bounded clash work (clip visibility and save/reopen coverage closed) | Targeted tests catch the documented failure, including recovery paths |
 | Everyday use | Less typing and fewer navigation steps | Zoom to selection; sidebar usability; named-plane profiles | Complete workflows on both a small part and a multi-body model |
 | Preparation and handoff | Repeatable meshing and review output | Mesh presets; drawing settings; batch export | Reopenable outputs with explicit settings and per-file results |
-| Exploration | Decide which kernel ideas deserve implementation | B-rep health first; then surface and boundary-layer probes | Analytic or independently checked results, with failure cases and timing |
+| Exploration | Decide which kernel ideas deserve implementation | The probe harness, then B-rep validity; surface, edge, boundary-layer and takeoff probes in that order | Analytic or independently checked results, with failure cases and timing, each probe's write-up filed where the section says |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
 
-### Tier 2 — Complete preparation and review workflows
+### Tier 1 — Complete preparation and review workflows
 
 *Admission: a useful extension of shipped infrastructure that spans several modules or needs a product decision. These are new candidates; implement a vertical slice before expanding the option surface.*
 
@@ -49,25 +49,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First increment:** detect a disk revision changing since the last read before a sidecar write; retain local state and offer reload or an explicitly chosen overwrite, with a readable summary. Distinguish an external source replacement from an ordinary sidecar change.
 - **Design dependency:** specify comparison/write race guarantees honestly. Content fingerprints alone are not an atomic cross-process transaction; stronger guarantees may require shared locking or an explicit protocol.
 - **Done when:** a reproducible local-edit/external-write race surfaces a conflict instead of silently discarding either version. No automatic merge of geometry-op lists or positional entity ids.
-
-#### Saved view bookmarks (**M**, webview + sidecar)
-
-- **Reuse:** `.view.json` restores the latest view; it is not a named collection of inspection viewpoints.
-- **Scope:** save, rename, replace and delete camera/projection/clip bookmarks; restore the focused pane, with a deliberate policy for a whole split layout. Decide whether bookmarks preserve only orientation/fit or also normalized pan and zoom before choosing the schema.
-- **Done when:** two named inspection views survive reopen and external reconciliation, restore without a save loop, and remain meaningful after a model-size change. Pure display bookmarks need no new MCP tool unless a headless render workflow is explicitly added.
-
-#### Reusable meshing presets (**M**, UI + MCP)
-
-- **Reuse:** shared `MeshOptions` validation and the macro library's bundled-plus-user-library pattern.
-- **Scope:** named option presets with explicit units and engine compatibility. Start with global options; leave Part-specific sizing and entity assignments in the document. Applying a preset changes settings but does not generate or save a source automatically.
-- **Done when:** the same preset produces equivalent effective options in UI and MCP, invalid fields are reported, and fTetWild-inapplicable Gmsh options are clearly identified. Labels such as “coarse” must not imply a mesh-quality guarantee.
-
-#### Measured mesh-refinement comparison (**M–L**, headless first)
-
-- **User goal:** compare mesh cost and quality at several sizes before choosing one.
-- **Scope:** a bounded sweep of explicit size settings, reporting actual engine, nodes/elements, elapsed time and the existing quality summary for each run; optional output files and a TSV summary. Keep the document's chosen options unchanged unless explicitly applied.
-- **Depends on:** bounded jobs/cancellation for long sweeps. Geometry and all non-swept options must stay fixed across a comparison.
-- **Done when:** failed runs are individual outcomes, exports identify their settings, and the summary makes clear that mesh-density/quality trends do not establish FE-solution convergence without a solver.
 
 #### Drawing-sheet settings and reusable templates (**M**, UI + shared serializer)
 
@@ -95,37 +76,96 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 ### Probe-gated — establish feasibility before estimating
 
-*Admission: a specific hypothesis with a discriminating experiment. Record the installed artifact version, fixture, exact calls, output facts, cleanup behaviour and timing. A method that accepts arguments but changes nothing is a failed probe.*
+*Admission: a specific hypothesis with a discriminating experiment. Each probe below is a small, self-contained piece of work with a firm **S** estimate of its own; the phases under "If admitted" are what ships if the probe passes, tagged provisionally. A method that accepts arguments but changes nothing is a failed probe.*
+
+**Probe protocol.** Every probe write-up records: the installed artifact version (`opencascade.js` 1.1.1 and `@loumalouomega/gmsh-wasm` 0.3.0 at the time of writing), the fixture path, the exact call shapes that worked — overload suffix and argument count, because there is no `.d.ts` for OCCT and signatures are found by enumerating a prototype and trying suffixes, the same way every other OCCT call site here was found — the output facts, cleanup behaviour (`.delete()` in `finally`, a kernel reset after a deliberate abort), and wall-clock timing on the largest fixture that fits. MEMFS paths stay at 10 characters or fewer; the 11+ cliff silently corrupts STEP writes.
+
+**Where a result goes.** *Pass:* the item's "If admitted" phases move into Tier 1 with firm estimates, and the probe's call shapes move to `CLAUDE.md` as the feature's verified facts. *Fail:* the item moves to Non-goals — Kernel-blocked for a dead binding, Rejected scope for a product judgement — with the exact calls that failed and what would change our mind. *Partial:* the item stays here, narrowed to the surviving hypothesis, with the negative half recorded under Non-goals.
+
+**Order, and why.**
+
+| Order | Item | Needs | Why here |
+| --- | --- | --- | --- |
+| 1 | Probe harness | — | Every other row hand-copies the same esbuild recipe today |
+| 2 | B-rep validity report | harness | Cheapest, largest reuse (mirrors `check_mesh_health`), and may explain the known Gmsh PLC failures |
+| 3 | Open-profile surface output | harness | Exercises the same free-face invariant the validity item reads; structurally cheap |
+| 4 | Small-detail edge suppression | harness, screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
+| 5 | Anisotropic boundary layers | harness, a `$Elements` walker | The largest probe, and the first live exercise of `dimension: 2` |
+| 6 | Loft takeoff by resampled intermediates | harness | Lowest value; the measurement design is the hard part |
+
+None depends on another row's *result*, only on the harness — a failed probe never blocks a later one.
+
+#### Probe harness (**S**, prerequisite)
+
+- **Gap:** every live-WASM finding recorded in this repo — `draft`'s five-argument `Add`, `BRepExtrema_DistanceSS`'s missing `Perform`, the IGES unit-writer false negative, fTetWild's winding — came from a throwaway esbuild bundle that was never committed, and `doc/development.md` has no section on obtaining a live `oc` or `gmsh` handle in a scratch script. The recipe exists only inside `scripts/screenshots/make-fixtures.mjs`.
+- **Scope:** `scripts/probe/run.mjs <entry.ts>` using that script's esbuild config verbatim — `platform: node`, `format: cjs`, the `wasmPathPlugin`, the `import.meta.url` banner, and an `external` list kept in sync with `esbuild.mjs`'s own arrays (it already fell behind once and broke `docs:screenshots` with a top-level-await error) — spawning `process.execPath` **without** clearing `ELECTRON_RUN_AS_NODE`, so it runs under the Flatpak recipe too. `extensionPath` is `process.cwd()` and `dist/*.wasm` must exist, so the runner chains `node esbuild.mjs` first. One committed example entry opens `examples/STP/bull.stp` through `readShape`, prints face and edge counts (36 and 98, known), and shows the `.delete()`-in-`finally` skeleton plus `resetOcct()`/`resetGmsh()` on abort. A `scripts/probe/README.md` states the protocol above and where write-ups go; scratch entries under `scripts/probe/scratch/` are git-ignored; `.vscodeignore` excludes the directory.
+- **Done when:** a new probe needs no copied esbuild config, the example runs under plain Node and under the Electron-as-Node recipe, `npm run build` is unaffected, and `doc/development.md` links the README.
 
 #### B-rep validity report
 
-- **Question:** can `BRepCheck_Analyzer` or `ShapeAnalysis_ShapeContents` expose useful diagnostics for imported solids, shells and faces? A previous rejection of `BRepCheck_Analyzer` for a closure test does not establish that it is unusable for validity.
-- **Probe:** a known-valid solid, an intentional open shell, and a deliberately malformed shape; determine which statuses and subshape references are accessible. An open shell can be valid as a shell while unsuitable as a closed solid, so report those facts separately.
-- **Admission to implementation:** actionable, reproducible status coverage with an honest “unknown” path. Begin read-only, parallel to `check_mesh_health`; `ShapeUpgrade_UnifySameDomain` and repair belong to a later, separately verified operation, not an automatic consequence of a failed check.
+- **Hypothesis:** `BRepCheck_Analyzer` returns per-subshape statuses — not only a whole-shape boolean — for imported STEP/IGES/BREP geometry, and `ShapeAnalysis_ShapeContents`/`ShapeAnalysis_FreeBounds` add counters a report can print as facts.
+- **Evidence today:** `BRepCheck_Analyzer`, `BRepCheck_Result`, `BRepCheck_Shell/Solid/Face`, `ShapeAnalysis_ShapeContents/Shell/Wire/FreeBounds/CheckSmallFace`, `ShapeUpgrade_UnifySameDomain` and `BRepAlgoAPI_Check` are all green in the manifest; `BOPAlgo_ArgumentAnalyzer` is red. The binary exports `BRepCheck_Analyzer` unsuffixed and `BRepCheck_Result_1..3`, `ShapeUpgrade_UnifySameDomain_1..3`. The only prior use was a rejection as a *closure test* on a freshly-sewn shell, where `NbFreeEdges()` won; it has never been called on imported geometry. `ShapeFix_Shape/Shell/Wireframe` throw or lack `.Perform`; only `ShapeFix_Solid` works. `TopExp.MapShapesAndAncestors` is unreachable (its map type is absent from the binary), so subshape bookkeeping uses the `HashCode(1<<30)` + `IsSame` bucket idiom.
+- **Probe (S):**
+  1. Enumerate the prototype of `new oc.BRepCheck_Analyzer(shape)`; if the unsuffixed ctor throws, try `_1` with `(shape, true)`. Find `IsValid` (whole-shape and per-subshape overloads), `Result(sub)`, and on the result `Status`/`StatusOnShape`; record which `BRepCheck_Status` members are readable symbolically.
+  2. Fixtures, in this order: `bull.stp` (healthy control); `cubsomcy.stp`, the shell-typed twin of `cubcylso.stp` (`examples/README.md` documents the pair); `block.stp` and `daratech.stp`, which both trip Gmsh's `PLC Error` during 3D meshing — the report should either flag them or say "valid per BRepCheck", and either is a finding; and a promoted `holed-cube.stl`, a deliberately open input. For each: whole-shape verdict, per-subshape status list keyed by `solid-N`/`face-N`/`edge-N`, `ShapeAnalysis_ShapeContents.Perform` counters (free versus shared edges, shells, solids), `ShapeAnalysis_FreeBounds` on the shell.
+  3. Discriminator: the shell twin reports free edges above zero and no closed solid; the solid twin reports zero. A per-subshape status must name at least one *specific* face or edge on the open input. A bare boolean is a failed probe.
+  4. Separately, `ShapeUpgrade_UnifySameDomain` on a box with one fillet: face count before and after, volume unchanged to 1e-9. Recorded as its own finding, never as this item's admission.
+  5. Time the analyzer on `turbine.stp` (2.3 MB) and record whether `IsValid` is cheap enough for a panel that runs on open or only for an explicit action.
+- **Decision gate:** *pass* — per-subshape statuses readable and reproducible on the shell/solid pair. *Fail* — a whole-shape boolean only, or statuses that don't discriminate the pair → Kernel-blocked, with the ctor and `Result` calls tried. *Partial* — counters work, statuses don't → narrow to a counters-only report.
+- **If admitted:** Phase 1 (**M**) — `checkBrepHealth(extensionPath, bytes, format, ops)` in a new `src/brepHealth.ts` returning a facts-only report shaped like `MeshHealthReport` (per solid: closed or not, free-edge count, per-subshape status list, `null` for anything the analyzer could not compute), wired through the four-touch-point `Pipeline` pattern; a `check_brep_health` MCP tool whose gate inverts `check_mesh_health`'s (mesh sources get `supported: false`); a "B-rep Health" sidebar section mirroring Mesh Health's request/result trio; a `describe_capabilities` limitation entry. Phase 2 (**M**, its own probe) — `unify_same_domain` as an explicit, undoable edit op, never an automatic consequence of a failed check.
+- **Out of scope:** repair. `ShapeFix_*` is three-quarters dead in this build and this item is read-only by design.
 
 #### Open-profile surface output
 
-- **Question:** can an open profile without `thin` produce a useful surface through the shipped sweep-family builders?
-- **Probe:** extrude a line and a bent wire; check nonzero area, expected bounds, orientation, export/reopen and free-face enumeration. Only then try revolve/sweep. Building a shell is not the same contract as the current solid-producing `featureModel` path.
-- **Admission to implementation:** define surface versus solid output explicitly, preserve face/edge id consistency and refuse volume-only operations on the result. Start with surface extrusion rather than promising all four feature builders at once.
+- **Hypothesis:** prisming an open wire directly with `BRepPrimAPI_MakePrism_1` — the already-verified call shape, applied to the wire instead of a face — yields a ruled *surface* the existing free-face pass displays and enumerates with stable `face-N` ids, with no new kernel binding.
+- **Evidence today:** the refusal is `openProfileNeedsThin` in `occtOperations.ts`, reached from `profileFaceFor`, `regionFacesFor` and the loft branch. Everything downstream is more permissive than that refusal implies: `featureModel` appends whatever `buildFeatureSolid` returns with no `TopAbs_SOLID` check (the same five `BRep_Builder` lines `addSurfaceFromLines` uses); `tessellateByGroup`'s free-face pass already groups un-owned faces as "Sketches" and `collectFaces` mirrors it; `computeMassProperties` already returns `volume: null` for a `face-N`; `STEPControl_AsIs` writes shells. The two real blockers are `finishThin`/`orientPositiveVolume`, which rejects a near-zero-volume result (a surface path must bypass it), and the id scheme — `solid-N`/`face-N`/`edge-N`/`point-N`, no `shell-N`.
+- **Probe (S):**
+  1. On `block.stp`, append an `addLine` (one segment) and an open three-point `addPolyline`; resolve their edges through `collectEdges` into a wire; `BRepPrimAPI_MakePrism_1(wire, vec, false, true).Shape()`.
+  2. Assert `ShapeType()` is a shell (or a compound of faces), face count equals segment count, `surfacePropertiesAdaptive` area equals the sum of segment length × extrude length to 1e-9, and a `BRepBuilderAPI_Sewing` pass reports `2·segments + 2` free edges — an open sheet by construction.
+  3. Append the result to the model compound exactly as `featureModel` would; run `tessellateByGroup` and `collectFaces` and assert the new faces land in "Sketches" at the same contiguous `face-N` positions in both — the invariant every `face-N` operand depends on.
+  4. Export to STEP at `/o.step`, re-read, and repeat step 2 on the reread shape; run `computeMassProperties` on one new face and assert `volume: null` with a matching `area`.
+  5. Then revolve the same open wire through `BRepPrimAPI_MakeRevol_1`: area equals Pappus (arc length × 2π × centroid radius) for a full sweep.
+- **Decision gate:** *pass* — analytic area, stable ids, a clean STEP round trip. *Fail* — the wire prism is refused, or the free-face pass and `collectFaces` disagree on the new faces' positions → Kernel-blocked (the wire prism specifically), with the refusal recorded.
+- **If admitted:** Phase 1 (**S**) — `extrude` and `revolve` accept an open profile without `thin` and produce a surface: the op outcome and bucket record the generic `produced` role, `finishThin` is bypassed, `featureModel` is unchanged, the faces are ordinary free faces (no new id kind), and consumers that need a closed volume (`addVolumeFromSurfaces`, mass volume) refuse them by name. The panel hint and `OP_PARAM_DOCS` say "surface, not solid". Phase 2 (**M**, only if a real need appears) — `sweep`/`loft` surfaces and a `shell-N` entity id; deferred deliberately, since that id touches `entityIdScheme`, the picker, rebinding and every sidecar reader.
+- **Out of scope:** any change to `collectFaces`'s claiming algorithm — the probe verifies the new faces fit it as-is.
 
 #### Loft takeoff by resampled intermediates
 
-- **Question:** can the shipped guide-rail fallback's intermediate-section technique approximate takeoff control without the blocked kernel condition API?
-- **Probe:** vary a near-end section offset on straight, curved and asymmetric fixtures; measure the resulting tangent change, endpoint preservation and self-intersections. Check sensitivity to station spacing and whether `ThruSections` smooths away the intended change.
-- **Admission to implementation:** measurable, repeatable steering with published approximation limits. Never label the result as satisfying an exact tangent/curvature constraint; the kernel route remains blocked below.
+- **Hypothesis:** inserting one extra near-end station, displaced along the section plane's normal by a signed magnitude, measurably changes the loft surface's takeoff angle at that section, and `ThruSections` keeps the change rather than smoothing it away.
+- **Evidence today:** the shipped `guides` fallback (`resampledGuideWires`) places `GUIDE_STATIONS = 6` intermediates at t = k/7 — never at t = 0 or 1 — each an M-gon (128 ≤ M ≤ 512) built by pointwise lerp plus a rigid chord-deviation offset, lofted through `ThruSections(true, false, 1e-6)` with `IsDone` as the only gate. Its steering signal on the smoke fixture is +0.83 % of volume (4139.06 against 4105.01), the same order as `SetSmoothing`'s own −0.711 % — so **volume cannot be this probe's measurement**. The fixed station spacing also misses an interior rail corner by ≈1.09 units on that fixture, recorded in the smoke script. The kernel route stays a Non-goal; this is an untested idea, not a probed finding.
+- **Probe (S):**
+  1. Reuse the smoke fixture (`block.stp` plus two circle profiles at z = 0 and z = 20). Build the wire list directly, not through the op: the two originals plus one extra station at t = 0.05 whose loop is the lerp offset along the start section's normal by δ ∈ {0, 0.5, 1, 2}; loft with the shipped `ThruSections` arguments.
+  2. Measure the takeoff: on the lateral face nearest the start section, evaluate the surface normal through `BRepAdaptor_Surface_2` + `GeomLProp_SLProps_1` at several u along v ≈ 0 and compute the angle between the v-tangent and the section plane; compare δ = 0 against each δ > 0. Record that the start wire is byte-identical (it must be — the originals are returned at both ends).
+  3. Integrity: zero free edges after sewing and a finite, positive volume for every δ; a self-intersecting result fails the row.
+  4. Repeat with an offset-circle pair, an asymmetric pair (circle to rectangle), and 6 versus 12 stations, to find where the effect saturates or `ThruSections` averages it away.
+- **Decision gate:** *pass* — a monotonic, repeatable tangent change of at least 5° across δ with no self-intersection, on all three fixtures. *Fail* — the change sits inside measurement noise or is non-monotonic → Kernel-blocked beside the takeoff-conditions entry, with the numbers. *Partial* — works on straight pairs only → keep here, narrowed.
+- **If admitted:** Phase 1 (**M**) — `takeoff?: { startDeg?, endDeg? }` on `loft`, implemented as one extra station per end, labelled "approximate takeoff" in the panel, `OP_PARAM_DOCS` and the docs, with the probe's published sensitivity limits. Never labelled as an exact tangent or curvature constraint.
+- **Out of scope:** any `MakePipeShell` revival — `SetMode_4` returns `false` even for the spine, recorded under Non-goals.
 
 #### Anisotropic boundary layers for 2D Gmsh meshes
 
-- **Question:** does the installed gmsh-wasm build support a working `BoundaryLayer` field, including `setAsBoundaryLayer`, rather than merely exposing names?
-- **Probe:** on a simple 2D domain, exercise wall size, growth ratio, thickness, quads and corner fans along a chosen curve. Inspect actual element connectivity, near-wall thickness and growth, not just the element count; repeat with the existing Distance/Threshold and Constant fields enabled.
-- **Admission to implementation:** a verified recipe, clear unsupported combinations and non-overlapping layer behaviour. Scope to 2D; this does not establish a 3D boundary-layer route for OCC-imported geometry.
+- **Hypothesis:** the bundled gmsh-wasm 0.3.0 builds a working `BoundaryLayer` field — thin, ratio-graded quads hugging a chosen curve — through `field.add("BoundaryLayer")` + `setAsBoundaryLayer`, and it composes with the existing `Min` background field rather than replacing it.
+- **Evidence today:** string presence only, but more of it than the earlier wording admitted. `setAsBoundaryLayer(tag)` and `geo.extrudeBoundaryLayer(dimTags, numElements?, heights?, recombine?, second?, viewIndex?)` are both in `dist/gmsh.d.ts` with `unsupported: false` in the binding descriptor; the binary's string pool registers `BoundaryLayerField` in the field factory and carries the option names `CurvesList`, `PointsList`, `FanPointsList`, `FanPointsSizesList`, `ExcludedSurfacesList`, `SizeFar`, `Thickness`, `Ratio`, `AnisoMax`, `BetaLaw`, `NumExactLayers`, `Quads`, plus the runtime diagnostics "Different boundary layers cannot touch each other" and "Impossible boundary layer configuration". Nothing has called any of it. The shipped `Distance`+`Threshold`+`Min` composition owns the single `setAsBackgroundMesh` call (`gmshSizingFields.ts`); a boundary layer is set through a *different* call, which is exactly what makes coexistence a question rather than a known. Two adjacent facts, stated plainly: no committed test runs `dimension: 2` live, and `CLAUDE.md`'s claim that a 3D layer "needs `geo.extrudeBoundaryLayer`, which OCC-imported sources can't use" is an inference from the type surface (`extrudeBoundaryLayer` lives on `model.geo` with no `model.occ` twin), not a probe result.
+- **Probe (S):**
+  1. *Isolated, native gmsh:* `occ.addRectangle(0, 0, 0, 10, 4)` → `synchronize` → `field.add("BoundaryLayer")` → `setNumbers` of `CurvesList` to the bottom edge, `setNumber` for the wall size 0.05 (try `hwall_n`, then `Size`), `Ratio` 1.2, `Thickness` 0.5, `Quads` 1, `FanPointsList` the two bottom corners → `setAsBoundaryLayer(tag)` → `Mesh.Algorithm = 6` → `generate(2)`. Assert the two rejection strings above never fire, then through `getElements(2)`: quads present (Gmsh type 3), the nearest node row at y ≈ 0.05, successive rows growing by ≈1.2, and more elements than the plain mesh. This needs a walker over `getElements`'s per-type arrays — new code; the smoke script only parses `$Nodes` today.
+  2. *Composition:* add a `Distance`+`Threshold` background through `setBackgroundMin` beside the layer and confirm both effects survive one generate; then two layers on touching curves, expecting the documented "cannot touch" diagnostic.
+  3. *Through the real pipeline:* append `addRectangleProfile` to a copy of `block.stp` (it lands as `face-6`), assign a curve-scoped Part, and `generate_mesh` at `dimension: 2` — the first live `dimension: 2` run in the repo — verifying the `edge-N` to `(1, tag)` bbox correlation `gmshPartsMap.ts` would rely on.
+  4. *Cheap, recorded:* `option.getNumber("Mesh.BoundaryLayerFanElements")` round-trips; `geo.extrudeBoundaryLayer` on an OCC-imported surface, to prove or refute the 3D claim instead of keeping the inference.
+- **Decision gate:** *pass* — graded quads with the asserted wall size and ratio, composing with the background field. *Fail* — triangles only, a no-op, or a throw → Kernel-blocked with the option names and diagnostics recorded. *Partial* — works alone but replaces the background field → keep here, narrowed to "layer or grading, not both".
+- **If admitted:** Phase 1 (**M**) — `Part.meshBoundaryLayer { wallSize, growthRatio, thickness, quads }` for curve-scoped Parts on 2D generates: a third `if (part.meshBoundaryLayer != null)` branch in `applyPartsToGmshModel` beside `meshSize` and `meshGrading`, a `validateMeshBoundaryLayer` gate, every length scaled by `scalePartsMeshSizeForUnit`, a `set_part` parameter, a panel row, and a `.geo` script comment. Phase 2 (**L**, its own probe, only if step 4 passes) — 3D layers through `extrudeBoundaryLayer`.
+- **Out of scope:** 3D layers on OCC-imported solids unless step 4 proves the route; STL sources (no entity correlation, the same rule physical groups follow).
 
 #### Optional small-detail edge suppression
 
-- **Question:** can a display-only classifier reduce clutter without hiding important small holes or thin features?
-- **Probe:** compare candidate relative-face-area measures on mixed-scale assemblies, fillets, small drilled holes and tiny standalone parts. Review rendered output at several zoom levels; a small area alone is not evidence of an unimportant edge.
-- **Admission to implementation:** opt-in threshold and reversible display flag, with original `edge-N` enumeration untouched. Reuse smooth-edge visibility plumbing only after the classifier earns it; no default suppression based on an unvalidated heuristic.
+- **Hypothesis:** a per-edge `detail` flag — both adjacent faces small relative to the model — hides post-treatment clutter (fillet-band seams, cosmetic chamfers) on real assemblies without hiding drilled-hole rims or thin features.
+- **Evidence today:** the `smooth` flag is the exact plumbing template: `EdgeLine`/`EncodedEdge.smooth`, `buildEdgeLine`'s `userData`, `Viewer.applyEdgeVisibility` as the single visibility writer, the `#hide-smooth-edges` menu item, and `applyLineFilter`'s seam exclusion. No per-face facts travel to the webview (`FaceMesh` is id plus buffers), but host-side `collectAllEntitySignatures` already computes every face's area in `face-N` order, `faceSurfaceInfo` gives the surface type, and `bboxDiagonal` is the codebase's relative-scale denominator. What is missing is evidence, not bindings: no fixture demonstrates the clutter, and "small" has no validated threshold.
+- **Probe (S):**
+  1. Host-side, on `bull.stp`, `4pinplug.stp`, `gear.stp` and `as1_pe.stp`: for every edge with exactly two adjacent faces (`buildEdgeFaceAdjacency`), compute `min(areaA, areaB) / bboxDiagonal²` and both surface types; mark `detail` at τ ∈ {1e-4, 1e-3, 1e-2}.
+  2. Count, per fixture and τ, the edges hidden, and of those how many belong to a cylindrical face (the drilled-hole proxy) or to a face whose own bbox spans more than 10 % of the model (a thin sheet — small area, large extent).
+  3. Render each τ through the screenshot harness with the flag applied and inspect the images at two zoom levels — a count is not evidence that the drawing reads correctly.
+- **Decision gate:** *pass* — some τ hides at least 30 % of fillet-band seams on two or more fixtures while hiding no cylindrical hole rim and no large-extent face's edges. *Fail* — every τ that removes clutter also removes a hole rim → Rejected scope, with the tables kept.
+- **If admitted:** Phase 1 (**S**) — `detail: boolean` beside `smooth` on the wire format (never a filter: `edge-N` enumeration untouched), a `#hide-detail-edges` View item through `applyEdgeVisibility`, opt-in, the threshold a `cadPreview.*` setting defaulting to the probe's τ; and fix the documented "edge visibility does not survive a model rebuild" limitation for *both* flags in the same change, since a second toggle would double that bug's surface.
+- **Out of scope:** any default-on suppression; area alone as the criterion — surface type and extent are part of the test.
 
 ## Definition of done
 

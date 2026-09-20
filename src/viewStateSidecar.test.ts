@@ -224,3 +224,90 @@ describe("view-state: collapsed sidebar sections", () => {
     expect(parseViewStateJson(text)).toEqual(validView);
   });
 });
+
+describe("view-state: named view bookmarks", () => {
+  const bookmark = {
+    name: "Top inspection",
+    viewDirection: [0, -1, 0] as [number, number, number],
+    cameraUp: [0, 0, -1] as [number, number, number],
+    orthographic: true,
+    displayMode: "xray" as const,
+    clip: { axis: "y" as const, offsetFrac: 0.1 },
+  };
+
+  it("round-trips through serialize → parse, as a top-level sibling of `view`", () => {
+    const view: ViewState = { ...validView, bookmarks: [bookmark] };
+    const file = JSON.parse(serializeViewStateJson("bull.stp", view));
+    expect(file.bookmarks).toEqual([bookmark]);
+    expect(file.view.bookmarks).toBeUndefined();
+    expect(parseViewStateJson(serializeViewStateJson("bull.stp", view))).toEqual(view);
+  });
+
+  it("survives a SINGLE-PANE sidecar — the case the layout early-return would swallow", () => {
+    const text = JSON.stringify({
+      version: VIEW_STATE_SIDECAR_VERSION,
+      source: "bull.stp",
+      view: validView,
+      bookmarks: [bookmark],
+    });
+    expect(parseViewStateJson(text)?.bookmarks).toEqual([bookmark]);
+
+    const withLayout = JSON.stringify({
+      version: VIEW_STATE_SIDECAR_VERSION,
+      source: "bull.stp",
+      view: validView,
+      layout: "1x1",
+      bookmarks: [bookmark],
+    });
+    expect(parseViewStateJson(withLayout)?.bookmarks).toEqual([bookmark]);
+  });
+
+  it("omits the key entirely when there are no bookmarks, so an untouched sidecar stays byte-stable", () => {
+    const text = serializeViewStateJson("bull.stp", validView);
+    expect(JSON.parse(text)).not.toHaveProperty("bookmarks");
+    expect(parseViewStateJson(text)?.bookmarks).toBeUndefined();
+    expect(serializeViewStateJson("bull.stp", { ...validView, bookmarks: [] })).toBe(text);
+  });
+
+  it("drops malformed entries individually, keeping the valid ones and the rest of the record", () => {
+    const text = JSON.stringify({
+      version: VIEW_STATE_SIDECAR_VERSION,
+      source: "bull.stp",
+      view: validView,
+      bookmarks: [
+        bookmark,
+        { name: "", viewDirection: [1, 0, 0], cameraUp: [0, 1, 0] },
+        { name: "no vectors" },
+        { name: "degenerate", viewDirection: [0, 0, 0], cameraUp: [0, 1, 0] },
+        "not an object",
+        { name: "bad clip", viewDirection: [1, 0, 0], cameraUp: [0, 1, 0], clip: { axis: "w", offsetFrac: 0 } },
+      ],
+    });
+    const parsed = parseViewStateJson(text);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.bookmarks?.map((b) => b.name)).toEqual(["Top inspection", "bad clip"]);
+    // A bad axis drops the bookmark's clip (same rule as view.clip), not the bookmark.
+    expect(parsed?.bookmarks?.[1].clip).toBeNull();
+    expect(parsed?.displayMode).toBe("shaded");
+  });
+
+  it("trims names, keeps the first of two duplicates, and falls back displayMode", () => {
+    const text = JSON.stringify({
+      version: VIEW_STATE_SIDECAR_VERSION,
+      source: "bull.stp",
+      view: validView,
+      bookmarks: [
+        { ...bookmark, name: "  Padded  " },
+        { ...bookmark, name: "Padded", displayMode: "bogus", orthographic: "yes" },
+      ],
+    });
+    const parsed = parseViewStateJson(text)?.bookmarks;
+    expect(parsed?.length).toBe(1);
+    expect(parsed?.[0].name).toBe("Padded");
+  });
+
+  it("an older sidecar with no bookmarks parses exactly as before", () => {
+    const text = JSON.stringify({ version: 1, source: "bull.stp", view: validView });
+    expect(parseViewStateJson(text)).toEqual(validView);
+  });
+});
