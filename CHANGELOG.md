@@ -4,6 +4,14 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [2.7.0] - 2026-09-20
+
+### Added
+
+- **Saved view bookmarks.** Named camera bookmarks (orientation, display mode, clip plane) persist per document in `<model>.view.json`; save, restore, replace, rename, and delete them from the View menu.
+- **Reusable meshing presets.** Named `MeshOptions` bundles with explicit units and a pinned engine (`save_mesh_preset` / `list_mesh_presets` / `apply_mesh_preset` MCP tools plus a Saved presets section in the FE Mesh panel), backed by a bundled starter library (`mesh-presets/starter-presets.json`).
+- **Measured mesh-refinement comparison.** New `compare_mesh_refinement` MCP tool meshes the same model at several explicit sizes and compares cost vs quality (nodes/elements, elapsed time, quality summary, TSV output) before choosing one via `applyIndex`.
+
 ## [2.6.0] - 2026-09-20
 
 Closes the last two Tier 1 roadmap items: all of Tier 1 is now empty, so the tier is dropped from `doc/roadmap.md` per its own rule.
@@ -494,6 +502,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[2.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.3.0...v2.4.0
