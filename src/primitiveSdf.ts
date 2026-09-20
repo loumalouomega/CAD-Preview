@@ -3,7 +3,7 @@
  * deviation of a point set from one.
  *
  * **Why this is hand-rolled rather than an OCCT query.** The recognition
- * report (roadmap item 8 Phase 2) needs the MAXIMUM deviation between a
+ * report (the "Primitive recognition report" feature) needs the MAXIMUM deviation between a
  * candidate primitive and the real solid's boundary, and this WASM build has
  * no maximum-distance query at all: `BRepExtrema_DistanceSS` constructs but
  * never computes, `BRepExtrema_ShapeType` is unbound, and

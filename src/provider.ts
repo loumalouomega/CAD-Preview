@@ -385,7 +385,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       vscode.commands.registerCommand("cad-preview.compareModels", () =>
         void runCompareModelsCommand(this.context, this.pipeline, this.activeSession?.uri)
       ),
-      // SpaceMouse 6DOF input (roadmap Tier 2 item 2) — deliberately NOT
+      // SpaceMouse 6DOF input — deliberately NOT
       // `withSession`: the device is global, not per-tab; motion events
       // route to whichever session is focused at event time (or drop when
       // none is). Connect is explicit opt-in only — never auto-started from
@@ -2452,8 +2452,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * re-tessellation.
    */
     /**
-     * `.scad`-aware source reader for every occt path below (roadmap Tier 2
-     * item 2, path (b), closed): reads bytes and converts `.scad` to `.csg`
+     * `.scad`-aware source reader for every occt path below (OpenSCAD support,
+     * path (b)): reads bytes and converts `.scad` to `.csg`
      * via the user-installed openscad binary (`cadPreview.openscadBinary`
      * setting, `OPENSCAD_BINARY` env fallback), so downstream only ever sees
      * step/iges/brep/csg. Conversion chatter accumulates into `warnings`

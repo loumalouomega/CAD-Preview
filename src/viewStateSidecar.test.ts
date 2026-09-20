@@ -106,6 +106,38 @@ describe("view-state clip: the optional arbitrary normal", () => {
   });
 });
 
+describe("view-state: sidebar width (resizable sidebar)", () => {
+  it("round-trips through serialize → parse, as a top-level sibling of `view`", () => {
+    const view: ViewState = { ...validView, sidebarWidth: 300 };
+    const file = JSON.parse(serializeViewStateJson("bull.stp", view));
+    expect(file.sidebarWidth).toBe(300);
+    expect(file.view.sidebarWidth).toBeUndefined();
+    expect(parseViewStateJson(serializeViewStateJson("bull.stp", view))).toEqual(view);
+  });
+
+  it("omits the field entirely at the 220 default — an untouched document's sidecar stays byte-stable", () => {
+    const file = JSON.parse(serializeViewStateJson("bull.stp", { ...validView }));
+    expect("sidebarWidth" in file).toBe(false);
+    expect("sidebarWidth" in file.view).toBe(false);
+    expect(serializeViewStateJson("bull.stp", validView)).toBe(
+      serializeViewStateJson("bull.stp", { ...validView, sidebarWidth: 220 })
+    );
+  });
+
+  it("clamps a hand-edited or out-of-range value; garbage falls back to default (absent)", () => {
+    const parse = (sidebarWidth: unknown) =>
+      parseViewStateJson(
+        JSON.stringify({ version: 1, source: "bull.stp", view: validView, sidebarWidth })
+      );
+    expect(parse(10)?.sidebarWidth).toBe(176);
+    expect(parse(99999)?.sidebarWidth).toBe(420);
+    expect(parse(297.6)?.sidebarWidth).toBe(298);
+    expect("sidebarWidth" in (parse("220px") ?? {})).toBe(false);
+    expect("sidebarWidth" in (parse(NaN) ?? {})).toBe(false);
+    expect("sidebarWidth" in (parse(undefined) ?? {})).toBe(false);
+  });
+});
+
 describe("view-state: collapsed sidebar sections", () => {
   it("round-trips through serialize → parse", () => {
     const view: ViewState = { ...validView, collapsedPanels: ["parts-panel", "mass-panel"] };

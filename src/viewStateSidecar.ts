@@ -9,6 +9,7 @@ import { PANE_LAYOUTS, paneCount, type PaneLayoutId } from "./webview/viewerPane
 // with no DOM access at module scope and no three.js import, the same reason
 // `displayMode`/`viewerPanes` above can be imported by value from the host.
 import { sanitizeCollapsedPanels } from "./webview/collapsiblePanels";
+import { clampSidebarWidth, SIDEBAR_DEFAULT_PX } from "./webview/sidebarResizer";
 
 /** Pure (vscode-free) parse/serialize for the view-state sidecar — unit-testable. */
 
@@ -21,6 +22,7 @@ interface SidecarFile {
   layout?: unknown;
   panes?: unknown;
   collapsedPanels?: unknown;
+  sidebarWidth?: unknown;
 }
 
 const CLIP_AXES: readonly ClipAxis[] = ["x", "y", "z"];
@@ -106,6 +108,13 @@ export function parseViewStateJson(text: string): ViewState | null {
   const collapsedPanels = sanitizeCollapsedPanels(file?.collapsedPanels);
   if (collapsedPanels.length > 0) base.collapsedPanels = collapsedPanels;
 
+  // Sidebar width — same additive sibling, same fold-before-the-1x1-early-
+  // return requirement. `clampSidebarWidth` returns null for a non-number, so
+  // a hand-edited `"220px"` or `"wide"` restores the default instead of
+  // poisoning the layout.
+  const sidebarWidth = clampSidebarWidth(file?.sidebarWidth);
+  if (sidebarWidth !== null) base.sidebarWidth = sidebarWidth;
+
   // Optional split-view layout — purely additive, tolerant.
   const rawLayout = file?.layout;
   const layoutValid = typeof rawLayout === "string" && (PANE_LAYOUTS as readonly string[]).includes(rawLayout);
@@ -133,7 +142,7 @@ export function parseViewStateJson(text: string): ViewState | null {
 
 /** Serializes view state to the sidecar JSON text (pretty-printed, trailing newline). */
 export function serializeViewStateJson(sourceName: string, view: ViewState): string {
-  const { layout, panes, collapsedPanels, ...viewCore } = view;
+  const { layout, panes, collapsedPanels, sidebarWidth, ...viewCore } = view;
   const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels"> } = {
     version: VIEW_STATE_SIDECAR_VERSION,
     source: sourceName,
@@ -147,6 +156,12 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   // above is what keeps the two halves agreeing about where it lives.
   if (collapsedPanels && collapsedPanels.length > 0) {
     (file as SidecarFile).collapsedPanels = collapsedPanels;
+  }
+  // Omitted at the 220 default (and only there): a user who dragged back to
+  // exactly the pre-resizer width, or never resized, writes a sidecar
+  // byte-identical to the untouched one.
+  if (sidebarWidth !== undefined && sidebarWidth !== SIDEBAR_DEFAULT_PX) {
+    (file as SidecarFile).sidebarWidth = sidebarWidth;
   }
   return JSON.stringify(file, null, 2) + "\n";
 }

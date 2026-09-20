@@ -1,5 +1,5 @@
 /**
- * OpenSCAD `.csg` import — roadmap Tier 2 item 2, path (a).
+ * OpenSCAD `.csg` import — path (a) of the OpenSCAD support feature.
  *
  * Pure, vscode/DOM/OCCT-free (no `DOMParser` — this project's vitest config
  * has no jsdom, same reasoning as `svgImport.ts`'s regex-based `<path d>`

@@ -276,7 +276,7 @@ try {
   assert(loaded.bbox && loaded.bbox.diagonal > 0, "load_model reports a bounding box");
   const { bbox } = loaded;
 
-  // OpenSCAD .csg import (roadmap Tier 2 item 2, path (a)) — parsed by the
+  // OpenSCAD .csg import (path (a) of the OpenSCAD support feature) — parsed by the
   // pure `csgImport.ts`, built kernel-side into an opaque base shape (like a
   // STEP import, not an op history). bracket.csg's volume is hand-derived
   // analytic, confirmed against the live kernel rather than copied from it:
@@ -326,7 +326,7 @@ try {
       mixed.warnings.some((w) => /hull\(\)/i.test(w)) && mixed.warnings.some((w) => /faceted|analytic/i.test(w)),
       `mixed.csg surfaces the hull-skip and faceted-sphere warnings (got ${JSON.stringify(mixed.warnings)})`
     );
-    // extrude.csg (roadmap Tier 1 item 2): linear_extrude of a polygon, a
+    // extrude.csg (the .csg node-coverage extension): linear_extrude of a polygon, a
     // centered square and a faceted circle, plus rotate_extrude full and
     // half — each placed disjointly — with twist=/paths= refusals. Volumes
     // are analytic: 300 + 128 + 96*pi + 48*pi + 135 = ~1015.3893, asserted
@@ -626,7 +626,11 @@ try {
       resetDef
     );
     assert(defFilleted.applied === 1, `fillet applied for the defeature fixture (got ${JSON.stringify(defFilleted.report)})`);
-    const defLoaded = await call("load_model", { path: defModel });
+    const defLoaded = await callWithCleanRetry(
+      "load_model",
+      { path: defModel },
+      () => {} // read-only call — nothing to reset (the render_ops_prefix precedent)
+    );
     const defBand = ((defLoaded.opBuckets ?? []).find((b) => b.op === 1)?.roles?.band ?? []);
     let defTarget = null;
     for (const id of defBand) {
@@ -651,9 +655,11 @@ try {
       defBucket !== undefined && Object.keys(defBucket.roles).every((r) => r === "produced"),
       `defeature records only the generic produced role (got ${JSON.stringify(defBucket?.roles)})`
     );
-    const defBad = await call("apply_edit_ops", {
-      path: defModel, ops: [{ op: "defeature", faces: ["face-9999"] }],
-    });
+    const defBad = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: defModel, ops: [{ op: "defeature", faces: ["face-9999"] }] },
+      resetDef
+    );
     assert(
       defBad.applied === 0 && (defBad.report[0]?.diagnostic ?? "").match(/face/i) !== null,
       `an unresolvable defeature face skips with a diagnostic (got ${JSON.stringify(defBad.report)})`
@@ -1068,7 +1074,7 @@ try {
   );
 
 
-  // ── inspect: analytic surface parameters (roadmap item 8 Phase 1) ────────
+  // ── inspect: analytic surface parameters (the "analytic surface parameters on inspect" feature) ────────
   //
   // `surfaceType: "cylinder"` used to be the whole answer — no radius, no
   // axis. These assert the parameters against geometry built with KNOWN
@@ -1416,7 +1422,7 @@ try {
   }
 
 
-  // ── recognize_primitives (roadmap item 8 Phase 2) ─────────────────────────
+  // ── recognize_primitives (the "Primitive recognition report" feature) ─────────────────────────
   //
   // Facts only. The assertion that carries this block is the FILLETED box:
   // publishing a residual is pointless unless it actually moves when the
@@ -1580,7 +1586,7 @@ try {
   }
 
 
-  // ── fit_mesh_region (roadmap item 9 Phase 1) ─────────────────────────────
+  // ── fit_mesh_region ─────────────────────────────
   //
   // Both fixtures have analytic ground truth: cube.stl is a real 10x10x10 cube,
   // and large-sphere-100k.stl is a sphere of radius exactly 10 at the origin
@@ -4345,7 +4351,7 @@ try {
     `set_plane refuses a zero-length normal (got: ${JSON.stringify(zeroNormal)})`
   );
 
-  // set_plane's midplaneOf (roadmap item 10's "midplane references" half,
+  // set_plane's midplaneOf (the "Cheap thin-wrapper ops" feature's midplane-references half,
   // host half): two parallel saved planes → a midplane with the averaged
   // offset and mid-POINT. On the throwaway planeModel (already holding one
   // plane), so the shared model's planes sidecar stays exactly as the
@@ -4941,7 +4947,7 @@ try {
     `the finished bracket has the 18 faces the tutorial claims (got ${bracketState.solids[0].faceIds.length})`
   );
 
-  // --- thin-walled sweep-family features (roadmap item 8, first cut) ---------
+  // --- the `.thin()` sweep-family feature (first cut) -----------------------
   //
   // Every expectation here is ANALYTIC, so a plausible-but-wrong band would
   // fail rather than pass. The profile is a 10x10 rectangle sketch whose
@@ -5051,7 +5057,7 @@ try {
     assert(Math.abs(plain.volume - 500) < 1e-6, `a non-thin extrude still fills the profile, exactly 500 (got ${plain.volume})`);
   }
 
-  // --- extrude up-to-face terminator (roadmap item 2) -------------------------
+  // --- extrude up-to-face terminator (the sweep-family feature's upToFace cut) 
   //
   // block.stp is a 3x4x5 box (volume 60, faces pair up by area). A 20x20x2 box
   // added on top contributes 800; its bottom face (area 400 at z=12.5) is the
@@ -5139,7 +5145,7 @@ try {
     );
   }
 
-  // --- rib() (roadmap item 2: open spine + up-to-face + fuse + blend) --------
+  // --- rib() (open spine + up-to-face + fuse + blend) ------------------------
   //
   // Same analytic discipline. Support box 20x20x10 (volume 4000) + cap box
   // 20x20x2 (800) on block.stp (60); open 2-segment spine on z=10, wall 2
@@ -5269,7 +5275,7 @@ try {
     );
   }
 
-  // --- wrap() (roadmap item 1: development + sew-two-offsets thickening) ---
+  // --- wrap() (development + sew-two-offsets thickening) -------------------
   //
   // Same analytic discipline. block.stp (3x4x5, vol 60) contributes 6 faces,
   // so a rectangle sketch is face-6. The shell volume is EXACTLY midArea x
@@ -5518,7 +5524,7 @@ try {
     assert(meshRefused.supported === false, `import_svg refuses a mesh-format source (got ${JSON.stringify(meshRefused)})`);
   }
 
-  // --- loft guide rail (roadmap item 1: resampled-intermediate fallback) ---
+  // --- loft guide rail (resampled-intermediate fallback) ------------------
   //
   // The kernel's MakePipeShell rail wiring is unreachable in this build
   // (SetMode_4 returns false; the rail-coincidence test reads noise — see the
@@ -5615,7 +5621,7 @@ try {
     }
   }
 
-  // --- open-profile (wire) operand, roadmap item 8 --------------------------
+  // --- open-profile (wire) operand for the sweep-family ops -----------------
   //
   // Same analytic discipline as the thin block above. block.stp is 6 faces /
   // 12 edges, so a rectangle sketch is face-6 and ITS wire's edges are
@@ -5757,7 +5763,7 @@ try {
     );
   }
 
-  // --- pick (region selector) + drill, roadmap item 1 ----------------------
+  // --- .pick(regions) + .drill() ------------------------------------------
   //
   // Same analytic discipline. block.stp is 6 faces; addBox appends 6 more, so
   // the box is solid-1 — until a hole cut rebuilds the compound
@@ -5892,7 +5898,7 @@ try {
     );
   }
 
-  // --- loft smoothing (roadmap item 2: the one ThruSections knob with a
+  // --- loft smoothing ("only SetSmoothing does anything" — the one ThruSections knob with a
   // measured effect) ---------------------------------------------------------
   //
   // Probed live: SetSmoothing moves a 4-section progressively-twisted loft

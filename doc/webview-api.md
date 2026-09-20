@@ -9,6 +9,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/main.ts` | Entry point, VS Code API, message routing, UI wiring |
 | `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
 | `src/webview/collapsiblePanels.ts` | The sidebar-section registry, its `.view.json` sanitizer, and the chevron wiring (partly unit-tested) |
+| `src/webview/sidebarResizer.ts` | The sidebar's width clamps and its drag/keyboard resize handle: `--side-width` on `<body>` is the single shared fact `#side{width}` and `#view-controls`' centring both read (partly unit-tested) |
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
 | `src/webview/cameraControls.ts` | Pure camera math utilities (unit-testable) |
 | `src/webview/spaceMouseDispatch.ts` | Pure SpaceMouse event → camera-call dispatch (deadzone is upstream in `motionToVelocity`; dt-scaled per-second speeds; Fit/Reset on button rising edges; zero calls at rest so the render loop stays asleep — unit-tested) |
@@ -165,6 +166,30 @@ interface CollapsiblePanelsHandle {
 - `#variables-section` is deliberately **not** collapsible here: it is nested inside the already-scrolling `#edits-scroll`, and the FE Mesh panel's "Advanced settings" chevron is the precedent to copy if nested collapse is ever wanted.
 - Module scope holds only the registry array; all DOM access is inside the exported functions, per this repo's no-DOM-at-import rule (vitest runs without jsdom).
 
+## `src/webview/sidebarResizer.ts`
+
+The resizable sidebar (roadmap "Sidebar layout and keyboard usability"). Pure constants + clamping are unit-tested; the DOM wiring is `test:webview`/F5 territory.
+
+```typescript
+const SIDEBAR_MIN_PX  // 176 — below this the FE Mesh / Standard Parts rows wrap badly
+const SIDEBAR_MAX_PX  // 420
+const SIDEBAR_DEFAULT_PX // 220 — the pre-resizer fixed width; equal values are never serialized
+const SIDEBAR_KEYBOARD_STEP_PX // 16 — ArrowLeft/ArrowRight on the handle
+
+function clampSidebarWidth(value: unknown): number | null   // null = "not persisted", never 0px
+function setupSidebarResizer(onChange: (width: number) => void): SidebarResizerHandle | null
+
+interface SidebarResizerHandle {
+  getWidth(): number;
+  setWidth(width: number): void;   // restore path — deliberately never fires `onChange`
+}
+```
+
+- **One `--side-width` custom property on `<body>` is the single shared fact** for `#side{width}` AND `#view-controls`' centring rule (`left: calc((100% + var(...)) / 2)` → centred on the canvas, not the editor pane) — the resizer is the only writer, so the two can never disagree.
+- **The handle is a real `<button id="sidebar-resize" role="separator">`** at `#side`'s right edge, so the resize is keyboard-operable: ArrowLeft/Right step by `SIDEBAR_KEYBOARD_STEP_PX`, Home/End jump to the clamps. A plain hover strip would not be.
+- `onChange` (the user-facing path: every drag move, every keyboard step) fires AFTER the CSS var is applied; `main.ts`'s callback calls `viewer.notifyResize()` (a sidebar drag does NOT produce a `window.resize` event) and `scheduleViewSave()` — the 500 ms debounce coalesces a whole drag into one sidecar write. `setWidth` (the restore path, from `applyViewState`) never fires it, the same silent-restore contract as `setCollapsed`.
+- The DOM wiring mirrors `setupDropdown`/`setupCollapsiblePanels`: `null` on a missing element (never a throw that could block the `ready` handshake), pointers captured on `pointerdown` so the canvas's pane-gate/orbit listeners never see the drag, and no DOM access at module scope.
+
 ## `src/webview/dropdownMenu.ts`
 
 Shared plumbing for every dropdown in the webview: the **File ▾** menubar menu and the toolbar's **View ▾** / **Select ▾** / **Measure ▾** / **Markup ▾** menus. The markup contract is a `.tb-menu-wrap` (`position: relative`) containing a `.tb-menu` trigger button (`aria-haspopup`, `aria-expanded`) and a sibling `.tb-dropdown.hidden[role=menu]` panel.
@@ -187,6 +212,7 @@ function closeAllDropdowns(): void
 - **Mutual exclusion**: `open()` closes every other registered handle first.
 - **Two global listeners total**, registered lazily on the first `setupDropdown()` call regardless of how many menus exist: a capture-phase `pointerdown` on `window` that closes the open menu when the click landed outside every registered trigger *and* panel, and a `keydown` for `Escape`. The containment test is `trigger.contains(target) || panel.contains(target)` — an identity comparison against the trigger fails, because every trigger wraps its icon in a `<span class="toolbar-icon"><svg>` that becomes the event target.
 - The dismissing `pointerdown` calls `preventDefault()` + `stopPropagation()`, so the click that closes a menu does not also reach whatever is underneath. This matters because `#markup-canvas` is `pointer-events: auto` while markup mode is on — without it, clicking away from the Markup menu would draw a stroke.
+- **Keyboard (roadmap "Sidebar layout and keyboard usability")**: Escape closes AND returns focus to the trigger that opened the menu (`display:none` would otherwise dump focus into the body with no way back). ArrowUp/ArrowDown cycle the panel's *buttons* with wrapping, Home/End jump — registered on the **trigger** as well as the panel, because right after keyboard-opening focus is still on the trigger (a *sibling* of the panel, so a panel-only listener never sees the first step). `<input>`/`<select>` are deliberately excluded from arrow navigation (a text field owns its arrows; a `<select>` owns up/down) and remain Tab-reachable. Tab itself stays native.
 - **Clicks inside a panel deliberately leave it open** (toggling a mode, picking a tool, and choosing a colour are one visit). One-shot items — the `#menu-*` File actions and `#screenshot` — call `close()` themselves.
 
 Module scope holds only a `Set<DropdownHandle>` and a `boolean`; all DOM access happens inside the exported functions, per this repo's no-DOM-at-import rule (vitest runs without jsdom).
@@ -427,7 +453,7 @@ Replaces the current model with a live preview of the in-progress edit operation
 - **blue** (wire/reference): profile, curve, section, surface-from-lines
 - **neutral** (transforms/fillet/chamfer): untinted at the whole-overlay level, with the produced band highlighted per-face instead (roadmap Tier 1 "Per-band operation-preview colouring", closed)
 
-**Per-band colouring** (roadmap Tier 1, closed): pass the draft op's band face ids and produced faces keep the full-strength intent treatment while retained context recedes (desaturated grey, opacity ×0.45 vs ×0.75 — both via `baseOpacity`, never raw writes). The tint math lives in `src/webview/opPreviewBands.ts` (`applyPreviewTint`, pure THREE, unit-tested headless); `main.ts` looks the band up off `opPreviewResult.opBuckets` by replay-tail index with a status-line legend (`Preview op N — green: …; grey: retained`, N in full-history numbering). A null/empty set keeps the uniform treatment — the neutral fallback for ambiguous roles, missing buckets, and the mesh path (no buckets client-side).
+**Per-band colouring** (the "Per-band operation-preview colouring" feature, closed): pass the draft op's band face ids and produced faces keep the full-strength intent treatment while retained context recedes (desaturated grey, opacity ×0.45 vs ×0.75 — both via `baseOpacity`, never raw writes). The tint math lives in `src/webview/opPreviewBands.ts` (`applyPreviewTint`, pure THREE, unit-tested headless); `main.ts` looks the band up off `opPreviewResult.opBuckets` by replay-tail index with a status-line legend (`Preview op N — green: …; grey: retained`, N in full-history numbering). A null/empty set keeps the uniform treatment — the neutral fallback for ambiguous roles, missing buckets, and the mesh path (no buckets client-side).
 
 **Appearance (session-only, never persisted — mirrors `toggleGrid`'s "always wins once set"):**
 

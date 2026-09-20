@@ -506,8 +506,8 @@ async function readModelBytes(modelPath: string): Promise<Uint8Array> {
 }
 
 /**
- * `.scad`-aware source reader for every occt-gated tool (roadmap Tier 2
- * item 2, path (b), closed): `resolveEffectiveSource` over the tool's
+ * `.scad`-aware source reader for every occt-gated tool (OpenSCAD support,
+ * path (b)): `resolveEffectiveSource` over the tool's
  * already-required route, so `.scad` converts to `.csg` bytes via the
  * user-installed openscad binary before any pipeline call and downstream
  * only ever sees step/iges/brep/csg. Returns `{ok: false}` (never throws)
@@ -1404,7 +1404,7 @@ export async function checkInterferenceAllTool(
 // resolve_selector
 
 /**
- * Re-executable selectors (roadmap item 1, ladder rungs 1–3) — resolves
+ * Re-executable selectors (the "Selector synthesis" feature, ladder rungs 1–3) — resolves
  * `{version: 1, source: {kind: "bucket", op, role}}` ("the faces op N produced
  * in role R") against the CURRENT op list, so a recorded `OpBucket`'s
  * step-local ids are never trusted against a newer shape; an optional
@@ -1481,7 +1481,7 @@ export async function resolveSelectorTool(
 // synthesize_selector
 
 /**
- * Constant-free-first synthesis (roadmap item 1, induction) — turns a picked
+ * Constant-free-first synthesis ("Selector synthesis" induction) — turns a picked
  * `entityId` produced by op `op` in bucket `role` into a `SelectorQuery`
  * that re-executes to exactly that entity, verified live before returning
  * (exact re-execution plus `centreDistance ~ 0` on every surviving match).
@@ -4469,7 +4469,7 @@ export async function exportBRepTool(
  * loudly rather than claiming verified highlights). An up-to-date document
  * (empty tail) succeeds with `baked: 0` and no rewrite.
  *
- * Cross-process caveat (roadmap Tier 0's documented `dirtyGuard` gap): this
+ * Cross-process caveat (the documented cross-process `dirtyGuard` gap): this
  * server cannot see whether a human has the file open in VS Code. Callers
  * should save (or close) the editor session first — an interactive autosave
  * racing this write can clobber either side's state.

@@ -55,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | 
 
 export function deactivate(): void {
   // Per-editor resources are disposed with their webview panels; the one
-  // global is the SpaceMouse reader (roadmap Tier 2 item 2) — release the
+  // global is the SpaceMouse reader — release the
   // device and stop its reconnect timer so the host exits cleanly.
   disconnectSpaceMouse();
 }

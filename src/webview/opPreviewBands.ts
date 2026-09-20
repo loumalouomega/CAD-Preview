@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { bucketSummary, type OpBucket } from "../opBuckets";
 
 /**
- * Per-band operation-preview colouring (roadmap Tier 1) — the pure half.
+ * Per-band operation-preview colouring (the same-named roadmap feature) — the pure half.
  * The draft op's own bucket comes back on `opPreviewResult.opBuckets` with
  * a replay-tail-relative `op` index (the same convention `opOutcomes`
  * already uses: the replay list is `[...tailOps, draft]`, so the draft is

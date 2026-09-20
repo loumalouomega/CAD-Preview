@@ -108,12 +108,12 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   iges: { strategy: "occt", format: "iges" },
   igs: { strategy: "occt", format: "iges" },
   brep: { strategy: "occt", format: "brep" },
-  // OpenSCAD `.csg` (roadmap Tier 2 item 2, path (a), closed): the fully
+  // OpenSCAD `.csg` (path (a) of the OpenSCAD support feature): the fully
   // evaluated model as text — parsed by `csgImport.ts` (pure) and built
   // kernel-side by `csgModel.ts` into an opaque base shape (like a STEP
   // import, not an op history). OCCT strategy, never a meshio format.
   csg: { strategy: "occt", format: "csg" },
-  // OpenSCAD `.scad` (roadmap Tier 2 item 2, path (b), closed): evaluated by
+  // OpenSCAD `.scad` (path (b) of the OpenSCAD support feature): evaluated by
   // a user-installed `openscad` binary into `.csg` text (`src/scadService.ts`,
   // host-side so relative use/include/import resolve), then the shipped
   // `.csg` pipeline takes over — downstream only ever sees format "csg".

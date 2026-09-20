@@ -1,5 +1,5 @@
 /**
- * SpaceMouse → camera dispatch (roadmap Tier 2 item 2, Phase 1).
+ * SpaceMouse → camera dispatch ("Native 6-DOF SpaceMouse input", Phase 1).
  *
  * Pure and DOM/THREE-free: maps a raw device motion event onto the
  * minimal viewer interface below, so it unit-tests headless with a fake

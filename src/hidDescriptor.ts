@@ -1,6 +1,6 @@
 /**
  * HID report-descriptor walk answering one question — does this device
- * declare itself a 6DOF controller? (roadmap Tier 2 item 2, Phase-0 probe
+ * declare itself a 6DOF controller? ("Native 6-DOF SpaceMouse input", Phase-0 probe
  * — hardware-free, unit-tested).
  *
  * Pure and dependency-free: walks the HID short-item encoding (prefix byte

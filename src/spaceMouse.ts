@@ -1,5 +1,5 @@
 /**
- * SpaceMouse-class 6DOF input, host side (roadmap Tier 2 item 2, Phase 1).
+ * SpaceMouse-class 6DOF input, host side ("Native 6-DOF SpaceMouse input", Phase 1).
  *
  * The extension host is a plain Node.js process (not a browser sandbox),
  * so it reads the device directly via `node-hid` (MIT, NAPI) and forwards

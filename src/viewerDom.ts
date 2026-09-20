@@ -187,6 +187,11 @@ export function viewerBodyHtml(): string {
         <div id="standard-parts-status"></div>
       </div>
     </div>
+    <!-- Sidebar resize handle. A real <button role="separator"> inside #side
+         (not a sibling divider): it is keyboard-operable (ArrowLeft/Right
+         step, Home/End jump) and its hit zone is #side's own edge, so it
+         tracks the width it changes. Wired by src/webview/sidebarResizer.ts. -->
+    <button id="sidebar-resize" type="button" role="separator" title="Drag or press ArrowLeft/ArrowRight to resize the sidebar"></button>
     <div id="app">
       <canvas id="markup-canvas"></canvas>
       <!-- Split-view pane separators — pure visual dividers over the single

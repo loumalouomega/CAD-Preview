@@ -33,22 +33,6 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
 
-### Tier 1 — Correctness and bounded daily-use improvements
-
-*Admission: a concrete gap in an existing workflow with a bounded first increment. Reuse is substantial, but estimates include the affected state transitions and test surface, not just the number of new calls.*
-
-#### Sidebar layout and keyboard usability (**M**, webview)
-
-- **Why:** collapsible sections help, but a narrow fixed sidebar with many headers and actions still makes forms hard to reach.
-- **First increment:** a resizable sidebar with usable minimum widths, predictable scrolling, and a view-controls placement that does not cover sidebar actions. Audit keyboard focus for dropdowns, collapsible headers and inline rename fields; Escape restores focus to the trigger.
-- **Done when:** every action is reachable at a small editor size and increased UI zoom, headers do not overlap, and keyboard-only users can select a form, apply an operation and return to the canvas. Verify light/dark/high-contrast layouts and regenerate screenshots.
-
-#### Contribution templates and durable references (**S** each, maintenance)
-
-- **Issue/PR templates — issue #30:** add bug and feature-request forms plus a concise PR checklist. Ask for source format, extension version, reproduction steps and an optional minimal fixture; explain how to reproduce with a non-confidential model. Separate a viewer failure from an MCP/kernel failure without requiring users to know the architecture.
-- **Reference cleanup:** replace positional `roadmap item N` citations in code, docs and scripts with feature names or durable documentation links. Preserve historical explanations where relevant; do not mechanically substitute today's item at the same number.
-- **Done when:** templates work on GitHub, every rewritten reference has a meaningful destination, and a lightweight documentation check prevents new ordinal-only roadmap citations without rejecting quoted historical examples.
-
 ### Tier 2 — Complete preparation and review workflows
 
 *Admission: a useful extension of shipped infrastructure that spans several modules or needs a product decision. These are new candidates; implement a vertical slice before expanding the option surface.*

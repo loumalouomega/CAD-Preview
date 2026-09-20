@@ -116,6 +116,8 @@ npm run watch      # rebuild on change
 npm test           # run unit tests (vitest)
 ```
 
+Questions or fixes welcome: see [doc/contributing.md](doc/contributing.md) for the development workflow, and use the **issue forms** (bug report / feature request) and the **PR checklist** that GitHub surfaces when opening an item — carrying your reproduction steps and a possible non-confidential fixture is what makes a report actionable.
+
 Press **F5** in VS Code to launch an Extension Development Host, then open any supported file from `examples/`:
 
 | Fixture                   | Format                      |

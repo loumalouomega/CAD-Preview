@@ -122,7 +122,7 @@ export class EditsModel {
 
   /**
    * Moves the stack boundary straight to timeline position `index` in ONE
-   * splice — the op-history-scrubbing primitive (roadmap Tier 2 item 1).
+   * splice — the op-history-scrubbing primitive.
    * `index` addresses the full chronological timeline: applied ops at
    * `0..ops.length-1`, then pending-redo ops after them in {@link redoList}
    * order. Jumping to position k makes the model state "after op k applied":

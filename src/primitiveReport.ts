@@ -1,5 +1,5 @@
 /**
- * Per-solid primitive recognition report (roadmap item 8 Phase 2).
+ * Per-solid primitive recognition report (the "Primitive recognition report" feature).
  *
  * **Facts only — this emits no ops and reclassifies nothing.** Per solid it
  * reports the face inventory by surface type, a candidate primitive when the

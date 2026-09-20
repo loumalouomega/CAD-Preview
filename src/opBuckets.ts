@@ -1,5 +1,5 @@
 /**
- * Build-time classification buckets — roadmap item 7 ("Selector synthesis")
+ * Build-time classification buckets — the "Selector synthesis" feature, Phase 1
  * Phase 1, closed. Every topology-changing edit op records, at the moment it
  * runs, which `face-N` ids it produced and what role each plays, so the
  * Edits history can show "this extrude produced: end cap face-13, side walls

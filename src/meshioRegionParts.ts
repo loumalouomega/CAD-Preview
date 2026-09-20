@@ -2,7 +2,7 @@
  * Builds `Part[]` from a meshio++-imported document's region correlation
  * (`src/meshioService.ts`'s `convertToStlBoundaryWithRegions`) — the piece
  * that actually turns a region into a selectable/colourable Part, closing
- * the remaining half of roadmap item 7 ("Richer meshio++ import — auto-
+ * the remaining half of the "Richer meshio++ import — auto-
  * converting regions into Parts"). Pure and WASM-free (only `parseStl` +
  * `segmentCoplanarFacets`, both already DOM/WASM-free), so it runs
  * identically host-side (`provider.ts`'s `handleMeshio`) and headlessly

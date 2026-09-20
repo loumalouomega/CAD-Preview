@@ -123,7 +123,7 @@ export interface EditsPanelCallbacks {
   /** Remove a single op from anywhere in the history list (not just the last one). */
   onRemoveOp: (index: number) => void;
   /** Jump the op stack straight to timeline position `index` in one splice
-   * (op-history scrubbing, roadmap Tier 2 item 1): applied rows roll the
+   * (op-history scrubbing): applied rows roll the
    * model back past them, pending-redo rows re-apply through them. Wired
    * straight to `EditsModel.jumpTo`. */
   onJumpTo: (index: number) => void;
@@ -666,7 +666,7 @@ export class EditsPanel {
   /**
    * Renders the op-history timeline: the applied ops, then — when the redo
    * buffer is non-empty — its ops as additional, visually dimmed pending rows
-   * with continued numbering (op-history scrubbing, roadmap Tier 2 item 1).
+   * with continued numbering (op-history scrubbing).
    * Every row (applied or pending) is clickable and jumps the stack straight
    * to that point in one splice via `onJumpTo`; the ✕ remove button still
    * works per applied row (it stops propagation so removing never also
@@ -1512,7 +1512,7 @@ export class EditsPanel {
     // creation): one generic field, read by `applyButtonDraft`'s wrapped
     // reader on both the Apply and preview paths. `guide` marks the built
     // entity reference-only — rendered dimmed and excluded from feature
-    // profile resolution (roadmap item 10).
+    // profile resolution (construction-geometry guide refusal).
     if (id && GUIDE_KINDS.has(id as never)) f.appendChild(this.boolField("guide", "Construction (guide)", false));
     // The form's Apply row, registered by `applyButtonDraft` during the
     // switch above — appended here, after every param row, so no form can

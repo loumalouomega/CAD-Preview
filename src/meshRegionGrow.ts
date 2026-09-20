@@ -1,6 +1,6 @@
 /**
  * Seeded, dihedral-gated region growing over a welded triangle mesh
- * (roadmap item 9).
+ * (the `fit_mesh_region` region-fitting feature).
  *
  * **Why this exists when `meshFacets.ts`'s `segmentCoplanarFacets` already
  * does a dihedral-gated flood fill.** That function is genuinely host-callable

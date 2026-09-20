@@ -1,5 +1,5 @@
 /**
- * Fit a plane / cylinder / sphere to a region of a mesh (roadmap item 9).
+ * Fit a plane / cylinder / sphere to a region of a mesh (the `fit_mesh_region` region-fitting feature).
  *
  * **Facts only — emits no ops and changes nothing.** Every candidate fit is
  * published with its own residual, and the caller decides which (if any) to

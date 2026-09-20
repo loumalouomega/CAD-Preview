@@ -1,5 +1,5 @@
 /**
- * SpaceMouse-class device discovery ranking (roadmap Tier 2 item 2,
+ * SpaceMouse-class device discovery ranking ("Native 6-DOF SpaceMouse input",
  * Phase-0 probe — hardware-free, unit-tested).
  *
  * Pure and vscode/DOM/HID-free: ranks one enumerated HID interface as a

@@ -87,6 +87,7 @@ import { convertLength, convertLengthBasedProperties, convertVolume, displayUnit
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { setupCollapsiblePanels, type CollapsiblePanelsHandle } from "./collapsiblePanels";
+import { setupSidebarResizer, clampSidebarWidth, SIDEBAR_DEFAULT_PX, type SidebarResizerHandle } from "./sidebarResizer";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
@@ -314,17 +315,35 @@ function renderPlanesList(): void {
     const rename = document.createElement("button");
     rename.textContent = "✎";
     rename.title = "Rename";
+    rename.setAttribute("aria-label", "Rename plane");
     rename.addEventListener("click", () => {
       // VS Code webviews block prompt(); rename inline, same as the Parts panel.
       const input = document.createElement("input");
       input.type = "text";
       input.value = plane.name;
       input.className = "plane-row-rename";
-      const commit = () => planesModel.rename(plane.id, input.value);
+      // Escape must CANCEL, never commit. It used to call `renderPlanesList()`
+      // directly, which removes the focused input — removal fires `blur`, whose
+      // listener called `commit()` with the half-typed value anyway, so Escape
+      // silently renamed the plane. A `cancelled` latch skips the blur commit.
+      let cancelled = false;
+      const commit = () => {
+        if (!cancelled) planesModel.rename(plane.id, input.value);
+        rename.focus(); // keyboard audit: rename ends back on the row's trigger
+      };
       input.addEventListener("blur", commit);
       input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") commit();
-        if (e.key === "Escape") renderPlanesList();
+        if (e.key === "Enter") {
+          input.blur(); // blur → commit
+        } else if (e.key === "Escape") {
+          e.stopPropagation();
+          cancelled = true;
+          // Restore the row in place — a full `renderPlanesList()` would
+          // unmount this button too, so the refocus below would land on a
+          // detached element and drop focus instead of returning it.
+          row.replaceChild(name, input);
+          rename.focus();
+        }
       });
       row.replaceChild(input, name);
       input.focus();
@@ -425,7 +444,7 @@ function setupPlanesControls(): void {
     setStatus("Added a construction plane.");
   });
 
-  // ── Midplane creator (roadmap item 10's "midplane references" half) ──────
+  // ── Midplane creator (the "Cheap thin-wrapper ops" feature's midplane-references half) ─
   // Computes client-side over the two picked saved planes — the same math and
   // validation `set_plane`'s `midplaneOf` applies headlessly — and stores a
   // RESOLVED plane, per the planes sidecar's "resolved vectors, never a live
@@ -1397,7 +1416,7 @@ const clashPanel = new ClashPanel(document.getElementById("clash-panel")!, {
 // triangulated but not itself one of those FILES) stays ineligible.
 let meshHealthEligibleFormat: MeshParseFormat | null = null;
 let meshHealRequestId: string | null = null;
-// Mesh-ops panel (roadmap Tier 2): requestId latch + meshio eligibility live
+// Mesh-ops panel (the "Mesh-operations panel for meshio sources" feature): requestId latch + meshio eligibility live
 // beside the Mesh Health latch — same stale-response-guard idiom.
 let meshioOpsRequestId: string | null = null;
 
@@ -1766,7 +1785,7 @@ function renderHighlight(): void {
   }
 }
 
-// ── Zoom to selection (roadmap Tier 1) ────────────────────────────────────
+// ── Zoom to selection ────────────────────────────────────
 // One choke point for the Select-menu button and the focused-editor command
 // (`cad-preview.zoomToSelection`, via the `zoomToSelection` host message):
 // frames the transient selection in the focused pane via
@@ -2844,7 +2863,7 @@ function setupSelectionControls(): void {
     menu?.close();
   });
 
-  // ── Geometric selection filters (roadmap Tier 2 item 1, Phase 1) ──────────
+  // ── Geometric selection filters (the "Query-based selection filters" feature) ─
   // One registry-driven predicate dropdown + numeric field + seam toggle, run
   // against `collectTargets(viewer.getModel(), selectMode)` and bulk-injected
   // into `SelectionSet`. Pure predicates live in `selectFilters.ts`.
@@ -3492,7 +3511,7 @@ function importSvgPaths(svgText: string): void {
 }
 
 /**
- * Converts a DXF file's entities into standalone sketch ops (roadmap Tier 2
+ * Converts a DXF file's entities into standalone sketch ops (the "SVG/DXF import → profile ops" feature,
  * #1 Phase 1). `parseDxf` already returns validated `EditOp`s (one per
  * LINE/CIRCLE/ARC, per-vertex arcs/lines for LWPOLYLINE/POLYLINE with bulges,
  * otherwise a single closed/open addPolyline/spline) — this just pushes them.
@@ -4140,6 +4159,7 @@ function setupMarkupControls(): void {
 let appearanceControls: AppearanceControlsHandle | null = null;
 let clippingControls: ClippingControlsHandle | null = null;
 let collapsiblePanels: CollapsiblePanelsHandle | null = null;
+let sidebarResizer: SidebarResizerHandle | null = null;
 
 try {
   setupViewControls();
@@ -4161,7 +4181,21 @@ try {
   // layout picker — the toggle has to ask for the save itself rather than
   // relying on `viewer.onViewChanged`.
   collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
+  // Sidebar resize handle. The callback is the USER-facing path only: the
+  // resizer already applied `--side-width` itself (it is the one authority on
+  // that var), so the callback just reflows the canvas — a window `resize`
+  // event does NOT fire for a layout change inside the pane, and viewer.ts's
+  // only other trigger is `window.resize`. The debounced 500 ms autosave
+  // coalesces a whole drag into one sidecar write. `setWider`'s handling of
+  // `notifyResize` must not touch `pickThreshold`/`pointSpriteScale` — those
+  // derive from the MODEL extents, not the viewport, and `notifyResize` calls
+  // the same code `window.onresize` does.
+  sidebarResizer = setupSidebarResizer(applySidebarWidth);
   setupThemeReactivity();
+  // A thin, mutating accessibility net: see `setupIconAriaLabelMirror`. Runs
+  // one MutationObserver with a microtask-batched pass — cheap and covers
+  // every dynamically-built panel row.
+  setupIconAriaLabelMirror();
   // Split view: when the focused pane changes (a click in another pane), UI
   // that mirrors FOCUSED-pane state must re-read it — projection is per-pane,
   // so the Persp/Ortho button can need the other label even though the user
@@ -4171,6 +4205,51 @@ try {
   const message = `View controls failed to initialize: ${(err as Error).message}`;
   console.error(message, err);
   post({ type: "log", message });
+}
+
+/**
+ * Icon-only controls (`title` present, no visible text label, no `aria-label`)
+ * get their title mirrored to `aria-label` automatically, so screen readers
+ * name them and no future panel has to author the string twice (`title`
+ * stays for hover). Runs on a `MutationObserver`, not once: Parts/Tree rows
+ * are built dynamically AFTER setup, so a one-pass pass would systematically
+ * miss every dynamically-created eye/delete button. Idempotent by the
+ * `aria-label === null` guard, so a DOM-authored explicit label always wins.
+ */
+function setupIconAriaLabelMirror(): void {
+  const apply = () => {
+    const labelled = document.querySelectorAll<HTMLElement>("button[title], input[title], select[title]");
+    for (const el of labelled) {
+      if (el.getAttribute("aria-label") !== null) continue;
+      if ((el.textContent ?? "").trim() !== "") continue; // text label present
+      const title = el.getAttribute("title");
+      if (title) el.setAttribute("aria-label", title);
+    }
+  };
+  apply();
+  let queued = false;
+  new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      apply();
+    });
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["title"] });
+}
+
+/** Reflows the 3D canvas after a sidebar width change. A sidebar drag changes
+ * `#side` / `#app` widths WITHOUT a `window.resize` event (the canvas shares
+ * `#app`'s box), so this drives the same code `window.onresize` runs. Model-
+ * derived state (`pickThreshold`, `pointSpriteScale`) is untouched — it is a
+ * function of the model's extents, not the viewport. */
+function applySidebarWidth(): void {
+  viewer.notifyResize();
+  // Persist like every other view change: the debounced autosave coalesces a
+  // whole drag (or a single keyboard step) into one sidecar write. `hasAppliedInitialView`'s
+  // gate lives inside `scheduleViewSave`, so a drag during first-load still
+  // saves nothing ahead of document-restore.
+  scheduleViewSave();
 }
 
 // ── View-state persistence (roadmap "View-state persistence", closed) ──────
@@ -4191,7 +4270,7 @@ try {
 // `ready` handler in `provider.ts` but via independent async reads).
 let pendingViewState: ViewState | null | undefined;
 let hasAppliedInitialView = false;
-// SpaceMouse 6DOF stream state (roadmap Tier 2 item 2): last event time for
+// SpaceMouse 6DOF stream state: last event time for
 // dt-scaled deltas, last button mask for rising-edge Fit/Reset.
 let lastSpaceMouseAt = 0;
 let lastSpaceMouseButtons = 0;
@@ -4231,6 +4310,14 @@ function applyViewState(state: ViewState): void {
   // `onChange`, so reopening a document can't rewrite the sidecar it just read
   // (the same silent-`load()` contract `PartsModel`/`PlanesModel` follow).
   collapsiblePanels?.setCollapsed(state.collapsedPanels ?? []);
+  // Restore, not echo: `setWidth` deliberately never fires the resizer's
+  // `onChange`, so reopening a document can't rewrite the sidecar it just
+  // read (the same contract `setCollapsed` keeps above). Clamping HERE too:
+  // the sidecar parse clamps, but this handler can receive a raw/unparsed
+  // payload (the harness does exactly that), and a garbage width must fall
+  // back to the default rather than silently keep whatever came before.
+  const sidebarWidth = clampSidebarWidth(state.sidebarWidth) ?? SIDEBAR_DEFAULT_PX;
+  sidebarResizer?.setWidth(sidebarWidth);
 }
 
 function applyInitialViewIfNeeded(): void {
@@ -4294,6 +4381,8 @@ function scheduleViewSave(): void {
     }
     const collapsed = collapsiblePanels?.getCollapsed() ?? [];
     if (collapsed.length > 0) view.collapsedPanels = collapsed;
+    const sidebarWidth = sidebarResizer?.getWidth() ?? SIDEBAR_DEFAULT_PX;
+    if (sidebarWidth !== SIDEBAR_DEFAULT_PX) view.sidebarWidth = sidebarWidth;
     post({ type: "viewChanged", view });
   }, VIEW_SAVE_DEBOUNCE_MS);
 }
@@ -4611,7 +4700,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "spacemouse": {
-      // 6DOF motion event (roadmap Tier 2 item 2): deadzone + normalize +
+      // 6DOF motion event: deadzone + normalize +
       // apply via the standard rotateView/panView/zoomView entry points, so
       // view-state autosave and render-on-demand invalidation compose for
       // free (both ride controls.update() → "change"). Acts on the focused

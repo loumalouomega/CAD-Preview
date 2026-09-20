@@ -1,6 +1,6 @@
 /**
- * SpaceMouse HID input-report parsing + velocity mapping (roadmap Tier 2
- * item 2, Phase-0 probe — hardware-free, unit-tested).
+ * SpaceMouse HID input-report parsing + velocity mapping ("Native 6-DOF
+ * SpaceMouse input", Phase-0 probe — hardware-free, unit-tested).
  *
  * Pure and dependency-free: parses the raw report Buffers `node-hid`
  * delivers via `device.on("data")` into normalized velocities. Report
