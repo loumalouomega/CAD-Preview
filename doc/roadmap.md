@@ -26,12 +26,25 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
+| Baseline | Installed, locked and documented kernel versions agree | The meshio++ upgrade pass | Full smoke and perf runs against the new artifact, with flipped assertions recorded |
 | Correctness | The view and saved state tell the same story | Bounded clash work (clip visibility and save/reopen coverage closed) | Targeted tests catch the documented failure, including recovery paths |
 | Everyday use | Less typing and fewer navigation steps | Zoom to selection; sidebar usability; named-plane profiles | Complete workflows on both a small part and a multi-body model |
 | Preparation and handoff | Repeatable meshing and review output | Mesh presets; drawing settings; batch export | Reopenable outputs with explicit settings and per-file results |
 | Exploration | Decide which kernel ideas deserve implementation | The probe harness, then B-rep validity; surface, edge, boundary-layer and takeoff probes in that order | Analytic or independently checked results, with failure cases and timing, each probe's write-up filed where the section says |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
+
+### Tier 0 — Keep the verified baseline current
+
+*Admission: recurring maintenance where drift silently invalidates verification already recorded in `CLAUDE.md`. Nothing here adds a feature; each item restores the guarantee that what is documented is what ships. Ahead of Tier 1 because every later item inherits whatever kernel behaviour this tier leaves stale.*
+
+#### Keep meshio++ up to date (**S–M**, dependency + verification)
+
+- **Current drift (measured 2026-09-20):** `package.json`/`package-lock.json` pin `@meshioplusplus/wasm` at `^10.21.1`; the development checkout's `node_modules` still holds **10.20.2** (an `npm install` was never re-run after the last bump — the same lockfile-versus-installed gap that left 9.9.0 in place when dependabot had already moved the manifest to 10.0.0); `npm view` reports **13.0.0** as latest, so majors 11, 12 and 13 have never been evaluated. The upstream source checkout is tagged v14.0.0.
+- **First increment:** `npm install` to make the checkout match the lockfile, then a reviewed bump to the latest published release. Read the upstream changelog entries for every version skipped (v11.2.0–v11.6.0 were the WASM-parity tiers, so new bindings are likely; v13.0.0's "Breaking" fallback change and v14.0.0's ABI change are Python-shim and C++-header changes that should not reach the WASM surface, but confirm rather than assume).
+- **Re-verify against the installed artifact, not the git checkout** (which can be ahead or behind the published tarball): still `"type": "module"` with no `exports` map, so the dynamic `import()` stays mandatory; `resolveVariant()` still returns the threaded build under Node, so `{ variant: "seq" }` stays load-bearing; glue stdio still routes through `console.log`/`console.error` with no raw fd writes (stdout is the MCP JSON-RPC channel); the glue still self-locates its `.wasm` through `import.meta.url`, so the four-file `.vscodeignore` carve-out must still match the published `files` array; the `cell_data["surface:parent_cell"]` provenance name, `extractSurface`/`convertCells`/`readMesh`/`readMetadata`/`dataInfo` signatures and `Float64Array` marshalling across `kernelIpc.ts` are unchanged. Record the packaged `.wasm` size delta.
+- **Known upstream limitations to re-check, in both directions:** the XDMF Mixed-topology reimport failure and the writers that embed no provenance (`med`/`cgns`/`xdmf`/`hmf`/`wkt`) are pinned by smoke assertions that are meant to flip when upstream fixes them — a flip is a finding to record and re-scope, not a regression to suppress. Then check whether newly published capability (WASM-parity bindings, transient/partitioned reads) is worth a follow-up item; adopt nothing speculatively in the bump itself.
+- **Done when:** the installed, locked and latest-compatible versions agree; `tsc`, `npm test`, `npm run build`, `npm run mcp:smoke` and `npm run perf` pass against them; a packaged VSIX contains exactly the runtime files the loader resolves; every intentionally flipped assertion and every changed invariant is recorded in `CLAUDE.md`'s meshio++ section with the version it was verified at; and the release checklist includes `npm outdated @meshioplusplus/wasm` so this drift is caught at the next tag instead of the next incident. The corpus item in Tier 1 ("Dependency and format compatibility corpus") is what makes each future pass cheaper; this item is the recurring action itself and should not wait for it.
 
 ### Tier 1 — Complete preparation and review workflows
 
