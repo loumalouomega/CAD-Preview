@@ -50,6 +50,9 @@ import {
   setPlane,
   setMeshOptions,
   pinAnnotation,
+  saveMeshPreset,
+  listMeshPresets,
+  applyMeshPreset,
   type Pipeline,
   type ToolContext,
   exportDrawingSheetTool,
@@ -2760,6 +2763,105 @@ describe("set_mesh_options", () => {
     const result = await setMeshOptions({ path: stpModel, options: { dimension: 7 as never } });
     expect(result.options.dimension).toBe(DEFAULT_MESH_OPTIONS.dimension);
     expect(result.warnings.some((w) => w.includes("dimension"))).toBe(true);
+  });
+});
+
+describe("mesh presets (save/list/apply)", () => {
+  const presetLib = () => path.join(dir, "presets.json");
+  const bundledFile = () => path.join(dir, "dist", "mesh-presets", "starter-presets.json");
+
+  async function writeBundled() {
+    await fs.mkdir(path.join(dir, "dist", "mesh-presets"), { recursive: true });
+    await fs.writeFile(
+      bundledFile(),
+      JSON.stringify({
+        version: 1,
+        presets: {
+          "coarse-preview": {
+            name: "coarse-preview",
+            unit: "mm",
+            engine: "gmsh",
+            options: { dimension: 3, sizeMax: 5 },
+          },
+        },
+      }),
+      "utf8"
+    );
+  }
+
+  it("save_mesh_preset persists and warns on invalid fields, refusing collisions without overwrite", async () => {
+    const lib = presetLib();
+    const saved = await saveMeshPreset({
+      libraryPath: lib,
+      name: "mine",
+      options: { sizeMax: 2, dimension: 7 as never },
+      unit: "mm",
+      engine: "gmsh",
+    });
+    expect(saved.presetCount).toBe(1);
+    expect(saved.warnings.some((w) => /dimension/.test(w))).toBe(true);
+    await expect(saveMeshPreset({ libraryPath: lib, name: "mine", options: {} })).rejects.toThrow(/overwrite/);
+    const replaced = await saveMeshPreset({ libraryPath: lib, name: "mine", options: { sizeMax: 3 }, overwrite: true });
+    expect(replaced.replaced).toBe(true);
+    expect(replaced.warnings.some((w) => /Replaced/.test(w))).toBe(true);
+  });
+
+  it("list_mesh_presets unions bundled and user libraries, caller winning collisions", async () => {
+    await writeBundled();
+    const lib = presetLib();
+    await saveMeshPreset({ libraryPath: lib, name: "coarse-preview", options: { sizeMax: 9 } });
+    const listed = await listMeshPresets({ libraryPath: lib, extensionPath: dir });
+    expect(listed.bundled).toEqual(["coarse-preview"]);
+    expect(listed.presets.map((p) => p.name)).toEqual(["coarse-preview"]);
+    expect(listed.warnings.some((w) => /collision/i.test(w))).toBe(true);
+  });
+
+  it("list_mesh_presets with no library reads as empty with a warning, never an error", async () => {
+    const listed = await listMeshPresets({ extensionPath: dir });
+    expect(listed.presets).toEqual([]);
+    expect(listed.warnings.some((w) => /No presets found/.test(w))).toBe(true);
+  });
+
+  it("apply_mesh_preset converts units, pins the engine, and writes .mesh.json + .geo", async () => {
+    const lib = presetLib();
+    await saveMeshPreset({
+      libraryPath: lib,
+      name: "inchy",
+      options: { sizeMin: 0.1, sizeMax: 1 },
+      unit: "in",
+      engine: "gmsh",
+    });
+    const applied = await applyMeshPreset({ libraryPath: lib, name: "inchy", path: stpModel });
+    expect(applied.options.sizeMin).toBeCloseTo(2.54, 10);
+    expect(applied.options.sizeMax).toBeCloseTo(25.4, 10);
+    expect(applied.options.engine).toBe("gmsh");
+    expect(applied.geoScriptRegenerated).toBe(true);
+    expect(applied.warnings.some((w) => /converted from in to mm/.test(w))).toBe(true);
+    // The write is the same one set_mesh_options performs — readable back.
+    const { readMeshOptions } = await import("./mcpSidecars");
+    expect(await readMeshOptions(stpModel)).toEqual(applied.options);
+    const geo = await fs.readFile(geoScriptPath(stpModel), "utf8");
+    expect(geo).toContain("Mesh.MeshSizeMax = 25.4;");
+  });
+
+  it("apply_mesh_preset warns about engine-ignored fields and throws for unknown names", async () => {
+    const lib = presetLib();
+    await saveMeshPreset({
+      libraryPath: lib,
+      name: "robust",
+      options: { elementOrder: 2 },
+      engine: "ftetwild",
+    });
+    const applied = await applyMeshPreset({ libraryPath: lib, name: "robust", path: stpModel });
+    expect(applied.options.engine).toBe("ftetwild");
+    expect(applied.warnings.some((w) => /"elementOrder".*fTetWild/.test(w))).toBe(true);
+    await expect(applyMeshPreset({ libraryPath: lib, name: "nope", path: stpModel })).rejects.toThrow(/No mesh preset named/);
+  });
+
+  it("apply_mesh_preset runs a bundled starter with no library file at all", async () => {
+    await writeBundled();
+    const applied = await applyMeshPreset({ name: "coarse-preview", path: stpModel, extensionPath: dir });
+    expect(applied.options.sizeMax).toBe(5);
   });
 });
 

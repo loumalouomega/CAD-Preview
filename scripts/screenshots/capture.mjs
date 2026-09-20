@@ -166,7 +166,20 @@ const SHOTS = [
   { file: "edit-history.png", setup: populate, target: { sel: "#edits-body" } },
   {
     file: "fe-mesh-panel.png",
-    setup: populate,
+    setup: async (page) => {
+      await populate(page);
+      // The Saved-presets picker starts as a placeholder until the host posts
+      // the merged library — post one bundled starter + one user preset so
+      // the shot documents the populated picker, not the pre-hydration state.
+      await post(page, {
+        type: "meshingPresets",
+        presets: [
+          { name: "balanced", description: null, unit: "mm", engine: "gmsh", readOnly: true },
+          { name: "my-coarse", description: "Shop preset", unit: "mm", engine: "gmsh" },
+        ],
+      });
+      await sleep(250);
+    },
     target: { sel: "#meshing-panel" },
   },
   {

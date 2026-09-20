@@ -1,7 +1,7 @@
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import type { MeshOptions, MeshGrading } from "./meshOptions";
+import type { MeshOptions, MeshGrading, MeshEngine } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
@@ -187,6 +187,31 @@ export interface ConstructionPlane {
 }
 
 /**
+ * A named view bookmark (roadmap "Saved view bookmarks", closed) — one saved
+ * inspection viewpoint in a per-document named collection, persisted as a
+ * top-level `bookmarks` sibling of `view` in `<model>.view.json`.
+ *
+ * Stores the same orientation/fit subset `ViewState` persists (a normalized
+ * direction + up vector, reframed from the model's CURRENT bbox on restore via
+ * `Viewer.frameFromDirection`), never raw camera position/target/distance —
+ * which is what keeps a bookmark meaningful after an edit changes the model's
+ * extents, the same reason `ViewState` itself stores a direction. Display mode
+ * and clip ride along (both already global per-document state); explode
+ * preview stays excluded (session-only by design); split layout is never
+ * stored — a bookmark restores into the focused pane only and leaves `layout`
+ * untouched.
+ */
+export interface ViewBookmark {
+  /** User-editable display name, unique within the document's collection. */
+  name: string;
+  viewDirection: [number, number, number];
+  cameraUp: [number, number, number];
+  orthographic: boolean;
+  displayMode: DisplayMode;
+  clip: ClipPlaneState | null;
+}
+
+/**
  * Per-pane camera state — the subset of {@link ViewState} that varies per pane
  * in a split-view layout (roadmap "Split view", Phase 2). Direction + up are
  * the same normalized vectors `ViewState` already persists; orthographic is
@@ -253,6 +278,30 @@ export interface ViewState {
    * display preference, like `displayMode` — no MCP surface, no geometry.
    */
   sidebarWidth?: number;
+  /**
+   * Named view bookmarks (roadmap "Saved view bookmarks", closed) — the
+   * document's inspection-viewpoint collection. Carried on the same
+   * `viewChanged` post as everything else here (the webview is the single
+   * writer of the list), serialized as a top-level sibling of `view` in
+   * `<model>.view.json`, omitted when empty so an untouched sidecar stays
+   * byte-stable. Never applied as a camera — `applyViewState` only reads it
+   * into the menu's list model. Purely a display preference — no MCP surface.
+   */
+  bookmarks?: ViewBookmark[];
+}
+
+/** One saved meshing preset, as the FE Mesh panel lists it. A preset's own
+ * `options` ARE its parameters — stored as-authored with an explicit `unit`
+ * (converted to mm on apply) and a pinned `engine`. `readOnly` marks a
+ * bundled starter (runnable/appliable like any preset, but the panel hides
+ * its Delete button and the host refuses the delete anyway, as a backstop) —
+ * the `MacroSummary.readOnly` precedent. Absent means false. */
+export interface MeshPresetSummary {
+  name: string;
+  description: string | null;
+  unit: DisplayUnit;
+  engine: MeshEngine;
+  readOnly?: boolean;
 }
 
 /** Messages sent from the extension host to the webview. */
@@ -386,6 +435,11 @@ export type HostToWebview =
       unit?: DisplayUnit;
     }
   | { type: "meshingOptions"; options: MeshOptions }
+  /** The saved meshing-preset library for this document's folder (roadmap
+   * Tier 1 "Reusable meshing presets"). Sent unprompted on `ready` and after
+   * every preset save/delete, so the panel never has to ask — the `macros`
+   * message precedent. */
+  | { type: "meshingPresets"; presets: MeshPresetSummary[] }
   | { type: "viewState"; view: ViewState | null }
   | {
       type: "meshingResult";
@@ -645,6 +699,14 @@ export type WebviewToHost =
   | { type: "meshingChanged"; options: MeshOptions }
   | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
   | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
+  /** Apply a saved meshing preset by name — the host resolves the merged
+   * (user + bundled) library itself, converts units, and writes the
+   * document's `.mesh.json` (+ regenerated `.geo`), re-posting
+   * `meshingOptions` so the panel re-renders. Changes settings only. */
+  | { type: "meshPresetApply"; name: string }
+  /** Save the current options as a preset; the host prompts for a name. */
+  | { type: "meshPresetSaveCurrent" }
+  | { type: "meshPresetDelete"; name: string }
   | { type: "screenshotButtonClicked" }
   | { type: "promoteToBrepButtonClicked" }
   | { type: "repairMeshButtonClicked" }

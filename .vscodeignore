@@ -70,6 +70,9 @@ icons/**
 # `copyMacros()`, resolved at runtime via `bundledMacrosPath`) — exclude the
 # source dir so the packaged .vsix carries exactly one copy.
 macros/**
+# Same for `mesh-presets/` (roadmap Tier 1 "Reusable meshing presets"):
+# source ships as `dist/mesh-presets/`, resolved via `bundledMeshPresetsPath`.
+mesh-presets/**
 scripts/screenshots/**
 scripts/mcp-smoke/**
 scripts/perf/**

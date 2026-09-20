@@ -50,18 +50,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Design dependency:** specify comparison/write race guarantees honestly. Content fingerprints alone are not an atomic cross-process transaction; stronger guarantees may require shared locking or an explicit protocol.
 - **Done when:** a reproducible local-edit/external-write race surfaces a conflict instead of silently discarding either version. No automatic merge of geometry-op lists or positional entity ids.
 
-#### Saved view bookmarks (**M**, webview + sidecar)
-
-- **Reuse:** `.view.json` restores the latest view; it is not a named collection of inspection viewpoints.
-- **Scope:** save, rename, replace and delete camera/projection/clip bookmarks; restore the focused pane, with a deliberate policy for a whole split layout. Decide whether bookmarks preserve only orientation/fit or also normalized pan and zoom before choosing the schema.
-- **Done when:** two named inspection views survive reopen and external reconciliation, restore without a save loop, and remain meaningful after a model-size change. Pure display bookmarks need no new MCP tool unless a headless render workflow is explicitly added.
-
-#### Reusable meshing presets (**M**, UI + MCP)
-
-- **Reuse:** shared `MeshOptions` validation and the macro library's bundled-plus-user-library pattern.
-- **Scope:** named option presets with explicit units and engine compatibility. Start with global options; leave Part-specific sizing and entity assignments in the document. Applying a preset changes settings but does not generate or save a source automatically.
-- **Done when:** the same preset produces equivalent effective options in UI and MCP, invalid fields are reported, and fTetWild-inapplicable Gmsh options are clearly identified. Labels such as “coarse” must not imply a mesh-quality guarantee.
-
 #### Measured mesh-refinement comparison (**M–L**, headless first)
 
 - **User goal:** compare mesh cost and quality at several sizes before choosing one.

@@ -46,6 +46,9 @@ import {
   screenshotShapeTool,
   type SnapshotView,
   listParametricScripts,
+  listMeshPresets,
+  applyMeshPreset,
+  saveMeshPreset,
   listStandardHoleSizes,
   listWorkspaceModels,
   searchStandardPartsTool,
@@ -1161,6 +1164,55 @@ server.registerTool(
   },
   wrap((args: { path: string; options: Record<string, unknown> }) =>
     setMeshOptions({ path: args.path, options: args.options as Partial<MeshOptions> })
+  )
+);
+
+const presetLibraryPath = z.string().describe("Absolute path to the mesh-preset library JSON file (you name it; it is created on first save)");
+const optionalPresetLibraryPath = z.string().optional().describe("Absolute path to your mesh-preset library JSON file. Omit to use the bundled starter presets (coarse-preview, balanced, fine-detail, robust-repair) — pass it to union that file's entries on top (yours win name collisions).");
+
+server.registerTool(
+  "save_mesh_preset",
+  {
+    description:
+      "Save the given mesh options as a named, reusable preset in a library file — the meshing counterpart of save_parametric_script. `options` is a partial MeshOptions (see describe_capabilities); `unit` names the unit its sizes were authored in (mm|cm|m|in|ft, default mm); `engine` pins gmsh|ftetwild (default gmsh). Invalid fields fall back to defaults with a warning. The bundled starters are read-only — libraryPath is always required, nothing ever writes into the bundle. Touches no model and no geometry.",
+    inputSchema: {
+      libraryPath: presetLibraryPath,
+      name: z.string().describe("Unique name within the library; how apply_mesh_preset refers to it"),
+      options: z.looseObject({}).describe("Partial MeshOptions, in `unit`"),
+      unit: z.string().optional().describe("Unit the sizes were authored in: mm | cm | m | in | ft (default mm)"),
+      engine: z.string().optional().describe("Pinned engine: gmsh | ftetwild (default gmsh)"),
+      description: z.string().optional().describe("Free text shown by list_mesh_presets"),
+      overwrite: z.boolean().optional().describe("Replace an existing preset of the same name (default false: a name collision is an error)"),
+    },
+  },
+  wrap((args: { libraryPath: string; name: string; options: Record<string, unknown>; unit?: string; engine?: string; description?: string; overwrite?: boolean }) =>
+    saveMeshPreset({ ...args, options: args.options as Partial<MeshOptions> })
+  )
+);
+
+server.registerTool(
+  "list_mesh_presets",
+  {
+    description:
+      "List the saved meshing presets in a library file with their units and pinned engines, so you can discover what is available without reading the raw JSON. Omit libraryPath to list the bundled starter presets (coarse-preview, balanced, fine-detail, robust-repair); pass it to union that file's entries on top. A missing or empty library reads as empty with a warning, never an error. Preset names describe density intent only — never a mesh-quality guarantee.",
+    inputSchema: { libraryPath: optionalPresetLibraryPath },
+  },
+  wrap((args: { libraryPath?: string }) => listMeshPresets({ ...args, extensionPath }))
+);
+
+server.registerTool(
+  "apply_mesh_preset",
+  {
+    description:
+      "Apply a named meshing preset to a model: writes the preset's options (sizes converted from its authored unit into mm) to <model>.mesh.json and regenerates <model>.geo. Your library file is searched first, then the bundled starter presets — omit libraryPath to apply a starter by name. Part-specific sizing and entity assignments are untouched (presets cover global options only). Changes settings only — never generates a mesh and never saves a source. Fields the preset's engine ignores are reported in warnings, not silently dropped.",
+    inputSchema: {
+      libraryPath: optionalPresetLibraryPath,
+      name: z.string().describe("The preset's name, as reported by list_mesh_presets"),
+      path: modelPath,
+    },
+  },
+  wrap((args: { libraryPath?: string; name: string; path: string }) =>
+    applyMeshPreset({ ...args, extensionPath })
   )
 );
 

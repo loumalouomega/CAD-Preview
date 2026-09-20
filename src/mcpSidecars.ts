@@ -19,6 +19,12 @@ import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 import { parseScriptLibraryJson, serializeScriptLibraryJson, type ScriptLibrary } from "./scriptLibrary";
 import { bundledMacrosPath } from "./starterMacros";
+import {
+  bundledMeshPresetsPath,
+  parseMeshPresetsJson,
+  serializeMeshPresetsJson,
+  type MeshPresetLibrary,
+} from "./meshPresets";
 import { parseViewStateJson } from "./viewStateSidecar";
 import type { ViewState } from "./protocol";
 
@@ -186,6 +192,41 @@ export async function readBundledScriptLibrary(extensionPath: string): Promise<S
   try {
     const text = await fs.readFile(bundledMacrosPath(extensionPath), "utf8");
     return parseScriptLibraryJson(text);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The mesh-preset library at a caller-named path (roadmap Tier 1 "Reusable
+ * meshing presets") — the `readScriptLibrary` shape exactly: a preset is
+ * reusable by definition, so it lives in an explicit caller-named file, not a
+ * hidden per-workspace convention. Missing/unreadable/corrupt yields an empty
+ * library, same bare-catch convention.
+ */
+export async function readMeshPresetLibrary(libraryPath: string): Promise<MeshPresetLibrary> {
+  try {
+    const text = await fs.readFile(libraryPath, "utf8");
+    return parseMeshPresetsJson(text);
+  } catch {
+    return {};
+  }
+}
+
+export async function writeMeshPresetLibrary(libraryPath: string, library: MeshPresetLibrary): Promise<void> {
+  await fs.writeFile(libraryPath, serializeMeshPresetsJson(library), "utf8");
+}
+
+/**
+ * The read-only bundled starter presets — `dist/mesh-presets/
+ * starter-presets.json` beside the bundle (copied there by `esbuild.mjs`'s
+ * `copyMeshPresets()`). Missing/unreadable/corrupt yields an empty library —
+ * a broken bundle degrades to "no starters", never fails a list/apply call.
+ */
+export async function readBundledMeshPresetLibrary(extensionPath: string): Promise<MeshPresetLibrary> {
+  try {
+    const text = await fs.readFile(bundledMeshPresetsPath(extensionPath), "utf8");
+    return parseMeshPresetsJson(text);
   } catch {
     return {};
   }

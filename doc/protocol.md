@@ -383,6 +383,7 @@ type HostToWebview =
   | { type: 'editError'; message: string }
   | { type: 'exportMesh'; requestId: string; format: CadFormat; unit?: DisplayUnit }
   | { type: 'meshingOptions'; options: MeshOptions }
+  | { type: 'meshingPresets'; presets: MeshPresetSummary[] }
   | { type: 'viewState'; view: ViewState | null }
   | { type: 'meshingResult'; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
@@ -642,6 +643,12 @@ Sent once during the `ready` handshake, right after `meshingOptions`, once the h
 ```
 
 In Phase 2 (roadmap "Split view", Phase 2) `view` carries optional `layout` + per-pane `panes` alongside the existing focused/single-pane fields — the message shape is unchanged, only the payload is wider. `layout` defaults to `"1x1"` when absent (an older sidecar or a session that never entered split view); `panes` is row-major, one `PaneViewState` per pane. `view` (the focused direction/up/ortho) stays the single-pane/focused-pane state, so an older build reading a new sidecar still restores sensibly, and vice versa — tolerant-parse. The headless harness (`renderService.ts`, which posts no layout message) and `capture.mjs`'s `populate()` (which posts `{view: null}`) keep getting single-pane.
+
+`view` also carries optional `bookmarks` (roadmap "Saved view bookmarks") — the document's named viewpoint collection, a top-level `bookmarks` sibling of `view` in `<model>.view.json`, omitted when empty. The webview is the single writer of the list (save/rename/replace/delete in the View ▾ menu mutate it in place); every `viewChanged` post carries the current list, and hydration/external reconciliation only re-render the menu rows, never apply one as a camera. Restoring a bookmark reframes the focused pane from the current bbox (split layout untouched) and then posts one deliberate `viewChanged`, so the bookmark view becomes the persisted latest view — the synchronous `controls.update()` echo mid-restore is suppressed by an `applyingBookmark` flag, the `applyingLinkedCamera` precedent.
+
+```json
+{ "type": "viewState", "view": { "viewDirection": [1, 0.8, 1], "cameraUp": [0, 1, 0], "orthographic": false, "displayMode": "shaded", "clip": null, "bookmarks": [{ "name": "Top inspection", "viewDirection": [0, -1, 0], "cameraUp": [0, 0, -1], "orthographic": true, "displayMode": "xray", "clip": null }] } }
+```
 
 ### `meshingResult`
 
@@ -936,6 +943,9 @@ type WebviewToHost =
   | { type: 'meshingChanged'; options: MeshOptions }
   | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
   | { type: 'meshingExport'; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
+  | { type: 'meshPresetApply'; name: string }
+  | { type: 'meshPresetSaveCurrent' }
+  | { type: 'meshPresetDelete'; name: string }
   | { type: 'screenshotButtonClicked' }
   | { type: 'promoteToBrepButtonClicked' }
   | { type: 'repairMeshButtonClicked' }
@@ -1051,6 +1061,15 @@ Sent when the user picks a format in the FE Mesh panel's export `<select>` and c
 
 ```json
 { "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 }, "unit": "in" }
+```
+
+### `meshingPresets` / `meshPresetApply` / `meshPresetSaveCurrent` / `meshPresetDelete`
+
+Reusable meshing presets (roadmap Tier 1 "Reusable meshing presets") — named, shareable `MeshOptions` bundles with explicit authored units and a pinned engine, covering global options only (Part sizing/entity assignments stay in the document). `meshingPresets` is sent unprompted on `ready` and after every preset save/delete (the `macros` message precedent), listing the merged user + bundled-starter library as `MeshPresetSummary[]` (`{name, description, unit, engine, readOnly?}` — bundled starters are `readOnly`, appliable but not deletable). The panel renders them into its "Saved presets" picker via `renderPresets()`. `meshPresetApply` names one; the host resolves the merged library itself (caller file first, then bundled), converts sizes into mm via `effectivePresetOptions` (`src/meshPresets.ts`), writes `.mesh.json` (+ regenerated `.geo`), and re-posts `meshingOptions` so the panel re-renders — settings only, never a generate. `meshPresetSaveCurrent` records the current mm-native options (the host prompts for a name; a dismissed prompt is a quiet no-op). Success/failure surface through the generic `status`/`error` messages — no requestId round trip is needed since the host owns each flow end to end (the `promoteToBrepButtonClicked` precedent).
+
+```json
+{ "type": "meshingPresets", "presets": [{ "name": "balanced", "description": null, "unit": "mm", "engine": "gmsh" }] }
+{ "type": "meshPresetApply", "name": "balanced" }
 ```
 
 ### `ready`

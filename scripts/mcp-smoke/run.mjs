@@ -250,8 +250,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 52, `tools/list exposes 52 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg"]) {
+  assert(tools.length === 55, `tools/list exposes 55 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -2963,6 +2963,62 @@ try {
   const brepOut = path.join(dir, "out.brep");
   const breped = await call("export_brep", { path: model, targetFormat: "brep", outputPath: brepOut });
   assert(breped.editsBaked === 1 && fs.statSync(brepOut).size > 0, "export_brep writes with the edit baked in");
+
+  // Reusable meshing presets (roadmap Tier 1 "Reusable meshing presets",
+  // closed) — save/list/apply over a caller-named library, plus the bundled
+  // starters with no library file at all. The inch-authored preset proves the
+  // convert-on-apply path end to end (stored 0.5 in → effective 12.7 mm);
+  // the ftetwild preset proves engine-ignored fields are reported, not
+  // silently dropped. Applies run against a dedicated copy: `apply_mesh_preset`
+  // writes `<model>.mesh.json`, and the shared `model` fixture must stay
+  // without one for the save_preprocess omission assertion below.
+  const presetModel = path.join(dir, "preset.stp");
+  fs.copyFileSync(model, presetModel);
+  const presetLib = path.join(dir, "presets.json");
+  const savedPreset = await call("save_mesh_preset", {
+    libraryPath: presetLib,
+    name: "smoke-inch",
+    options: { sizeMax: 0.5 },
+    unit: "in",
+    engine: "gmsh",
+  });
+  assert(savedPreset.presetCount === 1, "save_mesh_preset persists the preset");
+  const listedPresets = await call("list_mesh_presets", { libraryPath: presetLib });
+  assert(
+    listedPresets.presets.length >= 1 && listedPresets.presets.some((p) => p.name === "smoke-inch" && p.unit === "in"),
+    `list_mesh_presets unions the caller file (got ${JSON.stringify(listedPresets.presets.map((p) => p.name))})`
+  );
+  assert(
+    listedPresets.bundled.includes("balanced") && listedPresets.bundled.includes("robust-repair"),
+    `list_mesh_presets reports the bundled starters (got ${JSON.stringify(listedPresets.bundled)})`
+  );
+  const appliedPreset = await call("apply_mesh_preset", { libraryPath: presetLib, name: "smoke-inch", path: presetModel });
+  assert(
+    Math.abs(appliedPreset.options.sizeMax - 12.7) < 1e-9,
+    `apply_mesh_preset converts 0.5 in to 12.7 mm (got ${appliedPreset.options.sizeMax})`
+  );
+  assert(
+    appliedPreset.warnings.some((w) => /converted from in to mm/i.test(w)),
+    "apply_mesh_preset reports the unit conversion"
+  );
+  const presetState = await call("get_state", { path: presetModel });
+  assert(
+    Math.abs(presetState.meshOptions.sizeMax - 12.7) < 1e-9,
+    "the applied preset persists as the document's mesh options"
+  );
+  const robustPreset = await call("save_mesh_preset", {
+    libraryPath: presetLib,
+    name: "smoke-robust",
+    options: { elementOrder: 2 },
+    engine: "ftetwild",
+  });
+  assert(robustPreset.presetCount === 2, "a second preset saves alongside the first");
+  const appliedRobust = await call("apply_mesh_preset", { libraryPath: presetLib, name: "smoke-robust", path: presetModel });
+  assert(
+    appliedRobust.options.engine === "ftetwild" &&
+      appliedRobust.warnings.some((w) => /"elementOrder".*fTetWild/i.test(w)),
+    "apply_mesh_preset pins the engine and names the ignored field"
+  );
 
   // Unit conversion on export — a REAL geometric scale, verified end-to-end
   // against the live WASM (not just unit-tested): BREP has no unit metadata

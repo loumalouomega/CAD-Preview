@@ -135,8 +135,11 @@ import type {
 import {
   readBundledScriptLibrary,
   readScriptLibrary,
+  readBundledMeshPresetLibrary,
+  readMeshPresetLibrary,
   readViewState,
   writeScriptLibrary,
+  writeMeshPresetLibrary,
   readEdits as readEditsRaw,
   writeEdits,
   readParts,
@@ -164,6 +167,12 @@ import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson, nextPlaneId } from "./planesSidecar";
 import { parseEditsJson, replayTail } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
+import {
+  effectivePresetOptions,
+  mergePresetLibraries,
+  type MeshPreset,
+  type MeshPresetLibrary,
+} from "./meshPresets";
 import { DISPLAY_UNITS, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 
 type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
@@ -449,6 +458,7 @@ export function describeCapabilities() {
         "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
         "A part's meshSize gives local refinement (B-rep sources only). A part's meshGrading grades the mesh AROUND the part with distance — sizeAtWall within distNear, growing linearly to sizeFar at distFar (set_part; B-rep sources only, same as physical groups and meshSize; ignored on a mesh-format source).",
         'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction), ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction), ftetwildManifoldSurface (force a manifold boundary), ftetwildCoarsen (fewer, larger tets), and ftetwildDisableFiltering (skip interior filtering — returns a hull fill, NOT the part interior; inspection only) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. repair_mesh honors the stored options (still forcing engine/dimension). generate_mesh\'s response reports engineUsed and any fallback warnings.',
+        "save_mesh_preset / list_mesh_presets / apply_mesh_preset manage named, reusable option bundles (the macro library's bundled-plus-user pattern: bundled starters coarse-preview, balanced, fine-detail, robust-repair, plus your own caller-named file). A preset stores global options only — never Part sizing or entity assignments — with explicit authored units (converted to mm on apply) and a pinned engine. Preset names describe density intent, never a mesh-quality guarantee.",
       ],
     },
     headlessLimitations: [
@@ -4018,6 +4028,155 @@ export async function setMeshOptions(params: { path: string; options: Partial<Me
     }
   }
   return { options: merged, geoScriptRegenerated: true, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// Reusable meshing presets: save_mesh_preset / list_mesh_presets /
+// apply_mesh_preset (roadmap Tier 1 "Reusable meshing presets", closed)
+//
+// A preset is a named, shareable MeshOptions bundle with explicit units and a
+// pinned engine — the macro library's bundled-plus-user-library pattern
+// applied to meshing settings. All three functions are kernel-free (no `ctx`):
+// saving/listing touches no model, and applying only writes the document's
+// own `.mesh.json` (+ regenerated `.geo`) via the same `writeMeshOptions`
+// `set_mesh_options` uses. Applying never generates and never saves a source.
+
+/**
+ * Saves a named preset to a caller-named library file.
+ *
+ * Kernel-free and model-free. `options` is validated through the same
+ * `validateMeshOptions` gate every other options write uses (per-field
+ * fallback, reported — never silent); an unknown `unit`/`engine` falls back
+ * to `"mm"`/`"gmsh"` the same way. The bundle is read-only, so (unlike the
+ * script library's optional path) `libraryPath` is always required — nothing
+ * ever writes into the shipped starters.
+ */
+export async function saveMeshPreset(params: {
+  libraryPath: string;
+  name: string;
+  options: Partial<MeshOptions>;
+  unit?: string;
+  engine?: string;
+  description?: string;
+  overwrite?: boolean;
+}) {
+  const name = params.name.trim();
+  if (name === "") throw new Error("A preset name is required.");
+  if (!params.options || typeof params.options !== "object") {
+    throw new Error("options must be an object of MeshOptions fields — see describe_capabilities.");
+  }
+
+  const library = await readMeshPresetLibrary(params.libraryPath);
+  const existed = Object.prototype.hasOwnProperty.call(library, name);
+  if (existed && params.overwrite !== true) {
+    throw new Error(`A preset named "${name}" already exists — pass overwrite: true to replace it.`);
+  }
+
+  const merged = validateMeshOptions({ ...params.options });
+  if (!merged) throw new Error("options must be an object of MeshOptions fields.");
+  const unit: MeshPreset["unit"] =
+    typeof params.unit === "string" && (DISPLAY_UNITS as readonly string[]).includes(params.unit)
+      ? (params.unit as MeshPreset["unit"])
+      : "mm";
+  const engine: MeshPreset["engine"] = params.engine === "ftetwild" ? "ftetwild" : "gmsh";
+
+  const warnings: string[] = [];
+  if (params.unit != null && unit !== params.unit) {
+    warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Stored as "mm".`);
+  }
+  if (params.engine != null && engine !== params.engine) {
+    warnings.push(`Unknown engine "${params.engine}" — valid: gmsh, ftetwild. Stored as "gmsh".`);
+  }
+  for (const key of Object.keys(params.options)) {
+    if (!(key in DEFAULT_MESH_OPTIONS)) warnings.push(`Unknown option "${key}" ignored.`);
+    else if (
+      JSON.stringify((merged as unknown as Record<string, unknown>)[key]) !==
+      JSON.stringify((params.options as Record<string, unknown>)[key])
+    ) {
+      warnings.push(
+        `Option "${key}" was invalid or inconsistent and fell back to ${JSON.stringify((merged as unknown as Record<string, unknown>)[key])}.`
+      );
+    }
+  }
+  if (existed) warnings.push(`Replaced the existing preset "${name}".`);
+
+  const entry: MeshPreset = { name, unit, engine, options: merged };
+  if (params.description != null) entry.description = params.description;
+  library[name] = entry;
+  await writeMeshPresetLibrary(params.libraryPath, library);
+
+  return { name, replaced: existed, presetCount: Object.keys(library).length, warnings };
+}
+
+/**
+ * Lists presets with their units/engines, so an agent can discover what is
+ * available without reading the raw library JSON. Kernel-free (no `ctx`).
+ *
+ * `libraryPath` is optional: omit it to list just the bundled starters, pass
+ * it to union that file's entries on top (the caller's own entry wins a name
+ * collision, reported in `warnings`). `extensionPath` locates the bundled
+ * file and is injected by `mcpServer.ts` (never part of the tool schema);
+ * without it only the caller file is read.
+ */
+export async function listMeshPresets(params: { libraryPath?: string; extensionPath?: string }) {
+  const user = params.libraryPath ? await readMeshPresetLibrary(params.libraryPath) : {};
+  const bundled = params.extensionPath ? await readBundledMeshPresetLibrary(params.extensionPath) : {};
+  const { merged: library, collisions } = mergePresetLibraries(bundled, user);
+  const presets = Object.values(library).map((entry) => ({
+    name: entry.name,
+    description: entry.description ?? null,
+    unit: entry.unit,
+    engine: entry.engine,
+  }));
+  presets.sort((a, b) => a.name.localeCompare(b.name));
+  const warnings: string[] = [];
+  if (presets.length === 0) {
+    warnings.push(
+      `No presets found${params.libraryPath ? ` at ${params.libraryPath}` : ""} (a missing or empty library reads as empty, never an error).`
+    );
+  }
+  if (collisions.length > 0) {
+    warnings.push(
+      `Name collision(s) with the bundled starter presets — your file wins: ${collisions.join(", ")}.`
+    );
+  }
+  return {
+    libraryPath: params.libraryPath ?? null,
+    bundled: Object.keys(bundled).sort(),
+    presets,
+    warnings,
+  };
+}
+
+/**
+ * Applies a named preset to a model: resolves the merged library (caller file
+ * first, then bundled starters), converts the preset's authored sizes into
+ * mm-native options, and writes the document's `.mesh.json` (+ regenerated
+ * `.geo`) — the same write `set_mesh_options` performs. Part-specific sizing
+ * and entity assignments are untouched (presets cover global options only);
+ * nothing is generated and no source is saved.
+ */
+export async function applyMeshPreset(params: {
+  libraryPath?: string;
+  extensionPath?: string;
+  name: string;
+  path: string;
+}) {
+  const modelPath = params.path;
+  requireRoute(modelPath);
+  const user = params.libraryPath ? await readMeshPresetLibrary(params.libraryPath) : {};
+  const bundled = params.extensionPath ? await readBundledMeshPresetLibrary(params.extensionPath) : {};
+  const { merged: library } = mergePresetLibraries(bundled, user);
+  const entry = library[params.name];
+  if (!entry) {
+    const known = Object.keys(library).sort();
+    throw new Error(
+      `No mesh preset named "${params.name}"${known.length > 0 ? ` — known: ${known.join(", ")}` : " (the library is empty)"}.`
+    );
+  }
+  const { options, warnings } = effectivePresetOptions(entry);
+  await writeMeshOptions(modelPath, options);
+  return { name: params.name, options, geoScriptRegenerated: true, warnings };
 }
 
 // ---------------------------------------------------------------------------

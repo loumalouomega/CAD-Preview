@@ -195,6 +195,20 @@ function copyMacros() {
   console.log(`Copied starter-library.json → dist/macros/starter-library.json (${(fs.statSync(dst).size / 1e3).toFixed(1)} KB)`);
 }
 
+/**
+ * Copy the bundled starter meshing presets to dist/ so they ship with the
+ * packaged extension AND are beside `dist/mcp-server.js` for headless use
+ * (roadmap Tier 1 "Reusable meshing presets"). Same recipe as `copyMacros()`
+ * above — data read as JSON at runtime, never bundled into the JS.
+ */
+function copyMeshPresets() {
+  const src = path.join(__dirname, "mesh-presets", "starter-presets.json");
+  const dst = path.join(__dirname, "dist", "mesh-presets", "starter-presets.json");
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.copyFileSync(src, dst);
+  console.log(`Copied starter-presets.json → dist/mesh-presets/starter-presets.json (${(fs.statSync(dst).size / 1e3).toFixed(1)} KB)`);
+}
+
 if (watch) {
   const ctxExt = await esbuild.context(extensionConfig);
   const ctxMcp = await esbuild.context(mcpConfig);
@@ -203,6 +217,7 @@ if (watch) {
   await Promise.all([ctxExt.watch(), ctxMcp.watch(), ctxKernel.watch(), ctxWv.watch()]);
   copyWasm();
   copyMacros();
+  copyMeshPresets();
   console.log("esbuild: watching…");
 } else {
   await Promise.all([
@@ -213,4 +228,5 @@ if (watch) {
   ]);
   copyWasm();
   copyMacros();
+  copyMeshPresets();
 }

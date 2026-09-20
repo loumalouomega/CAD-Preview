@@ -589,6 +589,61 @@ body.sidebar-resizing {
   background: var(--vscode-editorWidget-border, #454545);
 }
 
+/* Saved view bookmarks (roadmap "Saved view bookmarks") — rows inside the
+ * View ▾ menu. One `.bookmark-row` per bookmark: the name restores on click,
+ * the three small buttons replace/rename/delete it. `#bookmark-name-row`'s
+ * own `.hidden` rule is load-bearing: there is no global `.hidden` rule in
+ * this file (the `#hover-tip.hidden` incident), so the class alone would leave
+ * a visible empty box behind. */
+#toolbar .tb-dropdown .bookmark-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px 0 4px;
+}
+#toolbar .tb-dropdown .bookmark-row .bookmark-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#toolbar .tb-dropdown .bookmark-row .bookmark-act {
+  flex: 0 0 auto;
+  padding: 6px 5px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+#toolbar .tb-dropdown .bookmark-row .bookmark-act:hover {
+  opacity: 1;
+}
+#toolbar .tb-dropdown .bookmark-empty {
+  padding: 2px 12px 4px;
+  font-size: 12px;
+  opacity: 0.6;
+}
+#bookmark-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+}
+#bookmark-name-row.hidden {
+  display: none;
+}
+#bookmark-name-row input,
+#bookmark-list .bookmark-row input.bookmark-rename-input {
+  font: inherit;
+  font-size: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 3px;
+}
+
 /* ── Toolbar ────────────────────────────────────────────────────────── */
 
 /* Above #view-controls (10) and #markup-canvas (5) so an open dropdown panel
