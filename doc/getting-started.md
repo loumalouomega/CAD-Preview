@@ -104,13 +104,24 @@ New Blank Model only ever creates new files: if you point it at a path that alre
 
 Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one after an external change) shows a native VS Code progress notification with a **Cancel** button while OpenCascade parses and tessellates it. Clicking Cancel stops the result from being applied — the toolbar status line immediately shows "Cancelled" — though the underlying computation, once started, always finishes in the background regardless; a subsequent edit or reopen starts a fresh load. Routine edits (adding/undoing an operation) don't show this notification — with the model already parsed, they're normally near-instant and stay on the lightweight toolbar status line only.
 
+### The Advanced Group
+
+The sidebar's top level holds only the four sections that **edit** the document — Components, Parts, Edits, FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
+
+| Advanced ▸ | Sections |
+| --- | --- |
+| **Analysis** | Mass Properties, Clash, Mesh Health, Region fit, Primitives |
+| **Library** | Macros, Standard Parts |
+
+Advanced starts collapsed. Its header carries a badge counting how many of its seven sections apply to the current file (`5 of 7` on a STEP source, where Mesh Health and Region fit want a mesh; a plain `7` when all of them apply), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
+
 ### Collapsing Sidebar Sections
 
-Every sidebar section — Components, Parts, Edits, FE Mesh, Mass Properties, Clash, Mesh Health, Region fit, Primitives, Macros, Standard Parts — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
+Every sidebar section — and the Advanced group itself — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Clash and Primitives are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this.
+Sections that don't apply to the current file (Clash and Primitives are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
 
 ### Resizing the Sidebar
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseViewStateJson, serializeViewStateJson, VIEW_STATE_SIDECAR_VERSION } from "./viewStateSidecar";
 import type { ViewState } from "./protocol";
+import { SIDEBAR_DEFAULT_PX } from "./webview/sidebarResizer";
 
 const validView: ViewState = {
   viewDirection: [1, 0.8, 1],
@@ -115,12 +116,15 @@ describe("view-state: sidebar width (resizable sidebar)", () => {
     expect(parseViewStateJson(serializeViewStateJson("bull.stp", view))).toEqual(view);
   });
 
-  it("omits the field entirely at the 220 default — an untouched document's sidecar stays byte-stable", () => {
+  it("omits the field entirely at the default — an untouched document's sidecar stays byte-stable", () => {
+    // Symbolic, not a literal: the default moved 220 → 272 once and a pinned
+    // number here would have gone on asserting byte-stability at a width that
+    // is no longer the default, i.e. testing nothing.
     const file = JSON.parse(serializeViewStateJson("bull.stp", { ...validView }));
     expect("sidebarWidth" in file).toBe(false);
     expect("sidebarWidth" in file.view).toBe(false);
     expect(serializeViewStateJson("bull.stp", validView)).toBe(
-      serializeViewStateJson("bull.stp", { ...validView, sidebarWidth: 220 })
+      serializeViewStateJson("bull.stp", { ...validView, sidebarWidth: SIDEBAR_DEFAULT_PX })
     );
   });
 

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { COLLAPSIBLE_PANELS, sanitizeCollapsedPanels } from "./collapsiblePanels";
+import {
+  COLLAPSIBLE_PANELS,
+  ADVANCED_CHILDREN,
+  advancedCountLabel,
+  sanitizeCollapsedPanels,
+} from "./collapsiblePanels";
 import { viewerBodyHtml } from "../viewerDom";
 
 /**
@@ -36,10 +41,25 @@ describe("COLLAPSIBLE_PANELS matches the shipped DOM", () => {
     }
   });
 
-  it("covers every direct #side panel, so no section is silently uncollapsible", () => {
+  it("covers every .side-section, so no section is silently uncollapsible", () => {
+    // Keyed off the class the collapse CSS itself uses, not an id suffix: the
+    // Advanced group is `#advanced-group`, and a `-panel`-shaped scan would
+    // have missed it while still passing.
     const side = html.slice(html.indexOf('<div id="side">'), html.indexOf('<div id="app">'));
-    const ids = [...side.matchAll(/<div id="([a-z-]+-panel)"/g)].map((m) => m[1]);
+    const ids = [...side.matchAll(/<div id="([a-z-]+)" class="side-section/g)].map((m) => m[1]);
     expect(new Set(ids)).toEqual(new Set(COLLAPSIBLE_PANELS.map((e) => e.panel)));
+  });
+
+  it("nests exactly the seven Advanced children inside #advanced-body", () => {
+    const start = html.indexOf('<div id="advanced-body">');
+    expect(start).toBeGreaterThan(-1);
+    const body = html.slice(start);
+    for (const id of ADVANCED_CHILDREN) expect(body).toContain(`id="${id}"`);
+    // The four that edit the document must stay OUT of the group.
+    const before = html.slice(0, start);
+    for (const id of ["tree-panel", "parts-panel", "edits-panel", "meshing-panel"]) {
+      expect(before).toContain(`id="${id}"`);
+    }
   });
 
   it("has unique ids", () => {
@@ -77,5 +97,23 @@ describe("sanitizeCollapsedPanels", () => {
   it("accepts every registered id at once", () => {
     const all = COLLAPSIBLE_PANELS.map((e) => e.panel);
     expect(sanitizeCollapsedPanels(all)).toEqual(all);
+  });
+});
+
+describe("advancedCountLabel", () => {
+  it("shows a bare total when every child is available", () => {
+    expect(advancedCountLabel(7, 7)).toBe("7");
+  });
+
+  it("shows N of M once a source format gates some out", () => {
+    expect(advancedCountLabel(5, 7)).toBe("5 of 7");
+    expect(advancedCountLabel(0, 7)).toBe("0 of 7");
+  });
+
+  it("covers the whole Advanced group", () => {
+    expect(ADVANCED_CHILDREN).toHaveLength(7);
+    // Every child must also be individually collapsible, or its chevron is dead.
+    const registered = new Set(COLLAPSIBLE_PANELS.map((e) => e.panel));
+    for (const id of ADVANCED_CHILDREN) expect(registered.has(id)).toBe(true);
   });
 });

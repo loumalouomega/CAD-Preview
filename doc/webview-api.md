@@ -149,10 +149,13 @@ Returns `true` if the root has more than one child (or any grandchild). The tree
 Collapses any sidebar section down to just its header, so the interface can be reduced to the panels actually in use. State persists per document in `<model>.view.json` (`ViewState.collapsedPanels`).
 
 ```typescript
-const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the ten sections, in #side order
+const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the twelve sections, in #side order
+const ADVANCED_CHILDREN: readonly string[]                               // the seven the Advanced group wraps
 
 function sanitizeCollapsedPanels(ids: unknown): string[]
 function setupCollapsiblePanels(onChange: () => void): CollapsiblePanelsHandle | null
+function advancedCountLabel(available: number, total: number): string    // "7" | "5 of 7"
+function setupAdvancedGroupCount(): void
 
 interface CollapsiblePanelsHandle {
   getCollapsed(): string[];
@@ -162,8 +165,11 @@ interface CollapsiblePanelsHandle {
 
 - **Markup contract**: every section is `#x-panel > #x-header.panel-header > button.panel-chevron`, with the chevron as the header's first child. It must be a **sibling** of `#x-title`, never nested inside it — `TreePanel` overwrites `#tree-title.textContent` on every render and would wipe a nested chevron.
 - **A dedicated chevron button, not a click-anywhere header.** Every header already holds action buttons (Isolate/New, Undo/Redo/Clear, Generate/Export/Clear plus two `<select>`s, Compute, Check/Promote/Repair, …) and `#tree-header` additionally holds `<input id="tree-filter">`, which a header-wide handler would toggle on every keystroke's click. A button is also focusable and carries `aria-expanded`.
-- **Three independent visibility mechanisms act on these panels and must not fight**: `#tree-panel.visible` (whether the Components tree is shown at all), the `hidden` property on `#mesh-health-panel`/`#region-fit-panel`/`#primitives-panel`/`#clash-panel` (source-format eligibility), and `.collapsed`. The first two set `display` on the *panel*; the collapse CSS therefore never does — it only hides the panel's own non-header children (`#side > .collapsed > :not(.panel-header)`) and drops the panel to `flex: 0 0 auto`. That last part is load-bearing for `#parts-panel`/`#edits-panel`, the two `flex: 1` panels, where a collapsed header would otherwise still claim its share of the column.
+- **Three independent visibility mechanisms act on these panels and must not fight**: `#tree-panel.visible` (whether the Components tree is shown at all), the `hidden` property on `#mesh-health-panel`/`#region-fit-panel`/`#primitives-panel`/`#clash-panel` (source-format eligibility), and `.collapsed`. The first two set `display` on the *panel*; the collapse CSS therefore never does — it only hides the panel's own non-header children (`#side .side-section.collapsed > :not(.panel-header)`) and drops the panel to `flex: 0 0 auto`. That last part is load-bearing for `#parts-panel`/`#edits-panel`, the two `flex: 1` panels, where a collapsed header would otherwise still claim its share of the column.
 - The `:not(.panel-header)` child selector rather than `#x-body` because the panels are not uniform: `#meshing-panel` has four body siblings (progress/body/status/quality) and `#standard-parts-panel` three (search-row/body/status).
+- **The Advanced group** (`#advanced-group`) wraps the seven read-only/library sections in `#advanced-body`, under two `.advanced-subhead` labels (Analysis, Library). It is a registry entry like any other, so collapsing it persists the same way; it ships **collapsed**, which is the point of the group. Its children keep their own entries and stay independently collapsible.
+- **Why the collapse CSS keys off `.side-section` rather than `#side > .collapsed`**: nesting seven sections one level deeper broke the direct-child selector, and loosening it to `#side .collapsed` would have caught `.tree-list.collapsed` and `.part-entities.collapsed` too, hiding the tree and the per-part entity lists. The `#side` prefix on the class rule is also required, not decoration — `#parts-panel`/`#edits-panel` set `flex: 1` by id at (1,0,0), which beats a bare `.side-section.collapsed` at (0,2,0), leaving a "collapsed" panel still claiming its share of the column.
+- **`setupAdvancedGroupCount` observes the `hidden` attribute** rather than exposing a refresh the four gating panels must each call: eligibility is recomputed from several sites at times this module does not control, and a hand-maintained call list drifts. `advancedCountLabel` is the pure half, so the wording is testable apart from the DOM.
 - **Returns `null`, never throws**, when the sidebar is missing — same reason as `setupDropdown` below.
 - `setCollapsed` is the restore path and deliberately does not fire `onChange`, the same silent-`load()` contract `PartsModel`/`PlanesModel` follow, so reopening a document cannot rewrite the sidecar it just read.
 - `#variables-section` is deliberately **not** collapsible here: it is nested inside the already-scrolling `#edits-scroll`, and the FE Mesh panel's "Advanced settings" chevron is the precedent to copy if nested collapse is ever wanted.

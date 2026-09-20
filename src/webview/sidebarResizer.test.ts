@@ -46,7 +46,7 @@ describe("constants", () => {
     expect(SIDEBAR_MIN_PX).toBeGreaterThanOrEqual(160);
     expect(SIDEBAR_MIN_PX).toBeLessThan(200);
     expect(SIDEBAR_MAX_PX).toBeGreaterThan(SIDEBAR_MIN_PX);
-    expect(SIDEBAR_DEFAULT_PX).toBe(220);
+    expect(SIDEBAR_DEFAULT_PX).toBe(272);
     expect(SIDEBAR_KEYBOARD_STEP_PX).toBeGreaterThan(0);
   });
 });

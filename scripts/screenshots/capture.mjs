@@ -83,6 +83,11 @@ const SHOTS = [
     file: "standard-parts-panel.png",
     setup: async (page) => {
       await populate(page);
+      // Standard Parts lives inside the Advanced group, which ships collapsed
+      // — without opening it the field is in a `display: none` subtree and
+      // the fill below waits out its timeout.
+      await page.click("#advanced-header > .panel-chevron");
+      await page.waitForSelector("#standard-parts-query", { state: "visible" });
       await page.fill("#standard-parts-query", "hex bolt");
       await page.click("#standard-parts-search-btn");
       const requestId = await page.waitForFunction(() => {

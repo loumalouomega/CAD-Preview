@@ -158,13 +158,13 @@ body {
 #side {
   display: none;
   flex-direction: column;
-  /* `--side-width` is set by `sidebarResizer.ts` on <body> (default 220, the
-   * pre-resizer fixed width); the restorer and the #view-controls centring
+  /* `--side-width` is set by `sidebarResizer.ts` on <body> (default 272, its
+   * SIDEBAR_DEFAULT_PX); the restorer and the #view-controls centring
    * rule below read the same property, so they can never disagree. `min-width`
    * clamps to the same floor, so a drag can't shrink a long panel title into
    * a stripped scrollbar-only column even if the var is hand-edited in DevTools. */
-  width: var(--side-width, 220px);
-  min-width: var(--side-width, 220px);
+  width: var(--side-width, 272px);
+  min-width: var(--side-width, 272px);
   /* The resize handle is positioned against #side's own right edge. */
   position: relative;
   flex-shrink: 0;
@@ -273,13 +273,42 @@ body.sidebar-resizing {
 
    `flex: 0 0 auto` is load-bearing for `#parts-panel` and `#edits-panel`
    only — both are `flex: 1`, so without it a collapsed header would still
-   claim its share of the column. The rest are already `flex-shrink: 0`. */
-#side > .collapsed > :not(.panel-header) {
+   claim its share of the column. The rest are already `flex-shrink: 0`.
+
+   Keyed off `.side-section`, NOT `#side > .collapsed`. The direct-child form
+   stopped working the moment the Advanced group nested seven sections one
+   level deeper, and simply loosening it to `#side .collapsed` would be worse
+   than useless: `.tree-list.collapsed` and `.part-entities.collapsed` both
+   live inside `#side` and would have their children hidden too, silently
+   breaking the tree and the per-part entity lists. A class set only on real
+   sidebar sections cannot over-match that way.
+
+   The `#side` prefix is REQUIRED, not decoration. `#parts-panel`/`#edits-panel`
+   set `flex: 1` by id, (1,0,0); a bare `.side-section.collapsed` is (0,2,0)
+   and loses to it, so the body hid but the panel went on claiming its share of
+   the column — collapsed in every visible respect except the one that frees
+   space. The old `#side > .collapsed` was (1,1,0) and won by the same margin
+   this restores. */
+#side .side-section.collapsed > :not(.panel-header) {
   display: none;
 }
 
-#side > .collapsed {
+#side .side-section.collapsed {
   flex: 0 0 auto;
+}
+
+/* Titles sit left, always. `.panel-header` is `justify-content: space-between`
+   and the headers hold wildly different numbers of action buttons, so without
+   a growing title the text drifted to the centre in `#mass-header`/`#clash-header`
+   and to the right in `#meshing-header`/`#standard-parts-header` — three
+   different alignments down one column. Ellipsis rather than wrap so a long
+   title cannot grow the header's height at a narrow sidebar width. */
+.panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-chevron {
@@ -299,6 +328,85 @@ body.sidebar-resizing {
 
 .panel-chevron:hover {
   opacity: 1;
+}
+
+/* ── Advanced group ─────────────────────────────────────────────────────
+   One collapsible wrapper around the read-only analysis sections and the two
+   library ones, so the sidebar's top level holds only the four that EDIT the
+   document. Deliberately themed from `--vscode-*` variables rather than the
+   fixed hexes the mockup used: this chrome has to survive light and
+   high-contrast themes, which a hardcoded dark palette would break (the same
+   reason the generated toolbar icons are `currentColor`-based). */
+#advanced-group {
+  flex-shrink: 0;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+/* The group header reads as a level above its children: full-strength
+   foreground where a leaf header uses the dimmer section-header colour. */
+#advanced-header {
+  color: var(--vscode-foreground, #ccc);
+}
+
+/* Count of children available for THIS source format. Four of the seven gate
+   themselves on it, so a collapsed group would otherwise give no hint whether
+   opening it is worth the click. Text comes from `advancedCountLabel`. */
+#advanced-count {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  /* `.panel-header` uppercases its whole subtree, which turned the badge into
+     "5 OF 7". The count is a sentence fragment, not a section label. */
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+}
+
+#advanced-count:empty {
+  display: none;
+}
+
+/* Children are inset so the nesting is legible at a glance without a border
+   per row. The inset is on the body, not each panel, so a child's own
+   `[hidden]` rule still collapses it away cleanly. */
+#advanced-body {
+  padding-left: 6px;
+  border-left: 2px solid var(--vscode-sideBar-border, #3c3c3c);
+  margin-left: 8px;
+}
+
+/* Analysis / Library. A plain label, not a collapsible section — grouping
+   seven items under two headings is what makes the list scannable. */
+.advanced-subhead {
+  padding: 8px 8px 3px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+}
+
+/* A subhead directly followed by nothing visible (every section under it
+   gated out for this source) would otherwise leave a dangling label. */
+.advanced-subhead:last-child {
+  display: none;
+}
+
+/* Inside the group the leaf headers drop their own top border — the body's
+   left rail already carries the grouping, and per-row borders on top of it
+   read as noise. */
+#advanced-body .panel-header {
+  border-bottom: none;
+}
+
+#advanced-body #mass-header,
+#advanced-body #mesh-health-header,
+#advanced-body #macros-header {
+  border-top: none;
 }
 
 #tree-header {
@@ -748,9 +856,9 @@ body.sidebar-resizing {
    * the bar peaked at 1290px once (the nested-planes comment inside
    * viewerDom.ts) — so the cap plus `#vc-body`'s wrap keeps overflow groups
    * inside the app region instead of painting over the sidebar. */
-  left: calc((100% + var(--side-width, 220px)) / 2);
+  left: calc((100% + var(--side-width, 272px)) / 2);
   transform: translateX(-50%);
-  max-width: calc(100% - var(--side-width, 220px) - 40px);
+  max-width: calc(100% - var(--side-width, 272px) - 40px);
 }
 /* `:has` only: the fallback when the sidebar is NOT visible — it occupies no
  * layout, so mid-point reverts to the whole-body centre. */

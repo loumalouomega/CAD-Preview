@@ -42,19 +42,19 @@ export function viewerBodyHtml(): string {
   </div>
   <div id="layout">
     <div id="side">
-      <div id="tree-panel">
+      <div id="tree-panel" class="side-section">
         <div id="tree-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="tree-title">Components</span>
+          <span id="tree-title" class="panel-title">Components</span>
           <input id="tree-filter" type="search" placeholder="Filter…" title="Filter components by name">
           <button id="tree-close" title="Close panel">${icon("close")}</button>
         </div>
         <div id="tree-body"></div>
       </div>
-      <div id="parts-panel">
+      <div id="parts-panel" class="side-section">
         <div id="parts-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="parts-title">Parts</span>
+          <span id="parts-title" class="panel-title">Parts</span>
           <div id="parts-header-actions">
             <button id="parts-isolate" title="Isolate the selected part (show only it)">${icon("isolate")} Isolate</button>
             <button id="parts-new" title="New part">${icon("add")} New</button>
@@ -63,10 +63,10 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="parts-body"></div>
       </div>
-      <div id="edits-panel">
+      <div id="edits-panel" class="side-section">
         <div id="edits-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="edits-title">Edits</span>
+          <span id="edits-title" class="panel-title">Edits</span>
           <div id="edits-actions">
             <button id="edits-undo" title="Undo last edit" disabled>${icon("undo")}</button>
             <button id="edits-redo" title="Redo edit" disabled>${icon("redo")}</button>
@@ -85,10 +85,10 @@ export function viewerBodyHtml(): string {
           <div id="edits-body"></div>
         </div>
       </div>
-      <div id="meshing-panel">
+      <div id="meshing-panel" class="side-section">
         <div id="meshing-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="meshing-title">FE Mesh</span>
+          <span id="meshing-title" class="panel-title">FE Mesh</span>
           <div id="meshing-actions">
             <button id="meshing-generate" title="Generate mesh">${icon("generate")} Generate</button>
             <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
@@ -103,18 +103,40 @@ export function viewerBodyHtml(): string {
         <div id="meshing-status"></div>
         <div id="meshing-quality"></div>
       </div>
-      <div id="mass-panel">
+      <!-- Advanced: the read-only analysis sections and the two library
+           sections, folded behind one collapsible group so the sidebar's top
+           level holds only what EDITS the document (Components, Parts, Edits,
+           FE Mesh). That is the split rule — a section that merely reports on
+           the model, or pulls from a catalog, belongs in here.
+
+           Each child keeps its own chevron and its own collapsedPanels id;
+           this group simply adds one more. Nesting them is why the collapse
+           CSS had to stop using "#side > .collapsed" (a direct-child
+           selector) and key off ".side-section" instead — see viewer.css.
+
+           NB: no backticks anywhere in here. This whole function body is one
+           template literal, so a backtick in a comment ends the string and
+           surfaces as a bare TS1005 pointing at an unrelated line. -->
+      <div id="advanced-group" class="side-section collapsed">
+        <div id="advanced-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="false" title="Expand section">▸</button>
+          <span id="advanced-title" class="panel-title">Advanced</span>
+          <span id="advanced-count" title="Sections available for this document"></span>
+        </div>
+        <div id="advanced-body">
+      <div class="advanced-subhead">Analysis</div>
+      <div id="mass-panel" class="side-section">
         <div id="mass-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="mass-title">Mass Properties</span>
+          <span id="mass-title" class="panel-title">Mass Properties</span>
           <button id="mass-refresh" title="Compute for the current selection, or the whole model if nothing is selected">${icon("generate")} Compute</button>
         </div>
         <div id="mass-body"></div>
       </div>
-      <div id="clash-panel" hidden>
+      <div id="clash-panel" class="side-section" hidden>
         <div id="clash-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="clash-title">Clash</span>
+          <span id="clash-title" class="panel-title">Clash</span>
           <button id="clash-check-all" title="Check every Part against every other in one call">Check all</button>
         </div>
         <div id="clash-body">
@@ -127,10 +149,10 @@ export function viewerBodyHtml(): string {
           <div id="clash-results"></div>
         </div>
       </div>
-      <div id="mesh-health-panel" hidden>
+      <div id="mesh-health-panel" class="side-section" hidden>
         <div id="mesh-health-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="mesh-health-title">Mesh Health</span>
+          <span id="mesh-health-title" class="panel-title">Mesh Health</span>
           <div id="mesh-health-actions">
             <label id="mesh-health-decimate-label" title="If the mesh exceeds the 50000-triangle ceiling, decimate it first (meshio++ quadric edge-collapse, target ~1000 triangles) and check the decimated mesh — the report says so, never silently"><input type="checkbox" id="mesh-health-decimate"> Auto-decimate</label>
             <button id="mesh-health-check" title="Read-only diagnostic: checks whether this mesh could be closed into a valid B-rep solid, and at what tolerance/cost — does not promote or change anything">${icon("generate")} Check Healability</button>
@@ -140,10 +162,10 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="mesh-health-body"></div>
       </div>
-      <div id="region-fit-panel" hidden>
+      <div id="region-fit-panel" class="side-section" hidden>
         <div id="region-fit-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="region-fit-title">Region fit</span>
+          <span id="region-fit-title" class="panel-title">Region fit</span>
           <div id="region-fit-actions">
             <button id="region-fit-pick" title="Pick a point on the mesh to grow a region and fit a plane/cylinder/sphere">${icon("point")} Pick seed</button>
             <button id="region-fit-save-plane" title="Save the fitted plane as a construction plane" disabled>${icon("save")} Save plane</button>
@@ -153,10 +175,10 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="region-fit-body"></div>
       </div>
-      <div id="primitives-panel" hidden>
+      <div id="primitives-panel" class="side-section" hidden>
         <div id="primitives-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="primitives-title">Primitives</span>
+          <span id="primitives-title" class="panel-title">Primitives</span>
           <div id="primitives-actions">
             <button id="primitives-recognize" title="Read-only diagnostic: classify each solid as a box/sphere/cylinder/cone/torus with a fit residual — emits nothing, changes nothing">${icon("generate")} Recognize</button>
             <button id="primitives-apply" title="Push the recognized primitives as parametric creation ops (one per solid, dimensions bound to named variables) onto the edit history — undoable, removable op-by-op" disabled>${icon("add")} Apply as edits</button>
@@ -166,18 +188,19 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="primitives-body"></div>
       </div>
-      <div id="macros-panel">
+      <div class="advanced-subhead">Library</div>
+      <div id="macros-panel" class="side-section">
         <div id="macros-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="macros-title">Macros</span>
+          <span id="macros-title" class="panel-title">Macros</span>
           <button id="macros-save" title="Save the current edit history as a reusable, parameterized macro">${icon("save")} Save current</button>
         </div>
         <div id="macros-body"></div>
       </div>
-      <div id="standard-parts-panel">
+      <div id="standard-parts-panel" class="side-section">
         <div id="standard-parts-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="standard-parts-title">Standard Parts</span>
+          <span id="standard-parts-title" class="panel-title">Standard Parts</span>
         </div>
         <div id="standard-parts-search-row">
           <input id="standard-parts-query" type="search" placeholder="Search step.parts…" title="Search the step.parts catalog (e.g. &quot;M6 hex bolt&quot;)">
@@ -185,6 +208,8 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="standard-parts-body"></div>
         <div id="standard-parts-status"></div>
+      </div>
+        </div>
       </div>
     </div>
     <!-- Sidebar resize handle. A real <button role="separator"> inside #side

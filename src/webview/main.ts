@@ -86,7 +86,7 @@ import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArc
 import { convertLength, convertLengthBasedProperties, convertVolume, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
-import { setupCollapsiblePanels, type CollapsiblePanelsHandle } from "./collapsiblePanels";
+import { setupCollapsiblePanels, setupAdvancedGroupCount, type CollapsiblePanelsHandle } from "./collapsiblePanels";
 import { setupSidebarResizer, clampSidebarWidth, SIDEBAR_DEFAULT_PX, type SidebarResizerHandle } from "./sidebarResizer";
 // Value import, safe the same way `sidebarResizer` above is: `viewStateSidecar`
 // is pure (no vscode, no three.js value import — only `import type` on
@@ -4267,6 +4267,7 @@ try {
   // layout picker — the toggle has to ask for the save itself rather than
   // relying on `viewer.onViewChanged`.
   collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
+  setupAdvancedGroupCount();
   // Sidebar resize handle. The callback is the USER-facing path only: the
   // resizer already applied `--side-width` itself (it is the one authority on
   // that var), so the callback just reflows the canvas — a window `resize`

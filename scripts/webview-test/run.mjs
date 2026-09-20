@@ -153,6 +153,7 @@ test("bootstrap: ready posted, canvas mounted with real dimensions", async (page
  */
 test("panels: every documented panel id exists and is populated", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const ids = [
     "menubar", "toolbar", "app", "view-controls",
     "tree-panel", "tree-body",
@@ -705,6 +706,27 @@ async function gridOff(page) {
   await page.click("#grid");
   await page.keyboard.press("Escape");
   await sleep(400);
+}
+
+/**
+ * Expands the Advanced group.
+ *
+ * It ships COLLAPSED — that is the whole point of the group, so the sidebar's
+ * top level holds only the four sections that edit the document. Every test
+ * touching Mass Properties, Clash, Mesh Health, Region fit, Primitives, Macros
+ * or Standard Parts must open it first, or the element it wants is inside a
+ * `display: none` subtree and Playwright waits out its timeout on a node that
+ * will never be actionable.
+ *
+ * Idempotent, so a test may call it without knowing whether an earlier step
+ * already opened the group.
+ */
+async function openAdvanced(page) {
+  const collapsed = await page.evaluate(
+    () => document.getElementById("advanced-group")?.classList.contains("collapsed") ?? false
+  );
+  if (collapsed) await page.click("#advanced-header > .panel-chevron");
+  await sleep(120);
 }
 
 /** Selects the single smallest face via the filter form; returns the status text. */
@@ -1762,7 +1784,9 @@ test("context menu: volume mode says why it has no groups instead of showing a b
 test("collapse: every sidebar section has a working chevron", async (page) => {
   await populate(page);
   const panels = [
-    "tree-panel", "parts-panel", "edits-panel", "meshing-panel", "mass-panel",
+    "tree-panel", "parts-panel", "edits-panel", "meshing-panel",
+    "advanced-group",
+    "mass-panel",
     "clash-panel",
     "mesh-health-panel", "region-fit-panel", "primitives-panel", "macros-panel", "standard-parts-panel",
   ];
@@ -1833,8 +1857,62 @@ test("collapse: hides EVERY body sibling, not just #x-body", async (page) => {
   );
 });
 
+test("advanced: the group ships collapsed, hides its seven children, and opens on its chevron", async (page) => {
+  await populate(page);
+
+  // Collapsed by default is the entire point: the sidebar's top level should
+  // hold only the four sections that EDIT the document.
+  const shut = await page.evaluate(() => {
+    const ids = [
+      "mass-panel", "clash-panel", "mesh-health-panel", "region-fit-panel",
+      "primitives-panel", "macros-panel", "standard-parts-panel",
+    ];
+    return {
+      collapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
+      bodyShown: document.getElementById("advanced-body").offsetParent !== null,
+      headerShown: document.getElementById("advanced-header").offsetParent !== null,
+      anyChildShown: ids.some((id) => document.getElementById(id)?.offsetParent != null),
+      // The four that stay top-level must NOT have been swept into the group.
+      topLevel: ["tree-panel", "parts-panel", "edits-panel", "meshing-panel"].every(
+        (id) => !document.getElementById("advanced-body").contains(document.getElementById(id))
+      ),
+    };
+  });
+  assert(shut.collapsed, "the group starts collapsed");
+  assert(shut.headerShown, "its header is still visible while collapsed");
+  assert(!shut.bodyShown, "its body is hidden while collapsed");
+  assert(!shut.anyChildShown, "none of the seven children render while it is collapsed");
+  assert(shut.topLevel, "Components/Parts/Edits/FE Mesh stayed OUT of the group");
+
+  // The badge must report availability, not the raw child count: on this
+  // B-rep fixture Mesh Health and Region fit gate themselves out.
+  const badge = await page.evaluate(() => document.getElementById("advanced-count").textContent.trim());
+  assert(badge === "5 of 7", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
+
+  await openAdvanced(page);
+  const open = await page.evaluate(() => ({
+    collapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
+    mass: document.getElementById("mass-panel").offsetParent !== null,
+    macros: document.getElementById("macros-panel").offsetParent !== null,
+    // Still gated — opening the group must not reveal an ineligible section.
+    meshHealth: document.getElementById("mesh-health-panel").offsetParent !== null,
+    subheads: Array.from(document.querySelectorAll("#advanced-body .advanced-subhead")).map((n) =>
+      n.textContent.trim()
+    ),
+  }));
+  assert(!open.collapsed, "the chevron expands the group");
+  assert(open.mass && open.macros, "its eligible children render once open");
+  assert(!open.meshHealth, "a source-gated child stays hidden even with the group open");
+  assert(
+    eq(open.subheads, ["Analysis", "Library"]),
+    `the children are grouped under two subheads (got ${JSON.stringify(open.subheads)})`
+  );
+});
+
 test("collapse: state is saved to and restored from view state", async (page) => {
   await populate(page);
+  await openAdvanced(page);
+  await sleep(700); // let the group's own autosave land before __sent is cleared
   await page.evaluate(() => (window.__sent.length = 0));
   await page.click("#mass-header > .panel-chevron");
   await sleep(900); // VIEW_SAVE_DEBOUNCE_MS is 500
@@ -1889,6 +1967,7 @@ test("collapse: state is saved to and restored from view state", async (page) =>
 
 test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", async (page) => {
   await populate(page); // the fixture is bull.stp — a B-rep, so both are ineligible
+  await openAdvanced(page); // open the group, so this tests [hidden] and not the collapse
   const shown = await page.evaluate(() => ({
     meshHealth: document.getElementById("mesh-health-panel").getBoundingClientRect().height,
     regionFit: document.getElementById("region-fit-panel").getBoundingClientRect().height,
@@ -1909,6 +1988,7 @@ test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", 
 
 test("clash: B-rep source shows the section with Part dropdowns populated", async (page) => {
   await populate(page); // bull.stp — B-rep, so the section is eligible
+  await openAdvanced(page);
   const state = await page.evaluate(() => ({
     shown: document.getElementById("clash-panel")?.offsetParent !== null,
     a: Array.from(document.getElementById("clash-a").options).map((o) => o.value),
@@ -1923,6 +2003,7 @@ test("clash: B-rep source shows the section with Part dropdowns populated", asyn
 
 test("clash: Check posts clashCheckRequest; the reply renders; a stale reply is ignored", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.selectOption("#clash-a", "Body");
   await page.selectOption("#clash-b", "Contact faces");
   await page.click("#clash-check");
@@ -1962,6 +2043,7 @@ test("clash: Check posts clashCheckRequest; the reply renders; a stale reply is 
 
 test("clash: Check-all posts one request and renders named pairs with the screened badge", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.click("#clash-check-all");
   const req = await page.evaluate(() =>
     (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null
@@ -1994,6 +2076,7 @@ test("clash: Check-all posts one request and renders named pairs with the screen
 
 test("clash: a partial all-pairs result labels itself partial and never as clash-free", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.click("#clash-check-all");
   const req = await page.evaluate(() =>
     (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null
@@ -2026,6 +2109,7 @@ test("clash: a partial all-pairs result labels itself partial and never as clash
 
 test("clash: the same Part twice is refused without a host round trip", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const before = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest").length);
   await page.selectOption("#clash-a", "Body");
   await page.selectOption("#clash-b", "Body");
@@ -2042,6 +2126,7 @@ test("clash: the hidden attribute genuinely hides the section", async (page) => 
   // set while an author `display` rule beat it, so the "hidden" panel still
   // rendered. Assert RENDERED height, not the attribute.
   await populate(page);
+  await openAdvanced(page);
   const height = await page.evaluate(() => {
     const el = document.getElementById("clash-panel");
     el.hidden = true;
@@ -2092,6 +2177,7 @@ const PRIMITIVE_BOX_REPORT = {
 
 test("primitives: B-rep source shows the section; Recognize posts a well-formed request", async (page) => {
   await populate(page); // bull.stp — B-rep, so the section is eligible
+  await openAdvanced(page);
   const shown = await page.evaluate(() => document.getElementById("primitives-panel")?.offsetParent !== null);
   assert(shown, "the Primitives section is genuinely rendered for a B-rep source");
   await page.evaluate(() => (window.__sent.length = 0));
@@ -2104,6 +2190,7 @@ test("primitives: B-rep source shows the section; Recognize posts a well-formed 
 
 test("primitives: reply renders recognized + unrecognized rows; a stale reply is ignored", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.click("#primitives-recognize");
   const req = await page.evaluate(() =>
     (window.__sent ?? []).filter((m) => m.type === "primitiveRecognizeRequest").at(-1) ?? null
@@ -2136,6 +2223,7 @@ test("primitives: reply renders recognized + unrecognized rows; a stale reply is
 
 test("primitives: Apply pushes the emitted ops via editsChanged", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.click("#primitives-recognize");
   const req = await page.evaluate(() =>
     (window.__sent ?? []).filter((m) => m.type === "primitiveRecognizeRequest").at(-1) ?? null
@@ -2169,6 +2257,7 @@ test("primitives: Apply pushes the emitted ops via editsChanged", async (page) =
 test("primitives: the hidden attribute genuinely hides the section", async (page) => {
   // Same regression shape as the clash `[hidden]` test above.
   await populate(page);
+  await openAdvanced(page);
   const height = await page.evaluate(() => {
     const el = document.getElementById("primitives-panel");
     el.hidden = true;
@@ -3382,6 +3471,7 @@ async function runPartsSearch(page, q) {
 
 test("thumbs: fetched thumbnails render beside the right rows; missing ones keep text", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const req = await runPartsSearch(page, "bolt");
   assert(req !== null && typeof req?.requestId === "string", "search posts a standardPartsSearchRequest");
   await post(page, {
@@ -3426,6 +3516,7 @@ test("thumbs: fetched thumbnails render beside the right rows; missing ones keep
 
 test("thumbs: a stale-generation reply decorates nothing", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const reqA = await runPartsSearch(page, "bolt");
   await post(page, {
     type: "standardPartsSearchResult",
@@ -3479,6 +3570,7 @@ test("thumbs: a stale-generation reply decorates nothing", async (page) => {
 
 test("thumbs: a thumbnail for an unknown id is dropped silently", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const req = await runPartsSearch(page, "bolt");
   await post(page, {
     type: "standardPartsSearchResult",
@@ -3559,7 +3651,7 @@ test("sidebar: a viewState post restores and clamps the width, and a garbage val
   await apply("garbage");
   await sleep(120);
   const fallback = await page.evaluate(() => document.getElementById("side").clientWidth);
-  assert(fallback === 220, `a non-numeric width falls back to the 220 default (got ${fallback}px)`);
+  assert(fallback === 272, `a non-numeric width falls back to the SIDEBAR_DEFAULT_PX default (got ${fallback}px)`);
 });
 
 test("sidebar: #view-controls never covers the sidebar's clickable panels", async (page) => {
