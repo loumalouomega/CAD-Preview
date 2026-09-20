@@ -553,7 +553,7 @@ class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocument> {
 }
 ```
 
- Dirty means exactly one thing: the op list has an unbaked tail on a source that can bake it (`currentEdits.length > currentBakedThrough` on step/iges/brep, and on stl/obj/ply for mesh save-in-place). Fired from the `editsChanged` handler via a provider-level `EventEmitter` (`CustomDocumentContentChangeEvent` only — never `EditEvent`, since the webview owns undo and the API forbids mixing kinds). VS Code clears dirty when `saveCustomDocument`/`revertCustomDocument` completes.
+ Dirty means exactly one thing: the op list has an unbaked tail on a source that can bake it (`currentEdits.length > currentBakedThrough` on step/iges/brep, and on stl/obj/ply for mesh save-in-place). Fired from the `editsChanged` handler via a provider-level `EventEmitter` (`CustomDocumentContentChangeEvent` only — never `EditEvent`, since the webview owns undo and the API forbids mixing kinds). VS Code clears dirty when `saveCustomDocument`/`revertCustomDocument` completes. The same predicate is `isDocumentDirty()`, which also feeds the webview's document chip: `syncDocumentInfo()` posts a deduplicated `documentInfo` message from the `ready` handshake, from `editsChanged`, and after a successful bake, and every host-to-webview `edits` post goes through the `postEdits()` choke point so the watermark and the chip cannot drift apart.
 
 **`register(context)`** — Registers the provider with VS Code. Called once from `activate()`. Returns a `Disposable` pushed onto `context.subscriptions`.
 

@@ -686,6 +686,16 @@ Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading 
 { "type": "viewerDefaults", "background": "#1e1e1e", "meshSizePreset": "medium", "showGridAndAxes": true, "upAxis": "y" }
 ```
 
+### `documentInfo`
+
+Host → webview. What the menu bar's **document chip** shows: `{ type: "documentInfo", name, path, format, dirty }` — the file's base name, its full path (the chip's hover title), its `CadFormat` (or `null` for a route with no format), and whether the document has **unsaved edits**.
+
+`dirty` is computed by `provider.ts`'s `isDocumentDirty()` — the same predicate that fires VS Code's own dirty event: an unbaked op tail (`currentEdits.length > currentBakedThrough`) on a source that can bake one (STEP/IGES/BREP, and STL/OBJ/PLY for mesh save-in-place). It is sent once in the `ready` handshake and again whenever the op list or the save watermark changes, **deduplicated** so an unchanged value is never re-posted. It can differ from the editor tab's dot in two intended ways — see [Getting Started](./getting-started.md#the-document-chip-and-status-line). The webview only displays it; there is no reply.
+
+```json
+{ "type": "documentInfo", "name": "bracket.step", "path": "/work/bracket.step", "format": "step", "dirty": true }
+```
+
 ### `screenshotRequest`
 
 Sent in reply to `screenshotButtonClicked` or the `cad-preview.screenshot` command, mirroring `exportMesh`'s request/response shape exactly (same `pending` map, same `requestId` correlation) — just with the format fixed to PNG, so there's no `format` field. The webview force-renders a fresh frame (`Viewer.render()`, avoiding a persistent `preserveDrawingBuffer`) then reads `renderer.domElement.toDataURL("image/png")`, replying with `screenshotResult`/`screenshotError`.

@@ -73,6 +73,23 @@ const SHOTS = [
     target: { clip: { x: 770, y: 30, width: 590, height: 500 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
+  {
+    // The "⋯" overflow popover. It hangs ABOVE the dock and outside the dock's own
+    // box, so `sel: "#view-controls"` would crop it away entirely — hence a fixed
+    // `clip`, with the usual silent-cut hazard (a popover that grows just gets
+    // cut off and the run still prints ✓). `webview-test/run.mjs` mirrors this
+    // rectangle in "chrome: the overflow popover fits its screenshot clip", so
+    // growing it fails a test instead. The dock is bottom-centred over the canvas
+    // in a 1360x900 viewport and the popover is right-anchored to the "⋯" at its
+    // end, so this covers the popover and the dock row beneath it.
+    file: "view-controls-more.png",
+    setup: async (page) => {
+      await populate(page);
+      await page.click("#vc-more");
+      await sleep(200);
+    },
+    target: { clip: { x: 630, y: 470, width: 680, height: 430 } },
+  },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },
   {
     // The Standard Parts panel talks to the real step.parts network API in

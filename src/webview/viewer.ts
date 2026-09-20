@@ -164,6 +164,14 @@ export class Viewer {
   /** Hover reporting. `null` until `setEntityHoverHandler` registers one, which
    * is also what attaches the pointermove listener. */
   private onEntityHover: ((r: PickResult | null) => void) | null = null;
+  /** Cursor-position reporting (the dock's coordinate readout). `null` until
+   * `setPointerWorldHandler` registers one. Reports the point on the model's
+   * surface under the pointer, in the MODEL's own frame and millimetres — or
+   * `null` over empty space. */
+  private onPointerWorld: ((p: [number, number, number] | null) => void) | null = null;
+  /** The pointermove/pointerleave pair is shared by both hover consumers and must
+   * be attached exactly once, whichever registers first. */
+  private hoverListenersAttached = false;
   /** Last reported entity, so an unchanged hover reports nothing. */
   private lastHoverKey: string | null = null;
   private lastHoverAt = 0;
@@ -1618,11 +1626,33 @@ export class Viewer {
    * wasted work on every frame of the drag.
    */
   setEntityHoverHandler(onHover: (r: PickResult | null) => void): void {
-    if (!this.onEntityHover) {
-      this.renderer.domElement.addEventListener("pointermove", this.onHoverPointerMove);
-      this.renderer.domElement.addEventListener("pointerleave", this.onHoverPointerLeave);
-    }
+    this.attachHoverListeners();
     this.onEntityHover = onHover;
+  }
+
+  /**
+   * Registers a callback for the point on the model's surface under the pointer —
+   * the dock's live coordinate readout. Reported in the model's OWN frame (not
+   * raw world space: a Z-up file rotates the model root, so a world coordinate
+   * would silently be in the wrong frame) and in millimetres; `null` over empty
+   * space or when the pointer leaves the canvas.
+   *
+   * Shares one raycast with {@link setEntityHoverHandler}'s pass, and — unlike
+   * that one — works with selection mode OFF, which is the normal state: the
+   * readout is not a picking feature. The cost is one extra throttled (~1/frame)
+   * raycast against the surface meshes only when the hover pass uses a different
+   * target set, and it is only paid when a handler is registered at all.
+   */
+  setPointerWorldHandler(onPoint: (p: [number, number, number] | null) => void): void {
+    this.attachHoverListeners();
+    this.onPointerWorld = onPoint;
+  }
+
+  private attachHoverListeners(): void {
+    if (this.hoverListenersAttached) return;
+    this.hoverListenersAttached = true;
+    this.renderer.domElement.addEventListener("pointermove", this.onHoverPointerMove);
+    this.renderer.domElement.addEventListener("pointerleave", this.onHoverPointerLeave);
   }
 
   /**
@@ -1666,18 +1696,26 @@ export class Viewer {
     }
   };
 
-  private onHoverPointerLeave = (): void => {
+  /** Clears only the ENTITY hover (tooltip). Used where a coordinate has already
+   * been reported for this move and must not be immediately undone. */
+  private clearEntityHover = (): void => {
     if (this.lastHoverKey !== null) {
       this.lastHoverKey = null;
       this.onEntityHover?.(null);
     }
   };
 
+  /** The pointer left the canvas, the model, or every pane: clear BOTH consumers. */
+  private onHoverPointerLeave = (): void => {
+    this.clearEntityHover();
+    this.onPointerWorld?.(null);
+  };
+
   private onHoverPointerMove = (event: PointerEvent): void => {
-    if (!this.onEntityHover) return;
+    if (!this.onEntityHover && !this.onPointerWorld) return;
     // A drag in progress owns the pointer — orbit, pan, or a gizmo handle.
     if (this.pointerDownPos || this.transformControls.dragging) return;
-    if (this.selectionMode === null || !this.model) {
+    if (!this.model) {
       this.onHoverPointerLeave();
       return;
     }
@@ -1700,10 +1738,38 @@ export class Viewer {
     this.raycaster.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), this.panes[index].active);
     this.raycaster.params.Line.threshold = this.pickThreshold;
 
-    const targets = collectTargets(this.model, this.selectionMode);
-    const hits = this.raycaster.intersectObjects(targets, false);
+    // The coordinate readout always measures against SURFACE meshes, whatever the
+    // pick mode is: in Line or Point mode the nearest "hit" would be a snapped edge
+    // or vertex, and the readout should say where the cursor is on the part.
+    const surfaceHits = this.onPointerWorld
+      ? this.raycaster.intersectObjects(collectTargets(this.model, "surface"), false)
+      : [];
+    if (this.onPointerWorld) {
+      const hit = surfaceHits[0];
+      if (hit) {
+        // World -> the model root's own frame (undoes a Z-up root rotation).
+        const local = this.model.worldToLocal(hit.point.clone());
+        this.onPointerWorld([local.x, local.y, local.z]);
+      } else {
+        this.onPointerWorld(null);
+      }
+    }
+
+    // Entity hover is a selection-mode feature: with picking off there is nothing
+    // to report, so it stays cleared exactly as it was before the readout existed.
+    const mode = this.selectionMode;
+    if (!this.onEntityHover || mode === null) {
+      this.clearEntityHover();
+      return;
+    }
+
+    // Reuse the surface pass when it IS the pick mode's target set.
+    const hits =
+      mode === "surface" && this.onPointerWorld
+        ? surfaceHits
+        : this.raycaster.intersectObjects(collectTargets(this.model, mode), false);
     for (const h of hits) {
-      const r = resolvePick(h.object.userData, this.selectionMode);
+      const r = resolvePick(h.object.userData, mode);
       if (r) {
         // Only report a CHANGE of entity: a tooltip re-render per mouse move
         // over one unchanged face is pure churn.
@@ -1715,7 +1781,7 @@ export class Viewer {
         return;
       }
     }
-    this.onHoverPointerLeave();
+    this.clearEntityHover();
   };
 
   // ── Transform gizmo (roadmap "Transform gizmo", closed) ─────────────────

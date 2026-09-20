@@ -87,6 +87,7 @@ import { convertLength, convertLengthBasedProperties, convertVolume, displayUnit
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { setupCollapsiblePanels, setupAdvancedGroupCount, type CollapsiblePanelsHandle } from "./collapsiblePanels";
+import { formatEntityCounts, formatMeshStats, formatCursor, type EntityCounts, type MeshStats } from "./dockStats";
 import { setupSidebarResizer, clampSidebarWidth, SIDEBAR_DEFAULT_PX, type SidebarResizerHandle } from "./sidebarResizer";
 // Value import, safe the same way `sidebarResizer` above is: `viewStateSidecar`
 // is pure (no vscode, no three.js value import — only `import type` on
@@ -1152,6 +1153,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onClear: () => {
     viewer.setMeshOverlay(null);
     viewer.setWorstElementsOverlay(null);
+    renderDockMeshStats(null); // the overlay these stats described is gone
     // Same toggle-truthfulness invariant as `meshingResult`/`meshingError`
     // below: Clear disposes the overlay, so the toggle must stop claiming "on".
     meshingEnabled = false;
@@ -1312,6 +1314,43 @@ function setDisplayUnit(unit: DisplayUnit): void {
       unit
     );
   renderClashResults();
+  renderDockCursor(); // the readout follows the Units dropdown like Mass Properties does
+}
+
+// ── Dock status row ──────────────────────────────────────────────────────
+// Facts about the loaded document, shown in `#vc-status` inside the dock (so the
+// webview tests, which hide the whole dock for exact-pixel comparisons, exclude
+// this live text automatically). The wording lives in `dockStats.ts`, pure and
+// unit-tested; this is only the DOM half. Every setter tolerates missing
+// elements — a stripped-down harness must not be able to throw from here.
+
+function setDockText(id: string, text: string): void {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+/** Entity counts for a B-rep document; `null` for a mesh source, which has no
+ * `geometry` message to count and whose face count would be facet-split anyway. */
+function renderDockEntityCounts(counts: EntityCounts | null): void {
+  setDockText("vc-count-entities", counts ? formatEntityCounts(counts) : "");
+}
+
+/** FE-mesh stats; `null` hides the span. Called with `null` from every place that
+ * replaces the model (the overlay is disposed with it) and from the panel's Clear. */
+function renderDockMeshStats(stats: MeshStats | null): void {
+  const el = document.getElementById("vc-count-mesh");
+  if (!el) return;
+  el.textContent = stats ? formatMeshStats(stats) : "";
+  el.hidden = stats === null;
+}
+
+/** The last point reported under the pointer, in the model's frame, in mm. Kept raw
+ * (not pre-formatted) so a Units change can re-render it without waiting for the
+ * pointer to move. */
+let lastCursorMm: [number, number, number] | null = null;
+
+function renderDockCursor(): void {
+  setDockText("vc-cursor", formatCursor(lastCursorMm, currentDisplayUnit));
 }
 
 /** Caches the raw (mm) result and renders it converted to `currentDisplayUnit`. */
@@ -2650,6 +2689,10 @@ function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   lastOpBuckets = null; // produced-face classification is B-rep only (no host replay for meshes)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model, opts);
+  renderDockEntityCounts(null); // a mesh source has no B-rep counts to report
+  renderDockMeshStats(null); // setModel() disposed the FE-mesh overlay these described
+  lastCursorMm = null;
+  renderDockCursor();
   cancelOpPreview(); // setModel() already cleared the overlay; this also kills any pending/in-flight preview request
   explodePreviewBases = null; // stale references to the just-replaced model's objects
   gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
@@ -2752,6 +2795,14 @@ viewer.setEntityHoverHandler((result) => {
     return;
   }
   showHoverTip(result.entityId, lastHoverPointer.x, lastHoverPointer.y);
+});
+
+// The dock's live cursor coordinates. Independent of pick mode — the hover tooltip
+// above only exists in selection mode, but a position readout is not a picking
+// feature and must work with selection off, which is the normal state.
+viewer.setPointerWorldHandler((p) => {
+  lastCursorMm = p;
+  renderDockCursor();
 });
 
 function hideInspectorCard(): void {
@@ -3446,10 +3497,24 @@ document.getElementById("tree-toggle")?.addEventListener("click", () => {
 function setupViewControls(): void {
   const panel = document.getElementById("view-controls");
   const toggle = document.getElementById("vc-toggle");
+  // The overflow popover ("⋯" at the end of the dock row). Registered like every
+  // toolbar menu, so single-open, outside-click dismissal that does not leak to
+  // the canvas, Escape-returns-focus and arrow navigation all come for free — this
+  // one call is the entire JS cost of the popover. Its contents are the controls
+  // that moved off the bar; they keep their ids, so the setup functions below (and
+  // setupClippingControls / setupPlanesControls / setupAppearanceControls, which
+  // run later) find them exactly as before. `null` when the markup is absent.
+  const moreMenu = setupDropdown("vc-more", "vc-more-dropdown");
   toggle?.addEventListener("click", () => {
     const collapsed = panel?.classList.toggle("collapsed") ?? false;
     toggle.textContent = collapsed ? "⌃" : "⌄";
     toggle.title = collapsed ? "Show controls" : "Hide controls";
+    // The glyph flips but an aria-label does not follow `title`, so a screen
+    // reader kept announcing "Hide controls" over a collapsed bar.
+    toggle.setAttribute("aria-label", toggle.title);
+    // The popover lives inside the body that just got display:none — close it, or
+    // its trigger keeps a stale aria-expanded="true".
+    if (collapsed) moreMenu?.close();
   });
 
   let rotateStep = 45;
@@ -4701,6 +4766,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         setStatus("Building geometry…");
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group, { autoFit: msg.autoFit });
+        renderDockEntityCounts({ faces: msg.meshes.length, edges: msg.edges.length, points: msg.points?.length ?? 0 });
+        renderDockMeshStats(null); // setModel() disposed the FE-mesh overlay these described
+        lastCursorMm = null;
+        renderDockCursor();
         cancelOpPreview(); // setModel() cleared the overlay; kill any pending/in-flight preview too
         explodePreviewBases = null; // stale references to the just-replaced model's objects
         gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
@@ -4937,6 +5006,24 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         if (bg) bg.value = msg.background;
       }
       break;
+
+    case "documentInfo": {
+      // The menubar's document chip. Everything goes through textContent /
+      // title — the name is a filename, i.e. untrusted document-derived text,
+      // and must never reach innerHTML. A missing element (a stripped-down
+      // harness) is a no-op rather than a throw, like every other setup here.
+      const chip = document.getElementById("doc-chip");
+      const name = document.getElementById("doc-chip-name");
+      const format = document.getElementById("doc-chip-format");
+      const dot = document.getElementById("doc-chip-dirty");
+      if (!chip || !name || !format || !dot) break;
+      name.textContent = msg.name;
+      format.textContent = msg.format ?? "";
+      chip.title = msg.path;
+      dot.hidden = !msg.dirty;
+      chip.hidden = false;
+      break;
+    }
 
     case "screenshotRequest":
       try {
@@ -5358,6 +5445,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "meshingResult":
       meshingPanel.setBusy(false);
       viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups));
+      renderDockMeshStats({ nodes: msg.nodeCount, elements: msg.elementCount, minQuality: msg.quality?.min });
       // A successful generate always results in a visible overlay, so bring the
       // toggle's state in sync here (rather than optimistically in `onGenerate`,
       // before the async round-trip even completes) — that way a failed generate

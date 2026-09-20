@@ -63,6 +63,41 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
  */
 const viewportBox = (page) => page.locator("#app").boundingBox();
 
+/**
+ * Takes a screenshot with the transient `#status` toast masked.
+ *
+ * Every pixel helper in this file measures the CANVAS — camera framing, cap
+ * coverage, scene colours — and the toast is not part of any of those. It used
+ * to be harmless by accident: it was centred on the whole body while the dock
+ * centres on the canvas, and sat directly behind the dock, so it painted over
+ * pixels that were already non-background and changed no count. Once it was
+ * moved clear of the dock (so it is actually readable) it started adding ~7,000
+ * real pixels to whichever capture happened to be taken while it was showing,
+ * and `zoom to selection: empty selection…` — which deliberately triggers a
+ * "No selection" toast — tripped its `< 0.001` tolerance on it.
+ *
+ * `visibility: hidden` rather than `display: none` so layout, and therefore
+ * every other element's position, is untouched by the mask.
+ */
+async function shotWithoutToast(page, take) {
+  await page.evaluate(() => {
+    const el = document.getElementById("status");
+    if (!el) return;
+    el.dataset.prevVis = el.style.visibility;
+    el.style.visibility = "hidden";
+  });
+  try {
+    return await take();
+  } finally {
+    await page.evaluate(() => {
+      const el = document.getElementById("status");
+      if (!el) return;
+      el.style.visibility = el.dataset.prevVis ?? "";
+      delete el.dataset.prevVis;
+    });
+  }
+}
+
 /** A dropdown is open when its panel has lost the `hidden` CLASS (not the attribute). */
 const dropdownOpen = (page, id) =>
   page.evaluate((i) => {
@@ -622,7 +657,7 @@ test("framing: the model occupies a sane fraction of the viewport", async (page)
   await page.keyboard.press("Escape");
   await sleep(400);
 
-  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
   const stats = await page.evaluate(
     async (b64) =>
       new Promise((resolve, reject) => {
@@ -670,7 +705,7 @@ test("framing: the model occupies a sane fraction of the viewport", async (page)
  * decode in-page via the framing-invariant helper above.
  */
 async function viewportModelStats(page) {
-  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
   return page.evaluate(
     async (b64) =>
       new Promise((resolve, reject) => {
@@ -721,6 +756,25 @@ async function gridOff(page) {
  * Idempotent, so a test may call it without knowing whether an earlier step
  * already opened the group.
  */
+/**
+ * Opens the dock's "⋯" overflow popover if it is not already open.
+ *
+ * Rotate/Pan, Clip ▸ Face / 3 Pts, the whole Planes authoring UI, background,
+ * opacity, Grid size and Colour by field live behind it, so a test that issues a
+ * REAL Playwright click or fill on one of them needs it open first — otherwise
+ * Playwright waits out its 30s actionability timeout on a `display: none`
+ * subtree. Only real interactions need this: a read or click done inside
+ * `page.evaluate` bypasses actionability and works whether or not it is open,
+ * which is why only two existing tests needed it.
+ *
+ * Idempotent, because any `Escape` closes every registered dropdown and a test
+ * may have pressed one since it last opened this.
+ */
+async function openDockMore(page) {
+  if (!(await dropdownOpen(page, "vc-more-dropdown"))) await page.click("#vc-more");
+  await sleep(80);
+}
+
 async function openAdvanced(page) {
   const collapsed = await page.evaluate(
     () => document.getElementById("advanced-group")?.classList.contains("collapsed") ?? false
@@ -1154,6 +1208,515 @@ test("dropdowns: clicking an open trigger's inner icon closes it", async (page) 
   assert((await isOpen()) === false, "clicking the trigger's inner icon closes it (does not reopen)");
 });
 
+/**
+ * Clip-drift guards for the two FIXED-clip documentation screenshots.
+ *
+ * `scripts/screenshots/capture.mjs` shoots the File menu with a hardcoded
+ * `clip {x:0, y:0, width:320, height:439}` and the four toolbar dropdowns with a
+ * shared `clip {x:770, y:30, width:590, height:500}`. A dropdown that grows, or
+ * a toolbar that moves, silently CUTS the last entry off — the run still exits
+ * 0 and still prints `✓ file-menu.png`. That failure has been realised twice
+ * already (250 → 285 → 342 → 371 → 410 → 439, and 830 → 770 / 300 → 500).
+ *
+ * These mirror those two rectangles exactly, so any change that would mis-crop
+ * a PNG now fails a test instead. Each assertion message prints the MEASURED
+ * box, so re-measuring a clip after a deliberate layout change is a read of the
+ * failure text rather than a guess. If one of these fails: measure, then update
+ * BOTH this test and the clip in `capture.mjs` together.
+ */
+const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 439 };
+const TOOLBAR_MENU_CLIP = { x: 770, y: 30, width: 590, height: 500 };
+
+const panelBox = (page, id) =>
+  page.evaluate((i) => {
+    const r = document.getElementById(i)?.getBoundingClientRect();
+    return r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null;
+  }, id);
+
+const fits = (box, clip) =>
+  box !== null &&
+  box.left >= clip.x &&
+  box.top >= clip.y &&
+  box.right <= clip.x + clip.width &&
+  box.bottom <= clip.y + clip.height;
+
+const fmtBox = (b) =>
+  b === null
+    ? "missing"
+    : `left ${b.left.toFixed(1)}, top ${b.top.toFixed(1)}, right ${b.right.toFixed(1)}, bottom ${b.bottom.toFixed(1)}`;
+
+test("chrome: the File menu panel fits file-menu.png's fixed clip", async (page) => {
+  await populate(page);
+  await page.click("#file-menu");
+  await sleep(150);
+  const box = await panelBox(page, "file-dropdown");
+  const c = FILE_MENU_CLIP;
+  assert(
+    fits(box, c),
+    `#file-dropdown must sit inside clip {x:${c.x}, y:${c.y}, w:${c.width}, h:${c.height}} ` +
+      `(measured: ${fmtBox(box)}) — update capture.mjs's file-menu clip if this is deliberate`
+  );
+});
+
+for (const name of ["view", "select", "measure", "markup"]) {
+  test(`chrome: the ${name} dropdown fits the shared toolbar-menu clip`, async (page) => {
+    await populate(page);
+    await page.click(`#${name}-menu`);
+    await sleep(150);
+    const box = await panelBox(page, `${name}-dropdown`);
+    const c = TOOLBAR_MENU_CLIP;
+    assert(
+      fits(box, c),
+      `#${name}-dropdown must sit inside clip {x:${c.x}, y:${c.y}, w:${c.width}, h:${c.height}} ` +
+        `(measured: ${fmtBox(box)}) — update the shared clip in capture.mjs if this is deliberate`
+    );
+  });
+}
+
+/**
+ * `hidden` on these three carried no effect for a long time, and the assertion
+ * style is the whole reason it went unnoticed: checking `el.hidden === true`
+ * passes while the element is plainly on screen. Each has an author `display`
+ * rule (`.vc-row` / `.vc-group` are `display: flex`) that beats the UA's
+ * `[hidden] { display: none }` regardless of specificity — origin is checked
+ * before specificity. `offsetParent === null` is what "genuinely not rendered"
+ * looks like, so that is what this asserts.
+ *
+ * A B-rep document is the right fixture: Colour by field is meshio++-only, and
+ * the Midplane… row only appears after its toggle is clicked.
+ */
+test("dock: elements carrying `hidden` are genuinely not rendered", async (page) => {
+  await populate(page);
+  const state = await page.evaluate(() =>
+    Object.fromEntries(
+      ["plane-entry", "plane-mid", "vc-colorfield-group", "vc-colorfield-legend"].map((id) => {
+        const el = document.getElementById(id);
+        return [id, { hasHidden: el?.hidden === true, rendered: el ? el.offsetParent !== null : null }];
+      })
+    )
+  );
+  for (const [id, s] of Object.entries(state)) {
+    assert(s.hasHidden, `#${id} still carries the hidden attribute (precondition)`);
+    assert(s.rendered === false, `#${id} is genuinely not rendered while hidden (rendered: ${s.rendered})`);
+  }
+});
+
+/**
+ * The menubar's document chip. The host half (which transitions post, and the
+ * dirty predicate) is covered by the integration suite; this covers what only
+ * a real DOM can: that it is genuinely NOT rendered before the first message
+ * (the `[hidden]` override — an empty pill in the menubar is the failure), that
+ * a hostile filename is text and never markup, that it fits the 34px menubar
+ * every fixed screenshot clip is derived from, and that it does not shift the
+ * File menu (`file-menu.png`'s clip assumes it sits at the viewport origin).
+ */
+/**
+ * The dock's status row: entity counts, FE-mesh stats and the live cursor position.
+ *
+ * The cursor readout is the piece with a real trap in it — `Viewer.onHoverPointerMove`
+ * used to bail out whenever no pick mode was set, which is the NORMAL state, so a
+ * readout wired to it would have stayed blank for exactly the users who never turn
+ * selection on. Every assertion below therefore runs with selection OFF.
+ */
+test("dock status: counts follow the geometry, the mesh stat follows the overlay", async (page) => {
+  await populate(page);
+  const geo = fixture("geometry");
+  const text = (id) =>
+    page.evaluate((i) => {
+      const el = document.getElementById(i);
+      return el && el.offsetParent !== null ? el.textContent : null;
+    }, id);
+
+  const expected = `${geo.meshes.length.toLocaleString("en-US")} face${geo.meshes.length === 1 ? "" : "s"} · ${geo.edges.length.toLocaleString("en-US")} edge${geo.edges.length === 1 ? "" : "s"} · ${(geo.points?.length ?? 0).toLocaleString("en-US")} point${(geo.points?.length ?? 0) === 1 ? "" : "s"}`;
+  assert((await text("vc-count-entities")) === expected, `the counts read straight off the geometry message (want ${JSON.stringify(expected)}, got ${JSON.stringify(await text("vc-count-entities"))})`);
+  assert((await text("vc-count-mesh")) === null, "no FE-mesh stat is rendered before a mesh exists (the [hidden] override holds)");
+
+  await post(page, fixture("meshingResult"));
+  await sleep(500);
+  assert(
+    (await text("vc-count-mesh")) === "2,685 nodes · 10,000 elements",
+    `the mesh stat reports the result's own node/element counts (got ${JSON.stringify(await text("vc-count-mesh"))})`
+  );
+
+  await page.click("#meshing-clear");
+  await sleep(300);
+  assert((await text("vc-count-mesh")) === null, "Clear removes the stat along with the overlay it described");
+
+  // Regenerating and then loading a new model must also drop it: the overlay is
+  // disposed by setModel(), so a surviving stat would describe a mesh that is gone.
+  await post(page, fixture("meshingResult"));
+  await sleep(500);
+  assert((await text("vc-count-mesh")) !== null, "the stat comes back with a new result");
+  await post(page, geo);
+  await sleep(400);
+  assert((await text("vc-count-mesh")) === null, "loading a model drops the stat of the overlay it disposed");
+});
+
+test("dock status: the cursor readout works with selection OFF, follows the Units dropdown, and clears when the pointer leaves", async (page) => {
+  await populate(page);
+  const selActive = await page.evaluate(() => document.getElementById("sel-toggle")?.classList.contains("active") ?? false);
+  assert(selActive === false, "precondition: selection mode is off (the normal state, and the one the old hover path ignored)");
+
+  const cursor = () =>
+    page.evaluate(() => {
+      const el = document.getElementById("vc-cursor");
+      return el && el.offsetParent !== null && el.textContent ? el.textContent : null;
+    });
+  assert((await cursor()) === null, "no coordinates before the pointer enters the model");
+
+  const box = await viewportBox(page);
+  await page.mouse.move(box.x + box.width / 2 - 20, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+  await sleep(250);
+  const mm = await cursor();
+  assert(
+    mm !== null && /^X -?\d+\.\d{3}  Y -?\d+\.\d{3}  Z -?\d+\.\d{3} mm$/.test(mm),
+    `hovering the model shows X/Y/Z in mm with selection off (got ${JSON.stringify(mm)})`
+  );
+
+  // The Units dropdown drives it like Mass Properties: 25.4 mm is one inch, so the
+  // same point read back in inches must be the mm value / 25.4. Reading it WITHOUT
+  // moving the pointer also proves the readout re-renders on a unit change instead
+  // of waiting for the next mouse-move.
+  await page.selectOption("#vc-unit", "in");
+  await sleep(150);
+  const inch = await cursor();
+  const nums = (t) => [...t.matchAll(/-?\d+\.\d{3}/g)].map((m) => parseFloat(m[0]));
+  assert(inch !== null && inch.endsWith(" in"), `the unit suffix follows the dropdown (got ${JSON.stringify(inch)})`);
+  const [mmN, inN] = [nums(mm), nums(inch)];
+  assert(
+    mmN.every((v, i) => Math.abs(v - inN[i] * 25.4) < 0.05),
+    `the inch readout is the mm readout / 25.4 (mm ${JSON.stringify(mmN)}, in ${JSON.stringify(inN)})`
+  );
+  await page.selectOption("#vc-unit", "mm");
+
+  // Leaving the model must clear it — stale coordinates beside a pointer that is
+  // no longer there read as a live measurement of nothing.
+  await page.mouse.move(box.x + box.width / 2, box.y - 40);
+  await sleep(250);
+  assert((await cursor()) === null, "leaving the viewport clears the readout");
+});
+
+test("doc chip: hidden until fed, then renders name/format/dirty inside the menubar", async (page) => {
+  await populate(page);
+  const rects = () =>
+    page.evaluate(() => {
+      const box = (id) => {
+        const b = document.getElementById(id)?.getBoundingClientRect();
+        return b ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height } : null;
+      };
+      return {
+        chip: box("doc-chip"),
+        menubar: box("menubar"),
+        fileMenu: box("file-menu"),
+        body: document.body.getBoundingClientRect().width,
+        chipRendered: document.getElementById("doc-chip")?.offsetParent !== null,
+        dotRendered: document.getElementById("doc-chip-dirty")?.offsetParent !== null,
+        badgeRendered: document.getElementById("doc-chip-format")?.offsetParent !== null,
+        name: document.getElementById("doc-chip-name")?.textContent ?? null,
+        format: document.getElementById("doc-chip-format")?.textContent ?? null,
+        title: document.getElementById("doc-chip")?.title ?? null,
+        badgeTransform: getComputedStyle(document.getElementById("doc-chip-format")).textTransform,
+      };
+    });
+
+  const before = await rects();
+  assert(before.chipRendered === false, "the chip is genuinely not rendered before any documentInfo arrives");
+
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/tmp/parts/bracket.step", format: "step", dirty: true });
+  await sleep(80);
+  const shown = await rects();
+  assert(shown.chipRendered === true, "the chip renders once documentInfo arrives");
+  assert(shown.name === "bracket.step", `it shows the file name (got ${JSON.stringify(shown.name)})`);
+  assert(shown.format === "step" && shown.badgeTransform === "uppercase", "the format badge carries the code and displays uppercase");
+  assert(shown.title === "/tmp/parts/bracket.step", "hovering the chip reveals the full path");
+  assert(shown.dotRendered === true, "the unsaved-edits dot renders when dirty");
+
+  assert(
+    shown.chip.top >= shown.menubar.top && shown.chip.bottom <= shown.menubar.bottom,
+    `the chip sits inside the menubar (chip ${shown.chip.top.toFixed(1)}–${shown.chip.bottom.toFixed(1)}, menubar ${shown.menubar.top.toFixed(1)}–${shown.menubar.bottom.toFixed(1)})`
+  );
+  // Compare to the MEASURED baseline, not a hardcoded 34: the bar is `height: 34px`
+  // plus a 1px border, so it is 35px outer, and a first version of this
+  // assertion that assumed 34 failed on the untouched layout. What matters is
+  // that the chip does not change it — #toolbar's `top: 42px` and every fixed
+  // screenshot clip are derived from this height.
+  assert(
+    Math.abs(shown.menubar.height - before.menubar.height) < 0.5,
+    `the chip did not grow the menubar (${before.menubar.height} -> ${shown.menubar.height})`
+  );
+  assert(
+    Math.abs(shown.fileMenu.left - before.fileMenu.left) < 0.5,
+    `the File menu did not move when the chip appeared (${before.fileMenu.left} -> ${shown.fileMenu.left})`
+  );
+
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/tmp/parts/bracket.step", format: "step", dirty: false });
+  await sleep(80);
+  assert((await rects()).dotRendered === false, "the dot is genuinely not rendered once the document is clean");
+
+  await post(page, { type: "documentInfo", name: "mystery.xyz", path: "/tmp/mystery.xyz", format: null, dirty: false });
+  await sleep(80);
+  const unrouted = await rects();
+  assert(unrouted.badgeRendered === false, "a null format leaves no empty badge behind");
+  assert(unrouted.name === "mystery.xyz", "an unrouted file still shows its name");
+
+  // A file NAME is untrusted, document-derived text.
+  const hostile = '<img src=x onerror="window.__chipPwned=1">';
+  await post(page, { type: "documentInfo", name: hostile, path: "/tmp/x", format: "stl", dirty: false });
+  await sleep(120);
+  const inj = await page.evaluate(() => ({
+    imgs: document.querySelectorAll("#doc-chip img").length,
+    pwned: window.__chipPwned ?? null,
+    text: document.getElementById("doc-chip-name")?.textContent,
+  }));
+  assert(inj.imgs === 0 && inj.pwned === null, "a filename containing markup is rendered as text, never parsed");
+  assert(inj.text === hostile, "the raw string is preserved verbatim as text");
+
+  // A very long name must ellipsize, not push the chip past half the bar.
+  await post(page, { type: "documentInfo", name: "a-really-quite-long-assembly-file-name-".repeat(8) + ".step", path: "/x", format: "step", dirty: true });
+  await sleep(80);
+  const long = await rects();
+  assert(
+    long.chip.width <= long.body * 0.5 + 2,
+    `a long name is capped at half the menubar (chip ${long.chip.width.toFixed(0)}px of ${long.body.toFixed(0)}px)`
+  );
+  assert(
+    Math.abs(long.menubar.height - before.menubar.height) < 0.5,
+    `a long name does not wrap the menubar taller (${before.menubar.height} -> ${long.menubar.height})`
+  );
+});
+
+/**
+ * The one-row dock and its "⋯" overflow popover.
+ *
+ * The restructure's whole safety argument is that every control KEPT ITS ID: the
+ * four setup functions (view controls, appearance, clipping, planes) query
+ * globally by id/class, so moving a node is invisible to them and renaming one
+ * silently kills its control (`getElementById` returns null, the wiring is
+ * skipped, and nothing throws). That is the first thing pinned here.
+ */
+const DOCK_MORE_CLIP = { x: 700, y: 400, width: 660, height: 500 }; // mirrors capture.mjs view-controls-more.png
+
+test("dock: every control keeps its id — inline ones render, moved ones sit inside the closed popover", async (page) => {
+  await populate(page);
+  const MOVED = [
+    "rot-up", "rot-left", "rot-right", "rot-down",
+    "pan-up", "pan-left", "pan-right", "pan-down",
+    "clip-from-face", "clip-from-points",
+    "plane-save", "plane-add", "plane-mid-toggle",
+    "plane-entry", "plane-entry-point", "plane-entry-normal", "plane-entry-ok",
+    "plane-mid", "plane-mid-a", "plane-mid-b", "plane-mid-ok", "planes-list",
+    "vc-background", "vc-opacity", "vc-grid-size",
+    "vc-colorfield-group", "vc-colorfield-select", "vc-colorfield-legend",
+    "vc-colorfield-gradient", "vc-colorfield-min", "vc-colorfield-max",
+  ];
+  const INLINE = [
+    "vc-toggle", "display-mode-group", "clip-offset", "clip-toggle",
+    "vc-ortho", "vc-unit", "view-fit", "view-reset", "zoom-in", "zoom-out", "vc-more",
+  ];
+  const state = await page.evaluate(
+    ({ moved, inline }) => {
+      const dd = document.getElementById("vc-more-dropdown");
+      const probe = (id) => {
+        const el = document.getElementById(id);
+        return { exists: el !== null, inPopover: !!el && !!dd && dd.contains(el), rendered: !!el && el.offsetParent !== null };
+      };
+      return {
+        moved: Object.fromEntries(moved.map((id) => [id, probe(id)])),
+        inline: Object.fromEntries(inline.map((id) => [id, probe(id)])),
+        // `#clip-custom` is `hidden` until a custom normal exists, so it is only checked for existence.
+        clipCustom: probe("clip-custom"),
+        popoverOpen: dd ? !dd.classList.contains("hidden") : null,
+      };
+    },
+    { moved: MOVED, inline: INLINE }
+  );
+  assert(state.popoverOpen === false, "the popover starts closed");
+  const missing = [...MOVED, ...INLINE].filter((id) => !(state.moved[id] ?? state.inline[id]).exists);
+  assert(missing.length === 0, `no control lost its id (missing: ${JSON.stringify(missing)})`);
+  assert(state.clipCustom.exists, "#clip-custom still exists (hidden until a custom normal is derived)");
+  const notInside = MOVED.filter((id) => !state.moved[id].inPopover);
+  assert(notInside.length === 0, `every moved control lives inside #vc-more-dropdown (not: ${JSON.stringify(notInside)})`);
+  const leaked = MOVED.filter((id) => state.moved[id].rendered);
+  assert(leaked.length === 0, `no moved control is rendered while the popover is closed (rendered: ${JSON.stringify(leaked)})`);
+  const hidden = INLINE.filter((id) => !state.inline[id].rendered);
+  assert(hidden.length === 0, `every inline control is rendered in the bar (hidden: ${JSON.stringify(hidden)})`);
+});
+
+test("dock: one compact row at a normal width; wraps rather than overflows when the editor is narrow", async (page) => {
+  await populate(page);
+  const measure = () =>
+    page.evaluate(() => {
+      const box = (id) => {
+        const b = document.getElementById(id)?.getBoundingClientRect();
+        return b ? { top: b.top, bottom: b.bottom, left: b.left, right: b.right, height: b.height, width: b.width } : null;
+      };
+      const mid = (id) => {
+        const b = box(id);
+        return b ? (b.top + b.bottom) / 2 : null;
+      };
+      const INLINE = ["display-mode-group", "clip-toggle", "vc-ortho", "vc-unit", "view-fit", "zoom-in", "vc-more"];
+      const dock = box("view-controls");
+      // The dock now also holds the status row (counts / cursor), which is always
+      // present, so "one row or wrapped" is a property of the CONTROLS row, not of
+      // the whole dock's height.
+      const rowEl = document.querySelector(".vc-dock-row")?.getBoundingClientRect();
+      return {
+        dock,
+        row: rowEl ? { height: rowEl.height } : null,
+        side: box("side"),
+        centres: ["display-mode-group", "clip-toggle", "vc-ortho", "vc-unit", "view-fit", "vc-more"].map(mid),
+        // Controls whose box pokes OUT of the dock's own box. A `nowrap` row keeps
+        // the dock's rect capped while its contents spill past the edge, so the
+        // dock's height/left alone cannot detect that — this is the check that can.
+        overflowing: INLINE.filter((id) => {
+          const b = box(id);
+          return b && (b.right > dock.right + 1 || b.left < dock.left - 1);
+        }),
+      };
+    });
+  const wide = await measure();
+  assert(wide.overflowing.length === 0, `no control pokes out of the dock at 1360px (${JSON.stringify(wide.overflowing)})`);
+  // The old dock was ~330px tall (eight column groups). One controls row is ~30px;
+  // two would be ~60, so 46 separates "one row" from "it wrapped" with room.
+  assert(wide.row && wide.row.height < 46, `the controls row is one line at 1360px (height ${wide.row?.height.toFixed(0)}px)`);
+  const spread = Math.max(...wide.centres) - Math.min(...wide.centres);
+  assert(spread < 6, `the inline controls share a line (vertical centres span ${spread.toFixed(1)}px)`);
+
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(250);
+  const narrow = await measure();
+  assert(
+    narrow.dock.left >= narrow.side.right - 1,
+    `at 820px the bar still clears the sidebar (bar ${narrow.dock.left.toFixed(0)} vs sidebar ${narrow.side.right.toFixed(0)})`
+  );
+  assert(
+    narrow.overflowing.length === 0,
+    `at 820px no control pokes out of the dock — it wraps instead (overflowing: ${JSON.stringify(narrow.overflowing)})`
+  );
+  assert(
+    narrow.row.height > wide.row.height + 10,
+    `at 820px the row WRAPPED (${wide.row.height.toFixed(0)}px -> ${narrow.row.height.toFixed(0)}px) — the guarantee engaged rather than the bar overflowing`
+  );
+});
+
+test("dock: the #status toast clears the dock at a normal width AND when the dock wraps", async (page) => {
+  await populate(page);
+  // An EMPTY toast collapses to a zero rect at (0,0), which trivially clears
+  // anything — the first version of this test passed with "toast bottom 0". Give it
+  // real text and assert it actually rendered before measuring.
+  await post(page, { type: "status", text: "Exported to /tmp/some/long/path/file.step" });
+  await sleep(150);
+  const gap = () =>
+    page.evaluate(() => {
+      const st = document.getElementById("status").getBoundingClientRect();
+      const dk = document.getElementById("view-controls").getBoundingClientRect();
+      return { statusBottom: st.bottom, statusH: st.height, dockTop: dk.top, dockH: dk.height, overlapsX: st.left < dk.right && st.right > dk.left };
+    });
+  const wide = await gap();
+  assert(wide.statusH > 10, `precondition: the toast actually rendered (height ${wide.statusH})`);
+  assert(
+    wide.statusBottom <= wide.dockTop,
+    `at 1360px the toast sits above the dock (toast bottom ${wide.statusBottom.toFixed(0)}, dock top ${wide.dockTop.toFixed(0)})`
+  );
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(250);
+  const narrow = await gap();
+  assert(narrow.dockH > wide.dockH + 10, `precondition: the dock wrapped at 820px (${wide.dockH.toFixed(0)} -> ${narrow.dockH.toFixed(0)}px)`);
+  assert(
+    narrow.statusBottom <= narrow.dockTop,
+    `at 820px, with the dock wrapped, the toast still clears it (toast bottom ${narrow.statusBottom.toFixed(0)}, dock top ${narrow.dockTop.toFixed(0)})`
+  );
+});
+
+test("dock: the overflow popover opens upward, clears the dock and the sidebar, and fits its screenshot clip", async (page) => {
+  await populate(page);
+  const rects = () =>
+    page.evaluate(() => {
+      const r = (id) => {
+        const b = document.getElementById(id)?.getBoundingClientRect();
+        return b ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom, height: b.height } : null;
+      };
+      return { dd: r("vc-more-dropdown"), dock: r("view-controls"), side: r("side"), body: document.body.getBoundingClientRect().width };
+    });
+  const closed = await rects();
+  await page.click("#vc-more");
+  await sleep(150);
+  const open = await rects();
+  const fmt = (b) => (b ? `${b.left.toFixed(0)},${b.top.toFixed(0)}–${b.right.toFixed(0)},${b.bottom.toFixed(0)}` : "missing");
+
+  assert(
+    Math.abs(open.dock.height - closed.dock.height) < 0.5,
+    `opening the popover does not resize the dock (${closed.dock.height} -> ${open.dock.height})`
+  );
+  assert(
+    open.dd.bottom <= open.dock.top,
+    `the popover clears the dock's top rim instead of overlapping it (popover ${fmt(open.dd)}, dock ${fmt(open.dock)})`
+  );
+  assert(
+    open.dd.left >= open.side.right - 1 && open.dd.right <= open.body - 4,
+    `the popover stays on the canvas at 1360px (popover ${fmt(open.dd)}, sidebar right ${open.side.right.toFixed(0)})`
+  );
+  const c = DOCK_MORE_CLIP;
+  assert(
+    open.dd.left >= c.x && open.dd.top >= c.y && open.dd.right <= c.x + c.width && open.dd.bottom <= c.y + c.height,
+    `the popover fits view-controls-more.png's fixed clip {x:${c.x}, y:${c.y}, w:${c.width}, h:${c.height}} ` +
+      `(measured ${fmt(open.dd)}) — update capture.mjs's clip if this is deliberate`
+  );
+
+  // Narrow editor: a popover wider than the room left of the "⋯" would run under the sidebar.
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(250);
+  const narrow = await rects();
+  assert(
+    narrow.dd.left >= narrow.side.right - 1 && narrow.dd.right <= narrow.body - 4,
+    `at 820px the popover still clears the sidebar and stays on screen (popover ${fmt(narrow.dd)}, sidebar right ${narrow.side.right.toFixed(0)}, body ${narrow.body.toFixed(0)})`
+  );
+});
+
+test("keyboard: the dock overflow opens on click, arrows move focus inside it, Escape closes and refocuses the trigger", async (page) => {
+  await populate(page);
+  const state = () =>
+    page.evaluate(() => ({
+      expanded: document.getElementById("vc-more").getAttribute("aria-expanded"),
+      inPanel: document.getElementById("vc-more-dropdown").contains(document.activeElement),
+      activeId: document.activeElement?.id ?? "",
+    }));
+  await page.click("#vc-more");
+  assert((await state()).expanded === "true", "clicking the trigger opens the popover (aria-expanded=true)");
+  await page.keyboard.press("ArrowDown");
+  assert((await state()).inPanel, "ArrowDown moves focus into the popover");
+  // Every popover button is disabled, hidden or a real control — arrow nav skips the hidden ones.
+  const focused = await page.evaluate(() => {
+    const el = document.activeElement;
+    return { rendered: el?.offsetParent !== null, disabled: el?.hasAttribute("disabled") ?? true };
+  });
+  assert(focused.rendered && !focused.disabled, "focus lands on a rendered, enabled control (hidden/disabled ones are skipped)");
+  await page.keyboard.press("Escape");
+  const after = await state();
+  assert(after.expanded === "false", "Escape closes the popover");
+  assert(after.activeId === "vc-more", `Escape returns focus to the trigger (got "${after.activeId}")`);
+});
+
+test("dock: collapsing the bar closes an open popover and keeps the toggle's aria-label truthful", async (page) => {
+  await populate(page);
+  const read = () =>
+    page.evaluate(() => ({
+      expanded: document.getElementById("vc-more").getAttribute("aria-expanded"),
+      label: document.getElementById("vc-toggle").getAttribute("aria-label"),
+      collapsed: document.getElementById("view-controls").classList.contains("collapsed"),
+    }));
+  await page.click("#vc-more");
+  assert((await read()).expanded === "true", "the popover is open before collapsing");
+  await page.click("#vc-toggle");
+  const collapsed = await read();
+  assert(collapsed.collapsed, "the bar collapsed");
+  assert(collapsed.expanded === "false", "collapsing closed the popover — no stale aria-expanded left over a display:none subtree");
+  assert(collapsed.label === "Show controls", `the toggle's aria-label follows its title (got "${collapsed.label}")`);
+  await page.click("#vc-toggle");
+  assert((await read()).label === "Hide controls", "and flips back when expanded");
+});
+
 test("dropdowns: dismissing a menu over the markup canvas draws no stroke", async (page) => {
   await populate(page);
   await page.click("#markup-menu");
@@ -1187,9 +1750,11 @@ test("dropdowns: dismissing a menu over the markup canvas draws no stroke", asyn
  */
 async function dominantColors(page, topN = 6) {
   const box = await viewportBox(page);
-  const shot = await page.screenshot({
-    clip: { x: box.x + 8, y: box.y + 8, width: box.width - 16, height: box.height - 16 },
-  });
+  const shot = await shotWithoutToast(page, () =>
+    page.screenshot({
+      clip: { x: box.x + 8, y: box.y + 8, width: box.width - 16, height: box.height - 16 },
+    })
+  );
   return page.evaluate(
     async ({ b64, topN }) => {
       const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
@@ -1419,6 +1984,36 @@ test("inspector card: selection requests facts, and the reply renders per classi
   );
   assert(req !== null, "clicking a face posts an entityFactsRequest");
   assert((await cardShown()) === true, "selecting a face renders the inspector card");
+
+  // It lives top-right with the other selection-state chrome, so the property
+  // worth pinning is that it CLEARS its neighbours: the toolbar above it, the
+  // measurement readout row that shares the corner, and the sidebar. Nothing
+  // else measured this — a card that overlapped the toolbar would pass every
+  // other assertion in this test, because they all read text, not geometry.
+  const rects = await page.evaluate(() => {
+    const r = (id) => {
+      const b = document.getElementById(id)?.getBoundingClientRect();
+      return b ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom } : null;
+    };
+    return { card: r("inspector-card"), toolbar: r("toolbar"), readout: r("measure-readout-row"), side: r("side") };
+  });
+  const fmt = (b) => (b ? `${b.left.toFixed(0)},${b.top.toFixed(0)}–${b.right.toFixed(0)},${b.bottom.toFixed(0)}` : "missing");
+  assert(
+    rects.card !== null && rects.toolbar !== null && rects.card.top >= rects.toolbar.bottom,
+    `the inspector card sits below the toolbar (card ${fmt(rects.card)}, toolbar ${fmt(rects.toolbar)})`
+  );
+  assert(
+    rects.card !== null && rects.side !== null && rects.card.left >= rects.side.right,
+    `the inspector card does not cover the sidebar (card ${fmt(rects.card)}, sidebar ${fmt(rects.side)})`
+  );
+  // The readout row collapses to zero size until a measurement exists, so this is
+  // satisfied by its top edge alone today — but it is the collision this
+  // placement was chosen to avoid, and it starts guarding in earnest the moment
+  // the row has content (its bottom edge is then ~26px below its top).
+  assert(
+    rects.readout === null || rects.readout.bottom <= rects.card.top,
+    `the inspector card clears the measurement readout row (card ${fmt(rects.card)}, readout ${fmt(rects.readout)})`
+  );
   assert(
     req !== null && typeof req.requestId === "string" && /^(face|solid)-\d+$/.test(req.entityId),
     `the request carries a requestId and the picked entity id (got ${JSON.stringify(req)})`
@@ -2698,8 +3293,13 @@ async function hideGrid(page) {
  */
 const setPanelHidden = (page, hidden) =>
   page.evaluate((h) => {
-    const el = document.getElementById("view-controls");
-    if (el) el.style.display = h ? "none" : "";
+    // Everything painted over `#app` that carries live, pointer- or reply-driven
+    // content: the dock (which also holds the cursor readout), the selection pill,
+    // and the measurement readout line.
+    for (const id of ["view-controls", "inspector-card", "measure-readout-row"]) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = h ? "none" : "";
+    }
   }, hidden);
 
 /**
@@ -2712,7 +3312,7 @@ const setPanelHidden = (page, hidden) =>
  * readback returns all-black without `preserveDrawingBuffer`).
  */
 async function frameSignature(page) {
-  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
   return page.evaluate(async (b64) => {
     const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
     const c = document.createElement("canvas");
@@ -2746,7 +3346,7 @@ async function frameSignature(page) {
  * `14,99,156`), the background, and every grey.
  */
 async function magentaFraction(page) {
-  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
   return page.evaluate(async (b64) => {
     const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
     const c = document.createElement("canvas");
@@ -3046,6 +3646,7 @@ test("clip P6: Clip ▸ Face applies a plane, and refuses a non-planar face", as
   });
   const clickAndReply = async (over) => {
     await page.evaluate(() => (window.__sent.length = 0));
+    await openDockMore(page);
     await page.click("#clip-from-face");
     await sleep(250);
     const requestId = await page.evaluate(() => {
@@ -3277,6 +3878,7 @@ test("planes P1: a stored plane renders, and Use applies it as the clip", async 
 
   // Numeric entry — the only way to author a plane with no geometry to pick.
   await page.evaluate(() => (window.__sent.length = 0));
+  await openDockMore(page);
   await page.click("#plane-add");
   await page.fill("#plane-entry-point", "1, 2, 3");
   await page.fill("#plane-entry-normal", "0,0,0");

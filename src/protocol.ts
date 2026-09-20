@@ -470,6 +470,36 @@ export type HostToWebview =
     }
   | { type: "meshingError"; message: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)
+  /** What the menubar's document chip shows: which file this is, what format it
+   * routed as, and whether it carries unsaved edits. Nothing else carried any of
+   * this to the webview before — the tab title and dirty dot are VS Code's own
+   * chrome, outside the webview.
+   *
+   * `dirty` is EXACTLY "an unbaked op tail on a source this build can bake back"
+   * (`currentEdits.length > currentBakedThrough` on step/iges/brep/stl/obj/ply),
+   * the same predicate that fires VS Code's dirty event. It is sent whenever that
+   * can change, deduplicated host-side, so a repeat post is never a signal.
+   * NOT "any sidecar pending autosave" — those are covered by the ~500ms
+   * debounce and never dirty the document.
+   *
+   * Deliberately NOT the same as the tab's dot in two cases, and in both the chip
+   * is the accurate one about the SOURCE FILE:
+   *   - at open: a document whose sidecar already holds an unbaked tail (say, ops
+   *     an agent appended over MCP) is `dirty: true` here, while VS Code shows the
+   *     tab clean until the next edit. The edits ARE saved — to the sidecar — but
+   *     the source file on disk does not contain them.
+   *   - undoing back to the save point makes this `false` at once, but VS Code
+   *     only clears its own dot on a save or revert. */
+  | {
+      type: "documentInfo";
+      /** Basename, e.g. "bracket.step". */
+      name: string;
+      /** Full filesystem path — the chip's hover title only. */
+      path: string;
+      /** The routed format, or null for a file this build does not route. */
+      format: CadFormat | null;
+      dirty: boolean;
+    }
   | { type: "screenshotRequest"; requestId: string }
   | {
       type: "standardPartsSearchResult";

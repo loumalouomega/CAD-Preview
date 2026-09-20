@@ -426,14 +426,50 @@ test("Ctrl+S bakes through the same join as Export save-in-place", async () => {
   const before = fs.readFileSync(staged);
   const seen: Array<{ type: string }> = [];
   assert(await openAndWaitGeometry(staged, api, seen as never), "the STEP fixture opens and posts geometry");
+
+  // The menubar's document chip, host side (`syncDocumentInfo` in provider.ts).
+  // Asserted HERE rather than in a standalone case on purpose: this test already
+  // opens a document with a pending sidecar op and then bakes it — exactly the
+  // lifecycle the chip must track — and every webview the suite opens is a
+  // cumulative cost. A standalone case that opened two extra documents pushed a
+  // LATER case past whatever resource ceiling the suite sits under (its webview
+  // never posted `ready`), a regression untouched HEAD does not have.
+  type DocInfo = { type: string; name?: string; path?: string; format?: string | null; dirty?: boolean };
+  const infosOf = (posts: Array<{ type: string }>) => (posts as DocInfo[]).filter((m) => m.type === "documentInfo");
+  const openInfos = infosOf(seen);
+  assert(openInfos.length >= 1, "a documentInfo is posted on open");
+  assert(
+    openInfos[0]?.name === path.basename(staged) && openInfos[0]?.path === staged && openInfos[0]?.format === "step",
+    `it names the file and its routed format (got ${JSON.stringify(openInfos[0])})`
+  );
+  // Deliberate: the sidecar holds an unbaked op, so the SOURCE FILE does not
+  // contain what is on screen — even though VS Code shows the tab clean until
+  // the next edit. The chip answers a different question from the tab dot.
+  assert(
+    openInfos.at(-1)?.dirty === true,
+    `an unbaked sidecar tail reports dirty at open (got ${JSON.stringify(openInfos.at(-1))})`
+  );
+
   markDirty(api, staged);
 
   const uri = vscode.Uri.file(staged);
+  const later: DocInfo[] = [];
+  const infoSub = api.onDidPostMessage?.((m) => void later.push(m as DocInfo));
   const record = await withModals([pick("Save in place")], async () => {
     await api.saveDocument!(uri);
     const settled = await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1);
     assert(settled, "the sidecar watermark lands after Ctrl+S");
   });
+  const cleared = await waitFor(() => infosOf(later).some((i) => i.dirty === false), 10000);
+  infoSub?.dispose();
+  assert(cleared, `the chip is told the document is clean once the bake lands (saw ${JSON.stringify(infosOf(later))})`);
+  // The poster is called at every op-list/watermark transition and deduplicates
+  // against the last value it actually sent: no two ADJACENT posts may match.
+  const serialized = [...openInfos, ...infosOf(later)].map((i) => JSON.stringify(i));
+  assert(
+    serialized.every((s, i) => i === 0 || s !== serialized[i - 1]),
+    `documentInfo is deduplicated — no back-to-back identical posts (${serialized.length} posts)`
+  );
   assert(
     record.warnings.length === 1 && /re-emitted/.test(record.warnings[0]?.message ?? ""),
     "the first Ctrl+S still confirms with the data-loss modal"
@@ -565,6 +601,16 @@ test("Reopening a save is stable; a stale watermark double-applies (sensitivity 
   await sleep(1500);
   const g2 = minXOfPosts(seen);
   assert(g1 !== null && g2 !== null && Math.abs(g2 - g1) < 1e-6, `reopening is geometrically stable (Δx ${g1} → ${g2})`);
+  // Same reopen, seen by the menubar's document chip: the watermark now equals
+  // the op count, so nothing is unbaked and the chip must NOT claim unsaved
+  // edits. Pairs with the "dirty at open" assertion in the Ctrl+S case above.
+  const reopenInfos = (seen as Array<{ type: string; name?: string; dirty?: boolean }>).filter(
+    (m) => m.type === "documentInfo"
+  );
+  assert(
+    reopenInfos.length >= 1 && reopenInfos.at(-1)?.dirty === false && reopenInfos.at(-1)?.name === path.basename(staged),
+    `a saved document (watermark == op count) reopens reporting clean (got ${JSON.stringify(reopenInfos.at(-1))})`
+  );
   await closeAll();
 
   // Negative control: forge a stale watermark and confirm this harness CAN

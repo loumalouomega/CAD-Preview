@@ -8,6 +8,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | --- | --- |
 | `src/webview/main.ts` | Entry point, VS Code API, message routing, UI wiring |
 | `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
+| `src/webview/dockStats.ts` | Pure text formatters for the dock's status line — entity counts, FE-mesh stats, live cursor position (unit-tested) |
 | `src/webview/collapsiblePanels.ts` | The sidebar-section registry, its `.view.json` sanitizer, and the chevron wiring (partly unit-tested) |
 | `src/webview/sidebarResizer.ts` | The sidebar's width clamps and its drag/keyboard resize handle: `--side-width` on `<body>` is the single shared fact `#side{width}` and `#view-controls`' centring both read (partly unit-tested) |
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
@@ -759,6 +760,19 @@ same string in two ops can denote different topology once an intervening op renu
 otherwise would be unsupportable. Positions are 1-based op numbers, matching the Edits history.
 
 ### Wiring
+
+`Viewer.setPointerWorldHandler(cb)` is a second consumer of the SAME hover listener, added for the
+dock's cursor readout: `cb([x, y, z] | null)` receives the surface point under the pointer in the
+**model's own frame** (the world hit is converted with `model.worldToLocal`, which undoes the
+Z-up root rotation), in millimetres. It always raycasts against *surface* meshes whatever the pick
+mode is — in Line or Point mode the nearest "hit" would be a snapped edge or vertex, and the
+readout should say where the cursor is on the part. **It works with selection mode off** — the
+listener used to bail out whenever no pick mode was set, which is the normal state — so
+`onHoverPointerMove` now does one raycast and only proceeds to the entity-hover path when a pick
+mode is active; the tooltip behaviour is unchanged. `null` means the pointer left the model.
+`src/webview/dockStats.ts` (pure, unit-tested) formats what the dock's status line shows:
+`formatEntityCounts`, `formatMeshStats`, and `formatCursor` (which converts to the Units dropdown's
+unit).
 
 `Viewer.setEntityHoverHandler(cb)` is a hover pick path parallel to
 `setEntityPickHandler` — registering one is also what attaches the `pointermove`/`pointerleave`

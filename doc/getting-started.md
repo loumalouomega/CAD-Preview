@@ -127,7 +127,7 @@ Sections that don't apply to the current file (Clash and Primitives are shown on
 
 Drag the thin handle at the sidebar's right edge (or hover/focus it — it highlights) to resize the whole column between a workspace-usable minimum and maximum. The handle is also keyboard-operable when focused: **ArrowLeft**/**ArrowRight** step the width, **Home**/**End** jump to the minimum/maximum. The chosen width is remembered per document in the same `<model>.view.json` sidecar (like the collapse state), with the pre-resizer 220px width treated as "default" — an unresized document never grows a `sidebarWidth` entry just from being opened.
 
-The floating view-controls panel is centred over the 3D view and abreast of the sidebar, so resizing the sidebar never hides the panel's controls; if the control bar would be wider than the remaining canvas, its groups wrap onto further rows inside it rather than covering nearby panels.
+The floating view-controls dock is centred over the 3D view and abreast of the sidebar, so resizing the sidebar never hides its controls; if the control row would be wider than the remaining canvas, it wraps onto a second row inside the dock rather than covering nearby panels.
 
 ### Keyboard Use
 
@@ -227,11 +227,21 @@ Click **View ▾ → Screenshot…** in the toolbar (or run **CAD Preview: Scree
 
 Open **Markup ▾** in the toolbar and click **Markup mode** to start drawing review notes directly over the 3D view — "this boss", "gap here" — without leaving the viewer. Pick a tool from the row below it (**Freehand**, **Line**, **Arrow**, **Rectangle**, **Circle**, or **Eraser**) and a stroke colour from the swatch, then click-drag on the view to draw. **Undo**/**Redo** step through your strokes one at a time; **Clear** removes them all. Annotations are session-only — never saved to any sidecar or the CAD file — but they ARE baked into the next Screenshot you take (see above), so you can mark up a view and export the annotated image in one flow. Loading a different model clears any existing annotations; switching display mode, applying an edit, or rotating/panning the view does not. Erasing a stroke with the **Eraser** tool is immediate and does not go through Undo/Redo. Toggle **Markup mode** off to resume orbiting/panning/picking normally — while it is active, clicks draw instead of orbiting the camera. The **Markup ▾** trigger stays highlighted while the mode is on, even after the menu closes.
 
-### View-Controls Panel
+### The View-Controls Dock
 
-The collapsible panel at the bottom-right provides discrete camera controls without a mouse:
+The floating dock at the bottom of the 3D view holds the controls you reach for while orbiting. It is one compact row, with a thin **status line** underneath (below), and a **⋯** button at its right end that opens a popover for the controls used less often:
 
-- **⌄ / ⌃ toggle** — Collapse or expand the panel.
+| Where | Controls |
+|---|---|
+| **In the row** | **Display** modes (Shaded / Wire / X-Ray / Hidden / Flat), the **Clip** plane (X / Y / Z, the offset slider, and its on/off toggle), **Persp / Ortho**, the **Units** dropdown, and compact navigation — **Fit**, **Ctr**, and zoom **−** / **+** |
+| **Behind ⋯** | **Rotate** and **Pan** arrow pads, clip **Face** / **3 Pts**, the **Planes** group, background colour, opacity, **Grid size**, and **Colour by field** (shown only for a meshio++ source that declares one) |
+
+Nothing was removed — every control that used to sit in the tall two-tier panel is still one click away. The popover opens upward, stays on the canvas rather than covering the sidebar, closes on **Escape** or an outside click, and is arrow-key navigable like the toolbar menus. On a narrow editor the row wraps onto a second line instead of overflowing.
+
+**Colours follow your VS Code theme.** The dock, toolbar, chip and status line use the theme's own colours (light, dark, and high-contrast all work); only the model's own colours — background, faces, edges — come from the separate scene palette.
+
+The panel's remaining controls in detail:
+
 - **Rotate buttons** — Step the camera by 15°, 45°, or 90° around the azimuth or elevation.
 - **Pan buttons** — Shift the camera target by a fraction of the viewport.
 - **Zoom buttons** — Dolly in or out by a fixed factor.
@@ -251,9 +261,18 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Appearance group** — A background-colour swatch (live preview only — the session-only override always wins over the [`cadPreview.background` setting](#settings) until you reload), an opacity slider for the whole model, a **Persp / Ortho** button toggling between perspective and orthographic projection (orbit/pan/zoom, picking, and the orientation cube all keep working under either projection), a **Units** dropdown (mm/cm/m/in/ft, see [Units](#units) below), and a **Grid size** field controlling the [Transform Gizmo](#transform-gizmo)'s Snap to grid increment (see **View ▾** above — unrelated to the display grid's own Grid toggle). For a meshio++-imported source that declares point or cell scalar data (temperatures, stresses, …), a **Colour by field** dropdown also appears here — picking a field paints the model as a viridis colour ramp with a min/max legend; picking "None" reverts. Background/opacity/units/grid-size/colour-by-field stay session-only (never exported/persisted); colour-by-field additionally resets whenever an edit is applied, since a field's values only stay meaningful for the model's original, unedited geometry.
 - **Display group** — Five mutually exclusive rendering modes, replacing the old standalone Wireframe toolbar toggle: **Shaded** (the default, lit faces), **Wire** (faces rendered as a mesh of lines), **X-Ray** (translucent faces so edges show through), **Hidden** (edges of occluded geometry shown faintly through solid faces, full-strength where actually visible), and **Flat** (unlit, constant-colour faces — no lighting gradient, useful for reading true part colours without shading artifacts).
 
-![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, Planes, Appearance, and Display.](/screenshots/view-controls.png)
+![The view-controls dock: Display modes, Clip, Persp/Ortho, Units and Fit/Ctr/zoom in one row, with the status line beneath and the ⋯ overflow button at the right.](/screenshots/view-controls.png)
+
+![The ⋯ popover open above the dock: Rotate and Pan pads, clip Face / 3 Pts, Planes, and Appearance.](/screenshots/view-controls-more.png)
 
 **The camera direction/up vector, Persp/Ortho, Display mode, and the Clip plane are all saved automatically** to a `<model>.view.json` sidecar and restored the next time you open the same file, so reopening a large assembly picks up right where you left off instead of always resetting to the default isometric — see [View State Sidecar](./file-formats.md#view-state-sidecar-modelviewjson) for the format. Applying an edit reframes in your CURRENT direction rather than snapping back to the saved (or default) one. Background colour, opacity, the Units dropdown, and Colour by field remain purely session-only, as does explode-preview state (the *committed* `explode` op itself is saved in `.edits.json` like any other edit).
+
+### The Document Chip and Status Line
+
+Two small readouts report facts about the open document without asking you to do anything:
+
+- **Document chip** — at the right end of the menu bar: the file name, a small format badge (`STEP`, `STL`, …), and a dot when the document has **unsaved edits** — an edit-op tail that a save would bake into the source file. It reads the same rule the editor tab's own dirty dot does, so the two agree while you edit and save; hover the chip for the full path. Two moments where it can differ from the tab, both intentional: on opening a file whose sidecar already holds edits that haven't been saved into the source, the chip shows the dot straight away (the tab stays clean until you change something), and after undoing back to the save point the chip's dot clears while the tab's dot stays until you save or revert (VS Code has no way to un-dirty a tab from an undo).
+- **Status line** — the bottom row of the dock: **entity counts** for a B-rep document (`36 faces · 98 edges · 64 points`, the entities you can pick), the **FE-mesh stats** once you generate one (`12,480 nodes · 51,200 elements · min SICN 0.412` — the full quality histogram stays in the FE Mesh panel), and the **live cursor position** (`X 142.060  Y -18.400  Z 27.000 mm`) in the model's own frame, following the **Units** dropdown. The position appears while the pointer is over the model and clears when it leaves; it works whether or not selection mode is on. Counts are shown for B-rep documents only — a mesh file has no comparable count that wouldn't change with how its facets are split — and there is deliberately no *solid* count, since sketch faces would make it off by one.
 
 ### Explaining the geometry under the cursor
 
@@ -265,7 +284,7 @@ ids in the sidecar are exactly the ids under your cursor. It says *mentions*, no
 deliberately — ids are positional, so the same `face-12` in two different ops can refer to
 different geometry once an op in between renumbers things.
 
-**Clicking** additionally opens an inspector card in the bottom-left corner, classifying the entity
+**Clicking** additionally opens an inspector card in the top-right corner of the view, classifying the entity
 analytically: a planar / cylindrical / conical / spherical / toroidal face, or a straight /
 circular / elliptical / spline edge. It lists **only the measurements that classification gives
 meaning to** — a plane gets its area, normal, and a point on its plane; a cylinder gets no normal

@@ -689,6 +689,56 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // the sidecar on `ready`, set to `currentEdits.length` by an in-place
     // save, persisted on every edits write.
     let currentBakedThrough = 0;
+
+    // Whether this document carries unsaved edits: an unbaked op tail on a source
+    // this build can write back (Tier 0 Phase 2+3 — step/iges/brep via OCCT,
+    // stl/obj/ply via the webview exporter). Sidecar-only changes never count
+    // (autosave covers them); meshio/CAD-text sources never fire (nothing bakes
+    // for them); glTF never fires (its exporter only emits binary `.glb`).
+    //
+    // ONE predicate, read by both consumers — VS Code's dirty event and the
+    // menubar's document chip — so the two cannot drift into different ideas of
+    // "unsaved". They still differ at two moments, by design (at open with a
+    // pre-existing unbaked tail; after undoing back to the save point) — see the
+    // `documentInfo` doc comment in protocol.ts. The chip answers "does the source
+    // file contain what I am looking at?", which is a different question from
+    // VS Code's "has anything changed since the last save event?".
+    const isDocumentDirty = (): boolean =>
+      !!route &&
+      currentEdits.length > currentBakedThrough &&
+      ((route.strategy === "occt" && BREP_FORMATS.has(route.format)) ||
+        (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)));
+
+    // Tells the webview's document chip which file this is and whether it has
+    // unsaved edits. DEDUPLICATED against the last value actually posted, so it is
+    // safe — and intended — to call at every point the op list or watermark can
+    // change without thinking about whether this particular call is redundant.
+    // That is the whole reason it exists as a syncing function rather than six
+    // hand-placed posts: the transitions are scattered (ready, editsChanged, both
+    // bakes, revert, external reconcile), and a forgotten one would leave the chip
+    // lying about the document's state.
+    let lastDocumentInfo = "";
+    const syncDocumentInfo = (): void => {
+      const info = {
+        type: "documentInfo" as const,
+        name: path.basename(document.uri.fsPath),
+        path: document.uri.fsPath,
+        format: route?.format ?? null,
+        dirty: isDocumentDirty(),
+      };
+      const serialized = JSON.stringify(info);
+      if (serialized === lastDocumentInfo) return;
+      lastDocumentInfo = serialized;
+      post(info);
+    };
+
+    // Every place the host tells the webview about the op list ALSO settles the
+    // watermark, i.e. can flip `dirty`. Routing them through one helper is what
+    // makes "post edits, forget to resync the chip" unrepresentable.
+    const postEdits = (): void => {
+      post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+      syncDocumentInfo();
+    };
     // Set around our own in-place source write so the source-file watcher
     // below skips exactly one self-event instead of "reloading" what we just
     // saved. One-shot: consumed by the next watcher firing.
@@ -895,6 +945,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           });
         }
         post({ type: "status", text: `Saved in place to ${fileName} (${tail.length} op(s) baked)` });
+        // The watermark just moved to the end of the op list, so the document is
+        // now clean. This bake path does not post `edits` (unlike the mesh one),
+        // so `postEdits` never runs for it — sync the chip here.
+        syncDocumentInfo();
         loadModel(true);
         return true;
       } catch (err) {
@@ -1023,7 +1077,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           });
           return false;
         }
-        post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+        postEdits();
         post({ type: "status", text: `Saved in place to ${fileName} (${tailLength} op(s) baked)` });
         loadModel(true);
         return true;
@@ -1078,7 +1132,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       currentAnnotations = annotations;
       currentPlanes = planes;
       await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
-      post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+      postEdits();
       post({ type: "parts", parts: currentParts });
       post({ type: "annotations", annotations: currentAnnotations });
       post({ type: "planes", planes: currentPlanes });
@@ -1324,7 +1378,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           loadModel();
           void rebindPartsOnChange(previousOps, currentEdits);
         }
-        post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+        postEdits();
         post({ type: "status", text: "Edits updated externally" });
       })();
     });
@@ -1354,7 +1408,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             loadModel();
             void rebindPartsOnChange(previousOps, currentEdits);
           }
-          post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+          postEdits();
         }
       })();
     });
@@ -1471,7 +1525,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         currentBakedThrough = parsed.bakedThrough;
         currentPlanes = planesInitial;
         loadModel(true);
-        post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+        postEdits();
         post({ type: "planes", planes: currentPlanes });
         // The meshio route's own handleMeshio() (above) owns the parts round
         // trip for that route instead (it may need to auto-create Parts from
@@ -1577,18 +1631,18 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         currentVariables = msg.variables;
         // Tier 0 Phase 2+3 — dirty tracking: an unbaked tail on a source
         // that can bake it marks the editor dirty (VS Code clears it when a
-        // save/revert completes). Sidecar-only changes never fire — they're
-        // covered by autosave + File-Save. meshio/CAD-text sources never
-        // fire (nothing bakes for them); glTF never fires (no same-format
-        // writer — its exporter only emits binary `.glb`).
-        if (
-          route &&
-          currentEdits.length > currentBakedThrough &&
-          ((route.strategy === "occt" && BREP_FORMATS.has(route.format)) ||
-            (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)))
-        ) {
+        // save/revert completes). The predicate is `isDocumentDirty` (defined
+        // with the watermark above) — shared with the menubar's document chip.
+        if (isDocumentDirty()) {
           this.fireDirty(document);
         }
+        // The chip is synced on EVERY edit, not only when dirty: undoing back to
+        // the save point makes the tail empty, which must clear the chip's dot —
+        // and for a mesh source nothing else posts to the webview on this path
+        // (mesh edits are applied client-side), so this is the only place that
+        // would notice. VS Code's own tab dot stays lit in that case until a
+        // save/revert; the chip is the accurate one.
+        syncDocumentInfo();
         // Debounced sidecar autosave (separate timer/file from parts).
         if (editsSaveTimer) clearTimeout(editsSaveTimer);
         editsSaveTimer = setTimeout(() => {

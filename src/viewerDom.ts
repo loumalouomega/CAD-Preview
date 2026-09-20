@@ -39,6 +39,19 @@ export function viewerBodyHtml(): string {
         <button id="menu-export-sheet" role="menuitem" title="Export a drafting sheet — front, top, right and iso views at one shared scale, with a title block (first-angle projection)">${icon("export")} Export Drawing Sheet…</button>
       </div>
     </div>
+    <!-- Document chip: which file this is, its format, and whether it carries
+         unsaved edits. Fed by the documentInfo message (nothing else carried the
+         name, format or dirty state to the webview). Hidden until the first one
+         arrives, so an unrouted file shows no empty pill. The dot is a role=img
+         span, not a button, so it is not part of the icon-only aria audit but
+         still needs its own accessible name.
+         NB: no backticks in this comment - the whole function is one template
+         literal and a backtick ends the string. -->
+    <div id="doc-chip" hidden>
+      <span id="doc-chip-name"></span>
+      <span id="doc-chip-format" class="ui-badge"></span>
+      <span id="doc-chip-dirty" class="ui-dot" role="img" aria-label="Edits not yet saved into the source file" title="Edits not yet saved into the source file" hidden></span>
+    </div>
   </div>
   <div id="layout">
     <div id="side">
@@ -355,125 +368,150 @@ export function viewerBodyHtml(): string {
   <div id="view-controls">
     <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">⌄</button>
     <div id="vc-body">
-    <div class="vc-group">
-      <span class="vc-label">Rotate</span>
-      <div class="vc-segments">
-        <button class="seg-btn" data-step="15">15°</button>
-        <button class="seg-btn active" data-step="45">45°</button>
-        <button class="seg-btn" data-step="90">90°</button>
-      </div>
-      <div class="vc-cross">
-        <button id="rot-up" class="vc-arrow" style="grid-area:up" title="Rotate up">↑</button>
-        <button id="rot-left" class="vc-arrow" style="grid-area:left" title="Rotate left">←</button>
-        <button id="rot-right" class="vc-arrow" style="grid-area:right" title="Rotate right">→</button>
-        <button id="rot-down" class="vc-arrow" style="grid-area:down" title="Rotate down">↓</button>
-      </div>
-    </div>
-    <div class="vc-group">
-      <span class="vc-label">Pan</span>
-      <div class="vc-cross">
-        <button id="pan-up" class="vc-arrow" style="grid-area:up" title="Pan up">↑</button>
-        <button id="pan-left" class="vc-arrow" style="grid-area:left" title="Pan left">←</button>
-        <button id="pan-right" class="vc-arrow" style="grid-area:right" title="Pan right">→</button>
-        <button id="pan-down" class="vc-arrow" style="grid-area:down" title="Pan down">↓</button>
-      </div>
-    </div>
-    <div class="vc-group">
-      <span class="vc-label">Zoom</span>
-      <div class="vc-row">
-        <button id="zoom-in" class="vc-arrow" title="Zoom in">+</button>
-        <button id="zoom-out" class="vc-arrow" title="Zoom out">−</button>
-      </div>
-    </div>
-    <div class="vc-group">
-      <span class="vc-label">View</span>
-      <div class="vc-row">
-        <button id="view-fit" title="Fit to view">Fit</button>
-        <button id="view-reset" title="Reset to default view">Ctr</button>
-      </div>
-    </div>
-    <div class="vc-group">
-      <span class="vc-label">Clip</span>
-      <div class="vc-segments">
-        <button class="clip-axis active" data-axis="x">X</button>
-        <button class="clip-axis" data-axis="y">Y</button>
-        <button class="clip-axis" data-axis="z">Z</button>
-        <button class="clip-axis" id="clip-custom" hidden title="Custom clip normal">N</button>
-      </div>
-      <div class="vc-row">
-        <button id="clip-from-face" title="Clip along the selected planar face">Face</button>
-        <button id="clip-from-points" title="Clip through three selected points">3 Pts</button>
-      </div>
-      <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset along the active normal">
-      <button id="clip-toggle" title="Toggle clipping">Off</button>
-      <!-- Saved construction planes live INSIDE the Clip group rather than as
-           a sixth top-level one: #view-controls is a horizontal row of column
-           groups, so a new group costs WIDTH, and a sixth took the bar from
-           866px to 1290px in a 1400px viewport — wide enough to cover the
-           sidebar and swallow clicks there (caught by the screenshot harness
-           timing out on a sidebar button). Nested here it costs height
-           instead, and the clip is a saved plane's only consumer today. -->
-      <div id="plane-entry" class="vc-row" hidden>
-        <input type="text" id="plane-entry-point" class="plane-vec" placeholder="px,py,pz" title="A point ON the plane">
-        <input type="text" id="plane-entry-normal" class="plane-vec" placeholder="nx,ny,nz" title="Plane normal">
-        <button id="plane-entry-ok" title="Create the plane">Add</button>
-      </div>
-      <div id="plane-mid" class="vc-row" hidden>
-        <select id="plane-mid-a" title="First plane"></select>
-        <select id="plane-mid-b" title="Second plane"></select>
-        <button id="plane-mid-ok" title="Create a plane halfway between the two (parallel normals required)">Add</button>
-      </div>
-      <div class="vc-row">
-        <button id="plane-save" title="Save the current clip plane as a named construction plane">Save</button>
-        <button id="plane-add" title="Enter a construction plane numerically">Enter…</button>
-        <button id="plane-mid-toggle" title="Create a midplane between two saved planes">Midplane…</button>
-      </div>
-      <div id="planes-list" title="Named construction planes — persisted beside the model"></div>
-    </div>
-    <div class="vc-group">
-      <span class="vc-label">Appearance</span>
-      <div class="vc-row">
-        <input type="color" id="vc-background" title="Background colour" value="#1e1e1e">
-        <input type="range" id="vc-opacity" class="meshing-slider" min="0" max="100" value="100" title="Model opacity">
-        <button id="vc-ortho" title="Toggle orthographic/perspective projection">Persp</button>
-      </div>
-      <div class="vc-row">
-        <label for="vc-unit" class="vc-label">Units</label>
-        <select id="vc-unit" title="Display unit for measurements and mass properties">
-          <option value="mm">mm</option>
-          <option value="cm">cm</option>
-          <option value="m">m</option>
-          <option value="in">in</option>
-          <option value="ft">ft</option>
-        </select>
-      </div>
-      <div class="vc-row">
-        <label for="vc-grid-size" class="vc-label">Grid size</label>
-        <input type="text" inputmode="decimal" id="vc-grid-size" class="vc-num" value="1" title="Grid snap spacing, in the model's own units (mm unless the file declares otherwise)">
-      </div>
-    </div>
-    <div class="vc-group" id="vc-colorfield-group" hidden>
-      <span class="vc-label">Colour by field</span>
-      <div class="vc-row">
-        <select id="vc-colorfield-select" title="Colour the model by a scalar field declared in the source file">
-          <option value="">None</option>
-        </select>
-      </div>
-      <div class="vc-row" id="vc-colorfield-legend" hidden>
-        <div id="vc-colorfield-gradient"></div>
-        <span id="vc-colorfield-min"></span>
-        <span id="vc-colorfield-max"></span>
-      </div>
-    </div>
-    <div class="vc-group">
-      <span class="vc-label">Display</span>
-      <div class="vc-segments" id="display-mode-group">
+    <!-- One row of the everyday controls. The rest sit behind the overflow button
+         at the end, in a popover. Nothing here was removed: every control kept its
+         id, and only its grouping changed - which is what lets all four setup
+         functions keep finding their elements by id and class. The row is the
+         PREFERENCE and its wrapping is the GUARANTEE: at a narrow editor it becomes
+         two rows rather than running under the sidebar (a webview test pins that at
+         820px), so never give it nowrap or an overflow scroll.
+
+         The row and the status line below it share one column: vc-body is a
+         wrapping flex ROW, so two direct children would sit side by side. -->
+    <div class="vc-stack">
+    <div class="vc-dock-row">
+      <div class="vc-segments" id="display-mode-group" role="group" aria-label="Display mode">
         <button class="display-mode-btn active" data-mode="shaded" title="Shaded — normal lit faces">${icon("shaded")} Shaded</button>
         <button class="display-mode-btn" data-mode="wireframe" title="Wireframe — faces rendered as a mesh of lines">${icon("wireframe")} Wire</button>
         <button class="display-mode-btn" data-mode="xray" title="X-Ray — translucent faces, edges visible through them">${icon("xray")} X-Ray</button>
         <button class="display-mode-btn" data-mode="hiddenLines" title="Hidden Lines — occluded edges shown faintly through solids">${icon("hiddenLines")} Hidden</button>
         <button class="display-mode-btn" data-mode="flat" title="Flat — unlit constant-colour faces, no shading gradient">${icon("flat")} Flat</button>
       </div>
+      <span class="vc-div" aria-hidden="true"></span>
+      <div class="vc-inline-group">
+        <span class="vc-label">Clip</span>
+        <div class="vc-segments" role="group" aria-label="Clip axis">
+          <button class="clip-axis active" data-axis="x">X</button>
+          <button class="clip-axis" data-axis="y">Y</button>
+          <button class="clip-axis" data-axis="z">Z</button>
+          <button class="clip-axis" id="clip-custom" hidden title="Custom clip normal">N</button>
+        </div>
+        <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset along the active normal">
+        <button id="clip-toggle" title="Toggle clipping">Off</button>
+      </div>
+      <span class="vc-div" aria-hidden="true"></span>
+      <button id="vc-ortho" title="Toggle orthographic/perspective projection">Persp</button>
+      <select id="vc-unit" title="Display unit for measurements and mass properties" aria-label="Display unit">
+        <option value="mm">mm</option>
+        <option value="cm">cm</option>
+        <option value="m">m</option>
+        <option value="in">in</option>
+        <option value="ft">ft</option>
+      </select>
+      <span class="vc-div" aria-hidden="true"></span>
+      <div class="vc-segments" id="vc-nav" role="group" aria-label="Navigate">
+        <button id="view-fit" class="vc-nav-btn" title="Fit to view">Fit</button>
+        <button id="view-reset" class="vc-nav-btn" title="Reset to default view">Ctr</button>
+        <button id="zoom-out" class="vc-nav-btn" title="Zoom out" aria-label="Zoom out">−</button>
+        <button id="zoom-in" class="vc-nav-btn" title="Zoom in" aria-label="Zoom in">+</button>
+      </div>
+      <div class="tb-menu-wrap" id="vc-more-wrap">
+        <button id="vc-more" class="tb-menu" title="More view controls" aria-label="More view controls" aria-haspopup="true" aria-expanded="false">⋯</button>
+        <!-- Wired by setupDropdown, exactly like the toolbar menus, so it gets
+             single-open, outside-click dismissal that does not leak to the canvas,
+             Escape-returns-focus and arrow navigation for free. -->
+        <div id="vc-more-dropdown" class="tb-dropdown hidden" role="menu">
+          <div class="vc-group" id="vc-colorfield-group" hidden>
+            <span class="vc-label">Colour by field</span>
+            <div class="vc-row">
+              <select id="vc-colorfield-select" title="Colour the model by a scalar field declared in the source file">
+                <option value="">None</option>
+              </select>
+            </div>
+            <div class="vc-row" id="vc-colorfield-legend" hidden>
+              <div id="vc-colorfield-gradient"></div>
+              <span id="vc-colorfield-min"></span>
+              <span id="vc-colorfield-max"></span>
+            </div>
+          </div>
+          <div class="vc-pair">
+            <div class="vc-group">
+              <span class="vc-label">Rotate</span>
+              <div class="vc-segments">
+                <button class="seg-btn" data-step="15">15°</button>
+                <button class="seg-btn active" data-step="45">45°</button>
+                <button class="seg-btn" data-step="90">90°</button>
+              </div>
+              <div class="vc-cross">
+                <button id="rot-up" class="vc-arrow" style="grid-area:up" title="Rotate up" aria-label="Rotate up">↑</button>
+                <button id="rot-left" class="vc-arrow" style="grid-area:left" title="Rotate left" aria-label="Rotate left">←</button>
+                <button id="rot-right" class="vc-arrow" style="grid-area:right" title="Rotate right" aria-label="Rotate right">→</button>
+                <button id="rot-down" class="vc-arrow" style="grid-area:down" title="Rotate down" aria-label="Rotate down">↓</button>
+              </div>
+            </div>
+            <div class="vc-group">
+              <span class="vc-label">Pan</span>
+              <div class="vc-cross">
+                <button id="pan-up" class="vc-arrow" style="grid-area:up" title="Pan up" aria-label="Pan up">↑</button>
+                <button id="pan-left" class="vc-arrow" style="grid-area:left" title="Pan left" aria-label="Pan left">←</button>
+                <button id="pan-right" class="vc-arrow" style="grid-area:right" title="Pan right" aria-label="Pan right">→</button>
+                <button id="pan-down" class="vc-arrow" style="grid-area:down" title="Pan down" aria-label="Pan down">↓</button>
+              </div>
+            </div>
+          </div>
+          <div class="vc-group">
+            <span class="vc-label">Clip from geometry</span>
+            <div class="vc-row">
+              <button id="clip-from-face" title="Clip along the selected planar face">Face</button>
+              <button id="clip-from-points" title="Clip through three selected points">3 Pts</button>
+            </div>
+          </div>
+          <!-- Saved construction planes. They sat INSIDE the Clip group back when
+               the dock was a row of column groups, because a sixth top-level group
+               took the bar from 866px to 1290px and covered the sidebar. Behind the
+               overflow they cost neither width nor height in the bar. -->
+          <div class="vc-group">
+            <span class="vc-label">Construction planes</span>
+            <div id="plane-entry" class="vc-row" hidden>
+              <input type="text" id="plane-entry-point" class="plane-vec" placeholder="px,py,pz" title="A point ON the plane">
+              <input type="text" id="plane-entry-normal" class="plane-vec" placeholder="nx,ny,nz" title="Plane normal">
+              <button id="plane-entry-ok" title="Create the plane">Add</button>
+            </div>
+            <div id="plane-mid" class="vc-row" hidden>
+              <select id="plane-mid-a" title="First plane"></select>
+              <select id="plane-mid-b" title="Second plane"></select>
+              <button id="plane-mid-ok" title="Create a plane halfway between the two (parallel normals required)">Add</button>
+            </div>
+            <div class="vc-row">
+              <button id="plane-save" title="Save the current clip plane as a named construction plane">Save</button>
+              <button id="plane-add" title="Enter a construction plane numerically">Enter…</button>
+              <button id="plane-mid-toggle" title="Create a midplane between two saved planes">Midplane…</button>
+            </div>
+            <div id="planes-list" title="Named construction planes — persisted beside the model"></div>
+          </div>
+          <div class="vc-group">
+            <span class="vc-label">Appearance</span>
+            <div class="vc-row">
+              <input type="color" id="vc-background" title="Background colour" value="#1e1e1e">
+              <input type="range" id="vc-opacity" class="meshing-slider" min="0" max="100" value="100" title="Model opacity">
+            </div>
+            <div class="vc-row">
+              <label for="vc-grid-size" class="vc-label">Grid size</label>
+              <input type="text" inputmode="decimal" id="vc-grid-size" class="vc-num" value="1" title="Grid snap spacing, in the model's own units (mm unless the file declares otherwise)">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Facts about the loaded document, never verdicts. Inside the dock on
+         purpose: the webview tests hide the whole dock for every exact-pixel
+         comparison, so a live pointer-driven readout is excluded from them
+         automatically. Each span collapses when empty. -->
+    <div id="vc-status">
+      <span id="vc-count-entities" class="ui-num" title="Faces, edges and points in the loaded model"></span>
+      <span id="vc-count-mesh" class="ui-num" title="Generated FE mesh: nodes, elements and the worst element quality (minSICN)" hidden></span>
+      <span id="vc-cursor" class="ui-num" title="Cursor position on the model, in the current display unit"></span>
+    </div>
     </div>
     </div>
   </div>
