@@ -4,6 +4,23 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [2.6.0] - 2026-09-20
+
+Closes the last two Tier 1 roadmap items: all of Tier 1 is now empty, so the tier is dropped from `doc/roadmap.md` per its own rule.
+
+### Added
+
+- **Resizable sidebar.** A drag handle (also a keyboard-operable `role="separator"` button: ArrowLeft/Right step, Home/End jump) resizes the sidebar between 176 and 420 px; the width persists per document in `<model>.view.json` (`sidebarWidth`, omitted at the 220 default so untouched sidecars stay byte-stable).
+- **View-controls placement.** The floating control bar is centred over the 3D canvas instead of the whole editor pane (the old position covered the sidebar's bottom panels at ordinary window widths), capped to the app region with row-wrapping at narrow editor sizes.
+- **Keyboard usability.** Dropdown menus gain roving ArrowUp/Down/Home/End navigation and Escape closes while returning focus to the trigger; every icon-only control gets a screen-reader `aria-label`; Parts/Variables/plane inline renames commit on Enter and cancel on Escape — which also fixed a real defect where the planes rename's Escape path committed the half-typed value anyway.
+- **GitHub issue and PR templates** (closes #30). Bug/feature forms carry the contributing guide's fields (VS Code/extension/OS, format + size, repro steps, a non-confidential fixture) and a "what were you doing?" surface selector; the PR template mirrors the repo's verification and docs-sync conventions.
+- **Roadmap-citation gate.** `npm test` now fails on a new bare-ordinal `roadmap item N` citation (`src/docRoadmapRefs.ts`); every existing positional citation was rewritten to carry the feature name.
+
+### Changed
+
+- **`decompose_to_primitives` tool description** now names the feature and issue #34 instead of a roadmap item number.
+- **`mcp:smoke` hardening.** The defeature block's ambient WASM-abort-prone calls now go through the established `callWithCleanRetry` convention (a read-only no-op-reset variant for `load_model`).
+
 ## [2.5.0] - 2026-09-18
 
 ### Added
@@ -477,6 +494,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[2.6.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.2.0...v2.3.0
