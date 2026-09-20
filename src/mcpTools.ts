@@ -3881,7 +3881,7 @@ const ANNOTATION_ID_PATTERN = /^(solid|face|edge|point|node)-\d+(\/face-\d+)?$/;
  * dimensioned drawing end-to-end headlessly, since that tool bakes whatever
  * pins the sidecar holds.
  *
- * Create + delete only (roadmap Tier 2 "Headless annotation authoring"): an
+ * Create + delete only (roadmap Tier 1 "Headless annotation authoring"): an
  * update is delete + re-pin, and the sidecar is a plain array with no keyed
  * map to make an update atomic. Structural misuse (bad tool/text/anchor/
  * linePoints/tolerance shape) throws fail-fast, like `set_plane`'s

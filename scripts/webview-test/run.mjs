@@ -421,7 +421,7 @@ test("mesh export: every target serializes real geometry from the live scene", a
 });
 
 /**
- * H2. Mesh-ops section — the interactive half of Tier 2 symmetry item 4.
+ * H2. Mesh-ops section — the interactive half of the mesh-operations-panel item.
  *
  * `transform_mesh` was MCP-only with zero webview callers; the FE Mesh panel
  * grew a Mesh-ops section driving the same `runMeshioOps` pipeline entry via
@@ -490,7 +490,7 @@ test("mesh ops: section tracks source kind and posts a guarded request", async (
 });
 
 /**
- * H3. BOM Copy button — the interactive half of Tier 2 symmetry item 4.
+ * H3. BOM Copy button — the interactive half of the BOM-copy item.
  *
  * `generate_bom` was MCP-only with nothing in the webview importing `bomTsv`;
  * the Parts header grew a Copy BOM button driving the same `computeBom`
@@ -1894,7 +1894,7 @@ test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", 
   assert(shown.regionFit === 0, `#region-fit-panel renders nothing (got ${shown.regionFit}px)`);
 });
 
-// ── Clash panel (roadmap Tier 2 "Clash panel") ────────────────────────────
+// ── Clash panel (roadmap Tier 1 "Clash panel") ────────────────────────────
 //
 // The kernel side (`checkInterference`/`checkInterferenceAll`) is covered
 // against live OCCT in `npm run mcp:smoke`, so what needs checking here is the
@@ -2045,7 +2045,7 @@ test("clash: the hidden attribute genuinely hides the section", async (page) => 
   assert(height === 0, `#clash-panel[hidden] renders nothing (got ${height}px)`);
 });
 
-// ── Primitives panel (Tier 2 "Primitive-recognition panel") ───────────────
+// ── Primitives panel (Tier 1 "Primitive-recognition panel") ───────────────
 //
 // The kernel side (`recognizePrimitives`/`buildPrimitivesFile` +
 // `emitPrimitiveOps`) is covered against live OCCT in `npm run mcp:smoke` and

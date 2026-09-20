@@ -144,8 +144,9 @@ export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string, triangle
     mesh.userData.groupId = volumeId;
     mesh.userData.entityType = "surface";
     mesh.userData.entityId = `${volumeId}/face-0`;
-    // BVH-accelerate kept-whole meshes (the dense-scan case — see Tier 2 item
-    // 1 in doc/roadmap.md). `indirect: true` preserves the original triangle
+    // BVH-accelerate kept-whole meshes (the dense-scan case — closed as
+    // "BVH-accelerated raycasting for kept-whole meshes", see CLAUDE.md).
+    // `indirect: true` preserves the original triangle
     // order so any index-based logic stays correct if later code keys on it.
     // The BVH lives with the geometry for the session; it is freed when the
     // geometry is disposed on document close — no per-rebuild disposal needed

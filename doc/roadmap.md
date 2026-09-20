@@ -33,7 +33,7 @@ Several past items were identified by comparing against [SketchForge-3D](https:/
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
 
-### Tier 2 — Complete preparation and review workflows
+### Tier 1 — Complete preparation and review workflows
 
 *Admission: a useful extension of shipped infrastructure that spans several modules or needs a product decision. These are new candidates; implement a vertical slice before expanding the option surface.*
 

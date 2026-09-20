@@ -9,8 +9,9 @@ const csg = new Evaluator();
 /** Above this many combined triangles, a `three-bvh-csg` boolean/hole would
  * likely freeze the webview's main thread — degrade to a status message
  * instead. Tuned empirically against THIS codebase's `Evaluator` (not a
- * number borrowed from a different boolean engine); see `doc/roadmap.md`'s
- * Tier 2 item 1 note on why the threshold must come from local timing. */
+ * number borrowed from a different boolean engine); see the "Dense-mesh
+ * boolean/hole guard" note (CLAUDE.md) on why the threshold must come from
+ * local timing. */
 export const MESH_CSG_MAX_TRIANGLES = 150_000;
 
 /** Triangle count of a mesh's geometry (indexed or non-indexed). 0 if none. */

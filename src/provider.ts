@@ -1792,7 +1792,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       /**
-       * Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button"): one
+       * Parts-section "Copy BOM" button (roadmap Tier 1 "BOM Copy button"): one
        * row per Part over a single parse/replay — the same `computeBom` call
        * shape `generateBomTool` uses headless (existing kernel surface, no new
        * geometry work). B-rep sources only: a mesh source has no per-part rows
@@ -1828,7 +1828,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       /**
-       * Clash panel (roadmap Tier 2 "Clash panel"): Part-vs-Part interference
+       * Clash panel (roadmap Tier 1 "Clash panel"): Part-vs-Part interference
        * over the existing `checkInterference` kernel function — the same
        * request/response shape as `massPropertiesRequest` above, over existing
        * kernel surface. Part-name resolution lives here (the pipeline function
@@ -2385,7 +2385,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       /**
-       * Primitives panel (Tier 2 "Primitive-recognition panel"): read-only
+       * Primitives panel (Tier 1 "Primitive-recognition panel"): read-only
        * per-solid report over the existing `recognizePrimitives` kernel
        * function — the same request/response shape as `massPropertiesRequest`
        * above, over existing kernel surface. B-rep sources only: a mesh has
@@ -3163,7 +3163,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   }
 
   /**
-   * Primitives panel (Tier 2 "Primitive-recognition panel") — the interactive
+   * Primitives panel (Tier 1 "Primitive-recognition panel") — the interactive
    * half of `decompose_to_primitives`. Deliberately a ONE-SHOT EXPORT
    * (recognize each solid, emit parametric creation ops, write them as a
    * brand-new STEP/IGES/BREP file the user opens separately), not an in-place
@@ -3300,7 +3300,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   }
 
   /**
-   * Mesh-operations panel (roadmap Tier 2 "Mesh-operations panel for meshio
+   * Mesh-operations panel (roadmap Tier 1 "Mesh-operations panel for meshio
    * sources") — runs one validated meshio++ operation over the current
    * meshio++-imported source and writes the result to a NEW file at a
    * save-dialog-chosen path (the export model, like `transform_mesh`'s

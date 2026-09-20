@@ -34,7 +34,7 @@ function fmt(n: number): string {
 }
 
 /**
- * "Primitive-recognition panel" (Tier 2, closed) — the interactive B-rep half
+ * "Primitive-recognition panel" (Tier 1, closed) — the interactive B-rep half
  * of `recognize_primitives`/`decompose_to_primitives`. `render()` shows the
  * read-only report (face inventory by surface type, candidate + fit residual
  * per solid, honest `candidate: null` + reason for anything that doesn't match

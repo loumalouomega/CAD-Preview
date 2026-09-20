@@ -1,5 +1,5 @@
 // Declarative meshio++ mesh-operation specs for the interactive Mesh Ops
-// panel (roadmap Tier 2 "Mesh-operations panel for meshio sources").
+// panel (roadmap Tier 1 "Mesh-operations panel for meshio sources").
 //
 // Pure, vscode/WASM/DOM-free — shared by the webview panel (which builds a
 // spec from its form) and `provider.ts` (which validates before calling the

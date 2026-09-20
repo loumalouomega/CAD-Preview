@@ -1729,7 +1729,7 @@ input[type="range"].meshing-slider:focus {
   padding: 4px 8px;
 }
 
-/* ── Clash panel (roadmap Tier 2 "Clash panel") ─────────────────────────── */
+/* ── Clash panel (roadmap Tier 1 "Clash panel") ─────────────────────────── */
 
 #clash-panel {
   display: flex;
@@ -1878,7 +1878,7 @@ input[type="range"].meshing-slider:focus {
   word-break: break-all;
 }
 
-/* ── Primitives panel (Tier 2 "Primitive-recognition panel") ────────────── */
+/* ── Primitives panel (Tier 1 "Primitive-recognition panel") ────────────── */
 
 #primitives-panel {
   display: flex;

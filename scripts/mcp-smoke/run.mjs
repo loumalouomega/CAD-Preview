@@ -2690,7 +2690,7 @@ try {
   const dxfDimText = fs.readFileSync(dxfDim, "utf8");
   assert(dxfDimText.includes("DIMENSIONS") && dxfDimText.includes("TEXT") && dxfDimText.includes("10 mm [10 ±0.05]"), "the DXF drawing carries DIMENSIONS-layer TEXT entities with the toleranced label");
 
-  // pin_annotation (Tier 2 "Headless annotation authoring"): the headless
+  // pin_annotation (Tier 1 "Headless annotation authoring"): the headless
   // counterpart of the Measure panel's Pin button — create + delete over the
   // annotations sidecar, kernel-free. Pinned via the TOOL here (not a
   // hand-written sidecar like the block above), then baked by the same
@@ -3352,7 +3352,7 @@ try {
     `generate_mesh on the re-imported .xdmf hits the KNOWN, separate meshio++ Mixed-topology limitation, not the .h5-companion one (got: ${JSON.stringify(xdmfReimport)})`
   );
 
-  // Format-coverage roadmap item (Tier 2 #6 successor): CAD-Preview's own FE
+  // Format-coverage roadmap item: CAD-Preview's own FE
   // Mesh panel writes .msh/.inp/.unv/.su2/.mesh via Gmsh's own writer — until
   // now it had no way to re-open ANY of them. Each new MESHIO_FORMATS/
   // EXTENSION_MAP entry (fileRouter.ts) is round-tripped here for real:
@@ -3573,7 +3573,7 @@ try {
   assert(medMeshed.nodeCount > 0 && medMeshed.elementCount > 0, `generate_mesh still works on the MED source: ${medMeshed.nodeCount} nodes, ${medMeshed.elementCount} elements`);
   assert(fs.statSync(path.join(dir, "tet.h5")).size > 0, "HDF5 companion has content");
 
-  // inspect_meshio_fields (Tier 2 symmetry item 4): the read path the
+  // inspect_meshio_fields (the field-data inspection item): the read path the
   // colour-by-field picker uses, headlessly — summaries only, never values.
   const medFields = await call("inspect_meshio_fields", { path: medFixture });
   assert(medFields.supported === true, "inspect_meshio_fields supports a meshio source");

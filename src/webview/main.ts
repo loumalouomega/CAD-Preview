@@ -1158,7 +1158,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
 let sourceKind: "brep" | "mesh" | null = null;
 let massPropertiesRequestId: string | null = null;
 
-// ── Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button") ────
+// ── Parts-section "Copy BOM" button (roadmap Tier 1 "BOM Copy button") ────
 // One TSV row per Part over a single host parse/replay (`computeBom`, the same
 // function `generate_bom` drives headlessly) — requested with a stale-guarded
 // `bomRequestId` like every other request/response round trip here, rendered
@@ -1332,7 +1332,7 @@ const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mas
   },
 });
 
-// ── Clash panel (roadmap Tier 2 "Clash panel") ────────────────────────────
+// ── Clash panel (roadmap Tier 1 "Clash panel") ────────────────────────────
 // B-rep sources only (no exact boolean geometry exists for a mesh) — the
 // section hides itself otherwise, like `meshHealthPanel`. Raw mm results are
 // cached so a display-unit change re-renders without a new host round trip
@@ -1529,7 +1529,7 @@ const regionFitPanel = new RegionFitPanel(document.getElementById("region-fit-pa
   },
 });
 
-// ── Primitives (Tier 2 "Primitive-recognition panel") ──────────────────────
+// ── Primitives (Tier 1 "Primitive-recognition panel") ──────────────────────
 // B-rep-only interactive half of recognize_primitives/decompose_to_primitives.
 // The report is host-computed (needs the OCCT kernel); Apply is webview-side
 // (the emission is pure — `emitPrimitiveOps` over the already-posted report —

@@ -33,7 +33,7 @@ function formatNum(n: number): string {
 /**
  * Clash (interference) sidebar section — the interactive counterpart of the
  * MCP-only `check_interference` / `check_interference_all` tools (roadmap
- * Tier 2 "Clash panel"). Two Part dropdowns for a pairwise check plus a
+ * Tier 1 "Clash panel"). Two Part dropdowns for a pairwise check plus a
  * Check-all button over every Part with volumes; results render as text rows
  * (overlap Y/N, volume, AABB-screened badge, unresolved-id notes). B-rep
  * sources only — like `meshHealthPanel`, the section hides itself otherwise.

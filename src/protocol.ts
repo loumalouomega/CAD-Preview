@@ -446,7 +446,7 @@ export type HostToWebview =
   | { type: "importDxfError"; message: string }
   | { type: "massPropertiesResult"; requestId: string; properties: MassProperties }
   | { type: "massPropertiesError"; requestId: string; message: string }
-  /** Parts-section "Copy BOM" button (roadmap Tier 2 "BOM Copy button"): one
+  /** Parts-section "Copy BOM" button (roadmap Tier 1 "BOM Copy button"): one
    * row per Part over a single host parse/replay (`computeBom`, the same
    * function `generate_bom` drives headless) — the webview renders
    * `bomTsv(rows)` itself and copies it to the clipboard. B-rep sources only;
@@ -454,7 +454,7 @@ export type HostToWebview =
    * `bomError` otherwise. */
   | { type: "bomResult"; requestId: string; rows: BomRow[]; warnings: string[] }
   | { type: "bomError"; requestId: string; message: string }
-  /** Clash panel (roadmap Tier 2 "Clash panel"): Part-vs-Part interference
+  /** Clash panel (roadmap Tier 1 "Clash panel"): Part-vs-Part interference
    * over the existing `checkInterference` kernel function — a new protocol
    * pair over existing kernel surface, not new geometry work (the same shape
    * `entityFactsRequest` used when it shipped). B-rep sources only: a mesh
@@ -495,7 +495,7 @@ export type HostToWebview =
   | { type: "measureExactError"; requestId: string; message: string }
   | { type: "meshHealResult"; requestId: string; report: MeshHealthReport }
   | { type: "meshHealError"; requestId: string; message: string }
-  /** Mesh-ops panel (roadmap Tier 2 "Mesh-operations panel"): one declarative
+  /** Mesh-ops panel (roadmap Tier 1 "Mesh-operations panel"): one declarative
    * meshio++ operation applied to the current meshio++-imported source and
    * written to a new file via the shared save flow. Mirrors
    * `meshHealRequest`'s requestId + stale-response-guard idiom. */
@@ -503,7 +503,7 @@ export type HostToWebview =
   | { type: "meshioOpsError"; requestId: string; message: string }
   | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }
   | { type: "fitRegionError"; requestId: string; message: string }
-  /** Primitive-recognition panel (Tier 2 "Primitive-recognition panel"): a
+  /** Primitive-recognition panel (Tier 1 "Primitive-recognition panel"): a
    * read-only per-solid report over the existing `recognizePrimitives` kernel
    * function — a new protocol pair over existing kernel surface, not new
    * geometry work (the same shape `entityFactsRequest` used when it shipped).
@@ -648,7 +648,7 @@ export type WebviewToHost =
   | { type: "screenshotButtonClicked" }
   | { type: "promoteToBrepButtonClicked" }
   | { type: "repairMeshButtonClicked" }
-  /** Primitives panel (Tier 2 "Primitive-recognition panel"): one-shot
+  /** Primitives panel (Tier 1 "Primitive-recognition panel"): one-shot
    * actions over the last recognized report. Like `promoteToBrepButtonClicked`,
    * the host owns the whole flow from here (for Export: format quick-pick →
    * unit quick-pick → save dialog; for Save-macro: name prompt → library
