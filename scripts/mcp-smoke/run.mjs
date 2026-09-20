@@ -250,8 +250,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 55, `tools/list exposes 55 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset"]) {
+  assert(tools.length === 56, `tools/list exposes 56 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -3018,6 +3018,51 @@ try {
     appliedRobust.options.engine === "ftetwild" &&
       appliedRobust.warnings.some((w) => /"elementOrder".*fTetWild/i.test(w)),
     "apply_mesh_preset pins the engine and names the ignored field"
+  );
+
+  // Measured mesh-refinement comparison (roadmap Tier 1 "Measured
+  // mesh-refinement comparison", closed) — one model, three explicit sizes,
+  // same geometry and non-size options throughout. Runs against a dedicated
+  // copy (the presetModel precedent above): applyIndex writes `.mesh.json`,
+  // and the shared `model` fixture must stay pristine for the
+  // save_preprocess omission assertion further down.
+  const sweepModel = path.join(dir, "sweep.stp");
+  fs.copyFileSync(model, sweepModel);
+  const sweepSizes = [bbox.diagonal / 8, bbox.diagonal / 15, bbox.diagonal / 30];
+  const sweepOutDir = path.join(dir, "sweep-out");
+  const sweepBefore = JSON.stringify((await call("get_state", { path: sweepModel })).meshOptions);
+  const sweep = await call("compare_mesh_refinement", { path: sweepModel, sizes: sweepSizes, outputDir: sweepOutDir });
+  assert(
+    sweep.runs.length === 3 && sweep.runs.every((r) => r.status === "ok"),
+    `sweep runs all three sizes cleanly (got ${JSON.stringify(sweep.runs.map((r) => r.status))})`
+  );
+  for (const [i, r] of sweep.runs.entries()) {
+    assert(r.size === sweepSizes[i], `row ${i} reports its own swept size`);
+    assert(r.engineUsed === "gmsh", `row ${i} reports the engine that actually ran`);
+    assert(r.nodeCount > 0 && r.elementCount > 0, `row ${i} has real counts (${r.nodeCount} nodes, ${r.elementCount} elements)`);
+    assert(Number.isFinite(r.elapsedMs), `row ${i} reports elapsed ms`);
+    assert(r.quality === null || typeof r.quality.min === "number", `row ${i} quality is null or a real summary`);
+    const expectedName = `sweep-size-${sweepSizes[i]}.msh`;
+    assert(
+      r.outputPaths.length === 1 && r.outputPaths[0] === path.join(sweepOutDir, expectedName),
+      `row ${i} names its size-encoded output (${JSON.stringify(r.outputPaths)})`
+    );
+    assert(fs.statSync(r.outputPaths[0]).size > 0, `row ${i} output file exists and is non-empty`);
+  }
+  const sweepTsvLines = sweep.tsv.split("\n");
+  assert(
+    sweepTsvLines.length === 4 && sweepTsvLines[0].startsWith("size_mm\tstatus\t"),
+    "sweep TSV carries a header plus one line per run"
+  );
+  assert(/do NOT establish FE-solution convergence/.test(sweep.note), "sweep response carries the convergence disclaimer");
+  const sweepAfter = JSON.stringify((await call("get_state", { path: sweepModel })).meshOptions);
+  assert(sweepBefore === sweepAfter, "a sweep without applyIndex leaves the stored options untouched");
+  const sweepApplied = await call("compare_mesh_refinement", { path: sweepModel, sizes: sweepSizes, applyIndex: 1 });
+  assert(sweepApplied.applied?.size === sweepSizes[1], "applyIndex reports the persisted run");
+  const sweepAppliedState = await call("get_state", { path: sweepModel });
+  assert(
+    sweepAppliedState.meshOptions.sizeMin === sweepSizes[1] && sweepAppliedState.meshOptions.sizeMax === sweepSizes[1],
+    "applyIndex persists that run's uniform size as the stored options"
   );
 
   // Unit conversion on export — a REAL geometric scale, verified end-to-end

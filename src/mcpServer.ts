@@ -79,6 +79,7 @@ import {
   setMeshOptions,
   generateMeshTool,
   exportMeshTool,
+  compareMeshRefinementTool,
   exportBRepTool,
   saveModelTool,
   savePreprocessTool,
@@ -1246,6 +1247,35 @@ server.registerTool(
       args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string },
       onProgress
     ) => exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
+  )
+);
+
+server.registerTool(
+  "compare_mesh_refinement",
+  {
+    description:
+      "Mesh the same model at several explicit sizes and compare cost vs quality before choosing one: each entry of sizes (mm) runs the same resolved geometry and the same non-size options as a uniform mesh (sizeMin = sizeMax = size), reporting per-run engine, nodes/elements, elapsed ms, the minSICN quality summary, and either output paths or an individual error — a failed run is a row, never a thrown sweep. The document's stored options are never written unless applyIndex (0-based into sizes) names the run to persist. Optional outputDir + outputFormat (any export_mesh format id, default msh) writes one <stem>-size-<size>.<ext> per run through the same writer export_mesh uses. Returns a spreadsheet-ready TSV alongside the rows. Rows describe meshing cost and element shape quality only — density/quality trends do NOT establish FE-solution convergence without a solver. Sequential runs (max 8 sizes), each bounded by the kernel watchdog; progress is reported per completed run. No mid-sweep cancellation exists.",
+    inputSchema: {
+      path: modelPath,
+      sizes: z.array(z.number()).describe("Explicit mesh sizes in mm, one run each (max 8) — sizeMin = sizeMax = size per run"),
+      options: meshOptionsOverride,
+      outputDir: z.string().optional().describe("Directory for per-run output files (created if missing; omit for no files)"),
+      outputFormat: z.string().optional().describe("Export format id for output files (default msh) — outputDir is required with it"),
+      applyIndex: z.number().int().optional().describe("0-based index into sizes whose effective options to persist to <model>.mesh.json (+ regenerated .geo)"),
+    },
+  },
+  wrap(
+    (
+      args: {
+        path: string;
+        sizes: number[];
+        options?: Record<string, unknown>;
+        outputDir?: string;
+        outputFormat?: string;
+        applyIndex?: number;
+      },
+      onProgress
+    ) => compareMeshRefinementTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )
 );
 

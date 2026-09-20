@@ -65,7 +65,8 @@ import { scaleStlBytes } from "./stlParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
 import { validateSelectorQuery } from "./selectorQuery";
 import { envelope } from "./untrustedText";
-import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./meshExportFormats";
+import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
+import { sweepTsv, sweepOutputName, type MeshSweepRun } from "./meshSweep";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part, Annotation, ConstructionPlane, MeasureTool } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
@@ -131,6 +132,7 @@ import type {
   exportGeoUnrolled,
   repairMesh,
   MeshGenerationInput,
+  MeshResult,
 } from "./gmshService";
 import {
   readBundledScriptLibrary,
@@ -459,6 +461,7 @@ export function describeCapabilities() {
         "A part's meshSize gives local refinement (B-rep sources only). A part's meshGrading grades the mesh AROUND the part with distance — sizeAtWall within distNear, growing linearly to sizeFar at distFar (set_part; B-rep sources only, same as physical groups and meshSize; ignored on a mesh-format source).",
         'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction), ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction), ftetwildManifoldSurface (force a manifold boundary), ftetwildCoarsen (fewer, larger tets), and ftetwildDisableFiltering (skip interior filtering — returns a hull fill, NOT the part interior; inspection only) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. repair_mesh honors the stored options (still forcing engine/dimension). generate_mesh\'s response reports engineUsed and any fallback warnings.',
         "save_mesh_preset / list_mesh_presets / apply_mesh_preset manage named, reusable option bundles (the macro library's bundled-plus-user pattern: bundled starters coarse-preview, balanced, fine-detail, robust-repair, plus your own caller-named file). A preset stores global options only — never Part sizing or entity assignments — with explicit authored units (converted to mm on apply) and a pinned engine. Preset names describe density intent, never a mesh-quality guarantee.",
+        "compare_mesh_refinement meshes one model at several explicit sizes (max 8) with identical geometry and non-size options — each run a uniform mesh (sizeMin = sizeMax = size), reporting engine/nodes/elements/elapsed/quality per run plus a TSV, with failed runs as individual rows. Optional per-run output files in any export_mesh format; optional applyIndex persists one run's options. Rows describe meshing cost and element shape quality only — density/quality trends do NOT establish FE-solution convergence without a solver.",
       ],
     },
     headlessLimitations: [
@@ -4441,9 +4444,41 @@ export async function exportMeshTool(
 
   // Same start/done-only scoping as generate_mesh — no mid-call hook exists.
   onProgress?.({ progress: 0, total: 1, message: `Generating + exporting to ${format.id}...` });
+  const written = await writeMeshExportFormat(ctx, modelPath, route, input, options, parts, format, outputPath, unit, warnings);
+
+  const sizes = await Promise.all(written.map(async (p) => ({ path: p, bytes: (await fs.stat(p)).size })));
+  onProgress?.({ progress: 1, total: 1, message: "Done" });
+  return { format: format.id, written: sizes, warnings };
+}
+
+/**
+ * The per-format mesh-export write body shared by `export_mesh` (one call)
+ * and `compare_mesh_refinement` (one call per swept size) — a single place
+ * for the `msh` / `geoUnrolled`+XAO / `mdpa` / meshio-bridge+companion /
+ * generic dispatch, so the two tools' file semantics can never drift apart.
+ *
+ * `pregenerated` lets a caller that already ran `generateMesh` for its own
+ * row stats reuse that result in the two branches that start from it (`msh`
+ * and the meshio bridge) instead of paying for a second identical meshing
+ * pass; the other three branches never call `generateMesh` at all, so it is
+ * simply unused there. Returns every path written (companions included).
+ */
+async function writeMeshExportFormat(
+  ctx: ToolContext,
+  modelPath: string,
+  route: FileRoute,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[],
+  format: MeshExportFormat,
+  outputPath: string,
+  unit: DisplayUnit,
+  warnings: string[],
+  pregenerated?: MeshResult
+): Promise<string[]> {
   const written: string[] = [];
   if (format.id === "msh") {
-    const result = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
+    const result = pregenerated ?? (await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts));
     await fs.writeFile(outputPath, result.mshText, "utf8");
     written.push(outputPath);
   } else if (format.id === "geoUnrolled") {
@@ -4480,7 +4515,7 @@ export async function exportMeshTool(
     // comment for the full id list and how each was verified. exportViaMeshio
     // takes generateMesh()'s own MSH 4.1 mshText directly (meshio++ 9.7.0+
     // reads 4.1 natively — see its doc comment).
-    const meshed = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
+    const meshed = pregenerated ?? (await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts));
     const { fullOps: editOpsForProvenance } = await readEditsResolved(modelPath);
     const { bytes, companion } = await ctx.pipeline.exportViaMeshio(meshed.mshText, format.id, {
       extension: format.extension,
@@ -4534,9 +4569,199 @@ export async function exportMeshTool(
     written.push(outputPath);
   }
 
-  const sizes = await Promise.all(written.map(async (p) => ({ path: p, bytes: (await fs.stat(p)).size })));
-  onProgress?.({ progress: 1, total: 1, message: "Done" });
-  return { format: format.id, written: sizes, warnings };
+  return written;
+}
+
+// ---------------------------------------------------------------------------
+// compare_mesh_refinement
+
+/**
+ * Hard cap on sweep rows — each row is a full meshing pass (seconds to
+ * minutes of WASM time), so an uncapped list is a hang by another name. Same
+ * safety-caps-instead-of-sandboxing discipline as `MAX_STEPS`/
+ * `MAX_TOTAL_OPS` in `parametricScript.ts`: hit it and the call throws
+ * before any work starts, never a silent truncation.
+ */
+const MAX_SWEEP_RUNS = 8;
+
+/**
+ * Carried on every sweep response (see the roadmap item's done-when): rows
+ * describe meshing COST (nodes/elements/time) and element SHAPE quality
+ * (minSICN) — neither establishes FE-solution convergence, which needs a
+ * solver run on the exported meshes, not just finer elements.
+ */
+const SWEEP_NOTE =
+  "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence — that needs a solver run on the exported meshes, not just finer elements. Rows describe meshing cost (nodes/elements/time) and element shape quality (minSICN), not solution accuracy.";
+
+/**
+ * Bounded sweep of explicit mesh sizes (roadmap Tier 1 "Measured
+ * mesh-refinement comparison", closed) — compare mesh cost and quality at
+ * several sizes before choosing one. Headless-first (`generate_bom`/
+ * `check_interference` precedent): MCP-only, no webview surface.
+ *
+ * Each entry of `sizes` (mm) runs the SAME resolved geometry and the SAME
+ * non-size options as a uniform mesh (`sizeMin = sizeMax = size`); per-run
+ * rows carry actual engine, nodes/elements, generate-only elapsed ms, the
+ * existing quality summary, and either output paths or an individual error —
+ * a failed run is a row, never a thrown sweep. The document's stored options
+ * are never written unless `applyIndex` (0-based into `sizes`) names the run
+ * whose effective options to persist (the `set_mesh_options` write exactly).
+ * Optional `outputDir` + `outputFormat` (any registered export-format id,
+ * default `msh`) writes one file per run via the same
+ * `writeMeshExportFormat` body `export_mesh` uses, named
+ * `<stem>-size-<size>.<ext>` so every file identifies its own settings.
+ *
+ * Cancellation scoping, stated plainly: runs execute sequentially, each
+ * bounded by the kernel client's per-call watchdog, with per-completed-run
+ * progress below — no mid-sweep cancel exists (MCP has no in-flight
+ * cancellation primitive and the kernel client serializes regardless). This
+ * deliberately does not wait on the still-open "Document-scoped jobs"
+ * roadmap item; the bound (capped rows × watchdog-bounded calls) is what
+ * keeps a sweep from running away instead.
+ */
+export async function compareMeshRefinementTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    sizes: number[];
+    options?: Partial<MeshOptions>;
+    outputDir?: string;
+    outputFormat?: string;
+    applyIndex?: number;
+  },
+  onProgress?: ProgressCallback
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const warnings: string[] = [];
+
+  // Fail fast on caller-input shape (the `set_plane` precedent) — before any
+  // WASM work, so a malformed sweep costs nothing.
+  if (!Array.isArray(params.sizes) || params.sizes.length === 0) {
+    throw new Error("sizes must be a non-empty array of positive mesh sizes in mm.");
+  }
+  if (params.sizes.length > MAX_SWEEP_RUNS) {
+    throw new Error(
+      `sizes has ${params.sizes.length} entries — capped at ${MAX_SWEEP_RUNS} runs per sweep (each run is a full meshing pass).`
+    );
+  }
+  for (const s of params.sizes) {
+    if (typeof s !== "number" || !Number.isFinite(s) || s <= 0) {
+      throw new Error(`sizes must all be finite positive numbers in mm (got ${JSON.stringify(s)}).`);
+    }
+  }
+  if (
+    params.applyIndex != null &&
+    (!Number.isInteger(params.applyIndex) || params.applyIndex < 0 || params.applyIndex >= params.sizes.length)
+  ) {
+    throw new Error(
+      `applyIndex ${JSON.stringify(params.applyIndex)} is out of range for ${params.sizes.length} swept size(s) (0-based).`
+    );
+  }
+
+  // Optional outputs: a format without a directory has nowhere to go (fail
+  // fast); a directory without a format gets the native `msh` text that every
+  // generate already produces.
+  let format: MeshExportFormat | undefined;
+  let outDir: string | undefined;
+  if (params.outputFormat != null && params.outputDir == null) {
+    throw new Error("outputFormat needs an outputDir to write into.");
+  }
+  if (params.outputDir != null) {
+    format = meshExportFormat(params.outputFormat ?? "msh");
+    if (!format) {
+      throw new Error(
+        `Unknown mesh export format "${params.outputFormat}" — valid ids: ${MESH_EXPORT_FORMATS.map((f) => f.id).join(", ")}.`
+      );
+    }
+    outDir = path.resolve(params.outputDir);
+    await fs.mkdir(outDir, { recursive: true });
+  }
+
+  // One resolution for the whole sweep: geometry (baking current sidecar ops)
+  // and non-size options stay fixed across every row by construction — the
+  // roadmap item's core invariant, achieved structurally rather than by
+  // re-resolving per run and hoping nothing changed in between.
+  const input = await resolveMeshInputHeadless(ctx, modelPath, route, warnings);
+  const { sizeMin: _ignoredSizeMin, sizeMax: _ignoredSizeMax, ...sizeFreeOverride } = params.options ?? {};
+  if (params.options && ("sizeMin" in params.options || "sizeMax" in params.options)) {
+    warnings.push("sizeMin/sizeMax in options are ignored — the sweep sets both from each entry of sizes.");
+  }
+  const base = await effectiveMeshOptions(modelPath, sizeFreeOverride);
+  const { parts, options: baseOptions } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
+  if (baseOptions.sizeMax === SIZE_MAX_SENTINEL) {
+    warnings.push(
+      "The stored sizeMax is the unbounded sentinel, but every swept run sets an explicit size anyway — the sentinel only describes what a plain generate_mesh would do."
+    );
+  }
+  const stem = path.basename(modelPath, path.extname(modelPath));
+
+  const runs: MeshSweepRun[] = [];
+  for (let i = 0; i < params.sizes.length; i++) {
+    const size = params.sizes[i];
+    const runOptions: MeshOptions = { ...baseOptions, sizeMin: size, sizeMax: size };
+    onProgress?.({ progress: i, total: params.sizes.length, message: `Meshing at size ${size} (${i + 1}/${params.sizes.length})...` });
+    const started = Date.now();
+    try {
+      const result = await ctx.pipeline.generateMesh(ctx.extensionPath, input, runOptions, parts);
+      const row: MeshSweepRun = {
+        size,
+        status: "ok",
+        nodeCount: result.nodeCount,
+        elementCount: result.elementCount,
+        elapsedMs: Date.now() - started,
+        engineUsed: result.engineUsed,
+        quality: result.quality ?? null,
+        outputPaths: [],
+        error: null,
+      };
+      if (format && outDir) {
+        const outPath = path.join(outDir, sweepOutputName(stem, size, format.extension));
+        assertNotSourcePath(modelPath, outPath);
+        // The helper reuses this run's own result for its `msh`/meshio
+        // branches (no second meshing pass); the other branches never call
+        // generateMesh at all.
+        row.outputPaths = await writeMeshExportFormat(
+          ctx,
+          modelPath,
+          route,
+          input,
+          runOptions,
+          parts,
+          format,
+          outPath,
+          "mm",
+          warnings,
+          result
+        );
+      }
+      warnings.push(...result.warnings);
+      runs.push(row);
+    } catch (err) {
+      runs.push({
+        size,
+        status: "error",
+        nodeCount: null,
+        elementCount: null,
+        elapsedMs: null,
+        engineUsed: null,
+        quality: null,
+        outputPaths: [],
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+    onProgress?.({ progress: i + 1, total: params.sizes.length, message: `Size ${size}: ${runs[i].status}` });
+  }
+
+  let applied: { index: number; size: number; options: MeshOptions } | null = null;
+  if (params.applyIndex != null) {
+    const size = params.sizes[params.applyIndex];
+    const appliedOptions = await effectiveMeshOptions(modelPath, { sizeMin: size, sizeMax: size });
+    await writeMeshOptions(modelPath, appliedOptions);
+    applied = { index: params.applyIndex, size, options: appliedOptions };
+  }
+
+  return { runs, tsv: sweepTsv(runs), applied, warnings, note: SWEEP_NOTE };
 }
 
 // ---------------------------------------------------------------------------

@@ -50,13 +50,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Design dependency:** specify comparison/write race guarantees honestly. Content fingerprints alone are not an atomic cross-process transaction; stronger guarantees may require shared locking or an explicit protocol.
 - **Done when:** a reproducible local-edit/external-write race surfaces a conflict instead of silently discarding either version. No automatic merge of geometry-op lists or positional entity ids.
 
-#### Measured mesh-refinement comparison (**M–L**, headless first)
-
-- **User goal:** compare mesh cost and quality at several sizes before choosing one.
-- **Scope:** a bounded sweep of explicit size settings, reporting actual engine, nodes/elements, elapsed time and the existing quality summary for each run; optional output files and a TSV summary. Keep the document's chosen options unchanged unless explicitly applied.
-- **Depends on:** bounded jobs/cancellation for long sweeps. Geometry and all non-swept options must stay fixed across a comparison.
-- **Done when:** failed runs are individual outcomes, exports identify their settings, and the summary makes clear that mesh-density/quality trends do not establish FE-solution convergence without a solver.
-
 #### Drawing-sheet settings and reusable templates (**M**, UI + shared serializer)
 
 - **Gap:** `export_drawing_sheet` supports more options than the interactive format/paper quick-picks expose.
