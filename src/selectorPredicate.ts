@@ -1,6 +1,6 @@
 /**
- * Induced face predicates for re-executable selector queries — roadmap item 1
- * ("Selector synthesis"), ladder rung 2: "bucket plus an induced predicate".
+ * Induced face predicates for re-executable selector queries — the "Selector synthesis"
+ * feature, ladder rung 2: "bucket plus an induced predicate".
  *
  * Rung 1 (`selectorQuery.ts`) names "the faces op N produced in role R" as a
  * set. Rung 2 narrows that set without baking in positional ids or numeric

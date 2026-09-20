@@ -75,7 +75,7 @@ const extensionConfig = {
   // avoiding the same eager-worker-pool risk gmsh-wasm's and meshio++'s
   // threaded variants have — but staying external is required regardless,
   // purely for the ESM/CJS reason.
-  // "node-hid" (src/spaceMouse.ts, roadmap Tier 2 item 2) is the fifth
+  // "node-hid" (src/spaceMouse.ts, the "Native 6-DOF SpaceMouse input" feature) is the fifth
   // external, on extensionConfig ONLY: a native NAPI addon (.node
   // prebuilds) that cannot bundle — esbuild would inline its JS loader
   // while leaving the .node binary behind, producing a bundle that

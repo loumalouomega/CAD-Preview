@@ -158,8 +158,15 @@ body {
 #side {
   display: none;
   flex-direction: column;
-  width: 220px;
-  min-width: 0;
+  /* `--side-width` is set by `sidebarResizer.ts` on <body> (default 220, the
+   * pre-resizer fixed width); the restorer and the #view-controls centring
+   * rule below read the same property, so they can never disagree. `min-width`
+   * clamps to the same floor, so a drag can't shrink a long panel title into
+   * a stripped scrollbar-only column even if the var is hand-edited in DevTools. */
+  width: var(--side-width, 220px);
+  min-width: var(--side-width, 220px);
+  /* The resize handle is positioned against #side's own right edge. */
+  position: relative;
   flex-shrink: 0;
   background: var(--vscode-sideBar-background, #252526);
   border-right: 1px solid var(--vscode-sideBar-border, #3c3c3c);
@@ -171,6 +178,40 @@ body {
 
 #side.visible {
   display: flex;
+}
+
+/* Sidebar resize handle (roadmap "Sidebar layout and keyboard usability"):
+ * a thin strip on #side's right edge, doubling as a real
+ * <button role="separator"> so the resize is keyboard-operable
+ * (ArrowLeft/Right step, Home/End jump to the clamps). z-index must paint
+ * over the canvas strip beside it but under the toolbar dropdowns (15) and
+ * the menubar (20). */
+#sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 6;
+}
+/* Visible affordance only on hover/focus — a permanent bar would fight the
+ * #tree-panel/#parts-panel border. */
+#sidebar-resize:hover,
+#sidebar-resize:focus-visible {
+  background: var(--vscode-sash-hoverBorder, var(--vscode-focusBorder, #007fd4));
+  outline: none;
+}
+/* While a drag is live the cursor must stay resize-shaped even over the
+ * canvas the pointer passes across. */
+body.sidebar-resizing {
+  cursor: ew-resize;
+  user-select: none;
 }
 
 /* ── Tree panel ─────────────────────────────────────────────────────── */
@@ -447,7 +488,10 @@ body {
 #toolbar .tb-dropdown {
   right: 0;
   left: auto;
-  min-width: 220px;
+  /* `min()` clamp: at a one-narrow editor the fixed 220px left-of-canvas
+   * width could push a *right-anchored* panel's leading edge past the
+   * sidebar/handle strip; capping at 60vw bows out instead. */
+  min-width: min(220px, 60vw);
 }
 
 .tb-dropdown.hidden {
@@ -510,7 +554,7 @@ body {
   font-size: 12px;
 }
 
-/* Geometric selection filters (roadmap Tier 2 item 1, Phase 1) — a predicate
+/* Geometric selection filters (the "Query-based selection filters" feature) — a predicate
  * dropdown + numeric field + seam toggle inside the Select ▾ panel. Reuses
  * the `.tb-row` flex container so nothing bespoke is needed for layout; only
  * the native `<select>`/`<input>` appearance needs a small, non-button reset
@@ -623,8 +667,6 @@ body {
 #view-controls {
   position: absolute;
   bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -635,20 +677,58 @@ body {
   border-radius: 6px;
   font-family: var(--vscode-font-family, sans-serif);
   color: var(--vscode-foreground, #ccc);
+  /* Centred over the CANVAS, not the editor pane: the sidebar is the first
+   * flex child of #layout, so a plain `left: 50%` of the body shifted the bar
+   * left by half its width — at ordinary editor widths the bar's left half
+   * covered the sidebar's bottom panels and swallowed clicks there (the
+   * #mass-refresh "looked clipped" false alarm in CLAUDE.md's collapsible-
+   * sections section). Adding `--side-width` (the same var `#side{width}` reads
+   * — set by sidebarResizer.ts) back before halving recentres on the app
+   * region: `calc((100% + W) / 2)` ≡ `50% + W/2`. While the sidebar is hidden
+   * it occupies no layout, so the offset must not apply — picked up via `:has`
+   * (Chromium ≥ 105, fine for a VS Code webview); the webview-test
+   * centre-disjointness case pins the visible-sidebar branch directly.
+   *
+   * Width cap (same var): centring cannot fix a bar WIDER than the canvas —
+   * the bar peaked at 1290px once (the nested-planes comment inside
+   * viewerDom.ts) — so the cap plus `#vc-body`'s wrap keeps overflow groups
+   * inside the app region instead of painting over the sidebar. */
+  left: calc((100% + var(--side-width, 220px)) / 2);
+  transform: translateX(-50%);
+  max-width: calc(100% - var(--side-width, 220px) - 40px);
+}
+/* `:has` only: the fallback when the sidebar is NOT visible — it occupies no
+ * layout, so mid-point reverts to the whole-body centre. */
+body:not(:has(#side.visible)) #view-controls {
+  left: 50%;
+  max-width: calc(100% - 40px);
+}
+#view-controls.collapsed {
+  padding: 4px 8px;
+  /* The collapsed bar is one small button — no cap needed. */
+  max-width: none;
+}
+
+#view-controls.collapsed #vc-body {
+  display: none;
 }
 
 #vc-body {
   display: flex;
   align-items: flex-end;
   gap: 18px;
-}
-
-#view-controls.collapsed {
-  padding: 4px 8px;
-}
-
-#view-controls.collapsed #vc-body {
-  display: none;
+  /* One-row preference + wrap fallback: `width: max-content` sizes the body
+   * to its SINGLE-row width, so at an ordinary editor (bar ≤ the
+   * #view-controls max-width cap) the bar stays the familiar single line.
+   * When the cap is narrower than that, `max-width: 100%` clamps the body and
+   * `flex-wrap` flows the overflow groups onto further rows INSIDE the
+   * #view-controls cap (which itself never exceeds the app region) — every
+   * control stays reachable rather than merely hidden. Without the explicit
+   * max-content request, Chromium's shrink-to-fit resolved the wrapping body
+   * to ~min-content and wrapped one group per row even when the bar fit. */
+  width: max-content;
+  max-width: 100%;
+  flex-wrap: wrap;
 }
 
 .vc-collapse {
@@ -2129,7 +2209,7 @@ input[type="range"].meshing-slider:focus {
   opacity: 0.6;
 }
 
-/* Op-history scrubbing (roadmap Tier 2 item 1): every history row is
+/* Op-history scrubbing: every history row is
  * clickable and jumps the stack to that point in one splice; rows still in
  * the redo buffer render dimmed with a ↷ mark and continued numbering, and
  * re-apply through themselves when clicked. */

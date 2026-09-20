@@ -528,7 +528,7 @@ function attachFaceCounts(groups: SolidGroup[], node: TreeNode): TreeNode {
 export function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ delete(): void }>, csgWarnings?: string[]): any {
   const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
 
-  // OpenSCAD `.csg` (roadmap Tier 2 item 2, path (a), closed): the MEMFS
+  // OpenSCAD `.csg` (path (a) of the OpenSCAD support feature): the MEMFS
   // file holds TEXT, not B-rep bytes — decode, parse purely, and build the
   // base shape directly (opaque base, like a STEP import — see csgModel.ts).
   // This one branch covers every `readShape` caller (load, export, mass

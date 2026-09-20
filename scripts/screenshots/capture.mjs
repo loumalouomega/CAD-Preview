@@ -213,7 +213,7 @@ const SHOTS = [
     },
     target: {},
   },
-  // --- Tutorial per-step shots (roadmap Tier 3 item 4) --------------------
+  // --- Tutorial per-step shots (the "per-step tutorial screenshots" feature)
   // Each posts its own cumulative-prefix geometry + tree with populate()'s
   // exact geometry → viewState(null) → sleep → tree → sleep ordering (the
   // viewState post is load-bearing for first-load framing). Full-page

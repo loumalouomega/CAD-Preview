@@ -1456,7 +1456,7 @@ function allFaceFilterableFacts(oc: any, shape: any, cleanup: Array<{ delete(): 
 }
 
 /**
- * Re-executable selectors — roadmap item 1 ("Selector synthesis"), ladder
+ * Re-executable selectors — the "Selector synthesis" feature, ladder
  * rungs 1–3. The bucket source (`{kind: "bucket", op, role}` — "the faces op
  * N produced in role R") resolves against the CURRENT `ops` list, so a
  * recorded `OpBucket`'s step-local ids never need to be trusted against a
@@ -1666,7 +1666,7 @@ export interface SynthesizeResult {
 }
 
 /**
- * Constant-free-first synthesis — roadmap item 1 ("Selector synthesis"),
+ * Constant-free-first synthesis — the "Selector synthesis" feature,
  * induction. Turns a picked `entityId` produced by op `opIndex` in `role`
  * into a `SelectorQuery` that re-executes to exactly that entity.
  *
@@ -1824,7 +1824,7 @@ export interface PartSelectorResolution {
 }
 
 /**
- * Part-level selector persistence — roadmap item 1 (final piece), Phase A.
+ * Part-level selector persistence — the "Selector synthesis" feature's final piece, Phase A.
  * Re-resolves every part's stored `selector` against the CURRENT `ops` list
  * and overwrites its `surfaces` cache on an oracle-clean result, so a stored
  * pick tracks the model instead of its positional ids.

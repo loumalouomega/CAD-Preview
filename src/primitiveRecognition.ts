@@ -1,5 +1,5 @@
 /**
- * Classify a solid's face inventory into a candidate primitive (roadmap item 8
+ * Classify a solid's face inventory into a candidate primitive (the "Primitive recognition report" feature,
  * Phase 2).
  *
  * Pure — takes the `SurfaceParams` Phase 1 already reads off each face and

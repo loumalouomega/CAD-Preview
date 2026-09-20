@@ -1801,7 +1801,7 @@ export class Viewer {
     this.onMeasurePick = onPick;
   }
 
-  /** One-shot world-point pick for the Region-fit seed (roadmap item 9 Phase 2).
+  /** One-shot world-point pick for the Region fit panel's seed (the `fit_mesh_region` feature, interactive half).
    * Takes priority over `measureMode`/`selectionMode` for the next click only;
    * the caller disarms it by calling `setFitSeedPickHandler(null)` in the
    * callback. Reuses the same drag/gizmo guards as entity picking. */
@@ -2252,6 +2252,18 @@ export class Viewer {
     this.syncTransformControlsToFocus();
     this.requestRender();
   };
+
+  /**
+   * Public alias for the window-resize path, for resizes that are NOT window
+   * resizes: a sidebar drag changes `#app`'s box without firing one, so
+   * `main.ts`'s sidebar-resizer callback calls this instead. Running the full
+   * private path is the point — grid scale/pick threshold derive from MODEL
+   * extents (untouched), but renderer size, pane rects, and the gizmo
+   * viewport all follow the container's real geometry.
+   */
+  notifyResize(): void {
+    this.onResize();
+  }
 
   /**
    * The split-view pane gate — a capture-phase `pointerdown`/`wheel` listener

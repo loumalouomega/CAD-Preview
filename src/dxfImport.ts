@@ -1,5 +1,5 @@
 /**
- * DXF import — roadmap Tier 2 #1 Phase 1, closed. Pure, vscode/DOM-free
+ * DXF import — the "SVG/DXF import → profile ops" feature, DXF half. Pure, vscode/DOM-free
  * (no `DOMParser` — this project's vitest config has no jsdom, same reasoning
  * as `svgImport.ts`'s regex-based `<path d>` extraction). DXF is plain ASCII
  * group-code/value text, so a line-pair scan is sufficient and keeps the

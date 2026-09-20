@@ -1,5 +1,5 @@
 /**
- * Executable doc examples — roadmap item 12 Phase 1.
+ * Executable doc examples — "Narrative tutorials + executable doc examples", Phase 1.
  *
  * Extracts the ```parametric fenced blocks from a markdown tree so a test can
  * compile each one through the real {@link compileParametricScript}. Without

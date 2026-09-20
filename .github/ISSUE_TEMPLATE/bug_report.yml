@@ -1,0 +1,64 @@
+name: Bug report
+description: Something broken in a view, an edit, an import/export, or the MCP/kernel pipeline. (GitHub issue #30's template.)
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, what you saw instead. Include the exact message from the toolbar status line or VS Code notification, if there is one.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: What were you doing?
+      description: Helps route the report without you knowing the architecture. Pick the closest — a viewer failure and an MCP/kernel-worker failure go to very different places.
+      options:
+        - Viewing/navigating the 3D preview
+        - Defining parts / assigning entities
+        - Applying an edit operation (incl. parametric variables/macros)
+        - Import / open a file
+        - Export (STEP/IGES/BREP/STL/OBJ/PLY/glTF/drawings/SVG/DXF)
+        - Generating an FE mesh / mesh operations
+        - Drawing sheets / silhouettes / technical drawing output
+        - The MCP server (an agent tool call)
+        - Installation / update / something else
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: VS Code version, extension version and OS
+      description: e.g. "VS Code 1.9x, CAD Preview v2.5.0, Windows 11 / Ubuntu 24.04"
+      placeholder: VS Code x.y.z, extension vX.Y.Z, OS
+    validations:
+      required: true
+  - type: input
+    id: format
+    attributes:
+      label: Source file format and approximate size
+      description: e.g. "STEP (assembly, 12 MB)" or "STL (single part, 4 MB)" — a B-rep source and a mesh source take different code paths.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Numbered steps from opening the file to the failure. What is the smallest sequence that shows the problem?
+      placeholder: |
+        1. Open examples/STP/bull.stp
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: fixture
+    attributes:
+      label: Minimal fixture (optional)
+      description: Attach the smallest file that reproduces it, or describe how to make one with the bundled primitives/fixtures. **Reproduce with a non-confidential model** — do not attach proprietary geometry without the owner's permission.
+      placeholder: Rebuildable with the Edits panel from a blank model, or a small public-file STEP/STL/OBJ/PLY.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output (optional)
+      description: "Helpful for anything viewer-side: View → Command Palette → Developer: Toggle Developer Tools → Console. For MCP issues, the agent-call error message and the terminal output of `node dist/mcp-server.js` are equivalent."

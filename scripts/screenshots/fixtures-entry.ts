@@ -154,7 +154,7 @@ async function main(): Promise<void> {
     elapsedMs,
   });
 
-  // --- Tutorial step fixtures (roadmap Tier 3 item 4) ----------------------
+  // --- Tutorial step fixtures (the "per-step tutorial screenshots" feature) -
   // Every tutorial starts from block.stp (not bull.stp) and its op-list ids
   // were probed live (pinned in scripts/mcp-smoke/run.mjs). Each entry below
   // is a cumulative prefix of its page's "Full operation list", tessellated

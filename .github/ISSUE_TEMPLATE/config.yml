@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contributing guide
+    url: https://github.com/loumalouomega/CAD-Preview/blob/master/doc/contributing.md
+    about: Development workflow, code style, and the full PR checklist.

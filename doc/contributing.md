@@ -127,11 +127,17 @@ The following are **non-negotiable** invariants. PRs that violate them will not 
 
 ## Reporting Issues
 
-Please open an issue on [GitHub Issues](https://github.com/loumalouomega/CAD-Preview/issues) with:
+Use the GitHub **issue forms** — a bug report or a feature request (see `.github/ISSUE_TEMPLATE/`). They ask for exactly what a report needs to be actionable:
 
-- VS Code version and operating system.
-- The file format and approximate file size.
+- VS Code version, extension version and operating system.
+- The file format and approximate file size (a B-rep source and a mesh source take different code paths, and a viewer failure and a kernel/MCP failure go to different places — pick honestly; you don't need to know the architecture).
 - Steps to reproduce.
-- If possible, attach a minimal test file that reproduces the problem.
+- If possible, attach a minimal test file that reproduces the problem — reproduced with a **non-confidential model**.
 
 Do **not** attach files containing proprietary geometry without permission from the file's owner.
+
+The PR checklist (`.github/PULL_REQUEST_TEMPLATE.md`) carries the same reminder as CLAUDE.md's "Keep docs in sync" header: docs, tests and screenshots move WITH the change, and any remaining manual verification gap is stated in the PR, not omitted.
+
+### Roadmap references: by name, never by number
+
+Cross-references to `doc/roadmap.md` name the FEATURE (or link the relevant doc section); they never cite an item *by number* — numbering is not stable across closes, so "roadmap item 7" names nothing after the next close while `roadmap Tier 1 "Zoom to selection"` keeps pointing somewhere real. Announcement mentions that carry the feature name in quotes (`roadmap Tier 1 "Name"`) are the established style and stay; a quoted historical example in prose is exempt too. A lightweight gate in `npm test` (`src/docRoadmapRefs.ts`) fails on a NEW bare-ordinal citation, with the offending `file:line` in the message.

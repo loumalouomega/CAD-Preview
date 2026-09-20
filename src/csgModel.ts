@@ -185,8 +185,8 @@ function buildNgonPrism(
 }
 
 // ---------------------------------------------------------------------------
-// 2D profiles — linear_extrude / rotate_extrude children (roadmap Tier 1
-// item 2, closed). A 2D node is only ever built through here, never as a
+// 2D profiles — linear_extrude / rotate_extrude children (the node-coverage
+// extension of the OpenSCAD support feature). A 2D node is only ever built through here, never as a
 // standalone solid: 2D has no volume, so a bare square/circle/polygon under
 // a union (or at top level) stays skipped, same as before.
 // ---------------------------------------------------------------------------

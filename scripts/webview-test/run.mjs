@@ -655,7 +655,7 @@ test("framing: the model occupies a sane fraction of the viewport", async (page)
 });
 
 /**
- * I2. Zoom to selection (roadmap Tier 1). The camera work itself
+ * I2. Zoom to selection (the "Zoom to selection" feature). The camera work itself
  * (`Viewer.frameSelection` → `frameBox`) is the already-verified placement
  * path `screenshot_shape` uses headless, so what needs checking here is the
  * wiring: a real selection frames (fill increases, stays centred), explicit
@@ -793,7 +793,7 @@ test("zoom to selection: works under orthographic projection", async (page) => {
 });
 
 /**
- * I3. Volume and point selection predicates (roadmap Tier 1). The pure
+ * I3. Volume and point selection predicates (the same-named feature). The pure
  * predicates are unit-covered; what needs the real bundle is the form
  * wiring per mode (registry population, Select/Add, status nouns) and the
  * point reference flow. Selection is read back via `partsChanged` assignment
@@ -876,7 +876,7 @@ test("filters: hidden geometry matches nothing in Vol mode", async (page) => {
 });
 
 /**
- * J. Plane-authored profiles (roadmap Tier 1). Kernel resolution is
+ * J. Plane-authored profiles (the "Author profiles on a named construction plane" feature). Kernel resolution is
  * unit-covered (`planeRefs.test.ts`) and live-verified (`mcp:smoke`'s
  * analytic block); what needs the real bundle is the form: the Plane
  * picker lists saved planes, picking one fills + disables the placement
@@ -970,7 +970,7 @@ test("profile planes: Custom restores hand typing", async (page) => {
 });
 
 /**
- * I4. Per-band operation preview (roadmap Tier 1). The tint math itself is
+ * I4. Per-band operation preview (the "Per-band operation-preview colouring" feature). The tint math itself is
  * unit-covered against real THREE materials; what needs the real bundle is
  * the wiring: the draft-bucket lookup off a genuine `opPreviewRequest`
  * round trip, the status-line legend (with full-history op numbering), its
@@ -1427,8 +1427,8 @@ test("inspector card: selection requests facts, and the reply renders per classi
   assert((await cardTitle()) === "Cylindrical face", `a cylinder renders as "Cylindrical face" (got ${await cardTitle()})`);
   assert(!(await cardKeys()).includes("Normal"), "a curved face shows NO Normal row");
 
-  // The analytic parameters behind the classification. Before roadmap item 8
-  // Phase 1 the card could say "Cylindrical face" and nothing more — the
+  // The analytic parameters behind the classification. Before the "analytic
+  // surface parameters on inspect" feature, the card could say "Cylindrical face" and nothing more — the
   // radius and axis were computed in the same OCCT call and thrown away.
   await reply(
     {
@@ -2298,7 +2298,7 @@ test("new blank: an EMPTY geometry message yields a usable blank document", asyn
 // `clipCap.ts` had NO test of any kind and a documented SILENT failure mode:
 // get the stencil state wrong and the model simply renders uncapped, with no
 // error anywhere. These cases close that, and they gate the arbitrary-normal
-// work (roadmap item 7) — everything below `Viewer.setClippingPlane` was
+// work (the "arbitrary clip planes" feature) — everything below `Viewer.setClippingPlane` was
 // "already plane-generic", but that was an inference from reading the code.
 //
 // The lever is `main.ts`'s `case "viewState"`, which re-applies a posted view
@@ -3081,7 +3081,7 @@ test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and c
 
 
 /**
- * Standard-parts thumbnails (roadmap Tier 1). Search stays text-first: rows
+ * Standard-parts thumbnails (the "Standard-parts thumbnails" feature). Search stays text-first: rows
  * render immediately, and a second fire-and-forget round trip decorates them
  * with host-fetched data-URL thumbnails. Host replies are faked by posting
  * `standardPartsSearchResult`/`standardPartsThumbsResult` directly (the
@@ -3237,6 +3237,184 @@ test("thumbs: a thumbnail for an unknown id is dropped silently", async (page) =
   await sleep(250);
   const imgs = await page.evaluate(() => document.querySelectorAll("img.standard-part-thumb").length);
   assert(imgs === 0, "a thumbnail naming no listed row creates no image");
+});
+
+// ── Sidebar layout and keyboard usability ─────────────────────────────────
+//
+// These six cases are the automated half of the item's "done when" list —
+// each one pinned to its documented failure class. The "feel" of a live drag
+// in a real VS Code theme at actual editor zoom stays F5-only, stated in
+// CLAUDE.md as the standing gap, as for every webview-touching feature.
+
+test("sidebar: dragging the handle clamps the width and one debounced viewChanged carries sidebarWidth", async (page) => {
+  await populate(page);
+  const box = await page.locator("#sidebar-resize").boundingBox();
+  assert(box, "the resize handle has a hit zone on #side's right edge");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.mouse.move(box.x + 2, box.y + 200);
+  await page.mouse.down();
+  // Drag 120px right from the handle → width should land clamped within [176, 420].
+  await page.mouse.move(box.x + 120, box.y + 200, { steps: 6 });
+  await page.mouse.up();
+  const dragged = await page.evaluate(() => ({
+    // clientWidth excludes the 1px border-right, so it IS the var the resizer set.
+    w: document.getElementById("side").clientWidth,
+  }));
+  assert(dragged.w >= 176 && dragged.w <= 420, `the dragged width is clamped (got ${dragged.w}px)`);
+
+  await sleep(900); // VIEW_SAVE_DEBOUNCE_MS is 500; the drag coalesces into ONE save
+  const saved = await page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1) ?? null
+  );
+  assert(saved !== null, "the drag posts a debounced viewChanged");
+  assert(
+    saved !== null && saved.view.sidebarWidth === dragged.w,
+    `the saved width matches the applied width (view=${JSON.stringify(saved?.view?.sidebarWidth)}, dom=${dragged.w})`
+  );
+  // Exactly ONE viewChanged for the whole drag — the debouncer coalesced it.
+  const count = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").length);
+  assert(count === 1, `a whole drag coalesces into one sidecar write (got ${count})`);
+});
+
+test("sidebar: a viewState post restores and clamps the width, and a garbage value falls back to default", async (page) => {
+  await populate(page);
+  const apply = (sidebarWidth) =>
+    post(page, {
+      type: "viewState",
+      view: {
+        viewDirection: [1, 0.8, 1], cameraUp: [0, 1, 0], orthographic: false,
+        displayMode: "shaded", clip: null, sidebarWidth,
+      },
+    });
+  await apply(300);
+  await sleep(120);
+  const wide = await page.evaluate(() => document.getElementById("side").clientWidth);
+  assert(wide === 300, `a persisted width is applied (got ${wide}px)`);
+
+  await apply(9999); // out-of-range restores to the CLAMP, not the raw value
+  await sleep(120);
+  const clamped = await page.evaluate(() => document.getElementById("side").clientWidth);
+  assert(clamped === 420, `an out-of-range width clamps to the max (got ${clamped}px)`);
+
+  await apply("garbage");
+  await sleep(120);
+  const fallback = await page.evaluate(() => document.getElementById("side").clientWidth);
+  assert(fallback === 220, `a non-numeric width falls back to the 220 default (got ${fallback}px)`);
+});
+
+test("sidebar: #view-controls never covers the sidebar's clickable panels", async (page) => {
+  await populate(page);
+  const rects = async () =>
+    page.evaluate(() => ({
+      side: document.getElementById("side").getBoundingClientRect(),
+      vc: document.getElementById("view-controls").getBoundingClientRect(),
+      body: document.body.getBoundingClientRect(),
+    }));
+  let r = await rects();
+  assert(
+    r.vc.left >= r.side.right - 1,
+    `view-controls' left edge clears the sidebar (vc ${r.vc.left.toFixed(0)} vs sidebar right ${r.side.right.toFixed(0)})`
+  );
+  assert(
+    r.vc.width <= r.body.width - r.side.width - 4,
+    `view-controls fits inside the app region (bar ${r.vc.width.toFixed(0)}px vs app ${(r.body.width - r.side.width).toFixed(0)}px)`
+  );
+  // Narrow editor: the six controls-groups bar (historically 866–1290px wide)
+  // is wider than the canvas at ~800px, so plain centring CANNOT clear the
+  // sidebar here — the max-width + #vc-body wrap must actually engage. This
+  // is the branch that catches a reverted `max-width` cap: a 50%-centred
+  // wide bar's left half paints over the sidebar's bottom panels and
+  // intercepts their clicks (a documented real incident from the
+  // collapsible-sections work).
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(200);
+  r = await rects();
+  assert(
+    r.vc.left >= r.side.right - 1,
+    `at an 820px editor the bar still clears the sidebar (vc ${r.vc.left.toFixed(0)} vs sidebar right ${r.side.right.toFixed(0)})`
+  );
+  assert(
+    r.vc.left + r.vc.width <= r.body.width - 4,
+    `at 820px the bar stays on the canvas, not overflowing right (right edge ${(r.vc.left + r.vc.width).toFixed(0)} vs body ${r.body.width.toFixed(0)})`
+  );
+});
+
+test("keyboard: dropdown arrows move focus along menu items; Escape closes and restores focus to the trigger", async (page) => {
+  await populate(page);
+  const trigger = await page.locator("#view-menu");
+  await trigger.click();
+  assert(await page.evaluate(() => !document.getElementById("view-dropdown").classList.contains("hidden")), "the menu opened");
+  const first = await page.evaluate(() => document.activeElement?.textContent ?? "");
+  // ArrowDown steps onto the first *menu item* from the trigger.
+  await page.keyboard.press("ArrowDown");
+  const afterDown1 = await page.evaluate(() => ({
+    focused: document.activeElement?.textContent ?? "", inPanel: document.getElementById("view-dropdown").contains(document.activeElement),
+  }));
+  assert(afterDown1.inPanel, `ArrowDown moves focus into the open panel (first: ${JSON.stringify(first)})`);
+  assert(afterDown1.focused !== "", "the target is a real labelled item");
+  // Home returns to the first item; five ArrowDowns then five ArrowUps cycle the same loop.
+  for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowDown");
+  for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowUp");
+  const cycled = await page.evaluate(() => document.getElementById("view-dropdown").contains(document.activeElement));
+  assert(cycled, "arrow cycling stays inside the panel at the wrap boundary");
+  const openBefore = await page.evaluate(() => !document.getElementById("view-dropdown").classList.contains("hidden"));
+  assert(openBefore, "the menu is still open before Escape");
+  await page.keyboard.press("Escape");
+  const after = await page.evaluate(() => ({
+    closed: document.getElementById("view-dropdown").classList.contains("hidden"),
+    focus: document.activeElement?.id ?? "",
+  }));
+  assert(after.closed, "Escape closes the menu");
+  assert(after.focus === "view-menu", `Escape returns focus to the trigger (got ${JSON.stringify(after.focus)})`);
+});
+
+test("aria: every icon-only title-carrying control carries an aria-label mirror", async (page) => {
+  await populate(page);
+  const missing = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("button, select, input")).filter(
+      (el) => el.getAttribute("title") !== null && el.getAttribute("aria-label") === null &&
+              (el.textContent ?? "").trim() === ""
+    ).map((el) => el.id || el.className || el.type)
+  );
+  assert(missing.length === 0, `every icon-only control has an aria-label (missing: ${JSON.stringify(missing)})`);
+  // Spot-check the resize handle explicitly — it carries no title-derived text.
+  const handle = await page.evaluate(() => ({
+    role: document.getElementById("sidebar-resize").getAttribute("role"),
+    label: document.getElementById("sidebar-resize").getAttribute("aria-label"),
+  }));
+  assert(handle.role === "separator", `the resize handle is a separator (got ${JSON.stringify(handle)})`);
+  assert(
+    handle.label !== null && handle.label.length > 3,
+    `the resize handle is screen-reader labelled (got ${JSON.stringify(handle.label)})`
+  );
+});
+
+test("keyboard: Escape cancels an inline Parts rename without committing the half-typed value", async (page) => {
+  await populate(page);
+  // Rename the first Part with a distinct value, then Escape mid-edit.
+  const original = await page.evaluate(() => document.querySelector(".part-name").value);
+  await page.evaluate(() => document.querySelector(".part-name").focus());
+  await page.keyboard.type("ESC-SHOULD-NOT-STICK");
+  await page.keyboard.press("Escape");
+  await sleep(900); // outlive the parts autosave debounce, if one were to fire
+  const after = await page.evaluate(() => ({
+    dom: document.querySelector(".part-name").value,
+    posted: (window.__sent ?? []).some((m) => m.type === "partsChanged"),
+  }));
+  assert(after.dom === original, `Escape restored the original name (got ${JSON.stringify(after.dom)})`);
+  assert(!after.posted, "an Escape-cancelled rename posts no partsChanged (no spurious push/rename)");
+  // And Enter styles the commit path: type, press Enter → partsChanged posted.
+  await page.evaluate(() => document.querySelector(".part-name").focus());
+  await page.keyboard.type("Z");
+  await page.keyboard.press("Enter");
+  await sleep(300);
+  const committed = await page.evaluate(
+    () => (window.__sent ?? []).findLast((m) => m.type === "partsChanged") ?? null
+  );
+  assert(committed !== null, "Enter commits the rename");
+  // Restore for later cases: undo the Z suffix via the same Escape path.
+  await page.evaluate(() => document.querySelector(".part-name").focus());
+  await page.keyboard.press("Escape");
 });
 
 async function main() {

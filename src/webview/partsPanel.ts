@@ -107,6 +107,21 @@ export class PartsPanel {
     name.className = "part-name";
     name.value = part.name;
     name.addEventListener("change", () => this.cb.onRename(index, name.value));
+    // Keyboard audit (roadmap "Sidebar layout and keyboard usability"):
+    // Enter commits (blur fires `change`), Escape CANCELS — restoring the value
+    // before blur means `change` never fires (it only fires when the value
+    // differs from the value at focus), so no half-typed rename can land via
+    // blur. The input IS the rename's own trigger, so focus stays on it.
+    name.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.stopPropagation();
+        name.blur();
+      } else if (e.key === "Escape") {
+        e.stopPropagation();
+        name.value = part.name;
+        name.blur();
+      }
+    });
     name.addEventListener("click", (e) => e.stopPropagation());
     row.appendChild(name);
 

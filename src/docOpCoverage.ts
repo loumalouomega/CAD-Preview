@@ -1,5 +1,5 @@
 /**
- * Coverage gate for agent-facing docs — roadmap Tier 3 item 4, Phase 2.
+ * Coverage gate for agent-facing docs — the doc-coverage gate (Phase 2 of "Narrative tutorials + executable doc examples").
  *
  * Phase 1 (`docExamples.ts`) executes every ```parametric block; what it
  * cannot see is *coverage* — an op kind documented nowhere fails nothing.

@@ -1,5 +1,5 @@
 /**
- * Re-executable selector queries — roadmap item 1 ("Selector synthesis"),
+ * Re-executable selector queries — the "Selector synthesis" feature,
  * ladder rungs 1–2: whole-bucket queries plus an induced predicate layer.
  *
  * Phase 1 (closed) records per-op classification buckets (`opBuckets.ts`):

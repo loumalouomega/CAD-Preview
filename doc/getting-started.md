@@ -112,6 +112,16 @@ The collapsed/expanded layout is remembered **per document**, in the same `<mode
 
 Sections that don't apply to the current file (Clash and Primitives are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this.
 
+### Resizing the Sidebar
+
+Drag the thin handle at the sidebar's right edge (or hover/focus it — it highlights) to resize the whole column between a workspace-usable minimum and maximum. The handle is also keyboard-operable when focused: **ArrowLeft**/**ArrowRight** step the width, **Home**/**End** jump to the minimum/maximum. The chosen width is remembered per document in the same `<model>.view.json` sidecar (like the collapse state), with the pre-resizer 220px width treated as "default" — an unresized document never grows a `sidebarWidth` entry just from being opened.
+
+The floating view-controls panel is centred over the 3D view and abreast of the sidebar, so resizing the sidebar never hides the panel's controls; if the control bar would be wider than the remaining canvas, its groups wrap onto further rows inside it rather than covering nearby panels.
+
+### Keyboard Use
+
+The File ▾ / View ▾ / Select ▾ / Measure ▾ / Markup ▾ dropdowns are keyboard-reachable end to end: **Tab** from the main canvas reaches the toolbar triggers; opening a menu and pressing **ArrowDown**/**ArrowUp** cycles its buttons (wrapping), **Home**/**End** jump to the first/last item, and **Escape** closes the menu and returns focus to its trigger. Icon-only buttons (Fit, Tree, the per-row eye/delete buttons, the collapse chevrons) are screen-reader labelled; their `aria-label` always mirrors the visible tooltip. Inline renames — Parts, Variables, construction planes — commit on **Enter** (or on clicking away) and cancel on **Escape**, leaving the value they had when the edit began.
+
 ### Camera Interaction
 
 | Action | Control          |

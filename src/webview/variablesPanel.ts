@@ -58,6 +58,19 @@ export class VariablesPanel {
     name.addEventListener("change", () => {
       if (!this.cb.onRename(index, name.value)) name.value = v.name; // rejected: restore
     });
+    // Keyboard audit (roadmap "Sidebar layout and keyboard usability"): Escape
+    // cancels — restoring the value BEFORE blur means `change` never fires, so
+    // no half-typed name reaches `onRename`.
+    name.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        name.blur();
+        e.stopPropagation();
+      } else if (e.key === "Escape") {
+        e.stopPropagation();
+        name.value = v.name;
+        name.blur();
+      }
+    });
     row.appendChild(name);
 
     const eq = document.createElement("span");

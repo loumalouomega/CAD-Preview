@@ -244,6 +244,15 @@ export interface ViewState {
    * there is deliberately no MCP surface for it.
    */
   collapsedPanels?: string[];
+  /**
+   * Sidebar width in px, persisted like {@link ViewState.collapsedPanels}'s
+   * precedent. One decimal-integer range: clamp through
+   * `webview/sidebarResizer.ts`'s `clampSidebarWidth` (`176..420`) on read;
+   * absent (or equal to the 220 default) means "the pre-resizer fixed width",
+   * which is also what keeps an untouched sidecar byte-stable. Purely a
+   * display preference, like `displayMode` — no MCP surface, no geometry.
+   */
+  sidebarWidth?: number;
 }
 
 /** Messages sent from the extension host to the webview. */
@@ -261,7 +270,7 @@ export type HostToWebview =
       opOutcomes?: import("./editOps").OpOutcome[];
       /** Guide-entity ids (face-N/edge-N/point-N) whose creating op had
        * `guide:true` — webview renders them dimmed and refuses them as
-       * profile operands for feature ops (roadmap item 10). Absent/empty
+       * profile operands for feature ops (construction geometry — refused as operands by the profile-resolution ops). Absent/empty
        * when no guide ops. */
       guideIds?: string[];
       /** Build-time classification buckets (roadmap "Selector synthesis"
@@ -504,7 +513,7 @@ export type HostToWebview =
   | { type: "primitiveRecognizeResult"; requestId: string; report: PrimitiveReport }
   | { type: "primitiveRecognizeError"; requestId: string; message: string }
   /**
-   * SpaceMouse 6DOF motion event (roadmap Tier 2 item 2) — raw device units
+   * SpaceMouse 6DOF motion event — raw device units
    * (signed 16-bit per axis, full deflection ≈ ±350), NOT camera deltas.
    * The webview deadzones + normalizes via `motionToVelocity` and applies
    * per-second speeds itself, so all tuning lives in one place and the host

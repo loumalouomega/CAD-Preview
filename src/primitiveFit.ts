@@ -1,6 +1,6 @@
 /**
  * Least-squares fits of a plane, sphere, and cylinder to a point set
- * (roadmap item 9).
+ * (the `fit_mesh_region` region-fitting feature).
  *
  * Pure and dependency-free, matching every other pure mesh module here — and
  * necessarily hand-rolled: there is no eigensolver, covariance builder, or

@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a new capability or an improvement to an existing workflow.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What can't you do today?
+      description: Describe the concrete workflow gap, not the solution — "I need to inspect these decisions end to end before exporting" rather than "add feature X".
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: How do you work around it?
+      description: If the Edits panel, a parametric macro, or an existing MCP tool already gets you partway there, say which — a repeated workaround is the strongest signal a feature is worth building.
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      description: Your ideal outcome. Be specific about what "done" looks like — an observable result, not an implementation sketch.
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues / roadmap items
+      description: Link anything adjacent. See [doc/roadmap.md](https://github.com/loumalouomega/CAD-Preview/blob/master/doc/roadmap.md) for what is already proposed and why some directions are Non-goals.

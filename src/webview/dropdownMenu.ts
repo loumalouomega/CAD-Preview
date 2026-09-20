@@ -66,8 +66,30 @@ function wireGlobals(): void {
   );
 
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeAllDropdowns();
+    if (e.key !== "Escape") return;
+    // Escape closes AND returns focus to the trigger that opened the menu —
+    // keyboard-only users otherwise land nowhere (the panel is display:none,
+    // so focus falls into the body) with no way back to what they opened.
+    for (const handle of registry) {
+      if (!handle.isOpen()) continue;
+      closeAllDropdowns();
+      handle.trigger.focus();
+      return;
+    }
+    closeAllDropdowns();
   });
+}
+
+/**
+ * Focusable elements inside a menu panel, in DOM order, visibility-filtered —
+ * the arrow-key menu items. `<select>`/`<input>` are deliberately EXCLUDED:
+ * a text field owns its arrows for caret motion and a `<select>` owns
+ * up/down for option selection, so they stay reachable via Tab only.
+ */
+function focusablesIn(panel: HTMLElement): HTMLElement[] {
+  return Array.from(panel.querySelectorAll<HTMLElement>("button")).filter(
+    (el) => !el.hasAttribute("disabled") && el.offsetParent !== null
+  );
 }
 
 /**
@@ -104,6 +126,35 @@ export function setupDropdown(triggerId: string, panelId: string): DropdownHandl
     e.stopPropagation();
     handle.toggle();
   });
+
+  // Roving arrow-key navigation WAI-ARIA menus expect (roadmap "Sidebar
+  // layout and keyboard usability"): ArrowDown/ArrowUp cycle the menu's
+  // buttons (wrapping), Home/End jump to first/last. Deliberately NOT applied
+  // to `<input>`/`<select>` — a text field owns its arrows for caret motion
+  // and a `<select>` owns up/down for option selection; those are reachable
+  // via Tab. Tab itself stays native: the natural tab order already visits
+  // everything in DOM order. Registered on the TRIGGER as well as the panel:
+  // right after keyboard-opening, focus is still on the trigger (a sibling of
+  // the panel, not a descendant), so a panel-only listener never fires for
+  // the first step.
+  const navigateByArrow = (e: KeyboardEvent): void => {
+    if (!handle.isOpen()) return;
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+    const items = focusablesIn(panel);
+    if (items.length === 0) return;
+    const idx = items.indexOf(document.activeElement as HTMLElement);
+    let next: number;
+    if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = items.length - 1;
+    else if (e.key === "ArrowUp") next = idx <= 0 ? items.length - 1 : idx - 1;
+    else next = idx < 0 ? 0 : (idx + 1) % items.length;
+    if (next === idx && idx >= 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    items[next].focus();
+  };
+  panel.addEventListener("keydown", navigateByArrow);
+  trigger.addEventListener("keydown", navigateByArrow);
 
   // Clicks *inside* the panel deliberately leave it open — toggling a mode,
   // picking a tool, or opening the colour picker are all things you do in one

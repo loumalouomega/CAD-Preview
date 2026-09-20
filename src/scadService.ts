@@ -1,6 +1,6 @@
 /**
  * OpenSCAD `.scad` → `.csg` conversion via a user-installed `openscad`
- * binary (roadmap Tier 2 item 2, path (b), closed) — the only half of the
+ * binary (OpenSCAD support, path (b)) — the only half of the
  * OpenSCAD item that shells out. Path (a) (pure `.csg` parse + kernel-side
  * build) already shipped; this module is the thin bridge from a `.scad`
  * source file to the bytes that path consumes.
