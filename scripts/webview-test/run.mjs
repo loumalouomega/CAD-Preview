@@ -4812,6 +4812,50 @@ test("sidebar: a collapsed section stacks no double rule, and the Advanced card 
 });
 
 
+test("sidebar: every section header carries the same rounded icon tile, between chevron and title", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  const headers = await page.evaluate(() => {
+    const ids = [
+      "tree-header", "parts-header", "edits-header", "meshing-header", "advanced-header", "mass-header",
+      "clash-header", "mesh-health-header", "region-fit-header", "primitives-header", "macros-header", "standard-parts-header",
+    ];
+    return ids.map((id) => {
+      const h = document.getElementById(id);
+      const chev = h?.querySelector(".panel-chevron");
+      const icon = h?.querySelector(":scope > .panel-icon");
+      const title = h?.querySelector(".panel-title");
+      const b = icon?.getBoundingClientRect();
+      return {
+        id,
+        present: !!h && !!icon,
+        hasGlyph: !!icon?.querySelector("svg path, svg circle, svg rect"),
+        ordered: !!chev && !!icon && !!title &&
+          !!(chev.compareDocumentPosition(icon) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          !!(icon.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING),
+        ariaHidden: icon?.getAttribute("aria-hidden") === "true",
+        // A source-gated section (Clash, Mesh Health, Region fit, Primitives) is
+        // legitimately not rendered for some formats — size is only checked for a
+        // tile that is actually on screen.
+        rendered: !!icon && icon.offsetParent !== null,
+        w: b?.width ?? 0,
+        h: b?.height ?? 0,
+        svgMarkup: icon?.innerHTML ?? "",
+      };
+    });
+  });
+  for (const x of headers) {
+    assert(x.present, `#${x.id} has an icon tile`);
+    assert(x.hasGlyph && x.ariaHidden, `#${x.id}'s tile holds a drawn glyph and is hidden from assistive tech (it is decoration — the title names the section)`);
+    assert(x.ordered, `#${x.id}: chevron, then icon, then title`);
+    if (x.rendered) assert(Math.abs(x.w - 22) < 0.6 && Math.abs(x.h - 22) < 0.6, `#${x.id}'s tile is the shared 22px (got ${x.w}x${x.h})`);
+  }
+  assert(headers.filter((x) => x.rendered).length >= 8, `most tiles are on screen for a B-rep document (rendered: ${headers.filter((x) => x.rendered).length})`);
+  const glyphs = headers.map((x) => x.svgMarkup);
+  assert(new Set(glyphs).size === glyphs.length, "every section has its OWN glyph — no two headers share an icon");
+});
+
+
 async function main() {
   if (!nodeSupportsPlaywright()) {
     // Not a failure: playwright-core would `process.exit(1)` at module load, so

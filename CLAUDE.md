@@ -800,6 +800,13 @@ Decided with the user first: the selection becomes a **subtle tint** (everywhere
 - **Verified**: 11 new `test:webview` checks (514 total); two bug injections (selection strength; the active-mode rule), each failing exactly its intended assertions before reverting.
 - **Verification gap, stated plainly**: how a 0.35 tint reads in light and high-contrast themes — where the accent and the face colours differ from the dark-theme fixture — is F5-only.
 
+### Pass 6 — an icon on every sidebar section
+
+Every section header now reads chevron · icon tile · title, the way the Advanced group's did. One shared `.panel-icon` class (a 22px rounded tile on `--vscode-input-background`, `aria-hidden` because the title already names the section) replaces the old `#advanced-icon` rules — the id survives in the markup, but nothing keys off it any more. Ten glyphs were added to `uiGlyphs.ts` (`listTree`, `tag`, `sliders`, `scale`, `intersect`, `activity`, `crosshair`, `shapes`, `braces`, `package`), and FE Mesh reuses the toolbar's `grid3` so the same concept has the same picture in both places.
+
+- **The tile is 22px, not the 24px Advanced originally used.** Header action buttons are 24px, so a 24px tile would have made the action-less headers (FE Mesh, Mass Properties) taller than the ones with buttons.
+- **The test walks all twelve headers**, checks chevron → icon → title order, `aria-hidden`, a drawn glyph, and that no two sections share a glyph. Size is asserted only for a tile that is actually rendered: Clash, Mesh Health, Region fit and Primitives are source-gated and legitimately not on screen for some formats. **Bug-injected two ways** — removing Standard Parts' tile, and giving Parts the same glyph as Mass Properties — each failing exactly the intended assertions.
+
 ## Collapsible sidebar sections
 
 Ten sections (`#tree-panel`, `#parts-panel`, `#edits-panel`, `#meshing-panel`, `#mass-panel`, `#clash-panel`, `#mesh-health-panel`, `#region-fit-panel`, `#macros-panel`, `#standard-parts-panel`) stacked in a fixed 220px column, all always expanded. Each now collapses to just its header, independently, persisted per document.

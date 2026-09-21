@@ -60,6 +60,7 @@ export function viewerBodyHtml(): string {
       <div id="tree-panel" class="side-section">
         <div id="tree-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("listTree")}</span>
           <span id="tree-title" class="panel-title">Components</span>
           <input id="tree-filter" type="search" placeholder="Filter…" title="Filter components by name" hidden>
           <button id="tree-search" class="panel-icon-btn" type="button" aria-expanded="false" title="Filter components by name">${glyph("search")}</button>
@@ -70,6 +71,7 @@ export function viewerBodyHtml(): string {
       <div id="parts-panel" class="side-section">
         <div id="parts-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("tag")}</span>
           <span id="parts-title" class="panel-title">Parts</span>
           <div id="parts-header-actions">
             <button id="parts-isolate" class="panel-icon-btn" title="Isolate the selected part (show only it)">${glyph("target")}</button>
@@ -82,6 +84,7 @@ export function viewerBodyHtml(): string {
       <div id="edits-panel" class="side-section">
         <div id="edits-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("sliders")}</span>
           <span id="edits-title" class="panel-title">Edits <span id="edits-count" title="Operations in the edit history"></span></span>
           <div id="edits-actions">
             <button id="edits-undo" title="Undo last edit" disabled>${glyph("undo")}</button>
@@ -104,6 +107,7 @@ export function viewerBodyHtml(): string {
       <div id="meshing-panel" class="side-section">
         <div id="meshing-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("grid3")}</span>
           <span id="meshing-title" class="panel-title">FE Mesh</span>
           <!-- Element count of the generated mesh, in the header so it reads while
                the section is collapsed. Fed from the same place as the status bar's
@@ -147,7 +151,7 @@ export function viewerBodyHtml(): string {
       <div id="advanced-group" class="side-section collapsed">
         <div id="advanced-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="false" title="Expand section">${glyph("chevronDown")}</button>
-          <span id="advanced-icon" aria-hidden="true">${glyph("layers")}</span>
+          <span id="advanced-icon" class="panel-icon" aria-hidden="true">${glyph("layers")}</span>
           <span id="advanced-title" class="panel-title">Advanced</span>
           <span id="advanced-count" title="Sections available for this document"></span>
         </div>
@@ -156,6 +160,7 @@ export function viewerBodyHtml(): string {
       <div id="mass-panel" class="side-section">
         <div id="mass-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("scale")}</span>
           <span id="mass-title" class="panel-title">Mass Properties</span>
           <button id="mass-refresh" title="Compute for the current selection, or the whole model if nothing is selected">${icon("generate")} Compute</button>
         </div>
@@ -164,6 +169,7 @@ export function viewerBodyHtml(): string {
       <div id="clash-panel" class="side-section" hidden>
         <div id="clash-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("intersect")}</span>
           <span id="clash-title" class="panel-title">Clash</span>
           <button id="clash-check-all" title="Check every Part against every other in one call">Check all</button>
         </div>
@@ -180,6 +186,7 @@ export function viewerBodyHtml(): string {
       <div id="mesh-health-panel" class="side-section" hidden>
         <div id="mesh-health-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("activity")}</span>
           <span id="mesh-health-title" class="panel-title">Mesh Health</span>
           <div id="mesh-health-actions">
             <label id="mesh-health-decimate-label" title="If the mesh exceeds the 50000-triangle ceiling, decimate it first (meshio++ quadric edge-collapse, target ~1000 triangles) and check the decimated mesh — the report says so, never silently"><input type="checkbox" id="mesh-health-decimate"> Auto-decimate</label>
@@ -193,6 +200,7 @@ export function viewerBodyHtml(): string {
       <div id="region-fit-panel" class="side-section" hidden>
         <div id="region-fit-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("crosshair")}</span>
           <span id="region-fit-title" class="panel-title">Region fit</span>
           <div id="region-fit-actions">
             <button id="region-fit-pick" title="Pick a point on the mesh to grow a region and fit a plane/cylinder/sphere">${icon("point")} Pick seed</button>
@@ -206,6 +214,7 @@ export function viewerBodyHtml(): string {
       <div id="primitives-panel" class="side-section" hidden>
         <div id="primitives-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("shapes")}</span>
           <span id="primitives-title" class="panel-title">Primitives</span>
           <div id="primitives-actions">
             <button id="primitives-recognize" title="Read-only diagnostic: classify each solid as a box/sphere/cylinder/cone/torus with a fit residual — emits nothing, changes nothing">${icon("generate")} Recognize</button>
@@ -220,6 +229,7 @@ export function viewerBodyHtml(): string {
       <div id="macros-panel" class="side-section">
         <div id="macros-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("braces")}</span>
           <span id="macros-title" class="panel-title">Macros</span>
           <button id="macros-save" title="Save the current edit history as a reusable, parameterized macro">${icon("save")} Save current</button>
         </div>
@@ -228,6 +238,7 @@ export function viewerBodyHtml(): string {
       <div id="standard-parts-panel" class="side-section">
         <div id="standard-parts-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("package")}</span>
           <span id="standard-parts-title" class="panel-title">Standard Parts</span>
         </div>
         <div id="standard-parts-search-row">

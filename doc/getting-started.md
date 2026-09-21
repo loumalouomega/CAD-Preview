@@ -106,7 +106,7 @@ Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one afte
 
 ### The Advanced Group
 
-The sidebar's top level holds only the four sections that **edit** the document — Components, Parts, Edits, FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
+Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the four sections that **edit** the document — Components, Parts, Edits, FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
 
 | Advanced ▸ | Sections |
 | --- | --- |

@@ -4098,13 +4098,13 @@ input[type="range"].meshing-slider:focus {
   border-bottom: none;
   border-top: none;
 }
-#advanced-icon {
+.panel-icon {
   display: inline-flex;
   flex-shrink: 0;
   margin-right: var(--ui-s-2);
   opacity: 0.8;
 }
-#advanced-icon svg {
+.panel-icon svg {
   width: 16px;
   height: 16px;
 }
@@ -4539,16 +4539,19 @@ body:has(#side.visible) #kernel-status {
 }
 
 /* Advanced card: the icon in a small rounded tile, and a quiet mono count. */
-#advanced-icon {
+/* One rounded tile per sidebar section header (chevron · icon · title). The same
+ * class serves every header, Advanced included — it started life as
+ * `#advanced-icon`, so the id survives in the markup but no rule keys off it. */
+.panel-icon {
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: var(--ui-r-sm);
   background: var(--vscode-input-background, #3c3c3c);
   opacity: 1;
 }
-#advanced-icon svg {
+.panel-icon svg {
   width: 14px;
   height: 14px;
 }
