@@ -4,6 +4,33 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.0.0] - 2026-09-21
+
+A ground-up redesign of the viewer's chrome. No CAD, meshing, MCP or file-format behaviour changed — every sidecar, tool and export reads and writes exactly what it did in 2.7.0 — but nearly everything you look at is different, and one control moved (see **Changed**), which is why this is a major version. It also covers the `2.7.1` version bump that was never released.
+
+### Added
+
+- **Status bar.** A full-width strip along the bottom of the window: **kernel readiness** (`OCCT ready · Gmsh ready`), entity counts (`36 faces · 98 edges · 64 points`), the generated FE mesh (`mesh 10,000 el · min SICN 0.412` — hover it for the node count) and the live cursor position on the model (`x 110.18  y 31.75  z 51.29 mm`, following the Units dropdown). Kernel readiness is inferred from calls, so a document that never needs a WebAssembly kernel — a plain STL open, say — honestly reads `Kernels idle`; a kernel shows *ready* only after a call that needed it has succeeded, and goes back to idle if the worker is cancelled or restarts.
+- **Document chip.** The menu bar shows the open file, a format badge and, when the document has edits not yet saved into the source file, a dot and the count (`3 unsaved edits`).
+- **Selection pill.** Selecting an entity shows a one-line summary (`face-0 · planar · 8,119.27 mm²`) with the full fact rows behind a disclosure arrow.
+- **An icon on every sidebar section**, and line glyphs on the toolbar, dock and section headers, all theme-adaptive.
+- **Components search.** The filter box is behind a search button in the header; Escape closes it and clears the filter. Assembly rows show how many solids they hold.
+- **Edits count badge** beside the section title, so the history length reads while the section is collapsed; the FE Mesh header shows the element count once a mesh exists.
+- **Preset highlighting.** The Coarse / Medium / Fine button nearest the current element size reads as selected.
+
+### Changed
+
+- **The sidebar is reorganised.** The four sections that edit the document (Components, Parts, Edits, FE Mesh) stay at the top; the read-only analysis sections and the two library sections fold into one collapsible **Advanced** group. The default sidebar width grew from 220 to 272 px.
+- **Parts rows are compact:** swatch, name, a `1 · 0 · 0` count and an eye. The assign (＋) and delete buttons appear when you hover or focus a row, and entity lists start collapsed. **A part's target mesh size is no longer edited in the Parts panel — use FE Mesh › Part sizes.** The stored value is unchanged.
+- **FE Mesh layout.** A full-width Generate button; the element-size readout above the slider; presets as a segmented control; Engine and Preset side by side; and the export row (format · unit · Export) closing the panel. Part-size fields are plain text fields, so `4.0231` reads `4.02` rather than following the OS locale.
+- **Toolbar and dock.** The toolbar was inheriting the browser's 16px font and is now sidebar-sized, with a divider between the plain buttons and the menus. The floating dock is one compact row with icon navigation, text-only display modes and the collapse control at its end; the controls used less often sit behind a **⋯** popover.
+- **A selected face keeps its Part colour** with a subtle tint; it used to turn lilac because the accent glow was added at full strength.
+- **Colours follow your VS Code theme** throughout the chrome; only the model's own colours come from the separate scene palette.
+
+### Fixed
+
+- **Three view-control elements rendered even when they should be hidden:** the construction-plane midplane row and the Colour-by-field group and legend. An author `display` rule beat the `hidden` attribute, so they showed for every document instead of only when applicable.
+
 ## [2.7.0] - 2026-09-20
 
 ### Added
@@ -502,6 +529,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.0.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.7.0...v3.0.0
 [2.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.4.0...v2.5.0
