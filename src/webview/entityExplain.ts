@@ -137,6 +137,26 @@ export function inspectorContent(facts: EntityFacts): InspectorContent {
 }
 
 /**
+ * The selection pill's one line: `face-12 · planar · 1840 mm²`.
+ *
+ * Facts, in the kernel's own unit (mm — OCCT converts every source to it at read
+ * time, and the card's detail rows are likewise unconverted). Three parts, each
+ * present only when the classification gives it meaning: the id, a short
+ * descriptor ("planar", "circular"), and the ONE measure that matters for the
+ * kind — area for a face or solid, length for an edge, position for a vertex.
+ */
+export function summaryLine(facts: EntityFacts): { id: string; descriptor: string; measure: string } {
+  const { title } = inspectorContent(facts);
+  // "Planar face" -> "planar"; a bare "Face"/"Edge"/"Solid"/"Vertex" stays as is.
+  const descriptor = title.replace(/ (face|edge)$/, "").toLowerCase();
+  let measure = "";
+  if (facts.kind === "point") measure = vec(facts.center);
+  else if (facts.kind === "edge" && facts.length !== null) measure = `${num(facts.length)} mm`;
+  else if (facts.area !== null) measure = `${num(facts.area)} mm²`;
+  return { id: facts.entityId, descriptor, measure };
+}
+
+/**
  * The hover tooltip's two lines: the entity's id, and which ops mention it.
  *
  * **"Mentions", never "acts on".** Entity ids are positional — `face-12` is an

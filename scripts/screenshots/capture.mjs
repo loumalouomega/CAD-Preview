@@ -35,11 +35,31 @@ async function shoot(page, target, file) {
   console.log(`  ✓ ${file} (${kb} KB)`);
 }
 
+/**
+ * The two hero shots show the document chip and the status bar's kernel
+ * readiness, which the shared `populate()` deliberately does not post (the
+ * webview tests assert the chip is NOT rendered before its first message). The
+ * values are what a real session of this fixture would show: `bull.stp` opened
+ * with its three sidecar edits unsaved, OCCT having loaded it and — once a mesh
+ * exists — Gmsh having generated one.
+ */
+async function heroChrome(page, { gmsh }) {
+  await post(page, { type: "documentInfo", name: "bull.stp", path: "/work/bull.stp", format: "step", dirty: true, unsavedEdits: 3 });
+  await post(page, {
+    type: "kernelStatus",
+    state: { occt: "ready", gmsh: gmsh ? "ready" : "idle", meshio: "idle", ftetwild: "idle" },
+  });
+  await sleep(150);
+}
+
 // ── Shot list ────────────────────────────────────────────────────────────
 const SHOTS = [
   {
     file: "viewer-main.png",
-    setup: async (page) => { await populate(page); },
+    setup: async (page) => {
+      await populate(page);
+      await heroChrome(page, { gmsh: false });
+    },
     target: {}, // full UI with model + panels
   },
   { file: "toolbar.png", setup: populate, target: { sel: "#toolbar" } },
@@ -69,8 +89,10 @@ const SHOTS = [
     // picker row made the panel wider (left-clipped at x=830) and the new
     // rows made it taller (Screenshot… half-cut at height 400) — now
     // x 830→770 / height 400→470 — plus one more row for Zoom to selection
-    // (470→500).
-    target: { clip: { x: 770, y: 30, width: 590, height: 500 } },
+    // (470→500). The trigger chevrons became icons (chrome redesign, pass 3),
+    // which widened the toolbar and pushed the View panel's left edge to
+    // x=766.9 — the clip went 770→750.
+    target: { clip: { x: 750, y: 30, width: 610, height: 500 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   {
@@ -244,6 +266,7 @@ const SHOTS = [
     setup: async (page) => {
       await populate(page);
       await post(page, fixture("meshingResult"));
+      await heroChrome(page, { gmsh: true });
       await sleep(900);
     },
     target: {},

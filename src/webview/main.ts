@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
 import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
-import { hoverContent, inspectorContent } from "./entityExplain";
+import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
+import { UI_GLYPHS } from "../uiGlyphs";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
@@ -87,7 +88,16 @@ import { convertLength, convertLengthBasedProperties, convertVolume, displayUnit
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
 import { setupCollapsiblePanels, setupAdvancedGroupCount, type CollapsiblePanelsHandle } from "./collapsiblePanels";
-import { formatEntityCounts, formatMeshStats, formatCursor, type EntityCounts, type MeshStats } from "./dockStats";
+import {
+  formatEntityCounts,
+  formatMeshStats,
+  formatMeshHeaderStat,
+  formatCursor,
+  unsavedEditsLabel,
+  type EntityCounts,
+  type MeshStats,
+} from "./dockStats";
+import { describeKernelState } from "../kernelActivity";
 import { setupSidebarResizer, clampSidebarWidth, SIDEBAR_DEFAULT_PX, type SidebarResizerHandle } from "./sidebarResizer";
 // Value import, safe the same way `sidebarResizer` above is: `viewStateSidecar`
 // is pure (no vscode, no three.js value import — only `import type` on
@@ -157,6 +167,32 @@ document.getElementById("tree-filter")?.addEventListener("input", (e) => {
   treePanel.filter((e.target as HTMLInputElement).value);
 });
 
+// The filter box stays hidden until the header's search button asks for it — a
+// permanent input made the Components header the busiest in the sidebar. Closing
+// it clears the filter, so a hidden box can never keep hiding rows.
+{
+  const filterInput = document.getElementById("tree-filter") as HTMLInputElement | null;
+  const searchBtn = document.getElementById("tree-search");
+  const setFilterOpen = (open: boolean): void => {
+    if (!filterInput || !searchBtn) return;
+    filterInput.hidden = !open;
+    searchBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) filterInput.focus();
+    else if (filterInput.value !== "") {
+      filterInput.value = "";
+      treePanel.filter("");
+    }
+  };
+  searchBtn?.addEventListener("click", () => setFilterOpen(!!filterInput?.hidden));
+  filterInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      setFilterOpen(false);
+      searchBtn?.focus();
+    }
+  });
+}
+
 // ── Parts / selection state ──────────────────────────────────────────────
 const selection = new SelectionSet();
 let previewPartIndex: number | null = null;
@@ -186,7 +222,6 @@ const partsPanel = new PartsPanel(
     onRemovePart: (index) => partsModel.remove(index),
     onRename: (index, name) => partsModel.rename(index, name),
     onRecolor: (index, color) => partsModel.recolor(index, color),
-    onMeshSize: (index, size) => partsModel.setMeshSize(index, size),
     onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
     onSelectPart: (index) => {
       previewPartIndex = index;
@@ -546,6 +581,10 @@ function renderEditsUi(): void {
   // point anyway.
   editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets, editsModel.savePoint);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
+  // The history length beside the section title, so it reads while collapsed.
+  // Empty (not "0") when there are no ops, so the badge collapses away.
+  const editsCount = document.getElementById("edits-count");
+  if (editsCount) editsCount.textContent = ops.length > 0 ? String(ops.length) : "";
 }
 
 /** The most recent replay's per-op outcomes (see `editOps.ts`'s
@@ -1342,6 +1381,14 @@ function renderDockMeshStats(stats: MeshStats | null): void {
   if (!el) return;
   el.textContent = stats ? formatMeshStats(stats) : "";
   el.hidden = stats === null;
+  // The same fact, shortened, in the FE Mesh section header so it reads while the
+  // section is collapsed.
+  const headerStat = document.getElementById("meshing-header-stat");
+  const headerText = document.getElementById("meshing-header-stat-text");
+  if (headerStat && headerText) {
+    headerText.textContent = stats ? formatMeshHeaderStat(stats) : "";
+    headerStat.hidden = stats === null;
+  }
 }
 
 /** The last point reported under the pointer, in the model's frame, in mm. Kept raw
@@ -2835,6 +2882,39 @@ function renderInspectorCard(entityId: string, facts: EntityFacts | null, error?
   if (!inspectorEl) return;
   inspectorEl.textContent = "";
 
+  // The pill: one line — dot · id · descriptor · the one measure that matters —
+  // with the full fact rows behind a disclosure. The rows are ALWAYS built (just
+  // not displayed while closed), so the card's content is the same whether or not
+  // anyone opened it; only how much of it is shown changes.
+  const summary = document.createElement("div");
+  summary.className = "insp-summary";
+  const dot = document.createElement("span");
+  dot.className = "ui-dot ui-dot-accent";
+  dot.setAttribute("aria-hidden", "true");
+  const summaryId = document.createElement("span");
+  summaryId.className = "insp-sum-id ui-num";
+  summaryId.textContent = entityId;
+  const summaryDesc = document.createElement("span");
+  summaryDesc.className = "insp-sum-desc";
+  const summaryMeasure = document.createElement("span");
+  summaryMeasure.className = "insp-sum-measure ui-num";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "insp-toggle";
+  toggle.title = "Show or hide the full details";
+  toggle.setAttribute("aria-label", "Show or hide the full details");
+  toggle.innerHTML = UI_GLYPHS.chevronDown;
+  toggle.setAttribute("aria-expanded", inspectorOpen ? "true" : "false");
+  toggle.addEventListener("click", () => {
+    inspectorOpen = !inspectorOpen;
+    inspectorEl?.classList.toggle("open", inspectorOpen);
+    toggle.setAttribute("aria-expanded", inspectorOpen ? "true" : "false");
+  });
+  summary.append(dot, summaryId, summaryDesc, summaryMeasure, toggle);
+  inspectorEl.append(summary);
+
+  const details = document.createElement("div");
+  details.className = "insp-details";
   const title = document.createElement("div");
   title.className = "insp-title";
   const name = document.createElement("span");
@@ -2842,19 +2922,24 @@ function renderInspectorCard(entityId: string, facts: EntityFacts | null, error?
   id.className = "insp-id";
   id.textContent = entityId;
   title.append(name, id);
-  inspectorEl.append(title);
+  details.append(title);
 
   if (error) {
     name.textContent = "Unavailable";
+    summaryDesc.textContent = "unavailable";
     const note = document.createElement("div");
     note.className = "insp-note";
     note.textContent = error;
-    inspectorEl.append(note);
+    details.append(note);
   } else if (!facts) {
     name.textContent = "Inspecting…";
+    summaryDesc.textContent = "inspecting…";
   } else {
     const content = inspectorContent(facts);
     name.textContent = content.title;
+    const line1 = summaryLine(facts);
+    summaryDesc.textContent = line1.descriptor;
+    summaryMeasure.textContent = line1.measure;
     for (const row of content.rows) {
       const line = document.createElement("div");
       line.className = "insp-row";
@@ -2865,11 +2950,18 @@ function renderInspectorCard(entityId: string, facts: EntityFacts | null, error?
       v.className = "insp-val";
       v.textContent = row.value;
       line.append(k, v);
-      inspectorEl.append(line);
+      details.append(line);
     }
   }
+  inspectorEl.append(details);
+  inspectorEl.classList.toggle("open", inspectorOpen);
   inspectorEl.classList.remove("hidden");
 }
+
+/** Whether the selection pill's detail rows are expanded. Module state, not per
+ * render: the card is rebuilt on every selection change, and a user who opened it
+ * should not have to reopen it for each face they click. */
+let inspectorOpen = false;
 
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
@@ -5016,12 +5108,29 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       const name = document.getElementById("doc-chip-name");
       const format = document.getElementById("doc-chip-format");
       const dot = document.getElementById("doc-chip-dirty");
+      const unsaved = document.getElementById("doc-chip-unsaved");
       if (!chip || !name || !format || !dot) break;
       name.textContent = msg.name;
       format.textContent = msg.format ?? "";
       chip.title = msg.path;
       dot.hidden = !msg.dirty;
+      // "3 unsaved edits" — a count, never a verdict. Empty when clean, so the
+      // span collapses instead of leaving a gap in the chip.
+      if (unsaved) unsaved.textContent = unsavedEditsLabel(msg.dirty ? msg.unsavedEdits : 0);
       chip.hidden = false;
+      break;
+    }
+
+    case "kernelStatus": {
+      // The status bar's kernel readiness. Text and tone come from the pure
+      // describeKernelState so the wording is unit-tested; this is only the DOM
+      // half, tolerant of a stripped-down harness like every other setter here.
+      const box = document.getElementById("kernel-status");
+      const text = document.getElementById("kernel-status-text");
+      if (!box || !text) break;
+      const d = describeKernelState(msg.state);
+      text.textContent = d.text;
+      box.dataset.tone = d.tone;
       break;
     }
 

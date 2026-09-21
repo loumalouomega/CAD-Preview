@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatEntityCounts, formatMeshStats, formatCursor } from "./dockStats";
+import { formatEntityCounts, formatMeshStats, formatMeshHeaderStat, formatCursor, unsavedEditsLabel } from "./dockStats";
 
 describe("formatEntityCounts", () => {
   it("reads as a plain list of facts", () => {
@@ -70,5 +70,27 @@ describe("formatCursor", () => {
     const out = formatCursor([-1, 0, 0], "mm");
     expect(out).toContain("-1.000");
     expect(out).not.toContain("−");
+  });
+});
+
+describe("formatMeshHeaderStat", () => {
+  it("shows the element count only, grouped with a fixed locale", () => {
+    expect(formatMeshHeaderStat({ nodes: 400, elements: 1248, minQuality: 0.41 })).toBe("1,248 el");
+    expect(formatMeshHeaderStat({ nodes: 4, elements: 1 })).toBe("1 el");
+  });
+});
+
+describe("unsavedEditsLabel", () => {
+  it("counts, with the right plural", () => {
+    expect(unsavedEditsLabel(1)).toBe("1 unsaved edit");
+    expect(unsavedEditsLabel(3)).toBe("3 unsaved edits");
+  });
+
+  it("is empty when clean, or for a value that is not a positive count", () => {
+    expect(unsavedEditsLabel(0)).toBe("");
+    expect(unsavedEditsLabel(-2)).toBe("");
+    expect(unsavedEditsLabel(Number.NaN)).toBe("");
+    // A payload from an older host has no field at all.
+    expect(unsavedEditsLabel(undefined as unknown as number)).toBe("");
   });
 });

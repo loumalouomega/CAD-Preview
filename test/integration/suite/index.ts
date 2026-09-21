@@ -434,7 +434,7 @@ test("Ctrl+S bakes through the same join as Export save-in-place", async () => {
   // cumulative cost. A standalone case that opened two extra documents pushed a
   // LATER case past whatever resource ceiling the suite sits under (its webview
   // never posted `ready`), a regression untouched HEAD does not have.
-  type DocInfo = { type: string; name?: string; path?: string; format?: string | null; dirty?: boolean };
+  type DocInfo = { type: string; name?: string; path?: string; format?: string | null; dirty?: boolean; unsavedEdits?: number };
   const infosOf = (posts: Array<{ type: string }>) => (posts as DocInfo[]).filter((m) => m.type === "documentInfo");
   const openInfos = infosOf(seen);
   assert(openInfos.length >= 1, "a documentInfo is posted on open");
@@ -448,6 +448,27 @@ test("Ctrl+S bakes through the same join as Export save-in-place", async () => {
   assert(
     openInfos.at(-1)?.dirty === true,
     `an unbaked sidecar tail reports dirty at open (got ${JSON.stringify(openInfos.at(-1))})`
+  );
+  // The chip's "N unsaved edits": the same predicate, so the sidecar's single
+  // unbaked op reads as exactly one.
+  assert(
+    openInfos.at(-1)?.unsavedEdits === 1,
+    `the chip counts the unbaked tail (got ${JSON.stringify(openInfos.at(-1))})`
+  );
+  // Kernel readiness (status bar): the ready handshake posts a state, and opening
+  // a B-rep document must end with OCCT reported ready — inferred from the load
+  // call actually succeeding in the worker, not from a flag.
+  assert(
+    (seen as Array<{ type: string }>).some((m) => m.type === "kernelStatus"),
+    "a kernelStatus is posted in the ready handshake"
+  );
+  assert(
+    await waitFor(() =>
+      (seen as Array<{ type: string; state?: { occt?: string } }>).some(
+        (m) => m.type === "kernelStatus" && m.state?.occt === "ready"
+      )
+    ),
+    "opening a B-rep document leaves OCCT reported ready once the load has succeeded"
   );
 
   markDirty(api, staged);
@@ -463,6 +484,10 @@ test("Ctrl+S bakes through the same join as Export save-in-place", async () => {
   const cleared = await waitFor(() => infosOf(later).some((i) => i.dirty === false), 10000);
   infoSub?.dispose();
   assert(cleared, `the chip is told the document is clean once the bake lands (saw ${JSON.stringify(infosOf(later))})`);
+  assert(
+    infosOf(later).find((i) => i.dirty === false)?.unsavedEdits === 0,
+    "and its unsaved-edit count drops to zero with it"
+  );
   // The poster is called at every op-list/watermark transition and deduplicates
   // against the last value it actually sent: no two ADJACENT posts may match.
   const serialized = [...openInfos, ...infosOf(later)].map((i) => JSON.stringify(i));
@@ -604,11 +629,14 @@ test("Reopening a save is stable; a stale watermark double-applies (sensitivity 
   // Same reopen, seen by the menubar's document chip: the watermark now equals
   // the op count, so nothing is unbaked and the chip must NOT claim unsaved
   // edits. Pairs with the "dirty at open" assertion in the Ctrl+S case above.
-  const reopenInfos = (seen as Array<{ type: string; name?: string; dirty?: boolean }>).filter(
+  const reopenInfos = (seen as Array<{ type: string; name?: string; dirty?: boolean; unsavedEdits?: number }>).filter(
     (m) => m.type === "documentInfo"
   );
   assert(
-    reopenInfos.length >= 1 && reopenInfos.at(-1)?.dirty === false && reopenInfos.at(-1)?.name === path.basename(staged),
+    reopenInfos.length >= 1 &&
+      reopenInfos.at(-1)?.dirty === false &&
+      reopenInfos.at(-1)?.unsavedEdits === 0 &&
+      reopenInfos.at(-1)?.name === path.basename(staged),
     `a saved document (watermark == op count) reopens reporting clean (got ${JSON.stringify(reopenInfos.at(-1))})`
   );
   await closeAll();

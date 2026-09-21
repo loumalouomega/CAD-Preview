@@ -70,7 +70,8 @@ export interface CollapsiblePanelsHandle {
 function reflect(panel: HTMLElement, chevron: HTMLElement | null, collapsed: boolean): void {
   panel.classList.toggle("collapsed", collapsed);
   if (!chevron) return;
-  chevron.textContent = collapsed ? "▸" : "▾";
+  // The chevron is an SVG glyph rotated by CSS off `aria-expanded`, so nothing
+  // here rewrites its content.
   chevron.setAttribute("aria-expanded", collapsed ? "false" : "true");
   chevron.setAttribute("title", collapsed ? "Expand section" : "Collapse section");
 }

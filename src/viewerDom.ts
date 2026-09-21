@@ -1,4 +1,5 @@
 import { TOOLBAR_ICONS } from "./toolbarIcons";
+import { glyph } from "./uiGlyphs";
 
 /** `<span>` wrapping a generated, currentColor-based toolbar icon (see toolbarIcons.ts). */
 function icon(id: keyof typeof TOOLBAR_ICONS): string {
@@ -20,7 +21,7 @@ function icon(id: keyof typeof TOOLBAR_ICONS): string {
 export function viewerBodyHtml(): string {
   return /* html */ `<div id="menubar">
     <div id="file-menu-wrap" class="tb-menu-wrap">
-      <button id="file-menu" class="tb-menu" title="File menu" aria-haspopup="true" aria-expanded="false">${icon("home")} File ▾</button>
+      <button id="file-menu" class="tb-menu" title="File menu" aria-haspopup="true" aria-expanded="false">${icon("home")} File ${glyph("chevronDown")}</button>
       <div id="file-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="menu-new" role="menuitem" title="Start an empty model you can build from scratch with the Edits panel — writes a new .brep file, then opens it">${icon("add")} New Blank Model…</button>
         <div class="tb-sep"></div>
@@ -48,42 +49,44 @@ export function viewerBodyHtml(): string {
          NB: no backticks in this comment - the whole function is one template
          literal and a backtick ends the string. -->
     <div id="doc-chip" hidden>
+      <span id="doc-chip-dirty" class="ui-dot" role="img" aria-label="Edits not yet saved into the source file" title="Edits not yet saved into the source file" hidden></span>
       <span id="doc-chip-name"></span>
       <span id="doc-chip-format" class="ui-badge"></span>
-      <span id="doc-chip-dirty" class="ui-dot" role="img" aria-label="Edits not yet saved into the source file" title="Edits not yet saved into the source file" hidden></span>
+      <span id="doc-chip-unsaved"></span>
     </div>
   </div>
   <div id="layout">
     <div id="side">
       <div id="tree-panel" class="side-section">
         <div id="tree-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="tree-title" class="panel-title">Components</span>
-          <input id="tree-filter" type="search" placeholder="Filter…" title="Filter components by name">
+          <input id="tree-filter" type="search" placeholder="Filter…" title="Filter components by name" hidden>
+          <button id="tree-search" class="panel-icon-btn" type="button" aria-expanded="false" title="Filter components by name">${glyph("search")}</button>
           <button id="tree-close" title="Close panel">${icon("close")}</button>
         </div>
         <div id="tree-body"></div>
       </div>
       <div id="parts-panel" class="side-section">
         <div id="parts-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="parts-title" class="panel-title">Parts</span>
           <div id="parts-header-actions">
-            <button id="parts-isolate" title="Isolate the selected part (show only it)">${icon("isolate")} Isolate</button>
-            <button id="parts-new" title="New part">${icon("add")} New</button>
-            <button id="parts-copy-bom" title="Copy the bill of materials (one row per part) as tab-separated text">Copy BOM</button>
+            <button id="parts-isolate" class="panel-icon-btn" title="Isolate the selected part (show only it)">${glyph("target")}</button>
+            <button id="parts-copy-bom" class="panel-icon-btn" title="Copy the bill of materials (one row per part) as tab-separated text">${glyph("copy")}</button>
+            <button id="parts-new" class="panel-primary-btn" title="New part">${glyph("plus")} New</button>
           </div>
         </div>
         <div id="parts-body"></div>
       </div>
       <div id="edits-panel" class="side-section">
         <div id="edits-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
-          <span id="edits-title" class="panel-title">Edits</span>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span id="edits-title" class="panel-title">Edits <span id="edits-count" title="Operations in the edit history"></span></span>
           <div id="edits-actions">
-            <button id="edits-undo" title="Undo last edit" disabled>${icon("undo")}</button>
-            <button id="edits-redo" title="Redo edit" disabled>${icon("redo")}</button>
-            <button id="edits-clear" title="Clear all edits" disabled>${icon("clear")} Clear</button>
+            <button id="edits-undo" title="Undo last edit" disabled>${glyph("undo")}</button>
+            <button id="edits-redo" title="Redo edit" disabled>${glyph("redo")}</button>
+            <button id="edits-clear" title="Clear all edits" disabled>${glyph("trash")}</button>
           </div>
         </div>
         <div id="edits-scroll">
@@ -100,19 +103,30 @@ export function viewerBodyHtml(): string {
       </div>
       <div id="meshing-panel" class="side-section">
         <div id="meshing-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="meshing-title" class="panel-title">FE Mesh</span>
-          <div id="meshing-actions">
-            <button id="meshing-generate" title="Generate mesh">${icon("generate")} Generate</button>
-            <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
-            <select id="meshing-export-unit" class="meshing-export-select" title="Export unit (geometric scale — mm is native, no conversion)"></select>
-            <button id="meshing-export" title="Export mesh">${icon("export")} Export</button>
-            <button id="meshing-clear" title="Clear generated mesh">${icon("clear")} Clear</button>
-            <button id="meshing-worst-toggle" title="Highlight worst-quality elements" hidden>${icon("warning")} Worst</button>
-          </div>
+          <!-- Element count of the generated mesh, in the header so it reads while
+               the section is collapsed. Fed from the same place as the status bar's
+               mesh stat; hidden until a mesh exists. -->
+          <span id="meshing-header-stat" class="ui-num" hidden><span class="ui-dot ui-dot-ok" aria-hidden="true"></span><span id="meshing-header-stat-text"></span></span>
         </div>
         <div id="meshing-progress"></div>
-        <div id="meshing-body"></div>
+        <!-- The action rows sit in the BODY, not the header: Generate is the panel's
+             primary action and wants a full-width button, which a header cannot
+             hold. meshingPanel.ts relocates #meshing-export-row below the Part
+             sizes; every id is unchanged. -->
+        <div id="meshing-body">
+          <div id="meshing-actions">
+            <button id="meshing-generate" class="panel-primary-btn" title="Generate mesh">${glyph("play")} Generate</button>
+            <button id="meshing-worst-toggle" class="panel-icon-btn" title="Highlight worst-quality elements" hidden>${icon("warning")}</button>
+            <button id="meshing-clear" class="panel-icon-btn" title="Clear generated mesh">${glyph("trash")}</button>
+          </div>
+          <div id="meshing-export-row">
+            <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
+            <select id="meshing-export-unit" class="meshing-export-select" title="Export unit (geometric scale — mm is native, no conversion)"></select>
+            <button id="meshing-export" title="Export mesh">${glyph("download")} Export</button>
+          </div>
+        </div>
         <div id="meshing-status"></div>
         <div id="meshing-quality"></div>
       </div>
@@ -132,7 +146,8 @@ export function viewerBodyHtml(): string {
            surfaces as a bare TS1005 pointing at an unrelated line. -->
       <div id="advanced-group" class="side-section collapsed">
         <div id="advanced-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="false" title="Expand section">▸</button>
+          <button class="panel-chevron" type="button" aria-expanded="false" title="Expand section">${glyph("chevronDown")}</button>
+          <span id="advanced-icon" aria-hidden="true">${glyph("layers")}</span>
           <span id="advanced-title" class="panel-title">Advanced</span>
           <span id="advanced-count" title="Sections available for this document"></span>
         </div>
@@ -140,7 +155,7 @@ export function viewerBodyHtml(): string {
       <div class="advanced-subhead">Analysis</div>
       <div id="mass-panel" class="side-section">
         <div id="mass-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="mass-title" class="panel-title">Mass Properties</span>
           <button id="mass-refresh" title="Compute for the current selection, or the whole model if nothing is selected">${icon("generate")} Compute</button>
         </div>
@@ -148,7 +163,7 @@ export function viewerBodyHtml(): string {
       </div>
       <div id="clash-panel" class="side-section" hidden>
         <div id="clash-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="clash-title" class="panel-title">Clash</span>
           <button id="clash-check-all" title="Check every Part against every other in one call">Check all</button>
         </div>
@@ -164,7 +179,7 @@ export function viewerBodyHtml(): string {
       </div>
       <div id="mesh-health-panel" class="side-section" hidden>
         <div id="mesh-health-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="mesh-health-title" class="panel-title">Mesh Health</span>
           <div id="mesh-health-actions">
             <label id="mesh-health-decimate-label" title="If the mesh exceeds the 50000-triangle ceiling, decimate it first (meshio++ quadric edge-collapse, target ~1000 triangles) and check the decimated mesh — the report says so, never silently"><input type="checkbox" id="mesh-health-decimate"> Auto-decimate</label>
@@ -177,7 +192,7 @@ export function viewerBodyHtml(): string {
       </div>
       <div id="region-fit-panel" class="side-section" hidden>
         <div id="region-fit-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="region-fit-title" class="panel-title">Region fit</span>
           <div id="region-fit-actions">
             <button id="region-fit-pick" title="Pick a point on the mesh to grow a region and fit a plane/cylinder/sphere">${icon("point")} Pick seed</button>
@@ -190,7 +205,7 @@ export function viewerBodyHtml(): string {
       </div>
       <div id="primitives-panel" class="side-section" hidden>
         <div id="primitives-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="primitives-title" class="panel-title">Primitives</span>
           <div id="primitives-actions">
             <button id="primitives-recognize" title="Read-only diagnostic: classify each solid as a box/sphere/cylinder/cone/torus with a fit residual — emits nothing, changes nothing">${icon("generate")} Recognize</button>
@@ -204,7 +219,7 @@ export function viewerBodyHtml(): string {
       <div class="advanced-subhead">Library</div>
       <div id="macros-panel" class="side-section">
         <div id="macros-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="macros-title" class="panel-title">Macros</span>
           <button id="macros-save" title="Save the current edit history as a reusable, parameterized macro">${icon("save")} Save current</button>
         </div>
@@ -212,7 +227,7 @@ export function viewerBodyHtml(): string {
       </div>
       <div id="standard-parts-panel" class="side-section">
         <div id="standard-parts-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">▾</button>
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
           <span id="standard-parts-title" class="panel-title">Standard Parts</span>
         </div>
         <div id="standard-parts-search-row">
@@ -254,12 +269,29 @@ export function viewerBodyHtml(): string {
       <div id="context-menu" class="tb-dropdown hidden" role="menu"></div>
     </div>
   </div>
+  <!-- Full-width status bar. Kernel readiness on the left (under the sidebar's
+       width), then the facts about the loaded document — counts, FE-mesh stats and
+       the live cursor position — never verdicts, so nothing here is coloured
+       good/bad. A sibling of #layout, not inside #app, so it never overlaps the
+       canvas; the webview tests hide the whole bar for every exact-pixel comparison
+       (setPanelHidden), because the cursor readout is live, pointer-driven text.
+       Each fact span collapses when empty. Kernel state is INFERRED from calls, not
+       read from a flag: a mesh-only document legitimately reads "Kernels idle". -->
+  <div id="statusbar">
+    <span id="kernel-status" data-tone="idle" title="Which WebAssembly kernels this session has used. They load lazily on first use, so a document that never needs one shows it as idle.">
+      <span id="kernel-status-dot" class="ui-dot" aria-hidden="true"></span>
+      <span id="kernel-status-text" class="ui-num">Kernels idle</span>
+    </span>
+    <span id="vc-count-entities" class="ui-num" title="Faces, edges and points in the loaded model"></span>
+    <span id="vc-count-mesh" class="ui-num" title="Generated FE mesh: nodes, elements and the worst element quality (minSICN)" hidden></span>
+    <span id="vc-cursor" class="ui-num" title="Cursor position on the model, in the current display unit"></span>
+  </div>
   <div id="toolbar">
     <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">${icon("tree")} Tree</button>
     <button id="meshing-toggle" title="Toggle FE mesh overlay">${icon("feMesh")} FE Mesh</button>
     <div class="tb-menu-wrap">
-      <button id="view-menu" class="tb-menu" title="View options" aria-haspopup="true" aria-expanded="false">${icon("view")} View ▾</button>
+      <button id="view-menu" class="tb-menu" title="View options" aria-haspopup="true" aria-expanded="false">${icon("view")} View ${glyph("chevronDown")}</button>
       <div id="view-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="grid" role="menuitemcheckbox" aria-checked="false" title="Toggle the grid and axis helpers">${icon("grid")} Grid</button>
         <button id="edges" role="menuitemcheckbox" aria-checked="true" title="Toggle edge visibility">${icon("edges")} Edges</button>
@@ -291,7 +323,7 @@ export function viewerBodyHtml(): string {
       </div>
     </div>
     <div class="tb-menu-wrap">
-      <button id="select-menu" class="tb-menu" title="Pick entities in the view to assign to a part" aria-haspopup="true" aria-expanded="false">${icon("select")} Select ▾</button>
+      <button id="select-menu" class="tb-menu" title="Pick entities in the view to assign to a part" aria-haspopup="true" aria-expanded="false">${icon("select")} Select ${glyph("chevronDown")}</button>
       <div id="select-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="sel-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle selection mode">${icon("select")} Selection mode</button>
         <div id="select-group" class="tb-row" title="What a click picks">
@@ -318,7 +350,7 @@ export function viewerBodyHtml(): string {
       </div>
     </div>
     <div class="tb-menu-wrap">
-      <button id="measure-menu" class="tb-menu" title="Measure distances, lengths, angles, and radii" aria-haspopup="true" aria-expanded="false">${icon("measure")} Measure ▾</button>
+      <button id="measure-menu" class="tb-menu" title="Measure distances, lengths, angles, and radii" aria-haspopup="true" aria-expanded="false">${icon("measure")} Measure ${glyph("chevronDown")}</button>
       <div id="measure-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="measure-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle measure mode">${icon("measure")} Measure mode</button>
         <div id="measure-tool" class="tb-row" title="Measurement tool">
@@ -334,7 +366,7 @@ export function viewerBodyHtml(): string {
       </div>
     </div>
     <div class="tb-menu-wrap">
-      <button id="markup-menu" class="tb-menu" title="Draw review annotations over the 3D view" aria-haspopup="true" aria-expanded="false">${icon("markup")} Markup ▾</button>
+      <button id="markup-menu" class="tb-menu" title="Draw review annotations over the 3D view" aria-haspopup="true" aria-expanded="false">${icon("markup")} Markup ${glyph("chevronDown")}</button>
       <div id="markup-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="markup-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle markup mode">${icon("markup")} Markup mode</button>
         <div id="markup-tool" class="tb-row" title="Markup tool">
@@ -380,6 +412,13 @@ export function viewerBodyHtml(): string {
          wrapping flex ROW, so two direct children would sit side by side. -->
     <div class="vc-stack">
     <div class="vc-dock-row">
+      <div class="vc-nav" id="vc-nav" role="group" aria-label="Navigate">
+        <button id="view-reset" class="vc-nav-btn" title="Reset to default view" aria-label="Reset to default view">${glyph("rotateCcw")}</button>
+        <button id="view-fit" class="vc-nav-btn" title="Fit to view" aria-label="Fit to view">${icon("fit")}</button>
+        <button id="zoom-out" class="vc-nav-btn" title="Zoom out" aria-label="Zoom out">${glyph("zoomOut")}</button>
+        <button id="zoom-in" class="vc-nav-btn" title="Zoom in" aria-label="Zoom in">${glyph("zoomIn")}</button>
+      </div>
+      <span class="vc-div" aria-hidden="true"></span>
       <div class="vc-segments" id="display-mode-group" role="group" aria-label="Display mode">
         <button class="display-mode-btn active" data-mode="shaded" title="Shaded — normal lit faces">${icon("shaded")} Shaded</button>
         <button class="display-mode-btn" data-mode="wireframe" title="Wireframe — faces rendered as a mesh of lines">${icon("wireframe")} Wire</button>
@@ -390,6 +429,7 @@ export function viewerBodyHtml(): string {
       <span class="vc-div" aria-hidden="true"></span>
       <div class="vc-inline-group">
         <span class="vc-label">Clip</span>
+        <button id="clip-toggle" title="Toggle clipping">Off</button>
         <div class="vc-segments" role="group" aria-label="Clip axis">
           <button class="clip-axis active" data-axis="x">X</button>
           <button class="clip-axis" data-axis="y">Y</button>
@@ -397,7 +437,6 @@ export function viewerBodyHtml(): string {
           <button class="clip-axis" id="clip-custom" hidden title="Custom clip normal">N</button>
         </div>
         <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset along the active normal">
-        <button id="clip-toggle" title="Toggle clipping">Off</button>
       </div>
       <span class="vc-div" aria-hidden="true"></span>
       <button id="vc-ortho" title="Toggle orthographic/perspective projection">Persp</button>
@@ -408,13 +447,6 @@ export function viewerBodyHtml(): string {
         <option value="in">in</option>
         <option value="ft">ft</option>
       </select>
-      <span class="vc-div" aria-hidden="true"></span>
-      <div class="vc-segments" id="vc-nav" role="group" aria-label="Navigate">
-        <button id="view-fit" class="vc-nav-btn" title="Fit to view">Fit</button>
-        <button id="view-reset" class="vc-nav-btn" title="Reset to default view">Ctr</button>
-        <button id="zoom-out" class="vc-nav-btn" title="Zoom out" aria-label="Zoom out">−</button>
-        <button id="zoom-in" class="vc-nav-btn" title="Zoom in" aria-label="Zoom in">+</button>
-      </div>
       <div class="tb-menu-wrap" id="vc-more-wrap">
         <button id="vc-more" class="tb-menu" title="More view controls" aria-label="More view controls" aria-haspopup="true" aria-expanded="false">⋯</button>
         <!-- Wired by setupDropdown, exactly like the toolbar menus, so it gets
@@ -502,15 +534,6 @@ export function viewerBodyHtml(): string {
           </div>
         </div>
       </div>
-    </div>
-    <!-- Facts about the loaded document, never verdicts. Inside the dock on
-         purpose: the webview tests hide the whole dock for every exact-pixel
-         comparison, so a live pointer-driven readout is excluded from them
-         automatically. Each span collapses when empty. -->
-    <div id="vc-status">
-      <span id="vc-count-entities" class="ui-num" title="Faces, edges and points in the loaded model"></span>
-      <span id="vc-count-mesh" class="ui-num" title="Generated FE mesh: nodes, elements and the worst element quality (minSICN)" hidden></span>
-      <span id="vc-cursor" class="ui-num" title="Cursor position on the model, in the current display unit"></span>
     </div>
     </div>
     </div>

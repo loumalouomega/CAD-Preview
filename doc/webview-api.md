@@ -8,7 +8,9 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | --- | --- |
 | `src/webview/main.ts` | Entry point, VS Code API, message routing, UI wiring |
 | `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
-| `src/webview/dockStats.ts` | Pure text formatters for the dock's status line — entity counts, FE-mesh stats, live cursor position (unit-tested) |
+| `src/webview/dockStats.ts` | Pure text formatters for the status bar and chip — entity counts, FE-mesh stats (full and the FE Mesh header's short `1,248 el`), live cursor position, and the chip's `N unsaved edits` (unit-tested) |
+| `src/uiGlyphs.ts` | Hand-authored `currentColor` line glyphs (chevron, search, eye, copy, trash, layers, …) for the sidebar, status bar and dock — deliberately separate from the generated `toolbarIcons.ts` (unit-tested) |
+| `src/kernelActivity.ts` | Pure kernel-readiness rules behind the status bar's `OCCT ready · Gmsh ready`: which kernels each pipeline call touches, the state reducer, and the display text (unit-tested) |
 | `src/webview/collapsiblePanels.ts` | The sidebar-section registry, its `.view.json` sanitizer, and the chevron wiring (partly unit-tested) |
 | `src/webview/sidebarResizer.ts` | The sidebar's width clamps and its drag/keyboard resize handle: `--side-width` on `<body>` is the single shared fact `#side{width}` and `#view-controls`' centring both read (partly unit-tested) |
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
@@ -770,9 +772,12 @@ readout should say where the cursor is on the part. **It works with selection mo
 listener used to bail out whenever no pick mode was set, which is the normal state — so
 `onHoverPointerMove` now does one raycast and only proceeds to the entity-hover path when a pick
 mode is active; the tooltip behaviour is unchanged. `null` means the pointer left the model.
-`src/webview/dockStats.ts` (pure, unit-tested) formats what the dock's status line shows:
+`src/webview/dockStats.ts` (pure, unit-tested) formats what the status bar shows:
 `formatEntityCounts`, `formatMeshStats`, and `formatCursor` (which converts to the Units dropdown's
-unit).
+unit), plus `formatMeshHeaderStat` (the FE Mesh section header's `1,248 el`) and `unsavedEditsLabel`
+(the chip's `3 unsaved edits`). The spans live in the full-width `#statusbar` (a sibling of `#layout`,
+so it never overlaps the canvas), which also holds `#kernel-status`; `main.ts` finds them by id, so
+moving them out of the dock needed no wiring change.
 
 `Viewer.setEntityHoverHandler(cb)` is a hover pick path parallel to
 `setEntityPickHandler` — registering one is also what attaches the `pointermove`/`pointerleave`
@@ -1219,7 +1224,7 @@ Every `update()` fires `onChange`, wired in `main.ts` to post `meshingChanged` (
 
 ### `MeshingPanel`
 
-Manages the `#meshing-panel` DOM, top to bottom: a large-mesh warning strip (`#meshing-warning`, its icon from `TOOLBAR_ICONS.warning` — see `doc/extension-host-api.md`'s `src/toolbarIcons.ts` section — set via `innerHTML` since it's mixed with formatted text, not `textContent`); the primary size control (Coarse/Medium/Fine preset buttons, a coarser→finer log-scale slider driving `sizeMax`, and a `Size: X · ~N elements` readout); a "Part sizes" section mirroring the Parts panel's per-part `meshSize` inputs (hidden while no parts exist); a collapsed-by-default "Advanced settings" section with the raw options form (dimension, size min/max, 2D/3D algorithm dropdowns, element shape, element order, optimize checkbox, STL angle) — plus a Generate button, an export-format `<select>` (populated from `MESH_EXPORT_FORMATS` in `src/meshExportFormats.ts` — one shared registry instead of one button per format), an export-**unit** `<select>` (`#meshing-export-unit`, populated from `DISPLAY_UNITS` in `src/lengthUnits.ts`, defaulting to `"mm"`) + Export button, a Clear button, and a status line. Pure DOM, no business logic (size math delegates to `meshSizeHeuristics.ts`), no `prompt()`/`alert()` (VS Code webviews block those — same constraint as the Parts/Edits panels).
+Manages the `#meshing-panel` DOM, top to bottom: a large-mesh warning strip (`#meshing-warning`, its icon from `TOOLBAR_ICONS.warning` — see `doc/extension-host-api.md`'s `src/toolbarIcons.ts` section — set via `innerHTML` since it's mixed with formatted text, not `textContent`); the primary size control (an `Element size … 12.9 mm · ~1.2k el` readout above a coarser→finer log-scale slider driving `sizeMax`, with its COARSER/FINER ends beneath and the Coarse/Medium/Fine presets as a segmented control — the preset nearest the current size reads as selected); Engine and Saved presets side by side; a "Part sizes" section — now the only place a Part's `meshSize` is edited (hidden while no parts exist); a collapsed-by-default "Advanced settings" section with the raw options form (dimension, size min/max, 2D/3D algorithm dropdowns, element shape, element order, optimize checkbox, STL angle) — plus, in the body rather than the header, a full-width Generate button with Clear (and Worst) beside it at the top, and — relocated below the Part sizes by the constructor — an export row: an export-format `<select>` (populated from `MESH_EXPORT_FORMATS` in `src/meshExportFormats.ts` — one shared registry instead of one button per format), an export-**unit** `<select>` (`#meshing-export-unit`, populated from `DISPLAY_UNITS` in `src/lengthUnits.ts`, defaulting to `"mm"`) and an Export button; the header carries only the title and `#meshing-header-stat` (the element count, once a mesh exists); and a status line. Pure DOM, no business logic (size math delegates to `meshSizeHeuristics.ts`), no `prompt()`/`alert()` (VS Code webviews block those — same constraint as the Parts/Edits panels).
 
 ```typescript
 interface ModelExtents { size: [number, number, number]; diagonal: number }

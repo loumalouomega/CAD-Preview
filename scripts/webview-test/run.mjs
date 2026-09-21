@@ -1213,10 +1213,10 @@ test("dropdowns: clicking an open trigger's inner icon closes it", async (page) 
  *
  * `scripts/screenshots/capture.mjs` shoots the File menu with a hardcoded
  * `clip {x:0, y:0, width:320, height:439}` and the four toolbar dropdowns with a
- * shared `clip {x:770, y:30, width:590, height:500}`. A dropdown that grows, or
+ * shared `clip {x:750, y:30, width:610, height:500}`. A dropdown that grows, or
  * a toolbar that moves, silently CUTS the last entry off — the run still exits
  * 0 and still prints `✓ file-menu.png`. That failure has been realised twice
- * already (250 → 285 → 342 → 371 → 410 → 439, and 830 → 770 / 300 → 500).
+ * already (250 → 285 → 342 → 371 → 410 → 439, and 830 → 770 → 750 / 300 → 500).
  *
  * These mirror those two rectangles exactly, so any change that would mis-crop
  * a PNG now fails a test instead. Each assertion message prints the MEASURED
@@ -1225,7 +1225,7 @@ test("dropdowns: clicking an open trigger's inner icon closes it", async (page) 
  * BOTH this test and the clip in `capture.mjs` together.
  */
 const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 439 };
-const TOOLBAR_MENU_CLIP = { x: 770, y: 30, width: 590, height: 500 };
+const TOOLBAR_MENU_CLIP = { x: 750, y: 30, width: 610, height: 500 };
 
 const panelBox = (page, id) =>
   page.evaluate((i) => {
@@ -2041,6 +2041,29 @@ test("inspector card: selection requests facts, and the reply renders per classi
   await sleep(120);
   assert((await cardTitle()) === "Planar face", `a plane renders as "Planar face" (got ${await cardTitle()})`);
   assert((await cardKeys()).includes("Normal"), "a planar face shows its Normal row");
+
+  // The pill: one line up front — id · descriptor · the one measure — with the
+  // fact rows behind a disclosure. The rows are built either way (the assertions
+  // around this block read them while collapsed), so what changes is what shows.
+  {
+    const pill = () =>
+      page.evaluate(() => ({
+        text: document.querySelector("#inspector-card .insp-summary")?.textContent?.trim() ?? null,
+        detailsShown: document.querySelector("#inspector-card .insp-details")?.offsetParent !== null,
+        expanded: document.querySelector("#inspector-card .insp-toggle")?.getAttribute("aria-expanded") ?? null,
+      }));
+    const p0 = await pill();
+    assert(
+      p0.text !== null && p0.text.includes(req.entityId) && p0.text.includes("planar") && p0.text.includes("1 mm²"),
+      `the pill's summary line names the entity, its class and its area (got ${JSON.stringify(p0.text)})`
+    );
+    assert(p0.detailsShown === false && p0.expanded === "false", "the fact rows are collapsed behind the pill's disclosure by default");
+    await page.click("#inspector-card .insp-toggle");
+    const p1 = await pill();
+    assert(p1.detailsShown === true && p1.expanded === "true", "the disclosure reveals the fact rows");
+    await page.click("#inspector-card .insp-toggle");
+    assert((await pill()).detailsShown === false, "and hides them again");
+  }
 
   // A cylinder has no single normal — EntityFacts returns null and the row must
   // be ABSENT, not blank. This is the whole point of the card.
@@ -4370,6 +4393,217 @@ test("keyboard: Escape cancels an inline Parts rename without committing the hal
   await page.evaluate(() => document.querySelector(".part-name").focus());
   await page.keyboard.press("Escape");
 });
+
+/**
+ * Chrome redesign, pass 3 — the sidebar, status bar and chip changes that the
+ * mockup asked for. Each assertion is about RENDERED state (offsetParent, boxes),
+ * never a class name: the file documents an instance where every class-based
+ * check passed while the element was plainly visible.
+ */
+test("doc chip: reports how many unsaved edits, and nothing when clean", async (page) => {
+  await populate(page);
+  const read = () =>
+    page.evaluate(() => {
+      const el = document.getElementById("doc-chip-unsaved");
+      const chip = document.getElementById("doc-chip").getBoundingClientRect();
+      const bar = document.getElementById("menubar").getBoundingClientRect();
+      return { text: el.textContent, rendered: el.offsetParent !== null, inside: chip.top >= bar.top && chip.bottom <= bar.bottom };
+    });
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/x/bracket.step", format: "step", dirty: true, unsavedEdits: 3 });
+  await sleep(80);
+  const three = await read();
+  assert(three.text === "3 unsaved edits" && three.rendered, `the chip counts the unsaved edits (got ${JSON.stringify(three.text)}, rendered ${three.rendered})`);
+  assert(three.inside, "the longer chip still fits inside the menubar");
+
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/x/bracket.step", format: "step", dirty: true, unsavedEdits: 1 });
+  await sleep(80);
+  assert((await read()).text === "1 unsaved edit", "singular for one");
+
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/x/bracket.step", format: "step", dirty: false, unsavedEdits: 3 });
+  await sleep(80);
+  const clean = await read();
+  assert(clean.text === "" && clean.rendered === false, "a clean document shows no count, even if a stale number rides along (the dirty flag wins)");
+
+  await post(page, { type: "documentInfo", name: "old-host.step", path: "/x", format: "step", dirty: true });
+  await sleep(80);
+  assert((await read()).rendered === false, "a payload from a host without the field renders no count rather than 'undefined'");
+});
+
+test("status bar: sits below the canvas, holds the facts, and clears the dock", async (page) => {
+  await populate(page);
+  const geo = () =>
+    page.evaluate(() => {
+      const r = (id) => {
+        const b = document.getElementById(id)?.getBoundingClientRect();
+        return b ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height } : null;
+      };
+      return {
+        bar: r("statusbar"),
+        app: r("app"),
+        dock: r("view-controls"),
+        side: r("side"),
+        kernel: r("kernel-status"),
+        vh: window.innerHeight,
+        factsInside: ["vc-count-entities", "vc-count-mesh", "vc-cursor"].every((id) => document.getElementById("statusbar")?.contains(document.getElementById(id))),
+        oldRowGone: document.getElementById("vc-status") === null,
+      };
+    });
+  const g = await geo();
+  assert(g.factsInside, "the counts, mesh stat and cursor readout live in the status bar");
+  assert(g.oldRowGone, "the dock no longer carries its own status row");
+  assert(Math.abs(g.bar.bottom - g.vh) < 1.5, `the bar is the bottom edge of the window (bottom ${g.bar.bottom.toFixed(1)} of ${g.vh})`);
+  assert(g.app.bottom <= g.bar.top + 1, `the canvas ends where the bar begins — the bar never overlaps it (app bottom ${g.app.bottom.toFixed(1)}, bar top ${g.bar.top.toFixed(1)})`);
+  assert(g.dock.bottom <= g.bar.top, `the dock floats clear of the bar (dock bottom ${g.dock.bottom.toFixed(1)}, bar top ${g.bar.top.toFixed(1)})`);
+  assert(Math.abs(g.kernel.width - g.side.width) < 1.5, `kernel readiness sits under the sidebar's own width (${g.kernel.width.toFixed(0)} vs ${g.side.width.toFixed(0)})`);
+
+  const kernel = () =>
+    page.evaluate(() => ({
+      text: document.getElementById("kernel-status-text").textContent,
+      tone: document.getElementById("kernel-status").dataset.tone,
+    }));
+  const idle = { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle" };
+  await post(page, { type: "kernelStatus", state: idle });
+  await sleep(60);
+  let k = await kernel();
+  assert(k.text === "Kernels idle" && k.tone === "idle", `idle kernels read as such, not as a fault (got ${JSON.stringify(k)})`);
+  await post(page, { type: "kernelStatus", state: { ...idle, occt: "ready", gmsh: "loading" } });
+  await sleep(60);
+  k = await kernel();
+  assert(k.text === "OCCT ready · Gmsh loading…" && k.tone === "loading", `only active kernels are listed, and a loading one sets the tone (got ${JSON.stringify(k)})`);
+  await post(page, { type: "kernelStatus", state: { ...idle, occt: "ready", gmsh: "ready" } });
+  await sleep(60);
+  k = await kernel();
+  assert(k.text === "OCCT ready · Gmsh ready" && k.tone === "ready", `both ready (got ${JSON.stringify(k)})`);
+
+  // Narrow editor: the dock wraps, the bar must still clear it.
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(250);
+  const n = await geo();
+  assert(n.dock.bottom <= n.bar.top, `at 820px the wrapped dock still clears the bar (dock bottom ${n.dock.bottom.toFixed(1)}, bar top ${n.bar.top.toFixed(1)})`);
+  assert(n.bar.right <= 820.5 && n.bar.width >= 819, "the bar spans the narrow window without overflowing it");
+});
+
+test("components: the filter box is behind a search button and clears when closed", async (page) => {
+  await populate(page);
+  const state = () =>
+    page.evaluate(() => ({
+      inputShown: document.getElementById("tree-filter").offsetParent !== null,
+      expanded: document.getElementById("tree-search").getAttribute("aria-expanded"),
+      rows: document.querySelectorAll("#tree-body .tree-row").length,
+    }));
+  const s0 = await state();
+  assert(s0.inputShown === false && s0.expanded === "false", "the filter input is genuinely not rendered until asked for");
+  assert(s0.rows > 0, "precondition: the tree has rows");
+
+  await page.click("#tree-search");
+  const s1 = await state();
+  assert(s1.inputShown === true && s1.expanded === "true", "the search button reveals the filter input");
+  const focused = await page.evaluate(() => document.activeElement?.id);
+  assert(focused === "tree-filter", `and focuses it (focus on ${focused})`);
+
+  await page.fill("#tree-filter", "zzz-no-such-component");
+  await sleep(80);
+  assert((await state()).rows === 0, "a filter that matches nothing empties the list");
+
+  await page.keyboard.press("Escape");
+  await sleep(80);
+  const s2 = await state();
+  assert(s2.inputShown === false, "Escape closes the filter box");
+  assert(s2.rows === s0.rows, `closing it clears the filter, so no hidden box keeps hiding rows (${s2.rows} vs ${s0.rows})`);
+  const back = await page.evaluate(() => document.activeElement?.id);
+  assert(back === "tree-search", `and returns focus to the search button (focus on ${back})`);
+});
+
+test("parts: compact rows — no size field, quiet actions, entity lists start collapsed", async (page) => {
+  await populate(page);
+  const rows = () =>
+    page.evaluate(() => {
+      const shown = (el) => !!el && el.offsetParent !== null;
+      return [...document.querySelectorAll("#parts-body .part-item")].map((item) => {
+        const row = item.querySelector(".part-row");
+        const btns = [...row.querySelectorAll("button.part-btn")];
+        const list = item.querySelector(".part-entities");
+        return {
+          hasSizeField: !!row.querySelector(".part-meshsize"),
+          badge: row.querySelector(".part-badge")?.textContent ?? null,
+          eyeShown: shown(row.querySelector(".part-eye")),
+          actionsShown: btns.filter((b) => !b.classList.contains("part-eye")).map(shown),
+          actionCount: btns.filter((b) => !b.classList.contains("part-eye")).length,
+          listCollapsed: list ? getComputedStyle(list).display === "none" : null,
+        };
+      });
+    });
+  const before = await rows();
+  assert(before.length >= 3, `precondition: the fixture defines Parts (got ${before.length})`);
+  for (const r of before) {
+    assert(r.hasSizeField === false, "a row has no size field — that lives in FE Mesh › Part sizes");
+    assert(/^\d+ · \d+ · \d+( · \d+)?$/.test(r.badge), `the count reads 'v · s · l' (got ${JSON.stringify(r.badge)})`);
+    assert(r.eyeShown, "the eye is always visible");
+    assert(r.actionCount === 2 && r.actionsShown.every((v) => v === false), "assign and delete are not rendered at rest — but exist, so tests and keyboard can reach them");
+    assert(r.listCollapsed !== false, "an entity list, when present, starts collapsed");
+  }
+  await page.hover("#parts-body .part-row");
+  await sleep(60);
+  const hovered = await page.evaluate(() =>
+    [...document.querySelector("#parts-body .part-row").querySelectorAll("button.part-btn:not(.part-eye)")].map((b) => b.offsetParent !== null)
+  );
+  assert(hovered.length === 2 && hovered.every(Boolean), "hovering a row reveals its assign and delete actions");
+});
+
+test("edits and FE Mesh headers: a count badge, a stat, and the actions moved into the body", async (page) => {
+  await populate(page);
+  const opCount = fixture("edits").ops.length;
+  const edits = await page.evaluate(() => {
+    const el = document.getElementById("edits-count");
+    return { text: el.textContent, rendered: el.offsetParent !== null };
+  });
+  assert(edits.text === String(opCount) && edits.rendered, `the Edits header shows the history length (want ${opCount}, got ${JSON.stringify(edits.text)})`);
+  await post(page, { type: "edits", ops: [], variables: [], bakedThrough: 0 });
+  await sleep(120);
+  assert(
+    await page.evaluate(() => document.getElementById("edits-count").offsetParent === null),
+    "an empty history leaves no badge behind"
+  );
+
+  const layout = await page.evaluate(() => {
+    const panel = document.getElementById("meshing-panel");
+    const body = document.getElementById("meshing-body");
+    const gen = document.getElementById("meshing-generate");
+    const kids = [...body.children].map((c) => c.id || c.className);
+    return {
+      generateInBody: body.contains(gen),
+      generateInHeader: document.getElementById("meshing-header").contains(gen),
+      generateWidth: gen.getBoundingClientRect().width,
+      bodyWidth: body.getBoundingClientRect().width,
+      exportAfterParts: (() => {
+        const row = document.getElementById("meshing-export-row");
+        const parts = document.getElementById("meshing-part-sizes");
+        return !!row && !!parts && !!(parts.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING);
+      })(),
+      exportInBody: body.contains(document.getElementById("meshing-export")),
+      kids,
+      panelOk: !!panel,
+    };
+  });
+  assert(layout.generateInBody && !layout.generateInHeader, "Generate lives in the body now, not the header");
+  assert(layout.generateWidth > layout.bodyWidth * 0.6, `Generate is the full-width primary button (${layout.generateWidth.toFixed(0)} of ${layout.bodyWidth.toFixed(0)}px)`);
+  assert(layout.exportInBody && layout.exportAfterParts, "the export row sits below the Part sizes");
+
+  const stat = () =>
+    page.evaluate(() => {
+      const el = document.getElementById("meshing-header-stat");
+      return { text: el.textContent.trim(), rendered: el.offsetParent !== null };
+    });
+  assert((await stat()).rendered === false, "no header stat before a mesh exists");
+  await post(page, fixture("meshingResult"));
+  await sleep(500);
+  const s1 = await stat();
+  assert(s1.rendered && s1.text === "10,000 el", `the header stat reports the element count (got ${JSON.stringify(s1)})`);
+  await page.click("#meshing-clear");
+  await sleep(300);
+  assert((await stat()).rendered === false, "Clear removes the header stat with the overlay");
+});
+
 
 async function main() {
   if (!nodeSupportsPlaywright()) {

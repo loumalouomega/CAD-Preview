@@ -346,6 +346,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // set (field initializers and parameter-property assignment ordering is
     // a real TS subtlety not worth relying on here).
     this.pipeline = createKernelClient(this.context.extensionPath);
+    // One child serves every open document, so its readiness is one fact for
+    // all of them: fan every change out to every session's status bar.
+    this.pipeline.onKernelState((state) => {
+      for (const s of this.sessions.values()) s.post({ type: "kernelStatus", state });
+    });
   }
 
   public static register(context: vscode.ExtensionContext): vscode.Disposable {
@@ -708,6 +713,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       currentEdits.length > currentBakedThrough &&
       ((route.strategy === "occt" && BREP_FORMATS.has(route.format)) ||
         (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)));
+    // The chip's count. Derived from the SAME predicate so "dirty" and "N unsaved
+    // edits" can never disagree (a format that cannot bake reports 0, not the
+    // length of a tail nothing will ever write).
+    const unsavedEditCount = (): number => (isDocumentDirty() ? currentEdits.length - currentBakedThrough : 0);
 
     // Tells the webview's document chip which file this is and whether it has
     // unsaved edits. DEDUPLICATED against the last value actually posted, so it is
@@ -725,6 +734,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         path: document.uri.fsPath,
         format: route?.format ?? null,
         dirty: isDocumentDirty(),
+        unsavedEdits: unsavedEditCount(),
       };
       const serialized = JSON.stringify(info);
       if (serialized === lastDocumentInfo) return;
@@ -1510,6 +1520,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
     webviewPanel.webview.onDidReceiveMessage(async (msg: WebviewToHost) => {
       if (msg.type === "ready") {
+        post({ type: "kernelStatus", state: this.pipeline.kernelState() });
         if (!route) {
           post({ type: "error", message: `Unsupported file type: ${document.uri.fsPath}` });
           return;

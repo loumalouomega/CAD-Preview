@@ -66,6 +66,22 @@ export function formatMeshStats(m: MeshStats): string {
 }
 
 /**
+ * "1,248 el" — the FE Mesh section header's short form of the mesh stat. Elements
+ * only: the header has room for one number, and the element count is the one that
+ * says how heavy the mesh is. The full nodes/elements/quality line lives in the
+ * status bar.
+ */
+export function formatMeshHeaderStat(m: MeshStats): string {
+  return `${GROUPED.format(m.elements)} el`;
+}
+
+/** "3 unsaved edits" for the document chip; "" when there are none. */
+export function unsavedEditsLabel(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return count(Math.floor(n), "unsaved edit", "unsaved edits");
+}
+
+/**
  * "X 142.060  Y -18.400  Z 27.000 mm", or "" when there is no point.
  *
  * `mmPoint` is in the model's OWN frame, in millimetres (the cascade unit) — the

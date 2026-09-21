@@ -1,4 +1,5 @@
 import type { TreeNode } from "../protocol";
+import { UI_GLYPHS } from "../uiGlyphs";
 import { filterTree } from "./treeFilter";
 import { descendantLeafIds } from "./treeGroups";
 import type { VisibilityState } from "./visibilityState";
@@ -96,25 +97,34 @@ export class TreePanel {
 
       const chevron = document.createElement("span");
       chevron.className = "tree-chevron";
-      chevron.textContent = hasChildren ? "▾" : " ";
+      chevron.innerHTML = hasChildren ? UI_GLYPHS.chevronDown : "";
       row.appendChild(chevron);
+
+      // An assembly group reads as a cube, a leaf solid as a box — the glyphs
+      // differ only enough to tell a container from a part at a glance.
+      const kind = document.createElement("span");
+      kind.className = "tree-kind";
+      kind.innerHTML = hasChildren ? UI_GLYPHS.cube : UI_GLYPHS.box;
+      row.appendChild(kind);
 
       const label = document.createElement("span");
       label.className = "tree-label";
       label.textContent = node.label;
+      row.appendChild(label);
+      // The count sits at the row's right edge, not inline after the name, so a
+      // column of them lines up.
       if (node.faceCount !== undefined) {
         const badge = document.createElement("span");
-        badge.className = "tree-badge";
+        badge.className = "tree-badge ui-num";
         badge.textContent = String(node.faceCount);
-        label.appendChild(badge);
+        row.appendChild(badge);
       }
-      row.appendChild(label);
 
       const hidden = this.visibility.isTreeGroupHidden(node.id);
       const eye = document.createElement("button");
       eye.className = "tree-eye";
       eye.classList.toggle("hidden-off", hidden);
-      eye.textContent = hidden ? "🙈" : "👁";
+      eye.innerHTML = hidden ? UI_GLYPHS.eyeOff : UI_GLYPHS.eye;
       if (hasChildren) {
         const leafCount = descendantLeafIds(this.root?.children ?? [], node.id).length;
         eye.title = hidden
@@ -139,7 +149,7 @@ export class TreePanel {
         chevron.addEventListener("click", (e) => {
           e.stopPropagation();
           const collapsed = sub.classList.toggle("collapsed");
-          chevron.textContent = collapsed ? "▸" : "▾";
+          chevron.classList.toggle("collapsed", collapsed);
         });
       }
 

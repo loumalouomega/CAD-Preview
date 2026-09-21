@@ -7,6 +7,7 @@ import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
+import type { KernelState } from "./kernelActivity";
 import type { EntityFacts, ExactMeasureKind, ExactMeasureResult, InterferenceResult, InterferencePairResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipPlaneState } from "./webview/clipping";
@@ -499,7 +500,17 @@ export type HostToWebview =
       /** The routed format, or null for a file this build does not route. */
       format: CadFormat | null;
       dirty: boolean;
+      /** How many ops in the history are not yet baked into the source file —
+       * `currentEdits.length - currentBakedThrough`, and 0 whenever `dirty` is
+       * false (a format that cannot bake counts none, matching the predicate
+       * that decides `dirty`). The chip's "N unsaved edits". */
+      unsavedEdits: number;
     }
+  /** Which kernels the host has used so far — the status bar's "OCCT ready ·
+   * Gmsh ready". Sent in the `ready` handshake and on every change; the state is
+   * inferred from calls, so a kernel is `ready` only after a call that needs it
+   * has succeeded (see `kernelActivity.ts`). */
+  | { type: "kernelStatus"; state: KernelState }
   | { type: "screenshotRequest"; requestId: string }
   | {
       type: "standardPartsSearchResult";

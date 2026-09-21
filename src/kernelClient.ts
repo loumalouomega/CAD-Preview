@@ -23,6 +23,12 @@
 import { fork, type ChildProcess } from "child_process";
 import * as path from "path";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
+import {
+  initialKernelState,
+  reduceKernelState,
+  type KernelEvent,
+  type KernelState,
+} from "./kernelActivity";
 import type { Pipeline } from "./mcpTools";
 import type { loadBRepCached, BRepResult } from "./occtService";
 import type { readMeshioFieldValues } from "./meshioService";
@@ -67,6 +73,11 @@ export interface KernelClient extends DocumentPipeline {
    * currently running. Also what the per-call watchdog timeout below uses
    * internally on a hang. */
   cancelCurrent(): void;
+  /** The kernels' inferred readiness (see `kernelActivity.ts`) — a snapshot. */
+  kernelState(): KernelState;
+  /** Subscribes to readiness changes; returns an unsubscribe. Fires only when
+   * the state actually changed. `mcpServer.ts` never subscribes. */
+  onKernelState(listener: (state: KernelState) => void): () => void;
 }
 
 interface PendingEntry {
@@ -92,6 +103,15 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
   // previous one has settled (resolved or rejected) — see the file doc
   // comment for why serializing is both correct and sufficient here.
   let queueTail: Promise<unknown> = Promise.resolve();
+  // Kernel readiness is INFERRED from calls (kernelActivity.ts explains why).
+  let kernels: KernelState = initialKernelState();
+  const kernelListeners = new Set<(state: KernelState) => void>();
+  function emit(ev: KernelEvent): void {
+    const next = reduceKernelState(kernels, ev);
+    if (next === kernels) return;
+    kernels = next;
+    for (const l of [...kernelListeners]) l(kernels);
+  }
 
   /** Removes and returns a pending entry, clearing its watchdog timer — the
    * one place every settlement path (a real response, a timeout, a send
@@ -136,6 +156,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     });
     const onGone = (err: Error) => {
       if (child === spawned) child = null; // let the NEXT call respawn
+      emit({ type: "reset" }); // the kernels died with the child
       rejectAllPending(err);
     };
     spawned.on("exit", (code, signal) => onGone(new Error(`kernel worker exited unexpectedly (code=${code}, signal=${signal})`)));
@@ -157,7 +178,18 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
           );
           killCurrentChild();
         }, timeoutMs);
-        pending.set(id, { resolve, reject, timer });
+        emit({ type: "start", fn });
+        pending.set(id, {
+          resolve: (value) => {
+            emit({ type: "success", fn });
+            resolve(value);
+          },
+          reject: (err) => {
+            emit({ type: "failure", fn });
+            reject(err);
+          },
+          timer,
+        });
         const request: KernelRequest = { id, fn, args: args.map(marshal) };
         getChild().send(request, (err) => {
           if (err) takePending(id)?.reject(err instanceof Error ? err : new Error(String(err)));
@@ -222,5 +254,10 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     exportDrawingSheet: (...args) => callKernel("exportDrawingSheet", args) as ReturnType<Pipeline["exportDrawingSheet"]>,
     buildPrimitivesFile: (...args) => callKernel("buildPrimitivesFile", args) as ReturnType<Pipeline["buildPrimitivesFile"]>,
     cancelCurrent: killCurrentChild,
+    kernelState: () => kernels,
+    onKernelState: (listener) => {
+      kernelListeners.add(listener);
+      return () => void kernelListeners.delete(listener);
+    },
   };
 }

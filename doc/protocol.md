@@ -688,12 +688,22 @@ Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading 
 
 ### `documentInfo`
 
-Host → webview. What the menu bar's **document chip** shows: `{ type: "documentInfo", name, path, format, dirty }` — the file's base name, its full path (the chip's hover title), its `CadFormat` (or `null` for a route with no format), and whether the document has **unsaved edits**.
+Host → webview. What the menu bar's **document chip** shows: `{ type: "documentInfo", name, path, format, dirty, unsavedEdits }` — the file's base name, its full path (the chip's hover title), its `CadFormat` (or `null` for a route with no format), whether the document has **unsaved edits**, and how many (`unsavedEdits`: the ops not yet baked into the source, `currentEdits.length - currentBakedThrough`, and `0` whenever `dirty` is false so the two can never disagree — a format that cannot bake counts none). The chip renders the count as `3 unsaved edits`; a payload without the field (an older host) renders no count.
 
 `dirty` is computed by `provider.ts`'s `isDocumentDirty()` — the same predicate that fires VS Code's own dirty event: an unbaked op tail (`currentEdits.length > currentBakedThrough`) on a source that can bake one (STEP/IGES/BREP, and STL/OBJ/PLY for mesh save-in-place). It is sent once in the `ready` handshake and again whenever the op list or the save watermark changes, **deduplicated** so an unchanged value is never re-posted. It can differ from the editor tab's dot in two intended ways — see [Getting Started](./getting-started.md#the-document-chip-and-status-line). The webview only displays it; there is no reply.
 
 ```json
-{ "type": "documentInfo", "name": "bracket.step", "path": "/work/bracket.step", "format": "step", "dirty": true }
+{ "type": "documentInfo", "name": "bracket.step", "path": "/work/bracket.step", "format": "step", "dirty": true, "unsavedEdits": 3 }
+```
+
+### `kernelStatus`
+
+Host → webview. The status bar's kernel readiness: `{ type: "kernelStatus", state }`, where `state` maps each of `occt` / `gmsh` / `meshio` / `ftetwild` to `"idle"`, `"loading"` or `"ready"`. Sent in the `ready` handshake and again on every change; the webview only displays it (`OCCT ready · Gmsh loading…`, or `Kernels idle` when nothing has been used).
+
+The state is **inferred from calls**, not read from a flag — the kernels load lazily inside one forked worker, so nothing else can say. A kernel becomes `loading` when a call that needs it starts, `ready` when such a call *succeeds*, back to `idle` if the only call loading it failed, and every kernel goes `idle` when the worker is killed (cancel, watchdog, crash) since they die with it. The set of kernels each pipeline function touches is `KERNELS_BY_FUNCTION` in `src/kernelActivity.ts` — typed over the real pipeline, so a new function is a compile error until it is classified — and lists only the kernels a function *definitely* uses, so a kernel can read `idle` after a call that also touched it (fTetWild under a `generateMesh`, say), but never `ready` without having loaded.
+
+```json
+{ "type": "kernelStatus", "state": { "occt": "ready", "gmsh": "loading", "meshio": "idle", "ftetwild": "idle" } }
 ```
 
 ### `screenshotRequest`
