@@ -20,6 +20,17 @@ Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has 
 
 Several past items were identified by comparing against [SketchForge-3D](https://github.com/Formsmith746/SketchForge-3D), a browser-based direct-manipulation CAD editor over the same OCCT kernel, and [FluidCAD](https://github.com/nkarasiak/fluidcad). Their *capability* gaps transferred well; most of their *interaction* model deliberately did not — see Non-goals.
 
+## Magnusim review — 2026-09-21
+
+Reviewed the implementation at `af8d059`, including mesher adapters, CAD diagnostics and their callers; no Magnusim kernel/solver execution was performed. The concrete opportunities are below. In particular, [refinement catalog](https://github.com/Lilmill2000/Magnusim/blob/af8d05945d3b65cd9daf220554cb08ab0392da2d/magnusim-web/python/cfddesk/project/mesh_refinements.py) contains settings-only entries: its region/extrusion menu is not evidence of implemented volume refinement. Existing Parts sizing, distance grading, Gmsh hex-dominant meshing, fTetWild and `compare_mesh_refinement` already ship here and are not new work.
+
+| Implementation inspected | Transferable gap in CAD-Preview |
+| --- | --- |
+| [`measure_radial_gaps` / `check_passage_cells`](https://github.com/Lilmill2000/Magnusim/blob/af8d05945d3b65cd9daf220554cb08ab0392da2d/magnusim-web/python/cfddesk/cad/gaps.py) and [passage checks](https://github.com/Lilmill2000/Magnusim/blob/af8d05945d3b65cd9daf220554cb08ab0392da2d/magnusim-web/python/cfddesk/cad/passage.py) | Measure resolvable small features before starting a mesh; distinguish actual gap width from an area-equivalent diameter. |
+| [`estimate_cell_count_range`](https://github.com/Lilmill2000/Magnusim/blob/af8d05945d3b65cd9daf220554cb08ab0392da2d/magnusim-web/python/cfddesk/cad/volume.py) | Preview the cost of size choices; adapt its rough estimate to our mesher rather than copying a hex-cell formula. |
+| [`prove_cad_adherence`](https://github.com/Lilmill2000/Magnusim/blob/af8d05945d3b65cd9daf220554cb08ab0392da2d/magnusim-web/python/cfddesk/mesh/cad_adherence.py) | Quantify geometric fidelity independently of element quality. Its sampled, one-way distances and filtered outliers are not a certified Hausdorff bound. |
+| [`stl_deflection_for_bc` / `verify_stl_chordal_deviation`](https://github.com/Lilmill2000/Magnusim/blob/af8d05945d3b65cd9daf220554cb08ab0392da2d/magnusim-web/python/cfddesk/cad/stl_quality.py) | Tie exported tessellation tolerances to downstream mesh size and verify sampled error. |
+
 ## Open items
 
 ### Suggested implementation sequence
@@ -74,6 +85,41 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **User goal:** hand off a folder of models or several chosen files without repeating the same export dialogue.
 - **First increment:** sequential B-rep-to-B-rep conversion and drawing export through existing headless-capable paths; explicit destination directory and naming policy; collision handling and cancellation; per-file success/failure report. Expand to other targets only where the pipeline can actually produce them headlessly.
 - **Done when:** one bad file does not discard other results, no input is overwritten by default, companion files retain correct names/references, and the report states which edits were baked. Do not implement this by repeatedly opening hidden custom editors.
+
+#### Narrow-gap and passage resolution preflight (**M–L**, geometry analysis + shared sizing)
+
+- **Current gap:** `gmshSizingFields.ts` applies per-Part sizes and distance grading, but does not compare them with a measured passage width. A mesh can have acceptable element quality while failing to resolve a small channel.
+- **First increment:** use existing analytic cylinder/plane recognition to find coaxial cylindrical gaps and annular openings; allow a user-measured width for other passages. Report the relevant face pair, width, requested local size and estimated cells across it. Offer an explicit **Apply local size** action setting `h <= width / targetCells` through the existing Parts/`Min` composition. Require axial overlap and expose geometric tolerances; merely coaxial, disjoint cylinders are not a flow passage.
+- **Evidence:** Magnusim's `measure_radial_gaps` compares radii; `check_passage_cells` compares size with an area-equivalent opening diameter. Do not label the latter as minimum width: a long narrow slot can have a large equivalent diameter. General medial-axis/thickness analysis is a separate project. The current `tools/generate_cfmesh_standard.py` caller stops before case generation when its passage check fails; use an advisory report here until the chosen geometric width is reliable enough for a blocking rule.
+- **Done when:** annulus, thin slot, disjoint coaxial cylinders and scaled-unit fixtures give the expected diagnoses; applying a suggestion changes only chosen Parts and survives reopen. Show requested resolution as an estimate until an actual mesh confirms it. **MCP:** read-only resolution report plus explicit sizing mutation with the same parameters.
+
+#### Mesh size and memory budget preview (**M**, shared estimator + UI/MCP)
+
+- **Current gap:** `MeshOptions` provides sizes and `compare_mesh_refinement` measures completed meshes; neither is a cheap pre-generation resource estimate.
+- **First increment:** display estimated element/node counts and memory range as global size, order, dimension and local sizing change. Start with uniform simplex meshes using volume/area and calibration from existing refinement-comparison results; show the assumptions and confidence. Treat local grading, boundary layers and hex-dominant output as uncertain until calibrated, and keep a user-set advisory budget.
+- **Evidence:** Magnusim's `estimate_cell_count` uses volume divided by finest hex-cell size cubed, with a heuristic lower band. That formula and its 0.55 band cannot be presented as a Gmsh tetrahedron bound. Include host/WASM/viewport copies in the memory model, not just connectivity bytes.
+- **Done when:** halving uniform size yields the expected dimensional growth trend, units do not change the estimate, and a small fixture corpus records predicted versus actual counts and peak memory. Invalid/open volume geometry returns unavailable instead of a misleading budget. **MCP:** a read-only estimate and actual-versus-estimated data in mesh generation reports.
+
+#### CAD-to-mesh deviation map (**L**, shared geometric analysis)
+
+- **Current gap:** `gmshService.ts` reports element quality; it does not show whether a well-shaped mesh flattened a fillet, bridged a gap or lost a small feature.
+- **First increment:** sample CAD faces/edges and measure distance to the exported mesh boundary, returning maximum, percentiles, coverage and per-region failures against an absolute tolerance. Start with the existing CAD tessellation as an explicitly approximate reference and a triangle acceleration structure; exact OCCT projection needs a separate binding probe. Add reverse mesh-boundary-to-reference sampling so extra surfaces are also visible. Render an error overlay and link results into **Preparation report bundle** and **Simulation handoff manifest and boundary coverage**.
+- **Evidence:** Magnusim's `cad_adherence.py` separates edge and face checks; its face path measures to the boundary surface rather than only vertices. Report raw and filtered statistics with excluded sample counts; filtering distant samples must not hide a missing region. Sampling is an estimate, not a mathematical maximum-distance guarantee.
+- **Done when:** an unchanged planar surface, a coarse cylinder, an omitted face and an extraneous surface produce distinguishable results; sampled density/tolerance are recorded and cancellation releases buffers. **MCP:** same numerical report and optional deviation-mesh export; overlay styling remains visual.
+
+#### Mesh-aware surface tessellation export (**M–L**, export options + fidelity check)
+
+- **Current gap:** volume meshing and surface export have separate accuracy controls; a fine downstream volume mesh cannot recover curvature already lost in a coarse STL.
+- **First increment:** for B-rep-to-STL handoffs, accept a target downstream cell size and a chordal-error fraction, derive absolute linear deflection, retain an angular limit, and preview triangle count. Persist these as export/preset options without changing viewport tessellation. Include units, requested tolerance and measured sampled error in the preparation report. Bound triangle growth and allow cancellation.
+- **Evidence:** Magnusim's `stl_quality.py` derives deflection from the finest local cell size and distinguishes requested deflection from sampled CAD distance. Transfer that relationship, not an unconditional guarantee from the mesher's input option.
+- **Done when:** coarse/fine exports of a sphere/cylinder show decreasing sampled chordal error, a planar patch is not needlessly over-refined, and mm-to-m conversion preserves the physical tolerance. Clearly identify this as a surface-export concern; direct B-rep Gmsh meshing remains its existing path. **MCP:** expose the same export tolerance options and report.
+
+#### Simulation handoff manifest and boundary coverage (**M–L**, shared export + MCP)
+
+- **User goal:** take a prepared CAD mesh into a simulation setup without reconstructing which named regions came from which geometry revision.
+- **First increment:** optionally write a versioned JSON manifest beside an existing mesh export: source/replay fingerprint, effective units and scale, meshing options and engine version, output paths, named Parts and their exported group IDs, dimensions and counts. Report empty/unresolved Parts, unassigned boundary entities and overlaps; whether an overlap is invalid belongs to the downstream problemtype. Keep solver-specific material and boundary-condition authoring downstream.
+- **Dependencies:** build on the current Parts-to-Gmsh mapping and writer contracts. Coordinate the schema with the consumer before coupling a KKSS study navigator to it; do not introduce a seventh autosaved document sidecar merely for an export receipt. Stable names plus source revision identify assignments; positional face IDs alone cannot survive arbitrary topology edits.
+- **Done when:** re-reading an MDPA export agrees with the manifest's SubModelParts and counts, a known unit conversion is recorded once, and remeshing or geometry edits produce a detectable revision change. Missing or ambiguous mappings remain visible rather than silently transferring conditions. MCP mesh export returns the same manifest/report and supports explicit output paths.
 
 #### Preparation report bundle (**M**, shared pipeline)
 
@@ -156,6 +202,8 @@ None depends on another row's *result*, only on the harness — a failed probe n
 - **Out of scope:** any `MakePipeShell` revival — `SetMode_4` returns `false` even for the spine, recorded under Non-goals.
 
 #### Anisotropic boundary layers for 2D Gmsh meshes
+
+- **Magnusim-inspired scope refinement:** if the existing probe passes, accept layer count, first-layer height and growth ratio with a computed total thickness and explicit units. Report incompatible/excessive thickness and unresolved wall selections before meshing, then report achieved layers and quality afterward. Persist the effective settings with the existing mesh options and expose them through MCP. Reuse the current distance-sizing controls; these inputs do not establish support for 3D inflation. Include an analytic geometric-series check and a narrow-gap fixture in acceptance.
 
 - **Hypothesis:** the bundled gmsh-wasm 0.3.0 builds a working `BoundaryLayer` field — thin, ratio-graded quads hugging a chosen curve — through `field.add("BoundaryLayer")` + `setAsBoundaryLayer`, and it composes with the existing `Min` background field rather than replacing it.
 - **Evidence today:** string presence only, but more of it than the earlier wording admitted. `setAsBoundaryLayer(tag)` and `geo.extrudeBoundaryLayer(dimTags, numElements?, heights?, recombine?, second?, viewIndex?)` are both in `dist/gmsh.d.ts` with `unsupported: false` in the binding descriptor; the binary's string pool registers `BoundaryLayerField` in the field factory and carries the option names `CurvesList`, `PointsList`, `FanPointsList`, `FanPointsSizesList`, `ExcludedSurfacesList`, `SizeFar`, `Thickness`, `Ratio`, `AnisoMax`, `BetaLaw`, `NumExactLayers`, `Quads`, plus the runtime diagnostics "Different boundary layers cannot touch each other" and "Impossible boundary layer configuration". Nothing has called any of it. The shipped `Distance`+`Threshold`+`Min` composition owns the single `setAsBackgroundMesh` call (`gmshSizingFields.ts`); a boundary layer is set through a *different* call, which is exactly what makes coexistence a question rather than a known. Two adjacent facts, stated plainly: no committed test runs `dimension: 2` live, and `CLAUDE.md`'s claim that a 3D layer "needs `geo.extrudeBoundaryLayer`, which OCC-imported sources can't use" is an inference from the type surface (`extrudeBoundaryLayer` lives on `model.geo` with no `model.occ` twin), not a probe result.
